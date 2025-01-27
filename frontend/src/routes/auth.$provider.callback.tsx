@@ -40,18 +40,16 @@ function OAuthCallback() {
       const urlParams = new URLSearchParams(window.location.search);
       const code = urlParams.get("code");
       const state = urlParams.get("state");
-      const inviteCode = window.localStorage.getItem(`${provider}_invite_code`) || "";
 
       if (code && state) {
         try {
           if (provider === "github") {
-            await handleGitHubCallback(code, state, inviteCode);
+            await handleGitHubCallback(code, state, "");
           } else if (provider === "google") {
-            await handleGoogleCallback(code, state, inviteCode);
+            await handleGoogleCallback(code, state, "");
           } else {
             throw new Error("Unsupported provider");
           }
-          window.localStorage.removeItem(`${provider}_invite_code`); // Clean up
           // If successful, redirect to home page after a short delay
           setTimeout(() => navigate({ to: "/" }), 2000);
         } catch (error) {

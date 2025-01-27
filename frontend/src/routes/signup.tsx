@@ -44,10 +44,9 @@ function SignupPage() {
     const formData = new FormData(e.currentTarget);
     const email = formData.get("email") as string;
     const password = formData.get("password") as string;
-    const inviteCode = formData.get("inviteCode") as string;
 
     try {
-      await os.signUp(email, password, inviteCode, "ANON");
+      await os.signUp(email, password, "", "ANON");
       setTimeout(() => {
         navigate({ to: next || "/" });
         window.scrollTo(0, 0);
@@ -66,41 +65,21 @@ function SignupPage() {
 
   const handleGitHubSignup = async () => {
     try {
-      const inviteCode = (document.getElementById("inviteCode") as HTMLInputElement)?.value;
-      if (!inviteCode) {
-        setError("Invite code is required");
-        return;
-      }
-      const { auth_url } = await os.initiateGitHubAuth(inviteCode);
-      window.localStorage.setItem("github_invite_code", inviteCode);
+      const { auth_url } = await os.initiateGitHubAuth("");
       window.location.href = auth_url;
     } catch (error) {
       console.error("Failed to initiate GitHub signup:", error);
-      if (error instanceof Error && error.message.includes("Invalid invite code")) {
-        setError("Invalid invite code. Please check and try again.");
-      } else {
-        setError("Failed to initiate GitHub signup. Please try again.");
-      }
+      setError("Failed to initiate GitHub signup. Please try again.");
     }
   };
 
   const handleGoogleSignup = async () => {
     try {
-      const inviteCode = (document.getElementById("inviteCode") as HTMLInputElement)?.value;
-      if (!inviteCode) {
-        setError("Invite code is required");
-        return;
-      }
-      const { auth_url } = await os.initiateGoogleAuth(inviteCode);
-      window.localStorage.setItem("google_invite_code", inviteCode);
+      const { auth_url } = await os.initiateGoogleAuth("");
       window.location.href = auth_url;
     } catch (error) {
       console.error("Failed to initiate Google signup:", error);
-      if (error instanceof Error && error.message.includes("Invalid invite code")) {
-        setError("Invalid invite code. Please check and try again.");
-      } else {
-        setError("Failed to initiate Google signup. Please try again.");
-      }
+      setError("Failed to initiate Google signup. Please try again.");
     }
   };
 
@@ -111,11 +90,11 @@ function SignupPage() {
           <Mail className="mr-2 h-4 w-4" />
           Sign up with Email
         </Button>
-        <Button onClick={() => setSignUpMethod("github")} className="w-full">
+        <Button onClick={handleGitHubSignup} className="w-full">
           <Github className="mr-2 h-4 w-4" />
           Sign up with GitHub
         </Button>
-        <Button onClick={() => setSignUpMethod("google")} className="w-full">
+        <Button onClick={handleGoogleSignup} className="w-full">
           <Google className="mr-2 h-4 w-4" />
           Sign up with Google
         </Button>
@@ -129,71 +108,9 @@ function SignupPage() {
     );
   }
 
-  if (signUpMethod === "github") {
-    return (
-      <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          handleGitHubSignup();
-        }}
-      >
-        <AuthMain title="Sign Up with GitHub" description="Invite code required for beta access.">
-          {error && <AlertDestructive title="Error" description={error} />}
-          <div className="grid gap-2">
-            <Label htmlFor="inviteCode">Invite Code</Label>
-            <Input id="inviteCode" name="inviteCode" type="text" required />
-          </div>
-          <Button type="submit" className="w-full">
-            <Github className="mr-2 h-4 w-4" />
-            Continue with GitHub
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            onClick={() => setSignUpMethod(null)}
-            className="w-full"
-          >
-            Back
-          </Button>
-        </AuthMain>
-      </form>
-    );
-  }
-
-  if (signUpMethod === "google") {
-    return (
-      <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          handleGoogleSignup();
-        }}
-      >
-        <AuthMain title="Sign Up with Google" description="Invite code required for beta access.">
-          {error && <AlertDestructive title="Error" description={error} />}
-          <div className="grid gap-2">
-            <Label htmlFor="inviteCode">Invite Code</Label>
-            <Input id="inviteCode" name="inviteCode" type="text" required />
-          </div>
-          <Button type="submit" className="w-full">
-            <Google className="mr-2 h-4 w-4" />
-            Continue with Google
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            onClick={() => setSignUpMethod(null)}
-            className="w-full"
-          >
-            Back
-          </Button>
-        </AuthMain>
-      </form>
-    );
-  }
-
   return (
     <form onSubmit={handleSubmit}>
-      <AuthMain title="Sign Up with Email" description="Invite code required for beta access.">
+      <AuthMain title="Sign Up with Email">
         {error && <AlertDestructive title="Error" description={error} />}
         <div className="grid gap-2">
           <Label htmlFor="email">Email</Label>
@@ -216,10 +133,6 @@ function SignupPage() {
             minLength={8}
             autoComplete="new-password"
           />
-        </div>
-        <div className="grid gap-2">
-          <Label htmlFor="inviteCode">Invite Code</Label>
-          <Input id="inviteCode" name="inviteCode" type="text" required />
         </div>
         <Button type="submit" className="w-full" disabled={isLoading}>
           {isLoading ? (
