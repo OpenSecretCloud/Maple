@@ -37,7 +37,7 @@ export function BillingStatus() {
       if (billingStatus.chats_remaining === null || billingStatus.chats_remaining <= 0) {
         return "You've run out of chats, upgrade to keep chatting!";
       }
-      return "Free Plan";
+      return `Free Plan — ${billingStatus.chats_remaining} Chat${billingStatus.chats_remaining === 1 ? "" : "s"} Left This Week`;
     }
     if (!billingStatus.can_chat) {
       if (isPro) {
