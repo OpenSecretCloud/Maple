@@ -1,4 +1,4 @@
-import { LogOut, Trash, User, CreditCard, ArrowUpCircle } from "lucide-react";
+import { LogOut, Trash, User, CreditCard, ArrowUpCircle, Mail } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -144,6 +144,12 @@ export function AccountMenu() {
                   <span>{isPortalLoading ? "Loading..." : "Manage Subscription"}</span>
                 </DropdownMenuItem>
               )}
+              <DropdownMenuItem asChild>
+                <a href="mailto:support@opensecret.cloud">
+                  <Mail className="mr-2 h-4 w-4" />
+                  <span>Contact Us</span>
+                </a>
+              </DropdownMenuItem>
               <AlertDialogTrigger asChild>
                 <DropdownMenuItem>
                   <Trash className="mr-2 h-4 w-4" />
