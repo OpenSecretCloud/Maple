@@ -40,7 +40,7 @@ export function TopNav() {
       <nav className="w-full my-4 rounded-lg">
         <div className="flex h-16 items-center px-4 sm:px-6 relative overflow-visible rounded-lg border bg-black/75 border-white/10">
           <div className="relative z-10 flex w-full items-center justify-between">
-            <div className="mr-4 flex-shrink-0">
+            <div className="flex-shrink-0">
               <Link to="/" className="flex items-center space-x-2">
                 <img src="/maple-logo.svg" alt="Maple" className="w-24" />
               </Link>
