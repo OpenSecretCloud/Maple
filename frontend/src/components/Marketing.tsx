@@ -38,7 +38,7 @@ export function Marketing() {
     <div className="flex flex-col items-center gap-12 text-foreground pt-24 text-white">
       <div className="flex flex-col items-center gap-8">
         <a
-          href="http://blog.opensecret.cloud/maple-private-ai-for-work-and-personal"
+          href="https://blog.opensecret.cloud/maple-private-ai-for-work-and-personal"
           target="_blank"
           rel="noopener noreferrer"
           className="bg-white/10 backdrop-blur-sm px-4 py-1.5 rounded-full border border-white/20 text-sm font-light hover:bg-white/20 transition-colors"
