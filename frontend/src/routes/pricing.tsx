@@ -456,6 +456,7 @@ function PricingPage() {
                     <div className="grid grid-rows-[auto_1fr_auto_auto] h-full gap-4 sm:gap-6 md:gap-8">
                       <h3 className="text-xl sm:text-2xl font-medium flex items-center gap-2">
                         {product.name}
+                        {useBitcoin && product.name !== "Free" ? " (Yearly)" : ""}
                         {isCurrentPlan && <Check className="w-5 h-5 text-green-500" />}
                       </h3>
 
@@ -479,9 +480,14 @@ function PricingPage() {
                             </div>
                             <div className="space-y-0.5 sm:space-y-1 mt-1">
                               {useBitcoin ? (
-                                <p className="text-xs sm:text-sm text-white/50">
-                                  First year billed at ${yearlyDiscountedPrice}/year
-                                </p>
+                                <>
+                                  <p className="text-sm sm:text-base text-white/90 font-medium">
+                                    Billed yearly at ${yearlyDiscountedPrice}
+                                  </p>
+                                  <p className="text-xs sm:text-sm text-white/50">
+                                    Save 10% with annual billing
+                                  </p>
+                                </>
                               ) : (
                                 <>
                                   <p className="text-xs sm:text-sm text-white/50">
