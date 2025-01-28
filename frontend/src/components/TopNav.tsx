@@ -56,11 +56,6 @@ export function TopNav() {
             </div>
 
             <div className="flex items-center gap-4">
-              {/* Waitlist Link (Desktop) */}
-              <div className="hidden sm:block">
-                <NavLink to="/waitlist">Join Waitlist</NavLink>
-              </div>
-
               {/* Login/Chat Button */}
               {os.auth.user ? (
                 <Button variant="secondary" onClick={() => navigate({ to: "/" })}>
@@ -96,9 +91,6 @@ export function TopNav() {
               </NavLink>
               <NavLink to="/about" onClick={() => setMobileMenuOpen(false)}>
                 About
-              </NavLink>
-              <NavLink to="/waitlist" onClick={() => setMobileMenuOpen(false)}>
-                Join Waitlist
               </NavLink>
             </div>
           </div>

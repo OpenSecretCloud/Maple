@@ -11,7 +11,6 @@
 // Import Routes
 
 import { Route as rootRoute } from './routes/__root'
-import { Route as WaitlistImport } from './routes/waitlist'
 import { Route as SignupImport } from './routes/signup'
 import { Route as ProofImport } from './routes/proof'
 import { Route as PricingImport } from './routes/pricing'
@@ -26,11 +25,6 @@ import { Route as AuthProviderCallbackImport } from './routes/auth.$provider.cal
 import { Route as AuthChatChatIdImport } from './routes/_auth.chat.$chatId'
 
 // Create/Update Routes
-
-const WaitlistRoute = WaitlistImport.update({
-  path: '/waitlist',
-  getParentRoute: () => rootRoute,
-} as any)
 
 const SignupRoute = SignupImport.update({
   path: '/signup',
@@ -152,13 +146,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SignupImport
       parentRoute: typeof rootRoute
     }
-    '/waitlist': {
-      id: '/waitlist'
-      path: '/waitlist'
-      fullPath: '/waitlist'
-      preLoaderRoute: typeof WaitlistImport
-      parentRoute: typeof rootRoute
-    }
     '/password-reset/confirm': {
       id: '/password-reset/confirm'
       path: '/confirm'
@@ -203,7 +190,6 @@ export const routeTree = rootRoute.addChildren({
   PricingRoute,
   ProofRoute,
   SignupRoute,
-  WaitlistRoute,
   VerifyCodeRoute,
   AuthProviderCallbackRoute,
 })
@@ -224,7 +210,6 @@ export const routeTree = rootRoute.addChildren({
         "/pricing",
         "/proof",
         "/signup",
-        "/waitlist",
         "/verify/$code",
         "/auth/$provider/callback"
       ]
@@ -258,9 +243,6 @@ export const routeTree = rootRoute.addChildren({
     },
     "/signup": {
       "filePath": "signup.tsx"
-    },
-    "/waitlist": {
-      "filePath": "waitlist.tsx"
     },
     "/password-reset/confirm": {
       "filePath": "password-reset.confirm.tsx",

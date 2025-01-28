@@ -37,12 +37,14 @@ export function Marketing() {
   return (
     <div className="flex flex-col items-center gap-12 text-foreground pt-24 text-white">
       <div className="flex flex-col items-center gap-8">
-        <Link
-          to="/waitlist"
+        <a
+          href="http://blog.opensecret.cloud/maple-private-ai-for-work-and-personal"
+          target="_blank"
+          rel="noopener noreferrer"
           className="bg-white/10 backdrop-blur-sm px-4 py-1.5 rounded-full border border-white/20 text-sm font-light hover:bg-white/20 transition-colors"
         >
-          🎉 Now in private beta • Join the waitlist →
-        </Link>
+          🎉 Now Live • Read the Announcement →
+        </a>
         <MarketingHeader
           title="Private AI Chat"
           className="pt-0"
@@ -82,7 +84,8 @@ export function Marketing() {
           <img src="/cloud-gradient.svg" alt="mask test" className="w-32 h-32 self-center p-4" />
           <h3 className="text-2xl font-medium">AI Cloud</h3>
           <p className="text-lg font-light text-white/70">
-            Your chats are sent encrypted to a GPU and are impossible to intercept.
+            Your chats are encrypted and sent to a GPU, providing a highly secure transmission
+            that's resistant to interception.
           </p>
         </div>
       </div>
