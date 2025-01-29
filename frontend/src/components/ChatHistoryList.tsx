@@ -52,7 +52,7 @@ export function ChatHistoryList({ currentChatId }: ChatHistoryListProps) {
     <>
       {chats.map((chat) => (
         <div key={chat.id} className="relative">
-          <Link to={`/chat/${chat.id}`}>
+          <Link to="/chat/$chatId" params={{ chatId: chat.id }}>
             <div
               className={`rounded-lg py-2 transition-all hover:text-primary cursor-pointer ${
                 chat.id === currentChatId ? "text-primary" : "text-muted-foreground"
