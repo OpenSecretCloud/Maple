@@ -27,9 +27,13 @@ export function Sidebar({
     if (location.pathname === "/") {
       document.getElementById("message")?.focus();
     } else {
-      router.navigate({ to: `/` }).then(() => {
-        document.getElementById("message")?.focus();
-      });
+      try {
+        await router.navigate({ to: `/` });
+        // Ensure element is available after navigation
+        setTimeout(() => document.getElementById("message")?.focus(), 0);
+      } catch (error) {
+        console.error("Navigation failed:", error);
+      }
     }
   }
 
