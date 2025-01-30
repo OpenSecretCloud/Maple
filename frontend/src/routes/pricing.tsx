@@ -393,16 +393,16 @@ function PricingPage() {
         />
 
         <div className="w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex justify-center">
-          <div className="inline-flex items-center gap-3 px-4 py-1 rounded-full bg-black/50 backdrop-blur-sm border border-white/10">
-            <div className="flex items-center gap-1.5 text-[#F7931A] text-sm font-light">
-              <Bitcoin className="w-3.5 h-3.5" />
+          <div className="inline-flex items-center gap-4 px-6 py-2.5 rounded-full bg-black/50 backdrop-blur-sm border border-white/10">
+            <div className="flex items-center gap-2 text-[#F7931A] text-base font-light">
+              <Bitcoin className="w-4.5 h-4.5" />
               <span>Pay with Bitcoin</span>
             </div>
             <Switch
               id="bitcoin-toggle"
               checked={useBitcoin}
               onCheckedChange={setUseBitcoin}
-              className="data-[state=checked]:bg-[#F7931A] scale-75"
+              className="data-[state=checked]:bg-[#F7931A] scale-100"
             />
           </div>
         </div>
