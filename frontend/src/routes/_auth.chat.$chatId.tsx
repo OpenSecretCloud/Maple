@@ -294,7 +294,7 @@ function ChatComponent() {
         {/* Place the chat box inline (below messages) in normal flow */}
         <div className="w-full max-w-[45rem] mx-auto flex flex-col gap-2 px-2 pb-2">
           {error && <AlertDestructive title="Error" description={error} />}
-          <ChatBox onSubmit={sendMessage} messages={localChat.messages} />
+          <ChatBox onSubmit={sendMessage} messages={localChat.messages} isStreaming={isLoading} />
         </div>
       </main>
     </div>
