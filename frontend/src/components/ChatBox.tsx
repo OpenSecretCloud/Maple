@@ -49,8 +49,8 @@ function TokenWarning({
   return (
     <div
       className={cn(
-        "flex items-center justify-between px-3 py-1.5",
-        "border-b bg-muted/50 backdrop-blur-sm",
+        "flex items-center justify-between px-3 py-1.5 mb-1",
+        "bg-muted/50 backdrop-blur-sm rounded-t-lg",
         "text-xs text-muted-foreground/90",
         className
       )}
