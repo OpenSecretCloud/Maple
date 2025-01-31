@@ -161,6 +161,21 @@ function PricingPage() {
     enabled: isLoggedIn
   });
 
+  // Check team plan availability if user is logged in
+  const { data: isTeamPlanAvailable } = useQuery({
+    queryKey: ["teamPlanAvailable"],
+    queryFn: async () => {
+      const billingService = getBillingService();
+      try {
+        return await billingService.getTeamPlanAvailable();
+      } catch (error) {
+        console.error("Error checking team plan availability:", error);
+        return false;
+      }
+    },
+    enabled: isLoggedIn
+  });
+
   const {
     data: products,
     error: productsError,
@@ -196,9 +211,15 @@ function PricingPage() {
     const currentPlanName = freshBillingStatus?.product_name?.toLowerCase();
     const targetPlanName = product.name.toLowerCase();
     const isCurrentPlan = currentPlanName === targetPlanName;
+    const isTeamPlan = targetPlanName.includes("team");
 
     // If user is on Zaprite plan, show Contact Us
     if (freshBillingStatus?.payment_provider === "zaprite") {
+      return "Contact Us";
+    }
+
+    // For team plan, show Contact Us if not available
+    if (isTeamPlan && !isTeamPlanAvailable) {
       return "Contact Us";
     }
 
@@ -241,25 +262,33 @@ function PricingPage() {
       return;
     }
 
+    const targetPlanName = product.name.toLowerCase();
+    const isTeamPlan = targetPlanName.includes("team");
+
+    // For team plan, redirect to email if not available
+    if (isTeamPlan && !isTeamPlanAvailable) {
+      window.location.href = "mailto:support@opensecret.cloud";
+      return;
+    }
+
     // If user is on Zaprite plan, redirect to email
     if (freshBillingStatus?.payment_provider === "zaprite") {
       window.location.href = "mailto:support@opensecret.cloud";
       return;
     }
 
-    const targetPlanName = product.name.toLowerCase();
-    const isFreePlan = targetPlanName.includes("free");
     const currentPlanName = freshBillingStatus?.product_name?.toLowerCase();
     const isCurrentlyOnFreePlan = currentPlanName?.includes("free");
+    const isTargetFreePlan = targetPlanName.includes("free");
 
-    // For free plan, just go to home
-    if (isFreePlan && isCurrentlyOnFreePlan) {
+    // If on free plan and clicking free plan, go home
+    if (isCurrentlyOnFreePlan && isTargetFreePlan) {
       navigate({ to: "/" });
       return;
     }
 
     // If user is on free plan and clicking a paid plan, use checkout URL
-    if (isCurrentlyOnFreePlan && !isFreePlan) {
+    if (isCurrentlyOnFreePlan && !isTargetFreePlan) {
       newHandleSubscribe(product.id);
       return;
     }
@@ -328,7 +357,8 @@ function PricingPage() {
             }
           />
 
-          <div className="pt-8 w-full max-w-7xl mx-auto grid grid-cols-1 md:grid-cols-3 gap-4 md:gap-6 lg:gap-8 px-4 sm:px-6 lg:px-8">
+          <div className="pt-8 w-full max-w-7xl mx-auto grid grid-cols-1 md:grid-cols-4 gap-4 md:gap-4 lg:gap-6 px-4 sm:px-6 lg:px-8">
+            <PricingSkeletonCard />
             <PricingSkeletonCard />
             <PricingSkeletonCard />
             <PricingSkeletonCard />
@@ -352,7 +382,7 @@ function PricingPage() {
         <FullPageMain>
           <MarketingHeader title="Pricing" subtitle="Choose the plan that's right for you." />
 
-          <div className="pt-8 w-full grid grid-cols-1 md:grid-cols-3 gap-4 md:gap-8">
+          <div className="pt-8 w-full grid grid-cols-1 md:grid-cols-4 gap-4 md:gap-4 lg:gap-6 px-4 sm:px-6 lg:px-8">
             <div className="flex flex-col border-white/10 bg-black/75 text-white p-8 border rounded-lg col-span-full">
               <div className="flex flex-col items-center text-center gap-4">
                 <div className="rounded-full bg-red-500/10 p-3">
@@ -407,7 +437,7 @@ function PricingPage() {
           </div>
         </div>
 
-        <div className="pt-2 w-full max-w-7xl mx-auto grid grid-cols-1 md:grid-cols-3 gap-4 md:gap-6 lg:gap-8 px-4 sm:px-6 lg:px-8">
+        <div className="pt-8 w-full max-w-7xl mx-auto grid grid-cols-1 md:grid-cols-4 gap-4 md:gap-4 lg:gap-6 px-4 sm:px-6 lg:px-8">
           {products &&
             [...products]
               .sort((a, b) => a.default_price.unit_amount - b.default_price.unit_amount)
@@ -416,6 +446,7 @@ function PricingPage() {
                 const isCurrentPlan =
                   isLoggedIn &&
                   freshBillingStatus?.product_name?.toLowerCase() === product.name.toLowerCase();
+                const isTeamPlan = product.name.toLowerCase().includes("team");
 
                 // Calculate prices
                 const monthlyOriginalPrice = (product.default_price.unit_amount / 100).toFixed(2);
@@ -441,7 +472,7 @@ function PricingPage() {
                     key={product.id}
                     className={`flex flex-col border-white/10 bg-black/75 text-white p-4 sm:p-6 md:p-8 border rounded-lg relative group transition-all duration-300 hover:border-white/30 ${
                       isCurrentPlan ? "ring-2 ring-white" : ""
-                    }`}
+                    } ${useBitcoin && product.name === "Team" ? "opacity-50 cursor-not-allowed" : ""}`}
                   >
                     {isCurrentPlan && (
                       <Badge className="absolute -top-3 left-1/2 -translate-x-1/2 bg-white text-black font-medium">
@@ -450,18 +481,22 @@ function PricingPage() {
                     )}
                     {product.name !== "Free" && (
                       <Badge className="absolute -top-3 right-4 bg-gradient-to-r from-pink-500 to-orange-500 text-white">
-                        {useBitcoin ? "10% OFF" : "50% OFF"}
+                        {useBitcoin && product.name !== "Team" ? "10% OFF" : "50% OFF"}
                       </Badge>
                     )}
                     <div className="grid grid-rows-[auto_1fr_auto_auto] h-full gap-4 sm:gap-6 md:gap-8">
                       <h3 className="text-xl sm:text-2xl font-medium flex items-center gap-2">
                         {product.name}
-                        {useBitcoin && product.name !== "Free" ? " (Yearly)" : ""}
+                        {useBitcoin && product.name !== "Free" && product.name !== "Team"
+                          ? " (Yearly)"
+                          : ""}
                         {isCurrentPlan && <Check className="w-5 h-5 text-green-500" />}
                       </h3>
 
                       <p className="text-base sm:text-lg font-light text-white/70 break-words">
-                        {product.description}
+                        {product.name === "Team" && useBitcoin
+                          ? "Team plan is not available with Bitcoin payment."
+                          : product.description}
                       </p>
 
                       <div className="flex flex-col">
@@ -474,15 +509,22 @@ function PricingPage() {
                               <span className="text-lg sm:text-xl line-through text-white/50">
                                 ${displayOriginalPrice}
                               </span>
-                              <span className="text-base sm:text-lg font-light text-white/70">
-                                /month
-                              </span>
+                              <div className="flex flex-col text-white/70">
+                                <span className="text-base sm:text-lg font-light">
+                                  {product.name === "Team" ? "per user" : ""}
+                                </span>
+                                <span className="text-base sm:text-lg font-light -mt-1">
+                                  per month
+                                </span>
+                              </div>
                             </div>
                             <div className="space-y-0.5 sm:space-y-1 mt-1">
-                              {useBitcoin ? (
+                              {useBitcoin && product.name !== "Team" ? (
                                 <>
                                   <p className="text-sm sm:text-base text-white/90 font-medium">
-                                    Billed yearly at ${yearlyDiscountedPrice}
+                                    {product.name === "Team"
+                                      ? `Billed yearly at $${yearlyDiscountedPrice} per user`
+                                      : `Billed yearly at $${yearlyDiscountedPrice}`}
                                   </p>
                                   <p className="text-xs sm:text-sm text-white/50">
                                     Save 10% with annual billing
@@ -506,7 +548,7 @@ function PricingPage() {
                               ${displayOriginalPrice}
                             </span>
                             <span className="text-base sm:text-lg font-light text-white/70">
-                              /month
+                              per month
                             </span>
                           </div>
                         )}
@@ -514,10 +556,18 @@ function PricingPage() {
 
                       <button
                         onClick={() => handleButtonClick(product)}
-                        disabled={loadingProductId === product.id}
-                        className="w-full bg-white/90 backdrop-blur-sm text-black hover:bg-white/70 active:bg-white/80 px-4 sm:px-8 py-3 sm:py-4 rounded-lg text-lg sm:text-xl font-light transition-all duration-200 shadow-[0_0_25px_rgba(255,255,255,0.25)] hover:shadow-[0_0_35px_rgba(255,255,255,0.35)] disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 group-hover:bg-white"
+                        disabled={
+                          loadingProductId === product.id || (useBitcoin && product.name === "Team")
+                        }
+                        className={`w-full bg-white/90 backdrop-blur-sm text-black hover:bg-white/70 active:bg-white/80 px-4 sm:px-8 py-3 sm:py-4 rounded-lg text-lg sm:text-xl font-light transition-all duration-200 shadow-[0_0_25px_rgba(255,255,255,0.25)] hover:shadow-[0_0_35px_rgba(255,255,255,0.35)] disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 group-hover:bg-white ${
+                          isTeamPlan && !isTeamPlanAvailable
+                            ? "!opacity-100 !cursor-pointer hover:!bg-white/70"
+                            : ""
+                        }`}
                       >
-                        {getButtonText(product)}
+                        {useBitcoin && product.name === "Team"
+                          ? "Not Available"
+                          : getButtonText(product)}
                       </button>
                     </div>
                   </div>
