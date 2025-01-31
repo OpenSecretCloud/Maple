@@ -76,11 +76,13 @@ function TokenWarning({
 export default function Component({
   onSubmit,
   startTall,
-  messages = []
+  messages = [],
+  isStreaming = false
 }: {
   onSubmit: (input: string) => void;
   startTall?: boolean;
   messages?: ChatMessage[];
+  isStreaming?: boolean;
 }) {
   const [inputValue, setInputValue] = useState("");
   const {
@@ -185,11 +187,11 @@ export default function Component({
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter") {
-      if (isMobile || e.shiftKey) {
-        // On mobile or when Shift is pressed, allow newline
+      if (isMobile || e.shiftKey || isStreaming) {
+        // On mobile, when Shift is pressed, or when streaming, allow newline
         return;
       } else {
-        // On desktop without Shift, submit the form
+        // On desktop without Shift and not streaming, submit the form
         e.preventDefault();
         handleSubmit();
       }
@@ -205,9 +207,11 @@ export default function Component({
   }, [inputValue]);
 
   const isDisabled =
-    freshBillingStatus !== undefined &&
-    (!freshBillingStatus.can_chat ||
-      (freshBillingStatus.chats_remaining !== null && freshBillingStatus.chats_remaining <= 0));
+    (freshBillingStatus !== undefined &&
+      (!freshBillingStatus.can_chat ||
+        (freshBillingStatus.chats_remaining !== null &&
+          freshBillingStatus.chats_remaining <= 0))) ||
+    isStreaming;
   const placeholderText = (() => {
     if (billingStatus === null || freshBillingStatus === undefined)
       return "Type your message here...";
