@@ -1,5 +1,4 @@
 import { Blend, CornerRightUp } from "lucide-react";
-
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { useEffect, useRef, useState } from "react";
@@ -8,13 +7,76 @@ import { cn } from "@/utils/utils";
 import { useQuery } from "@tanstack/react-query";
 import { getBillingService } from "@/billing/billingService";
 import { Route as ChatRoute } from "@/routes/_auth.chat.$chatId";
+import { ChatMessage } from "@/state/LocalStateContext";
+import { useNavigate } from "@tanstack/react-router";
+
+// Rough token estimation function
+function estimateTokenCount(text: string): number {
+  // A very rough estimation: ~4 characters per token on average
+  return Math.ceil(text.length / 4);
+}
+
+function TokenWarning({
+  messages,
+  currentInput,
+  className
+}: {
+  messages: ChatMessage[];
+  currentInput: string;
+  className?: string;
+}) {
+  const totalTokens =
+    messages.reduce((acc, msg) => acc + estimateTokenCount(msg.content), 0) +
+    (currentInput ? estimateTokenCount(currentInput) : 0);
+
+  const navigate = useNavigate();
+
+  if (totalTokens < 10000) return null;
+
+  const handleNewChat = async (e: React.MouseEvent) => {
+    e.preventDefault();
+    try {
+      await navigate({ to: "/" });
+      // Ensure element is available after navigation
+      setTimeout(() => document.getElementById("message")?.focus(), 0);
+    } catch (error) {
+      console.error("Navigation failed:", error);
+    }
+  };
+
+  return (
+    <div
+      className={cn(
+        "flex items-center justify-between px-3 py-1.5",
+        "border-b bg-muted/50 backdrop-blur-sm",
+        "text-xs text-muted-foreground/90",
+        className
+      )}
+    >
+      <div className="flex items-center gap-2 min-w-0">
+        <span className="text-[11px] font-semibold text-foreground/70 shrink-0">Tip:</span>
+        <span className="min-w-0">Long chats cause you to reach your usage limits faster.</span>
+      </div>
+      <button
+        onClick={handleNewChat}
+        className="font-medium text-primary hover:text-primary/80 hover:underline transition-colors whitespace-nowrap shrink-0 ml-4"
+      >
+        <span className="hidden md:inline">Start a new chat</span>
+        <span className="md:hidden">New chat</span>
+        <span className="sr-only">, to reduce token usage</span>
+      </button>
+    </div>
+  );
+}
 
 export default function Component({
   onSubmit,
-  startTall
+  startTall,
+  messages = []
 }: {
   onSubmit: (input: string) => void;
   startTall?: boolean;
+  messages?: ChatMessage[];
 }) {
   const [inputValue, setInputValue] = useState("");
   const {
@@ -152,78 +214,81 @@ export default function Component({
   })();
 
   return (
-    <form
-      className={cn(
-        "p-2 rounded-lg border border-primary bg-background/80 backdrop-blur-lg focus-within:ring-1 focus-within:ring-ring",
-        isDisabled && "opacity-50"
-      )}
-      onSubmit={handleSubmit}
-      onClick={(e) => {
-        if (isDisabled) {
-          e.preventDefault();
-          return;
-        }
-        if (!isFocused) {
-          inputRef.current?.focus();
-        }
-      }}
-    >
-      <Label htmlFor="message" className="sr-only">
-        Message
-      </Label>
-      <textarea
-        disabled={isDisabled}
-        ref={inputRef}
-        onKeyDown={handleKeyDown}
-        onFocus={() => setIsFocused(true)}
-        onBlur={() => setIsFocused(false)}
-        id="message"
-        name="message"
-        autoComplete="off"
-        placeholder={placeholderText}
-        rows={1}
-        style={{
-          height: "auto",
-          resize: "none",
-          overflowY: "auto",
-          maxHeight: "12rem",
-          ...(startTall ? { minHeight: "6rem" } : {})
-        }}
+    <div className="flex flex-col w-full">
+      <TokenWarning messages={messages} currentInput={inputValue} />
+      <form
         className={cn(
-          "flex w-full ring-offset-background bg-background/0",
-          "placeholder:text-muted-foreground focus-visible:outline-none",
-          "disabled:cursor-not-allowed disabled:opacity-50",
-          "!border-0 shadow-none !border-none focus-visible:ring-0 !ring-0",
-          billingStatus === null && "animate-pulse"
+          "p-2 rounded-lg border border-primary bg-background/80 backdrop-blur-lg focus-within:ring-1 focus-within:ring-ring",
+          isDisabled && "opacity-50"
         )}
-        value={inputValue}
-        onChange={(e) => setInputValue(e.target.value)}
-      />
-      <div className="flex items-center pt-0">
-        <div className="gap-2 text-xs opacity-50 flex items-center">
-          <Blend className="size-3" />
-          <span className={cn([startTall ? "" : "truncate max-w-[8rem]"])}>
-            {model.startsWith("ibnzterrell") ? (
-              <span className="flex items-center gap-1.5">
-                Llama 3.3 70B
-                <span className="text-[9px] bg-primary/10 text-primary px-1 rounded-full font-medium">
-                  New
+        onSubmit={handleSubmit}
+        onClick={(e) => {
+          if (isDisabled) {
+            e.preventDefault();
+            return;
+          }
+          if (!isFocused) {
+            inputRef.current?.focus();
+          }
+        }}
+      >
+        <Label htmlFor="message" className="sr-only">
+          Message
+        </Label>
+        <textarea
+          disabled={isDisabled}
+          ref={inputRef}
+          onKeyDown={handleKeyDown}
+          onFocus={() => setIsFocused(true)}
+          onBlur={() => setIsFocused(false)}
+          id="message"
+          name="message"
+          autoComplete="off"
+          placeholder={placeholderText}
+          rows={1}
+          style={{
+            height: "auto",
+            resize: "none",
+            overflowY: "auto",
+            maxHeight: "12rem",
+            ...(startTall ? { minHeight: "6rem" } : {})
+          }}
+          className={cn(
+            "flex w-full ring-offset-background bg-background/0",
+            "placeholder:text-muted-foreground focus-visible:outline-none",
+            "disabled:cursor-not-allowed disabled:opacity-50",
+            "!border-0 shadow-none !border-none focus-visible:ring-0 !ring-0",
+            billingStatus === null && "animate-pulse"
+          )}
+          value={inputValue}
+          onChange={(e) => setInputValue(e.target.value)}
+        />
+        <div className="flex items-center pt-0">
+          <div className="gap-2 text-xs opacity-50 flex items-center">
+            <Blend className="size-3" />
+            <span className={cn([startTall ? "" : "truncate max-w-[8rem]"])}>
+              {model.startsWith("ibnzterrell") ? (
+                <span className="flex items-center gap-1.5">
+                  Llama 3.3 70B
+                  <span className="text-[9px] bg-primary/10 text-primary px-1 rounded-full font-medium">
+                    New
+                  </span>
                 </span>
-              </span>
-            ) : (
-              model
-            )}
-          </span>
+              ) : (
+                model
+              )}
+            </span>
+          </div>
+          <Button
+            type="submit"
+            size="sm"
+            className="ml-auto gap-1.5"
+            disabled={!inputValue.trim() || isDisabled}
+          >
+            <CornerRightUp className="size-3.5" />
+          </Button>
         </div>
-        <Button
-          type="submit"
-          size="sm"
-          className="ml-auto gap-1.5"
-          disabled={!inputValue.trim() || isDisabled}
-        >
-          <CornerRightUp className="size-3.5" />
-        </Button>
-      </div>
-    </form>
+      </form>
+    </div>
   );
 }
