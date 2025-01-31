@@ -50,8 +50,25 @@ function OAuthCallback() {
           } else {
             throw new Error("Unsupported provider");
           }
-          // If successful, redirect to home page after a short delay
-          setTimeout(() => navigate({ to: "/" }), 2000);
+
+          // Check for stored selected_plan
+          const selectedPlan = sessionStorage.getItem("selected_plan");
+          // Clear it from storage
+          sessionStorage.removeItem("selected_plan");
+
+          // If successful, redirect after a short delay
+          setTimeout(() => {
+            if (selectedPlan) {
+              // If there was a selected plan, go to pricing
+              navigate({
+                to: "/pricing",
+                search: { selected_plan: selectedPlan }
+              });
+            } else {
+              // Otherwise go home (original behavior)
+              navigate({ to: "/" });
+            }
+          }, 2000);
         } catch (error) {
           console.error(`${provider} callback error:`, error);
           if (error instanceof Error) {
@@ -108,7 +125,10 @@ function OAuthCallback() {
         <CardTitle>{formattedProvider} Authentication Successful</CardTitle>
       </CardHeader>
       <CardContent>
-        You have successfully authenticated with {formattedProvider}. Redirecting to home page...
+        You have successfully authenticated with {formattedProvider}.
+        {sessionStorage.getItem("selected_plan")
+          ? "Redirecting to complete your plan selection..."
+          : "Redirecting to home page..."}
       </CardContent>
     </Card>
   );

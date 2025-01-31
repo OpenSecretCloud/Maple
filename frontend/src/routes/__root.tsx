@@ -6,8 +6,23 @@ interface RootRouterContext {
   os: OpenSecretContextType;
 }
 
+export type RootSearchParams = {
+  login?: string;
+  next?: string;
+  selected_plan?: string;
+  success?: boolean;
+  canceled?: boolean;
+};
+
 export const Route = createRootRouteWithContext<RootRouterContext>()({
-  component: Root
+  component: Root,
+  validateSearch: (search: Record<string, unknown>): RootSearchParams => ({
+    login: typeof search.login === "string" ? search.login : undefined,
+    next: typeof search.next === "string" ? search.next : undefined,
+    selected_plan: typeof search.selected_plan === "string" ? search.selected_plan : undefined,
+    success: typeof search.success === "boolean" ? search.success : undefined,
+    canceled: typeof search.canceled === "boolean" ? search.canceled : undefined
+  })
 });
 
 function Root() {

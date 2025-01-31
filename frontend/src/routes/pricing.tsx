@@ -12,6 +12,12 @@ import { useLocalState } from "@/state/useLocalState";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 
+type PricingSearchParams = {
+  selected_plan?: string;
+  success?: boolean;
+  canceled?: boolean;
+};
+
 function PricingSkeletonCard() {
   return (
     <div className="flex flex-col border-white/10 bg-black/75 text-white p-4 sm:p-6 md:p-8 border rounded-lg relative overflow-hidden">
@@ -125,6 +131,7 @@ function PricingPage() {
   const os = useOpenSecret();
   const { setBillingStatus } = useLocalState();
   const isLoggedIn = !!os.auth.user;
+  const { selected_plan } = Route.useSearch();
 
   // Fetch billing status if user is logged in
   const { data: freshBillingStatus, isLoading: isBillingStatusLoading } = useQuery({
@@ -258,6 +265,18 @@ function PricingPage() {
 
   const handleButtonClick = (product: any) => {
     if (!isLoggedIn) {
+      const targetPlanName = product.name.toLowerCase();
+      if (!targetPlanName.includes("free")) {
+        // For paid plans, redirect to signup with the plan selection
+        navigate({
+          to: "/signup",
+          search: {
+            next: "/pricing",
+            selected_plan: product.id
+          }
+        });
+        return;
+      }
       navigate({ to: "/signup" });
       return;
     }
@@ -323,14 +342,14 @@ function PricingPage() {
         await billingService.createZapriteCheckoutSession(
           email,
           productId,
-          `${window.location.origin}/pricing?success=true`
+          `${window.location.origin}/`
         );
       } else {
         await billingService.createCheckoutSession(
           email,
           productId,
-          `${window.location.origin}/pricing?success=true`,
-          `${window.location.origin}/pricing?canceled=true`
+          `${window.location.origin}/`,
+          `${window.location.origin}/`
         );
       }
     } catch (err) {
@@ -340,6 +359,32 @@ function PricingPage() {
       setLoadingProductId(null);
     }
   };
+
+  useEffect(() => {
+    let isSubscribed = true;
+
+    // If user is logged in and there's a selected plan, trigger checkout
+    if (isLoggedIn && selected_plan && !isBillingStatusLoading) {
+      if (loadingProductId) return; // Prevent multiple triggers
+      const product = products?.find((p) => p.id === selected_plan);
+      if (product) {
+        if (isSubscribed) {
+          handleButtonClick(product);
+        }
+      }
+    }
+
+    return () => {
+      isSubscribed = false;
+    };
+  }, [
+    isLoggedIn,
+    selected_plan,
+    isBillingStatusLoading,
+    products,
+    loadingProductId,
+    handleButtonClick
+  ]);
 
   // Show loading state if we're fetching initial data
   if (productsLoading || (isLoggedIn && isBillingStatusLoading)) {
@@ -582,5 +627,10 @@ function PricingPage() {
 }
 
 export const Route = createFileRoute("/pricing")({
-  component: PricingPage
+  component: PricingPage,
+  validateSearch: (search: Record<string, unknown>): PricingSearchParams => ({
+    selected_plan: typeof search.selected_plan === "string" ? search.selected_plan : undefined,
+    success: typeof search.success === "boolean" ? search.success : undefined,
+    canceled: typeof search.canceled === "boolean" ? search.canceled : undefined
+  })
 });
