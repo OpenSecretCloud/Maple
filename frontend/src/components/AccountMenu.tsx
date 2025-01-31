@@ -92,12 +92,27 @@ export function AccountMenu() {
     }
   };
 
-  function signOut() {
-    os.signOut();
-    sessionStorage.removeItem("maple_billing_token");
-    router.invalidate().finally(() => {
-      router.navigate({ to: "/" });
-    });
+  async function signOut() {
+    try {
+      // Try to clear billing token first
+      try {
+        getBillingService().clearToken();
+      } catch (error) {
+        // Fallback to direct session storage removal if billing service fails
+        sessionStorage.removeItem("maple_billing_token");
+      }
+
+      // Sign out from OpenSecret
+      await os.signOut();
+
+      // Navigate after everything is done
+      await router.invalidate();
+      await router.navigate({ to: "/" });
+    } catch (error) {
+      console.error("Error during sign out:", error);
+      // Force reload as last resort
+      window.location.href = "/";
+    }
   }
 
   return (
