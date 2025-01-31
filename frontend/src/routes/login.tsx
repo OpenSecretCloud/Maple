@@ -11,12 +11,14 @@ import { AuthMain } from "@/components/AuthMain";
 
 type LoginSearchParams = {
   next?: string;
+  selected_plan?: string;
 };
 
 export const Route = createFileRoute("/login")({
   component: LoginPage,
   validateSearch: (search: Record<string, unknown>): LoginSearchParams => ({
-    next: typeof search.next === "string" ? search.next : undefined
+    next: typeof search.next === "string" ? search.next : undefined,
+    selected_plan: typeof search.selected_plan === "string" ? search.selected_plan : undefined
   })
 });
 
@@ -25,7 +27,7 @@ type LoginMethod = "email" | "github" | "google" | null;
 function LoginPage() {
   const navigate = useNavigate();
   const os = useOpenSecret();
-  const { next } = Route.useSearch();
+  const { next, selected_plan } = Route.useSearch();
   const [loginMethod, setLoginMethod] = useState<LoginMethod>(null);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -33,9 +35,16 @@ function LoginPage() {
   // Redirect if already logged in
   useEffect(() => {
     if (os.auth.user) {
-      navigate({ to: next || "/" });
+      if (selected_plan) {
+        navigate({
+          to: "/pricing",
+          search: { selected_plan }
+        });
+      } else {
+        navigate({ to: next || "/" });
+      }
     }
-  }, [os.auth.user, navigate, next]);
+  }, [os.auth.user, navigate, next, selected_plan]);
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -48,7 +57,14 @@ function LoginPage() {
     try {
       await os.signIn(email, password);
       setTimeout(() => {
-        navigate({ to: next || "/" });
+        if (selected_plan) {
+          navigate({
+            to: "/pricing",
+            search: { selected_plan }
+          });
+        } else {
+          navigate({ to: next || "/" });
+        }
         window.scrollTo(0, 0);
       }, 100);
     } catch (error) {
@@ -66,6 +82,9 @@ function LoginPage() {
   const handleGitHubLogin = async () => {
     try {
       const { auth_url } = await os.initiateGitHubAuth("");
+      if (selected_plan) {
+        sessionStorage.setItem("selected_plan", selected_plan);
+      }
       window.location.href = auth_url;
     } catch (error) {
       console.error("Failed to initiate GitHub login:", error);
@@ -76,6 +95,9 @@ function LoginPage() {
   const handleGoogleLogin = async () => {
     try {
       const { auth_url } = await os.initiateGoogleAuth("");
+      if (selected_plan) {
+        sessionStorage.setItem("selected_plan", selected_plan);
+      }
       window.location.href = auth_url;
     } catch (error) {
       console.error("Failed to initiate Google login:", error);
