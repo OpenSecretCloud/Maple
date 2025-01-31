@@ -2,6 +2,10 @@
 default:
     @just --list
 
+# Install frontend dependencies
+install:
+    cd frontend && bun install
+
 # Start the frontend development server
 dev:
     cd frontend && bun run dev
