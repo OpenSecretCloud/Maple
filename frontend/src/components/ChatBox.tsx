@@ -19,10 +19,12 @@ function estimateTokenCount(text: string): number {
 function TokenWarning({
   messages,
   currentInput,
+  chatId,
   className
 }: {
   messages: ChatMessage[];
   currentInput: string;
+  chatId?: string;
   className?: string;
 }) {
   const totalTokens =
@@ -57,14 +59,16 @@ function TokenWarning({
         <span className="text-[11px] font-semibold text-foreground/70 shrink-0">Tip:</span>
         <span className="min-w-0">Long chats cause you to reach your usage limits faster.</span>
       </div>
-      <button
-        onClick={handleNewChat}
-        className="font-medium text-primary hover:text-primary/80 hover:underline transition-colors whitespace-nowrap shrink-0 ml-4"
-      >
-        <span className="hidden md:inline">Start a new chat</span>
-        <span className="md:hidden">New chat</span>
-        <span className="sr-only">, to reduce token usage</span>
-      </button>
+      {chatId && (
+        <button
+          onClick={handleNewChat}
+          className="font-medium text-primary hover:text-primary/80 hover:underline transition-colors whitespace-nowrap shrink-0 ml-4"
+        >
+          <span className="hidden md:inline">Start a new chat</span>
+          <span className="md:hidden">New chat</span>
+          <span className="sr-only">, to reduce token usage</span>
+        </button>
+      )}
     </div>
   );
 }
@@ -215,7 +219,7 @@ export default function Component({
 
   return (
     <div className="flex flex-col w-full">
-      <TokenWarning messages={messages} currentInput={inputValue} />
+      <TokenWarning messages={messages} currentInput={inputValue} chatId={chatId} />
       <form
         className={cn(
           "p-2 rounded-lg border border-primary bg-background/80 backdrop-blur-lg focus-within:ring-1 focus-within:ring-ring",
