@@ -495,9 +495,7 @@ function PricingPage() {
 
                 // Calculate prices
                 const monthlyOriginalPrice = (product.default_price.unit_amount / 100).toFixed(2);
-                const monthlyDiscountedPrice = (
-                  Math.floor(product.default_price.unit_amount / 2) / 100
-                ).toFixed(2);
+                const monthlyPrice = monthlyOriginalPrice;
 
                 // Calculate yearly prices for Bitcoin (10% off)
                 const yearlyDiscountedPrice = (
@@ -507,10 +505,7 @@ function PricingPage() {
                 // Calculate monthly equivalent of yearly Bitcoin price
                 const monthlyEquivalentPrice = (Number(yearlyDiscountedPrice) / 12).toFixed(2);
 
-                const displayOriginalPrice = monthlyOriginalPrice;
-                const displayDiscountedPrice = useBitcoin
-                  ? monthlyEquivalentPrice
-                  : monthlyDiscountedPrice;
+                const displayPrice = useBitcoin ? monthlyEquivalentPrice : monthlyPrice;
 
                 return (
                   <div
@@ -524,9 +519,9 @@ function PricingPage() {
                         Current Plan
                       </Badge>
                     )}
-                    {product.name !== "Free" && (
+                    {product.name !== "Free" && useBitcoin && product.name !== "Team" && (
                       <Badge className="absolute -top-3 right-4 bg-gradient-to-r from-pink-500 to-orange-500 text-white">
-                        {useBitcoin && product.name !== "Team" ? "10% OFF" : "50% OFF"}
+                        10% OFF
                       </Badge>
                     )}
                     <div className="grid grid-rows-[auto_1fr_auto_auto] h-full gap-4 sm:gap-6 md:gap-8">
@@ -549,11 +544,13 @@ function PricingPage() {
                           <>
                             <div className="flex flex-wrap items-center gap-2">
                               <span className="text-2xl sm:text-3xl font-bold">
-                                ${displayDiscountedPrice}
+                                ${displayPrice}
                               </span>
-                              <span className="text-lg sm:text-xl line-through text-white/50">
-                                ${displayOriginalPrice}
-                              </span>
+                              {useBitcoin && product.name !== "Team" && (
+                                <span className="text-lg sm:text-xl line-through text-white/50">
+                                  ${monthlyOriginalPrice}
+                                </span>
+                              )}
                               <div className="flex flex-col text-white/70">
                                 <span className="text-base sm:text-lg font-light">
                                   {product.name === "Team" ? "per user" : ""}
@@ -564,7 +561,7 @@ function PricingPage() {
                               </div>
                             </div>
                             <div className="space-y-0.5 sm:space-y-1 mt-1">
-                              {useBitcoin && product.name !== "Team" ? (
+                              {useBitcoin && product.name !== "Team" && (
                                 <>
                                   <p className="text-sm sm:text-base text-white/90 font-medium">
                                     {product.name === "Team"
@@ -575,23 +572,12 @@ function PricingPage() {
                                     Save 10% with annual billing
                                   </p>
                                 </>
-                              ) : (
-                                <>
-                                  <p className="text-xs sm:text-sm text-white/50">
-                                    First 3 months only
-                                  </p>
-                                  <p className="text-xs sm:text-sm text-white/50">
-                                    Offer ends January 31st
-                                  </p>
-                                </>
                               )}
                             </div>
                           </>
                         ) : (
                           <div className="flex flex-wrap items-center gap-2">
-                            <span className="text-2xl sm:text-3xl font-bold">
-                              ${displayOriginalPrice}
-                            </span>
+                            <span className="text-2xl sm:text-3xl font-bold">${monthlyPrice}</span>
                             <span className="text-base sm:text-lg font-light text-white/70">
                               per month
                             </span>
