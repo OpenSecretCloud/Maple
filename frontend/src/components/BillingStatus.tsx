@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { BillingDebugger } from "./BillingDebugger";
 import { useLocalState } from "@/state/useLocalState";
 import { getBillingService } from "@/billing/billingService";
-import { Sparkles } from "lucide-react";
+import { Bitcoin } from "lucide-react";
 
 export function BillingStatus() {
   const navigate = useNavigate();
@@ -66,8 +66,8 @@ export function BillingStatus() {
           onClick={() => navigate({ to: "/pricing" })}
           className="bg-white/10 backdrop-blur-sm px-6 py-2 rounded-full border border-white/20 text-sm font-light hover:bg-white/20 transition-colors cursor-pointer flex items-center gap-2 w-fit"
         >
-          <Sparkles className="w-3.5 h-3.5 flex-shrink-0" />
-          <span>50% off monthly plans until January 31st →</span>
+          <Bitcoin className="w-3.5 h-3.5 flex-shrink-0" />
+          <span>Save 10% with yearly Bitcoin plans →</span>
         </div>
       )}
       {import.meta.env.DEV && (
