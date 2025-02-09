@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { createFileRoute } from "@tanstack/react-router";
-import { AsteriskIcon, Check, Copy, UserIcon } from "lucide-react";
+import { AsteriskIcon, Check, Copy, UserIcon, ChevronDown } from "lucide-react";
 import ChatBox from "@/components/ChatBox";
 import { useOpenAI } from "@/ai/useOpenAi";
 import { useLocalState } from "@/state/useLocalState";
@@ -67,22 +67,45 @@ function SystemMessage({ text, loading }: { text: string; loading?: boolean }) {
   );
 }
 
-const scrollToMessage = (messageId: string) => {
-  const element = document.getElementById(messageId);
-  if (element) {
-    element.scrollIntoView({ behavior: "smooth", block: "start" });
-  }
-};
-
 function ChatComponent() {
   const { chatId } = Route.useParams();
   const { model, persistChat, getChatById, userPrompt, setUserPrompt } = useLocalState();
   const openai = useOpenAI();
   const queryClient = useQueryClient();
+  const [showScrollButton, setShowScrollButton] = useState(false);
 
   const [error, setError] = useState("");
 
   const chatContainerRef = useRef<HTMLDivElement>(null);
+
+  // Memoize the scroll handler
+  const handleScroll = useCallback(() => {
+    const container = chatContainerRef.current;
+    if (!container) return;
+    const { scrollTop, scrollHeight, clientHeight } = container;
+    const isNearBottom = scrollHeight - scrollTop - clientHeight < 100;
+    setShowScrollButton(!isNearBottom);
+  }, []);
+
+  // Add scroll detection
+  useEffect(() => {
+    const container = chatContainerRef.current;
+    if (!container) return;
+
+    container.addEventListener("scroll", handleScroll);
+    // Initial check
+    handleScroll();
+    return () => container.removeEventListener("scroll", handleScroll);
+  }, [handleScroll]);
+
+  const scrollToBottom = useCallback(() => {
+    if (chatContainerRef.current) {
+      chatContainerRef.current.scrollTo({
+        top: chatContainerRef.current.scrollHeight,
+        behavior: "smooth"
+      });
+    }
+  }, []);
 
   // Query the chat from the backend, in case it already exists
   const {
@@ -175,10 +198,13 @@ function ChatComponent() {
         messages: newMessages
       }));
 
-      // Scroll to the new user message
-      setTimeout(() => {
-        scrollToMessage(`message-user-${newMessages.length - 1}`);
-      }, 0);
+      // Scroll to bottom when user sends message
+      requestAnimationFrame(() => {
+        chatContainerRef.current?.scrollTo({
+          top: chatContainerRef.current.scrollHeight,
+          behavior: "smooth"
+        });
+      });
 
       setIsLoading(true);
 
@@ -190,12 +216,28 @@ function ChatComponent() {
         });
 
         let fullResponse = "";
+        let isFirstChunk = true;
 
         for await (const chunk of stream) {
           const content = chunk.choices[0]?.delta?.content || "";
           fullResponse += content;
           setCurrentStreamingMessage(fullResponse);
+
+          // Scroll to bottom on first chunk of the response
+          if (isFirstChunk && content.trim()) {
+            requestAnimationFrame(() => {
+              chatContainerRef.current?.scrollTo({
+                top: chatContainerRef.current.scrollHeight,
+                behavior: "smooth"
+              });
+            });
+            isFirstChunk = false;
+          }
         }
+
+        // Save scroll position before state updates
+        const container = chatContainerRef.current;
+        const scrollPosition = container?.scrollTop;
 
         const finalMessages = [
           ...newMessages,
@@ -206,6 +248,17 @@ function ChatComponent() {
           messages: finalMessages
         }));
         setCurrentStreamingMessage(undefined);
+
+        // Restore scroll position after state updates
+        if (container && scrollPosition !== undefined) {
+          // Use requestAnimationFrame to ensure this runs after the render
+          requestAnimationFrame(() => {
+            // Ensure we don't scroll beyond bounds
+            const maxScroll = container.scrollHeight - container.clientHeight;
+            const boundedPosition = Math.min(scrollPosition, maxScroll);
+            container.scrollTop = boundedPosition;
+          });
+        }
 
         let title = localChat.title;
 
@@ -289,6 +342,15 @@ function ChatComponent() {
               </div>
             )}
           </div>
+          {showScrollButton && (
+            <button
+              onClick={scrollToBottom}
+              className="fixed bottom-24 right-4 p-2 bg-primary text-primary-foreground rounded-full shadow-lg hover:bg-primary/90 transition-colors z-10"
+              aria-label="Scroll to bottom"
+            >
+              <ChevronDown className="h-5 w-5" />
+            </button>
+          )}
         </div>
 
         {/* Place the chat box inline (below messages) in normal flow */}
