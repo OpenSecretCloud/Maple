@@ -13,8 +13,6 @@ import { VerificationModal } from "@/components/VerificationModal";
 import { TopNav } from "@/components/TopNav";
 import { Marketing } from "@/components/Marketing";
 import { Footer } from "@/components/Footer";
-import { AlertCircle } from "lucide-react";
-import { Alert, AlertDescription } from "@/components/ui/alert";
 
 const homeVariants = cva("grid h-full w-full overflow-hidden", {
   variants: {
@@ -97,13 +95,6 @@ function Index() {
                   Private AI Chat
                 </h2>
               </div>
-              <Alert className="w-full">
-                <AlertCircle className="h-4 w-4" />
-                <AlertDescription>
-                  Our AI is currently experiencing issues. We're working on bringing it back up
-                  soon.
-                </AlertDescription>
-              </Alert>
               <div className="self-center">
                 <BillingStatus />
               </div>
