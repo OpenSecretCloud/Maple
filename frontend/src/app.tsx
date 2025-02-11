@@ -48,6 +48,7 @@ export default function App() {
   return (
     <OpenSecretProvider
       apiUrl={import.meta.env.VITE_OPEN_SECRET_API_URL}
+      clientId={import.meta.env.VITE_CLIENT_ID}
       pcrConfig={{
         pcr0Values: [
           "ed9109c16f30a470cf0ea2251816789b4ffa510c990118323ce94a2364b9bf05bdb8777959cbac86f5cabc4852e0da71",
