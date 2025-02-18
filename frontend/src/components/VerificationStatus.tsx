@@ -19,7 +19,7 @@ export function VerificationStatus() {
       }
     }
     verify();
-  }, []);
+  }, [os]);
 
   return (
     <Link to="/proof" className="flex items-center gap-1 text-sm font-medium hover:underline">

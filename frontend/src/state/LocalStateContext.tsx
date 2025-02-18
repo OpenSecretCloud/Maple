@@ -1,61 +1,15 @@
 import { useOpenSecret } from "@opensecret/react";
-import { createContext, useState } from "react";
+import { useState } from "react";
 import { BillingStatus } from "@/billing/billingApi";
+import { LocalStateContext, Chat, HistoryItem } from "./LocalStateContextDef";
 
-export type ChatMessage = {
-  role: "user" | "assistant";
-  content: string;
-};
-
-export type Chat = {
-  id: string;
-  title: string;
-  messages: ChatMessage[];
-};
-
-export type HistoryItem = {
-  id: string;
-  title: string;
-  updated_at: number;
-  created_at: number;
-};
-
-type LocalState = {
-  model: string;
-  userPrompt: string;
-  billingStatus: BillingStatus | null;
-  setBillingStatus: (status: BillingStatus) => void;
-  setUserPrompt: (prompt: string) => void;
-  addChat: () => Promise<string>;
-  getChatById: (id: string) => Promise<Chat | undefined>;
-  persistChat: (chat: Chat) => Promise<void>;
-  fetchOrCreateHistoryList: () => Promise<HistoryItem[]>;
-  clearHistory: () => Promise<void>;
-  deleteChat: (chatId: string) => Promise<void>;
-  /** Map of chat IDs to their draft messages */
-  draftMessages: Map<string, string>;
-  /** Sets a draft message for a specific chat */
-  setDraftMessage: (chatId: string, draft: string) => void;
-  /** Clears the draft message for a specific chat */
-  clearDraftMessage: (chatId: string) => void;
-};
-
-export const LocalStateContext = createContext<LocalState>({
-  model: "",
-  userPrompt: "",
-  billingStatus: null,
-  setBillingStatus: () => {},
-  setUserPrompt: () => {},
-  addChat: async () => "",
-  getChatById: async () => undefined,
-  persistChat: async () => {},
-  fetchOrCreateHistoryList: async () => [],
-  clearHistory: async () => {},
-  deleteChat: async () => {},
-  draftMessages: new Map(),
-  setDraftMessage: () => {},
-  clearDraftMessage: () => {}
-});
+export {
+  LocalStateContext,
+  type Chat,
+  type ChatMessage,
+  type HistoryItem,
+  type LocalState
+} from "./LocalStateContextDef";
 
 export const LocalStateProvider = ({ children }: { children: React.ReactNode }) => {
   const [localState, setLocalState] = useState({

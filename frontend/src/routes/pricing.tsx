@@ -1,5 +1,5 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useOpenSecret } from "@opensecret/react";
 import { TopNav } from "@/components/TopNav";
 import { FullPageMain } from "@/components/FullPageMain";
@@ -17,6 +17,16 @@ type PricingSearchParams = {
   success?: boolean;
   canceled?: boolean;
 };
+
+interface Product {
+  id: string;
+  name: string;
+  default_price: {
+    unit_amount: number;
+  };
+  description?: string;
+  active?: boolean;
+}
 
 function PricingSkeletonCard() {
   return (
@@ -201,7 +211,7 @@ function PricingPage() {
     retry: 1 // Only retry once for faster error feedback
   });
 
-  const getButtonText = (product: any) => {
+  const getButtonText = (product: Product) => {
     if (loadingProductId === product.id) {
       return (
         <>
@@ -263,102 +273,108 @@ function PricingPage() {
     return "Downgrade";
   };
 
-  const handleButtonClick = (product: any) => {
-    if (!isLoggedIn) {
-      const targetPlanName = product.name.toLowerCase();
-      if (!targetPlanName.includes("free")) {
-        // For paid plans, redirect to signup with the plan selection
-        navigate({
-          to: "/signup",
-          search: {
-            next: "/pricing",
-            selected_plan: product.id
-          }
-        });
+  const newHandleSubscribe = useCallback(
+    async (productId: string) => {
+      if (!isLoggedIn) {
+        navigate({ to: "/signup" });
         return;
       }
-      navigate({ to: "/signup" });
-      return;
-    }
 
-    const targetPlanName = product.name.toLowerCase();
-    const isTeamPlan = targetPlanName.includes("team");
+      setLoadingProductId(productId);
+      try {
+        const billingService = getBillingService();
+        const email = os.auth.user?.user.email;
+        if (!email) {
+          throw new Error("User email not found");
+        }
 
-    // For team plan, redirect to email if not available
-    if (isTeamPlan && !isTeamPlanAvailable) {
-      window.location.href = "mailto:support@opensecret.cloud";
-      return;
-    }
+        if (useBitcoin) {
+          await billingService.createZapriteCheckoutSession(
+            email,
+            productId,
+            `${window.location.origin}/`
+          );
+        } else {
+          await billingService.createCheckoutSession(
+            email,
+            productId,
+            `${window.location.origin}/`,
+            `${window.location.origin}/`
+          );
+        }
+      } catch (err) {
+        console.error("Subscribe error:", err);
+        setCheckoutError(err instanceof Error ? err.message : "Failed to start checkout");
+      } finally {
+        setLoadingProductId(null);
+      }
+    },
+    [isLoggedIn, navigate, os.auth.user?.user.email, useBitcoin]
+  );
 
-    // If user is on Zaprite plan, redirect to email
-    if (freshBillingStatus?.payment_provider === "zaprite") {
-      window.location.href = "mailto:support@opensecret.cloud";
-      return;
-    }
+  const handleButtonClick = useCallback(
+    (product: Product) => {
+      if (!isLoggedIn) {
+        const targetPlanName = product.name.toLowerCase();
+        if (!targetPlanName.includes("free")) {
+          // For paid plans, redirect to signup with the plan selection
+          navigate({
+            to: "/signup",
+            search: {
+              next: "/pricing",
+              selected_plan: product.id
+            }
+          });
+          return;
+        }
+        navigate({ to: "/signup" });
+        return;
+      }
 
-    const currentPlanName = freshBillingStatus?.product_name?.toLowerCase();
-    const isCurrentlyOnFreePlan = currentPlanName?.includes("free");
-    const isTargetFreePlan = targetPlanName.includes("free");
+      const targetPlanName = product.name.toLowerCase();
+      const isTeamPlan = targetPlanName.includes("team");
 
-    // If on free plan and clicking free plan, go home
-    if (isCurrentlyOnFreePlan && isTargetFreePlan) {
-      navigate({ to: "/" });
-      return;
-    }
+      // For team plan, redirect to email if not available
+      if (isTeamPlan && !isTeamPlanAvailable) {
+        window.location.href = "mailto:support@opensecret.cloud";
+        return;
+      }
 
-    // If user is on free plan and clicking a paid plan, use checkout URL
-    if (isCurrentlyOnFreePlan && !isTargetFreePlan) {
+      // If user is on Zaprite plan, redirect to email
+      if (freshBillingStatus?.payment_provider === "zaprite") {
+        window.location.href = "mailto:support@opensecret.cloud";
+        return;
+      }
+
+      const currentPlanName = freshBillingStatus?.product_name?.toLowerCase();
+      const isCurrentlyOnFreePlan = currentPlanName?.includes("free");
+      const isTargetFreePlan = targetPlanName.includes("free");
+
+      // If on free plan and clicking free plan, go home
+      if (isCurrentlyOnFreePlan && isTargetFreePlan) {
+        navigate({ to: "/" });
+        return;
+      }
+
+      // If user is on free plan and clicking a paid plan, use checkout URL
+      if (isCurrentlyOnFreePlan && !isTargetFreePlan) {
+        newHandleSubscribe(product.id);
+        return;
+      }
+
+      // For all other cases (upgrades/downgrades between paid plans, or downgrades to free),
+      // use portal URL if it exists
+      if (portalUrl) {
+        window.open(portalUrl, "_blank");
+        return;
+      }
+
+      // If no portal URL exists and it's not a free plan user upgrading,
+      // create checkout session
       newHandleSubscribe(product.id);
-      return;
-    }
-
-    // For all other cases (upgrades/downgrades between paid plans, or downgrades to free),
-    // use portal URL if it exists
-    if (portalUrl) {
-      window.open(portalUrl, "_blank");
-      return;
-    }
-
-    // If no portal URL exists and it's not a free plan user upgrading,
-    // create checkout session
-    newHandleSubscribe(product.id);
-  };
-
-  const newHandleSubscribe = async (productId: string) => {
-    if (!isLoggedIn) {
-      navigate({ to: "/signup" });
-      return;
-    }
-
-    setLoadingProductId(productId);
-    try {
-      const billingService = getBillingService();
-      const email = os.auth.user?.user.email;
-      if (!email) {
-        throw new Error("User email not found");
-      }
-
-      if (useBitcoin) {
-        await billingService.createZapriteCheckoutSession(
-          email,
-          productId,
-          `${window.location.origin}/`
-        );
-      } else {
-        await billingService.createCheckoutSession(
-          email,
-          productId,
-          `${window.location.origin}/`,
-          `${window.location.origin}/`
-        );
-      }
-    } catch (err) {
-      console.error("Subscribe error:", err);
-      setCheckoutError(err instanceof Error ? err.message : "Failed to start checkout");
-    } finally {
-      setLoadingProductId(null);
-    }
-  };
+    },
+    [isLoggedIn, isTeamPlanAvailable, freshBillingStatus, navigate, portalUrl, newHandleSubscribe]
+  );
 
   useEffect(() => {
     let isSubscribed = true;
