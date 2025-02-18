@@ -275,16 +275,7 @@ export default function Component({
           <div className="gap-2 text-xs opacity-50 flex items-center">
             <Blend className="size-3" />
             <span className={cn([startTall ? "" : "truncate max-w-[8rem]"])}>
-              {model.startsWith("ibnzterrell") ? (
-                <span className="flex items-center gap-1.5">
-                  Llama 3.3 70B
-                  <span className="text-[9px] bg-primary/10 text-primary px-1 rounded-full font-medium">
-                    New
-                  </span>
-                </span>
-              ) : (
-                model
-              )}
+              {model.startsWith("ibnzterrell") ? "Llama 3.3 70B" : model}
             </span>
           </div>
           <Button
