@@ -18,7 +18,11 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
 ### macOS
 ```bash
+# Install Xcode Command Line Tools
 xcode-select --install
+
+# Install additional dependencies via Homebrew
+brew install openssl@3
 ```
 
 ### Linux (Ubuntu/Debian)
@@ -33,6 +37,11 @@ sudo apt install libwebkit2gtk-4.1-dev \
     libgtk-3-dev \
     libayatana-appindicator3-dev \
     librsvg2-dev
+```
+
+4. Add required Rust targets for universal macOS builds:
+```bash
+rustup target add aarch64-apple-darwin x86_64-apple-darwin
 ```
 
 ## Development
@@ -57,24 +66,44 @@ Expects a `VITE_OPEN_SECRET_API_URL` environment variable to be set. (See `.env.
 
 To build the desktop application:
 ```bash
+# Standard build
 bun tauri build
+
+# For universal macOS build (Apple Silicon + Intel)
+bun tauri build --target universal-apple-darwin
 ```
 
 ## Releases
 
 ### Setting up Signing Keys
+
+#### Tauri Updater Signing
 1. Generate a new signing key:
 ```bash
 cargo tauri signer generate
 ```
 This will create the tauri public and private key.
 
-
 2. Add the public key to `src-tauri/tauri.conf.json` in the `updater.pubkey` field
 3. Add the private key to GitHub Actions secrets:
    - Go to repository Settings → Secrets and variables → Actions
    - Create a new secret named `TAURI_SIGNING_PRIVATE_KEY`
+   - Create another secret named `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` if your key has a password
    - Paste the private key from the tauri command.
+
+#### Apple Developer Certificate (for macOS builds)
+For proper macOS builds and notarization, you need to set up the following GitHub secrets:
+
+1. `APPLE_CERTIFICATE` - Base64-encoded p12 certificate
+   ```bash
+   base64 -i YourCertificate.p12 | pbcopy  # Copies to clipboard
+   ```
+
+2. `APPLE_CERTIFICATE_PASSWORD` - Password for the certificate
+3. `KEYCHAIN_PASSWORD` - Password for the temporary keychain (can be any secure password)
+4. `APPLE_ID` - Your Apple Developer account email
+5. `APPLE_PASSWORD` - Your Apple Developer account password or app-specific password
+6. `APPLE_TEAM_ID` - Your Apple Developer team ID
 
 ### Creating a Release
 1. Update the version in `src-tauri/tauri.conf.json`
