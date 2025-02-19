@@ -8,7 +8,7 @@ import { useQuery } from "@tanstack/react-query";
 import { getBillingService } from "@/billing/billingService";
 import { Route as ChatRoute } from "@/routes/_auth.chat.$chatId";
 import { ChatMessage } from "@/state/LocalStateContext";
-import { useNavigate } from "@tanstack/react-router";
+import { useNavigate, useRouter } from "@tanstack/react-router";
 
 // Rough token estimation function
 function estimateTokenCount(text: string): number {
@@ -100,14 +100,11 @@ export default function Component({
   const previousChatIdRef = useRef<string | undefined>(undefined);
   const currentInputRef = useRef<string>("");
 
-  // Get the chatId from the route params, but handle the case where we're not in a chat route
-  let chatId: string | undefined;
-  try {
-    chatId = ChatRoute.useParams().chatId;
-  } catch {
-    // We're not in a chat route (e.g., we're on the home page)
-    chatId = undefined;
-  }
+  // Get the chatId from the current route state
+  const router = useRouter();
+  const chatId = router.state.matches.find((m) => m.routeId === ChatRoute.id)?.params?.chatId as
+    | string
+    | undefined;
 
   const { data: freshBillingStatus } = useQuery({
     queryKey: ["billingStatus"],

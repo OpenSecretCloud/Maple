@@ -98,6 +98,7 @@ export function AccountMenu() {
       try {
         getBillingService().clearToken();
       } catch (error) {
+        console.error("Error clearing billing token:", error);
         // Fallback to direct session storage removal if billing service fails
         sessionStorage.removeItem("maple_billing_token");
       }

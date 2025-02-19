@@ -1,8 +1,6 @@
-import React, { createContext } from "react";
 import OpenAI from "openai";
 import { useOpenSecret } from "@opensecret/react";
-
-export const OpenAIContext = createContext<OpenAI | undefined>(undefined);
+import { OpenAIContext } from "./OpenAIContextDef";
 
 export const OpenAIProvider = ({ children }: { children: React.ReactNode }) => {
   const url = import.meta.env.VITE_OPEN_SECRET_API_URL;
@@ -32,3 +30,5 @@ export const OpenAIProvider = ({ children }: { children: React.ReactNode }) => {
 
   return <OpenAIContext.Provider value={openai}>{children}</OpenAIContext.Provider>;
 };
+
+export { OpenAIContext } from "./OpenAIContextDef";
