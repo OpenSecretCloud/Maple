@@ -1,4 +1,5 @@
 import { Github, Twitter, Mail } from "lucide-react";
+import { DiscordIcon } from "./icons/DiscordIcon";
 
 export function Footer() {
   return (
@@ -51,6 +52,15 @@ export function Footer() {
           aria-label="GitHub"
         >
           <Github className="h-5 w-5" />
+        </a>
+        <a
+          href="https://discord.gg/ch2gjZAMGy"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="hover:text-white/90"
+          aria-label="Discord"
+        >
+          <DiscordIcon className="h-5 w-5" />
         </a>
         <a href="mailto:team@opensecret.cloud" className="hover:text-white/90" aria-label="Email">
           <Mail className="h-5 w-5" />
