@@ -41,15 +41,13 @@ function TokenWarning({
 
   // Token thresholds for different plan types
   const STARTER_WARNING_THRESHOLD = 4000;
-  const STARTER_LIMIT_THRESHOLD = 7000;
   const PRO_WARNING_THRESHOLD = 10000;
 
   // Different thresholds for starter vs pro users
   const warningThreshold = isStarter ? STARTER_WARNING_THRESHOLD : PRO_WARNING_THRESHOLD;
 
-  // For starter users: don't show warning if already at the limit (we'll show a different message)
-  if (totalTokens < warningThreshold || (isStarter && totalTokens >= STARTER_LIMIT_THRESHOLD))
-    return null;
+  // Only show warning if above the threshold
+  if (totalTokens < warningThreshold) return null;
 
   const handleNewChat = async (e: React.MouseEvent) => {
     e.preventDefault();
@@ -85,77 +83,6 @@ function TokenWarning({
           <span className="sr-only">, to reduce token usage</span>
         </button>
       )}
-    </div>
-  );
-}
-
-// New component for starter plan token limit message
-function StarterTokenLimit({
-  messages,
-  currentInput,
-  chatId,
-  className
-}: {
-  messages: ChatMessage[];
-  currentInput: string;
-  chatId?: string;
-  className?: string;
-}) {
-  const totalTokens =
-    messages.reduce((acc, msg) => acc + estimateTokenCount(msg.content), 0) +
-    (currentInput ? estimateTokenCount(currentInput) : 0);
-
-  const navigate = useNavigate();
-
-  // Constants for token thresholds
-  const STARTER_LIMIT_THRESHOLD = 7000;
-
-  // Only show this for starter users who have exceeded the token limit
-  if (totalTokens < STARTER_LIMIT_THRESHOLD) return null;
-
-  const handleNewChat = async (e: React.MouseEvent) => {
-    e.preventDefault();
-    try {
-      await navigate({ to: "/" });
-      // Ensure element is available after navigation
-      setTimeout(() => document.getElementById("message")?.focus(), 0);
-    } catch (error) {
-      console.error("Navigation failed:", error);
-    }
-  };
-
-  return (
-    <div
-      className={cn(
-        "flex items-center justify-between px-3 py-1.5 mb-1",
-        "bg-yellow-100/90 dark:bg-yellow-900/30 backdrop-blur-sm rounded-t-lg",
-        "text-xs text-muted-foreground/90",
-        className
-      )}
-    >
-      <div className="flex items-center gap-2 min-w-0">
-        <span className="text-[11px] font-semibold text-foreground/70 shrink-0">
-          Limit reached:
-        </span>
-        <span className="min-w-0">Longer chat messages require upgrading to the Pro plan.</span>
-      </div>
-      <div className="flex gap-3 items-center ml-4">
-        {chatId && (
-          <button
-            onClick={handleNewChat}
-            className="font-medium text-primary hover:text-primary/80 hover:underline transition-colors whitespace-nowrap shrink-0"
-          >
-            <span className="hidden md:inline">Start a new chat</span>
-            <span className="md:hidden">New chat</span>
-          </button>
-        )}
-        <a
-          href="/pricing"
-          className="font-medium text-primary hover:text-primary/80 hover:underline transition-colors whitespace-nowrap shrink-0"
-        >
-          <span>Upgrade</span>
-        </a>
-      </div>
     </div>
   );
 }
@@ -294,16 +221,8 @@ export default function Component({
     }
   }, [inputValue]);
 
-  // Calculate total tokens for token limit enforcement
-  const totalTokens =
-    messages.reduce((acc, msg) => acc + estimateTokenCount(msg.content), 0) +
-    (inputValue ? estimateTokenCount(inputValue) : 0);
-
-  // Token thresholds for different plan types
-  const STARTER_LIMIT_THRESHOLD = 7000;
-
-  // Check if user is on starter plan
-  const isStarter = freshBillingStatus?.product_name.toLowerCase().includes("starter") || false;
+  // No longer need token calculation or plan type check since we removed the hard limit
+  // Just keeping the TokenWarning component which handles its own calculations
 
   // Determine when the submit button should be disabled
   const isSubmitDisabled =
@@ -311,8 +230,6 @@ export default function Component({
       (!freshBillingStatus.can_chat ||
         (freshBillingStatus.chats_remaining !== null &&
           freshBillingStatus.chats_remaining <= 0))) ||
-    // Disable for starter users who exceed token limit
-    (isStarter && totalTokens >= STARTER_LIMIT_THRESHOLD) ||
     isStreaming;
 
   // Disable the input box only when the user is out of chats or when streaming
@@ -328,34 +245,17 @@ export default function Component({
     if (freshBillingStatus.can_chat === false) {
       return "You've used up all your chats. Upgrade to continue.";
     }
-    if (isStarter && totalTokens >= STARTER_LIMIT_THRESHOLD) {
-      return "Token limit reached. Upgrade to Pro for longer chats.";
-    }
     return "Type your message here...";
   })();
 
   return (
     <div className="flex flex-col w-full">
-      {isStarter ? (
-        // For starter users, show either the warning or the limit message
-        <>
-          <TokenWarning
-            messages={messages}
-            currentInput={inputValue}
-            chatId={chatId}
-            billingStatus={freshBillingStatus}
-          />
-          <StarterTokenLimit messages={messages} currentInput={inputValue} chatId={chatId} />
-        </>
-      ) : (
-        // For pro users, show only the standard warning
-        <TokenWarning
-          messages={messages}
-          currentInput={inputValue}
-          chatId={chatId}
-          billingStatus={freshBillingStatus}
-        />
-      )}
+      <TokenWarning
+        messages={messages}
+        currentInput={inputValue}
+        chatId={chatId}
+        billingStatus={freshBillingStatus}
+      />
       <form
         className={cn(
           "p-2 rounded-lg border border-primary bg-background/80 backdrop-blur-lg focus-within:ring-1 focus-within:ring-ring",
