@@ -14,6 +14,7 @@ import { useOpenSecret } from "@opensecret/react";
 import { useNavigate, useRouter } from "@tanstack/react-router";
 import { Dialog, DialogTrigger } from "./ui/dialog";
 import { AccountDialog } from "./AccountDialog";
+import { CreditUsage } from "./CreditUsage";
 import { Badge } from "./ui/badge";
 
 import {
@@ -129,6 +130,7 @@ export function AccountMenu() {
                 {billingStatus ? `${billingStatus.product_name} Plan` : "Loading..."}
               </Badge>
             </Link>
+            <CreditUsage />
             <DropdownMenuTrigger asChild>
               <Button variant="outline" className="gap-2">
                 <User className="w-4 h-4" />

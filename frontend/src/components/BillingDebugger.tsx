@@ -21,7 +21,9 @@ export function BillingDebugger({ currentStatus, onOverride }: BillingDebuggerPr
     product_id: currentStatus?.product_id ?? "free",
     subscription_status: currentStatus?.subscription_status ?? "active",
     current_period_end: currentStatus?.current_period_end ?? null,
-    payment_provider: currentStatus?.payment_provider ?? null
+    payment_provider: currentStatus?.payment_provider ?? null,
+    total_tokens: currentStatus?.total_tokens ?? null,
+    used_tokens: currentStatus?.used_tokens ?? null
   });
   const { setBillingStatus } = useLocalState();
 
@@ -94,6 +96,36 @@ export function BillingDebugger({ currentStatus, onOverride }: BillingDebuggerPr
           </label>
         </div>
 
+        <div>
+          <label className="block text-sm">Total Credits</label>
+          <Input
+            type="number"
+            value={debugStatus.total_tokens ?? ""}
+            onChange={(e) =>
+              setDebugStatus((prev) => ({
+                ...prev,
+                total_tokens: e.target.value ? parseInt(e.target.value) : null
+              }))
+            }
+            className="w-full bg-transparent border-yellow-500/30"
+          />
+        </div>
+
+        <div>
+          <label className="block text-sm">Used Credits</label>
+          <Input
+            type="number"
+            value={debugStatus.used_tokens ?? ""}
+            onChange={(e) =>
+              setDebugStatus((prev) => ({
+                ...prev,
+                used_tokens: e.target.value ? parseInt(e.target.value) : null
+              }))
+            }
+            className="w-full bg-transparent border-yellow-500/30"
+          />
+        </div>
+
         <div className="space-x-2">
           <Button
             variant="outline"
@@ -117,7 +149,9 @@ export function BillingDebugger({ currentStatus, onOverride }: BillingDebuggerPr
                 product_id: "pro",
                 subscription_status: "active",
                 current_period_end: null,
-                payment_provider: "stripe"
+                payment_provider: "stripe",
+                total_tokens: 20000,
+                used_tokens: 18500
               };
               setDebugStatus(newStatus);
               handleOverride(newStatus);

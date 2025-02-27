@@ -8,6 +8,8 @@ export type BillingStatus = {
   can_chat: boolean;
   chats_remaining: number | null;
   payment_provider: "stripe" | "zaprite" | null;
+  total_tokens: number | null;
+  used_tokens: number | null;
 };
 
 type BillingRecurringInfo = {

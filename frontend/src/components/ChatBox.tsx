@@ -39,11 +39,17 @@ function TokenWarning({
   // Check if user is on starter plan
   const isStarter = billingStatus?.product_name.toLowerCase().includes("starter") || false;
 
+  // Token thresholds for different plan types
+  const STARTER_WARNING_THRESHOLD = 4000;
+  const STARTER_LIMIT_THRESHOLD = 7000;
+  const PRO_WARNING_THRESHOLD = 10000;
+
   // Different thresholds for starter vs pro users
-  const warningThreshold = isStarter ? 3000 : 10000;
+  const warningThreshold = isStarter ? STARTER_WARNING_THRESHOLD : PRO_WARNING_THRESHOLD;
 
   // For starter users: don't show warning if already at the limit (we'll show a different message)
-  if (totalTokens < warningThreshold || (isStarter && totalTokens >= 5000)) return null;
+  if (totalTokens < warningThreshold || (isStarter && totalTokens >= STARTER_LIMIT_THRESHOLD))
+    return null;
 
   const handleNewChat = async (e: React.MouseEvent) => {
     e.preventDefault();
@@ -101,8 +107,11 @@ function StarterTokenLimit({
 
   const navigate = useNavigate();
 
-  // Only show this for starter users who have exceeded 5000 tokens
-  if (totalTokens < 5000) return null;
+  // Constants for token thresholds
+  const STARTER_LIMIT_THRESHOLD = 7000;
+
+  // Only show this for starter users who have exceeded the token limit
+  if (totalTokens < STARTER_LIMIT_THRESHOLD) return null;
 
   const handleNewChat = async (e: React.MouseEvent) => {
     e.preventDefault();
@@ -290,6 +299,9 @@ export default function Component({
     messages.reduce((acc, msg) => acc + estimateTokenCount(msg.content), 0) +
     (inputValue ? estimateTokenCount(inputValue) : 0);
 
+  // Token thresholds for different plan types
+  const STARTER_LIMIT_THRESHOLD = 7000;
+
   // Check if user is on starter plan
   const isStarter = freshBillingStatus?.product_name.toLowerCase().includes("starter") || false;
 
@@ -299,8 +311,8 @@ export default function Component({
       (!freshBillingStatus.can_chat ||
         (freshBillingStatus.chats_remaining !== null &&
           freshBillingStatus.chats_remaining <= 0))) ||
-    // Disable for starter users who exceed 5000 tokens
-    (isStarter && totalTokens >= 5000) ||
+    // Disable for starter users who exceed token limit
+    (isStarter && totalTokens >= STARTER_LIMIT_THRESHOLD) ||
     isStreaming;
 
   // Disable the input box only when the user is out of chats or when streaming
@@ -316,7 +328,7 @@ export default function Component({
     if (freshBillingStatus.can_chat === false) {
       return "You've used up all your chats. Upgrade to continue.";
     }
-    if (isStarter && totalTokens >= 5000) {
+    if (isStarter && totalTokens >= STARTER_LIMIT_THRESHOLD) {
       return "Token limit reached. Upgrade to Pro for longer chats.";
     }
     return "Type your message here...";
