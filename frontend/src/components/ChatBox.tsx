@@ -6,6 +6,7 @@ import { useLocalState } from "@/state/useLocalState";
 import { cn } from "@/utils/utils";
 import { useQuery } from "@tanstack/react-query";
 import { getBillingService } from "@/billing/billingService";
+import { BillingStatus } from "@/billing/billingApi";
 import { Route as ChatRoute } from "@/routes/_auth.chat.$chatId";
 import { ChatMessage } from "@/state/LocalStateContext";
 import { useNavigate, useRouter } from "@tanstack/react-router";
@@ -20,12 +21,14 @@ function TokenWarning({
   messages,
   currentInput,
   chatId,
-  className
+  className,
+  billingStatus
 }: {
   messages: ChatMessage[];
   currentInput: string;
   chatId?: string;
   className?: string;
+  billingStatus?: BillingStatus;
 }) {
   const totalTokens =
     messages.reduce((acc, msg) => acc + estimateTokenCount(msg.content), 0) +
@@ -33,7 +36,14 @@ function TokenWarning({
 
   const navigate = useNavigate();
 
-  if (totalTokens < 10000) return null;
+  // Check if user is on starter plan
+  const isStarter = billingStatus?.product_name.toLowerCase().includes("starter") || false;
+
+  // Different thresholds for starter vs pro users
+  const warningThreshold = isStarter ? 3000 : 10000;
+
+  // For starter users: don't show warning if already at the limit (we'll show a different message)
+  if (totalTokens < warningThreshold || (isStarter && totalTokens >= 5000)) return null;
 
   const handleNewChat = async (e: React.MouseEvent) => {
     e.preventDefault();
@@ -69,6 +79,74 @@ function TokenWarning({
           <span className="sr-only">, to reduce token usage</span>
         </button>
       )}
+    </div>
+  );
+}
+
+// New component for starter plan token limit message
+function StarterTokenLimit({
+  messages,
+  currentInput,
+  chatId,
+  className
+}: {
+  messages: ChatMessage[];
+  currentInput: string;
+  chatId?: string;
+  className?: string;
+}) {
+  const totalTokens =
+    messages.reduce((acc, msg) => acc + estimateTokenCount(msg.content), 0) +
+    (currentInput ? estimateTokenCount(currentInput) : 0);
+
+  const navigate = useNavigate();
+
+  // Only show this for starter users who have exceeded 5000 tokens
+  if (totalTokens < 5000) return null;
+
+  const handleNewChat = async (e: React.MouseEvent) => {
+    e.preventDefault();
+    try {
+      await navigate({ to: "/" });
+      // Ensure element is available after navigation
+      setTimeout(() => document.getElementById("message")?.focus(), 0);
+    } catch (error) {
+      console.error("Navigation failed:", error);
+    }
+  };
+
+  return (
+    <div
+      className={cn(
+        "flex items-center justify-between px-3 py-1.5 mb-1",
+        "bg-yellow-100/90 dark:bg-yellow-900/30 backdrop-blur-sm rounded-t-lg",
+        "text-xs text-muted-foreground/90",
+        className
+      )}
+    >
+      <div className="flex items-center gap-2 min-w-0">
+        <span className="text-[11px] font-semibold text-foreground/70 shrink-0">
+          Limit reached:
+        </span>
+        <span className="min-w-0">Longer chat messages require upgrading to the Pro plan.</span>
+      </div>
+      <div className="flex gap-3 items-center ml-4">
+        {chatId && (
+          <button
+            onClick={handleNewChat}
+            className="font-medium text-primary hover:text-primary/80 hover:underline transition-colors whitespace-nowrap shrink-0"
+          >
+            <span className="hidden md:inline">Start a new chat</span>
+            <span className="md:hidden">New chat</span>
+          </button>
+        )}
+        <a
+          href="/pricing"
+          className="font-medium text-primary hover:text-primary/80 hover:underline transition-colors whitespace-nowrap shrink-0"
+        >
+          <span>Upgrade</span>
+        </a>
+      </div>
     </div>
   );
 }
@@ -127,7 +205,7 @@ export default function Component({
 
   const handleSubmit = (e?: React.FormEvent) => {
     e?.preventDefault();
-    if (!inputValue.trim()) return;
+    if (!inputValue.trim() || isSubmitDisabled) return;
 
     // Clear the draft when submitting
     if (chatId) {
@@ -187,6 +265,10 @@ export default function Component({
       if (isMobile || e.shiftKey || isStreaming) {
         // On mobile, when Shift is pressed, or when streaming, allow newline
         return;
+      } else if (isSubmitDisabled || !inputValue.trim()) {
+        // Prevent form submission when disabled or empty input
+        e.preventDefault();
+        return;
       } else {
         // On desktop without Shift and not streaming, submit the form
         e.preventDefault();
@@ -203,7 +285,26 @@ export default function Component({
     }
   }, [inputValue]);
 
-  const isDisabled =
+  // Calculate total tokens for token limit enforcement
+  const totalTokens =
+    messages.reduce((acc, msg) => acc + estimateTokenCount(msg.content), 0) +
+    (inputValue ? estimateTokenCount(inputValue) : 0);
+
+  // Check if user is on starter plan
+  const isStarter = freshBillingStatus?.product_name.toLowerCase().includes("starter") || false;
+
+  // Determine when the submit button should be disabled
+  const isSubmitDisabled =
+    (freshBillingStatus !== undefined &&
+      (!freshBillingStatus.can_chat ||
+        (freshBillingStatus.chats_remaining !== null &&
+          freshBillingStatus.chats_remaining <= 0))) ||
+    // Disable for starter users who exceed 5000 tokens
+    (isStarter && totalTokens >= 5000) ||
+    isStreaming;
+
+  // Disable the input box only when the user is out of chats or when streaming
+  const isInputDisabled =
     (freshBillingStatus !== undefined &&
       (!freshBillingStatus.can_chat ||
         (freshBillingStatus.chats_remaining !== null &&
@@ -215,20 +316,42 @@ export default function Component({
     if (freshBillingStatus.can_chat === false) {
       return "You've used up all your chats. Upgrade to continue.";
     }
+    if (isStarter && totalTokens >= 5000) {
+      return "Token limit reached. Upgrade to Pro for longer chats.";
+    }
     return "Type your message here...";
   })();
 
   return (
     <div className="flex flex-col w-full">
-      <TokenWarning messages={messages} currentInput={inputValue} chatId={chatId} />
+      {isStarter ? (
+        // For starter users, show either the warning or the limit message
+        <>
+          <TokenWarning
+            messages={messages}
+            currentInput={inputValue}
+            chatId={chatId}
+            billingStatus={freshBillingStatus}
+          />
+          <StarterTokenLimit messages={messages} currentInput={inputValue} chatId={chatId} />
+        </>
+      ) : (
+        // For pro users, show only the standard warning
+        <TokenWarning
+          messages={messages}
+          currentInput={inputValue}
+          chatId={chatId}
+          billingStatus={freshBillingStatus}
+        />
+      )}
       <form
         className={cn(
           "p-2 rounded-lg border border-primary bg-background/80 backdrop-blur-lg focus-within:ring-1 focus-within:ring-ring",
-          isDisabled && "opacity-50"
+          isInputDisabled && "opacity-50"
         )}
         onSubmit={handleSubmit}
         onClick={(e) => {
-          if (isDisabled) {
+          if (isInputDisabled) {
             e.preventDefault();
             return;
           }
@@ -241,7 +364,7 @@ export default function Component({
           Message
         </Label>
         <textarea
-          disabled={isDisabled}
+          disabled={isInputDisabled}
           ref={inputRef}
           onKeyDown={handleKeyDown}
           onFocus={() => setIsFocused(true)}
@@ -279,7 +402,7 @@ export default function Component({
             type="submit"
             size="sm"
             className="ml-auto gap-1.5"
-            disabled={!inputValue.trim() || isDisabled}
+            disabled={!inputValue.trim() || isSubmitDisabled}
           >
             <CornerRightUp className="size-3.5" />
           </Button>
