@@ -221,23 +221,36 @@ function PricingPage() {
       );
     }
 
+    const targetPlanName = product.name.toLowerCase();
+    const isTeamPlan = targetPlanName.includes("team");
+
+    // Always show Contact Us for team plan when not logged in
     if (!isLoggedIn) {
+      if (isTeamPlan) {
+        return "Contact Us";
+      }
       return "Start Chatting";
     }
 
     const currentPlanName = freshBillingStatus?.product_name?.toLowerCase();
-    const targetPlanName = product.name.toLowerCase();
     const isCurrentPlan = currentPlanName === targetPlanName;
-    const isTeamPlan = targetPlanName.includes("team");
 
     // If user is on Zaprite plan, show Contact Us
     if (freshBillingStatus?.payment_provider === "zaprite") {
       return "Contact Us";
     }
 
-    // For team plan, show Contact Us if not available
-    if (isTeamPlan && !isTeamPlanAvailable) {
-      return "Contact Us";
+    // For team plan, ALWAYS show Contact Us if not whitelisted
+    // regardless of current subscription status
+    if (isTeamPlan) {
+      if (!isTeamPlanAvailable) {
+        return "Contact Us";
+      }
+      // Only show upgrade/downgrade for team plan if explicitly whitelisted
+      if (isCurrentPlan) {
+        return "Manage Plan";
+      }
+      return "Upgrade to Team";
     }
 
     // For free plan
@@ -288,6 +301,18 @@ function PricingPage() {
           throw new Error("User email not found");
         }
 
+        // Find the product to check if it's a team plan
+        const product = products?.find((p) => p.id === productId);
+        if (product && product.name.toLowerCase().includes("team")) {
+          // Double-check team plan availability before proceeding
+          const isAllowed = await billingService.getTeamPlanAvailable();
+          if (!isAllowed) {
+            throw new Error(
+              "You are not authorized to purchase the Team plan. Please contact support for assistance."
+            );
+          }
+        }
+
         if (useBitcoin) {
           await billingService.createZapriteCheckoutSession(
             email,
@@ -309,13 +334,21 @@ function PricingPage() {
         setLoadingProductId(null);
       }
     },
-    [isLoggedIn, navigate, os.auth.user?.user.email, useBitcoin]
+    [isLoggedIn, navigate, os.auth.user?.user.email, useBitcoin, products]
   );
 
   const handleButtonClick = useCallback(
     (product: Product) => {
       if (!isLoggedIn) {
         const targetPlanName = product.name.toLowerCase();
+        const isTeamPlan = targetPlanName.includes("team");
+
+        // For team plan, redirect to email when not logged in
+        if (isTeamPlan) {
+          window.location.href = "mailto:support@opensecret.cloud";
+          return;
+        }
+
         if (!targetPlanName.includes("free")) {
           // For paid plans, redirect to signup with the plan selection
           navigate({
@@ -334,10 +367,14 @@ function PricingPage() {
       const targetPlanName = product.name.toLowerCase();
       const isTeamPlan = targetPlanName.includes("team");
 
-      // For team plan, redirect to email if not available
-      if (isTeamPlan && !isTeamPlanAvailable) {
-        window.location.href = "mailto:support@opensecret.cloud";
-        return;
+      // For team plan, ALWAYS redirect to email if not whitelisted
+      // regardless of current subscription status
+      if (isTeamPlan) {
+        if (!isTeamPlanAvailable) {
+          window.location.href = "mailto:support@opensecret.cloud";
+          return;
+        }
+        // Only allow team plan checkout if explicitly whitelisted
       }
 
       // If user is on Zaprite plan, redirect to email
