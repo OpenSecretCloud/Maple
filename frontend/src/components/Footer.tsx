@@ -36,7 +36,7 @@ export function Footer() {
       </div>
       <div className="mt-4 flex justify-center gap-6 text-white/70">
         <a
-          href="https://twitter.com/try_maple_ai"
+          href="https://twitter.com/TryMapleAI"
           target="_blank"
           rel="noopener noreferrer"
           className="hover:text-white/90"
