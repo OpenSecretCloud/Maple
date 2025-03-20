@@ -25,7 +25,7 @@ export type LocalState = {
   billingStatus: BillingStatus | null;
   setBillingStatus: (status: BillingStatus) => void;
   setUserPrompt: (prompt: string) => void;
-  addChat: () => Promise<string>;
+  addChat: (title?: string) => Promise<string>;
   getChatById: (id: string) => Promise<Chat | undefined>;
   persistChat: (chat: Chat) => Promise<void>;
   fetchOrCreateHistoryList: () => Promise<HistoryItem[]>;

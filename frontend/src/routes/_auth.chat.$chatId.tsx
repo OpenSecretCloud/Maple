@@ -162,14 +162,6 @@ function ChatComponent() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [queryChat, chatId, isPending]);
 
-  async function generateChatTitle(messages: ChatMessage[]): Promise<string> {
-    // Find the first user message
-    const userMessage = messages.find((message) => message.role === "user");
-    if (!userMessage) return "New Chat";
-    // Use the first 50 characters of the user message
-    return `${userMessage.content.slice(0, 50)}`;
-  }
-
   // IMPORTANT that this runs only once (because it uses the user's tokens!)
   const userPromptEffectRan = useRef(false);
 
@@ -188,6 +180,57 @@ function ChatComponent() {
 
   const sendMessage = useCallback(
     async (input: string) => {
+      // Inner function to generate chat title to avoid dependency issues
+      async function generateChatTitle(messages: ChatMessage[]): Promise<string> {
+        // Find the first user message
+        const userMessage = messages.find((message) => message.role === "user");
+        if (!userMessage) return "New Chat";
+
+        try {
+          // Get the user's first message, truncate if too long
+          const userContent = userMessage.content.slice(0, 1000); // Limit to 1000 chars to save tokens
+
+          // Use the OpenAI API to generate a concise title - use the same model as chat
+          const stream = openai.beta.chat.completions.stream({
+            model: model, // Use the same model that's used for chat
+            messages: [
+              {
+                role: "system",
+                content:
+                  "You are a helpful assistant that generates concise, meaningful titles (3-5 words) for chat conversations based on the user's first message. Return only the title without quotes or explanations."
+              },
+              {
+                role: "user",
+                content: `Generate a concise, contextual title (3-5 words) for a chat that starts with this message: "${userContent}"`
+              }
+            ],
+            temperature: 0.7,
+            max_tokens: 15, // Keep response very short
+            stream: true
+          });
+
+          let generatedTitle = "";
+          for await (const chunk of stream) {
+            const content = chunk.choices[0]?.delta?.content || "";
+            generatedTitle += content;
+          }
+
+          // Get the final completion
+          await stream.finalChatCompletion();
+
+          // Remove quotes if present and limit length
+          const cleanTitle = generatedTitle
+            .replace(/^["']|["']$/g, "") // Remove surrounding quotes if present
+            .replace(/\n/g, " ") // Remove new lines
+            .trim();
+
+          return cleanTitle || userMessage.content.slice(0, 50); // Fallback to first 50 chars if generation fails
+        } catch (error) {
+          console.error("Failed to generate chat title:", error);
+          // Fallback to first 50 characters of user message
+          return userMessage.content.slice(0, 50);
+        }
+      }
       if (!input.trim() || !localChat) return;
       setError("");
 
@@ -262,13 +305,24 @@ function ChatComponent() {
 
         let title = localChat.title;
 
-        // Generate and update the chat title, if the current title isn't "New Chat"
+        // Generate and update the chat title, if the current title is "New Chat"
         if (title === "New Chat") {
-          console.log("Generating chat title");
-          const newTitle = await generateChatTitle(finalMessages);
+          console.log("Generating AI title for chat");
+          // Set a temporary title to indicate we're generating one
+          setLocalChat((prev) => ({
+            ...prev,
+            title: "Generating title..."
+          }));
 
+          const newTitle = await generateChatTitle(finalMessages);
           // Get rid of quotes and any newlines in the title
           title = newTitle.replace(/"/g, "").replace(/\n/g, " ");
+
+          // Update local chat with generated title
+          setLocalChat((prev) => ({
+            ...prev,
+            title: title
+          }));
         }
 
         const chatCompletion = await stream.finalChatCompletion();
@@ -280,8 +334,15 @@ function ChatComponent() {
         // React sucks and doesn't get the latest state
         await persistChat({ ...localChat, title, messages: finalMessages });
 
+        // Invalidate chat history to show the new title in the sidebar
         queryClient.invalidateQueries({
           queryKey: ["chatHistory"],
+          refetchType: "all"
+        });
+
+        // Invalidate current chat query to ensure the title update is reflected
+        queryClient.invalidateQueries({
+          queryKey: ["chat", chatId],
           refetchType: "all"
         });
 
@@ -303,7 +364,7 @@ function ChatComponent() {
 
       setIsLoading(false);
     },
-    [localChat, model, openai, persistChat, queryClient, setUserPrompt]
+    [localChat, model, openai, persistChat, queryClient, setUserPrompt, chatId]
   );
 
   return (
@@ -321,7 +382,9 @@ function ChatComponent() {
         >
           <InfoPopover />
           <div className="mt-4 md:mt-8 w-full h-10 flex items-center justify-center">
-            <h2 className="text-lg font-semibold self-center truncate max-w-[20rem] mx-[6rem] py-2">
+            <h2
+              className={`text-lg font-semibold self-center truncate max-w-[20rem] mx-[6rem] py-2 ${localChat.title === "Generating title..." ? "animate-pulse text-muted-foreground" : ""}`}
+            >
               {localChat.title}
             </h2>
           </div>
