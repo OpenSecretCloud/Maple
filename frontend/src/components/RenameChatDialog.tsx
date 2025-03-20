@@ -30,7 +30,6 @@ export function RenameChatDialog({
   const [newTitle, setNewTitle] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState(false);
 
   // Set the initial value when dialog opens
   useEffect(() => {
@@ -42,7 +41,6 @@ export function RenameChatDialog({
   const resetForm = useCallback(() => {
     setNewTitle(currentTitle);
     setError(null);
-    setSuccess(false);
     setIsLoading(false);
   }, [currentTitle]);
 
@@ -55,20 +53,25 @@ export function RenameChatDialog({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
-    setSuccess(false);
 
-    if (!newTitle.trim()) {
+    const trimmedTitle = newTitle.trim();
+
+    if (!trimmedTitle) {
       setError("Chat title cannot be empty.");
+      return;
+    }
+
+    // Check if the new title is the same as the current title
+    if (trimmedTitle === currentTitle.trim()) {
+      setError("Please enter a different title.");
       return;
     }
 
     setIsLoading(true);
     try {
-      await onRename(chatId, newTitle);
-      setSuccess(true);
-      setTimeout(() => {
-        onOpenChange(false);
-      }, 1000); // Close the dialog after 1 second
+      await onRename(chatId, trimmedTitle);
+      // Close dialog immediately on success
+      onOpenChange(false);
     } catch (error) {
       console.error("Failed to rename chat:", error);
       setError("Failed to rename chat. Please try again.");
@@ -90,11 +93,6 @@ export function RenameChatDialog({
               <AlertDescription>{error}</AlertDescription>
             </Alert>
           )}
-          {success && (
-            <Alert>
-              <AlertDescription>Chat renamed successfully.</AlertDescription>
-            </Alert>
-          )}
           <div className="grid gap-2">
             <Label htmlFor="chat-title">Chat Title</Label>
             <Input
@@ -107,7 +105,9 @@ export function RenameChatDialog({
               onKeyDown={(e) => {
                 if (e.key === "Enter") {
                   e.preventDefault();
-                  handleSubmit(e);
+                  // Use requestSubmit for better form validation
+                  const form = e.currentTarget.form;
+                  if (form) form.requestSubmit();
                 }
               }}
             />
@@ -116,7 +116,7 @@ export function RenameChatDialog({
             <Button variant="outline" onClick={() => onOpenChange(false)} type="button">
               Cancel
             </Button>
-            <Button type="submit" disabled={isLoading || success}>
+            <Button type="submit" disabled={isLoading}>
               {isLoading ? "Renaming..." : "Rename Chat"}
             </Button>
           </DialogFooter>

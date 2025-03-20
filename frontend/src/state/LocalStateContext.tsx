@@ -163,9 +163,8 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
 
   async function renameChat(chatId: string, newTitle: string) {
     try {
-      // Get the current chat
+      // Get the current chat (getChatById already throws if chat not found)
       const chat = await getChatById(chatId);
-      if (!chat) throw new Error("Chat not found");
 
       // Update the chat title
       chat.title = newTitle;
