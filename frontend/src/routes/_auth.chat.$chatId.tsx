@@ -11,6 +11,7 @@ import { Sidebar, SidebarToggle } from "@/components/Sidebar";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { InfoPopover } from "@/components/InfoPopover";
 import { Button } from "@/components/ui/button";
+import { BillingStatus } from "@/billing/billingApi";
 
 export const Route = createFileRoute("/_auth/chat/$chatId")({
   component: ChatComponent
@@ -162,14 +163,6 @@ function ChatComponent() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [queryChat, chatId, isPending]);
 
-  async function generateChatTitle(messages: ChatMessage[]): Promise<string> {
-    // Find the first user message
-    const userMessage = messages.find((message) => message.role === "user");
-    if (!userMessage) return "New Chat";
-    // Use the first 50 characters of the user message
-    return `${userMessage.content.slice(0, 50)}`;
-  }
-
   // IMPORTANT that this runs only once (because it uses the user's tokens!)
   const userPromptEffectRan = useRef(false);
 
@@ -188,6 +181,86 @@ function ChatComponent() {
 
   const sendMessage = useCallback(
     async (input: string) => {
+      // Helper function to check if the user is on a free plan
+      function isUserOnFreePlan(): boolean {
+        try {
+          const billingStatus = queryClient.getQueryData(["billingStatus"]) as
+            | BillingStatus
+            | undefined;
+
+          return (
+            !billingStatus ||
+            !billingStatus.product_name ||
+            billingStatus.product_name.toLowerCase().includes("free")
+          );
+        } catch (error) {
+          console.log("Error checking billing status, defaulting to free plan", error);
+          return true; // Default to free plan if there's an error
+        }
+      }
+
+      async function generateChatTitle(messages: ChatMessage[]): Promise<string> {
+        // Find the first user message
+        const userMessage = messages.find((message) => message.role === "user");
+        if (!userMessage) return "New Chat";
+
+        // Simple title generation - truncate first message to 50 chars
+        const simpleTitleFromMessage = userMessage.content.slice(0, 50).trim();
+
+        // For free plan users, just use the simple title
+        // For paid plans, try to generate AI title
+        if (isUserOnFreePlan()) {
+          console.log("Using simple title generation for free plan user");
+          return simpleTitleFromMessage;
+        }
+
+        // For paid plans, use LLM to generate a smart title
+        try {
+          console.log("Using AI title generation for paid plan user");
+          // Get the user's first message, truncate if too long
+          const userContent = userMessage.content.slice(0, 500); // Reduced to 500 chars to optimize token usage
+
+          // Use the OpenAI API to generate a concise title - use the same model as chat
+          const stream = openai.beta.chat.completions.stream({
+            model: model, // Use the same model that's used for chat
+            messages: [
+              {
+                role: "system",
+                content:
+                  "You are a helpful assistant that generates concise, meaningful titles (3-5 words) for chat conversations based on the user's first message. Return only the title without quotes or explanations."
+              },
+              {
+                role: "user",
+                content: `Generate a concise, contextual title (3-5 words) for a chat that starts with this message: "${userContent}"`
+              }
+            ],
+            temperature: 0.7,
+            max_tokens: 15, // Keep response very short
+            stream: true
+          });
+
+          let generatedTitle = "";
+          for await (const chunk of stream) {
+            const content = chunk.choices[0]?.delta?.content || "";
+            generatedTitle += content;
+          }
+
+          // Get the final completion
+          await stream.finalChatCompletion();
+
+          // Remove quotes if present and limit length
+          const cleanTitle = generatedTitle
+            .replace(/^["']|["']$/g, "") // Remove surrounding quotes if present
+            .replace(/\n/g, " ") // Remove new lines
+            .trim();
+
+          return cleanTitle || simpleTitleFromMessage; // Fallback to simple title if generation fails
+        } catch (error) {
+          console.error("Failed to generate chat title:", error);
+          // Fallback to simple title method
+          return simpleTitleFromMessage;
+        }
+      }
       if (!input.trim() || !localChat) return;
       setError("");
 
@@ -209,6 +282,42 @@ function ChatComponent() {
       setIsLoading(true);
 
       try {
+        // Start title generation early for paid users if needed
+        let titleGenerationPromise;
+        let title = localChat.title;
+
+        if (title === "New Chat") {
+          const isFreePlan = isUserOnFreePlan();
+
+          if (!isFreePlan) {
+            console.log("Starting async AI title generation for paid user's chat");
+            // Start title generation in parallel for paid users
+            titleGenerationPromise = generateChatTitle(newMessages).then((newTitle) => {
+              // Clean up the title
+              const cleanTitle = newTitle.replace(/"/g, "").replace(/\n/g, " ");
+
+              // Update local chat with generated title immediately when available
+              setLocalChat((prev) => ({
+                ...prev,
+                title: cleanTitle
+              }));
+
+              return cleanTitle;
+            });
+          } else {
+            console.log("Using simple title for free user's chat");
+            // For free users, set the title synchronously
+            const newTitle = await generateChatTitle(newMessages);
+            title = newTitle.replace(/"/g, "").replace(/\n/g, " ");
+
+            setLocalChat((prev) => ({
+              ...prev,
+              title
+            }));
+          }
+        }
+
+        // Stream the chat response (happens in parallel with title generation)
         const stream = openai.beta.chat.completions.stream({
           model,
           messages: newMessages,
@@ -260,15 +369,9 @@ function ChatComponent() {
           });
         }
 
-        let title = localChat.title;
-
-        // Generate and update the chat title, if the current title isn't "New Chat"
-        if (title === "New Chat") {
-          console.log("Generating chat title");
-          const newTitle = await generateChatTitle(finalMessages);
-
-          // Get rid of quotes and any newlines in the title
-          title = newTitle.replace(/"/g, "").replace(/\n/g, " ");
+        // Wait for title generation to complete if we started it
+        if (titleGenerationPromise) {
+          title = await titleGenerationPromise;
         }
 
         const chatCompletion = await stream.finalChatCompletion();
@@ -278,10 +381,19 @@ function ChatComponent() {
         setUserPrompt("");
 
         // React sucks and doesn't get the latest state
-        await persistChat({ ...localChat, title, messages: finalMessages });
+        // Use current title from localChat which may have been updated asynchronously
+        const currentTitle = localChat.title === "New Chat" ? title : localChat.title;
+        await persistChat({ ...localChat, title: currentTitle, messages: finalMessages });
 
+        // Invalidate chat history to show the new title in the sidebar
         queryClient.invalidateQueries({
           queryKey: ["chatHistory"],
+          refetchType: "all"
+        });
+
+        // Invalidate current chat query to ensure the title update is reflected
+        queryClient.invalidateQueries({
+          queryKey: ["chat", chatId],
           refetchType: "all"
         });
 
@@ -303,7 +415,10 @@ function ChatComponent() {
 
       setIsLoading(false);
     },
-    [localChat, model, openai, persistChat, queryClient, setUserPrompt]
+    // We intentionally don't include freshBillingStatus in the dependency array
+    // even though it's used in the closure to avoid re-creating the function
+    // on every billing status change
+    [localChat, model, openai, persistChat, queryClient, setUserPrompt, chatId]
   );
 
   return (

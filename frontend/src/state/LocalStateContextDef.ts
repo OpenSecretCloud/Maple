@@ -25,12 +25,13 @@ export type LocalState = {
   billingStatus: BillingStatus | null;
   setBillingStatus: (status: BillingStatus) => void;
   setUserPrompt: (prompt: string) => void;
-  addChat: () => Promise<string>;
+  addChat: (title?: string) => Promise<string>;
   getChatById: (id: string) => Promise<Chat | undefined>;
   persistChat: (chat: Chat) => Promise<void>;
   fetchOrCreateHistoryList: () => Promise<HistoryItem[]>;
   clearHistory: () => Promise<void>;
   deleteChat: (chatId: string) => Promise<void>;
+  renameChat: (chatId: string, newTitle: string) => Promise<void>;
   /** Map of chat IDs to their draft messages */
   draftMessages: Map<string, string>;
   /** Sets a draft message for a specific chat */
@@ -51,6 +52,7 @@ export const LocalStateContext = createContext<LocalState>({
   fetchOrCreateHistoryList: async () => [],
   clearHistory: async () => {},
   deleteChat: async () => {},
+  renameChat: async () => {},
   draftMessages: new Map(),
   setDraftMessage: () => {},
   clearDraftMessage: () => {}

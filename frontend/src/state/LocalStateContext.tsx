@@ -161,6 +161,25 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
     await put("history_list", JSON.stringify(updatedChatHistory));
   }
 
+  async function renameChat(chatId: string, newTitle: string) {
+    try {
+      // Get the current chat (getChatById already throws if chat not found)
+      const chat = await getChatById(chatId);
+
+      // Update the chat title
+      chat.title = newTitle;
+
+      // Save the updated chat
+      await persistChat(chat);
+
+      // The persistChat function already updates the history list
+      return;
+    } catch (error) {
+      console.error("Error renaming chat:", error);
+      throw new Error("Error renaming chat");
+    }
+  }
+
   function setDraftMessage(chatId: string, draft: string) {
     if (!chatId?.trim()) {
       console.error("Invalid chatId provided to setDraftMessage");
@@ -201,6 +220,7 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
         fetchOrCreateHistoryList,
         clearHistory,
         deleteChat,
+        renameChat,
         draftMessages: localState.draftMessages,
         setDraftMessage,
         clearDraftMessage
