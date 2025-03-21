@@ -17,6 +17,8 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
     model:
       import.meta.env.VITE_DEV_MODEL_OVERRIDE || "ibnzterrell/Meta-Llama-3.3-70B-Instruct-AWQ-INT4",
     billingStatus: null as BillingStatus | null,
+    searchQuery: "",
+    isSearchVisible: false,
     draftMessages: new Map<string, string>()
   });
 
@@ -69,6 +71,14 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
 
   function setBillingStatus(status: BillingStatus) {
     setLocalState((prev) => ({ ...prev, billingStatus: status }));
+  }
+
+  function setSearchQuery(query: string) {
+    setLocalState((prev) => ({ ...prev, searchQuery: query }));
+  }
+
+  function setIsSearchVisible(visible: boolean) {
+    setLocalState((prev) => ({ ...prev, isSearchVisible: visible }));
   }
 
   async function addChat(title: string = "New Chat") {
@@ -212,6 +222,10 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
         model: localState.model,
         userPrompt: localState.userPrompt,
         billingStatus: localState.billingStatus,
+        searchQuery: localState.searchQuery,
+        setSearchQuery,
+        isSearchVisible: localState.isSearchVisible,
+        setIsSearchVisible,
         setBillingStatus,
         setUserPrompt,
         addChat,

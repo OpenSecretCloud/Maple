@@ -1,13 +1,10 @@
 # Maple Project Guidelines
 
 ## Build & Development Commands
-- `bun run dev` - Start development server
-- `bun run build` - Build for production
-- `bun run preview` - Preview production build
-- `bun run lint` - Run ESLint
 - `bun run format` - Format code with Prettier
-- `npx playwright test` - Run all tests
-- `npx playwright test [file-path]` - Run a specific test
+- `bun run lint` - Run ESLint
+- `bun run build` - Build for production
+- Always run the above commands when you get done with code changes and fix any errors.
 
 ## Code Style Guidelines
 - **Imports**: Use path aliases (e.g., `@/*` maps to `./src/*`)
