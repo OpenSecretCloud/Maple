@@ -23,6 +23,10 @@ export type LocalState = {
   model: string;
   userPrompt: string;
   billingStatus: BillingStatus | null;
+  searchQuery: string;
+  setSearchQuery: (query: string) => void;
+  isSearchVisible: boolean;
+  setIsSearchVisible: (visible: boolean) => void;
   setBillingStatus: (status: BillingStatus) => void;
   setUserPrompt: (prompt: string) => void;
   addChat: (title?: string) => Promise<string>;
@@ -44,16 +48,20 @@ export const LocalStateContext = createContext<LocalState>({
   model: "",
   userPrompt: "",
   billingStatus: null,
-  setBillingStatus: () => {},
-  setUserPrompt: () => {},
+  searchQuery: "",
+  setSearchQuery: () => void 0,
+  isSearchVisible: false,
+  setIsSearchVisible: () => void 0,
+  setBillingStatus: () => void 0,
+  setUserPrompt: () => void 0,
   addChat: async () => "",
   getChatById: async () => undefined,
-  persistChat: async () => {},
+  persistChat: async () => void 0,
   fetchOrCreateHistoryList: async () => [],
-  clearHistory: async () => {},
-  deleteChat: async () => {},
-  renameChat: async () => {},
+  clearHistory: async () => void 0,
+  deleteChat: async () => void 0,
+  renameChat: async () => void 0,
   draftMessages: new Map(),
-  setDraftMessage: () => {},
-  clearDraftMessage: () => {}
+  setDraftMessage: () => void 0,
+  clearDraftMessage: () => void 0
 });
