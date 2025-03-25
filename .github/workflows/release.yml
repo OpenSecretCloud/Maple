@@ -7,16 +7,16 @@ jobs:
   create-release:
     runs-on: ubuntu-latest
     outputs:
-      release_id: ${{ steps.create-release.outputs.result }}
+      release_id: ${{ steps.get_version.outputs.version }}
 
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Setup Bun
         uses: oven-sh/setup-bun@v1
         with:
           bun-version: 1.2.2
-      
+
       - name: Get version
         id: get_version
         run: echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
@@ -116,29 +116,34 @@ jobs:
         run: |
           VERSION="${{ github.ref_name }}"
           RELEASE_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-          
+
           # Get signatures from the artifacts
-          MACOS_ARM_SIG=$(cat artifacts/*.app.tar.gz.sig)
-          MACOS_X64_SIG=$(cat artifacts/*.app.tar.gz.sig)
+          # We build a single universal macOS binary that works on both Intel and Apple Silicon
+          # but Tauri updater requires entries for each architecture to work properly
+          MACOS_SIG=$(cat artifacts/*.app.tar.gz.sig)
           LINUX_X64_SIG=$(cat artifacts/*.AppImage.sig)
           
+          # Create latest.json for auto-updates
+          # Note: Even though we build one universal binary for macOS,
+          # we need separate entries for each architecture in the JSON
+          # to ensure the updater works correctly on all Macs
           cat > latest.json << EOF
           {
             "version": "${VERSION#v}",
-            "notes": "See the release notes at https://github.com/OpenSecret/maple/releases/tag/${VERSION}",
+            "notes": "See the release notes at https://github.com/OpenSecretCloud/Maple/releases/tag/${VERSION}",
             "pub_date": "${RELEASE_DATE}",
             "platforms": {
               "darwin-x86_64": {
-                "signature": "${MACOS_X64_SIG}",
-                "url": "https://github.com/OpenSecret/maple/releases/download/${VERSION}/Maple.app.tar.gz"
+                "signature": "${MACOS_SIG}",
+                "url": "https://github.com/OpenSecretCloud/Maple/releases/download/${VERSION}/Maple.app.tar.gz"
               },
               "darwin-aarch64": {
-                "signature": "${MACOS_ARM_SIG}",
-                "url": "https://github.com/OpenSecret/maple/releases/download/${VERSION}/Maple.app.tar.gz"
+                "signature": "${MACOS_SIG}",
+                "url": "https://github.com/OpenSecretCloud/Maple/releases/download/${VERSION}/Maple.app.tar.gz"
               },
               "linux-x86_64": {
                 "signature": "${LINUX_X64_SIG}",
-                "url": "https://github.com/OpenSecret/maple/releases/download/${VERSION}/maple.AppImage"
+                "url": "https://github.com/OpenSecretCloud/Maple/releases/download/${VERSION}/maple.AppImage"
               }
             }
           }
@@ -148,4 +153,4 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release upload ${{ github.ref_name }} latest.json --clobber 
+          gh release upload ${{ github.ref_name }} latest.json --clobber
