@@ -105,7 +105,7 @@ For proper macOS builds and notarization, you need to set up the following GitHu
 5. `APPLE_PASSWORD` - Your Apple Developer account password or app-specific password
 6. `APPLE_TEAM_ID` - Your Apple Developer team ID
 
-### Creating a Release
+### To Create a Release
 1. Update the version in `src-tauri/tauri.conf.json`
 2. Create a new release in GitHub:
    - Go to Releases → Draft a new release
