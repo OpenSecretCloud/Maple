@@ -15,32 +15,32 @@
 @layer base {
   body {
     @apply h-dvh;
-    @apply bg-cover bg-center bg-fixed;
-    @apply bg-[url('/october-light.webp')];
+    @apply bg-[#111111];
+    @apply text-[#E2E2E2];
   }
 
   :root {
-    --background: 0 0% 100%;
-    --foreground: 20 14.3% 1.1%;
-    --card: 0 0% 100%;
-    --card-foreground: 20 14.3% 4.1%;
-    --popover: 0 0% 100%;
-    --popover-foreground: 20 14.3% 4.1%;
-    --primary: 24 9.8% 10%;
-    --primary-foreground: 60 9.1% 97.8%;
-    --secondary: 60 4.8% 95.9%;
-    --secondary-foreground: 24 9.8% 10%;
-    --muted: 60 4.8% 95.9%;
-    --muted-foreground: 25 5.3% 25%;
-    --accent: 60 4.8% 95.9%;
-    --accent-foreground: 24 9.8% 10%;
+    --background: 0 0% 7%;
+    --foreground: 0 0% 89%;
+    --card: 0 0% 7%;
+    --card-foreground: 0 0% 89%;
+    --popover: 0 0% 7%;
+    --popover-foreground: 0 0% 89%;
+    --primary: 264 89% 69%;
+    --primary-foreground: 0 0% 7%;
+    --secondary: 191 98% 62%;
+    --secondary-foreground: 0 0% 7%;
+    --accent: 131 98% 78%;
+    --accent-foreground: 0 0% 7%;
+    --muted: 0 0% 15%;
+    --muted-foreground: 0 0% 70%;
     /* THIS WAS EDITED BY PAUL */
     --destructive: 0, 80%, 37%;
     /* THIS WAS EDITED BY PAUL */
     --destructive-foreground: 0, 80%, 37%;
-    --border: 20 5.9% 90%;
-    --input: 20 5.9% 90%;
-    --ring: 20 14.3% 4.1%;
+    --border: 0 0% 20%;
+    --input: 0 0% 20%;
+    --ring: 264 89% 69%;
     --radius: 0.5rem;
     --chart-1: 12 76% 61%;
     --chart-2: 173 58% 39%;
@@ -60,32 +60,28 @@
   }
 
   @media (prefers-color-scheme: dark) {
-    body {
-      @apply bg-[url('/october.webp')];
-    }
-
     :root {
-      --background: 20 14.3% 4.1%;
-      --foreground: 60 9.1% 97.8%;
-      --card: 20 14.3% 4.1%;
-      --card-foreground: 60 9.1% 97.8%;
-      --popover: 20 14.3% 4.1%;
-      --popover-foreground: 60 9.1% 97.8%;
-      --primary: 60 9.1% 97.8%;
-      --primary-foreground: 24 9.8% 10%;
-      --secondary: 12 6.5% 15.1%;
-      --secondary-foreground: 60 9.1% 97.8%;
-      --muted: 12 6.5% 15.1%;
-      --muted-foreground: 24 5.4% 63.9%;
-      --accent: 12 6.5% 15.1%;
-      --accent-foreground: 60 9.1% 97.8%;
+      --background: 0 0% 7%;
+      --foreground: 0 0% 89%;
+      --card: 0 0% 10%;
+      --card-foreground: 0 0% 89%;
+      --popover: 0 0% 7%;
+      --popover-foreground: 0 0% 89%;
+      --primary: 264 89% 69%;
+      --primary-foreground: 0 0% 7%;
+      --secondary: 191 98% 62%;
+      --secondary-foreground: 0 0% 7%;
+      --accent: 131 98% 78%;
+      --accent-foreground: 0 0% 7%;
+      --muted: 0 0% 15%;
+      --muted-foreground: 0 0% 70%;
       /* THIS WAS EDITED BY PAUL */
       --destructive: 0, 80%, 37%;
       /* THIS WAS EDITED BY PAUL */
       --destructive-foreground: 0, 80%, 37%;
-      --border: 12 6.5% 15.1%;
-      --input: 12 6.5% 15.1%;
-      --ring: 24 5.7% 82.9%;
+      --border: 0 0% 20%;
+      --input: 0 0% 20%;
+      --ring: 264 89% 69%;
       --chart-1: 220 70% 50%;
       --chart-2: 160 60% 45%;
       --chart-3: 30 80% 55%;
