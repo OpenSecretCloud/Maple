@@ -32,20 +32,20 @@ export function useIsMobile() {
     };
 
     // Use addListener for broader browser support
-    if ('addEventListener' in mediaQuery) {
+    if ("addEventListener" in mediaQuery) {
       mediaQuery.addEventListener("change", handleMediaChange);
     } else {
       // For older browsers - using type assertion for deprecated method
-      (mediaQuery as any).addListener(handleMediaChange);
+      (mediaQuery as MediaQueryList).addListener(handleMediaChange);
     }
 
     // Cleanup
     return () => {
-      if ('removeEventListener' in mediaQuery) {
+      if ("removeEventListener" in mediaQuery) {
         mediaQuery.removeEventListener("change", handleMediaChange);
       } else {
         // For older browsers - using type assertion for deprecated method
-        (mediaQuery as any).removeListener(handleMediaChange);
+        (mediaQuery as MediaQueryList).removeListener(handleMediaChange);
       }
     };
   }, []);
