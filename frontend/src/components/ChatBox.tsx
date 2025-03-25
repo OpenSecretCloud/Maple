@@ -3,7 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { useEffect, useRef, useState } from "react";
 import { useLocalState } from "@/state/useLocalState";
-import { cn } from "@/utils/utils";
+import { cn, useIsMobile } from "@/utils/utils";
 import { useQuery } from "@tanstack/react-query";
 import { getBillingService } from "@/billing/billingService";
 import { BillingStatus } from "@/billing/billingApi";
@@ -109,7 +109,6 @@ export default function Component({
   } = useLocalState();
   const [isFocused, setIsFocused] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const [isMobile, setIsMobile] = useState(false);
   const lastDraftRef = useRef<string>("");
   const previousChatIdRef = useRef<string | undefined>(undefined);
   const currentInputRef = useRef<string>("");
@@ -130,14 +129,8 @@ export default function Component({
     }
   });
 
-  useEffect(() => {
-    const checkMobile = () => {
-      setIsMobile(window.matchMedia("(max-width: 768px)").matches);
-    };
-    checkMobile();
-    window.addEventListener("resize", checkMobile);
-    return () => window.removeEventListener("resize", checkMobile);
-  }, []);
+  // Use the centralized hook for mobile detection directly
+  const isMobile = useIsMobile();
 
   const handleSubmit = (e?: React.FormEvent) => {
     e?.preventDefault();

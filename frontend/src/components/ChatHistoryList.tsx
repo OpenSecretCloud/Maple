@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { useLocalState } from "@/state/useLocalState";
 import { Link } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -14,9 +14,10 @@ import { RenameChatDialog } from "@/components/RenameChatDialog";
 
 interface ChatHistoryListProps {
   currentChatId?: string;
+  searchQuery?: string;
 }
 
-export function ChatHistoryList({ currentChatId }: ChatHistoryListProps) {
+export function ChatHistoryList({ currentChatId, searchQuery = "" }: ChatHistoryListProps) {
   const { fetchOrCreateHistoryList, deleteChat, renameChat } = useLocalState();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -31,6 +32,15 @@ export function ChatHistoryList({ currentChatId }: ChatHistoryListProps) {
     queryKey: ["chatHistory"],
     queryFn: () => fetchOrCreateHistoryList()
   });
+
+  // Filter chats based on search query
+  const filteredChats = useMemo(() => {
+    if (!chats) return [];
+    if (!searchQuery.trim()) return chats;
+
+    const normalizedQuery = searchQuery.trim().toLowerCase();
+    return chats.filter((chat) => chat.title.toLowerCase().includes(normalizedQuery));
+  }, [chats, searchQuery]);
 
   const handleDeleteChat = async (chatId: string) => {
     try {
@@ -69,9 +79,20 @@ export function ChatHistoryList({ currentChatId }: ChatHistoryListProps) {
     return <div>Loading chat history...</div>;
   }
 
+  // Only show no results message if we have a trimmed search query
+  const trimmedQuery = searchQuery.trim();
+  if (trimmedQuery && filteredChats.length === 0) {
+    return (
+      <div className="text-muted-foreground text-center py-4">
+        <p>No chats found matching "{trimmedQuery}"</p>
+        <p className="text-sm mt-1">Try a different search term</p>
+      </div>
+    );
+  }
+
   return (
     <>
-      {chats.map((chat) => (
+      {filteredChats.map((chat) => (
         <div key={chat.id} className="relative">
           <Link to="/chat/$chatId" params={{ chatId: chat.id }}>
             <div

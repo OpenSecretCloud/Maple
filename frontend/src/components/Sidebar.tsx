@@ -1,10 +1,12 @@
-import { SquarePenIcon, PanelRightClose, PanelRightOpen } from "lucide-react";
+import { Search, SquarePenIcon, PanelRightClose, PanelRightOpen, XCircle } from "lucide-react";
 import { Button } from "./ui/button";
 import { useLocation, useRouter } from "@tanstack/react-router";
 import { ChatHistoryList } from "./ChatHistoryList";
 import { AccountMenu } from "./AccountMenu";
-import { useRef, useEffect } from "react";
-import { cn, useClickOutside } from "@/utils/utils";
+import { useRef, useEffect, KeyboardEvent } from "react";
+import { cn, useClickOutside, useIsMobile } from "@/utils/utils";
+import { Input } from "./ui/input";
+import { useLocalState } from "@/state/useLocalState";
 
 export function Sidebar({
   chatId,
@@ -17,6 +19,8 @@ export function Sidebar({
 }) {
   const router = useRouter();
   const location = useLocation();
+  const { searchQuery, setSearchQuery, isSearchVisible, setIsSearchVisible } = useLocalState();
+  const searchInputRef = useRef<HTMLInputElement>(null);
 
   async function addChat() {
     // If sidebar is open, close it
@@ -37,6 +41,28 @@ export function Sidebar({
     }
   }
 
+  const toggleSearch = () => {
+    setIsSearchVisible(!isSearchVisible);
+    if (!isSearchVisible) {
+      // Focus the search input when it becomes visible
+      setTimeout(() => searchInputRef.current?.focus(), 0);
+    } else {
+      // Clear search when hiding
+      setSearchQuery("");
+    }
+  };
+
+  const clearSearch = () => {
+    setSearchQuery("");
+    searchInputRef.current?.focus();
+  };
+
+  const handleKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Escape") {
+      clearSearch();
+    }
+  };
+
   const sidebarRef = useRef<HTMLDivElement>(null);
 
   // Modified click outside handler to ignore clicks in dropdowns and dialogs
@@ -54,10 +80,17 @@ export function Sidebar({
     }
   });
 
-  // Close the sidebar if we navigate to a different route
+  // Use the centralized hook for mobile detection
+  const isMobile = useIsMobile();
+
+  // This effect closes the sidebar on mobile when navigating,
+  // but preserves search state between navigations
   useEffect(() => {
     const unsubscribe = router.subscribe("onResolved", () => {
-      if (isOpen) {
+      // On mobile: close the sidebar when navigating to any page
+      // On desktop: keep the sidebar open
+      if (isOpen && isMobile) {
+        // Always close sidebar on mobile when navigating to preserve screen real estate
         onToggle();
       }
     });
@@ -65,7 +98,7 @@ export function Sidebar({
     return () => {
       unsubscribe();
     };
-  }, [router, isOpen, onToggle]);
+  }, [router, isOpen, onToggle, isMobile]);
 
   return (
     <div
@@ -85,9 +118,43 @@ export function Sidebar({
             <PanelRightOpen className="h-4 w-4" />
           </Button>
         </div>
-        <h2 className="font-semibold -mb-2">History</h2>
+        <div className="flex justify-between items-center">
+          <h2 className="font-semibold">History</h2>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8"
+            onClick={toggleSearch}
+            aria-label={isSearchVisible ? "Hide search" : "Search chat history"}
+          >
+            <Search className="h-4 w-4" />
+          </Button>
+        </div>
+        {isSearchVisible && (
+          <div className="relative transition-all duration-200 ease-in-out">
+            <Input
+              ref={searchInputRef}
+              type="text"
+              placeholder="Search chat titles..."
+              className="pl-2 pr-8 h-9"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              onKeyDown={handleKeyDown}
+              aria-label="Search chat titles"
+            />
+            {searchQuery && (
+              <button
+                onClick={clearSearch}
+                className="absolute right-2.5 top-2.5 text-muted-foreground hover:text-foreground"
+                aria-label="Clear search"
+              >
+                <XCircle className="h-4 w-4" />
+              </button>
+            )}
+          </div>
+        )}
         <nav className="flex flex-col gap-2 px-4 -mx-4 h-full overflow-y-auto">
-          <ChatHistoryList currentChatId={chatId} />
+          <ChatHistoryList currentChatId={chatId} searchQuery={searchQuery} />
         </nav>
         <AccountMenu />
       </div>
