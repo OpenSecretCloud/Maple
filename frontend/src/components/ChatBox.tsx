@@ -109,7 +109,6 @@ export default function Component({
   } = useLocalState();
   const [isFocused, setIsFocused] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const [isMobile, setIsMobile] = useState(false);
   const lastDraftRef = useRef<string>("");
   const previousChatIdRef = useRef<string | undefined>(undefined);
   const currentInputRef = useRef<string>("");
@@ -130,13 +129,8 @@ export default function Component({
     }
   });
 
-  // Use the centralized hook for mobile detection
-  const isMobileDevice = useIsMobile();
-
-  // Update internal mobile state when hook value changes
-  useEffect(() => {
-    setIsMobile(isMobileDevice);
-  }, [isMobileDevice]);
+  // Use the centralized hook for mobile detection directly
+  const isMobile = useIsMobile();
 
   const handleSubmit = (e?: React.FormEvent) => {
     e?.preventDefault();

@@ -23,15 +23,31 @@ export function useIsMobile() {
   );
 
   useEffect(() => {
-    const checkMobile = () => {
-      setIsMobile(window.matchMedia(`(max-width: ${MD_BREAKPOINT - 1}px)`).matches);
+    // Create media query list
+    const mediaQuery = window.matchMedia(`(max-width: ${MD_BREAKPOINT - 1}px)`);
+
+    // Function to handle media query changes
+    const handleMediaChange = (e: MediaQueryListEvent) => {
+      setIsMobile(e.matches);
     };
 
-    // Add event listener for window resize
-    window.addEventListener("resize", checkMobile);
+    // Use addListener for broader browser support
+    if ('addEventListener' in mediaQuery) {
+      mediaQuery.addEventListener("change", handleMediaChange);
+    } else {
+      // For older browsers - using type assertion for deprecated method
+      (mediaQuery as any).addListener(handleMediaChange);
+    }
 
     // Cleanup
-    return () => window.removeEventListener("resize", checkMobile);
+    return () => {
+      if ('removeEventListener' in mediaQuery) {
+        mediaQuery.removeEventListener("change", handleMediaChange);
+      } else {
+        // For older browsers - using type assertion for deprecated method
+        (mediaQuery as any).removeListener(handleMediaChange);
+      }
+    };
   }, []);
 
   return isMobile;

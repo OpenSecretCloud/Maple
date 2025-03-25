@@ -23,9 +23,13 @@ export type LocalState = {
   model: string;
   userPrompt: string;
   billingStatus: BillingStatus | null;
+  /** Current search query for filtering chat history */
   searchQuery: string;
+  /** Updates the current search query */
   setSearchQuery: (query: string) => void;
+  /** Whether the search input is currently visible */
   isSearchVisible: boolean;
+  /** Controls the visibility of the search input */
   setIsSearchVisible: (visible: boolean) => void;
   setBillingStatus: (status: BillingStatus) => void;
   setUserPrompt: (prompt: string) => void;

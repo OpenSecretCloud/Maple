@@ -79,10 +79,12 @@ export function ChatHistoryList({ currentChatId, searchQuery = "" }: ChatHistory
     return <div>Loading chat history...</div>;
   }
 
-  if (filteredChats.length === 0 && searchQuery.trim()) {
+  // Only show no results message if we have a trimmed search query
+  const trimmedQuery = searchQuery.trim();
+  if (trimmedQuery && filteredChats.length === 0) {
     return (
       <div className="text-muted-foreground text-center py-4">
-        <p>No chats found matching "{searchQuery.trim()}"</p>
+        <p>No chats found matching "{trimmedQuery}"</p>
         <p className="text-sm mt-1">Try a different search term</p>
       </div>
     );
