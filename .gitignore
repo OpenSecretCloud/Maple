@@ -10,6 +10,7 @@ frontend/node_modules/
 .env
 .env.local
 .env.*.local
+*.key
 
 # IDE files
 .vscode/
