@@ -303,7 +303,7 @@ export function Marketing() {
                 
                 {/* Main Content */}
                 <div className="p-8 relative">
-                  <div className="w-full h-48 mx-auto relative flex items-center justify-between">
+                  <div className="w-full h-48 mx-auto relative flex items-center justify-between px-2">
                     {/* Phone Shape - Left Side */}
                     <div className="w-24 h-40 relative">
                       <div className="absolute inset-0 bg-[#1D1D1D] border border-[#9469F8]/30 rounded-2xl">
@@ -321,9 +321,9 @@ export function Marketing() {
                       </div>
                     </div>
 
-                    {/* Connection Line - Now with two-way arrows and closer spacing */}
-                    <div className="flex-1 mx-4 flex items-center">
-                      <div className="h-px bg-gradient-to-r from-[#9469F8]/50 to-[#3FDBFF]/50 w-full relative">
+                    {/* Connection Line - Reduced width and closer spacing */}
+                    <div className="flex-1 mx-2 flex items-center justify-center">
+                      <div className="h-px bg-gradient-to-r from-[#9469F8]/50 to-[#3FDBFF]/50 w-4/5 relative">
                         {/* Left Arrow */}
                         <div className="absolute left-0 top-1/2 -translate-y-1/2 w-2 h-2 border-t-2 border-l-2 border-[#9469F8] transform -rotate-45"></div>
                         {/* Right Arrow */}
