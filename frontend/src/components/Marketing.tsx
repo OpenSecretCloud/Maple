@@ -175,7 +175,7 @@ export function Marketing() {
             <div className="flex items-center gap-4 text-sm text-[#E2E2E2]/60 mt-2">
               <div className="flex -space-x-2">
                 <img
-                  src="https://randomuser.me/api/portraits/women/44.jpg"
+                  src="/ryan-g.jpg"
                   alt="User avatar"
                   className="w-8 h-8 rounded-full border border-[#111111]"
                 />
@@ -190,7 +190,7 @@ export function Marketing() {
                   className="w-8 h-8 rounded-full border border-[#111111]"
                 />
               </div>
-              <p>Trusted by thousands of security-conscious users</p>
+              <p>Trusted by professionals who handle sensitive client information</p>
             </div>
           </div>
           <div className="relative bg-gradient-to-br from-[#9469F8]/10 to-[#3FDBFF]/10 rounded-2xl p-1">
