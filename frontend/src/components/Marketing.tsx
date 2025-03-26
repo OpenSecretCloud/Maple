@@ -171,7 +171,7 @@ export function Marketing() {
                   className="w-8 h-8 rounded-full border border-[#111111]"
                 />
                 <img
-                  src="https://randomuser.me/api/portraits/men/32.jpg"
+                  src="/christopher-r.jpg"
                   alt="User avatar"
                   className="w-8 h-8 rounded-full border border-[#111111]"
                 />
@@ -407,10 +407,10 @@ export function Marketing() {
               avatar="/ryan-g.jpg"
             />
             <TestimonialCard
-              quote="The transparency of their security measures is impressive. I can actually verify that my data is protected."
-              author="Michael T."
-              role="Cybersecurity Analyst"
-              avatar="https://randomuser.me/api/portraits/men/32.jpg"
+              quote="I am fascinated by the possibilities of AI in the legal field. Finding Maple and knowing confidential client information is encrypted has been a game changer for our team."
+              author="Christopher R."
+              role="Attorney"
+              avatar="/christopher-r.jpg"
             />
             <TestimonialCard
               quote="As a healthcare professional, patient privacy is paramount. Maple is the only AI assistant I trust with related discussions."
