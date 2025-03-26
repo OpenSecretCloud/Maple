@@ -292,46 +292,78 @@ export function Marketing() {
               <div className="bg-[#111111]/80 backdrop-blur-sm rounded-xl overflow-hidden border border-[#E2E2E2]/10">
                 {/* Header */}
                 <div className="bg-[#111111] p-3 border-b border-[#E2E2E2]/10 flex items-center">
-                  <div className="flex gap-1.5">
+                  {/* <div className="flex gap-1.5">
                     <div className="w-3 h-3 rounded-full bg-[#E2E2E2]/20"></div>
                     <div className="w-3 h-3 rounded-full bg-[#E2E2E2]/20"></div>
                     <div className="w-3 h-3 rounded-full bg-[#E2E2E2]/20"></div>
-                  </div>
+                  </div> */}
                   <div className="mx-auto text-sm text-[#E2E2E2]/60">Secure Server</div>
                 </div>
                 
                 {/* Main Content */}
                 <div className="p-8 relative">
-                  {/* Server Shape */}
-                  <div className="w-64 h-48 mx-auto relative">
-                    {/* Server Outline */}
-                    <div className="absolute inset-0 mx-auto w-40 bg-[#1D1D1D] border border-[#9469F8]/30 rounded-lg">
-                      {/* Server Top */}
-                      <div className="h-8 border-b border-[#9469F8]/30 flex items-center justify-between px-3">
-                        <div className="flex gap-1">
-                          <div className="w-2 h-2 rounded-full bg-[#9469F8]/40"></div>
-                          <div className="w-2 h-2 rounded-full bg-[#9469F8]/40"></div>
+                  <div className="w-full h-48 mx-auto relative flex items-center justify-between">
+                    {/* Phone Shape - Left Side */}
+                    <div className="w-24 h-40 relative">
+                      <div className="absolute inset-0 bg-[#1D1D1D] border border-[#9469F8]/30 rounded-2xl">
+                        {/* Phone Screen - Now with consistent bezels */}
+                        <div className="m-2 bg-[#9469F8]/10 rounded-lg border border-[#9469F8]/30 h-[calc(100%-16px)]">
+                          <div className="h-2 w-8 bg-[#9469F8]/20 rounded mx-auto mt-2"></div>
+                          <div className="h-2 w-12 bg-[#9469F8]/20 rounded mx-auto mt-2"></div>
                         </div>
                       </div>
                       
-                      {/* Server Body - Drive Bays */}
-                      <div className="p-3 space-y-2">
-                        <div className="h-6 bg-[#9469F8]/20 rounded border border-[#9469F8]/30 flex items-center px-2">
-                          <div className="w-2 h-2 rounded-full bg-[#9469F8]/40"></div>
-                        </div>
-                        <div className="h-6 bg-[#9469F8]/20 rounded border border-[#9469F8]/30 flex items-center px-2">
-                          <div className="w-2 h-2 rounded-full bg-[#9469F8]/40"></div>
-                        </div>
-                        <div className="h-6 bg-[#9469F8]/20 rounded border border-[#9469F8]/30 flex items-center px-2">
-                          <div className="w-2 h-2 rounded-full bg-[#9469F8]/40"></div>
+                      {/* Phone Lock Icon */}
+                      <div className="absolute -top-2 -right-2 bg-[#3FDBFF]/20 p-2 rounded-lg border border-[#3FDBFF]/30">
+                        <div className="w-4 h-3 border-2 border-[#3FDBFF] rounded-t-lg mx-auto"></div>
+                        <div className="w-6 h-5 bg-[#3FDBFF]/30 border-2 border-[#3FDBFF] rounded-lg -mt-0.5"></div>
+                      </div>
+                    </div>
+
+                    {/* Connection Line - Now with two-way arrows and closer spacing */}
+                    <div className="flex-1 mx-4 flex items-center">
+                      <div className="h-px bg-gradient-to-r from-[#9469F8]/50 to-[#3FDBFF]/50 w-full relative">
+                        {/* Left Arrow */}
+                        <div className="absolute left-0 top-1/2 -translate-y-1/2 w-2 h-2 border-t-2 border-l-2 border-[#9469F8] transform -rotate-45"></div>
+                        {/* Right Arrow */}
+                        <div className="absolute right-0 top-1/2 -translate-y-1/2 w-2 h-2 border-t-2 border-r-2 border-[#3FDBFF] transform rotate-45"></div>
+                        {/* Encryption Indicators */}
+                        <div className="absolute -top-4 left-1/2 -translate-x-1/2 text-xs text-[#E2E2E2]/40 whitespace-nowrap">
+                          Encrypted Connection
                         </div>
                       </div>
                     </div>
-                    
-                    {/* Lock Icon */}
-                    <div className="absolute -top-2 -right-2 bg-[#3FDBFF]/20 p-2 rounded-lg border border-[#3FDBFF]/30">
-                      <div className="w-4 h-3 border-2 border-[#3FDBFF] rounded-t-lg mx-auto"></div>
-                      <div className="w-6 h-5 bg-[#3FDBFF]/30 border-2 border-[#3FDBFF] rounded-lg -mt-0.5"></div>
+
+                    {/* Server Shape - Right Side */}
+                    <div className="w-32 h-48 relative">
+                      <div className="absolute inset-0 bg-[#1D1D1D] border border-[#9469F8]/30 rounded-lg">
+                        {/* Server Top */}
+                        <div className="h-8 border-b border-[#9469F8]/30 flex items-center justify-between px-3">
+                          <div className="flex gap-1">
+                            <div className="w-2 h-2 rounded-full bg-[#9469F8]/40"></div>
+                            <div className="w-2 h-2 rounded-full bg-[#9469F8]/40"></div>
+                          </div>
+                        </div>
+                        
+                        {/* Server Body - Drive Bays */}
+                        <div className="p-3 space-y-2">
+                          <div className="h-6 bg-[#9469F8]/20 rounded border border-[#9469F8]/30 flex items-center px-2">
+                            <div className="w-2 h-2 rounded-full bg-[#9469F8]/40"></div>
+                          </div>
+                          <div className="h-6 bg-[#9469F8]/20 rounded border border-[#9469F8]/30 flex items-center px-2">
+                            <div className="w-2 h-2 rounded-full bg-[#9469F8]/40"></div>
+                          </div>
+                          <div className="h-6 bg-[#9469F8]/20 rounded border border-[#9469F8]/30 flex items-center px-2">
+                            <div className="w-2 h-2 rounded-full bg-[#9469F8]/40"></div>
+                          </div>
+                        </div>
+                      </div>
+                      
+                      {/* Server Lock Icon */}
+                      <div className="absolute -top-2 -right-2 bg-[#3FDBFF]/20 p-2 rounded-lg border border-[#3FDBFF]/30">
+                        <div className="w-4 h-3 border-2 border-[#3FDBFF] rounded-t-lg mx-auto"></div>
+                        <div className="w-6 h-5 bg-[#3FDBFF]/30 border-2 border-[#3FDBFF] rounded-lg -mt-0.5"></div>
+                      </div>
                     </div>
                   </div>
                   
