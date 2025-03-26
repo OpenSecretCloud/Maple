@@ -57,9 +57,6 @@ export function Footer() {
             <a href="/proof" className="text-[#E2E2E2]/70 hover:text-[#E2E2E2] transition-colors">
               Security Proof
             </a>
-            <a href="/about" className="text-[#E2E2E2]/70 hover:text-[#E2E2E2] transition-colors">
-              About
-            </a>
           </div>
 
           <div className="flex flex-col gap-4">

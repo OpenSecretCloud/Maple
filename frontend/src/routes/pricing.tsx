@@ -446,7 +446,11 @@ function PricingPage() {
         <TopNav />
         <FullPageMain>
           <MarketingHeader
-            title="Simple, transparent pricing"
+            title={
+              <h2 className="text-6xl font-light mb-0">
+                Simple, <span className="text-[#9469F8]">Transparent</span> Pricing
+              </h2>
+            }
             subtitle={
               <div className="space-y-2">
                 <p>Start with our free tier and upgrade as you grow.</p>
@@ -492,7 +496,7 @@ function PricingPage() {
                 </div>
                 <Button
                   onClick={() => window.location.reload()}
-                  className="mt-4 bg-white/90 backdrop-blur-sm text-black hover:bg-white/70 active:bg-white/80 px-8 py-4 rounded-lg text-xl font-light transition-all duration-200 shadow-[0_0_25px_rgba(255,255,255,0.25)] hover:shadow-[0_0_35px_rgba(255,255,255,0.35)]"
+                  className="mt-4 bg-white/90 backdrop-blur-sm text-black hover:bg-[#A57FF9] active:bg-white/80 px-8 py-4 rounded-lg text-xl font-light transition-all duration-300 shadow-[0_0_25px_rgba(255,255,255,0.25)] hover:shadow-[0_0_35px_rgba(148,105,248,0.35)]"
                 >
                   Retry
                 </Button>
@@ -511,7 +515,11 @@ function PricingPage() {
       <TopNav />
       <FullPageMain>
         <MarketingHeader
-          title="Simple, transparent pricing"
+          title={
+            <h2 className="text-6xl font-light mb-0">
+              Simple, <span className="text-[#9469F8]">Transparent</span> Pricing
+            </h2>
+          }
           subtitle={
             <div className="space-y-2">
               <p>Start with our free tier and upgrade as you grow.</p>
@@ -563,10 +571,19 @@ function PricingPage() {
                 return (
                   <div
                     key={product.id}
-                    className={`flex flex-col border-white/10 bg-black/75 text-white p-4 sm:p-6 md:p-8 border rounded-lg relative group transition-all duration-300 hover:border-white/30 ${
+                    className={`flex flex-col ${
+                      product.name === "Pro" 
+                        ? "border-2 border-[#9469F8] bg-gradient-to-b from-[#111111] to-[#111111]/80 relative shadow-[0_0_30px_rgba(148,105,248,0.2)]" 
+                        : "border border-white/10 bg-black/75"
+                    } text-white p-4 sm:p-6 md:p-8 rounded-lg relative group transition-all duration-300 hover:border-white/30 ${
                       isCurrentPlan ? "ring-2 ring-white" : ""
                     } ${useBitcoin && product.name === "Team" ? "opacity-50 cursor-not-allowed" : ""}`}
                   >
+                    {product.name === "Pro" && (
+                      <div className="absolute -top-4 left-1/2 transform -translate-x-1/2 bg-[#9469F8] text-[#111111] px-4 py-1 rounded-full text-sm font-medium">
+                        Most Popular
+                      </div>
+                    )}
                     {isCurrentPlan && (
                       <Badge className="absolute -top-3 left-1/2 -translate-x-1/2 bg-white text-black font-medium">
                         Current Plan
@@ -643,9 +660,9 @@ function PricingPage() {
                         disabled={
                           loadingProductId === product.id || (useBitcoin && product.name === "Team")
                         }
-                        className={`w-full bg-white/90 backdrop-blur-sm text-black hover:bg-white/70 active:bg-white/80 px-4 sm:px-8 py-3 sm:py-4 rounded-lg text-lg sm:text-xl font-light transition-all duration-200 shadow-[0_0_25px_rgba(255,255,255,0.25)] hover:shadow-[0_0_35px_rgba(255,255,255,0.35)] disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 group-hover:bg-white ${
+                        className={`w-full bg-white/90 backdrop-blur-sm text-black hover:bg-[#A57FF9] active:bg-white/80 px-4 sm:px-8 py-3 sm:py-4 rounded-lg text-lg sm:text-xl font-light transition-all duration-300 shadow-[0_0_25px_rgba(255,255,255,0.25)] hover:shadow-[0_0_35px_rgba(148,105,248,0.35)] disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 group-hover:bg-[#A57FF9] ${
                           isTeamPlan && !isTeamPlanAvailable
-                            ? "!opacity-100 !cursor-pointer hover:!bg-white/70"
+                            ? "!opacity-100 !cursor-pointer hover:!bg-[#A57FF9]"
                             : ""
                         }`}
                       >

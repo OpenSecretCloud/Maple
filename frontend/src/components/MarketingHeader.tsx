@@ -1,8 +1,8 @@
-interface MarketingHeaderProps {
-  title: string;
+type MarketingHeaderProps = {
+  title: React.ReactNode;
   subtitle: React.ReactNode;
   className?: string;
-}
+};
 
 export function MarketingHeader({ title, subtitle, className = "pt-12" }: MarketingHeaderProps) {
   return (
