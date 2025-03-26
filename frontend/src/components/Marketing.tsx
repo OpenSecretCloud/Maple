@@ -171,12 +171,12 @@ export function Marketing() {
                   className="w-8 h-8 rounded-full border border-[#111111]"
                 />
                 <img
-                  src="/christopher-r.jpg"
+                  src="/lauren-t.jpg"
                   alt="User avatar"
                   className="w-8 h-8 rounded-full border border-[#111111]"
                 />
                 <img
-                  src="https://randomuser.me/api/portraits/women/68.jpg"
+                  src="/javier-r.jpg"
                   alt="User avatar"
                   className="w-8 h-8 rounded-full border border-[#111111]"
                 />
@@ -278,6 +278,7 @@ export function Marketing() {
                 proof. Our commitment to transparency means you don't have to trust us - you can
                 verify it yourself.
               </p>
+              <div className="text-l text-[#E2E2E2]/70">Live Secure Enclave Verification</div>
               <div className="bg-[#111111]/80 border border-[#E2E2E2]/10 rounded-xl p-6 mb-8">
                 <VerificationStatus />
               </div>
@@ -407,16 +408,16 @@ export function Marketing() {
               avatar="/ryan-g.jpg"
             />
             <TestimonialCard
-              quote="I am fascinated by the possibilities of AI in the legal field. Finding Maple and knowing confidential client information is encrypted has been a game changer for our team."
-              author="Christopher R."
-              role="Attorney"
-              avatar="/christopher-r.jpg"
+              quote="I've been using Maple AI to help my clients with their tax and financial needs. The encryption means that their sensitive financial data and situations stay private. It really gives me peace of mind."
+              author="Lauren T."
+              role="Certified Public Accountant"
+              avatar="/lauren-t.jpg"
             />
             <TestimonialCard
-              quote="As a healthcare professional, patient privacy is paramount. Maple is the only AI assistant I trust with related discussions."
-              author="Dr. Lisa R."
-              role="Healthcare Provider"
-              avatar="https://randomuser.me/api/portraits/women/68.jpg"
+              quote="I am fascinated by the possibilities of AI in the legal field. Finding Maple and knowing confidential client information is encrypted has been a game changer for our team."
+              author="Javier R."
+              role="Attorney"
+              avatar="/javier-r.jpg"
             />
           </div>
         </div>
