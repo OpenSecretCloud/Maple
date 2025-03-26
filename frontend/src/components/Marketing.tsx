@@ -148,15 +148,6 @@ export function Marketing() {
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-16 items-center">
           <div className="flex flex-col gap-8">
             <div className="flex flex-col gap-2">
-              <a
-                href="https://blog.opensecret.cloud/maple-private-ai-for-work-and-personal"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="w-fit bg-[#111111] border border-[#9469F8]/30 hover:border-[#9469F8]/60 px-4 py-1.5 rounded-full text-sm font-light flex items-center gap-2 transition-all duration-300"
-              >
-                <span className="bg-[#9469F8] h-2 w-2 rounded-full"></span>
-                Now Live • Read the Announcement <ArrowRight className="h-3 w-3 ml-1" />
-              </a>
               <h1 className="text-6xl font-light tracking-tight mb-4 bg-gradient-to-r from-[#E2E2E2] via-[#3FDBFF] to-[#9469F8] text-transparent bg-clip-text">
                 Private AI Chat <br /> <span className="text-[#A1FE8F]">that's truly secure</span>
               </h1>
