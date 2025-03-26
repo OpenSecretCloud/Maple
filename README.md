@@ -73,6 +73,12 @@ bun tauri build
 bun tauri build --target universal-apple-darwin
 ```
 
+If you need a new set of icons: 
+
+```
+bun run tauri icon [path/to/png]
+```
+
 ## Releases
 
 ### Setting up Signing Keys
