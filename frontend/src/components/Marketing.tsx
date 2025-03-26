@@ -288,12 +288,66 @@ export function Marketing() {
                 Learn more about our verification system <ArrowRight className="h-4 w-4" />
               </Link>
             </div>
-            <div className="bg-gradient-to-br from-[#3FDBFF]/10 to-[#111111] p-8 rounded-xl">
-              <img
-                src="/server-gradient.svg"
-                alt="Verification illustration"
-                className="w-full h-auto"
-              />
+            <div className="relative bg-gradient-to-br from-[#9469F8]/10 to-[#3FDBFF]/10 rounded-2xl p-1">
+              <div className="bg-[#111111]/80 backdrop-blur-sm rounded-xl overflow-hidden border border-[#E2E2E2]/10">
+                {/* Header */}
+                <div className="bg-[#111111] p-3 border-b border-[#E2E2E2]/10 flex items-center">
+                  <div className="flex gap-1.5">
+                    <div className="w-3 h-3 rounded-full bg-[#E2E2E2]/20"></div>
+                    <div className="w-3 h-3 rounded-full bg-[#E2E2E2]/20"></div>
+                    <div className="w-3 h-3 rounded-full bg-[#E2E2E2]/20"></div>
+                  </div>
+                  <div className="mx-auto text-sm text-[#E2E2E2]/60">Secure Server</div>
+                </div>
+                
+                {/* Main Content */}
+                <div className="p-8 relative">
+                  {/* Server Shape */}
+                  <div className="w-64 h-48 mx-auto relative">
+                    {/* Server Outline */}
+                    <div className="absolute inset-0 mx-auto w-40 bg-[#1D1D1D] border border-[#9469F8]/30 rounded-lg">
+                      {/* Server Top */}
+                      <div className="h-8 border-b border-[#9469F8]/30 flex items-center justify-between px-3">
+                        <div className="flex gap-1">
+                          <div className="w-2 h-2 rounded-full bg-[#9469F8]/40"></div>
+                          <div className="w-2 h-2 rounded-full bg-[#9469F8]/40"></div>
+                        </div>
+                      </div>
+                      
+                      {/* Server Body - Drive Bays */}
+                      <div className="p-3 space-y-2">
+                        <div className="h-6 bg-[#9469F8]/20 rounded border border-[#9469F8]/30 flex items-center px-2">
+                          <div className="w-2 h-2 rounded-full bg-[#9469F8]/40"></div>
+                        </div>
+                        <div className="h-6 bg-[#9469F8]/20 rounded border border-[#9469F8]/30 flex items-center px-2">
+                          <div className="w-2 h-2 rounded-full bg-[#9469F8]/40"></div>
+                        </div>
+                        <div className="h-6 bg-[#9469F8]/20 rounded border border-[#9469F8]/30 flex items-center px-2">
+                          <div className="w-2 h-2 rounded-full bg-[#9469F8]/40"></div>
+                        </div>
+                      </div>
+                    </div>
+                    
+                    {/* Lock Icon */}
+                    <div className="absolute -top-2 -right-2 bg-[#3FDBFF]/20 p-2 rounded-lg border border-[#3FDBFF]/30">
+                      <div className="w-4 h-3 border-2 border-[#3FDBFF] rounded-t-lg mx-auto"></div>
+                      <div className="w-6 h-5 bg-[#3FDBFF]/30 border-2 border-[#3FDBFF] rounded-lg -mt-0.5"></div>
+                    </div>
+                  </div>
+                  
+                  {/* Crypto Text */}
+                  <div className="mt-8 flex gap-4 justify-center overflow-hidden text-xs font-mono">
+                    <div className="text-[#3FDBFF]/60">0x7B4...</div>
+                    <div className="text-[#9469F8]/60">RSA-2048</div>
+                    <div className="text-[#A1FE8F]/60">AES-256</div>
+                  </div>
+                </div>
+              </div>
+              
+              {/* Status Indicator */}
+              <div className="absolute -bottom-3 -right-3 bg-[#9469F8] text-[#111111] p-2 rounded-lg font-medium text-sm flex items-center gap-1.5">
+                <Shield className="w-4 h-4" /> Secure Enclave Verified
+              </div>
             </div>
           </div>
         </div>
@@ -307,7 +361,8 @@ export function Marketing() {
               What Our <span className="text-[#A1FE8F]">Users Say</span>
             </h2>
             <p className="text-xl text-[#E2E2E2]/70 max-w-2xl mx-auto">
-              Hear from those who've made privacy a priority with Maple AI.<br>
+              Hear from those who've made privacy a priority with Maple AI.
+              <br />
               (Quotes are real, names are changed for privacy)
             </p>
           </div>
