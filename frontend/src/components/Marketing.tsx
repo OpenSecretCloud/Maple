@@ -316,16 +316,17 @@ export function Marketing() {
               What Our <span className="text-[#A1FE8F]">Users Say</span>
             </h2>
             <p className="text-xl text-[#E2E2E2]/70 max-w-2xl mx-auto">
-              Hear from those who've made privacy a priority with Maple AI.
+              Hear from those who've made privacy a priority with Maple AI.<br>
+              (Quotes are real, names are changed for privacy)
             </p>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
             <TestimonialCard
-              quote="I work with sensitive client information daily. Maple gives me the confidence to use AI without compromising confidentiality."
-              author="Sarah J."
-              role="Legal Consultant"
-              avatar="https://randomuser.me/api/portraits/women/44.jpg"
+              quote="For me, knowing it's end-to-end encrypted reassures me that proprietary information, client information, or any IP won't be exposed."
+              author="Ryan G."
+              role="VP Data & Analytics"
+              avatar="/ryan-g.jpg"
             />
             <TestimonialCard
               quote="The transparency of their security measures is impressive. I can actually verify that my data is protected."
