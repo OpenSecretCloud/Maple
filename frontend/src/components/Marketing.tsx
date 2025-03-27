@@ -164,24 +164,33 @@ export function Marketing() {
               <CTAButton to="/login">Log In</CTAButton>
             </div>
             <div className="flex items-center gap-4 text-sm text-[#E2E2E2]/60 mt-2">
-              <div className="flex -space-x-2">
-                <img
-                  src="/ryan-g.jpg"
-                  alt="User avatar"
-                  className="w-8 h-8 rounded-full border border-[#111111]"
-                />
-                <img
-                  src="/lauren-t.jpg"
-                  alt="User avatar"
-                  className="w-8 h-8 rounded-full border border-[#111111]"
-                />
-                <img
-                  src="/javier-r.jpg"
-                  alt="User avatar"
-                  className="w-8 h-8 rounded-full border border-[#111111]"
-                />
-              </div>
-              <p>Trusted by professionals who handle sensitive client information</p>
+              <Link 
+                to="#testimonials" 
+                className="flex items-center gap-4 hover:text-[#E2E2E2]/80 transition-colors duration-300"
+                onClick={(e) => {
+                  e.preventDefault();
+                  document.getElementById('testimonials')?.scrollIntoView({ behavior: 'smooth' });
+                }}
+              >
+                <div className="flex -space-x-2">
+                  <img
+                    src="/ryan-g.jpg"
+                    alt="User avatar"
+                    className="w-8 h-8 rounded-full border border-[#111111]"
+                  />
+                  <img
+                    src="/lauren-t.jpg"
+                    alt="User avatar"
+                    className="w-8 h-8 rounded-full border border-[#111111]"
+                  />
+                  <img
+                    src="/javier-r.jpg"
+                    alt="User avatar"
+                    className="w-8 h-8 rounded-full border border-[#111111]"
+                  />
+                </div>
+                <p>Trusted by professionals who handle sensitive client information</p>
+              </Link>
             </div>
           </div>
           <div className="relative bg-gradient-to-br from-[#9469F8]/10 to-[#3FDBFF]/10 rounded-2xl p-1">
@@ -266,7 +275,7 @@ export function Marketing() {
       </section>
 
       {/* Proof/Verification Section */}
-      <section className="w-full py-20">
+      <section className="w-full pt-20 pb-0">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-16 items-center">
             <div>
@@ -387,7 +396,7 @@ export function Marketing() {
       </section>
 
       {/* Testimonials */}
-      <section className="w-full py-20 bg-[#13131A]">
+      <section id="testimonials" className="w-full pt-40 pb-20 bg-[#13131A]">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="text-center mb-16">
             <h2 className="text-4xl font-light mb-4">
