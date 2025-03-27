@@ -189,7 +189,7 @@ export function Marketing() {
                     className="w-8 h-8 rounded-full border border-[#111111]"
                   />
                 </div>
-                <p>Trusted by professionals who handle sensitive client information</p>
+                <p className="ml-10 md:ml-0">Trusted by professionals who handle sensitive client information</p>
               </a>
             </div>
           </div>
