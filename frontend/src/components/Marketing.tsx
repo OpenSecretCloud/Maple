@@ -383,7 +383,7 @@ export function Marketing() {
                       <div className="h-16 w-px bg-gradient-to-b from-[#9469F8]/50 to-[#3FDBFF]/50 relative">
                         <div className="absolute -top-1 left-1/2 -translate-x-1/2 w-2 h-2 border-t-2 border-l-2 border-[#9469F8] transform rotate-45"></div>
                         <div className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-2 h-2 border-b-2 border-r-2 border-[#3FDBFF] transform rotate-45"></div>
-                        <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 whitespace-nowrap text-xs text-[#E2E2E2]/40">
+                        <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 whitespace-nowrap text-xs text-[#E2E2E2]/40 ml-1">
                           Encrypted Connection
                         </div>
                       </div>
