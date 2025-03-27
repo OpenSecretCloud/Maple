@@ -192,6 +192,32 @@ export function Marketing() {
                 <p>Trusted by professionals who handle sensitive client information</p>
               </a>
             </div>
+            <div className="flex items-center gap-4 mt-6">
+              <a 
+                href="#" // Replace with actual App Store link
+                className="transition-opacity hover:opacity-80"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                <img 
+                  src="/app-store-badge.svg" 
+                  alt="Download on the App Store" 
+                  className="h-[40px] w-auto"
+                />
+              </a>
+              <a 
+                href="#" // Replace with actual Google Play link
+                className="transition-opacity hover:opacity-80"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                <img 
+                  src="/google-play-badge.png" 
+                  alt="Get it on Google Play" 
+                  className="h-[40px] w-auto"
+                />
+              </a>
+            </div>
           </div>
           <div className="relative bg-gradient-to-br from-[#9469F8]/10 to-[#3FDBFF]/10 rounded-2xl p-1">
             <div className="bg-[#111111]/80 backdrop-blur-sm rounded-xl overflow-hidden border border-[#E2E2E2]/10">
