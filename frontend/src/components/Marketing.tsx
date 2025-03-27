@@ -192,54 +192,6 @@ export function Marketing() {
                 <p>Trusted by professionals who handle sensitive client information</p>
               </a>
             </div>
-            <div className="flex items-center gap-4 mt-6">
-              <a 
-                href="#" // Replace with actual App Store link
-                className="transition-opacity hover:opacity-80"
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                <img 
-                  src="/app-store-badge.svg" 
-                  alt="Download on the App Store" 
-                  className="h-[40px] w-auto"
-                />
-              </a>
-              <a 
-                href="#" // Replace with actual Google Play link
-                className="transition-opacity hover:opacity-80"
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                <img 
-                  src="/google-play-badge.png" 
-                  alt="Get it on Google Play" 
-                  className="h-[40px] w-auto"
-                />
-              </a>
-              <a 
-                href="#" // Replace with actual macOS download link
-                className="flex items-center gap-2 h-[40px] px-2 bg-[#111111] rounded-md border border-[#FFFFFF]/45 transition-opacity hover:opacity-80"
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                <svg 
-                  className="w-5 h-5 text-[#FFFFFF]" 
-                  viewBox="0 0 24 24" 
-                  fill="none" 
-                  stroke="currentColor" 
-                  strokeWidth="2"
-                >
-                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                  <polyline points="7 10 12 15 17 10" />
-                  <line x1="12" y1="15" x2="12" y2="3" />
-                </svg>
-                <div className="flex flex-col text-left leading-[1.1]">
-                  <span className="text-[10px] text-[#FFFFFF]">Download for</span>
-                  <span className="text-[15px] font-medium text-[#FFFFFF]">macOS</span>
-                </div>
-              </a>
-            </div>
           </div>
           <div className="relative bg-gradient-to-br from-[#9469F8]/10 to-[#3FDBFF]/10 rounded-2xl p-1">
             <div className="bg-[#111111]/80 backdrop-blur-sm rounded-xl overflow-hidden border border-[#E2E2E2]/10">
@@ -283,6 +235,56 @@ export function Marketing() {
               <Lock className="w-4 h-4" /> End-to-End Encrypted
             </div>
           </div>
+        </div>
+
+        {/* Download Buttons */}
+        <div className="flex justify-center items-center gap-4 mt-20">
+          <a 
+            href="#" 
+            className="transition-opacity hover:opacity-80"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            <img 
+              src="/app-store-badge.svg" 
+              alt="Download on the App Store" 
+              className="h-[40px] w-auto"
+            />
+          </a>
+          <a 
+            href="#" 
+            className="transition-opacity hover:opacity-80"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            <img 
+              src="/google-play-badge.png" 
+              alt="Get it on Google Play" 
+              className="h-[40px] w-auto"
+            />
+          </a>
+          <a 
+            href="#" 
+            className="flex items-center gap-2 h-[40px] px-2 bg-[#111111] rounded-md border border-[#FFFFFF]/45 transition-opacity hover:opacity-80"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            <svg 
+              className="w-5 h-5 text-[#FFFFFF]" 
+              viewBox="0 0 24 24" 
+              fill="none" 
+              stroke="currentColor" 
+              strokeWidth="2"
+            >
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <polyline points="7 10 12 15 17 10" />
+              <line x1="12" y1="15" x2="12" y2="3" />
+            </svg>
+            <div className="flex flex-col text-left leading-[1.1]">
+              <span className="text-[10px] text-[#FFFFFF]">Download for</span>
+              <span className="text-[15px] font-medium text-[#FFFFFF]">macOS</span>
+            </div>
+          </a>
         </div>
       </section>
 
