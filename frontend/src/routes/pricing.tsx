@@ -64,7 +64,7 @@ function PricingFAQ() {
               </li>
               <li>Starter: Enough chats per month for a casual user</li>
               <li>Pro: Great for heavier workloads with a high monthly cap</li>
-              <li>Enterprise: Message us at team@opensecret.cloud</li>
+              <li>Team: Message us at team@opensecret.cloud</li>
             </ul>
           </div>
         </details>
@@ -511,12 +511,15 @@ function PricingPage() {
       <TopNav />
       <FullPageMain>
         <MarketingHeader
-          title="Simple, transparent pricing"
+          title={
+            <h2 className="text-6xl font-light mb-0">
+              Simple, <span className="text-[#9469F8]">Transparent</span> Pricing
+            </h2>
+          }
           subtitle={
-            <div className="space-y-2">
-              <p>Start with our free tier and upgrade as you grow.</p>
+            <p className="text-2xl text-[#E2E2E2]/70 max-w-2xl mx-auto">
               <p>All plans include end-to-end encrypted AI chat.</p>
-            </div>
+            </p>
           }
         />
 
@@ -560,13 +563,25 @@ function PricingPage() {
 
                 const displayPrice = useBitcoin ? monthlyEquivalentPrice : monthlyPrice;
 
+                const isPro = product.name === "Pro";
+
                 return (
                   <div
                     key={product.id}
-                    className={`flex flex-col border-white/10 bg-black/75 text-white p-4 sm:p-6 md:p-8 border rounded-lg relative group transition-all duration-300 hover:border-white/30 ${
-                      isCurrentPlan ? "ring-2 ring-white" : ""
-                    } ${useBitcoin && product.name === "Team" ? "opacity-50 cursor-not-allowed" : ""}`}
+                    className={`
+                      flex flex-col p-8 rounded-xl relative
+                      ${isCurrentPlan ? "ring-2 ring-white" : ""}
+                      ${useBitcoin && product.name === "Team" ? "opacity-50 cursor-not-allowed" : ""}
+                      ${isPro 
+                        ? "border-2 border-[#9469F8] bg-gradient-to-b from-[#111111] to-[#111111]/80 shadow-[0_0_30px_rgba(148,105,248,0.2)]" 
+                        : "border border-[#E2E2E2]/10 bg-[#111111]/50"}
+                    `}
                   >
+                    {isPro && (
+                      <div className="absolute -top-4 left-1/2 transform -translate-x-1/2 bg-[#9469F8] text-[#111111] px-4 py-1 rounded-full text-sm font-medium">
+                        Best Value
+                      </div>
+                    )}
                     {isCurrentPlan && (
                       <Badge className="absolute -top-3 left-1/2 -translate-x-1/2 bg-white text-black font-medium">
                         Current Plan
@@ -577,20 +592,13 @@ function PricingPage() {
                         10% OFF
                       </Badge>
                     )}
+
                     <div className="grid grid-rows-[auto_1fr_auto_auto] h-full gap-4 sm:gap-6 md:gap-8">
-                      <h3 className="text-xl sm:text-2xl font-medium flex items-center gap-2">
+                      <h3 className="text-xl sm:text-2xl font-medium text-[#E2E2E2] flex items-center gap-2">
                         {product.name}
-                        {useBitcoin && product.name !== "Free" && product.name !== "Team"
-                          ? " (Yearly)"
-                          : ""}
+                        {useBitcoin && product.name !== "Free" && product.name !== "Team" ? " (Yearly)" : ""}
                         {isCurrentPlan && <Check className="w-5 h-5 text-green-500" />}
                       </h3>
-
-                      <p className="text-base sm:text-lg font-light text-white/70 break-words">
-                        {product.name === "Team" && useBitcoin
-                          ? "Team plan is not available with Bitcoin payment."
-                          : product.description}
-                      </p>
 
                       <div className="flex flex-col">
                         {product.name !== "Free" ? (
@@ -638,16 +646,22 @@ function PricingPage() {
                         )}
                       </div>
 
+                      <p className="text-base sm:text-lg font-light text-[#E2E2E2]/70 break-words">
+                        {product.name === "Team" && useBitcoin
+                          ? "Team plan is not available with Bitcoin payment."
+                          : product.description}
+                      </p>
+
                       <button
                         onClick={() => handleButtonClick(product)}
-                        disabled={
-                          loadingProductId === product.id || (useBitcoin && product.name === "Team")
-                        }
-                        className={`w-full bg-white/90 backdrop-blur-sm text-black hover:bg-white/70 active:bg-white/80 px-4 sm:px-8 py-3 sm:py-4 rounded-lg text-lg sm:text-xl font-light transition-all duration-200 shadow-[0_0_25px_rgba(255,255,255,0.25)] hover:shadow-[0_0_35px_rgba(255,255,255,0.35)] disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 group-hover:bg-white ${
-                          isTeamPlan && !isTeamPlanAvailable
-                            ? "!opacity-100 !cursor-pointer hover:!bg-white/70"
-                            : ""
-                        }`}
+                        disabled={loadingProductId === product.id || (useBitcoin && product.name === "Team")}
+                        className={`
+                          w-full py-3 px-6 rounded-lg text-center font-medium transition-all duration-300
+                          ${isPro
+                            ? "bg-[#9469F8] text-[#111111] hover:bg-[#A57FF9]"
+                            : "bg-[#111111] border border-[#E2E2E2]/20 text-[#E2E2E2] hover:border-[#E2E2E2]/40"}
+                          disabled:opacity-50 disabled:cursor-not-allowed
+                        `}
                       >
                         {useBitcoin && product.name === "Team"
                           ? "Not Available"
