@@ -152,7 +152,7 @@ export function Marketing() {
                 Private AI Chat <br /> <span className="text-[#A1FE8F]">that's truly secure</span>
               </h1>
               <p className="text-xl text-[#E2E2E2]/80 font-light max-w-xl">
-                End-to-end encryption means your conversations are protected at every step. Only you
+                End-to-end encryption means your conversations are confidential and protected at every step. Only you
                 can access your data — not even we can read your chats.
               </p>
             </div>
@@ -226,7 +226,7 @@ export function Marketing() {
                   </div>
                   <div className="bg-[#1D1D1D] p-3 rounded-xl rounded-tl-none text-[#E2E2E2]/90 text-sm max-w-xs">
                     Yes, absolutely. Your messages are end-to-end encrypted. Even the server admins
-                    can't read your conversations. We use zero-knowledge proofs to verify this.
+                    can't read your conversations. We use secure enclaves and open-source code to verify this.
                   </div>
                 </div>
               </div>
@@ -261,13 +261,13 @@ export function Marketing() {
             <FeatureCard
               icon={Lock}
               title="Secure Server"
-              description="Our servers can't read your data. We use zero-knowledge proofs to verify our infrastructure integrity."
+              description="Our servers can't read your data. We use secure enclaves in confidential computing environments to verify our infrastructure integrity."
               gradient="from-[#3FDBFF]/10 to-[#3FDBFF]/5"
             />
             <FeatureCard
               icon={Sparkles}
               title="AI Processing"
-              description="Even during AI processing, your data remains encrypted. The entire pipeline is designed with privacy as the priority."
+              description="Even during AI processing, your data remains encrypted. The entire pipeline through to the GPU is designed with privacy as the priority."
               gradient="from-[#A1FE8F]/10 to-[#A1FE8F]/5"
             />
           </div>
