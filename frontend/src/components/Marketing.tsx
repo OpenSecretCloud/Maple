@@ -238,7 +238,7 @@ export function Marketing() {
         </div>
 
         {/* Download Buttons */}
-        <div className="flex justify-center items-center gap-4 mt-20">
+        <div className="flex flex-col md:flex-row justify-center items-center gap-4 mt-20">
           <a 
             href="#" 
             className="transition-opacity hover:opacity-80"
