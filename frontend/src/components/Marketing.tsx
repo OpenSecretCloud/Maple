@@ -164,8 +164,8 @@ export function Marketing() {
               <CTAButton to="/login">Log In</CTAButton>
             </div>
             <div className="flex items-center gap-4 text-sm text-[#E2E2E2]/60 mt-2">
-              <Link 
-                to="#testimonials" 
+              <a 
+                href="#testimonials" 
                 className="flex items-center gap-4 hover:text-[#E2E2E2]/80 transition-colors duration-300"
                 onClick={(e) => {
                   e.preventDefault();
@@ -190,7 +190,7 @@ export function Marketing() {
                   />
                 </div>
                 <p>Trusted by professionals who handle sensitive client information</p>
-              </Link>
+              </a>
             </div>
           </div>
           <div className="relative bg-gradient-to-br from-[#9469F8]/10 to-[#3FDBFF]/10 rounded-2xl p-1">

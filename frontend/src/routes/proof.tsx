@@ -183,7 +183,7 @@ function Verify() {
         <MarketingHeader
           title={
             <h2 className="text-6xl font-light mb-0">
-              <span className="text-[#9469F8]">Proof</span> of Security
+              <span className="text-[#3FDBFF]">Proof</span> of Security
             </h2>
           }
           subtitle={

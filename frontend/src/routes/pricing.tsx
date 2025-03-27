@@ -222,11 +222,10 @@ function PricingPage() {
     }
 
     const targetPlanName = product.name.toLowerCase();
-    const isTeamPlan = targetPlanName.includes("team");
 
     // Always show Contact Us for team plan when not logged in
     if (!isLoggedIn) {
-      if (isTeamPlan) {
+      if (targetPlanName.includes("team")) {
         return "Contact Us";
       }
       return "Start Chatting";
@@ -242,7 +241,7 @@ function PricingPage() {
 
     // For team plan, ALWAYS show Contact Us if not whitelisted
     // regardless of current subscription status
-    if (isTeamPlan) {
+    if (targetPlanName.includes("team")) {
       if (!isTeamPlanAvailable) {
         return "Contact Us";
       }
@@ -341,10 +340,9 @@ function PricingPage() {
     (product: Product) => {
       if (!isLoggedIn) {
         const targetPlanName = product.name.toLowerCase();
-        const isTeamPlan = targetPlanName.includes("team");
 
         // For team plan, redirect to email when not logged in
-        if (isTeamPlan) {
+        if (targetPlanName.includes("team")) {
           window.location.href = "mailto:support@opensecret.cloud";
           return;
         }
@@ -365,11 +363,10 @@ function PricingPage() {
       }
 
       const targetPlanName = product.name.toLowerCase();
-      const isTeamPlan = targetPlanName.includes("team");
 
       // For team plan, ALWAYS redirect to email if not whitelisted
       // regardless of current subscription status
-      if (isTeamPlan) {
+      if (targetPlanName.includes("team")) {
         if (!isTeamPlanAvailable) {
           window.location.href = "mailto:support@opensecret.cloud";
           return;
@@ -547,7 +544,6 @@ function PricingPage() {
                 const isCurrentPlan =
                   isLoggedIn &&
                   freshBillingStatus?.product_name?.toLowerCase() === product.name.toLowerCase();
-                const isTeamPlan = product.name.toLowerCase().includes("team");
 
                 // Calculate prices
                 const monthlyOriginalPrice = (product.default_price.unit_amount / 100).toFixed(2);
