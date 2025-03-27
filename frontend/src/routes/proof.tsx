@@ -181,8 +181,16 @@ function Verify() {
       <TopNav />
       <FullPageMain>
         <MarketingHeader
-          title="Proof of Security"
-          subtitle="Cryptographic proof that you're talking with a secure server."
+          title={
+            <h2 className="text-6xl font-light mb-0">
+              <span className="text-[#9469F8]">Proof</span> of Security
+            </h2>
+          }
+          subtitle={
+            <p className="text-2xl text-[#E2E2E2]/70 max-w-2xl mx-auto">
+              Cryptographic proof that you're talking with a secure server.
+            </p>
+          }
         />
 
         {isLoading && (
