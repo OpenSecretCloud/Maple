@@ -41,7 +41,8 @@ export function TopNav() {
         <div className="flex h-16 items-center px-6 relative overflow-visible rounded-xl border border-[#E2E2E2]/10 bg-[#111111]/80 backdrop-blur-md">
           <div className="relative z-10 flex w-full items-center justify-between">
             <div className="flex-shrink-0">
-              <Link to="/" className="flex items-center space-x-2">
+              <Link to="/" className="flex items-center gap-2">
+                <img src="/maple-icon-nobg.png" alt="" className="h-8 w-8" />
                 <img src="/maple-logo.svg" alt="Maple" className="w-24" />
               </Link>
             </div>
