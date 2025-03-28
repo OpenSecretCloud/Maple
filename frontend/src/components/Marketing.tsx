@@ -513,7 +513,7 @@ export function Marketing() {
                 "Search Chat History",
                 "Rename Chats"
               ]}
-              ctaText="Get Started"
+              ctaText="Start Chatting"
             />
             <PricingTier
               name="Pro"
@@ -525,7 +525,7 @@ export function Marketing() {
                 "Early Access to Upcoming Features",
                 "Everything in Starter"
               ]}
-              ctaText="Get Started"
+              ctaText="Start Chatting"
               popular={true}
             />
             <PricingTier
@@ -538,7 +538,7 @@ export function Marketing() {
                 "Pool chat credits among team",
                 "Everything in Pro"
               ]}
-              ctaText="Get Started"
+              ctaText="Start Chatting"
             />
           </div>
         </div>
