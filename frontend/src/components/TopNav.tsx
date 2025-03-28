@@ -52,7 +52,6 @@ export function TopNav() {
               <div className="flex items-center gap-6 sm:gap-10">
                 <NavLink to="/pricing">Pricing</NavLink>
                 <NavLink to="/proof">Proof</NavLink>
-                <NavLink to="/about">About</NavLink>
               </div>
             </div>
 
