@@ -553,7 +553,7 @@ export function Marketing() {
                 Ready to Chat <span className="text-[#FFFFFF]">Securely?</span>
               </h2>
               <p className="text-xl text-[#E2E2E2]/70 max-w-2xl mx-auto mb-8">
-                Join thousands of privacy-conscious users who've made the switch to truly secure AI
+                Join privacy-conscious users who've made the switch to truly secure AI
                 chat.
               </p>
               <div className="flex justify-center gap-4 flex-col sm:flex-row">
