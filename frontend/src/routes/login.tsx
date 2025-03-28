@@ -108,15 +108,15 @@ function LoginPage() {
   if (!loginMethod) {
     return (
       <AuthMain title="Log In" description="Choose your preferred login method">
-        <Button onClick={() => setLoginMethod("email")} className="w-full" style={{ backgroundColor: '#E2E2E2' }}>
+        <Button onClick={() => setLoginMethod("email")} className="w-full">
           <Mail className="mr-2 h-4 w-4" />
           Log in with Email
         </Button>
-        <Button onClick={handleGitHubLogin} className="w-full" style={{ backgroundColor: '#E2E2E2' }}>
+        <Button onClick={handleGitHubLogin} className="w-full">
           <Github className="mr-2 h-4 w-4" />
           Log in with GitHub
         </Button>
-        <Button onClick={handleGoogleLogin} className="w-full" style={{ backgroundColor: '#E2E2E2' }}>
+        <Button onClick={handleGoogleLogin} className="w-full">
           <Google className="mr-2 h-4 w-4" />
           Log in with Google
         </Button>

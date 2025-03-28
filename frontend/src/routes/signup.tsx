@@ -108,15 +108,15 @@ function SignupPage() {
   if (!signUpMethod) {
     return (
       <AuthMain title="Sign Up" description="Choose your preferred sign-up method">
-        <Button onClick={() => setSignUpMethod("email")} className="w-full" style={{ backgroundColor: '#E2E2E2' }}>
+        <Button onClick={() => setSignUpMethod("email")} className="w-full">
           <Mail className="mr-2 h-4 w-4" />
           Sign up with Email
         </Button>
-        <Button onClick={handleGitHubSignup} className="w-full" style={{ backgroundColor: '#E2E2E2' }}>
+        <Button onClick={handleGitHubSignup} className="w-full">
           <Github className="mr-2 h-4 w-4" />
           Sign up with GitHub
         </Button>
-        <Button onClick={handleGoogleSignup} className="w-full" style={{ backgroundColor: '#E2E2E2' }}>
+        <Button onClick={handleGoogleSignup} className="w-full">
           <Google className="mr-2 h-4 w-4" />
           Sign up with Google
         </Button>
