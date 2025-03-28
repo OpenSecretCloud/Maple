@@ -523,7 +523,7 @@ export function Marketing() {
                 "5x more chats than Starter",
                 "Priority support",
                 "Early Access to Upcoming Features",
-                "Everything in Starter"
+                "Features from Starter"
               ]}
               ctaText="Start Chatting"
               popular={true}
@@ -536,7 +536,7 @@ export function Marketing() {
                 "8x more chats than Starter per user",
                 "Unified billing",
                 "Pool chat credits among team",
-                "Everything in Pro"
+                "Features from Pro"
               ]}
               ctaText="Start Chatting"
             />
