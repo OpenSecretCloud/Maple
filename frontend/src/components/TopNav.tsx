@@ -67,7 +67,7 @@ export function TopNav() {
               ) : (
                 <Button
                   onClick={() => navigate({ to: "/login" })}
-                  className="bg-[#111111] border border-[#3FDBFF]/20 text-[#E2E2E2] hover:border-[#3FDBFF]/80 transition-colors"
+                  className="bg-[#111111] border border-[#3FDBFF]/20 text-[#E2E2E2] hover:border-[#3FDBFF]/80 hover:bg-[#111111] transition-colors"
                 >
                   Log In
                 </Button>
