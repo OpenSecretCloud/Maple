@@ -575,7 +575,7 @@ function PricingPage() {
                   >
                     {isPro && (
                       <div className="absolute -top-4 left-1/2 transform -translate-x-1/2 bg-[#9469F8] text-[#111111] px-4 py-1 rounded-full text-sm font-medium">
-                        Best Value
+                        Most Popular
                       </div>
                     )}
                     {isCurrentPlan && (

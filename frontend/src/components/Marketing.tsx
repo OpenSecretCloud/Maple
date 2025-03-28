@@ -115,13 +115,13 @@ function PricingTier({
       <h3 className="text-xl font-medium text-[#E2E2E2]">{name}</h3>
       <div className="mt-4 mb-2">
         <span className="text-4xl font-bold text-[#E2E2E2]">{price}</span>
-        {price !== "Free" && <span className="text-[#E2E2E2]/60 ml-2">/mo</span>}
+        {name === "Team" ? <span className="text-[#E2E2E2]/60 ml-2">/user /mo</span> : price !== "Free" && <span className="text-[#E2E2E2]/60 ml-2">/mo</span>}
       </div>
       <p className="text-[#E2E2E2]/70 mb-6">{description}</p>
       <div className="flex flex-col gap-3 mb-8">
         {features.map((feature, index) => (
           <div key={index} className="flex items-start gap-2">
-            <Check className="w-5 h-5 text-[#FFFFFF] mt-0.5 flex-shrink-0" />
+            {feature !== "Included from Free" && feature !== "" && <Check className="w-5 h-5 text-[#FFFFFF] mt-0.5 flex-shrink-0" />}
             <span className="text-[#E2E2E2]/80">{feature}</span>
           </div>
         ))}
@@ -493,44 +493,45 @@ export function Marketing() {
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
             <PricingTier
-              name="Basic"
-              price="Free"
+              name="Starter"
+              price="$5.99"
               description="Get started with secure AI chat"
               features={[
+                "Enough chats for casual use",
+                "AI Naming of Chats",
+                "",
+                "Included from Free",
                 "End-to-end encryption",
-                "10 messages per day",
                 "Access to core AI features",
-                "7-day message history"
+                "Search Chat History",
+                "Rename Chats"
               ]}
               ctaText="Get Started"
             />
             <PricingTier
               name="Pro"
-              price="$15"
+              price="$20"
               description="For power users who need more"
               features={[
-                "Everything in Basic",
-                "Unlimited messages",
-                "Advanced AI models",
-                "30-day message history",
-                "Priority support"
+                "5x more chats than Starter",
+                "Priority support",
+                "Early Access to Upcoming Features",
+                "Everything in Starter"
               ]}
-              ctaText="Try Pro"
+              ctaText="Get Started"
               popular={true}
             />
             <PricingTier
-              name="Enterprise"
-              price="$49"
+              name="Team"
+              price="$30"
               description="For teams and businesses"
               features={[
-                "Everything in Pro",
-                "Team collaboration",
-                "Custom security policies",
-                "Unlimited message history",
-                "Dedicated account manager",
-                "Compliance reporting"
+                "8x more chats than Starter",
+                "Unified billing",
+                "Pool chat credits among team",
+                "Everything in Pro"
               ]}
-              ctaText="Contact Sales"
+              ctaText="Get Started"
             />
           </div>
         </div>
