@@ -522,6 +522,7 @@ export function Marketing() {
               features={[
                 "5x more chats than Starter",
                 "Priority support",
+                "Upcoming Pro-only features",
                 "Features from Starter"
               ]}
               ctaText="Start Chatting"
