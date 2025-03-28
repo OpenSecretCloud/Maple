@@ -121,7 +121,7 @@ function PricingTier({
       <div className="flex flex-col gap-3 mb-8">
         {features.map((feature, index) => (
           <div key={index} className="flex items-start gap-2">
-            <Check className="w-5 h-5 text-[#A1FE8F] mt-0.5 flex-shrink-0" />
+            <Check className="w-5 h-5 text-[#FFFFFF] mt-0.5 flex-shrink-0" />
             <span className="text-[#E2E2E2]/80">{feature}</span>
           </div>
         ))}
@@ -149,7 +149,7 @@ export function Marketing() {
           <div className="flex flex-col gap-8">
             <div className="flex flex-col gap-2">
               <h1 className="text-6xl font-light tracking-tight mb-4 bg-gradient-to-r from-[#E2E2E2] via-[#3FDBFF] to-[#9469F8] text-transparent bg-clip-text">
-                Private AI Chat <br /> <span className="text-[#A1FE8F]">that's truly secure</span>
+                Private AI Chat <br /> <span className="text-[#FFFFFF]">that's truly secure</span>
               </h1>
               <p className="text-xl text-[#E2E2E2]/80 font-light max-w-xl">
                 End-to-end encryption means your conversations are confidential and protected at every step. Only you
@@ -205,7 +205,7 @@ export function Marketing() {
               </div>
               <div className="p-6 space-y-4">
                 <div className="flex gap-3">
-                  <div className="w-8 h-8 rounded-full bg-[#9469F8]/30 flex items-center justify-center text-[#9469F8] flex-shrink-0">
+                  <div className="w-8 h-8 rounded-full bg-[#FFFFFF]/30 flex items-center justify-center text-[#FFFFFF] flex-shrink-0">
                     AI
                   </div>
                   <div className="bg-[#1D1D1D] p-3 rounded-xl rounded-tl-none text-[#E2E2E2]/90 text-sm max-w-xs">
@@ -216,12 +216,12 @@ export function Marketing() {
                   <div className="bg-[#9469F8]/20 p-3 rounded-xl rounded-tr-none text-[#E2E2E2] text-sm max-w-xs">
                     I need to discuss some sensitive information. Is this really secure?
                   </div>
-                  <div className="w-8 h-8 rounded-full bg-[#E2E2E2]/10 flex items-center justify-center text-[#E2E2E2] flex-shrink-0">
+                  <div className="w-8 h-8 rounded-full bg-[#FFFFFF]/10 flex items-center justify-center text-[#FFFFFF] flex-shrink-0">
                     U
                   </div>
                 </div>
                 <div className="flex gap-3">
-                  <div className="w-8 h-8 rounded-full bg-[#9469F8]/30 flex items-center justify-center text-[#9469F8] flex-shrink-0">
+                  <div className="w-8 h-8 rounded-full bg-[#FFFFFF]/30 flex items-center justify-center text-[#FFFFFF] flex-shrink-0">
                     AI
                   </div>
                   <div className="bg-[#1D1D1D] p-3 rounded-xl rounded-tl-none text-[#E2E2E2]/90 text-sm max-w-xs">
@@ -318,7 +318,7 @@ export function Marketing() {
               icon={Sparkles}
               title="AI Processing"
               description="Even during AI processing, your data remains encrypted. The entire pipeline through to the GPU is designed with privacy as the priority."
-              gradient="from-[#A1FE8F]/10 to-[#A1FE8F]/5"
+              gradient="from-[#FFFFFF]/10 to-[#FFFFFF]/5"
             />
           </div>
         </div>
@@ -476,9 +476,9 @@ export function Marketing() {
                   
                   {/* Crypto Text */}
                   <div className="mt-8 flex gap-4 justify-center overflow-hidden text-xs font-mono">
-                    <div className="text-[#3FDBFF]/60">0x7B4...</div>
-                    <div className="text-[#9469F8]/60">RSA-2048</div>
-                    <div className="text-[#A1FE8F]/60">AES-256</div>
+                    <div className="text-[#FFFFFF]/60">0x7B4...</div>
+                    <div className="text-[#FFFFFF]/60">RSA-2048</div>
+                    <div className="text-[#FFFFFF]/60">AES-256</div>
                   </div>
                 </div>
               </div>
@@ -497,7 +497,7 @@ export function Marketing() {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="text-center mb-16">
             <h2 className="text-4xl font-light mb-4">
-              What Our <span className="text-[#A1FE8F]">Users Say</span>
+              What Our <span className="text-[#FFFFFF]">Users Say</span>
             </h2>
             <p className="text-xl text-[#E2E2E2]/70 max-w-2xl mx-auto">
               Hear from those who've made privacy a priority with Maple AI.
@@ -589,10 +589,10 @@ export function Marketing() {
       {/* CTA Section */}
       <section className="w-full py-20 bg-gradient-to-r from-[#111111] via-[#13131A] to-[#111111]">
         <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="bg-gradient-to-br from-[#9469F8]/20 to-[#3FDBFF]/20 p-1 rounded-2xl">
+          <div className="bg-gradient-to-br from-[#9469F8]/20 to-[#FFFFFF]/20 p-1 rounded-2xl">
             <div className="bg-[#111111]/95 rounded-2xl p-12 text-center">
               <h2 className="text-4xl font-light mb-4">
-                Ready to Chat <span className="text-[#A1FE8F]">Securely?</span>
+                Ready to Chat <span className="text-[#FFFFFF]">Securely?</span>
               </h2>
               <p className="text-xl text-[#E2E2E2]/70 max-w-2xl mx-auto mb-8">
                 Join thousands of privacy-conscious users who've made the switch to truly secure AI
