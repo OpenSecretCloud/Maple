@@ -491,6 +491,13 @@ export function Marketing() {
             </p>
           </div>
 
+          {/* Free Account Callout */}
+          <div className="text-center mb-8">
+            <p className="text-lg text-[#E2E2E2]/70">
+            Free account comes with 10 free chats per week
+            </p>
+          </div>
+
           <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
             <PricingTier
               name="Starter"
@@ -526,7 +533,7 @@ export function Marketing() {
               price="$30"
               description="For teams and businesses"
               features={[
-                "8x more chats than Starter",
+                "8x more chats than Starter per user",
                 "Unified billing",
                 "Pool chat credits among team",
                 "Everything in Pro"
