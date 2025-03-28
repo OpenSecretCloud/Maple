@@ -21,7 +21,7 @@ function CTAButton({
         transition-all duration-300 relative
         ${
           primary
-            ? "bg-[#9469F8] text-[#111111] hover:bg-[#A57FF9] shadow-[0_0_20px_rgba(148,105,248,0.3)]"
+            ? "bg-[#E2E2E2] text-[#111111] hover:bg-[#A57FF9] shadow-[0_0_20px_rgba(148,105,248,0.3)]"
             : "bg-[#111111] border border-[#3FDBFF]/20 text-[#E2E2E2] hover:border-[#3FDBFF]/80 shadow-[0_0_15px_rgba(63,219,255,0.1)]"
         }
       `}
@@ -30,7 +30,7 @@ function CTAButton({
       {primary && (
         <div className="absolute inset-0 rounded-lg overflow-hidden">
           <div
-            className="absolute inset-0 bg-gradient-to-r from-[#9469F8]/0 via-[#3FDBFF]/20 to-[#9469F8]/0 opacity-50 animate-shimmer"
+            className="absolute inset-0 bg-gradient-to-r from-[#9469F8]/0 via-[#FFFFFF]/20 to-[#9469F8]/0 opacity-50 animate-shimmer"
             style={{ transform: "translateX(-100%)" }}
           ></div>
         </div>
@@ -130,7 +130,7 @@ function PricingTier({
         to="/signup"
         className={`mt-auto py-3 px-6 rounded-lg text-center font-medium transition-all duration-300 ${
           popular
-            ? "bg-[#9469F8] text-[#111111] hover:bg-[#A57FF9]"
+            ? "bg-[#E2E2E2] text-[#111111] hover:bg-[#A57FF9]"
             : "bg-[#111111] border border-[#E2E2E2]/20 text-[#E2E2E2] hover:border-[#E2E2E2]/40"
         }`}
       >
