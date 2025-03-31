@@ -15,38 +15,60 @@
 @layer base {
   body {
     @apply h-dvh;
-    @apply bg-[#111111];
-    @apply text-[#E2E2E2];
   }
 
+  /* Light mode by default */
   :root {
-    --background: 0 0% 7%;
-    --foreground: 0 0% 89%;
-    --card: 0 0% 7%;
-    --card-foreground: 0 0% 89%;
-    --popover: 0 0% 7%;
-    --popover-foreground: 0 0% 89%;
-    --primary: 0 100% 100%;
-    --primary-foreground: 0 0% 7%;
-    --secondary: 191 98% 62%;
-    --secondary-foreground: 0 0% 7%;
-    --accent: 131 98% 78%;
-    --accent-foreground: 0 0% 7%;
-    --muted: 0 0% 15%;
-    --muted-foreground: 0 0% 70%;
-    /* THIS WAS EDITED BY PAUL */
-    --destructive: 0, 80%, 37%;
-    /* THIS WAS EDITED BY PAUL */
-    --destructive-foreground: 0, 80%, 37%;
-    --border: 0 0% 20%;
-    --input: 0 0% 20%;
+    /* Base colors */
+    --background: 40 30% 96%; /* Off-white color */
+    --foreground: 0 0% 12%;
+
+    /* Card & UI elements */
+    --card: 40 30% 96%;
+    --card-foreground: 0 0% 12%;
+    --popover: 40 30% 96%;
+    --popover-foreground: 0 0% 12%;
+
+    /* Primary & accent colors */
+    --primary: 0 0% 12%;
+    --primary-foreground: 40 30% 96%;
+    --secondary: 264 89% 69%;
+    --secondary-foreground: 0 0% 12%;
+    --accent: 264 89% 69%;
+    --accent-foreground: 0 0% 12%;
+
+    /* UI states */
+    --muted: 40 20% 90%;
+    --muted-foreground: 0 0% 40%;
+    --destructive: 0 80% 37%;
+    --destructive-foreground: 0 80% 37%;
+    --border: 40 15% 85%;
+    --input: 40 15% 85%;
     --ring: 264 89% 69%;
     --radius: 0.5rem;
+
+    /* Brand colors */
+    --purple: 264 89% 69%; /* #9469F8 */
+    --blue: 191 98% 62%; /* #3FDBFF */
+    --green: 131 98% 78%; /* For accent */
+
+    /* Marketing UI colors */
+    --marketing-card: 40 30% 96%;
+    --marketing-card-border: 0 0% 20%;
+    --marketing-card-highlight: 40 30% 100%;
+    --marketing-text: 0 0% 12%;
+    --marketing-text-muted: 0 0% 40%;
+    --section-alt: 40 30% 94%;
+    --footer-bg: 40 30% 98%;
+
+    /* Chart colors */
     --chart-1: 12 76% 61%;
     --chart-2: 173 58% 39%;
     --chart-3: 197 37% 24%;
     --chart-4: 43 74% 66%;
     --chart-5: 27 87% 67%;
+
+    /* Syntax highlighting */
     --hljs-comment: 225 27% 13%;
     --hljs-deletion: 349 86% 42%;
     --hljs-number: 22 100% 39%;
@@ -59,34 +81,64 @@
     --hljs-punctuation: 225 27% 40%;
   }
 
+  /* Apply light mode styles */
+  body {
+    @apply bg-background text-foreground;
+  }
+
+  /* Dark mode when system preference is set to dark */
   @media (prefers-color-scheme: dark) {
     :root {
+      /* Base colors */
       --background: 0 0% 7%;
       --foreground: 0 0% 89%;
+
+      /* Card & UI elements */
       --card: 0 0% 10%;
       --card-foreground: 0 0% 89%;
       --popover: 0 0% 7%;
       --popover-foreground: 0 0% 89%;
+
+      /* Primary & accent colors */
       --primary: 0 100% 100%;
       --primary-foreground: 0 0% 7%;
       --secondary: 191 98% 62%;
       --secondary-foreground: 0 0% 7%;
       --accent: 131 98% 78%;
       --accent-foreground: 0 0% 7%;
+
+      /* UI states */
       --muted: 0 0% 15%;
       --muted-foreground: 0 0% 70%;
-      /* THIS WAS EDITED BY PAUL */
-      --destructive: 0, 80%, 37%;
-      /* THIS WAS EDITED BY PAUL */
-      --destructive-foreground: 0, 80%, 37%;
+      --destructive: 0 80% 37%;
+      --destructive-foreground: 0 80% 37%;
       --border: 0 0% 20%;
       --input: 0 0% 20%;
       --ring: 264 89% 69%;
+
+      /* Brand colors remain consistent */
+      --purple: 264 89% 69%; /* #9469F8 */
+      --blue: 191 98% 62%; /* #3FDBFF */
+      --green: 131 98% 78%; /* For accent */
+
+      /* Marketing UI colors for dark mode */
+      --marketing-card: 0 0% 7%;
+      --marketing-card-border: 0 0% 20%;
+      --marketing-card-highlight: 0 0% 15%;
+      --marketing-text: 0 0% 89%;
+      --marketing-text-muted: 0 0% 70%;
+      /* #13131A - dark purple-ish color used in original design */
+      --section-alt: 240 17% 9%;
+      --footer-bg: 0 0% 5%;
+
+      /* Chart colors */
       --chart-1: 220 70% 50%;
       --chart-2: 160 60% 45%;
       --chart-3: 30 80% 55%;
       --chart-4: 280 65% 60%;
       --chart-5: 340 75% 55%;
+
+      /* Syntax highlighting */
       --hljs-comment: 225 27% 43%;
       --hljs-deletion: 349 86% 72%;
       --hljs-number: 22 100% 69%;
@@ -98,5 +150,46 @@
       --hljs-attribute: 270 75% 78%;
       --hljs-punctuation: 225 27% 70%;
     }
+  }
+}
+
+@layer components {
+  /* Marketing UI specific components */
+  .marketing-card {
+    @apply bg-[#111111]/80 border border-[#E2E2E2]/10 dark:bg-[#111111]/80 dark:border-[#E2E2E2]/10 
+           bg-[hsl(var(--marketing-card))] border-[hsl(var(--marketing-card-border))] rounded-xl p-6;
+  }
+
+  .primary-gradient {
+    @apply dark:bg-gradient-to-r dark:from-[hsl(var(--purple))] dark:to-[hsl(var(--blue))]
+           bg-gradient-to-r from-[hsl(var(--purple))] to-[hsl(var(--purple))/80];
+  }
+
+  .feature-card {
+    @apply flex flex-col gap-4 p-8 rounded-xl bg-gradient-to-br 
+           border border-[hsl(var(--marketing-card-border))] hover:border-[hsl(var(--marketing-card-border))]/50 
+           transition-all duration-300;
+  }
+
+  .cta-button-primary {
+    @apply dark:bg-[#E2E2E2] dark:text-[#111111] dark:hover:bg-[#A57FF9] dark:hover:text-[#E2E2E2]
+           bg-background text-foreground hover:bg-[hsl(var(--purple))] hover:text-[#E2E2E2]
+           border border-[hsl(var(--purple))]/30 hover:border-[hsl(var(--purple))]
+           shadow-[0_0_15px_rgba(148,105,248,0.2)] hover:shadow-[0_0_25px_rgba(148,105,248,0.3)]
+           flex items-center justify-center gap-2 
+           px-8 py-4 rounded-lg text-xl font-light
+           transition-all duration-300 relative;
+  }
+
+  .cta-button-secondary {
+    @apply dark:bg-[#111111] dark:border dark:border-[#3FDBFF]/20 dark:text-[#E2E2E2] dark:hover:border-[#3FDBFF]/80
+           bg-[hsl(var(--marketing-card))] 
+           border border-[hsl(var(--purple))]/20 hover:border-[hsl(var(--purple))]/80
+           dark:border-[hsl(var(--blue))]/20 dark:hover:border-[hsl(var(--blue))]/80
+           text-foreground shadow-[0_0_15px_rgba(148,105,248,0.1)]
+           dark:shadow-[0_0_15px_rgba(63,219,255,0.1)]
+           flex items-center justify-center gap-2 
+           px-8 py-4 rounded-lg text-xl font-light
+           transition-all duration-300 relative;
   }
 }

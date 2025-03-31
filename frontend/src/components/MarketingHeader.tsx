@@ -7,12 +7,12 @@ type MarketingHeaderProps = {
 export function MarketingHeader({ title, subtitle, className = "pt-12" }: MarketingHeaderProps) {
   return (
     <div
-      className={`flex flex-col items-center gap-[calc(3rem-0.1em)] text-foreground text-white ${className}`}
+      className={`flex flex-col items-center gap-[calc(3rem-0.1em)] text-foreground ${className}`}
     >
-      <h2 className="text-[clamp(2.5rem,10vw,5rem)] font-light leading-none tracking-tight text-center text-balance bg-gradient-to-b from-white to-white/80 inline-block text-transparent bg-clip-text drop-shadow-[0_0_25px_rgba(0,0,0,0.5)] pb-[0.1em]">
+      <h2 className="text-[clamp(2.5rem,10vw,5rem)] font-light leading-none tracking-tight text-center text-balance bg-gradient-to-b from-foreground to-foreground/80 inline-block text-transparent bg-clip-text pb-[0.1em]">
         {title}
       </h2>
-      <h3 className="text-[clamp(1.5rem,5vw,2.5rem)] text-center text-white leading-tight font-light tracking-tight text-balance drop-shadow-[0_0_25px_rgba(0,0,0,0.5)]">
+      <h3 className="text-[clamp(1.5rem,5vw,2.5rem)] text-center leading-tight font-light tracking-tight text-balance">
         {subtitle}
       </h3>
     </div>

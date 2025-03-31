@@ -19,9 +19,7 @@ function About() {
             </h2>
           }
           subtitle={
-            <p className="text-2xl text-[#E2E2E2]/70 max-w-2xl mx-auto">
-              Why we built Maple
-            </p>
+            <p className="text-2xl text-[#E2E2E2]/70 max-w-2xl mx-auto">Why we built Maple</p>
           }
         />
         <div className="max-w-[35rem] self-center flex flex-col gap-8 border-white/10 bg-black/75 p-8 border rounded-lg text-lg font-light text-white/90">

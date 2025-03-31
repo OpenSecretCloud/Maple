@@ -13,24 +13,12 @@ function CTAButton({
   primary?: boolean;
 }) {
   return (
-    <Link
-      to={to}
-      className={`
-        flex items-center justify-center gap-2
-        px-8 py-4 rounded-lg text-xl font-light
-        transition-all duration-300 relative
-        ${
-          primary
-            ? "bg-[#E2E2E2] text-[#111111] hover:bg-[#A57FF9] shadow-[0_0_20px_rgba(148,105,248,0.3)]"
-            : "bg-[#111111] border border-[#3FDBFF]/20 text-[#E2E2E2] hover:border-[#3FDBFF]/80 shadow-[0_0_15px_rgba(63,219,255,0.1)]"
-        }
-      `}
-    >
+    <Link to={to} className={primary ? "cta-button-primary" : "cta-button-secondary"}>
       {children}
       {primary && (
         <div className="absolute inset-0 rounded-lg overflow-hidden">
           <div
-            className="absolute inset-0 bg-gradient-to-r from-[#9469F8]/0 via-[#FFFFFF]/20 to-[#9469F8]/0 opacity-50 animate-shimmer"
+            className="absolute inset-0 bg-gradient-to-r from-[hsl(var(--purple))]/0 via-[hsl(var(--primary-foreground))]/20 to-[hsl(var(--purple))]/0 opacity-50 animate-shimmer"
             style={{ transform: "translateX(-100%)" }}
           ></div>
         </div>
@@ -43,7 +31,7 @@ function FeatureCard({
   icon: Icon,
   title,
   description,
-  gradient = "from-[#9469F8]/10 to-[#3FDBFF]/10"
+  gradient = "from-[hsl(var(--purple))]/10 to-[hsl(var(--blue))]/10"
 }: {
   icon: React.ElementType;
   title: string;
@@ -51,14 +39,12 @@ function FeatureCard({
   gradient?: string;
 }) {
   return (
-    <div
-      className={`flex flex-col gap-4 p-8 rounded-xl bg-gradient-to-br ${gradient} border border-[#E2E2E2]/10 hover:border-[#E2E2E2]/20 transition-all duration-300`}
-    >
-      <div className="p-3 rounded-full bg-[#111111]/50 border border-[#9469F8]/30 w-fit">
-        <Icon className="w-6 h-6 text-[#9469F8]" />
+    <div className={`feature-card ${gradient}`}>
+      <div className="p-3 rounded-full bg-[hsl(var(--marketing-card))]/50 border border-[hsl(var(--purple))]/30 w-fit">
+        <Icon className="w-6 h-6 text-[hsl(var(--purple))]" />
       </div>
-      <h3 className="text-2xl font-medium text-[#E2E2E2]">{title}</h3>
-      <p className="text-lg font-light text-[#E2E2E2]/70">{description}</p>
+      <h3 className="text-2xl font-medium text-foreground">{title}</h3>
+      <p className="text-lg font-light text-[hsl(var(--marketing-text-muted))]">{description}</p>
     </div>
   );
 }
@@ -75,13 +61,13 @@ function TestimonialCard({
   avatar: string;
 }) {
   return (
-    <div className="p-6 rounded-xl bg-[#111111]/80 border border-[#E2E2E2]/10 flex flex-col gap-4">
-      <p className="text-lg italic text-[#E2E2E2]/90 font-light">&ldquo;{quote}&rdquo;</p>
+    <div className="p-6 rounded-xl bg-[hsl(var(--marketing-card))]/80 border border-[hsl(var(--marketing-card-border))] flex flex-col gap-4">
+      <p className="text-lg italic text-foreground/90 font-light">&ldquo;{quote}&rdquo;</p>
       <div className="flex items-center gap-3 mt-2">
         <img src={avatar} alt={author} className="w-12 h-12 rounded-full" />
         <div>
-          <p className="font-medium text-[#E2E2E2]">{author}</p>
-          <p className="text-sm text-[#E2E2E2]/60">{role}</p>
+          <p className="font-medium text-foreground">{author}</p>
+          <p className="text-sm text-[hsl(var(--marketing-text-muted))]">{role}</p>
         </div>
       </div>
     </div>
@@ -105,30 +91,42 @@ function PricingTier({
 }) {
   return (
     <div
-      className={`flex flex-col p-8 rounded-xl ${popular ? "border-2 border-[#9469F8] bg-gradient-to-b from-[#111111] to-[#111111]/80 relative shadow-[0_0_30px_rgba(148,105,248,0.2)]" : "border border-[#E2E2E2]/10 bg-[#111111]/50"}`}
+      className={`flex flex-col p-8 rounded-xl ${popular ? "border-2 border-[hsl(var(--purple))] bg-gradient-to-b from-[hsl(var(--marketing-card))] to-[hsl(var(--marketing-card))]/80 relative shadow-[0_0_30px_rgba(148,105,248,0.2)]" : "border border-[hsl(var(--marketing-card-border))] bg-[hsl(var(--marketing-card))]/50"}`}
     >
       {popular && (
-        <div className="absolute -top-4 left-1/2 transform -translate-x-1/2 bg-[#9469F8] text-[#111111] px-4 py-1 rounded-full text-sm font-medium">
+        <div className="absolute -top-4 left-1/2 transform -translate-x-1/2 bg-[hsl(var(--purple))] text-[hsl(var(--marketing-card))] px-4 py-1 rounded-full text-sm font-medium">
           Most Popular
         </div>
       )}
-      <h3 className="text-xl font-medium text-[#E2E2E2]">{name}</h3>
+      <h3 className="text-xl font-medium text-foreground">{name}</h3>
       <div className="mt-4 mb-2">
-        <span className="text-4xl font-bold text-[#E2E2E2]">{price}</span>
-        {name === "Team" ? <span className="text-[#E2E2E2]/60 ml-2">/user /mo</span> : price !== "Free" && <span className="text-[#E2E2E2]/60 ml-2">/mo</span>}
+        <span className="text-4xl font-bold text-foreground">{price}</span>
+        {name === "Team" ? (
+          <span className="text-[hsl(var(--marketing-text-muted))] ml-2">/user /mo</span>
+        ) : (
+          price !== "Free" && (
+            <span className="text-[hsl(var(--marketing-text-muted))] ml-2">/mo</span>
+          )
+        )}
       </div>
-      <p className="text-[#E2E2E2]/70 mb-6">{description}</p>
+      <p className="text-[hsl(var(--marketing-text-muted))] mb-6">{description}</p>
       <div className="flex flex-col gap-3 mb-8">
         {features.map((feature, index) => (
           <div key={index} className="flex items-start gap-2">
-            {feature !== "Included from Free" && feature !== "" && <Check className="w-5 h-5 text-[#FFFFFF] mt-0.5 flex-shrink-0" />}
-            <span className="text-[#E2E2E2]/80">{feature}</span>
+            {feature !== "Included from Free" && feature !== "" && (
+              <Check className="w-5 h-5 text-foreground mt-0.5 flex-shrink-0" />
+            )}
+            <span className="text-foreground/80">{feature}</span>
           </div>
         ))}
       </div>
       <Link
         to="/signup"
-        className="mt-auto py-3 px-6 rounded-lg text-center font-medium transition-all duration-300 bg-white/90 backdrop-blur-sm text-black hover:bg-[#A57FF9] active:bg-white/80 shadow-[0_0_25px_rgba(255,255,255,0.25)] hover:shadow-[0_0_35px_rgba(148,105,248,0.35)]"
+        className="mt-auto py-3 px-6 rounded-lg text-center font-medium transition-all duration-300 
+        dark:bg-white/90 dark:text-black dark:hover:bg-[#A57FF9] dark:hover:text-[#E2E2E2] dark:active:bg-white/80
+        bg-background text-foreground hover:bg-[hsl(var(--purple))] hover:text-[#E2E2E2] active:bg-background/80 
+        border border-[hsl(var(--purple))]/30 hover:border-[hsl(var(--purple))]
+        shadow-[0_0_15px_rgba(148,105,248,0.2)] hover:shadow-[0_0_25px_rgba(148,105,248,0.3)]"
       >
         {ctaText}
       </Link>
@@ -138,18 +136,22 @@ function PricingTier({
 
 export function Marketing() {
   return (
-    <div className="flex flex-col items-center w-full text-[#E2E2E2]">
+    <div className="flex flex-col items-center w-full">
       {/* Hero Section */}
       <section className="w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-32 pb-24">
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-16 items-center">
           <div className="flex flex-col gap-8">
             <div className="flex flex-col gap-2">
-              <h1 className="text-6xl font-light tracking-tight mb-4 bg-gradient-to-r from-[#E2E2E2] via-[#3FDBFF] to-[#9469F8] text-transparent bg-clip-text">
-                Private AI Chat <br /> <span className="text-[#FFFFFF]">that's truly secure</span>
+              <h1 className="text-6xl font-light tracking-tight mb-4">
+                <span className="dark:bg-gradient-to-r dark:from-foreground dark:to-[hsl(var(--blue))]
+                             bg-gradient-to-r from-foreground from-5% via-[hsl(var(--purple))]/90 via-50% to-[hsl(var(--purple))]
+                             text-transparent bg-clip-text">
+                  Private AI Chat
+                </span> <br /> <span className="text-foreground">that's truly secure</span>
               </h1>
-              <p className="text-xl text-[#E2E2E2]/80 font-light max-w-xl">
-                End-to-end encryption means your conversations are confidential and protected at every step. Only you
-                can access your data — not even we can read your chats.
+              <p className="text-xl text-[hsl(var(--marketing-text-muted))] font-light max-w-xl">
+                End-to-end encryption means your conversations are confidential and protected at
+                every step. Only you can access your data — not even we can read your chats.
               </p>
             </div>
             <div className="flex gap-4 flex-col sm:flex-row">
@@ -159,75 +161,83 @@ export function Marketing() {
               </CTAButton>
               <CTAButton to="/login">Log In</CTAButton>
             </div>
-            <div className="flex items-center gap-4 text-sm text-[#E2E2E2]/60 mt-2">
-              <a 
-                href="#testimonials" 
-                className="flex items-center gap-4 hover:text-[#E2E2E2]/80 transition-colors duration-300"
+            <div className="flex items-center gap-4 text-sm text-[hsl(var(--marketing-text-muted))] mt-2">
+              <a
+                href="#testimonials"
+                className="flex items-center gap-4 hover:text-foreground/80 transition-colors duration-300"
                 onClick={(e) => {
                   e.preventDefault();
-                  document.getElementById('testimonials')?.scrollIntoView({ behavior: 'smooth' });
+                  document.getElementById("testimonials")?.scrollIntoView({ behavior: "smooth" });
                 }}
               >
                 <div className="flex -space-x-2">
                   <img
                     src="/ryan-g.jpg"
                     alt="User avatar"
-                    className="w-8 h-8 rounded-full border border-[#111111]"
+                    className="w-8 h-8 rounded-full border border-[hsl(var(--marketing-card))]"
                   />
                   <img
                     src="/lauren-t.jpg"
                     alt="User avatar"
-                    className="w-8 h-8 rounded-full border border-[#111111]"
+                    className="w-8 h-8 rounded-full border border-[hsl(var(--marketing-card))]"
                   />
                   <img
                     src="/javier-r.jpg"
                     alt="User avatar"
-                    className="w-8 h-8 rounded-full border border-[#111111]"
+                    className="w-8 h-8 rounded-full border border-[hsl(var(--marketing-card))]"
                   />
                 </div>
-                <p className="ml-10 md:ml-0">Trusted by professionals who handle sensitive client information</p>
+                <p className="ml-10 md:ml-0">
+                  Trusted by professionals who handle sensitive client information
+                </p>
               </a>
             </div>
           </div>
-          <div className="relative bg-gradient-to-br from-[#9469F8]/10 to-[#3FDBFF]/10 rounded-2xl p-1">
-            <div className="bg-[#111111]/80 backdrop-blur-sm rounded-xl overflow-hidden border border-[#E2E2E2]/10">
-              <div className="bg-[#111111] p-3 border-b border-[#E2E2E2]/10 flex items-center">
+          <div
+            className="relative dark:bg-gradient-to-br dark:from-[hsl(var(--purple))]/10 dark:to-[hsl(var(--blue))]/10 
+               bg-gradient-to-br from-[hsl(var(--purple))]/5 to-[hsl(var(--purple))]/20 rounded-2xl p-1"
+          >
+            <div className="bg-[hsl(var(--marketing-card))]/80 backdrop-blur-sm rounded-xl overflow-hidden border border-[hsl(var(--marketing-card-border))]">
+              <div className="bg-[hsl(var(--marketing-card))] p-3 border-b border-[hsl(var(--marketing-card-border))] flex items-center">
                 <div className="flex gap-1.5">
-                  <div className="w-3 h-3 rounded-full bg-[#E2E2E2]/20"></div>
-                  <div className="w-3 h-3 rounded-full bg-[#E2E2E2]/20"></div>
-                  <div className="w-3 h-3 rounded-full bg-[#E2E2E2]/20"></div>
+                  <div className="w-3 h-3 rounded-full bg-foreground/20"></div>
+                  <div className="w-3 h-3 rounded-full bg-foreground/20"></div>
+                  <div className="w-3 h-3 rounded-full bg-foreground/20"></div>
                 </div>
-                <div className="mx-auto text-sm text-[#E2E2E2]/60">Encrypted Chat</div>
+                <div className="mx-auto text-sm text-[hsl(var(--marketing-text-muted))]">
+                  Encrypted Chat
+                </div>
               </div>
               <div className="p-6 space-y-4">
                 <div className="flex gap-3">
-                  <div className="w-8 h-8 rounded-full bg-[#FFFFFF]/30 flex items-center justify-center text-[#FFFFFF] flex-shrink-0">
+                  <div className="w-8 h-8 rounded-full bg-foreground/30 flex items-center justify-center text-background flex-shrink-0">
                     AI
                   </div>
-                  <div className="bg-[#1D1D1D] p-3 rounded-xl rounded-tl-none text-[#E2E2E2]/90 text-sm max-w-xs">
+                  <div className="bg-[hsl(var(--marketing-card-highlight))] p-3 rounded-xl rounded-tl-none text-foreground/90 text-sm max-w-xs">
                     How can I help you today? Your conversation is fully encrypted.
                   </div>
                 </div>
                 <div className="flex gap-3 justify-end">
-                  <div className="bg-[#9469F8]/20 p-3 rounded-xl rounded-tr-none text-[#E2E2E2] text-sm max-w-xs">
+                  <div className="bg-[hsl(var(--purple))]/20 p-3 rounded-xl rounded-tr-none text-foreground text-sm max-w-xs">
                     I need to discuss some sensitive information. Is this really secure?
                   </div>
-                  <div className="w-8 h-8 rounded-full bg-[#FFFFFF]/10 flex items-center justify-center text-[#FFFFFF] flex-shrink-0">
+                  <div className="w-8 h-8 rounded-full bg-foreground/10 flex items-center justify-center text-background flex-shrink-0">
                     U
                   </div>
                 </div>
                 <div className="flex gap-3">
-                  <div className="w-8 h-8 rounded-full bg-[#FFFFFF]/30 flex items-center justify-center text-[#FFFFFF] flex-shrink-0">
+                  <div className="w-8 h-8 rounded-full bg-foreground/30 flex items-center justify-center text-background flex-shrink-0">
                     AI
                   </div>
-                  <div className="bg-[#1D1D1D] p-3 rounded-xl rounded-tl-none text-[#E2E2E2]/90 text-sm max-w-xs">
+                  <div className="bg-[hsl(var(--marketing-card-highlight))] p-3 rounded-xl rounded-tl-none text-foreground/90 text-sm max-w-xs">
                     Yes, absolutely. Your messages are end-to-end encrypted. Even the server admins
-                    can't read your conversations. We use secure enclaves and open-source code to verify this.
+                    can't read your conversations. We use secure enclaves and open-source code to
+                    verify this.
                   </div>
                 </div>
               </div>
             </div>
-            <div className="absolute -bottom-3 -right-3 bg-[#9469F8] text-[#111111] p-2 rounded-lg font-medium text-sm flex items-center gap-1.5">
+            <div className="absolute -bottom-3 -right-3 bg-[hsl(var(--purple))] text-[hsl(var(--marketing-card))] p-2 rounded-lg font-medium text-sm flex items-center gap-1.5">
               <Lock className="w-4 h-4" /> End-to-End Encrypted
             </div>
           </div>
@@ -235,13 +245,13 @@ export function Marketing() {
       </section>
 
       {/* Features Section */}
-      <section className="w-full py-20 bg-[#13131A]">
+      <section className="w-full py-20 dark:bg-[#13131A] bg-[hsl(var(--section-alt))]">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="text-center mb-16">
             <h2 className="text-4xl font-light mb-4">
-              Privacy at <span className="text-[#9469F8]">Every Layer</span>
+              Privacy at <span className="text-[hsl(var(--purple))] font-medium">Every Layer</span>
             </h2>
-            <p className="text-xl text-[#E2E2E2]/70 max-w-2xl mx-auto">
+            <p className="text-xl text-[hsl(var(--marketing-text-muted))] max-w-2xl mx-auto">
               Your security is our primary concern. We've engineered Maple to ensure your data
               remains yours alone, protected by cutting-edge encryption.
             </p>
@@ -252,60 +262,64 @@ export function Marketing() {
               icon={Shield}
               title="Your Device"
               description="All communications are encrypted locally on your device before being transmitted, ensuring your data is secured from the start."
-              gradient="from-[#9469F8]/10 to-[#9469F8]/5"
+              gradient="from-[hsl(var(--purple))]/5 to-[hsl(var(--purple))]/10"
             />
             <FeatureCard
               icon={Lock}
               title="Secure Server"
               description="Our servers can't read your data. We use secure enclaves in confidential computing environments to verify our infrastructure integrity."
-              gradient="from-[#3FDBFF]/10 to-[#3FDBFF]/5"
+              gradient="dark:from-[hsl(var(--blue))]/10 dark:to-[hsl(var(--blue))]/5 from-[hsl(var(--purple))]/10 to-[hsl(var(--purple))]/20"
             />
             <FeatureCard
               icon={Sparkles}
               title="AI Processing"
               description="Even during AI processing, your data remains encrypted. The entire pipeline through to the GPU is designed with privacy as the priority."
-              gradient="from-[#FFFFFF]/10 to-[#FFFFFF]/5"
+              gradient="dark:from-foreground/10 dark:to-foreground/5 from-[hsl(var(--purple))]/20 to-[hsl(var(--purple))]/5"
             />
           </div>
         </div>
       </section>
 
       {/* Proof/Verification Section */}
-      <section className="w-full pt-20 pb-0">
+      <section className="w-full py-20">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-16 items-center">
             <div>
               <h2 className="text-4xl font-light mb-6">
-                We <span className="text-[#3FDBFF]">Prove</span> Our Security
+                We <span className="dark:text-[hsl(var(--blue))] text-[hsl(var(--purple))] font-medium">Prove</span> Our Security
               </h2>
-              <p className="text-xl text-[#E2E2E2]/70 mb-8">
+              <p className="text-xl text-[hsl(var(--marketing-text-muted))] mb-8">
                 Unlike other services that merely claim to be secure, we provide cryptographic
                 proof. Our commitment to transparency means you don't have to trust us - you can
                 verify it yourself.
               </p>
-              <div className="text-l text-[#E2E2E2]/70">Live Secure Enclave Verification</div>
-              <div className="bg-[#111111]/80 border border-[#E2E2E2]/10 rounded-xl p-6 mb-8">
+              <div className="text-l text-[hsl(var(--marketing-text-muted))]">
+                Live Secure Enclave Verification
+              </div>
+              <div className="bg-[hsl(var(--marketing-card))]/80 border border-[hsl(var(--marketing-card-border))] rounded-xl p-6 mb-8">
                 <VerificationStatus />
               </div>
               <Link
                 to="/proof"
-                className="text-[#3FDBFF] hover:text-[#3FDBFF]/80 flex items-center gap-2 font-medium"
+                className="dark:text-[hsl(var(--blue))] dark:hover:text-[hsl(var(--blue))]/80 
+                           text-[hsl(var(--purple))] hover:text-[hsl(var(--purple))]/80 
+                           flex items-center gap-2 font-medium"
               >
                 Learn more about our verification system <ArrowRight className="h-4 w-4" />
               </Link>
             </div>
-            <div className="relative bg-gradient-to-br from-[#9469F8]/10 to-[#3FDBFF]/10 rounded-2xl p-1">
-              <div className="bg-[#111111]/80 backdrop-blur-sm rounded-xl overflow-hidden border border-[#E2E2E2]/10">
+            <div
+              className="relative dark:bg-gradient-to-br dark:from-[hsl(var(--purple))]/10 dark:to-[hsl(var(--blue))]/10 
+                 bg-gradient-to-br from-[hsl(var(--purple))]/5 to-[hsl(var(--purple))]/20 rounded-2xl p-1"
+            >
+              <div className="bg-[hsl(var(--marketing-card))]/80 backdrop-blur-sm rounded-xl overflow-hidden border border-[hsl(var(--marketing-card-border))]">
                 {/* Header */}
-                <div className="bg-[#111111] p-3 border-b border-[#E2E2E2]/10 flex items-center">
-                  {/* <div className="flex gap-1.5">
-                    <div className="w-3 h-3 rounded-full bg-[#E2E2E2]/20"></div>
-                    <div className="w-3 h-3 rounded-full bg-[#E2E2E2]/20"></div>
-                    <div className="w-3 h-3 rounded-full bg-[#E2E2E2]/20"></div>
-                  </div> */}
-                  <div className="mx-auto text-sm text-[#E2E2E2]/60">Secure Server</div>
+                <div className="bg-[hsl(var(--marketing-card))] p-3 border-b border-[hsl(var(--marketing-card-border))] flex items-center">
+                  <div className="mx-auto text-sm text-[hsl(var(--marketing-text-muted))]">
+                    Secure Server
+                  </div>
                 </div>
-                
+
                 {/* Main Content */}
                 <div className="p-8 relative">
                   <div className="w-full mx-auto relative flex flex-col md:flex-row items-center justify-between px-2">
@@ -313,51 +327,51 @@ export function Marketing() {
                     <div className="flex flex-col md:hidden items-center gap-8 w-full">
                       {/* Phone - Mobile */}
                       <div className="w-24 h-48 relative">
-                        <div className="absolute inset-0 bg-[#1D1D1D] border border-[#9469F8]/30 rounded-2xl">
-                          <div className="m-2 bg-[#9469F8]/10 rounded-lg border border-[#9469F8]/30 h-[calc(100%-16px)]">
-                            <div className="h-2 w-8 bg-[#9469F8]/20 rounded mx-auto mt-2"></div>
-                            <div className="h-2 w-12 bg-[#9469F8]/20 rounded mx-auto mt-2"></div>
+                        <div className="absolute inset-0 bg-[hsl(var(--marketing-card-highlight))] border border-[hsl(var(--purple))]/30 rounded-2xl">
+                          <div className="m-2 bg-[hsl(var(--purple))]/10 rounded-lg border border-[hsl(var(--purple))]/30 h-[calc(100%-16px)]">
+                            <div className="h-2 w-8 bg-[hsl(var(--purple))]/20 rounded mx-auto mt-2"></div>
+                            <div className="h-2 w-12 bg-[hsl(var(--purple))]/20 rounded mx-auto mt-2"></div>
                           </div>
                         </div>
-                        <div className="absolute -top-2 -right-2 bg-[#3FDBFF]/20 p-2 rounded-lg border border-[#3FDBFF]/30">
-                          <div className="w-4 h-3 border-2 border-[#3FDBFF] rounded-t-lg mx-auto"></div>
-                          <div className="w-6 h-5 bg-[#3FDBFF]/30 border-2 border-[#3FDBFF] rounded-lg -mt-0.5"></div>
+                        <div className="absolute -top-2 -right-2 dark:bg-[hsl(var(--blue))]/20 dark:border-[hsl(var(--blue))]/30 bg-[hsl(var(--purple))]/20 border-[hsl(var(--purple))]/30 p-2 rounded-lg border">
+                          <div className="w-4 h-3 border-2 dark:border-[hsl(var(--blue))] border-[hsl(var(--purple))] rounded-t-lg mx-auto"></div>
+                          <div className="w-6 h-5 dark:bg-[hsl(var(--blue))]/30 dark:border-[hsl(var(--blue))] bg-[hsl(var(--purple))]/30 border-2 border-[hsl(var(--purple))] rounded-lg -mt-0.5"></div>
                         </div>
                       </div>
 
                       {/* Vertical Connection Line - Mobile */}
-                      <div className="h-16 w-px bg-gradient-to-b from-[#9469F8]/50 to-[#3FDBFF]/50 relative">
-                        <div className="absolute -top-1 left-1/2 -translate-x-1/2 w-2 h-2 border-t-2 border-l-2 border-[#9469F8] transform rotate-45"></div>
-                        <div className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-2 h-2 border-b-2 border-r-2 border-[#3FDBFF] transform rotate-45"></div>
-                        <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 whitespace-nowrap text-xs text-[#E2E2E2]/40 ml-1">
+                      <div className="h-16 w-px dark:bg-gradient-to-b dark:from-[hsl(var(--purple))]/50 dark:to-[hsl(var(--blue))]/50 bg-gradient-to-b from-[hsl(var(--purple))]/30 to-[hsl(var(--purple))]/70 relative">
+                        <div className="absolute -top-1 left-1/2 -translate-x-1/2 w-2 h-2 border-t-2 border-l-2 border-[hsl(var(--purple))] transform rotate-45"></div>
+                        <div className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-2 h-2 border-b-2 border-r-2 dark:border-[hsl(var(--blue))] border-[hsl(var(--purple))] transform rotate-45"></div>
+                        <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 whitespace-nowrap text-xs text-foreground/40 ml-1">
                           Encrypted Connection
                         </div>
                       </div>
 
                       {/* Server - Mobile */}
                       <div className="w-32 h-48 relative">
-                        <div className="absolute inset-0 bg-[#1D1D1D] border border-[#9469F8]/30 rounded-lg">
-                          <div className="h-8 border-b border-[#9469F8]/30 flex items-center justify-between px-3">
+                        <div className="absolute inset-0 bg-[hsl(var(--marketing-card-highlight))] border border-[hsl(var(--purple))]/30 rounded-lg">
+                          <div className="h-8 border-b border-[hsl(var(--purple))]/30 flex items-center justify-between px-3">
                             <div className="flex gap-1">
-                              <div className="w-2 h-2 rounded-full bg-[#9469F8]/40"></div>
-                              <div className="w-2 h-2 rounded-full bg-[#9469F8]/40"></div>
+                              <div className="w-2 h-2 rounded-full bg-[hsl(var(--purple))]/40"></div>
+                              <div className="w-2 h-2 rounded-full bg-[hsl(var(--purple))]/40"></div>
                             </div>
                           </div>
                           <div className="p-3 space-y-2">
-                            <div className="h-7 bg-[#9469F8]/20 rounded border border-[#9469F8]/30 flex items-center px-2">
-                              <div className="w-2 h-2 rounded-full bg-[#9469F8]/40"></div>
+                            <div className="h-7 bg-[hsl(var(--purple))]/20 rounded border border-[hsl(var(--purple))]/30 flex items-center px-2">
+                              <div className="w-2 h-2 rounded-full bg-[hsl(var(--purple))]/40"></div>
                             </div>
-                            <div className="h-7 bg-[#9469F8]/20 rounded border border-[#9469F8]/30 flex items-center px-2">
-                              <div className="w-2 h-2 rounded-full bg-[#9469F8]/40"></div>
+                            <div className="h-7 bg-[hsl(var(--purple))]/20 rounded border border-[hsl(var(--purple))]/30 flex items-center px-2">
+                              <div className="w-2 h-2 rounded-full bg-[hsl(var(--purple))]/40"></div>
                             </div>
-                            <div className="h-7 bg-[#9469F8]/20 rounded border border-[#9469F8]/30 flex items-center px-2">
-                              <div className="w-2 h-2 rounded-full bg-[#9469F8]/40"></div>
+                            <div className="h-7 bg-[hsl(var(--purple))]/20 rounded border border-[hsl(var(--purple))]/30 flex items-center px-2">
+                              <div className="w-2 h-2 rounded-full bg-[hsl(var(--purple))]/40"></div>
                             </div>
                           </div>
                         </div>
-                        <div className="absolute -top-2 -right-2 bg-[#3FDBFF]/20 p-2 rounded-lg border border-[#3FDBFF]/30">
-                          <div className="w-4 h-3 border-2 border-[#3FDBFF] rounded-t-lg mx-auto"></div>
-                          <div className="w-6 h-5 bg-[#3FDBFF]/30 border-2 border-[#3FDBFF] rounded-lg -mt-0.5"></div>
+                        <div className="absolute -top-2 -right-2 dark:bg-[hsl(var(--blue))]/20 dark:border-[hsl(var(--blue))]/30 bg-[hsl(var(--purple))]/20 border-[hsl(var(--purple))]/30 p-2 rounded-lg border">
+                          <div className="w-4 h-3 border-2 dark:border-[hsl(var(--blue))] border-[hsl(var(--purple))] rounded-t-lg mx-auto"></div>
+                          <div className="w-6 h-5 dark:bg-[hsl(var(--blue))]/30 dark:border-[hsl(var(--blue))] bg-[hsl(var(--purple))]/30 border-2 border-[hsl(var(--purple))] rounded-lg -mt-0.5"></div>
                         </div>
                       </div>
                     </div>
@@ -367,24 +381,24 @@ export function Marketing() {
                       {/* Phone - Desktop */}
                       <div className="w-24 h-48 relative">
                         {/* Same phone content as mobile */}
-                        <div className="absolute inset-0 bg-[#1D1D1D] border border-[#9469F8]/30 rounded-2xl">
-                          <div className="m-2 bg-[#9469F8]/10 rounded-lg border border-[#9469F8]/30 h-[calc(100%-16px)]">
-                            <div className="h-2 w-8 bg-[#9469F8]/20 rounded mx-auto mt-2"></div>
-                            <div className="h-2 w-12 bg-[#9469F8]/20 rounded mx-auto mt-2"></div>
+                        <div className="absolute inset-0 bg-[hsl(var(--marketing-card-highlight))] border border-[hsl(var(--purple))]/30 rounded-2xl">
+                          <div className="m-2 bg-[hsl(var(--purple))]/10 rounded-lg border border-[hsl(var(--purple))]/30 h-[calc(100%-16px)]">
+                            <div className="h-2 w-8 bg-[hsl(var(--purple))]/20 rounded mx-auto mt-2"></div>
+                            <div className="h-2 w-12 bg-[hsl(var(--purple))]/20 rounded mx-auto mt-2"></div>
                           </div>
                         </div>
-                        <div className="absolute -top-2 -right-2 bg-[#3FDBFF]/20 p-2 rounded-lg border border-[#3FDBFF]/30">
-                          <div className="w-4 h-3 border-2 border-[#3FDBFF] rounded-t-lg mx-auto"></div>
-                          <div className="w-6 h-5 bg-[#3FDBFF]/30 border-2 border-[#3FDBFF] rounded-lg -mt-0.5"></div>
+                        <div className="absolute -top-2 -right-2 dark:bg-[hsl(var(--blue))]/20 dark:border-[hsl(var(--blue))]/30 bg-[hsl(var(--purple))]/20 border-[hsl(var(--purple))]/30 p-2 rounded-lg border">
+                          <div className="w-4 h-3 border-2 dark:border-[hsl(var(--blue))] border-[hsl(var(--purple))] rounded-t-lg mx-auto"></div>
+                          <div className="w-6 h-5 dark:bg-[hsl(var(--blue))]/30 dark:border-[hsl(var(--blue))] bg-[hsl(var(--purple))]/30 border-2 border-[hsl(var(--purple))] rounded-lg -mt-0.5"></div>
                         </div>
                       </div>
 
                       {/* Horizontal Connection Line - Desktop */}
                       <div className="flex-1 mx-2 flex items-center justify-center">
-                        <div className="h-px w-4/5 bg-gradient-to-r from-[#9469F8]/50 to-[#3FDBFF]/50 relative">
-                          <div className="absolute left-0 top-1/2 -translate-y-1/2 w-2 h-2 border-t-2 border-l-2 border-[#9469F8] transform -rotate-45"></div>
-                          <div className="absolute right-0 top-1/2 -translate-y-1/2 w-2 h-2 border-t-2 border-r-2 border-[#3FDBFF] transform rotate-45"></div>
-                          <div className="absolute -top-4 left-1/2 -translate-x-1/2 whitespace-nowrap text-xs text-[#E2E2E2]/40">
+                        <div className="h-px w-4/5 dark:bg-gradient-to-r dark:from-[hsl(var(--purple))]/50 dark:to-[hsl(var(--blue))]/50 bg-gradient-to-r from-[hsl(var(--purple))]/30 to-[hsl(var(--purple))]/70 relative">
+                          <div className="absolute left-0 top-1/2 -translate-y-1/2 w-2 h-2 border-t-2 border-l-2 border-[hsl(var(--purple))] transform -rotate-45"></div>
+                          <div className="absolute right-0 top-1/2 -translate-y-1/2 w-2 h-2 border-t-2 border-r-2 dark:border-[hsl(var(--blue))] border-[hsl(var(--purple))] transform rotate-45"></div>
+                          <div className="absolute -top-4 left-1/2 -translate-x-1/2 whitespace-nowrap text-xs text-foreground/40">
                             Encrypted Connection
                           </div>
                         </div>
@@ -393,44 +407,44 @@ export function Marketing() {
                       {/* Server - Desktop */}
                       <div className="w-32 h-48 relative">
                         {/* Same server content as mobile */}
-                        <div className="absolute inset-0 bg-[#1D1D1D] border border-[#9469F8]/30 rounded-lg">
-                          <div className="h-8 border-b border-[#9469F8]/30 flex items-center justify-between px-3">
+                        <div className="absolute inset-0 bg-[hsl(var(--marketing-card-highlight))] border border-[hsl(var(--purple))]/30 rounded-lg">
+                          <div className="h-8 border-b border-[hsl(var(--purple))]/30 flex items-center justify-between px-3">
                             <div className="flex gap-1">
-                              <div className="w-2 h-2 rounded-full bg-[#9469F8]/40"></div>
-                              <div className="w-2 h-2 rounded-full bg-[#9469F8]/40"></div>
+                              <div className="w-2 h-2 rounded-full bg-[hsl(var(--purple))]/40"></div>
+                              <div className="w-2 h-2 rounded-full bg-[hsl(var(--purple))]/40"></div>
                             </div>
                           </div>
                           <div className="p-3 space-y-2">
-                            <div className="h-7 bg-[#9469F8]/20 rounded border border-[#9469F8]/30 flex items-center px-2">
-                              <div className="w-2 h-2 rounded-full bg-[#9469F8]/40"></div>
+                            <div className="h-7 bg-[hsl(var(--purple))]/20 rounded border border-[hsl(var(--purple))]/30 flex items-center px-2">
+                              <div className="w-2 h-2 rounded-full bg-[hsl(var(--purple))]/40"></div>
                             </div>
-                            <div className="h-7 bg-[#9469F8]/20 rounded border border-[#9469F8]/30 flex items-center px-2">
-                              <div className="w-2 h-2 rounded-full bg-[#9469F8]/40"></div>
+                            <div className="h-7 bg-[hsl(var(--purple))]/20 rounded border border-[hsl(var(--purple))]/30 flex items-center px-2">
+                              <div className="w-2 h-2 rounded-full bg-[hsl(var(--purple))]/40"></div>
                             </div>
-                            <div className="h-7 bg-[#9469F8]/20 rounded border border-[#9469F8]/30 flex items-center px-2">
-                              <div className="w-2 h-2 rounded-full bg-[#9469F8]/40"></div>
+                            <div className="h-7 bg-[hsl(var(--purple))]/20 rounded border border-[hsl(var(--purple))]/30 flex items-center px-2">
+                              <div className="w-2 h-2 rounded-full bg-[hsl(var(--purple))]/40"></div>
                             </div>
                           </div>
                         </div>
-                        <div className="absolute -top-2 -right-2 bg-[#3FDBFF]/20 p-2 rounded-lg border border-[#3FDBFF]/30">
-                          <div className="w-4 h-3 border-2 border-[#3FDBFF] rounded-t-lg mx-auto"></div>
-                          <div className="w-6 h-5 bg-[#3FDBFF]/30 border-2 border-[#3FDBFF] rounded-lg -mt-0.5"></div>
+                        <div className="absolute -top-2 -right-2 dark:bg-[hsl(var(--blue))]/20 dark:border-[hsl(var(--blue))]/30 bg-[hsl(var(--purple))]/20 border-[hsl(var(--purple))]/30 p-2 rounded-lg border">
+                          <div className="w-4 h-3 border-2 dark:border-[hsl(var(--blue))] border-[hsl(var(--purple))] rounded-t-lg mx-auto"></div>
+                          <div className="w-6 h-5 dark:bg-[hsl(var(--blue))]/30 dark:border-[hsl(var(--blue))] bg-[hsl(var(--purple))]/30 border-2 border-[hsl(var(--purple))] rounded-lg -mt-0.5"></div>
                         </div>
                       </div>
                     </div>
                   </div>
-                  
+
                   {/* Crypto Text */}
                   <div className="mt-8 flex gap-4 justify-center overflow-hidden text-xs font-mono">
-                    <div className="text-[#FFFFFF]/60">0x7B4...</div>
-                    <div className="text-[#FFFFFF]/60">RSA-2048</div>
-                    <div className="text-[#FFFFFF]/60">AES-256</div>
+                    <div className="text-foreground/60">0x7B4...</div>
+                    <div className="text-foreground/60">RSA-2048</div>
+                    <div className="text-foreground/60">AES-256</div>
                   </div>
                 </div>
               </div>
-              
+
               {/* Status Indicator */}
-              <div className="absolute -bottom-3 -right-3 bg-[#9469F8] text-[#111111] p-2 rounded-lg font-medium text-sm flex items-center gap-1.5">
+              <div className="absolute -bottom-3 -right-3 bg-[hsl(var(--purple))] text-[hsl(var(--marketing-card))] p-2 rounded-lg font-medium text-sm flex items-center gap-1.5">
                 <Shield className="w-4 h-4" /> Secure Enclave Verified
               </div>
             </div>
@@ -439,13 +453,16 @@ export function Marketing() {
       </section>
 
       {/* Testimonials */}
-      <section id="testimonials" className="w-full pt-40 pb-20 bg-[#13131A]">
+      <section
+        id="testimonials"
+        className="w-full py-20 dark:bg-[#13131A] bg-[hsl(var(--section-alt))]"
+      >
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="text-center mb-16">
             <h2 className="text-4xl font-light mb-4">
-              What Our <span className="text-[#FFFFFF]">Users Say</span>
+              What Our <span className="text-foreground font-medium">Users Say</span>
             </h2>
-            <p className="text-xl text-[#E2E2E2]/70 max-w-2xl mx-auto">
+            <p className="text-xl text-[hsl(var(--marketing-text-muted))] max-w-2xl mx-auto">
               Hear from those who've made privacy a priority with Maple AI.
               <br />
               (Quotes are real, names are changed for privacy)
@@ -480,17 +497,17 @@ export function Marketing() {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="text-center mb-16">
             <h2 className="text-4xl font-light mb-4">
-              Simple, <span className="text-[#9469F8]">Transparent</span> Pricing
+              Simple, <span className="text-[hsl(var(--purple))] font-medium">Transparent</span> Pricing
             </h2>
-            <p className="text-xl text-[#E2E2E2]/70 max-w-2xl mx-auto">
+            <p className="text-xl text-[hsl(var(--marketing-text-muted))] max-w-2xl mx-auto">
               No hidden fees. Choose the plan that works for your needs.
             </p>
           </div>
 
           {/* Free Account Callout */}
           <div className="text-center mb-8">
-            <p className="text-lg text-[#E2E2E2]/70">
-            Free account comes with 10 free chats per week
+            <p className="text-lg text-[hsl(var(--marketing-text-muted))]">
+              Free account comes with 10 free chats per week
             </p>
           </div>
 
@@ -541,16 +558,15 @@ export function Marketing() {
       </section>
 
       {/* CTA Section */}
-      <section className="w-full py-20 bg-gradient-to-r from-[#111111] via-[#13131A] to-[#111111]">
+      <section className="w-full py-20 dark:bg-gradient-to-r dark:from-[#111111] dark:via-[#13131A] dark:to-[#111111] bg-gradient-to-r from-[hsl(var(--section-alt))] via-[hsl(var(--marketing-card))] to-[hsl(var(--section-alt))]">
         <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="bg-gradient-to-br from-[#9469F8]/20 to-[#FFFFFF]/20 p-1 rounded-2xl">
-            <div className="bg-[#111111]/95 rounded-2xl p-12 text-center">
+          <div className="bg-gradient-to-br from-[hsl(var(--purple))]/20 to-foreground/20 p-1 rounded-2xl">
+            <div className="dark:bg-[#111111]/95 bg-[hsl(var(--marketing-card))]/95 rounded-2xl p-12 text-center">
               <h2 className="text-4xl font-light mb-4">
-                Ready to Chat <span className="text-[#FFFFFF]">Securely?</span>
+                Ready to Chat <span className="text-foreground font-medium">Securely?</span>
               </h2>
-              <p className="text-xl text-[#E2E2E2]/70 max-w-2xl mx-auto mb-8">
-                Join privacy-conscious users who've made the switch to truly secure AI
-                chat.
+              <p className="text-xl text-[hsl(var(--marketing-text-muted))] max-w-2xl mx-auto mb-8">
+                Join privacy-conscious users who've made the switch to truly secure AI chat.
               </p>
               <div className="flex justify-center gap-4 flex-col sm:flex-row">
                 <CTAButton to="/signup" primary>
