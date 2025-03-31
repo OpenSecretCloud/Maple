@@ -7,16 +7,8 @@ export function Footer() {
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="grid grid-cols-1 md:grid-cols-4 gap-8">
           <div className="flex flex-col gap-4">
-            <img 
-              src="/maple-logo-dark.svg" 
-              alt="Maple" 
-              className="w-32 block dark:hidden" 
-            />
-            <img 
-              src="/maple-logo.svg" 
-              alt="Maple" 
-              className="w-32 hidden dark:block" 
-            />
+            <img src="/maple-logo-dark.svg" alt="Maple" className="w-32 block dark:hidden" />
+            <img src="/maple-logo.svg" alt="Maple" className="w-32 hidden dark:block" />
             <p className="text-[hsl(var(--marketing-text-muted))] font-light">
               Private AI chat with end-to-end encryption. Your conversations stay yours.
             </p>

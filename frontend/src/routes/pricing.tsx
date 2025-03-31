@@ -588,7 +588,7 @@ function PricingPage() {
                     } ${useBitcoin && product.name === "Team" ? "opacity-50 cursor-not-allowed" : ""}`}
                   >
                     {product.name === "Pro" && (
-                      <div className="absolute -top-4 left-1/2 transform -translate-x-1/2 bg-[hsl(var(--purple))] text-[hsl(var(--marketing-card))] px-4 py-1 rounded-full text-sm font-medium">
+                      <div className="absolute -top-4 left-1/2 transform -translate-x-1/2 bg-[hsl(var(--purple))] text-[hsl(var(--marketing-card))] px-4 py-1 rounded-full text-sm font-medium text-center min-w-[110px] whitespace-normal">
                         Most Popular
                       </div>
                     )}

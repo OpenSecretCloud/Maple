@@ -94,7 +94,7 @@ function PricingTier({
       className={`flex flex-col p-8 rounded-xl ${popular ? "border-2 border-[hsl(var(--purple))] bg-gradient-to-b from-[hsl(var(--marketing-card))] to-[hsl(var(--marketing-card))]/80 relative shadow-[0_0_30px_rgba(148,105,248,0.2)]" : "border border-[hsl(var(--marketing-card-border))] bg-[hsl(var(--marketing-card))]/50"}`}
     >
       {popular && (
-        <div className="absolute -top-4 left-1/2 transform -translate-x-1/2 bg-[hsl(var(--purple))] text-[hsl(var(--marketing-card))] px-4 py-1 rounded-full text-sm font-medium">
+        <div className="absolute -top-4 left-1/2 transform -translate-x-1/2 bg-[hsl(var(--purple))] text-[hsl(var(--marketing-card))] px-4 py-1 rounded-full text-sm font-medium text-center min-w-[110px] whitespace-normal">
           Most Popular
         </div>
       )}
@@ -143,11 +143,14 @@ export function Marketing() {
           <div className="flex flex-col gap-8">
             <div className="flex flex-col gap-2">
               <h1 className="text-6xl font-light tracking-tight mb-4">
-                <span className="dark:bg-gradient-to-r dark:from-foreground dark:to-[hsl(var(--blue))]
+                <span
+                  className="dark:bg-gradient-to-r dark:from-foreground dark:to-[hsl(var(--blue))]
                              bg-gradient-to-r from-foreground from-5% via-[hsl(var(--purple))]/90 via-50% to-[hsl(var(--purple))]
-                             text-transparent bg-clip-text">
+                             text-transparent bg-clip-text"
+                >
                   Private AI Chat
-                </span> <br /> <span className="text-foreground">that's truly secure</span>
+                </span>{" "}
+                <br /> <span className="text-foreground">that's truly secure</span>
               </h1>
               <p className="text-xl text-[hsl(var(--marketing-text-muted))] font-light max-w-xl">
                 End-to-end encryption means your conversations are confidential and protected at
@@ -286,7 +289,11 @@ export function Marketing() {
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-16 items-center">
             <div>
               <h2 className="text-4xl font-light mb-6">
-                We <span className="dark:text-[hsl(var(--blue))] text-[hsl(var(--purple))] font-medium">Prove</span> Our Security
+                We{" "}
+                <span className="dark:text-[hsl(var(--blue))] text-[hsl(var(--purple))] font-medium">
+                  Prove
+                </span>{" "}
+                Our Security
               </h2>
               <p className="text-xl text-[hsl(var(--marketing-text-muted))] mb-8">
                 Unlike other services that merely claim to be secure, we provide cryptographic
@@ -497,7 +504,8 @@ export function Marketing() {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="text-center mb-16">
             <h2 className="text-4xl font-light mb-4">
-              Simple, <span className="text-[hsl(var(--purple))] font-medium">Transparent</span> Pricing
+              Simple, <span className="text-[hsl(var(--purple))] font-medium">Transparent</span>{" "}
+              Pricing
             </h2>
             <p className="text-xl text-[hsl(var(--marketing-text-muted))] max-w-2xl mx-auto">
               No hidden fees. Choose the plan that works for your needs.
