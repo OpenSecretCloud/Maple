@@ -128,11 +128,7 @@ function PricingTier({
       </div>
       <Link
         to="/signup"
-        className={`mt-auto py-3 px-6 rounded-lg text-center font-medium transition-all duration-300 ${
-          popular
-            ? "bg-[#E2E2E2] text-[#111111] hover:bg-[#A57FF9]"
-            : "bg-[#111111] border border-[#E2E2E2]/20 text-[#E2E2E2] hover:border-[#E2E2E2]/40"
-        }`}
+        className="mt-auto py-3 px-6 rounded-lg text-center font-medium transition-all duration-300 bg-white/90 backdrop-blur-sm text-black hover:bg-[#A57FF9] active:bg-white/80 shadow-[0_0_25px_rgba(255,255,255,0.25)] hover:shadow-[0_0_35px_rgba(148,105,248,0.35)]"
       >
         {ctaText}
       </Link>

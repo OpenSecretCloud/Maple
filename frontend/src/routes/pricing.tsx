@@ -64,7 +64,7 @@ function PricingFAQ() {
               </li>
               <li>Starter: Enough chats per month for a casual user</li>
               <li>Pro: Great for heavier workloads with a high monthly cap</li>
-              <li>Team: Message us at team@opensecret.cloud</li>
+              <li>Enterprise: Message us at team@opensecret.cloud</li>
             </ul>
           </div>
         </details>
@@ -222,10 +222,11 @@ function PricingPage() {
     }
 
     const targetPlanName = product.name.toLowerCase();
+    const isTeamPlan = targetPlanName.includes("team");
 
     // Always show Contact Us for team plan when not logged in
     if (!isLoggedIn) {
-      if (targetPlanName.includes("team")) {
+      if (isTeamPlan) {
         return "Contact Us";
       }
       return "Start Chatting";
@@ -241,7 +242,7 @@ function PricingPage() {
 
     // For team plan, ALWAYS show Contact Us if not whitelisted
     // regardless of current subscription status
-    if (targetPlanName.includes("team")) {
+    if (isTeamPlan) {
       if (!isTeamPlanAvailable) {
         return "Contact Us";
       }
@@ -340,9 +341,10 @@ function PricingPage() {
     (product: Product) => {
       if (!isLoggedIn) {
         const targetPlanName = product.name.toLowerCase();
+        const isTeamPlan = targetPlanName.includes("team");
 
         // For team plan, redirect to email when not logged in
-        if (targetPlanName.includes("team")) {
+        if (isTeamPlan) {
           window.location.href = "mailto:support@opensecret.cloud";
           return;
         }
@@ -363,10 +365,11 @@ function PricingPage() {
       }
 
       const targetPlanName = product.name.toLowerCase();
+      const isTeamPlan = targetPlanName.includes("team");
 
       // For team plan, ALWAYS redirect to email if not whitelisted
       // regardless of current subscription status
-      if (targetPlanName.includes("team")) {
+      if (isTeamPlan) {
         if (!isTeamPlanAvailable) {
           window.location.href = "mailto:support@opensecret.cloud";
           return;
@@ -443,7 +446,11 @@ function PricingPage() {
         <TopNav />
         <FullPageMain>
           <MarketingHeader
-            title="Simple, transparent pricing"
+            title={
+              <h2 className="text-6xl font-light mb-0">
+                Simple, <span className="text-[#9469F8]">Transparent</span> Pricing
+              </h2>
+            }
             subtitle={
               <div className="space-y-2">
                 <p>Start with our free tier and upgrade as you grow.</p>
@@ -489,7 +496,7 @@ function PricingPage() {
                 </div>
                 <Button
                   onClick={() => window.location.reload()}
-                  className="mt-4 bg-white/90 backdrop-blur-sm text-black hover:bg-white/70 active:bg-white/80 px-8 py-4 rounded-lg text-xl font-light transition-all duration-200 shadow-[0_0_25px_rgba(255,255,255,0.25)] hover:shadow-[0_0_35px_rgba(255,255,255,0.35)]"
+                  className="mt-4 bg-white/90 backdrop-blur-sm text-black hover:bg-[#A57FF9] active:bg-white/80 px-8 py-4 rounded-lg text-xl font-light transition-all duration-300 shadow-[0_0_25px_rgba(255,255,255,0.25)] hover:shadow-[0_0_35px_rgba(148,105,248,0.35)]"
                 >
                   Retry
                 </Button>
@@ -514,9 +521,10 @@ function PricingPage() {
             </h2>
           }
           subtitle={
-            <p className="text-2xl text-[#E2E2E2]/70 max-w-2xl mx-auto">
+            <div className="space-y-2">
+              <p>Start with our free tier and upgrade as you grow.</p>
               <p>All plans include end-to-end encrypted AI chat.</p>
-            </p>
+            </div>
           }
         />
 
@@ -544,6 +552,7 @@ function PricingPage() {
                 const isCurrentPlan =
                   isLoggedIn &&
                   freshBillingStatus?.product_name?.toLowerCase() === product.name.toLowerCase();
+                const isTeamPlan = product.name.toLowerCase().includes("team");
 
                 // Calculate prices
                 const monthlyOriginalPrice = (product.default_price.unit_amount / 100).toFixed(2);
@@ -559,21 +568,18 @@ function PricingPage() {
 
                 const displayPrice = useBitcoin ? monthlyEquivalentPrice : monthlyPrice;
 
-                const isPro = product.name === "Pro";
-
                 return (
                   <div
                     key={product.id}
-                    className={`
-                      flex flex-col p-8 rounded-xl relative
-                      ${isCurrentPlan ? "ring-2 ring-white" : ""}
-                      ${useBitcoin && product.name === "Team" ? "opacity-50 cursor-not-allowed" : ""}
-                      ${isPro 
-                        ? "border-2 border-[#9469F8] bg-gradient-to-b from-[#111111] to-[#111111]/80 shadow-[0_0_30px_rgba(148,105,248,0.2)]" 
-                        : "border border-[#E2E2E2]/10 bg-[#111111]/50"}
-                    `}
+                    className={`flex flex-col ${
+                      product.name === "Pro" 
+                        ? "border-2 border-[#9469F8] bg-gradient-to-b from-[#111111] to-[#111111]/80 relative shadow-[0_0_30px_rgba(148,105,248,0.2)]" 
+                        : "border border-white/10 bg-black/75"
+                    } text-white p-4 sm:p-6 md:p-8 rounded-lg relative group transition-all duration-300 hover:border-white/30 ${
+                      isCurrentPlan ? "ring-2 ring-white" : ""
+                    } ${useBitcoin && product.name === "Team" ? "opacity-50 cursor-not-allowed" : ""}`}
                   >
-                    {isPro && (
+                    {product.name === "Pro" && (
                       <div className="absolute -top-4 left-1/2 transform -translate-x-1/2 bg-[#9469F8] text-[#111111] px-4 py-1 rounded-full text-sm font-medium">
                         Most Popular
                       </div>
@@ -588,13 +594,20 @@ function PricingPage() {
                         10% OFF
                       </Badge>
                     )}
-
                     <div className="grid grid-rows-[auto_1fr_auto_auto] h-full gap-4 sm:gap-6 md:gap-8">
-                      <h3 className="text-xl sm:text-2xl font-medium text-[#E2E2E2] flex items-center gap-2">
+                      <h3 className="text-xl sm:text-2xl font-medium flex items-center gap-2">
                         {product.name}
-                        {useBitcoin && product.name !== "Free" && product.name !== "Team" ? " (Yearly)" : ""}
+                        {useBitcoin && product.name !== "Free" && product.name !== "Team"
+                          ? " (Yearly)"
+                          : ""}
                         {isCurrentPlan && <Check className="w-5 h-5 text-green-500" />}
                       </h3>
+
+                      <p className="text-base sm:text-lg font-light text-white/70 break-words">
+                        {product.name === "Team" && useBitcoin
+                          ? "Team plan is not available with Bitcoin payment."
+                          : product.description}
+                      </p>
 
                       <div className="flex flex-col">
                         {product.name !== "Free" ? (
@@ -642,22 +655,16 @@ function PricingPage() {
                         )}
                       </div>
 
-                      <p className="text-base sm:text-lg font-light text-[#E2E2E2]/70 break-words">
-                        {product.name === "Team" && useBitcoin
-                          ? "Team plan is not available with Bitcoin payment."
-                          : product.description}
-                      </p>
-
                       <button
                         onClick={() => handleButtonClick(product)}
-                        disabled={loadingProductId === product.id || (useBitcoin && product.name === "Team")}
-                        className={`
-                          w-full py-3 px-6 rounded-lg text-center font-medium transition-all duration-300
-                          ${isPro
-                            ? "bg-[#9469F8] text-[#111111] hover:bg-[#A57FF9]"
-                            : "bg-[#111111] border border-[#E2E2E2]/20 text-[#E2E2E2] hover:border-[#E2E2E2]/40"}
-                          disabled:opacity-50 disabled:cursor-not-allowed
-                        `}
+                        disabled={
+                          loadingProductId === product.id || (useBitcoin && product.name === "Team")
+                        }
+                        className={`w-full bg-white/90 backdrop-blur-sm text-black hover:bg-[#A57FF9] active:bg-white/80 px-4 sm:px-8 py-3 sm:py-4 rounded-lg text-lg sm:text-xl font-light transition-all duration-300 shadow-[0_0_25px_rgba(255,255,255,0.25)] hover:shadow-[0_0_35px_rgba(148,105,248,0.35)] disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 group-hover:bg-[#A57FF9] ${
+                          isTeamPlan && !isTeamPlanAvailable
+                            ? "!opacity-100 !cursor-pointer hover:!bg-[#A57FF9]"
+                            : ""
+                        }`}
                       >
                         {useBitcoin && product.name === "Team"
                           ? "Not Available"
