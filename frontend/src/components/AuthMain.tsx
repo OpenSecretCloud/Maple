@@ -13,9 +13,16 @@ export function AuthMain({ children, title, description }: AuthMainProps) {
     <main className="flex flex-col items-center gap-6 justify-center min-h-screen px-4 py-16">
       <Link to="/" className="h-[40px] flex items-center mb-2">
         <img
+          src="/maple-logo-dark.svg"
+          alt="Maple AI logo"
+          className="w-[10rem] block dark:hidden"
+          width={160}
+          height={40}
+        />
+        <img
           src="/maple-logo.svg"
           alt="Maple AI logo"
-          className="w-[10rem]"
+          className="w-[10rem] hidden dark:block"
           width={160}
           height={40}
         />
