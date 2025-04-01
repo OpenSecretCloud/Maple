@@ -26,8 +26,8 @@ function ProofDisplay({
   os: ReturnType<typeof useOpenSecret>;
 }) {
   return (
-    <div className="flex flex-col gap-4 text-white pt-8">
-      <div className="flex flex-col gap-6 border-white/10 bg-black/75 text-white p-8 border rounded-lg">
+    <div className="flex flex-col gap-4 text-foreground pt-8">
+      <div className="flex flex-col gap-6 dark:border-white/10 border-[hsl(var(--marketing-card-border))] dark:bg-black/75 bg-[hsl(var(--marketing-card))]/80 dark:text-white p-8 border rounded-lg">
         <h3 className="text-2xl font-medium">Server PCR0 Fingerprint</h3>
 
         {parsedDocument.pcrs.map(
@@ -45,13 +45,13 @@ function ProofDisplay({
               </div>
             )
         )}
-        <p className="text-sm text-white/70">
+        <p className="text-sm dark:text-white/70 text-foreground/70">
           For technical details, check out the{" "}
           <a
             href="https://docs.aws.amazon.com/enclaves/latest/user/verify-root.html"
             target="_blank"
             rel="noopener noreferrer"
-            className="underline hover:text-white/80"
+            className="underline hover:text-foreground/80 dark:hover:text-white/80"
           >
             AWS Nitro Enclaves documentation
           </a>
@@ -59,14 +59,14 @@ function ProofDisplay({
         </p>
       </div>
 
-      <details className="group rounded p-8 bg-black/75">
-        <summary className="font-medium cursor-pointer hover:text-white/80">
+      <details className="group rounded p-8 dark:bg-black/75 bg-[hsl(var(--marketing-card))]/80 border border-[hsl(var(--marketing-card-border))] dark:border-white/10">
+        <summary className="font-medium cursor-pointer hover:text-foreground/80 dark:hover:text-white/80">
           <span className="group-open:hidden">Show</span>
           <span className="hidden group-open:inline">Hide</span>
           {" Full Attestation Details"}
         </summary>
         <div className="mt-4 space-y-4">
-          <div className="text-sm text-gray-400 space-y-2">
+          <div className="text-sm dark:text-gray-400 text-foreground/70 space-y-2">
             <p>
               Module ID: <span className="font-mono break-all">{parsedDocument.moduleId}</span>
             </p>
@@ -91,7 +91,7 @@ function ProofDisplay({
             )}
             <div>
               <details className="group mt-2">
-                <summary className="text-sm cursor-pointer hover:text-white/80">
+                <summary className="text-sm cursor-pointer hover:text-foreground/80 dark:hover:text-white/80">
                   Additional PCR Values
                 </summary>
                 <div className="mt-2 space-y-2">
@@ -111,7 +111,7 @@ function ProofDisplay({
             <div>
               <p className="font-medium mt-4 mb-2">Certificate Chain:</p>
               {parsedDocument.certificates.map((cert, index) => (
-                <div key={index} className="mb-4 p-3 bg-black/50 rounded">
+                <div key={index} className="mb-4 p-3 dark:bg-black/50 bg-foreground/5 rounded">
                   {cert.isRoot ? (
                     <p className="font-medium mb-1">Root Certificate</p>
                   ) : (
@@ -143,10 +143,10 @@ function ProofDisplay({
                     <MatchIndicator isMatch={true} text="Signature verified with chain" />
                   )}
                   <details className="mt-2">
-                    <summary className="text-sm cursor-pointer hover:text-white/80">
+                    <summary className="text-sm cursor-pointer hover:text-foreground/80 dark:hover:text-white/80">
                       Show PEM Certificate
                     </summary>
-                    <pre className="mt-2 p-2 bg-black/50 rounded text-xs font-mono whitespace-pre-wrap break-all">
+                    <pre className="mt-2 p-2 dark:bg-black/50 bg-foreground/5 rounded text-xs font-mono whitespace-pre-wrap break-all">
                       {cert.pem}
                     </pre>
                   </details>
@@ -181,8 +181,17 @@ function Verify() {
       <TopNav />
       <FullPageMain>
         <MarketingHeader
-          title="Proof of Security"
-          subtitle="Cryptographic proof that you're talking with a secure server."
+          title={
+            <h2 className="text-6xl font-light mb-0">
+              <span className="dark:text-[hsl(var(--blue))] text-[hsl(var(--purple))]">Proof</span> of
+              Security
+            </h2>
+          }
+          subtitle={
+            <p className="text-2xl text-[hsl(var(--marketing-text-muted))] max-w-2xl mx-auto">
+              Cryptographic proof that you're talking with a secure server.
+            </p>
+          }
         />
 
         {isLoading && (

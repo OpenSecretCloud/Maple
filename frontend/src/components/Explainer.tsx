@@ -90,9 +90,14 @@ export function InfoContent() {
       </div>
       <div className="w-full pt-4 flex gap-4 items-center justify-between">
         <VerificationStatus />
-        <Link to="/about" className="text-center hover:underline font-medium text-sm">
+        <a
+          href="https://blog.trymaple.ai"
+          className="text-center hover:underline font-medium text-sm"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
           Learn more
-        </Link>
+        </a>
       </div>
     </>
   );

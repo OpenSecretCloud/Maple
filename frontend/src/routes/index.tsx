@@ -12,7 +12,7 @@ import { Card, CardHeader } from "@/components/ui/card";
 import { VerificationModal } from "@/components/VerificationModal";
 import { TopNav } from "@/components/TopNav";
 import { Marketing } from "@/components/Marketing";
-import { Footer } from "@/components/Footer";
+import { SimplifiedFooter } from "@/components/SimplifiedFooter";
 
 const homeVariants = cva("grid h-full w-full overflow-hidden", {
   variants: {
@@ -87,11 +87,20 @@ function Index() {
         {os.auth.user ? (
           <>
             <div className="w-full max-w-[35rem] flex flex-col gap-8 ">
-              <div className="flex flex-col items-center gap-2 text-white">
+              <div className="flex flex-col items-center gap-2">
                 <Link to="/">
-                  <img src="/maple-logo.svg" alt="Maple AI logo" className="w-[10rem]" />
+                  <img
+                    src="/maple-logo.svg"
+                    alt="Maple AI logo"
+                    className="w-[10rem] hidden dark:block"
+                  />
+                  <img
+                    src="/maple-logo-dark.svg"
+                    alt="Maple AI logo"
+                    className="w-[10rem] block dark:hidden filter drop-shadow-sm"
+                  />
                 </Link>
-                <h2 className="text-2xl font-light leading-none tracking-tight text-center text-balance">
+                <h2 className="text-2xl font-light leading-none tracking-tight text-center text-balance text-foreground dark:text-white">
                   Private AI Chat
                 </h2>
               </div>
@@ -106,7 +115,7 @@ function Index() {
                   <InfoContent />
                 </CardHeader>
               </Card>
-              <Footer />
+              <SimplifiedFooter />
             </div>
           </>
         ) : (

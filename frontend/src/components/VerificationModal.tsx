@@ -8,7 +8,7 @@ import {
 } from "@/components/ui/dialog";
 import { useOpenSecret } from "@opensecret/react";
 import { useState, useEffect } from "react";
-import { Loader2, CheckCircle } from "lucide-react";
+import { Loader2, CheckCircle, LogOut } from "lucide-react";
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
 import { AlertDestructive } from "./AlertDestructive";
@@ -130,7 +130,8 @@ export function VerificationModal() {
                 )}
               </Button>
             )}
-            <Button variant="secondary" onClick={() => os.signOut()}>
+            <Button variant="outline" onClick={() => os.signOut()} className="gap-2">
+              <LogOut className="w-4 h-4" />
               Log Out
             </Button>
           </div>

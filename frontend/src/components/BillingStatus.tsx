@@ -64,7 +64,7 @@ export function BillingStatus() {
       {isFree && (
         <div
           onClick={() => navigate({ to: "/pricing" })}
-          className="bg-white/10 backdrop-blur-sm px-6 py-2 rounded-full border border-white/20 text-sm font-light hover:bg-white/20 transition-colors cursor-pointer flex items-center gap-2 w-fit"
+          className="dark:bg-white/10 bg-[hsl(var(--primary))]/5 backdrop-blur-sm px-6 py-2 rounded-full dark:border-white/20 border-[hsl(var(--primary))]/20 border text-sm font-light dark:hover:bg-white/20 hover:bg-[hsl(var(--primary))]/10 transition-colors cursor-pointer flex items-center gap-2 w-fit dark:text-white text-foreground"
         >
           <Bitcoin className="w-3.5 h-3.5 flex-shrink-0" />
           <span>Save 10% with yearly Bitcoin plans →</span>

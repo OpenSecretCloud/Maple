@@ -108,9 +108,9 @@ export function Sidebar({
         isOpen ? "block w-[280px]" : "hidden md:block md:w-[280px]"
       ])}
     >
-      <div className="h-full border-r border-input bg-background backdrop-blur-lg flex flex-col gap-4 px-4 py-4 md:py-8 items-stretch w-[280px]">
+      <div className="h-full border-r border-input dark:bg-background bg-[hsl(var(--footer-bg))] backdrop-blur-lg flex flex-col gap-4 px-4 py-4 md:py-8 items-stretch w-[280px]">
         <div className="flex justify-between items-center">
-          <Button variant={"outline"} size="icon" className="md:w-full gap-2" onClick={addChat}>
+          <Button variant="outline" size="icon" className="md:w-full gap-2" onClick={addChat}>
             <SquarePenIcon className="w-4 h-4" />
             <span className="hidden md:block">New Chat</span>
           </Button>
