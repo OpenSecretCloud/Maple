@@ -125,7 +125,7 @@ export function AccountMenu() {
             <Link to="/pricing" className="self-end">
               <Badge
                 variant="secondary"
-                className="bg-[#111111] text-white hover:bg-[#111111]/80 dark:bg-white dark:text-[#111111] dark:hover:bg-white/80 transition-colors cursor-pointer uppercase"
+                className="bg-[hsl(var(--primary))] text-[hsl(var(--primary-foreground))] hover:bg-[hsl(var(--primary))]/80 dark:bg-white dark:text-[hsl(var(--background))] dark:hover:bg-white/80 transition-colors cursor-pointer uppercase"
               >
                 {billingStatus ? `${billingStatus.product_name} Plan` : "Loading..."}
               </Badge>

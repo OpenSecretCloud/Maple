@@ -133,10 +133,10 @@ function PricingTier({
             window.location.href = "mailto:support@opensecret.cloud";
           }}
           className="mt-auto py-3 px-6 rounded-lg text-center font-medium transition-all duration-300 
-            dark:bg-white/90 dark:text-black dark:hover:bg-[#A57FF9] dark:hover:text-[#E2E2E2] dark:active:bg-white/80
-            bg-background text-foreground hover:bg-[hsl(var(--purple))] hover:text-[#E2E2E2] active:bg-background/80 
+            dark:bg-white/90 dark:text-black dark:hover:bg-[hsl(var(--purple))]/80 dark:hover:text-[hsl(var(--foreground))] dark:active:bg-white/80
+            bg-background text-foreground hover:bg-[hsl(var(--purple))] hover:text-[hsl(var(--foreground))] active:bg-background/80 
             border border-[hsl(var(--purple))]/30 hover:border-[hsl(var(--purple))]
-            shadow-[0_0_15px_rgba(148,105,248,0.2)] hover:shadow-[0_0_25px_rgba(148,105,248,0.3)]"
+            shadow-[0_0_15px_rgba(var(--purple-rgb),0.2)] hover:shadow-[0_0_25px_rgba(var(--purple-rgb),0.3)]"
         >
           Contact Us
         </button>
@@ -149,10 +149,10 @@ function PricingTier({
             window.location.href = `/signup?next=/pricing&selected_plan=${productId}`;
           }}
           className="mt-auto py-3 px-6 rounded-lg text-center font-medium transition-all duration-300 
-              dark:bg-white/90 dark:text-black dark:hover:bg-[#A57FF9] dark:hover:text-[#E2E2E2] dark:active:bg-white/80
-              bg-background text-foreground hover:bg-[hsl(var(--purple))] hover:text-[#E2E2E2] active:bg-background/80 
+              dark:bg-white/90 dark:text-black dark:hover:bg-[hsl(var(--purple))]/80 dark:hover:text-[hsl(var(--foreground))] dark:active:bg-white/80
+              bg-background text-foreground hover:bg-[hsl(var(--purple))] hover:text-[hsl(var(--foreground))] active:bg-background/80 
               border border-[hsl(var(--purple))]/30 hover:border-[hsl(var(--purple))]
-              shadow-[0_0_15px_rgba(148,105,248,0.2)] hover:shadow-[0_0_25px_rgba(148,105,248,0.3)]"
+              shadow-[0_0_15px_rgba(var(--purple-rgb),0.2)] hover:shadow-[0_0_25px_rgba(var(--purple-rgb),0.3)]"
         >
           {ctaText}
         </button>
@@ -161,10 +161,10 @@ function PricingTier({
         <Link
           to="/signup"
           className="mt-auto py-3 px-6 rounded-lg text-center font-medium transition-all duration-300 
-              dark:bg-white/90 dark:text-black dark:hover:bg-[#A57FF9] dark:hover:text-[#E2E2E2] dark:active:bg-white/80
-              bg-background text-foreground hover:bg-[hsl(var(--purple))] hover:text-[#E2E2E2] active:bg-background/80 
+              dark:bg-white/90 dark:text-black dark:hover:bg-[hsl(var(--purple))]/80 dark:hover:text-[hsl(var(--foreground))] dark:active:bg-white/80
+              bg-background text-foreground hover:bg-[hsl(var(--purple))] hover:text-[hsl(var(--foreground))] active:bg-background/80 
               border border-[hsl(var(--purple))]/30 hover:border-[hsl(var(--purple))]
-              shadow-[0_0_15px_rgba(148,105,248,0.2)] hover:shadow-[0_0_25px_rgba(148,105,248,0.3)]"
+              shadow-[0_0_15px_rgba(var(--purple-rgb),0.2)] hover:shadow-[0_0_25px_rgba(var(--purple-rgb),0.3)]"
         >
           {ctaText}
         </Link>
@@ -313,7 +313,7 @@ export function Marketing() {
       </section>
 
       {/* Features Section */}
-      <section className="w-full py-20 dark:bg-[#13131A] bg-[hsl(var(--section-alt))]">
+      <section className="w-full py-20 dark:bg-[hsl(var(--section-alt))] bg-[hsl(var(--section-alt))]">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="text-center mb-16">
             <h2 className="text-4xl font-light mb-4">
@@ -527,7 +527,7 @@ export function Marketing() {
       {/* Testimonials */}
       <section
         id="testimonials"
-        className="w-full py-20 dark:bg-[#13131A] bg-[hsl(var(--section-alt))]"
+        className="w-full py-20 dark:bg-[hsl(var(--section-alt))] bg-[hsl(var(--section-alt))]"
       >
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="text-center mb-16">
@@ -634,10 +634,10 @@ export function Marketing() {
       </section>
 
       {/* CTA Section */}
-      <section className="w-full py-20 dark:bg-gradient-to-r dark:from-[#111111] dark:via-[#13131A] dark:to-[#111111] bg-gradient-to-r from-[hsl(var(--section-alt))] via-[hsl(var(--marketing-card))] to-[hsl(var(--section-alt))]">
+      <section className="w-full py-20 dark:bg-gradient-to-r dark:from-[hsl(var(--background))] dark:via-[hsl(var(--section-alt))] dark:to-[hsl(var(--background))] bg-gradient-to-r from-[hsl(var(--section-alt))] via-[hsl(var(--marketing-card))] to-[hsl(var(--section-alt))]">
         <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="bg-gradient-to-br from-[hsl(var(--purple))]/20 to-foreground/20 p-1 rounded-2xl">
-            <div className="dark:bg-[#111111]/95 bg-[hsl(var(--marketing-card))]/95 rounded-2xl p-12 text-center">
+            <div className="dark:bg-[hsl(var(--background))]/95 bg-[hsl(var(--marketing-card))]/95 rounded-2xl p-12 text-center">
               <h2 className="text-4xl font-light mb-4">
                 Ready to Chat <span className="text-foreground font-medium">Securely?</span>
               </h2>

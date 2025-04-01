@@ -500,11 +500,11 @@ function PricingPage() {
                 <Button
                   onClick={() => window.location.reload()}
                   className="mt-4 
-                    dark:bg-white/90 dark:text-black dark:hover:bg-[#A57FF9] dark:hover:text-[#E2E2E2] dark:active:bg-white/80
-                    bg-background text-foreground hover:bg-[hsl(var(--purple))] hover:text-[#E2E2E2] active:bg-background/80 
+                    dark:bg-white/90 dark:text-black dark:hover:bg-[hsl(var(--purple))]/80 dark:hover:text-[hsl(var(--foreground))] dark:active:bg-white/80
+                    bg-background text-foreground hover:bg-[hsl(var(--purple))] hover:text-[hsl(var(--foreground))] active:bg-background/80 
                     border border-[hsl(var(--purple))]/30 hover:border-[hsl(var(--purple))]
                     px-8 py-4 rounded-lg text-xl font-light transition-all duration-300 
-                    shadow-[0_0_15px_rgba(148,105,248,0.2)] hover:shadow-[0_0_25px_rgba(148,105,248,0.3)]"
+                    shadow-[0_0_15px_rgba(var(--purple-rgb),0.2)] hover:shadow-[0_0_25px_rgba(var(--purple-rgb),0.3)]"
                 >
                   Retry
                 </Button>
@@ -538,7 +538,7 @@ function PricingPage() {
 
         <div className="w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex justify-center">
           <div className="inline-flex items-center gap-4 px-6 py-2.5 rounded-full bg-[hsl(var(--marketing-card))]/50 backdrop-blur-sm border border-[hsl(var(--marketing-card-border))]">
-            <div className="flex items-center gap-2 text-[#F7931A] text-base font-light">
+            <div className="flex items-center gap-2 text-[hsl(var(--bitcoin))] text-base font-light">
               <Bitcoin className="w-4.5 h-4.5" />
               <span>Pay with Bitcoin</span>
             </div>
@@ -546,7 +546,7 @@ function PricingPage() {
               id="bitcoin-toggle"
               checked={useBitcoin}
               onCheckedChange={setUseBitcoin}
-              className="data-[state=checked]:bg-[#F7931A] data-[state=unchecked]:border-foreground/30 scale-100"
+              className="data-[state=checked]:bg-[hsl(var(--bitcoin))] data-[state=unchecked]:border-foreground/30 scale-100"
             />
           </div>
         </div>
@@ -581,7 +581,7 @@ function PricingPage() {
                     key={product.id}
                     className={`flex flex-col ${
                       product.name === "Pro" && !isCurrentPlan
-                        ? "border-2 border-[hsl(var(--purple))] bg-gradient-to-b from-[hsl(var(--marketing-card))] to-[hsl(var(--marketing-card))]/80 relative shadow-[0_0_30px_rgba(148,105,248,0.2)]"
+                        ? "border-2 border-[hsl(var(--purple))] bg-gradient-to-b from-[hsl(var(--marketing-card))] to-[hsl(var(--marketing-card))]/80 relative shadow-[0_0_30px_rgba(var(--purple-rgb),0.2)]"
                         : "border border-[hsl(var(--marketing-card-border))] bg-[hsl(var(--marketing-card))]/75"
                     } text-foreground p-4 sm:p-6 md:p-8 rounded-lg relative group transition-all duration-300 hover:border-foreground/30 ${
                       isCurrentPlan ? "ring-2 ring-foreground" : ""
@@ -669,14 +669,14 @@ function PricingPage() {
                           loadingProductId === product.id || (useBitcoin && product.name === "Team")
                         }
                         className={`w-full 
-                          dark:bg-white/90 dark:text-black dark:hover:bg-[#A57FF9] dark:hover:text-[#E2E2E2] dark:active:bg-white/80
-                          bg-background text-foreground hover:bg-[hsl(var(--purple))] hover:text-[#E2E2E2] active:bg-background/80 
+                          dark:bg-white/90 dark:text-black dark:hover:bg-[hsl(var(--purple))]/80 dark:hover:text-[hsl(var(--foreground))] dark:active:bg-white/80
+                          bg-background text-foreground hover:bg-[hsl(var(--purple))] hover:text-[hsl(var(--foreground))] active:bg-background/80 
                           border border-[hsl(var(--purple))]/30 hover:border-[hsl(var(--purple))]
                           px-4 sm:px-8 py-3 sm:py-4 rounded-lg text-lg sm:text-xl font-light 
-                          transition-all duration-300 shadow-[0_0_15px_rgba(148,105,248,0.2)] 
-                          hover:shadow-[0_0_25px_rgba(148,105,248,0.3)] disabled:opacity-50 
+                          transition-all duration-300 shadow-[0_0_15px_rgba(var(--purple-rgb),0.2)] 
+                          hover:shadow-[0_0_25px_rgba(var(--purple-rgb),0.3)] disabled:opacity-50 
                           disabled:cursor-not-allowed flex items-center justify-center gap-2 
-                          group-hover:bg-[hsl(var(--purple))] group-hover:text-[#E2E2E2] dark:group-hover:text-[#E2E2E2] dark:group-hover:bg-[#A57FF9] ${
+                          group-hover:bg-[hsl(var(--purple))] group-hover:text-[hsl(var(--foreground))] dark:group-hover:text-[hsl(var(--foreground))] dark:group-hover:bg-[hsl(var(--purple))]/80 ${
                             isTeamPlan && !isTeamPlanAvailable
                               ? "!opacity-100 !cursor-pointer hover:!bg-[hsl(var(--purple))]"
                               : ""
