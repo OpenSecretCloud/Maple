@@ -412,9 +412,9 @@ export function Marketing() {
                       </div>
 
                       {/* Vertical Connection Line - Mobile */}
-                      <div className="h-16 w-px dark:bg-gradient-to-b dark:from-[hsl(var(--purple))]/50 dark:to-[hsl(var(--blue))]/50 bg-gradient-to-b from-[hsl(var(--purple))]/30 to-[hsl(var(--purple))]/70 relative">
+                      <div className="h-16 w-px bg-[hsl(var(--purple))]/50 relative">
                         <div className="absolute -top-1 left-1/2 -translate-x-1/2 w-2 h-2 border-t-2 border-l-2 border-[hsl(var(--purple))] transform rotate-45"></div>
-                        <div className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-2 h-2 border-b-2 border-r-2 dark:border-[hsl(var(--blue))] border-[hsl(var(--purple))] transform rotate-45"></div>
+                        <div className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-2 h-2 border-b-2 border-r-2 border-[hsl(var(--purple))] transform rotate-45"></div>
                         <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 whitespace-nowrap text-xs text-foreground/40 ml-1">
                           Encrypted Connection
                         </div>
@@ -467,9 +467,9 @@ export function Marketing() {
 
                       {/* Horizontal Connection Line - Desktop */}
                       <div className="flex-1 mx-2 flex items-center justify-center">
-                        <div className="h-px w-4/5 dark:bg-gradient-to-r dark:from-[hsl(var(--purple))]/50 dark:to-[hsl(var(--blue))]/50 bg-gradient-to-r from-[hsl(var(--purple))]/30 to-[hsl(var(--purple))]/70 relative">
+                        <div className="h-px w-4/5 bg-[hsl(var(--purple))]/50 relative">
                           <div className="absolute left-0 top-1/2 -translate-y-1/2 w-2 h-2 border-t-2 border-l-2 border-[hsl(var(--purple))] transform -rotate-45"></div>
-                          <div className="absolute right-0 top-1/2 -translate-y-1/2 w-2 h-2 border-t-2 border-r-2 dark:border-[hsl(var(--blue))] border-[hsl(var(--purple))] transform rotate-45"></div>
+                          <div className="absolute right-0 top-1/2 -translate-y-1/2 w-2 h-2 border-t-2 border-r-2 border-[hsl(var(--purple))] transform rotate-45"></div>
                           <div className="absolute -top-4 left-1/2 -translate-x-1/2 whitespace-nowrap text-xs text-foreground/40">
                             Encrypted Connection
                           </div>
@@ -509,8 +509,8 @@ export function Marketing() {
                   {/* Crypto Text */}
                   <div className="mt-8 flex gap-4 justify-center overflow-hidden text-xs font-mono">
                     <div className="text-foreground/60">0x7B4...</div>
-                    <div className="text-foreground/60">RSA-2048</div>
-                    <div className="text-foreground/60">AES-256</div>
+                    <div className="text-foreground/60">ECDSA P-384</div>
+                    <div className="text-foreground/60">SHA-384</div>
                   </div>
                 </div>
               </div>
