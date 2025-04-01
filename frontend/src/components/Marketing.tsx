@@ -2,6 +2,8 @@ import { Link } from "@tanstack/react-router";
 import { VerificationStatus } from "./VerificationStatus";
 import { ArrowRight, Check, Lock, MessageSquareMore, Shield, Sparkles } from "lucide-react";
 import { Footer } from "./Footer";
+import { useQuery } from "@tanstack/react-query";
+import { getBillingService } from "@/billing/billingService";
 
 function CTAButton({
   children,
@@ -80,7 +82,8 @@ function PricingTier({
   description,
   features,
   ctaText,
-  popular = false
+  popular = false,
+  productId = "" // Add productId parameter
 }: {
   name: string;
   price: string;
@@ -88,7 +91,10 @@ function PricingTier({
   features: string[];
   ctaText: string;
   popular?: boolean;
+  productId?: string; // Add type for productId
 }) {
+  const isTeamPlan = name.toLowerCase().includes("team");
+
   return (
     <div
       className={`flex flex-col p-8 rounded-xl ${popular ? "border-2 border-[hsl(var(--purple))] bg-gradient-to-b from-[hsl(var(--marketing-card))] to-[hsl(var(--marketing-card))]/80 relative shadow-[0_0_30px_rgba(148,105,248,0.2)]" : "border border-[hsl(var(--marketing-card-border))] bg-[hsl(var(--marketing-card))]/50"}`}
@@ -120,21 +126,80 @@ function PricingTier({
           </div>
         ))}
       </div>
-      <Link
-        to="/signup"
-        className="mt-auto py-3 px-6 rounded-lg text-center font-medium transition-all duration-300 
-        dark:bg-white/90 dark:text-black dark:hover:bg-[#A57FF9] dark:hover:text-[#E2E2E2] dark:active:bg-white/80
-        bg-background text-foreground hover:bg-[hsl(var(--purple))] hover:text-[#E2E2E2] active:bg-background/80 
-        border border-[hsl(var(--purple))]/30 hover:border-[hsl(var(--purple))]
-        shadow-[0_0_15px_rgba(148,105,248,0.2)] hover:shadow-[0_0_25px_rgba(148,105,248,0.3)]"
-      >
-        {ctaText}
-      </Link>
+      {isTeamPlan ? (
+        // For team plans, add "Contact Us" button that opens email
+        <button
+          onClick={() => {
+            window.location.href = "mailto:support@opensecret.cloud";
+          }}
+          className="mt-auto py-3 px-6 rounded-lg text-center font-medium transition-all duration-300 
+            dark:bg-white/90 dark:text-black dark:hover:bg-[#A57FF9] dark:hover:text-[#E2E2E2] dark:active:bg-white/80
+            bg-background text-foreground hover:bg-[hsl(var(--purple))] hover:text-[#E2E2E2] active:bg-background/80 
+            border border-[hsl(var(--purple))]/30 hover:border-[hsl(var(--purple))]
+            shadow-[0_0_15px_rgba(148,105,248,0.2)] hover:shadow-[0_0_25px_rgba(148,105,248,0.3)]"
+        >
+          Contact Us
+        </button>
+      ) : // For non-team plans, redirect to signup with pricing selection
+      productId ? (
+        // When we have a product ID, create a button that handles the navigation
+        <button
+          onClick={() => {
+            // Use window.location to navigate with search params
+            window.location.href = `/signup?next=/pricing&selected_plan=${productId}`;
+          }}
+          className="mt-auto py-3 px-6 rounded-lg text-center font-medium transition-all duration-300 
+              dark:bg-white/90 dark:text-black dark:hover:bg-[#A57FF9] dark:hover:text-[#E2E2E2] dark:active:bg-white/80
+              bg-background text-foreground hover:bg-[hsl(var(--purple))] hover:text-[#E2E2E2] active:bg-background/80 
+              border border-[hsl(var(--purple))]/30 hover:border-[hsl(var(--purple))]
+              shadow-[0_0_15px_rgba(148,105,248,0.2)] hover:shadow-[0_0_25px_rgba(148,105,248,0.3)]"
+        >
+          {ctaText}
+        </button>
+      ) : (
+        // Default link when no product ID is available
+        <Link
+          to="/signup"
+          className="mt-auto py-3 px-6 rounded-lg text-center font-medium transition-all duration-300 
+              dark:bg-white/90 dark:text-black dark:hover:bg-[#A57FF9] dark:hover:text-[#E2E2E2] dark:active:bg-white/80
+              bg-background text-foreground hover:bg-[hsl(var(--purple))] hover:text-[#E2E2E2] active:bg-background/80 
+              border border-[hsl(var(--purple))]/30 hover:border-[hsl(var(--purple))]
+              shadow-[0_0_15px_rgba(148,105,248,0.2)] hover:shadow-[0_0_25px_rgba(148,105,248,0.3)]"
+        >
+          {ctaText}
+        </Link>
+      )}
     </div>
   );
 }
 
 export function Marketing() {
+  // Fetch products to get product IDs for pricing tiers
+  const {
+    data: products
+    // We don't need to use loading state as we provide empty string fallback
+  } = useQuery({
+    queryKey: ["marketing-products"],
+    queryFn: async () => {
+      try {
+        const billingService = getBillingService();
+        return await billingService.getProducts();
+      } catch (error) {
+        console.error("Error fetching products:", error);
+        return [];
+      }
+    },
+    retry: 1 // Only retry once for faster error feedback
+  });
+
+  // Find product IDs for each tier
+  const getProductId = (name: string) => {
+    if (!products || products.length === 0) return "";
+
+    const product = products.find((p) => p.name.toLowerCase() === name.toLowerCase() && p.active);
+    return product ? product.id : "";
+  };
+
   return (
     <div className="flex flex-col items-center w-full">
       {/* Hero Section */}
@@ -535,6 +600,7 @@ export function Marketing() {
                 "Rename Chats"
               ]}
               ctaText="Start Chatting"
+              productId={getProductId("Starter")}
             />
             <PricingTier
               name="Pro"
@@ -548,6 +614,7 @@ export function Marketing() {
               ]}
               ctaText="Start Chatting"
               popular={true}
+              productId={getProductId("Pro")}
             />
             <PricingTier
               name="Team"
@@ -559,7 +626,8 @@ export function Marketing() {
                 "Pool chat credits among team",
                 "Features from Pro"
               ]}
-              ctaText="Start Chatting"
+              ctaText="Contact Us"
+              productId={getProductId("Team")}
             />
           </div>
         </div>

@@ -580,14 +580,14 @@ function PricingPage() {
                   <div
                     key={product.id}
                     className={`flex flex-col ${
-                      product.name === "Pro"
+                      product.name === "Pro" && !isCurrentPlan
                         ? "border-2 border-[hsl(var(--purple))] bg-gradient-to-b from-[hsl(var(--marketing-card))] to-[hsl(var(--marketing-card))]/80 relative shadow-[0_0_30px_rgba(148,105,248,0.2)]"
                         : "border border-[hsl(var(--marketing-card-border))] bg-[hsl(var(--marketing-card))]/75"
                     } text-foreground p-4 sm:p-6 md:p-8 rounded-lg relative group transition-all duration-300 hover:border-foreground/30 ${
                       isCurrentPlan ? "ring-2 ring-foreground" : ""
                     } ${useBitcoin && product.name === "Team" ? "opacity-50 cursor-not-allowed" : ""}`}
                   >
-                    {product.name === "Pro" && (
+                    {product.name === "Pro" && !isCurrentPlan && (
                       <div className="absolute -top-4 left-1/2 transform -translate-x-1/2 bg-[hsl(var(--purple))] text-[hsl(var(--marketing-card))] px-4 py-1 rounded-full text-sm font-medium text-center min-w-[110px] whitespace-normal">
                         Most Popular
                       </div>
