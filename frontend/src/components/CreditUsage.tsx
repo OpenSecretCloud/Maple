@@ -15,18 +15,26 @@ export function CreditUsage() {
   );
   const roundedPercent = Math.round(percentUsed);
 
+  // Set bar color based on usage
+  const getBarColor = () => {
+    if (percentUsed >= 90) return "rgb(239, 68, 68)"; // Tailwind red-500
+    if (percentUsed >= 75) return "rgb(245, 158, 11)"; // Tailwind amber-500
+    return "rgb(16, 185, 129)"; // Tailwind emerald-500
+  };
+
   return (
     <div className="px-2 py-2 text-xs text-muted-foreground">
       <div className="mb-1 flex justify-between">
         <span>Credit Usage</span>
         <span>{roundedPercent}%</span>
       </div>
-      <div className="h-2.5 w-full overflow-hidden rounded-full bg-secondary">
+      <div className="h-2.5 w-full overflow-hidden rounded-full bg-muted">
         <div
-          className={`h-full transition-all ${
-            percentUsed >= 90 ? "bg-destructive" : percentUsed >= 75 ? "bg-amber-500" : "bg-primary"
-          }`}
-          style={{ width: `${percentUsed}%` }}
+          className="h-full transition-all"
+          style={{
+            width: `${percentUsed}%`,
+            backgroundColor: getBarColor()
+          }}
         />
       </div>
       <div className="mt-1 text-xs text-right">Resets Monthly</div>
