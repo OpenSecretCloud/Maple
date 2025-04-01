@@ -16,7 +16,6 @@ import { Route as ProofImport } from './routes/proof'
 import { Route as PricingImport } from './routes/pricing'
 import { Route as PasswordResetImport } from './routes/password-reset'
 import { Route as LoginImport } from './routes/login'
-import { Route as AboutImport } from './routes/about'
 import { Route as AuthImport } from './routes/_auth'
 import { Route as IndexImport } from './routes/index'
 import { Route as VerifyCodeImport } from './routes/verify.$code'
@@ -53,12 +52,6 @@ const PasswordResetRoute = PasswordResetImport.update({
 const LoginRoute = LoginImport.update({
   id: '/login',
   path: '/login',
-  getParentRoute: () => rootRoute,
-} as any)
-
-const AboutRoute = AboutImport.update({
-  id: '/about',
-  path: '/about',
   getParentRoute: () => rootRoute,
 } as any)
 
@@ -113,13 +106,6 @@ declare module '@tanstack/react-router' {
       path: ''
       fullPath: ''
       preLoaderRoute: typeof AuthImport
-      parentRoute: typeof rootRoute
-    }
-    '/about': {
-      id: '/about'
-      path: '/about'
-      fullPath: '/about'
-      preLoaderRoute: typeof AboutImport
       parentRoute: typeof rootRoute
     }
     '/login': {
@@ -215,7 +201,6 @@ const PasswordResetRouteWithChildren = PasswordResetRoute._addFileChildren(
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '': typeof AuthRouteWithChildren
-  '/about': typeof AboutRoute
   '/login': typeof LoginRoute
   '/password-reset': typeof PasswordResetRouteWithChildren
   '/pricing': typeof PricingRoute
@@ -230,7 +215,6 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '': typeof AuthRouteWithChildren
-  '/about': typeof AboutRoute
   '/login': typeof LoginRoute
   '/password-reset': typeof PasswordResetRouteWithChildren
   '/pricing': typeof PricingRoute
@@ -246,7 +230,6 @@ export interface FileRoutesById {
   __root__: typeof rootRoute
   '/': typeof IndexRoute
   '/_auth': typeof AuthRouteWithChildren
-  '/about': typeof AboutRoute
   '/login': typeof LoginRoute
   '/password-reset': typeof PasswordResetRouteWithChildren
   '/pricing': typeof PricingRoute
@@ -263,7 +246,6 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | ''
-    | '/about'
     | '/login'
     | '/password-reset'
     | '/pricing'
@@ -277,7 +259,6 @@ export interface FileRouteTypes {
   to:
     | '/'
     | ''
-    | '/about'
     | '/login'
     | '/password-reset'
     | '/pricing'
@@ -291,7 +272,6 @@ export interface FileRouteTypes {
     | '__root__'
     | '/'
     | '/_auth'
-    | '/about'
     | '/login'
     | '/password-reset'
     | '/pricing'
@@ -307,7 +287,6 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AuthRoute: typeof AuthRouteWithChildren
-  AboutRoute: typeof AboutRoute
   LoginRoute: typeof LoginRoute
   PasswordResetRoute: typeof PasswordResetRouteWithChildren
   PricingRoute: typeof PricingRoute
@@ -320,7 +299,6 @@ export interface RootRouteChildren {
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AuthRoute: AuthRouteWithChildren,
-  AboutRoute: AboutRoute,
   LoginRoute: LoginRoute,
   PasswordResetRoute: PasswordResetRouteWithChildren,
   PricingRoute: PricingRoute,
@@ -342,7 +320,6 @@ export const routeTree = rootRoute
       "children": [
         "/",
         "/_auth",
-        "/about",
         "/login",
         "/password-reset",
         "/pricing",
@@ -360,9 +337,6 @@ export const routeTree = rootRoute
       "children": [
         "/_auth/chat/$chatId"
       ]
-    },
-    "/about": {
-      "filePath": "about.tsx"
     },
     "/login": {
       "filePath": "login.tsx"

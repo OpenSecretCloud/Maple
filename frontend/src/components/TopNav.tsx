@@ -95,9 +95,6 @@ export function TopNav() {
               <NavLink to="/proof" onClick={() => setMobileMenuOpen(false)}>
                 Proof
               </NavLink>
-              <NavLink to="/about" onClick={() => setMobileMenuOpen(false)}>
-                About
-              </NavLink>
             </div>
           </div>
         )}
