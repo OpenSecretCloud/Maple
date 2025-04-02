@@ -2,14 +2,9 @@
 pub fn run() {
     #[cfg(desktop)]
     let app = tauri::Builder::default()
+        .plugin(tauri_plugin_log::Builder::default().level(log::LevelFilter::Info).build())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            // Set up logging
-            app.handle().plugin(
-                tauri_plugin_log::Builder::default()
-                    .level(log::LevelFilter::Info)
-                    .build(),
-            )?;
-
             // Create the application menu with update options
             #[cfg(desktop)]
             {
@@ -115,14 +110,11 @@ pub fn run() {
 
     #[cfg(not(desktop))]
     let app = tauri::Builder::default()
-        .setup(|app| {
-            app.handle().plugin(
-                tauri_plugin_log::Builder::default()
-                    .level(log::LevelFilter::Info)
-                    .build(),
-            )?;
-            Ok(())
-        })
+        .plugin(
+            tauri_plugin_log::Builder::default()
+                .level(log::LevelFilter::Info)
+                .build(),
+        )
         .plugin(tauri_plugin_updater::Builder::new().build());
 
     app.run(tauri::generate_context!())
@@ -173,6 +165,39 @@ async fn check_for_updates(app_handle: tauri::AppHandle) -> Result<(), String> {
                         Ok(_) => {
                             // Log that the update is ready
                             log::info!("Update installed successfully. Will be applied on next application restart.");
+
+                            // Show a dialog prompting the user to restart
+                            let message = format!(
+                                "An update to version {} has been downloaded and is ready to install. \
+                                Would you like to restart the application now to apply the update?", 
+                                update.version
+                            );
+
+                            use tauri_plugin_dialog::{
+                                DialogExt, MessageDialogButtons, MessageDialogKind,
+                            };
+                            let dialog = app_handle.dialog();
+
+                            // Show a friendly info dialog with Yes/No buttons
+                            dialog
+                                .message(message)
+                                .title("Update Ready")
+                                .kind(MessageDialogKind::Info) // Use info icon for a friendlier look
+                                .buttons(MessageDialogButtons::OkCancelCustom(
+                                    "Yes".to_string(),
+                                    "No".to_string(),
+                                ))
+                                .show(move |should_restart| {
+                                    if should_restart {
+                                        log::info!("User chose to restart now for update");
+
+                                        // Restart the application instead of just exiting
+                                        // This will automatically apply the update
+                                        app_handle.restart();
+                                    } else {
+                                        log::info!("User chose to postpone update restart");
+                                    }
+                                });
                         }
                         Err(e) => {
                             log::error!("Failed to install update: {}", e);
