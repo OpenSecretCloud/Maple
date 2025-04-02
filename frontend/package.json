@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "lint": "eslint .",
+    "lint": "eslint './src/**/*.{ts,tsx}'",
     "preview": "vite preview",
     "add": "bunx shadcn-ui@latest add",
     "format": "prettier --write \"src/**/*.{ts,tsx,js,jsx,json,css,md}\"",
