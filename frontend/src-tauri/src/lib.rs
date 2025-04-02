@@ -29,7 +29,84 @@ pub fn run() {
                     let _ = check_for_updates(app_handle).await;
                 });
 
-                // We'll add Tauri menu integration when it's more stable
+                // Create a native menu with a "Check for Updates" option
+                {
+                    #[cfg(target_os = "macos")]
+                    use tauri::menu::{MenuBuilder, SubmenuBuilder};
+
+                    #[cfg(not(target_os = "macos"))]
+                    use tauri::menu::MenuBuilder;
+
+                    // Define menu item ID for "Check for Updates"
+                    let check_updates_id = "check-for-updates";
+
+                    // Get app handle for menu operations
+                    let handle = app.handle();
+
+                    // Build platform-specific menus
+                    #[cfg(target_os = "macos")]
+                    {
+                        // For macOS, we need to create a proper submenu structure
+                        // First create the app submenu (first submenu becomes the application menu)
+                        let app_submenu = SubmenuBuilder::new(handle, &app.package_info().name)
+                            // Add about menu item (standard macOS menu item)
+                            .about(None)
+                            // Add our update checker to the app menu
+                            .text(check_updates_id, "Check for Updates")
+                            .build()?;
+
+                        // Create the main menu and add our app submenu
+                        let menu = MenuBuilder::new(handle).items(&[&app_submenu]).build()?;
+
+                        // Set as the application menu
+                        app.set_menu(menu)?;
+
+                        // Log that we're setting up the menu
+                        log::info!(
+                            "Setting up macOS menu with app submenu containing About and Check for Updates options"
+                        );
+                    }
+
+                    #[cfg(not(target_os = "macos"))]
+                    {
+                        // For Windows/Linux, we can create a simpler menu
+                        let menu = MenuBuilder::new(handle)
+                            .about(None)
+                            .text(check_updates_id, "Check for Updates")
+                            .separator()
+                            .quit()
+                            .build()?;
+
+                        app.set_menu(menu)?;
+
+                        log::info!("Setting up Windows/Linux menu with About and Check for Updates options");
+                    }
+
+                    // Handle menu events
+                    let app_handle_for_menu = app.handle().clone();
+                    app.on_menu_event(move |_window, event| {
+                        // Menu event handler receives events for all menu items
+                        log::info!("Menu event received: {:?}", event.id());
+
+                        // Check for our menu ID - works the same on all platforms now
+                        if event.id().0 == check_updates_id {
+                            log::info!(
+                                "Check for updates menu item clicked - triggering update check..."
+                            );
+
+                            // Clone the app handle to use in the async task
+                            let app_handle_clone = app_handle_for_menu.clone();
+
+                            // Spawn a new async task to check for updates (non-blocking)
+                            tauri::async_runtime::spawn(async move {
+                                match check_for_updates(app_handle_clone).await {
+                                    Ok(_) => log::info!("Update check completed successfully"),
+                                    Err(e) => log::error!("Update check failed: {}", e),
+                                }
+                            });
+                        }
+                    });
+                }
             }
 
             Ok(())
