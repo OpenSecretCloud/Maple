@@ -1,0 +1,156 @@
+name: Release
+on:
+  release:
+    types: [created]
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    outputs:
+      release_id: ${{ steps.get_version.outputs.version }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: 1.2.2
+
+      - name: Get version
+        id: get_version
+        run: echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+  build-tauri:
+    needs: create-release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            args: --target universal-apple-darwin
+          - platform: ubuntu-latest
+            args: ""
+
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: 1.2.2
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "frontend/src-tauri -> target"
+          cache-on-failure: true
+
+      - name: Install dependencies (macOS)
+        if: matrix.platform == 'macos-latest'
+        run: |
+          brew install openssl@3
+
+      - name: Install dependencies (Linux)
+        if: matrix.platform == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev \
+              build-essential \
+              curl \
+              wget \
+              file \
+              libssl-dev \
+              libgtk-3-dev \
+              libayatana-appindicator3-dev \
+              librsvg2-dev
+
+      - name: Install frontend dependencies
+        working-directory: ./frontend
+        run: bun install
+
+      - name: Build Tauri App
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          VITE_OPEN_SECRET_API_URL: https://enclave.trymaple.ai
+          VITE_MAPLE_BILLING_API_URL: https://billing.opensecret.cloud
+          VITE_CLIENT_ID: ba5a14b5-d915-47b1-b7b1-afda52bc5fc6
+        with:
+          projectPath: './frontend'
+          tagName: ${{ github.ref_name }}
+          releaseName: 'Maple v${{ github.ref_name }}'
+          releaseBody: 'See the assets to download this version and install.'
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}
+
+  update-latest-json:
+    needs: build-tauri
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download release artifacts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p artifacts
+          gh release download ${{ github.ref_name }} -D artifacts
+
+      - name: Generate latest.json
+        id: generate-latest
+        run: |
+          VERSION="${{ github.ref_name }}"
+          RELEASE_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          # Get signatures from the artifacts
+          # We build a single universal macOS binary that works on both Intel and Apple Silicon
+          # but Tauri updater requires entries for each architecture to work properly
+          MACOS_SIG=$(cat artifacts/*.app.tar.gz.sig)
+          LINUX_X64_SIG=$(cat artifacts/*.AppImage.sig)
+          
+          # Create latest.json for auto-updates
+          # Note: Even though we build one universal binary for macOS,
+          # we need separate entries for each architecture in the JSON
+          # to ensure the updater works correctly on all Macs
+          cat > latest.json << EOF
+          {
+            "version": "${VERSION#v}",
+            "notes": "See the release notes at https://github.com/OpenSecretCloud/Maple/releases/tag/${VERSION}",
+            "pub_date": "${RELEASE_DATE}",
+            "platforms": {
+              "darwin-x86_64": {
+                "signature": "${MACOS_SIG}",
+                "url": "https://github.com/OpenSecretCloud/Maple/releases/download/${VERSION}/Maple.app.tar.gz"
+              },
+              "darwin-aarch64": {
+                "signature": "${MACOS_SIG}",
+                "url": "https://github.com/OpenSecretCloud/Maple/releases/download/${VERSION}/Maple.app.tar.gz"
+              },
+              "linux-x86_64": {
+                "signature": "${LINUX_X64_SIG}",
+                "url": "https://github.com/OpenSecretCloud/Maple/releases/download/${VERSION}/maple.AppImage"
+              }
+            }
+          }
+          EOF
+
+      - name: Upload latest.json
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload ${{ github.ref_name }} latest.json --clobber
