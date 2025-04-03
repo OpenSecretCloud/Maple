@@ -50,31 +50,52 @@ pub fn run() {
                             .text(check_updates_id, "Check for Updates")
                             .build()?;
 
-                        // Create the main menu and add our app submenu
-                        let menu = MenuBuilder::new(handle).items(&[&app_submenu]).build()?;
+                        // Create edit submenu with standard clipboard operations
+                        let edit_submenu = SubmenuBuilder::new(handle, "Edit")
+                            .undo()
+                            .redo()
+                            .separator()
+                            .cut()
+                            .copy()
+                            .paste()
+                            .separator()
+                            .select_all()
+                            .build()?;
+
+                        // Create the main menu and add our app submenu and edit submenu
+                        let menu = MenuBuilder::new(handle).items(&[&app_submenu, &edit_submenu]).build()?;
 
                         // Set as the application menu
                         app.set_menu(menu)?;
 
                         // Log that we're setting up the menu
                         log::info!(
-                            "Setting up macOS menu with app submenu containing About and Check for Updates options"
+                            "Setting up macOS menu with app submenu and edit submenu (copy/paste)"
                         );
                     }
 
                     #[cfg(not(target_os = "macos"))]
                     {
-                        // For Windows/Linux, we can create a simpler menu
+                        // For Windows/Linux, we need to include edit functionality while keeping a simpler structure
                         let menu = MenuBuilder::new(handle)
                             .about(None)
                             .text(check_updates_id, "Check for Updates")
+                            .separator()
+                            // Add standard edit operations
+                            .undo()
+                            .redo()
+                            .separator()
+                            .cut()
+                            .copy()
+                            .paste()
+                            .select_all()
                             .separator()
                             .quit()
                             .build()?;
 
                         app.set_menu(menu)?;
 
-                        log::info!("Setting up Windows/Linux menu with About and Check for Updates options");
+                        log::info!("Setting up Windows/Linux menu with About, Check for Updates, and Edit options");
                     }
 
                     // Handle menu events
