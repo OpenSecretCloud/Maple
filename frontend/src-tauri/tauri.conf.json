@@ -17,6 +17,11 @@
       ],
       "dialog": true,
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDRCRjU0OEJCM0M2OTNEQjAKUldTd1BXazh1MGoxUyt3TXdHREU1WUdzL1VNYlludXhORHpQSUc1cGxSSW1kdEYrOXNPNzRjdUUK"
+    },
+    "deep-link": {
+      "desktop": {
+        "schemes": ["cloud.opensecret.maple"]
+      }
     }
   },
   "app": {
