@@ -1,23 +1,15 @@
-use tauri::{Emitter, Runtime};
+use tauri::Emitter;
+use tauri_plugin_deep_link::DeepLinkExt;
+use tauri_plugin_opener;
 
-#[tauri::command]
-async fn start_oauth_server<R: Runtime>(window: tauri::Window<R>) -> Result<u16, String> {
-    log::info!("[OAuth] Starting OAuth server...");
-    let port = tauri_plugin_oauth::start(move |url| {
-        log::info!("[OAuth] Received redirect URL: {}", url);
-        // Emit the redirect URL to the frontend
-        match window.emit("oauth_redirect", url) {
-            Ok(_) => log::info!("[OAuth] Successfully emitted oauth_redirect event"),
-            Err(e) => log::error!("[OAuth] Failed to emit oauth_redirect event: {}", e),
-        }
-    })
-    .map_err(|err| {
-        log::error!("[OAuth] Failed to start OAuth server: {}", err);
-        err.to_string()
-    })?;
-
-    log::info!("[OAuth] OAuth server started on port: {}", port);
-    Ok(port)
+// This handles incoming deep links
+fn handle_deep_link_event(url: &str, app: &tauri::AppHandle) {
+    log::info!("[Deep Link] Received: {}", url);
+    // Forward the URL to the frontend
+    match app.emit_to("main", "deep-link-received", url.to_string()) {
+        Ok(_) => log::info!("[Deep Link] Event emitted successfully"),
+        Err(e) => log::error!("[Deep Link] Failed to emit event: {}", e),
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -26,9 +18,24 @@ pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_log::Builder::default().level(log::LevelFilter::Info).build())
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_oauth::init())
-        .invoke_handler(tauri::generate_handler![start_oauth_server])
+        .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
+            // Set up the deep link handler
+            // Use a cloned handle with 'static lifetime
+            let app_handle = app.handle().clone();
+            // Register the deep link handler
+            app.deep_link().on_open_url(move |event| {
+                if let Some(url) = event.urls().first() {
+                    // Use the cloned app_handle
+                    handle_deep_link_event(&url.to_string(), &app_handle);
+                }
+            });
+            // Optionally register the scheme at runtime
+            #[cfg(desktop)]
+            if let Err(e) = app.deep_link().register("cloud.opensecret.maple") {
+                log::error!("[Deep Link] Failed to register scheme: {}", e);
+            }
             // Create the application menu with update options
             #[cfg(desktop)]
             {

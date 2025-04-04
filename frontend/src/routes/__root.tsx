@@ -12,6 +12,7 @@ export type RootSearchParams = {
   selected_plan?: string;
   success?: boolean;
   canceled?: boolean;
+  provider?: string;
 };
 
 export const Route = createRootRouteWithContext<RootRouterContext>()({
@@ -21,7 +22,8 @@ export const Route = createRootRouteWithContext<RootRouterContext>()({
     next: typeof search.next === "string" ? search.next : undefined,
     selected_plan: typeof search.selected_plan === "string" ? search.selected_plan : undefined,
     success: typeof search.success === "boolean" ? search.success : undefined,
-    canceled: typeof search.canceled === "boolean" ? search.canceled : undefined
+    canceled: typeof search.canceled === "boolean" ? search.canceled : undefined,
+    provider: typeof search.provider === "string" ? search.provider : undefined
   })
 });
 
