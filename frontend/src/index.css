@@ -49,9 +49,9 @@
 
     /* Brand colors */
     --purple: 264 89% 69%; /* #9469F8 */
-    --purple-rgb: 148,105,248; /* RGB values for the purple color */
+    --purple-rgb: 148, 105, 248; /* RGB values for the purple color */
     --blue: 191 98% 62%; /* #3FDBFF */
-    --blue-rgb: 63,219,255; /* RGB values for the blue color */
+    --blue-rgb: 63, 219, 255; /* RGB values for the blue color */
     --green: 131 98% 78%; /* For accent */
     --bitcoin: 33 96% 55%; /* #F7931A */
 

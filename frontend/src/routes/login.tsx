@@ -8,6 +8,8 @@ import { AlertDestructive } from "@/components/AlertDestructive";
 import { Loader2, Github, Mail } from "lucide-react";
 import { Google } from "@/components/icons/Google";
 import { AuthMain } from "@/components/AuthMain";
+import { isTauri, invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 
 type LoginSearchParams = {
   next?: string;
@@ -85,7 +87,65 @@ function LoginPage() {
       if (selected_plan) {
         sessionStorage.setItem("selected_plan", selected_plan);
       }
-      window.location.href = auth_url;
+
+      const isTauriEnv = await isTauri();
+      // Log which OAuth flow we're using (desktop or web)
+      console.log("[OAuth] Using", isTauriEnv ? "desktop" : "web", "flow");
+
+      if (isTauriEnv) {
+        // Desktop app: Use the OAuth plugin
+        try {
+          // Start the OAuth server
+          await invoke<number>("start_oauth_server");
+
+          // Listen for the redirect URL
+          const unlisten = await listen<string>("oauth_redirect", async (event) => {
+            const url = event.payload;
+            console.log("[OAuth] Received redirect callback");
+
+            // Extract the code and state from the URL
+            const urlObj = new URL(url);
+            const code = urlObj.searchParams.get("code");
+            const state = urlObj.searchParams.get("state");
+
+            if (code && state) {
+              try {
+                await os.handleGitHubCallback(code, state, "");
+                console.log("[OAuth] GitHub authentication successful");
+                // Cancel the OAuth server
+                await invoke("plugin:oauth|cancel");
+
+                // Redirect after successful login
+                setTimeout(() => {
+                  if (selected_plan) {
+                    navigate({
+                      to: "/pricing",
+                      search: { selected_plan }
+                    });
+                  } else {
+                    navigate({ to: "/" });
+                  }
+                }, 2000);
+              } catch (error) {
+                console.error("GitHub callback error:", error);
+                setError("Failed to complete GitHub authentication");
+              } finally {
+                // Remove the event listener
+                await unlisten();
+              }
+            }
+          });
+
+          // We'll let the OS handle opening the auth URL
+          window.location.href = auth_url;
+        } catch (error) {
+          console.error("Tauri OAuth error:", error);
+          setError("Failed to authenticate with GitHub");
+        }
+      } else {
+        // Web app: Redirect to the auth URL
+        window.location.href = auth_url;
+      }
     } catch (error) {
       console.error("Failed to initiate GitHub login:", error);
       setError("Failed to initiate GitHub login. Please try again.");
@@ -98,7 +158,65 @@ function LoginPage() {
       if (selected_plan) {
         sessionStorage.setItem("selected_plan", selected_plan);
       }
-      window.location.href = auth_url;
+
+      const isTauriEnv = await isTauri();
+      // Log which OAuth flow we're using (desktop or web)
+      console.log("[OAuth] Using", isTauriEnv ? "desktop" : "web", "flow");
+
+      if (isTauriEnv) {
+        // Desktop app: Use the OAuth plugin
+        try {
+          // Start the OAuth server
+          await invoke<number>("start_oauth_server");
+
+          // Listen for the redirect URL
+          const unlisten = await listen<string>("oauth_redirect", async (event) => {
+            const url = event.payload;
+            console.log("[OAuth] Received redirect callback");
+
+            // Extract the code and state from the URL
+            const urlObj = new URL(url);
+            const code = urlObj.searchParams.get("code");
+            const state = urlObj.searchParams.get("state");
+
+            if (code && state) {
+              try {
+                await os.handleGoogleCallback(code, state, "");
+                console.log("[OAuth] Google authentication successful");
+                // Cancel the OAuth server
+                await invoke("plugin:oauth|cancel");
+
+                // Redirect after successful login
+                setTimeout(() => {
+                  if (selected_plan) {
+                    navigate({
+                      to: "/pricing",
+                      search: { selected_plan }
+                    });
+                  } else {
+                    navigate({ to: "/" });
+                  }
+                }, 2000);
+              } catch (error) {
+                console.error("Google callback error:", error);
+                setError("Failed to complete Google authentication");
+              } finally {
+                // Remove the event listener
+                await unlisten();
+              }
+            }
+          });
+
+          // We'll let the OS handle opening the auth URL
+          window.location.href = auth_url;
+        } catch (error) {
+          console.error("Tauri OAuth error:", error);
+          setError("Failed to authenticate with Google");
+        }
+      } else {
+        // Web app: Redirect to the auth URL
+        window.location.href = auth_url;
+      }
     } catch (error) {
       console.error("Failed to initiate Google login:", error);
       setError("Failed to initiate Google login. Please try again.");

@@ -1,9 +1,33 @@
+use tauri::{Emitter, Runtime};
+
+#[tauri::command]
+async fn start_oauth_server<R: Runtime>(window: tauri::Window<R>) -> Result<u16, String> {
+    log::info!("[OAuth] Starting OAuth server...");
+    let port = tauri_plugin_oauth::start(move |url| {
+        log::info!("[OAuth] Received redirect URL: {}", url);
+        // Emit the redirect URL to the frontend
+        match window.emit("oauth_redirect", url) {
+            Ok(_) => log::info!("[OAuth] Successfully emitted oauth_redirect event"),
+            Err(e) => log::error!("[OAuth] Failed to emit oauth_redirect event: {}", e),
+        }
+    })
+    .map_err(|err| {
+        log::error!("[OAuth] Failed to start OAuth server: {}", err);
+        err.to_string()
+    })?;
+
+    log::info!("[OAuth] OAuth server started on port: {}", port);
+    Ok(port)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     #[cfg(desktop)]
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_log::Builder::default().level(log::LevelFilter::Info).build())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_oauth::init())
+        .invoke_handler(tauri::generate_handler![start_oauth_server])
         .setup(|app| {
             // Create the application menu with update options
             #[cfg(desktop)]
