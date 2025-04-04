@@ -2,7 +2,7 @@ import { createContext } from "react";
 import { BillingStatus } from "@/billing/billingApi";
 
 export type ChatMessage = {
-  role: "user" | "assistant";
+  role: "user" | "assistant" | "system";
   content: string;
 };
 
