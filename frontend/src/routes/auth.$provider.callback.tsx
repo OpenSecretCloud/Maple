@@ -43,17 +43,40 @@ function OAuthCallback() {
 
       if (code && state) {
         try {
-          if (provider === "github") {
-            await handleGitHubCallback(code, state, "");
-          } else if (provider === "google") {
-            await handleGoogleCallback(code, state, "");
-          } else {
-            throw new Error("Unsupported provider");
+          // Get the auth token from localStorage
+          await (provider === "github"
+            ? handleGitHubCallback(code, state, "")
+            : handleGoogleCallback(code, state, ""));
+
+          // Check if this is a desktop auth flow
+          const isDesktopAuth = localStorage.getItem("redirect-to-native") === "true";
+
+          // Clear the flag
+          localStorage.removeItem("redirect-to-native");
+
+          if (isDesktopAuth) {
+            // This is a desktop auth flow - redirect to the desktop app with tokens
+            // Get tokens from localStorage where they're stored after auth
+            const accessToken = localStorage.getItem("access_token") || "";
+            const refreshToken = localStorage.getItem("refresh_token");
+
+            // Construct the deep link URL using the consistent token names
+            let deepLinkUrl = `cloud.opensecret.maple://auth?access_token=${encodeURIComponent(accessToken)}`;
+
+            if (refreshToken) {
+              deepLinkUrl += `&refresh_token=${encodeURIComponent(refreshToken)}`;
+            }
+
+            // Redirect to the deep link
+            setTimeout(() => {
+              window.location.href = deepLinkUrl;
+            }, 1000);
+
+            return; // Stop further processing
           }
 
-          // Check for stored selected_plan
+          // Regular web flow - unchanged
           const selectedPlan = sessionStorage.getItem("selected_plan");
-          // Clear it from storage
           sessionStorage.removeItem("selected_plan");
 
           // If successful, redirect after a short delay
@@ -88,6 +111,26 @@ function OAuthCallback() {
     processCallback();
   }, [handleGitHubCallback, handleGoogleCallback, navigate, provider]);
 
+  // If this is a desktop auth flow, show a different UI
+  if (localStorage.getItem("redirect-to-native") === "true") {
+    return (
+      <Card className="max-w-md mx-auto mt-20">
+        <CardHeader>
+          <CardTitle>{formattedProvider} Authentication Successful</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <p className="mb-4">
+            Authentication successful! Redirecting you back to the desktop app...
+          </p>
+          <div className="flex justify-center">
+            <Loader2 className="h-8 w-8 animate-spin" />
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  // Regular processing UI for web flow
   if (isProcessing) {
     return (
       <Card className="max-w-md mx-auto mt-20">

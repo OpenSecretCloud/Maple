@@ -10,6 +10,7 @@ import { LocalStateProvider } from "./state/LocalStateContext";
 import { ErrorFallback } from "./components/ErrorFallback";
 import { NotFoundFallback } from "./components/NotFoundFallback";
 import { BillingServiceProvider } from "./components/BillingServiceProvider";
+import { DeepLinkHandler } from "./components/DeepLinkHandler";
 
 // Create a new router instance
 const router = createRouter({
@@ -88,6 +89,7 @@ export default function App() {
           <QueryClientProvider client={queryClient}>
             <TooltipProvider>
               <BillingServiceProvider>
+                <DeepLinkHandler />
                 <InnerApp />
               </BillingServiceProvider>
             </TooltipProvider>
