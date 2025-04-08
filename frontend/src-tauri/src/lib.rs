@@ -42,7 +42,7 @@ pub fn run() {
                 // Set up a simple updater handler
                 log::info!("Setting up automatic updater");
 
-                // Setup update check on startup with delay
+                // Setup update check on startup with delay and hourly checks
                 let app_handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
                     // Wait for app to fully initialize (use async sleep to not block the thread)
@@ -52,7 +52,23 @@ pub fn run() {
                     // This will check for updates, download if available, and install them
                     // The update will be applied silently in the background
                     // It will take effect the next time the application is started
-                    let _ = check_for_updates(app_handle).await;
+                    let _ = check_for_updates(app_handle.clone()).await;
+                    
+                    // Set up hourly update checks
+                    let hourly_app_handle = app_handle.clone();
+                    tauri::async_runtime::spawn(async move {
+                        // Define one hour in seconds
+                        let one_hour = std::time::Duration::from_secs(3600);
+                        
+                        loop {
+                            // Wait one hour before checking again
+                            tokio::time::sleep(one_hour).await;
+                            log::info!("Performing scheduled hourly update check");
+                            
+                            // Check for updates
+                            let _ = check_for_updates(hourly_app_handle.clone()).await;
+                        }
+                    });
                 });
 
                 // Create a native menu with a "Check for Updates" option
