@@ -95,6 +95,12 @@ pub fn run() {
                             .about(None)
                             // Add our update checker to the app menu
                             .text(check_updates_id, "Check for Updates")
+                            .separator()
+                            .hide()
+                            .hide_others()
+                            .show_all()
+                            .separator()
+                            .quit()
                             .build()?;
 
                         // Create edit submenu with standard clipboard operations
