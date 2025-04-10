@@ -10,6 +10,9 @@ install:
 dev:
     cd frontend && bun run dev
 
+build:
+    cd frontend && bun run build
+
 # Test the frontend (needs local backend running)
 test:
     cd tests && bun test 

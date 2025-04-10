@@ -15,6 +15,12 @@ export function SimplifiedFooter() {
         </p>
         <div className="flex justify-center gap-6 mt-2">
           <a
+            href="/downloads"
+            className="text-[hsl(var(--marketing-text-muted))] hover:text-foreground text-sm transition-colors"
+          >
+            Downloads
+          </a>
+          <a
             href="https://opensecret.cloud/terms"
             target="_blank"
             rel="noopener noreferrer"
