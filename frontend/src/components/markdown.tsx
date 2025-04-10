@@ -95,18 +95,36 @@ function escapeDollarNumber(text: string) {
   return escapedText;
 }
 
-function escapeBrackets(text: string) {
-  const pattern = /(```[\s\S]*?```|`.*?`)|\\\[([\s\S]*?[^\\])\\\]|\\\((.*?)\\\)/g;
-  return text.replace(pattern, (match, codeBlock, squareBracket, roundBracket) => {
-    if (codeBlock) {
-      return codeBlock;
-    } else if (squareBracket) {
-      return `$$${squareBracket}$$`;
-    } else if (roundBracket) {
-      return `$${roundBracket}$`;
-    }
-    return match;
+function escapeBrackets(text: string): string {
+  // First, handle code blocks to protect them from processing
+  const codeBlockPattern = /```[\s\S]*?```|`.*?`/g;
+  const codeBlocks: string[] = [];
+  const textWithoutCode = text.replace(codeBlockPattern, function (match: string) {
+    codeBlocks.push(match);
+    return `__CODE_BLOCK_${codeBlocks.length - 1}__`;
   });
+
+  // Process escaped square brackets - LaTeX display mode
+  const squareBracketPattern = /\\\[([\s\S]*?[^\\])\\\]/g;
+  let result = textWithoutCode.replace(
+    squareBracketPattern,
+    function (_match: string, content: string) {
+      return `$$${content}$$`;
+    }
+  );
+
+  // Process escaped parentheses - LaTeX inline mode
+  const roundBracketPattern = /\\\((.*?)\\\)/g;
+  result = result.replace(roundBracketPattern, function (_match: string, content: string) {
+    return `$${content}$`;
+  });
+
+  // Restore code blocks
+  codeBlocks.forEach(function (block: string, i: number) {
+    result = result.replace(`__CODE_BLOCK_${i}__`, block);
+  });
+
+  return result;
 }
 
 function MarkDownContentToMemo(props: { content: string }) {
