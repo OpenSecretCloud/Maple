@@ -59,6 +59,12 @@ export function Footer() {
               Pricing
             </a>
             <a
+              href="/downloads"
+              className="text-[hsl(var(--marketing-text-muted))] hover:text-foreground transition-colors"
+            >
+              Downloads
+            </a>
+            <a
               href="/proof"
               className="text-[hsl(var(--marketing-text-muted))] hover:text-foreground transition-colors"
             >

@@ -16,6 +16,7 @@ import { Route as ProofImport } from './routes/proof'
 import { Route as PricingImport } from './routes/pricing'
 import { Route as PasswordResetImport } from './routes/password-reset'
 import { Route as LoginImport } from './routes/login'
+import { Route as DownloadsImport } from './routes/downloads'
 import { Route as DesktopAuthImport } from './routes/desktop-auth'
 import { Route as AuthImport } from './routes/_auth'
 import { Route as IndexImport } from './routes/index'
@@ -53,6 +54,12 @@ const PasswordResetRoute = PasswordResetImport.update({
 const LoginRoute = LoginImport.update({
   id: '/login',
   path: '/login',
+  getParentRoute: () => rootRoute,
+} as any)
+
+const DownloadsRoute = DownloadsImport.update({
+  id: '/downloads',
+  path: '/downloads',
   getParentRoute: () => rootRoute,
 } as any)
 
@@ -120,6 +127,13 @@ declare module '@tanstack/react-router' {
       path: '/desktop-auth'
       fullPath: '/desktop-auth'
       preLoaderRoute: typeof DesktopAuthImport
+      parentRoute: typeof rootRoute
+    }
+    '/downloads': {
+      id: '/downloads'
+      path: '/downloads'
+      fullPath: '/downloads'
+      preLoaderRoute: typeof DownloadsImport
       parentRoute: typeof rootRoute
     }
     '/login': {
@@ -216,6 +230,7 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '': typeof AuthRouteWithChildren
   '/desktop-auth': typeof DesktopAuthRoute
+  '/downloads': typeof DownloadsRoute
   '/login': typeof LoginRoute
   '/password-reset': typeof PasswordResetRouteWithChildren
   '/pricing': typeof PricingRoute
@@ -231,6 +246,7 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '': typeof AuthRouteWithChildren
   '/desktop-auth': typeof DesktopAuthRoute
+  '/downloads': typeof DownloadsRoute
   '/login': typeof LoginRoute
   '/password-reset': typeof PasswordResetRouteWithChildren
   '/pricing': typeof PricingRoute
@@ -247,6 +263,7 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/_auth': typeof AuthRouteWithChildren
   '/desktop-auth': typeof DesktopAuthRoute
+  '/downloads': typeof DownloadsRoute
   '/login': typeof LoginRoute
   '/password-reset': typeof PasswordResetRouteWithChildren
   '/pricing': typeof PricingRoute
@@ -264,6 +281,7 @@ export interface FileRouteTypes {
     | '/'
     | ''
     | '/desktop-auth'
+    | '/downloads'
     | '/login'
     | '/password-reset'
     | '/pricing'
@@ -278,6 +296,7 @@ export interface FileRouteTypes {
     | '/'
     | ''
     | '/desktop-auth'
+    | '/downloads'
     | '/login'
     | '/password-reset'
     | '/pricing'
@@ -292,6 +311,7 @@ export interface FileRouteTypes {
     | '/'
     | '/_auth'
     | '/desktop-auth'
+    | '/downloads'
     | '/login'
     | '/password-reset'
     | '/pricing'
@@ -308,6 +328,7 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AuthRoute: typeof AuthRouteWithChildren
   DesktopAuthRoute: typeof DesktopAuthRoute
+  DownloadsRoute: typeof DownloadsRoute
   LoginRoute: typeof LoginRoute
   PasswordResetRoute: typeof PasswordResetRouteWithChildren
   PricingRoute: typeof PricingRoute
@@ -321,6 +342,7 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AuthRoute: AuthRouteWithChildren,
   DesktopAuthRoute: DesktopAuthRoute,
+  DownloadsRoute: DownloadsRoute,
   LoginRoute: LoginRoute,
   PasswordResetRoute: PasswordResetRouteWithChildren,
   PricingRoute: PricingRoute,
@@ -343,6 +365,7 @@ export const routeTree = rootRoute
         "/",
         "/_auth",
         "/desktop-auth",
+        "/downloads",
         "/login",
         "/password-reset",
         "/pricing",
@@ -363,6 +386,9 @@ export const routeTree = rootRoute
     },
     "/desktop-auth": {
       "filePath": "desktop-auth.tsx"
+    },
+    "/downloads": {
+      "filePath": "downloads.tsx"
     },
     "/login": {
       "filePath": "login.tsx"

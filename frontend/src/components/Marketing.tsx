@@ -1,6 +1,6 @@
 import { Link } from "@tanstack/react-router";
 import { VerificationStatus } from "./VerificationStatus";
-import { ArrowRight, Check, Lock, MessageSquareMore, Shield, Sparkles } from "lucide-react";
+import { ArrowRight, Check, Lock, MessageSquareMore, Shield, Sparkles, Laptop } from "lucide-react";
 import { Footer } from "./Footer";
 import { useQuery } from "@tanstack/react-query";
 import { getBillingService } from "@/billing/billingService";
@@ -309,6 +309,18 @@ export function Marketing() {
               <Lock className="w-4 h-4" /> End-to-End Encrypted
             </div>
           </div>
+        </div>
+
+        <div className="flex justify-center mt-8">
+          <Link
+            to="/downloads"
+            className="inline-flex items-center gap-2 py-2 px-4 rounded-lg text-center font-medium transition-all duration-300 
+              border border-[hsl(var(--purple))]/30 hover:border-[hsl(var(--purple))]
+              text-[hsl(var(--marketing-text-muted))] hover:text-foreground"
+          >
+            <Laptop className="h-4 w-4" />
+            <span>Download</span>
+          </Link>
         </div>
       </section>
 
