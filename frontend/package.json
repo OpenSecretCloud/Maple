@@ -12,6 +12,9 @@
     "format": "prettier --write \"src/**/*.{ts,tsx,js,jsx,json,css,md}\"",
     "format:check": "prettier --check \"src/**/*.{ts,tsx,js,jsx,json,css,md}\""
   },
+  "resolutions": {
+    "mdast-util-gfm-autolink-literal": "2.0.0"
+  },
   "dependencies": {
     "@opensecret/react": "1.2.0",
     "@radix-ui/react-alert-dialog": "^1.1.1",
