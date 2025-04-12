@@ -53,18 +53,18 @@ pub fn run() {
                     // The update will be applied silently in the background
                     // It will take effect the next time the application is started
                     let _ = check_for_updates(app_handle.clone()).await;
-                    
+
                     // Set up hourly update checks
                     let hourly_app_handle = app_handle.clone();
                     tauri::async_runtime::spawn(async move {
                         // Define one hour in seconds
                         let one_hour = std::time::Duration::from_secs(3600);
-                        
+
                         loop {
                             // Wait one hour before checking again
                             tokio::time::sleep(one_hour).await;
                             log::info!("Performing scheduled hourly update check");
-                            
+
                             // Check for updates
                             let _ = check_for_updates(hourly_app_handle.clone()).await;
                         }
@@ -195,6 +195,19 @@ pub fn run() {
         .expect("error while running tauri application");
 }
 
+// Create a global variable to track if an update is already prepared and notified
+#[cfg(desktop)]
+use once_cell::sync::Lazy;
+#[cfg(desktop)]
+use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(desktop)]
+use std::sync::Mutex;
+
+#[cfg(desktop)]
+static UPDATE_DOWNLOADED: AtomicBool = AtomicBool::new(false);
+#[cfg(desktop)]
+static CURRENT_VERSION: Lazy<Mutex<String>> = Lazy::new(|| Mutex::new(String::new()));
+
 /// Check for updates silently in the background
 #[cfg(desktop)]
 async fn check_for_updates(app_handle: tauri::AppHandle) -> Result<(), String> {
@@ -214,6 +227,25 @@ async fn check_for_updates(app_handle: tauri::AppHandle) -> Result<(), String> {
     // Check for updates
     match updater.check().await {
         Ok(Some(update)) => {
+            // Check if we've already downloaded this specific version
+            let current_downloaded_version = match CURRENT_VERSION.lock() {
+                Ok(guard) => guard.clone(),
+                Err(e) => {
+                    log::error!("Failed to lock CURRENT_VERSION mutex: {}", e);
+                    String::new() // Use empty string if lock fails
+                }
+            };
+
+            if UPDATE_DOWNLOADED.load(Ordering::SeqCst)
+                && current_downloaded_version == update.version
+            {
+                log::info!(
+                    "Update to version {} already downloaded, skipping redundant download",
+                    update.version
+                );
+                return Ok(());
+            }
+
             log::info!("Update available, attempting to download and install");
 
             // Download the update
@@ -240,6 +272,25 @@ async fn check_for_updates(app_handle: tauri::AppHandle) -> Result<(), String> {
                             // Log that the update is ready
                             log::info!("Update installed successfully. Will be applied on next application restart.");
 
+                            // Mark this version as downloaded to prevent redundant downloads/notifications
+                            {
+                                match CURRENT_VERSION.lock() {
+                                    Ok(mut version) => *version = update.version.clone(),
+                                    Err(e) => log::error!("Failed to lock CURRENT_VERSION mutex when updating version: {}", e)
+                                }
+                            }
+
+                            // If we've already shown a notification, don't show another one
+                            if UPDATE_DOWNLOADED.load(Ordering::SeqCst) {
+                                log::info!(
+                                    "Update notification already shown, not showing another one"
+                                );
+                                return Ok(());
+                            }
+
+                            // Mark as downloaded to prevent further update dialogs
+                            UPDATE_DOWNLOADED.store(true, Ordering::SeqCst);
+
                             // Show a dialog prompting the user to restart
                             let message = format!(
                                 "An update to version {} has been downloaded and is ready to install. \
@@ -255,7 +306,7 @@ async fn check_for_updates(app_handle: tauri::AppHandle) -> Result<(), String> {
                             // Show a friendly info dialog with Yes/No buttons
                             dialog
                                 .message(message)
-                                .title("Update Ready")
+                                .title("Maple Update")
                                 .kind(MessageDialogKind::Info) // Use info icon for a friendlier look
                                 .buttons(MessageDialogButtons::OkCancelCustom(
                                     "Yes".to_string(),

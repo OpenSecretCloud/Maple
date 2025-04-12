@@ -2223,6 +2223,7 @@ name = "maple"
 version = "0.2.2"
 dependencies = [
  "log",
+ "once_cell",
  "serde",
  "serde_json",
  "tauri",
