@@ -10,6 +10,7 @@ interface DesktopAuthSearchParams {
   selected_plan?: string;
 }
 
+// This route handles OAuth flow for both desktop and mobile Tauri apps
 export const Route = createFileRoute("/desktop-auth")({
   component: DesktopAuth,
   validateSearch: (search: Record<string, unknown>): DesktopAuthSearchParams => {
@@ -35,7 +36,7 @@ function DesktopAuth() {
   useEffect(() => {
     const initiateAuth = async () => {
       try {
-        // Store the flag to indicate this is a desktop auth flow
+        // Store the flag to indicate this is a Tauri app auth flow (desktop or mobile)
         localStorage.setItem("redirect-to-native", "true");
 
         // Store selected plan if present

@@ -189,6 +189,22 @@ pub fn run() {
                 .level(log::LevelFilter::Info)
                 .build(),
         )
+        .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_opener::init())
+        .setup(|app| {
+            // Set up the deep link handler for mobile
+            let app_handle = app.handle().clone();
+
+            // Register deep link handler - note that iOS does not support runtime registration
+            // but the handler for incoming URLs still works
+            app.deep_link().on_open_url(move |event| {
+                if let Some(url) = event.urls().first() {
+                    handle_deep_link_event(&url.to_string(), &app_handle);
+                }
+            });
+
+            Ok(())
+        })
         .plugin(tauri_plugin_updater::Builder::new().build());
 
     app.run(tauri::generate_context!())

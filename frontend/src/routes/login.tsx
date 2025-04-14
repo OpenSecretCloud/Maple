@@ -83,10 +83,10 @@ function LoginPage() {
   const handleGitHubLogin = async () => {
     try {
       const isTauriEnv = await isTauri();
-      console.log("[OAuth] Using", isTauriEnv ? "desktop" : "web", "flow");
+      console.log("[OAuth] Using", isTauriEnv ? "Tauri" : "web", "flow");
 
       if (isTauriEnv) {
-        // For desktop, redirect to the web app's desktop-auth route
+        // For Tauri (desktop or mobile), redirect to the web app's desktop-auth route
         let desktopAuthUrl = "https://trymaple.ai/desktop-auth?provider=github";
 
         // If there's a selected plan, add it to the URL
@@ -95,6 +95,8 @@ function LoginPage() {
         }
 
         // Use the opener plugin by directly invoking the command
+        // This works for both desktop and mobile (iOS/Android)
+        console.log("[OAuth] Opening URL in external browser:", desktopAuthUrl);
         invoke("plugin:opener|open_url", { url: desktopAuthUrl }).catch((error: Error) => {
           console.error("[OAuth] Failed to open external browser:", error);
           setError("Failed to open authentication page in browser");
@@ -116,10 +118,10 @@ function LoginPage() {
   const handleGoogleLogin = async () => {
     try {
       const isTauriEnv = await isTauri();
-      console.log("[OAuth] Using", isTauriEnv ? "desktop" : "web", "flow");
+      console.log("[OAuth] Using", isTauriEnv ? "Tauri" : "web", "flow");
 
       if (isTauriEnv) {
-        // For desktop, redirect to the web app's desktop-auth route
+        // For Tauri (desktop or mobile), redirect to the web app's desktop-auth route
         let desktopAuthUrl = "https://trymaple.ai/desktop-auth?provider=google";
 
         // If there's a selected plan, add it to the URL
@@ -128,6 +130,8 @@ function LoginPage() {
         }
 
         // Use the opener plugin by directly invoking the command
+        // This works for both desktop and mobile (iOS/Android)
+        console.log("[OAuth] Opening URL in external browser:", desktopAuthUrl);
         invoke("plugin:opener|open_url", { url: desktopAuthUrl }).catch((error: Error) => {
           console.error("[OAuth] Failed to open external browser:", error);
           setError("Failed to open authentication page in browser");
