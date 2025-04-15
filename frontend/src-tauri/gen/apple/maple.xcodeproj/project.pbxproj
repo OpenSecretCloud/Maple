@@ -552,7 +552,7 @@
 				CODE_SIGN_IDENTITY = "Apple Development";
 				"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "iPhone Developer";
 				CODE_SIGN_STYLE = Manual;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = X773Y823TN;
 				"DEVELOPMENT_TEAM[sdk=iphoneos*]" = X773Y823TN;
 				ENABLE_BITCODE = NO;
 				"EXCLUDED_ARCHS[sdk=iphoneos*]" = "arm64-sim x86_64";
@@ -589,8 +589,8 @@
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = cloud.opensecret.maple;
 				PRODUCT_NAME = Maple;
-				PROVISIONING_PROFILE_SPECIFIER = "";
-				"PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*]" = "maple-dev";
+				PROVISIONING_PROFILE_SPECIFIER = "86059ea7-ae8e-44af-8a58-b2ab7c78d299";
+				"PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*]" = "86059ea7-ae8e-44af-8a58-b2ab7c78d299";
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
 				VALID_ARCHS = "arm64  arm64-sim";

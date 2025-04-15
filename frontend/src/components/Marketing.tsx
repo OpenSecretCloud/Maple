@@ -4,6 +4,10 @@ import { ArrowRight, Check, Lock, MessageSquareMore, Shield, Sparkles, Laptop } 
 import { Footer } from "./Footer";
 import { useQuery } from "@tanstack/react-query";
 import { getBillingService } from "@/billing/billingService";
+import { useState, useEffect } from "react";
+// eslint-disable-next-line
+// @ts-ignore
+import { type } from "@tauri-apps/plugin-os";
 
 function CTAButton({
   children,
@@ -83,7 +87,8 @@ function PricingTier({
   features,
   ctaText,
   popular = false,
-  productId = "" // Add productId parameter
+  productId = "", // Add productId parameter
+  isIOS = false // Add iOS detection parameter
 }: {
   name: string;
   price: string;
@@ -92,8 +97,10 @@ function PricingTier({
   ctaText: string;
   popular?: boolean;
   productId?: string; // Add type for productId
+  isIOS?: boolean; // Add type for iOS detection
 }) {
   const isTeamPlan = name.toLowerCase().includes("team");
+  const isFreeplan = name.toLowerCase().includes("free");
 
   return (
     <div
@@ -126,7 +133,20 @@ function PricingTier({
           </div>
         ))}
       </div>
-      {isTeamPlan ? (
+      {/* For iOS devices, disable paid plans with "Coming Soon" text */}
+      {isIOS && !isFreeplan ? (
+        <button
+          disabled={true}
+          className="mt-auto py-3 px-6 rounded-lg text-center font-medium transition-all duration-300 
+            dark:bg-white/90 dark:text-black dark:hover:bg-[hsl(var(--purple))]/80 dark:hover:text-[hsl(var(--foreground))] dark:active:bg-white/80
+            bg-background text-foreground hover:bg-[hsl(var(--purple))] hover:text-[hsl(var(--foreground))] active:bg-background/80 
+            border border-[hsl(var(--purple))]/30 hover:border-[hsl(var(--purple))]
+            shadow-[0_0_15px_rgba(var(--purple-rgb),0.2)] hover:shadow-[0_0_25px_rgba(var(--purple-rgb),0.3)]
+            opacity-50 cursor-not-allowed"
+        >
+          Coming Soon
+        </button>
+      ) : isTeamPlan ? (
         // For team plans, add "Contact Us" button that opens email
         <button
           onClick={() => {
@@ -174,6 +194,23 @@ function PricingTier({
 }
 
 export function Marketing() {
+  const [isIOS, setIsIOS] = useState(false);
+
+  // Check if the app is running on iOS
+  useEffect(() => {
+    const checkPlatform = async () => {
+      try {
+        const platform = await type();
+        setIsIOS(platform === "ios");
+      } catch (error) {
+        console.error("Error checking platform:", error);
+        setIsIOS(false);
+      }
+    };
+
+    checkPlatform();
+  }, []);
+
   // Fetch products to get product IDs for pricing tiers
   const {
     data: products
@@ -613,6 +650,7 @@ export function Marketing() {
               ]}
               ctaText="Start Chatting"
               productId={getProductId("Starter")}
+              isIOS={isIOS}
             />
             <PricingTier
               name="Pro"
@@ -627,6 +665,7 @@ export function Marketing() {
               ctaText="Start Chatting"
               popular={true}
               productId={getProductId("Pro")}
+              isIOS={isIOS}
             />
             <PricingTier
               name="Team"
@@ -640,6 +679,7 @@ export function Marketing() {
               ]}
               ctaText="Contact Us"
               productId={getProductId("Team")}
+              isIOS={isIOS}
             />
           </div>
         </div>
