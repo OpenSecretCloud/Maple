@@ -7,8 +7,10 @@ import { Label } from "@/components/ui/label";
 import { AlertDestructive } from "@/components/AlertDestructive";
 import { Loader2, Github, Mail } from "lucide-react";
 import { Google } from "@/components/icons/Google";
+import { Apple } from "@/components/icons/Apple";
 import { AuthMain } from "@/components/AuthMain";
 import { isTauri, invoke } from "@tauri-apps/api/core";
+import { type } from "@tauri-apps/plugin-os";
 
 type SignupSearchParams = {
   next?: string;
@@ -23,7 +25,7 @@ export const Route = createFileRoute("/signup")({
   })
 });
 
-type SignUpMethod = "email" | "github" | "google" | null;
+type SignUpMethod = "email" | "github" | "google" | "apple" | null;
 
 function SignupPage() {
   const navigate = useNavigate();
@@ -32,6 +34,22 @@ function SignupPage() {
   const [signUpMethod, setSignUpMethod] = useState<SignUpMethod>(null);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [isIOS, setIsIOS] = useState(false);
+
+  // Check if running on iOS
+  useEffect(() => {
+    const checkPlatform = async () => {
+      try {
+        const platform = await type();
+        setIsIOS(platform === "ios");
+      } catch (error) {
+        console.error("Error checking platform:", error);
+        setIsIOS(false);
+      }
+    };
+
+    checkPlatform();
+  }, []);
 
   // Redirect if already logged in
   useEffect(() => {
@@ -150,9 +168,49 @@ function SignupPage() {
     }
   };
 
+  const handleAppleSignup = async () => {
+    try {
+      // For Sign in with Apple, we use the Tauri plugin's command
+      console.log("[OAuth] Initiating Sign in with Apple");
+
+      try {
+        // Invoke the Apple Sign in plugin
+        // This will show the native Apple authentication UI
+        const result = await invoke("plugin:sign-in-with-apple|get_apple_id_credential", {
+          payload: {
+            scope: ["email", "fullName"],
+            state: "apple-signup-state",
+            // Add options to help with debugging
+            options: {
+              debug: true
+            }
+          }
+        });
+
+        console.log("[OAuth] Apple Sign-In result:", result);
+
+        // In a real implementation, you would send this result to your backend
+        // For now we'll just show a message that this is coming soon
+        setError("Apple Sign In successful, but backend integration is coming soon.");
+      } catch (error) {
+        console.error("[OAuth] Failed to authenticate with Apple:", error);
+        // Be more specific about the error message
+        const errorMessage =
+          error instanceof Error
+            ? `Apple Sign In error: ${error.message}`
+            : "Failed to authenticate with Apple. Please try again.";
+        setError(errorMessage);
+      }
+    } catch (error) {
+      console.error("Failed to initiate Apple signup:", error);
+      setError("Failed to initiate Apple signup. Please try again.");
+    }
+  };
+
   if (!signUpMethod) {
     return (
       <AuthMain title="Sign Up" description="Choose your preferred sign-up method">
+        {error && <AlertDestructive title="Note" description={error} />}
         <Button onClick={() => setSignUpMethod("email")} className="w-full">
           <Mail className="mr-2 h-4 w-4" />
           Sign up with Email
@@ -165,6 +223,12 @@ function SignupPage() {
           <Google className="mr-2 h-4 w-4" />
           Sign up with Google
         </Button>
+        {isIOS && (
+          <Button onClick={handleAppleSignup} className="w-full">
+            <Apple className="mr-2 h-4 w-4" />
+            Sign up with Apple
+          </Button>
+        )}
         <div className="text-center text-sm">
           Already have an account?{" "}
           <Link to="/login" search={next ? { next } : undefined} className="underline">
