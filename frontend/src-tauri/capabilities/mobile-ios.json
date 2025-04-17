@@ -1,10 +1,11 @@
 {
-  "$schema": "../gen/schemas/desktop-schema.json",
-  "identifier": "default",
-  "description": "enables the default permissions",
+  "$schema": "../gen/schemas/mobile-schema.json",
+  "identifier": "mobile-ios",
+  "description": "Capabilities for iOS",
   "windows": [
     "main"
   ],
+  "platforms": ["iOS"],
   "permissions": [
     "core:default",
     "updater:default",

@@ -16,7 +16,7 @@ export const Route = createFileRoute("/desktop-auth")({
   validateSearch: (search: Record<string, unknown>): DesktopAuthSearchParams => {
     const provider = typeof search.provider === "string" ? search.provider : "github";
     // Validate provider is supported
-    if (provider !== "github" && provider !== "google") {
+    if (provider !== "github" && provider !== "google" && provider !== "apple") {
       throw new Error(`Unsupported provider: ${provider}`);
     }
     return {
@@ -52,6 +52,12 @@ function DesktopAuth() {
         } else if (provider === "google") {
           const result = await os.initiateGoogleAuth("");
           auth_url = result.auth_url;
+        } else if (provider === "apple") {
+          // Apple sign-in is handled natively on iOS, not through browser OAuth
+          // For this demo, we'll just redirect to login page
+          console.log("[Apple Auth] Apple Sign In should be handled natively on iOS");
+          navigate({ to: "/login" });
+          return;
         } else {
           throw new Error("Unsupported provider");
         }

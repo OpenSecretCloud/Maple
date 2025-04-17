@@ -1,6 +1,7 @@
 use tauri::Emitter;
 use tauri_plugin_deep_link::DeepLinkExt;
 use tauri_plugin_opener;
+use tauri_plugin_sign_in_with_apple;
 
 // This handles incoming deep links
 fn handle_deep_link_event(url: &str, app: &tauri::AppHandle) {
@@ -21,6 +22,7 @@ pub fn run() {
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_os::init())
+        .plugin(tauri_plugin_sign_in_with_apple::init())
         .setup(|app| {
             // Set up the deep link handler
             // Use a cloned handle with 'static lifetime
@@ -193,6 +195,7 @@ pub fn run() {
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_os::init())
+        .plugin(tauri_plugin_sign_in_with_apple::init())
         .setup(|app| {
             // Set up the deep link handler for mobile
             let app_handle = app.handle().clone();
