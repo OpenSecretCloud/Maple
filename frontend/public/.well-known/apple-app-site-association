@@ -1,0 +1,19 @@
+{
+  "applinks": {
+    "details": [
+      {
+        "appIDs": ["X773Y823TN.cloud.opensecret.maple"],
+        "components": [
+          {
+            "/": "/auth/*",
+            "comment": "Matches any URL whose path starts with /auth/"
+          },
+          {
+            "/": "/desktop-auth/*",
+            "comment": "Matches any URL whose path starts with /desktop-auth/"
+          }
+        ]
+      }
+    ]
+  }
+}

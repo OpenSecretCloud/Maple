@@ -1,0 +1,84 @@
+name: Mobile App CI
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+jobs:
+  build-ios:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: 1.2.2
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "frontend/src-tauri -> target"
+          cache-on-failure: true
+
+      - name: Install dependencies (macOS)
+        run: |
+          brew install openssl@3
+
+      - name: Install frontend dependencies
+        working-directory: ./frontend
+        run: bun install
+
+      - name: Setup Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli
+
+      - name: Set up API Key
+        run: |
+          mkdir -p ~/.private_keys
+          echo "${{ secrets.APPLE_API_PRIVATE_KEY }}" | base64 --decode > ~/.private_keys/AuthKey_${{ secrets.APPLE_API_KEY }}.p8
+          chmod 600 ~/.private_keys/AuthKey_${{ secrets.APPLE_API_KEY }}.p8
+          echo "APPLE_API_KEY_PATH=~/.private_keys/AuthKey_${{ secrets.APPLE_API_KEY }}.p8" >> $GITHUB_ENV
+      
+      - name: Build Tauri iOS App
+        working-directory: ./frontend
+        run: |
+          bun tauri ios build --export-method app-store-connect
+        env:
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_PATH: ${{ env.APPLE_API_KEY_PATH }}
+          APPLE_DEVELOPMENT_TEAM: ${{ secrets.APPLE_TEAM_ID }}
+          VITE_OPEN_SECRET_API_URL: https://enclave.trymaple.ai
+          VITE_MAPLE_BILLING_API_URL: https://billing.opensecret.cloud
+          VITE_CLIENT_ID: ba5a14b5-d915-47b1-b7b1-afda52bc5fc6
+
+      - name: Upload iOS App
+        uses: actions/upload-artifact@v4
+        with:
+          name: maple-ios
+          path: |
+            frontend/src-tauri/gen/apple/build/arm64/*.ipa
+          retention-days: 5
+
+      - name: Submit to TestFlight
+        run: |
+          # Find the actual path of the IPA file
+          IPA_PATH=$(find frontend/src-tauri/gen/apple/build -name "*.ipa" | head -n 1)
+          echo "Found IPA at: $IPA_PATH"
+          
+          xcrun altool --upload-app --type ios \
+            --file "$IPA_PATH" \
+            --apiKey ${{ secrets.APPLE_API_KEY }} \
+            --apiIssuer ${{ secrets.APPLE_API_ISSUER }}

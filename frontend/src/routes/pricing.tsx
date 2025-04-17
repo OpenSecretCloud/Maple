@@ -11,6 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { useLocalState } from "@/state/useLocalState";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
+import { type } from "@tauri-apps/plugin-os";
 
 type PricingSearchParams = {
   selected_plan?: string;
@@ -140,11 +141,27 @@ function PricingPage() {
   const [checkoutError, setCheckoutError] = useState<string>("");
   const [loadingProductId, setLoadingProductId] = useState<string | null>(null);
   const [useBitcoin, setUseBitcoin] = useState(false);
+  const [isIOS, setIsIOS] = useState(false);
   const navigate = useNavigate();
   const os = useOpenSecret();
   const { setBillingStatus } = useLocalState();
   const isLoggedIn = !!os.auth.user;
   const { selected_plan } = Route.useSearch();
+
+  // Check if the app is running on iOS
+  useEffect(() => {
+    const checkPlatform = async () => {
+      try {
+        const platform = await type();
+        setIsIOS(platform === "ios");
+      } catch (error) {
+        console.error("Error checking platform:", error);
+        setIsIOS(false);
+      }
+    };
+
+    checkPlatform();
+  }, []);
 
   // Fetch billing status if user is logged in
   const { data: freshBillingStatus, isLoading: isBillingStatusLoading } = useQuery({
@@ -158,12 +175,12 @@ function PricingPage() {
     enabled: isLoggedIn
   });
 
-  // Auto-enable Bitcoin toggle for Zaprite users
+  // Auto-enable Bitcoin toggle for Zaprite users (except on iOS)
   useEffect(() => {
-    if (freshBillingStatus?.payment_provider === "zaprite") {
+    if (freshBillingStatus?.payment_provider === "zaprite" && !isIOS) {
       setUseBitcoin(true);
     }
-  }, [freshBillingStatus?.payment_provider]);
+  }, [freshBillingStatus?.payment_provider, isIOS]);
 
   // Always try to fetch portal URL if logged in
   const { data: portalUrl } = useQuery({
@@ -215,6 +232,11 @@ function PricingPage() {
   });
 
   const getButtonText = (product: Product) => {
+    // For iOS, show "Coming Soon" for paid plans
+    if (isIOS && !product.name.toLowerCase().includes("free")) {
+      return "Coming Soon";
+    }
+
     if (loadingProductId === product.id) {
       return (
         <>
@@ -342,6 +364,11 @@ function PricingPage() {
 
   const handleButtonClick = useCallback(
     (product: Product) => {
+      // For iOS, disable payment buttons except for free plan
+      if (isIOS && !product.name.toLowerCase().includes("free")) {
+        return; // Do nothing for paid plans on iOS
+      }
+
       if (!isLoggedIn) {
         const targetPlanName = product.name.toLowerCase();
         const isTeamPlan = targetPlanName.includes("team");
@@ -413,17 +440,30 @@ function PricingPage() {
       // create checkout session
       newHandleSubscribe(product.id);
     },
-    [isLoggedIn, isTeamPlanAvailable, freshBillingStatus, navigate, portalUrl, newHandleSubscribe]
+    [
+      isLoggedIn,
+      isTeamPlanAvailable,
+      freshBillingStatus,
+      navigate,
+      portalUrl,
+      newHandleSubscribe,
+      isIOS
+    ]
   );
 
   useEffect(() => {
     let isSubscribed = true;
 
-    // If user is logged in and there's a selected plan, trigger checkout
+    // If user is logged in and there's a selected plan, trigger checkout (except on iOS for paid plans)
     if (isLoggedIn && selected_plan && !isBillingStatusLoading) {
       if (loadingProductId) return; // Prevent multiple triggers
       const product = products?.find((p) => p.id === selected_plan);
       if (product) {
+        // Skip automatic checkout for paid plans on iOS
+        if (isIOS && !product.name.toLowerCase().includes("free")) {
+          return;
+        }
+
         if (isSubscribed) {
           handleButtonClick(product);
         }
@@ -439,7 +479,8 @@ function PricingPage() {
     isBillingStatusLoading,
     products,
     loadingProductId,
-    handleButtonClick
+    handleButtonClick,
+    isIOS
   ]);
 
   // Show loading state if we're fetching initial data
@@ -536,20 +577,22 @@ function PricingPage() {
           }
         />
 
-        <div className="w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex justify-center">
-          <div className="inline-flex items-center gap-4 px-6 py-2.5 rounded-full bg-[hsl(var(--marketing-card))]/50 backdrop-blur-sm border border-[hsl(var(--marketing-card-border))]">
-            <div className="flex items-center gap-2 text-[hsl(var(--bitcoin))] text-base font-light">
-              <Bitcoin className="w-4.5 h-4.5" />
-              <span>Pay with Bitcoin</span>
+        {!isIOS && (
+          <div className="w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex justify-center">
+            <div className="inline-flex items-center gap-4 px-6 py-2.5 rounded-full bg-[hsl(var(--marketing-card))]/50 backdrop-blur-sm border border-[hsl(var(--marketing-card-border))]">
+              <div className="flex items-center gap-2 text-[hsl(var(--bitcoin))] text-base font-light">
+                <Bitcoin className="w-4.5 h-4.5" />
+                <span>Pay with Bitcoin</span>
+              </div>
+              <Switch
+                id="bitcoin-toggle"
+                checked={useBitcoin}
+                onCheckedChange={setUseBitcoin}
+                className="data-[state=checked]:bg-[hsl(var(--bitcoin))] data-[state=unchecked]:border-foreground/30 scale-100"
+              />
             </div>
-            <Switch
-              id="bitcoin-toggle"
-              checked={useBitcoin}
-              onCheckedChange={setUseBitcoin}
-              className="data-[state=checked]:bg-[hsl(var(--bitcoin))] data-[state=unchecked]:border-foreground/30 scale-100"
-            />
           </div>
-        </div>
+        )}
 
         <div className="pt-8 w-full max-w-7xl mx-auto grid grid-cols-1 md:grid-cols-4 gap-4 md:gap-4 lg:gap-6 px-4 sm:px-6 lg:px-8">
           {products &&
@@ -666,7 +709,9 @@ function PricingPage() {
                       <button
                         onClick={() => handleButtonClick(product)}
                         disabled={
-                          loadingProductId === product.id || (useBitcoin && product.name === "Team")
+                          loadingProductId === product.id ||
+                          (useBitcoin && product.name === "Team") ||
+                          (isIOS && !product.name.toLowerCase().includes("free"))
                         }
                         className={`w-full 
                           dark:bg-white/90 dark:text-black dark:hover:bg-[hsl(var(--purple))]/80 dark:hover:text-[hsl(var(--foreground))] dark:active:bg-white/80
@@ -677,7 +722,7 @@ function PricingPage() {
                           hover:shadow-[0_0_25px_rgba(var(--purple-rgb),0.3)] disabled:opacity-50 
                           disabled:cursor-not-allowed flex items-center justify-center gap-2 
                           group-hover:bg-[hsl(var(--purple))] group-hover:text-[hsl(var(--foreground))] dark:group-hover:text-[hsl(var(--foreground))] dark:group-hover:bg-[hsl(var(--purple))]/80 ${
-                            isTeamPlan && !isTeamPlanAvailable
+                            isTeamPlan && !isTeamPlanAvailable && !isIOS
                               ? "!opacity-100 !cursor-pointer hover:!bg-[hsl(var(--purple))]"
                               : ""
                           }`}

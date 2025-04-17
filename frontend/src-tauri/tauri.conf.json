@@ -21,7 +21,12 @@
     "deep-link": {
       "desktop": {
         "schemes": ["cloud.opensecret.maple"]
-      }
+      },
+      "mobile": [
+        {
+          "host": "trymaple.ai"
+        }
+      ]
     }
   },
   "app": {
@@ -60,7 +65,7 @@
       "entitlements": null
     },
     "iOS": {
-      "developmentTeam": null
+      "developmentTeam": "X773Y823TN"
     },
     "windows": {
       "certificateThumbprint": null,

@@ -8,6 +8,7 @@ import { AlertDestructive } from "@/components/AlertDestructive";
 import { Loader2, Github, Mail } from "lucide-react";
 import { Google } from "@/components/icons/Google";
 import { AuthMain } from "@/components/AuthMain";
+import { isTauri, invoke } from "@tauri-apps/api/core";
 
 type SignupSearchParams = {
   next?: string;
@@ -81,11 +82,33 @@ function SignupPage() {
 
   const handleGitHubSignup = async () => {
     try {
-      const { auth_url } = await os.initiateGitHubAuth("");
-      if (selected_plan) {
-        sessionStorage.setItem("selected_plan", selected_plan);
+      const isTauriEnv = await isTauri();
+      console.log("[OAuth] Using", isTauriEnv ? "Tauri" : "web", "flow");
+
+      if (isTauriEnv) {
+        // For Tauri (desktop or mobile), redirect to the web app's desktop-auth route
+        let desktopAuthUrl = "https://trymaple.ai/desktop-auth?provider=github";
+
+        // If there's a selected plan, add it to the URL
+        if (selected_plan) {
+          desktopAuthUrl += `&selected_plan=${encodeURIComponent(selected_plan)}`;
+        }
+
+        // Use the opener plugin by directly invoking the command
+        // This works for both desktop and mobile (iOS/Android)
+        console.log("[OAuth] Opening URL in external browser:", desktopAuthUrl);
+        invoke("plugin:opener|open_url", { url: desktopAuthUrl }).catch((error: Error) => {
+          console.error("[OAuth] Failed to open external browser:", error);
+          setError("Failed to open authentication page in browser");
+        });
+      } else {
+        // Web flow remains unchanged
+        const { auth_url } = await os.initiateGitHubAuth("");
+        if (selected_plan) {
+          sessionStorage.setItem("selected_plan", selected_plan);
+        }
+        window.location.href = auth_url;
       }
-      window.location.href = auth_url;
     } catch (error) {
       console.error("Failed to initiate GitHub signup:", error);
       setError("Failed to initiate GitHub signup. Please try again.");
@@ -94,11 +117,33 @@ function SignupPage() {
 
   const handleGoogleSignup = async () => {
     try {
-      const { auth_url } = await os.initiateGoogleAuth("");
-      if (selected_plan) {
-        sessionStorage.setItem("selected_plan", selected_plan);
+      const isTauriEnv = await isTauri();
+      console.log("[OAuth] Using", isTauriEnv ? "Tauri" : "web", "flow");
+
+      if (isTauriEnv) {
+        // For Tauri (desktop or mobile), redirect to the web app's desktop-auth route
+        let desktopAuthUrl = "https://trymaple.ai/desktop-auth?provider=google";
+
+        // If there's a selected plan, add it to the URL
+        if (selected_plan) {
+          desktopAuthUrl += `&selected_plan=${encodeURIComponent(selected_plan)}`;
+        }
+
+        // Use the opener plugin by directly invoking the command
+        // This works for both desktop and mobile (iOS/Android)
+        console.log("[OAuth] Opening URL in external browser:", desktopAuthUrl);
+        invoke("plugin:opener|open_url", { url: desktopAuthUrl }).catch((error: Error) => {
+          console.error("[OAuth] Failed to open external browser:", error);
+          setError("Failed to open authentication page in browser");
+        });
+      } else {
+        // Web flow remains unchanged
+        const { auth_url } = await os.initiateGoogleAuth("");
+        if (selected_plan) {
+          sessionStorage.setItem("selected_plan", selected_plan);
+        }
+        window.location.href = auth_url;
       }
-      window.location.href = auth_url;
     } catch (error) {
       console.error("Failed to initiate Google signup:", error);
       setError("Failed to initiate Google signup. Please try again.");

@@ -48,14 +48,14 @@ function OAuthCallback() {
             ? handleGitHubCallback(code, state, "")
             : handleGoogleCallback(code, state, ""));
 
-          // Check if this is a desktop auth flow
-          const isDesktopAuth = localStorage.getItem("redirect-to-native") === "true";
+          // Check if this is a Tauri app auth flow (desktop or mobile)
+          const isTauriAuth = localStorage.getItem("redirect-to-native") === "true";
 
           // Clear the flag
           localStorage.removeItem("redirect-to-native");
 
-          if (isDesktopAuth) {
-            // This is a desktop auth flow - redirect to the desktop app with tokens
+          if (isTauriAuth) {
+            // This is a Tauri app auth flow - redirect back to the app with tokens
             // Get tokens from localStorage where they're stored after auth
             const accessToken = localStorage.getItem("access_token") || "";
             const refreshToken = localStorage.getItem("refresh_token");
@@ -111,7 +111,7 @@ function OAuthCallback() {
     processCallback();
   }, [handleGitHubCallback, handleGoogleCallback, navigate, provider]);
 
-  // If this is a desktop auth flow, show a different UI
+  // If this is a Tauri app auth flow (desktop or mobile), show a different UI
   if (localStorage.getItem("redirect-to-native") === "true") {
     return (
       <Card className="max-w-md mx-auto mt-20">
@@ -119,9 +119,7 @@ function OAuthCallback() {
           <CardTitle>{formattedProvider} Authentication Successful</CardTitle>
         </CardHeader>
         <CardContent>
-          <p className="mb-4">
-            Authentication successful! Redirecting you back to the desktop app...
-          </p>
+          <p className="mb-4">Authentication successful! Redirecting you back to the app...</p>
           <div className="flex justify-center">
             <Loader2 className="h-8 w-8 animate-spin" />
           </div>
