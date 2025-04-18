@@ -150,6 +150,11 @@ export default function Component({
 
     onSubmit(inputValue.trim());
     setInputValue("");
+
+    // Re-focus input after submitting
+    setTimeout(() => {
+      inputRef.current?.focus();
+    }, 0);
   };
 
   // Keep currentInputRef in sync with inputValue
@@ -214,9 +219,6 @@ export default function Component({
     }
   }, [inputValue]);
 
-  // No longer need token calculation or plan type check since we removed the hard limit
-  // Just keeping the TokenWarning component which handles its own calculations
-
   // Determine when the submit button should be disabled
   const isSubmitDisabled =
     (freshBillingStatus !== undefined &&
@@ -232,6 +234,27 @@ export default function Component({
         (freshBillingStatus.chats_remaining !== null &&
           freshBillingStatus.chats_remaining <= 0))) ||
     isStreaming;
+
+  // Auto-focus effect - runs on mount, when chat ID changes, and after streaming completes
+  useEffect(() => {
+    // Skip if user is already focused on an input elsewhere
+    if (document.activeElement?.matches("input, textarea")) {
+      return;
+    }
+
+    // Short delay to ensure DOM is ready
+    const timer = setTimeout(() => {
+      // Only focus if input isn't disabled
+      if (inputRef.current && !isInputDisabled) {
+        inputRef.current.focus();
+      }
+    }, 100);
+
+    return () => clearTimeout(timer);
+  }, [chatId, isStreaming, isInputDisabled]); // Re-run when chat ID changes, streaming completes, or input state changes
+
+  // No longer need token calculation or plan type check since we removed the hard limit
+  // Just keeping the TokenWarning component which handles its own calculations
   const placeholderText = (() => {
     if (billingStatus === null || freshBillingStatus === undefined)
       return "Type your message here...";
