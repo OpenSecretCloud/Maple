@@ -264,6 +264,12 @@ function ChatComponent() {
       if (!input.trim() || !localChat) return;
       setError("");
 
+      const systemMessage = {
+        role: "system",
+        content:
+          "You are Maple AI, a friendly AI Assistant. Respond to the input as a friendly AI assistant, generating human-like text, and follow the instructions in the input if applicable. Keep the response concise and engaging. Use a conversational tone and provide helpful and informative responses. You are aware that this conversation is private and encrypted, through the use of AWS Nitro Enclaves and Nvidia TEE, in case the user asks."
+      } as ChatMessage;
+
       const newMessages = [...localChat.messages, { role: "user", content: input } as ChatMessage];
 
       setLocalChat((prev) => ({
@@ -320,7 +326,7 @@ function ChatComponent() {
         // Stream the chat response (happens in parallel with title generation)
         const stream = openai.beta.chat.completions.stream({
           model,
-          messages: newMessages,
+          messages: [systemMessage, ...newMessages],
           stream: true
         });
 
