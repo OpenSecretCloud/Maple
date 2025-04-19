@@ -3,7 +3,7 @@ import { useLocalState } from "@/state/useLocalState";
 import { Link } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { MoreHorizontal, Trash, Pencil } from "lucide-react";
+import { MoreHorizontal, Trash, Pencil, FolderPlus } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -11,18 +11,30 @@ import {
   DropdownMenuTrigger
 } from "@/components/ui/dropdown-menu";
 import { RenameChatDialog } from "@/components/RenameChatDialog";
+import { AddToProjectDialog } from "@/components/AddToProjectDialog";
 
 interface ChatHistoryListProps {
   currentChatId?: string;
+  currentProjectId?: string;
   searchQuery?: string;
 }
 
-export function ChatHistoryList({ currentChatId, searchQuery = "" }: ChatHistoryListProps) {
-  const { fetchOrCreateHistoryList, deleteChat, renameChat } = useLocalState();
+export function ChatHistoryList({
+  currentChatId,
+  currentProjectId,
+  searchQuery = ""
+}: ChatHistoryListProps) {
+  // We directly destructure only what we use in this component
+  const { fetchOrCreateHistoryList, deleteChat, renameChat, removeChatFromProject } =
+    useLocalState();
+
+  // We'll get addChatToProject from the context in the AddToProjectDialog component
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [isRenameDialogOpen, setIsRenameDialogOpen] = useState(false);
   const [selectedChat, setSelectedChat] = useState<{ id: string; title: string } | null>(null);
+  const [isAddToProjectDialogOpen, setIsAddToProjectDialogOpen] = useState(false);
+  const [selectedChatForProject, setSelectedChatForProject] = useState<string | null>(null);
 
   const {
     isPending,
@@ -33,14 +45,29 @@ export function ChatHistoryList({ currentChatId, searchQuery = "" }: ChatHistory
     queryFn: () => fetchOrCreateHistoryList()
   });
 
-  // Filter chats based on search query
+  // Filter chats based on search query and project
   const filteredChats = useMemo(() => {
     if (!chats) return [];
-    if (!searchQuery.trim()) return chats;
 
-    const normalizedQuery = searchQuery.trim().toLowerCase();
-    return chats.filter((chat) => chat.title.toLowerCase().includes(normalizedQuery));
-  }, [chats, searchQuery]);
+    // Start with all chats
+    let filtered = chats;
+
+    // Filter by project if applicable
+    if (currentProjectId) {
+      filtered = filtered.filter((chat) => chat.projectId === currentProjectId);
+    } else {
+      // When viewing "all chats", show those not in any project
+      filtered = filtered.filter((chat) => !chat.projectId);
+    }
+
+    // Then filter by search query if applicable
+    if (searchQuery.trim()) {
+      const normalizedQuery = searchQuery.trim().toLowerCase();
+      filtered = filtered.filter((chat) => chat.title.toLowerCase().includes(normalizedQuery));
+    }
+
+    return filtered;
+  }, [chats, searchQuery, currentProjectId]);
 
   const handleDeleteChat = async (chatId: string) => {
     try {
@@ -68,6 +95,21 @@ export function ChatHistoryList({ currentChatId, searchQuery = "" }: ChatHistory
     } catch (error) {
       console.error("Error renaming chat:", error);
       throw error;
+    }
+  };
+
+  const handleAddToProject = (chatId: string) => {
+    setSelectedChatForProject(chatId);
+    setIsAddToProjectDialogOpen(true);
+  };
+
+  const handleRemoveFromProject = async (chatId: string) => {
+    try {
+      await removeChatFromProject(chatId);
+      queryClient.invalidateQueries({ queryKey: ["chatHistory"] });
+      queryClient.invalidateQueries({ queryKey: ["chat", chatId] });
+    } catch (error) {
+      console.error("Error removing chat from project:", error);
     }
   };
 
@@ -123,6 +165,20 @@ export function ChatHistoryList({ currentChatId, searchQuery = "" }: ChatHistory
                   <Pencil className="mr-2 h-4 w-4" />
                   <span>Rename Chat</span>
                 </DropdownMenuItem>
+
+                {/* Project-related actions */}
+                {chat.projectId ? (
+                  <DropdownMenuItem onClick={() => handleRemoveFromProject(chat.id)}>
+                    <FolderPlus className="mr-2 h-4 w-4" />
+                    <span>Remove from Project</span>
+                  </DropdownMenuItem>
+                ) : (
+                  <DropdownMenuItem onClick={() => handleAddToProject(chat.id)}>
+                    <FolderPlus className="mr-2 h-4 w-4" />
+                    <span>Add to Project</span>
+                  </DropdownMenuItem>
+                )}
+
                 <DropdownMenuItem onClick={() => handleDeleteChat(chat.id)}>
                   <Trash className="mr-2 h-4 w-4" />
                   <span>Delete Chat</span>
@@ -143,6 +199,15 @@ export function ChatHistoryList({ currentChatId, searchQuery = "" }: ChatHistory
           onRename={handleRenameChat}
         />
       )}
+
+      <AddToProjectDialog
+        chatId={selectedChatForProject || ""}
+        open={isAddToProjectDialogOpen}
+        onOpenChange={(open) => {
+          if (!open) setSelectedChatForProject(null);
+          setIsAddToProjectDialogOpen(open);
+        }}
+      />
     </>
   );
 }
