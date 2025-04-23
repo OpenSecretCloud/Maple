@@ -34,22 +34,8 @@ function LoginPage() {
   const [loginMethod, setLoginMethod] = useState<LoginMethod>(null);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
-  const [isIOS, setIsIOS] = useState(false);
-
-  // Check if running on iOS
-  useEffect(() => {
-    const checkPlatform = async () => {
-      try {
-        const platform = await type();
-        setIsIOS(platform === "ios");
-      } catch (error) {
-        console.error("Error checking platform:", error);
-        setIsIOS(false);
-      }
-    };
-
-    checkPlatform();
-  }, []);
+  // No longer needed to check if it's iOS only for visibility
+  // We still check the platform inside the handlers to determine the flow
 
   // Redirect if already logged in
   useEffect(() => {
@@ -170,36 +156,99 @@ function LoginPage() {
 
   const handleAppleLogin = async () => {
     try {
-      // For Sign in with Apple, we use the Tauri plugin's command
-      console.log("[OAuth] Initiating Sign in with Apple");
+      const isTauriEnv = await isTauri();
+      let isIOSDevice = false;
+      
+      // Only check platform type if we're in a Tauri environment
+      if (isTauriEnv) {
+        try {
+          const platform = await type();
+          isIOSDevice = platform === "ios";
+        } catch (error) {
+          console.error("Error checking platform type:", error);
+        }
+      }
+      
+      console.log("[OAuth] Using", isIOSDevice ? "iOS native" : isTauriEnv ? "Tauri" : "web", "flow");
 
-      try {
-        // Invoke the Apple Sign in plugin
-        // This will show the native Apple authentication UI
-        const result = await invoke("plugin:sign-in-with-apple|get_apple_id_credential", {
-          payload: {
-            scope: ["email", "fullName"],
-            state: "apple-signin-state",
-            // Add options to help with debugging
-            options: {
-              debug: true
+      if (isIOSDevice) {
+        // For iOS, use the native Apple Sign In
+        console.log("[OAuth] Initiating native Sign in with Apple");
+
+        try {
+          // Invoke the Apple Sign in plugin
+          // This will show the native Apple authentication UI
+          const result = await invoke<AppleCredential>("plugin:sign-in-with-apple|get_apple_id_credential", {
+            payload: {
+              scope: ["email", "fullName"],
+              state: "apple-signin-state",
+              // Add options to help with debugging
+              options: {
+                debug: true
+              }
             }
+          });
+
+          console.log("[OAuth] Apple Sign-In result:", result);
+
+          // Format the response for the API
+          const appleUser = {
+            user_identifier: result.user,
+            identity_token: result.identityToken,
+            email: result.email,
+            given_name: result.fullName?.givenName,
+            family_name: result.fullName?.familyName
+          };
+
+          // Send to backend via SDK
+          try {
+            await os.handleAppleNativeSignIn(appleUser, "");
+            // Redirect after successful login
+            if (selected_plan) {
+              navigate({
+                to: "/pricing",
+                search: { selected_plan }
+              });
+            } else {
+              navigate({ to: next || "/" });
+            }
+          } catch (backendError) {
+            console.error("[OAuth] Backend processing failed:", backendError);
+            setError(backendError instanceof Error ? backendError.message : "Failed to process Apple authentication");
           }
+        } catch (error) {
+          console.error("[OAuth] Failed to authenticate with Apple:", error);
+          const errorMessage =
+            error instanceof Error
+              ? `Apple Sign In error: ${error.message}`
+              : "Failed to authenticate with Apple. Please try again.";
+          setError(errorMessage);
+        }
+      } else if (isTauriEnv) {
+        // For Tauri (desktop), redirect to the web app's desktop-auth route
+        let desktopAuthUrl = "https://trymaple.ai/desktop-auth?provider=apple";
+
+        // If there's a selected plan, add it to the URL
+        if (selected_plan) {
+          desktopAuthUrl += `&selected_plan=${encodeURIComponent(selected_plan)}`;
+        }
+
+        // Use the opener plugin by directly invoking the command
+        console.log("[OAuth] Opening URL in external browser:", desktopAuthUrl);
+        invoke("plugin:opener|open_url", { url: desktopAuthUrl }).catch((error: Error) => {
+          console.error("[OAuth] Failed to open external browser:", error);
+          setError("Failed to open authentication page in browser");
         });
-
-        console.log("[OAuth] Apple Sign-In result:", result);
-
-        // In a real implementation, you would send this result to your backend
-        // For now we'll just show a message that this is coming soon
-        setError("Apple Sign In successful, but backend integration is coming soon.");
-      } catch (error) {
-        console.error("[OAuth] Failed to authenticate with Apple:", error);
-        // Be more specific about the error message
-        const errorMessage =
-          error instanceof Error
-            ? `Apple Sign In error: ${error.message}`
-            : "Failed to authenticate with Apple. Please try again.";
-        setError(errorMessage);
+      } else {
+        // Web flow for Apple OAuth with response_mode=query
+        // This makes Apple send the response as URL parameters instead of a form POST
+        const options = { response_mode: "query" };
+        const { auth_url } = await os.initiateAppleAuth("", options);
+        
+        if (selected_plan) {
+          sessionStorage.setItem("selected_plan", selected_plan);
+        }
+        window.location.href = auth_url;
       }
     } catch (error) {
       console.error("Failed to initiate Apple login:", error);
@@ -223,12 +272,10 @@ function LoginPage() {
           <Google className="mr-2 h-4 w-4" />
           Log in with Google
         </Button>
-        {isIOS && (
-          <Button onClick={handleAppleLogin} className="w-full">
-            <Apple className="mr-2 h-4 w-4" />
-            Log in with Apple
-          </Button>
-        )}
+        <Button onClick={handleAppleLogin} className="w-full">
+          <Apple className="mr-2 h-4 w-4" />
+          Log in with Apple
+        </Button>
         <div className="text-center text-sm">
           Need an account?{" "}
           <Link to="/signup" search={next ? { next } : undefined} className="underline">

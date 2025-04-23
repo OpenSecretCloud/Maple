@@ -53,11 +53,17 @@ function DesktopAuth() {
           const result = await os.initiateGoogleAuth("");
           auth_url = result.auth_url;
         } else if (provider === "apple") {
-          // Apple sign-in is handled natively on iOS, not through browser OAuth
-          // For this demo, we'll just redirect to login page
-          console.log("[Apple Auth] Apple Sign In should be handled natively on iOS");
-          navigate({ to: "/login" });
-          return;
+          // Apple sign-in can be handled through OAuth too for non-iOS platforms
+          console.log("[Apple Auth] Initiating Apple OAuth flow for desktop/web");
+          try {
+            // Use response_mode=query to make Apple return URL parameters instead of a form POST
+            const options = { response_mode: "query" };
+            const result = await os.initiateAppleAuth("", options);
+            auth_url = result.auth_url;
+          } catch (error) {
+            console.error("[Apple Auth] Failed to initiate Apple OAuth:", error);
+            throw new Error("Failed to initiate Apple authentication. Please try again.");
+          }
         } else {
           throw new Error("Unsupported provider");
         }
