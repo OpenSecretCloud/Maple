@@ -17,8 +17,6 @@ function formatProviderName(provider: string): string {
       return "GitHub";
     case "google":
       return "Google";
-    case "apple":
-      return "Apple";
     default:
       return provider.charAt(0).toUpperCase() + provider.slice(1);
   }
@@ -28,39 +26,39 @@ function OAuthCallback() {
   const [isProcessing, setIsProcessing] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const navigate = useNavigate();
-  const { handleGitHubCallback, handleGoogleCallback, handleAppleCallback } = useOpenSecret();
+  const { handleGitHubCallback, handleGoogleCallback } = useOpenSecret();
   const processedRef = useRef(false);
-  
+
   // Helper functions for the callback process
   const handleSuccessfulAuth = () => {
     // Check if this is a Tauri app auth flow (desktop or mobile)
     const isTauriAuth = localStorage.getItem("redirect-to-native") === "true";
-    
+
     // Clear the flag
     localStorage.removeItem("redirect-to-native");
-    
+
     if (isTauriAuth) {
       // Handle Tauri redirect
       const accessToken = localStorage.getItem("access_token") || "";
       const refreshToken = localStorage.getItem("refresh_token");
-      
+
       let deepLinkUrl = `cloud.opensecret.maple://auth?access_token=${encodeURIComponent(accessToken)}`;
-      
+
       if (refreshToken) {
         deepLinkUrl += `&refresh_token=${encodeURIComponent(refreshToken)}`;
       }
-      
+
       setTimeout(() => {
         window.location.href = deepLinkUrl;
       }, 1000);
-      
+
       return;
     }
-    
+
     // Handle web redirect
     const selectedPlan = sessionStorage.getItem("selected_plan");
     sessionStorage.removeItem("selected_plan");
-    
+
     setTimeout(() => {
       if (selectedPlan) {
         navigate({
@@ -72,7 +70,7 @@ function OAuthCallback() {
       }
     }, 2000);
   };
-  
+
   const handleAuthError = (error: unknown) => {
     console.error(`Authentication callback error:`, error);
     if (error instanceof Error) {
@@ -90,29 +88,11 @@ function OAuthCallback() {
     const processCallback = async () => {
       if (processedRef.current) return;
       processedRef.current = true;
-      
+
       // Get URL parameters for all OAuth providers
       const urlParams = new URLSearchParams(window.location.search);
       const code = urlParams.get("code");
       const state = urlParams.get("state");
-      
-      // For Apple, also check for user data in the URL parameters
-      if (provider === "apple") {
-        console.log("[Apple Auth] Processing Apple callback");
-        
-        // Apple may include user data in the URL parameters with response_mode=query
-        const userParam = urlParams.get("user");
-        if (userParam) {
-          try {
-            const userData = JSON.parse(decodeURIComponent(userParam));
-            console.log("[Apple Auth] User data from Apple:", userData);
-            // userData.name.firstName, userData.name.lastName, userData.email available on first sign-in
-            // Note: Apple only sends this data on the first sign-in
-          } catch (e) {
-            console.error("[Apple Auth] Failed to parse user data:", e);
-          }
-        }
-      }
 
       if (code && state) {
         try {
@@ -121,16 +101,12 @@ function OAuthCallback() {
             await handleGitHubCallback(code, state, "");
           } else if (provider === "google") {
             await handleGoogleCallback(code, state, "");
-          } else if (provider === "apple") {
-            // Use the OpenSecret SDK to handle Apple OAuth callback
-            await handleAppleCallback(code, state, "");
           } else {
             throw new Error(`Unsupported provider: ${provider}`);
           }
 
           // Handle the successful authentication (redirect)
           handleSuccessfulAuth();
-          
         } catch (error) {
           // Handle authentication error
           handleAuthError(error);
@@ -144,7 +120,7 @@ function OAuthCallback() {
     };
 
     processCallback();
-  }, [handleGitHubCallback, handleGoogleCallback, handleAppleCallback, navigate, provider]);
+  }, [handleGitHubCallback, handleGoogleCallback, navigate, provider]);
 
   // If this is a Tauri app auth flow (desktop or mobile), show a different UI
   if (localStorage.getItem("redirect-to-native") === "true") {

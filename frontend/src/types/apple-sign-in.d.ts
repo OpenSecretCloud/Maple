@@ -1,4 +1,4 @@
-// Type definitions for Apple Sign In plugin and OAuth
+// Type definitions for native iOS Apple Sign In plugin
 
 // For native Apple Sign In plugin
 interface AppleCredential {
@@ -10,9 +10,4 @@ interface AppleCredential {
     familyName?: string;
   };
   state?: string;
-}
-
-// For Apple OAuth options
-interface AppleOAuthOptions {
-  response_mode?: "query" | "form_post";
 }

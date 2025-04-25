@@ -16,7 +16,7 @@ export const Route = createFileRoute("/desktop-auth")({
   validateSearch: (search: Record<string, unknown>): DesktopAuthSearchParams => {
     const provider = typeof search.provider === "string" ? search.provider : "github";
     // Validate provider is supported
-    if (provider !== "github" && provider !== "google" && provider !== "apple") {
+    if (provider !== "github" && provider !== "google") {
       throw new Error(`Unsupported provider: ${provider}`);
     }
     return {
@@ -52,18 +52,6 @@ function DesktopAuth() {
         } else if (provider === "google") {
           const result = await os.initiateGoogleAuth("");
           auth_url = result.auth_url;
-        } else if (provider === "apple") {
-          // Apple sign-in can be handled through OAuth too for non-iOS platforms
-          console.log("[Apple Auth] Initiating Apple OAuth flow for desktop/web");
-          try {
-            // Use response_mode=query to make Apple return URL parameters instead of a form POST
-            const options = { response_mode: "query" };
-            const result = await os.initiateAppleAuth("", options);
-            auth_url = result.auth_url;
-          } catch (error) {
-            console.error("[Apple Auth] Failed to initiate Apple OAuth:", error);
-            throw new Error("Failed to initiate Apple authentication. Please try again.");
-          }
         } else {
           throw new Error("Unsupported provider");
         }

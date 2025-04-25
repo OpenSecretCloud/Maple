@@ -201,8 +201,10 @@ export function Marketing() {
     const checkPlatform = async () => {
       try {
         // First check if we're in a Tauri environment
-        const isTauriEnv = await import('@tauri-apps/api/core').then(m => m.isTauri()).catch(() => false);
-        
+        const isTauriEnv = await import("@tauri-apps/api/core")
+          .then((m) => m.isTauri())
+          .catch(() => false);
+
         if (isTauriEnv) {
           // Only check platform type if we're in a Tauri environment
           const platform = await type();
