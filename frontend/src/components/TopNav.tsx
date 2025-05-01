@@ -52,6 +52,14 @@ export function TopNav() {
               <div className="flex items-center gap-6 sm:gap-10">
                 <NavLink to="/pricing">Pricing</NavLink>
                 <NavLink to="/proof">Proof</NavLink>
+                <a
+                  href="https://blog.trymaple.ai/tag/guides/"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="transition-colors font-light tracking-tight text-lg text-[#E2E2E2]/70 hover:text-[#E2E2E2]"
+                >
+                  Guides
+                </a>
               </div>
             </div>
 
@@ -95,6 +103,15 @@ export function TopNav() {
               <NavLink to="/proof" onClick={() => setMobileMenuOpen(false)}>
                 Proof
               </NavLink>
+              <a
+                href="https://blog.trymaple.ai/tag/guides/"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="transition-colors font-light tracking-tight text-lg text-[#E2E2E2]/70 hover:text-[#E2E2E2]"
+                onClick={() => setMobileMenuOpen(false)}
+              >
+                Guides
+              </a>
             </div>
           </div>
         )}
