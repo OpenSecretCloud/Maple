@@ -22,7 +22,6 @@ pub fn run() {
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_os::init())
-        .plugin(tauri_plugin_sign_in_with_apple::init())
         .setup(|app| {
             // Set up the deep link handler
             // Use a cloned handle with 'static lifetime
@@ -186,7 +185,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build());
 
     #[cfg(not(desktop))]
-    let app = tauri::Builder::default()
+    let mut builder = tauri::Builder::default()
         .plugin(
             tauri_plugin_log::Builder::default()
                 .level(log::LevelFilter::Info)
@@ -194,8 +193,16 @@ pub fn run() {
         )
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_os::init())
-        .plugin(tauri_plugin_sign_in_with_apple::init())
+        .plugin(tauri_plugin_os::init());
+
+    // Only add the Apple Sign In plugin on iOS
+    #[cfg(all(not(desktop), target_os = "ios"))]
+    {
+        builder = builder.plugin(tauri_plugin_sign_in_with_apple::init());
+    }
+
+    #[cfg(not(desktop))]
+    let app = builder
         .setup(|app| {
             // Set up the deep link handler for mobile
             let app_handle = app.handle().clone();

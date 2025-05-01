@@ -63,3 +63,5 @@ frontend/*.local
 
 # Build caching apparently?
 *.tsbuildinfo
+
+**/.claude/settings.local.json

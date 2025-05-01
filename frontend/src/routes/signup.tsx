@@ -11,6 +11,8 @@ import { Apple } from "@/components/icons/Apple";
 import { AuthMain } from "@/components/AuthMain";
 import { isTauri, invoke } from "@tauri-apps/api/core";
 import { type } from "@tauri-apps/plugin-os";
+import { v4 as uuidv4 } from "uuid";
+import type { AppleCredential } from "@/types/apple-sign-in";
 
 type SignupSearchParams = {
   next?: string;
@@ -189,6 +191,10 @@ function SignupPage() {
       console.log("[OAuth] Initiating native Sign in with Apple for iOS");
 
       try {
+        // Generate random UUIDs for state and nonce
+        const state = uuidv4();
+        const nonce = uuidv4();
+
         // Invoke the Apple Sign in plugin
         // This will show the native Apple authentication UI
         const result = await invoke<AppleCredential>(
@@ -196,10 +202,11 @@ function SignupPage() {
           {
             payload: {
               scope: ["email", "fullName"],
-              state: "apple-signup-state",
-              // Add options to help with debugging
+              state,
+              nonce,
+              // Disable debug mode in production
               options: {
-                debug: true
+                debug: false
               }
             }
           }
