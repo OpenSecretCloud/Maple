@@ -13,6 +13,8 @@ import { isTauri, invoke } from "@tauri-apps/api/core";
 import { type } from "@tauri-apps/plugin-os";
 import { v4 as uuidv4 } from "uuid";
 import type { AppleCredential } from "@/types/apple-sign-in";
+import { sha256 } from "@noble/hashes/sha256";
+import { bytesToHex } from "@noble/hashes/utils";
 
 type LoginSearchParams = {
   next?: string;
@@ -193,7 +195,12 @@ function LoginPage() {
       try {
         // Generate random UUIDs for state and nonce
         const state = uuidv4();
-        const nonce = uuidv4();
+        const rawNonce = uuidv4();
+
+        // SHA-256 hash the nonce before sending to Apple
+        // Apple requires the nonce to be hashed with SHA-256
+        const hashedNonce = bytesToHex(sha256(new TextEncoder().encode(rawNonce)));
+
 
         // Invoke the Apple Sign in plugin
         // This will show the native Apple authentication UI
@@ -203,7 +210,7 @@ function LoginPage() {
             payload: {
               scope: ["email", "fullName"],
               state,
-              nonce,
+              nonce: hashedNonce, // Send the hashed nonce to Apple
               // Disable debug mode in production
               options: {
                 debug: false
@@ -220,7 +227,8 @@ function LoginPage() {
           identity_token: result.identityToken,
           email: result.email,
           given_name: result.fullName?.givenName,
-          family_name: result.fullName?.familyName
+          family_name: result.fullName?.familyName,
+          nonce: rawNonce // Pass the original raw nonce to backend
         };
 
         // Send to backend via SDK
