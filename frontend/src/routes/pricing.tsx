@@ -241,12 +241,10 @@ function PricingPage() {
     retry: 1 // Only retry once for faster error feedback
   });
 
-  const getButtonText = (product: Product) => {
-    // For iOS, show "Coming Soon" for paid plans
-    if (isIOS && !product.name.toLowerCase().includes("free")) {
-      return "Coming Soon";
-    }
+  // Handle payment callback status from URL params
+  const { success, canceled } = Route.useSearch();
 
+  const getButtonText = (product: Product) => {
     if (loadingProductId === product.id) {
       return (
         <>
@@ -348,19 +346,69 @@ function PricingPage() {
           }
         }
 
-        if (useBitcoin) {
-          await billingService.createZapriteCheckoutSession(
-            email,
-            productId,
-            `${window.location.origin}/`
-          );
-        } else {
-          await billingService.createCheckoutSession(
-            email,
-            productId,
-            `${window.location.origin}/`,
-            `${window.location.origin}/`
-          );
+        try {
+          // Check if we're in a Tauri environment
+          const isTauri = await import("@tauri-apps/api/core")
+            .then((m) => m.isTauri())
+            .catch(() => false);
+
+          const isTauriIOS =
+            isTauri &&
+            (await import("@tauri-apps/plugin-os")
+              .then((m) => m.type())
+              .then((type) => type === "ios")
+              .catch(() => false));
+
+          // For iOS, use Universal Links that match the AASA configuration
+          if (isTauriIOS) {
+            if (useBitcoin) {
+              await billingService.createZapriteCheckoutSession(
+                email,
+                productId,
+                `https://trymaple.ai/payment-success?source=zaprite`
+              );
+            } else {
+              await billingService.createCheckoutSession(
+                email,
+                productId,
+                `https://trymaple.ai/payment-success?source=stripe`,
+                `https://trymaple.ai/payment-canceled?source=stripe`
+              );
+            }
+          } else {
+            // For web or desktop, use regular URLs
+            if (useBitcoin) {
+              await billingService.createZapriteCheckoutSession(
+                email,
+                productId,
+                `${window.location.origin}/pricing?success=true`
+              );
+            } else {
+              await billingService.createCheckoutSession(
+                email,
+                productId,
+                `${window.location.origin}/pricing?success=true`,
+                `${window.location.origin}/pricing?canceled=true`
+              );
+            }
+          }
+        } catch (error) {
+          console.error("Error determining platform:", error);
+          // Fall back to regular URLs if platform detection fails
+          if (useBitcoin) {
+            await billingService.createZapriteCheckoutSession(
+              email,
+              productId,
+              `${window.location.origin}/pricing?success=true`
+            );
+          } else {
+            await billingService.createCheckoutSession(
+              email,
+              productId,
+              `${window.location.origin}/pricing?success=true`,
+              `${window.location.origin}/pricing?canceled=true`
+            );
+          }
         }
       } catch (err) {
         console.error("Subscribe error:", err);
@@ -374,11 +422,6 @@ function PricingPage() {
 
   const handleButtonClick = useCallback(
     (product: Product) => {
-      // For iOS, disable payment buttons except for free plan
-      if (isIOS && !product.name.toLowerCase().includes("free")) {
-        return; // Do nothing for paid plans on iOS
-      }
-
       if (!isLoggedIn) {
         const targetPlanName = product.name.toLowerCase();
         const isTeamPlan = targetPlanName.includes("team");
@@ -468,15 +511,8 @@ function PricingPage() {
     if (isLoggedIn && selected_plan && !isBillingStatusLoading) {
       if (loadingProductId) return; // Prevent multiple triggers
       const product = products?.find((p) => p.id === selected_plan);
-      if (product) {
-        // Skip automatic checkout for paid plans on iOS
-        if (isIOS && !product.name.toLowerCase().includes("free")) {
-          return;
-        }
-
-        if (isSubscribed) {
-          handleButtonClick(product);
-        }
+      if (product && isSubscribed) {
+        handleButtonClick(product);
       }
     }
 
@@ -586,6 +622,29 @@ function PricingPage() {
             </div>
           }
         />
+
+        {/* Payment Callback Status Messages */}
+        {success && (
+          <div className="w-full max-w-7xl mx-auto mt-4 px-4 sm:px-6 lg:px-8">
+            <div className="bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-900/50 text-green-800 dark:text-green-100 rounded-lg p-4 flex items-center gap-3">
+              <div className="rounded-full bg-green-100 dark:bg-green-800 p-1">
+                <Check className="w-5 h-5 text-green-600 dark:text-green-200" />
+              </div>
+              <p>Payment successful! Your subscription has been updated.</p>
+            </div>
+          </div>
+        )}
+
+        {canceled && (
+          <div className="w-full max-w-7xl mx-auto mt-4 px-4 sm:px-6 lg:px-8">
+            <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-900/50 text-amber-800 dark:text-amber-100 rounded-lg p-4 flex items-center gap-3">
+              <div className="rounded-full bg-amber-100 dark:bg-amber-800 p-1">
+                <AlertTriangle className="w-5 h-5 text-amber-600 dark:text-amber-200" />
+              </div>
+              <p>Payment canceled. Your subscription remains unchanged.</p>
+            </div>
+          </div>
+        )}
 
         {!isIOS && (
           <div className="w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex justify-center">
@@ -719,9 +778,7 @@ function PricingPage() {
                       <button
                         onClick={() => handleButtonClick(product)}
                         disabled={
-                          loadingProductId === product.id ||
-                          (useBitcoin && product.name === "Team") ||
-                          (isIOS && !product.name.toLowerCase().includes("free"))
+                          loadingProductId === product.id || (useBitcoin && product.name === "Team")
                         }
                         className={`w-full 
                           dark:bg-white/90 dark:text-black dark:hover:bg-[hsl(var(--purple))]/80 dark:hover:text-[hsl(var(--foreground))] dark:active:bg-white/80
@@ -757,7 +814,17 @@ export const Route = createFileRoute("/pricing")({
   component: PricingPage,
   validateSearch: (search: Record<string, unknown>): PricingSearchParams => ({
     selected_plan: typeof search.selected_plan === "string" ? search.selected_plan : undefined,
-    success: typeof search.success === "boolean" ? search.success : undefined,
-    canceled: typeof search.canceled === "boolean" ? search.canceled : undefined
+    success:
+      search.success === true || search.success === "true"
+        ? true
+        : search.success === false || search.success === "false"
+          ? false
+          : undefined,
+    canceled:
+      search.canceled === true || search.canceled === "true"
+        ? true
+        : search.canceled === false || search.canceled === "false"
+          ? false
+          : undefined
   })
 });
