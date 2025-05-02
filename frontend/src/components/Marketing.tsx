@@ -200,8 +200,18 @@ export function Marketing() {
   useEffect(() => {
     const checkPlatform = async () => {
       try {
-        const platform = await type();
-        setIsIOS(platform === "ios");
+        // First check if we're in a Tauri environment
+        const isTauriEnv = await import("@tauri-apps/api/core")
+          .then((m) => m.isTauri())
+          .catch(() => false);
+
+        if (isTauriEnv) {
+          // Only check platform type if we're in a Tauri environment
+          const platform = await type();
+          setIsIOS(platform === "ios");
+        } else {
+          setIsIOS(false);
+        }
       } catch (error) {
         console.error("Error checking platform:", error);
         setIsIOS(false);

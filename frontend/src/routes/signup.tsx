@@ -7,8 +7,14 @@ import { Label } from "@/components/ui/label";
 import { AlertDestructive } from "@/components/AlertDestructive";
 import { Loader2, Github, Mail } from "lucide-react";
 import { Google } from "@/components/icons/Google";
+import { Apple } from "@/components/icons/Apple";
 import { AuthMain } from "@/components/AuthMain";
 import { isTauri, invoke } from "@tauri-apps/api/core";
+import { type } from "@tauri-apps/plugin-os";
+import { v4 as uuidv4 } from "uuid";
+import type { AppleCredential } from "@/types/apple-sign-in";
+import { sha256 } from "@noble/hashes/sha256";
+import { bytesToHex } from "@noble/hashes/utils";
 
 type SignupSearchParams = {
   next?: string;
@@ -23,7 +29,7 @@ export const Route = createFileRoute("/signup")({
   })
 });
 
-type SignUpMethod = "email" | "github" | "google" | null;
+type SignUpMethod = "email" | "github" | "google" | "apple" | null;
 
 function SignupPage() {
   const navigate = useNavigate();
@@ -32,6 +38,37 @@ function SignupPage() {
   const [signUpMethod, setSignUpMethod] = useState<SignUpMethod>(null);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [isIOS, setIsIOS] = useState(false);
+
+  // Check if running on iOS
+  useEffect(() => {
+    const checkPlatform = async () => {
+      try {
+        // First check if we're in a Tauri environment
+        let isTauriEnv = false;
+        try {
+          isTauriEnv = await isTauri();
+        } catch {
+          // Not in Tauri environment
+          isTauriEnv = false;
+        }
+
+        // Only check platform type if we're in a Tauri environment
+        if (isTauriEnv) {
+          const platform = await type();
+          setIsIOS(platform === "ios");
+        } else {
+          // Not in Tauri environment, definitely not iOS
+          setIsIOS(false);
+        }
+      } catch (error) {
+        console.error("Error checking platform:", error);
+        setIsIOS(false);
+      }
+    };
+
+    checkPlatform();
+  }, []);
 
   // Redirect if already logged in
   useEffect(() => {
@@ -150,9 +187,88 @@ function SignupPage() {
     }
   };
 
+  const handleAppleSignup = async () => {
+    try {
+      // Only iOS supports native Apple Sign In
+      console.log("[OAuth] Initiating native Sign in with Apple for iOS");
+
+      try {
+        // Generate random UUIDs for state and nonce
+        const state = uuidv4();
+        const rawNonce = uuidv4();
+
+        // SHA-256 hash the nonce before sending to Apple
+        // Apple requires the nonce to be hashed with SHA-256
+        const hashedNonce = bytesToHex(sha256(new TextEncoder().encode(rawNonce)));
+
+
+        // Invoke the Apple Sign in plugin
+        // This will show the native Apple authentication UI
+        const result = await invoke<AppleCredential>(
+          "plugin:sign-in-with-apple|get_apple_id_credential",
+          {
+            payload: {
+              scope: ["email", "fullName"],
+              state,
+              nonce: hashedNonce, // Send the hashed nonce to Apple
+              // Disable debug mode in production
+              options: {
+                debug: false
+              }
+            }
+          }
+        );
+
+        console.log("[OAuth] Apple Sign-In result:", result);
+
+        // Format the response for the API
+        const appleUser = {
+          user_identifier: result.user,
+          identity_token: result.identityToken,
+          email: result.email,
+          given_name: result.fullName?.givenName,
+          family_name: result.fullName?.familyName,
+          nonce: rawNonce // Pass the original raw nonce to backend
+        };
+
+        // Send to backend via SDK
+        try {
+          await os.handleAppleNativeSignIn(appleUser, "");
+          // Redirect after successful signup
+          if (selected_plan) {
+            navigate({
+              to: "/pricing",
+              search: { selected_plan }
+            });
+          } else {
+            navigate({ to: next || "/" });
+          }
+        } catch (backendError) {
+          console.error("[OAuth] Backend processing failed:", backendError);
+          setError(
+            backendError instanceof Error
+              ? backendError.message
+              : "Failed to process Apple authentication"
+          );
+        }
+      } catch (error) {
+        console.error("[OAuth] Failed to authenticate with Apple:", error);
+        const errorMessage =
+          error instanceof Error
+            ? `Apple Sign In error: ${error.message}`
+            : "Failed to authenticate with Apple. Please try again.";
+        setError(errorMessage);
+      }
+    } catch (error) {
+      console.error("Failed to initiate Apple signup:", error);
+      setError("Failed to initiate Apple signup. Please try again.");
+    }
+  };
+
   if (!signUpMethod) {
     return (
       <AuthMain title="Sign Up" description="Choose your preferred sign-up method">
+        {error && <AlertDestructive title="Note" description={error} />}
         <Button onClick={() => setSignUpMethod("email")} className="w-full">
           <Mail className="mr-2 h-4 w-4" />
           Sign up with Email
@@ -165,6 +281,12 @@ function SignupPage() {
           <Google className="mr-2 h-4 w-4" />
           Sign up with Google
         </Button>
+        {isIOS && (
+          <Button onClick={handleAppleSignup} className="w-full">
+            <Apple className="mr-2 h-4 w-4" />
+            Sign up with Apple
+          </Button>
+        )}
         <div className="text-center text-sm">
           Already have an account?{" "}
           <Link to="/login" search={next ? { next } : undefined} className="underline">
