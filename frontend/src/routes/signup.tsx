@@ -201,7 +201,6 @@ function SignupPage() {
         // Apple requires the nonce to be hashed with SHA-256
         const hashedNonce = bytesToHex(sha256(new TextEncoder().encode(rawNonce)));
 
-
         // Invoke the Apple Sign in plugin
         // This will show the native Apple authentication UI
         const result = await invoke<AppleCredential>(

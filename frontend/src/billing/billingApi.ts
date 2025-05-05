@@ -142,6 +142,51 @@ export async function createCheckoutSession(
 
   const { checkout_url } = await response.json();
   console.log("Redirecting to checkout:", checkout_url);
+
+  try {
+    // Check if we're in a Tauri environment
+    const isTauri = await import("@tauri-apps/api/core")
+      .then((m) => m.isTauri())
+      .catch(() => false);
+
+    if (isTauri) {
+      // Log the URL we're about to open
+      console.log("[Billing] Opening URL in external browser:", checkout_url);
+
+      // For iOS, we need to force Safari to open with no fallback
+      const { type } = await import("@tauri-apps/plugin-os");
+      const platform = await type();
+      const { invoke } = await import("@tauri-apps/api/core");
+
+      if (platform === "ios") {
+        console.log("[Billing] iOS detected, using opener plugin to launch Safari");
+
+        // Use the opener plugin directly - with NO fallback for iOS
+        await invoke("plugin:opener|open_url", { url: checkout_url })
+          .then(() => {
+            console.log("[Billing] Successfully opened URL in external browser");
+          })
+          .catch((error: Error) => {
+            console.error("[Billing] Failed to open external browser:", error);
+            throw new Error(
+              "Failed to open payment page in external browser. This is required for iOS payments."
+            );
+          });
+
+        // Add a small delay to ensure the browser has time to open
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        return;
+      } else {
+        // For other platforms, maintain original behavior - use window.location directly
+        window.location.href = checkout_url;
+        return;
+      }
+    }
+  } catch (error) {
+    console.error("[Billing] Error opening URL with Tauri:", error);
+  }
+
+  // Fall back to regular navigation if not on Tauri or if Tauri opener fails
   window.location.href = checkout_url;
 }
 
@@ -179,6 +224,51 @@ export async function createZapriteCheckoutSession(
 
   const { checkout_url } = await response.json();
   console.log("Redirecting to Zaprite checkout:", checkout_url);
+
+  try {
+    // Check if we're in a Tauri environment
+    const isTauri = await import("@tauri-apps/api/core")
+      .then((m) => m.isTauri())
+      .catch(() => false);
+
+    if (isTauri) {
+      // Log the URL we're about to open
+      console.log("[Billing] Opening URL in external browser:", checkout_url);
+
+      // For iOS, we need to force Safari to open with no fallback
+      const { type } = await import("@tauri-apps/plugin-os");
+      const platform = await type();
+      const { invoke } = await import("@tauri-apps/api/core");
+
+      if (platform === "ios") {
+        console.log("[Billing] iOS detected, using opener plugin to launch Safari");
+
+        // Use the opener plugin directly - with NO fallback for iOS
+        await invoke("plugin:opener|open_url", { url: checkout_url })
+          .then(() => {
+            console.log("[Billing] Successfully opened URL in external browser");
+          })
+          .catch((error: Error) => {
+            console.error("[Billing] Failed to open external browser:", error);
+            throw new Error(
+              "Failed to open payment page in external browser. This is required for iOS payments."
+            );
+          });
+
+        // Add a small delay to ensure the browser has time to open
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        return;
+      } else {
+        // For other platforms, maintain original behavior - use window.location directly
+        window.location.href = checkout_url;
+        return;
+      }
+    }
+  } catch (error) {
+    console.error("[Billing] Error opening URL with Tauri:", error);
+  }
+
+  // Fall back to regular navigation if not on Tauri or if Tauri opener fails
   window.location.href = checkout_url;
 }
 

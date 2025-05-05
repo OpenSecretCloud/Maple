@@ -14,6 +14,8 @@ import { Route as rootRoute } from './routes/__root'
 import { Route as SignupImport } from './routes/signup'
 import { Route as ProofImport } from './routes/proof'
 import { Route as PricingImport } from './routes/pricing'
+import { Route as PaymentSuccessImport } from './routes/payment-success'
+import { Route as PaymentCanceledImport } from './routes/payment-canceled'
 import { Route as PasswordResetImport } from './routes/password-reset'
 import { Route as LoginImport } from './routes/login'
 import { Route as DownloadsImport } from './routes/downloads'
@@ -42,6 +44,18 @@ const ProofRoute = ProofImport.update({
 const PricingRoute = PricingImport.update({
   id: '/pricing',
   path: '/pricing',
+  getParentRoute: () => rootRoute,
+} as any)
+
+const PaymentSuccessRoute = PaymentSuccessImport.update({
+  id: '/payment-success',
+  path: '/payment-success',
+  getParentRoute: () => rootRoute,
+} as any)
+
+const PaymentCanceledRoute = PaymentCanceledImport.update({
+  id: '/payment-canceled',
+  path: '/payment-canceled',
   getParentRoute: () => rootRoute,
 } as any)
 
@@ -150,6 +164,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof PasswordResetImport
       parentRoute: typeof rootRoute
     }
+    '/payment-canceled': {
+      id: '/payment-canceled'
+      path: '/payment-canceled'
+      fullPath: '/payment-canceled'
+      preLoaderRoute: typeof PaymentCanceledImport
+      parentRoute: typeof rootRoute
+    }
+    '/payment-success': {
+      id: '/payment-success'
+      path: '/payment-success'
+      fullPath: '/payment-success'
+      preLoaderRoute: typeof PaymentSuccessImport
+      parentRoute: typeof rootRoute
+    }
     '/pricing': {
       id: '/pricing'
       path: '/pricing'
@@ -233,6 +261,8 @@ export interface FileRoutesByFullPath {
   '/downloads': typeof DownloadsRoute
   '/login': typeof LoginRoute
   '/password-reset': typeof PasswordResetRouteWithChildren
+  '/payment-canceled': typeof PaymentCanceledRoute
+  '/payment-success': typeof PaymentSuccessRoute
   '/pricing': typeof PricingRoute
   '/proof': typeof ProofRoute
   '/signup': typeof SignupRoute
@@ -249,6 +279,8 @@ export interface FileRoutesByTo {
   '/downloads': typeof DownloadsRoute
   '/login': typeof LoginRoute
   '/password-reset': typeof PasswordResetRouteWithChildren
+  '/payment-canceled': typeof PaymentCanceledRoute
+  '/payment-success': typeof PaymentSuccessRoute
   '/pricing': typeof PricingRoute
   '/proof': typeof ProofRoute
   '/signup': typeof SignupRoute
@@ -266,6 +298,8 @@ export interface FileRoutesById {
   '/downloads': typeof DownloadsRoute
   '/login': typeof LoginRoute
   '/password-reset': typeof PasswordResetRouteWithChildren
+  '/payment-canceled': typeof PaymentCanceledRoute
+  '/payment-success': typeof PaymentSuccessRoute
   '/pricing': typeof PricingRoute
   '/proof': typeof ProofRoute
   '/signup': typeof SignupRoute
@@ -284,6 +318,8 @@ export interface FileRouteTypes {
     | '/downloads'
     | '/login'
     | '/password-reset'
+    | '/payment-canceled'
+    | '/payment-success'
     | '/pricing'
     | '/proof'
     | '/signup'
@@ -299,6 +335,8 @@ export interface FileRouteTypes {
     | '/downloads'
     | '/login'
     | '/password-reset'
+    | '/payment-canceled'
+    | '/payment-success'
     | '/pricing'
     | '/proof'
     | '/signup'
@@ -314,6 +352,8 @@ export interface FileRouteTypes {
     | '/downloads'
     | '/login'
     | '/password-reset'
+    | '/payment-canceled'
+    | '/payment-success'
     | '/pricing'
     | '/proof'
     | '/signup'
@@ -331,6 +371,8 @@ export interface RootRouteChildren {
   DownloadsRoute: typeof DownloadsRoute
   LoginRoute: typeof LoginRoute
   PasswordResetRoute: typeof PasswordResetRouteWithChildren
+  PaymentCanceledRoute: typeof PaymentCanceledRoute
+  PaymentSuccessRoute: typeof PaymentSuccessRoute
   PricingRoute: typeof PricingRoute
   ProofRoute: typeof ProofRoute
   SignupRoute: typeof SignupRoute
@@ -345,6 +387,8 @@ const rootRouteChildren: RootRouteChildren = {
   DownloadsRoute: DownloadsRoute,
   LoginRoute: LoginRoute,
   PasswordResetRoute: PasswordResetRouteWithChildren,
+  PaymentCanceledRoute: PaymentCanceledRoute,
+  PaymentSuccessRoute: PaymentSuccessRoute,
   PricingRoute: PricingRoute,
   ProofRoute: ProofRoute,
   SignupRoute: SignupRoute,
@@ -368,6 +412,8 @@ export const routeTree = rootRoute
         "/downloads",
         "/login",
         "/password-reset",
+        "/payment-canceled",
+        "/payment-success",
         "/pricing",
         "/proof",
         "/signup",
@@ -398,6 +444,12 @@ export const routeTree = rootRoute
       "children": [
         "/password-reset/confirm"
       ]
+    },
+    "/payment-canceled": {
+      "filePath": "payment-canceled.tsx"
+    },
+    "/payment-success": {
+      "filePath": "payment-success.tsx"
     },
     "/pricing": {
       "filePath": "pricing.tsx"

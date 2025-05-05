@@ -11,6 +11,18 @@
           {
             "/": "/desktop-auth/*",
             "comment": "Matches any URL whose path starts with /desktop-auth/"
+          },
+          {
+            "/": "/payment-success*",
+            "comment": "Matches URLs for successful payments"
+          },
+          {
+            "/": "/payment-canceled*",
+            "comment": "Matches URLs for canceled payments"
+          },
+          {
+            "/": "/pricing*",
+            "comment": "Matches URLs for pricing page with parameters"
           }
         ]
       }

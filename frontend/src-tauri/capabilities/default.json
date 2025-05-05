@@ -16,6 +16,15 @@
         },
         {
           "url": "https://trymaple.ai/*"
+        },
+        {
+          "url": "https://*.stripe.com/*"
+        },
+        {
+          "url": "https://*.stripe.network/*"
+        },
+        {
+          "url": "https://*.zaprite.com/*"
         }
       ]
     },
