@@ -1,6 +1,11 @@
 use tauri::Emitter;
 use tauri_plugin_deep_link::DeepLinkExt;
 use tauri_plugin_opener;
+
+#[cfg(all(not(desktop), target_os = "ios"))]
+use store;
+
+#[cfg(all(not(desktop), target_os = "ios"))]
 use tauri_plugin_sign_in_with_apple;
 
 // This handles incoming deep links
@@ -198,7 +203,9 @@ pub fn run() {
     // Only add the Apple Sign In plugin on iOS
     #[cfg(all(not(desktop), target_os = "ios"))]
     {
-        builder = builder.plugin(tauri_plugin_sign_in_with_apple::init());
+        builder = builder
+            .plugin(tauri_plugin_sign_in_with_apple::init())
+            .plugin(store::init());
     }
 
     #[cfg(not(desktop))]

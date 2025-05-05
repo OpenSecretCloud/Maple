@@ -16,7 +16,7 @@
         };
         
         # Use specific rust version required by Tauri
-        rustToolchain = pkgs.rust-bin.stable."1.78.0".default.override {
+        rustToolchain = pkgs.rust-bin.stable."1.81.0".default.override {
           extensions = [ "rust-src" ];
         };
       in

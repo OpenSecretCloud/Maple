@@ -29,6 +29,7 @@
         }
       ]
     },
-    "sign-in-with-apple:default"
+    "sign-in-with-apple:default",
+    "store:allow-get-region"
   ]
 }
