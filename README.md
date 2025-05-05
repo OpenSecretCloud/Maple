@@ -128,3 +128,17 @@ The GitHub Actions workflow will automatically:
 ## Updating PCR0 values
 
 If there's a new version of the enclave pushed to staging or prod, append the new PCR0 value to the `pcr0Values` or `pcr0DevValues` arrays in `frontend/src/app.tsx`.
+
+## iOS Development
+
+### Ignoring Local XCode Project Changes
+
+To prevent committing automatic changes to the XCode project file during local development:
+
+```bash
+# Tell Git to ignore changes to the file
+git update-index --assume-unchanged frontend/src-tauri/gen/apple/maple.xcodeproj/project.pbxproj
+
+# When you need to commit changes to this file, use:
+git update-index --no-assume-unchanged frontend/src-tauri/gen/apple/maple.xcodeproj/project.pbxproj
+```
