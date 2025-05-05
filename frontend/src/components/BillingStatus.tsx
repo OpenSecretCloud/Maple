@@ -4,7 +4,6 @@ import { Button } from "@/components/ui/button";
 import { BillingDebugger } from "./BillingDebugger";
 import { useLocalState } from "@/state/useLocalState";
 import { getBillingService } from "@/billing/billingService";
-import { Bitcoin } from "lucide-react";
 
 export function BillingStatus() {
   const navigate = useNavigate();
@@ -61,15 +60,6 @@ export function BillingStatus() {
       >
         {getChatsText()}
       </Button>
-      {isFree && (
-        <div
-          onClick={() => navigate({ to: "/pricing" })}
-          className="dark:bg-white/10 bg-[hsl(var(--primary))]/5 backdrop-blur-sm px-6 py-2 rounded-full dark:border-white/20 border-[hsl(var(--primary))]/20 border text-sm font-light dark:hover:bg-white/20 hover:bg-[hsl(var(--primary))]/10 transition-colors cursor-pointer flex items-center gap-2 w-fit dark:text-white text-foreground"
-        >
-          <Bitcoin className="w-3.5 h-3.5 flex-shrink-0" />
-          <span>Save 10% with yearly Bitcoin plans →</span>
-        </div>
-      )}
       {import.meta.env.DEV && (
         <BillingDebugger
           currentStatus={billingStatus}
