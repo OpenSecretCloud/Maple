@@ -20,13 +20,15 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useOpenSecret } from "@opensecret/react";
-import { CheckCircle, XCircle } from "lucide-react";
+import { CheckCircle, XCircle, Trash } from "lucide-react";
 import { ChangePasswordDialog } from "./ChangePasswordDialog";
 import { useLocalState } from "@/state/useLocalState";
+import { DeleteAccountDialog } from "./DeleteAccountDialog";
 
 export function AccountDialog() {
   const os = useOpenSecret();
   const [isChangePasswordOpen, setIsChangePasswordOpen] = useState(false);
+  const [isDeleteAccountOpen, setIsDeleteAccountOpen] = useState(false);
   const [verificationStatus, setVerificationStatus] = useState<"unverified" | "pending">(
     "unverified"
   );
@@ -105,11 +107,33 @@ export function AccountDialog() {
               </SelectContent>
             </Select>
           </div>
-          {isEmailUser && (
-            <DialogTrigger asChild>
-              <Button onClick={() => setIsChangePasswordOpen(true)}>Change Password</Button>
-            </DialogTrigger>
-          )}
+          <div className="flex flex-col space-y-2">
+            {isEmailUser && (
+              <DialogTrigger asChild>
+                <Button
+                  onClick={(e) => {
+                    e.preventDefault(); // Prevent form submission
+                    setIsChangePasswordOpen(true);
+                  }}
+                  type="button" // Explicitly set type to button
+                >
+                  Change Password
+                </Button>
+              </DialogTrigger>
+            )}
+            <Button
+              variant="outline"
+              className="border-destructive text-destructive hover:bg-destructive/10"
+              onClick={(e) => {
+                e.preventDefault(); // Prevent form submission
+                setIsDeleteAccountOpen(true);
+              }}
+              type="button" // Explicitly set type to button to prevent form submission
+            >
+              <Trash className="mr-2 h-4 w-4" />
+              Delete Account
+            </Button>
+          </div>
         </form>
         <DialogFooter>
           <Button type="submit" disabled>
@@ -120,6 +144,7 @@ export function AccountDialog() {
       {isEmailUser && (
         <ChangePasswordDialog open={isChangePasswordOpen} onOpenChange={setIsChangePasswordOpen} />
       )}
+      <DeleteAccountDialog open={isDeleteAccountOpen} onOpenChange={setIsDeleteAccountOpen} />
     </>
   );
 }
