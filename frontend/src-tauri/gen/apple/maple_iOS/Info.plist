@@ -58,7 +58,5 @@
 	</array>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
-	<key>LD_RUNPATH_SEARCH_PATHS</key>
-	<string>@executable_path/Frameworks /usr/lib/swift</string>
 </dict>
 </plist>

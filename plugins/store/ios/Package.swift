@@ -11,7 +11,7 @@ let package = Package(
     products: [
         .library(
             name: "store",
-            type: .dynamic,          // Using dynamic to ensure Swift runtime is properly linked
+            type: .static,          // Original static configuration
             targets: ["StorePlugin"]),
     ],
     dependencies: [
@@ -21,12 +21,6 @@ let package = Package(
         .target(
             name: "StorePlugin",
             dependencies: ["Tauri"],
-            path: "Sources",
-            swiftSettings: [
-                .unsafeFlags([
-                    "-Xlinker", "-rpath", "-Xlinker", "@executable_path/Frameworks",
-                    "-Xlinker", "-rpath", "-Xlinker", "/usr/lib/swift"
-                ])
-            ])
+            path: "Sources")
     ]
 )
