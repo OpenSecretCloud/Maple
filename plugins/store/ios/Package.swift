@@ -1,16 +1,17 @@
-// swift-tools-version:5.3
+// swift-tools-version:5.5
+// Requires iOS 15.0+
 
 import PackageDescription
 
 let package = Package(
     name: "store",
     platforms: [
-        .iOS(.v13)
+        .iOS(.v15)
     ],
     products: [
         .library(
             name: "store",
-            type: .static,          // Make SwiftPM emit libstore.a
+            type: .dynamic,          // Using dynamic to ensure Swift runtime is properly linked
             targets: ["StorePlugin"]),
     ],
     dependencies: [
@@ -20,6 +21,12 @@ let package = Package(
         .target(
             name: "StorePlugin",
             dependencies: ["Tauri"],
-            path: "Sources"),
+            path: "Sources",
+            swiftSettings: [
+                .unsafeFlags([
+                    "-Xlinker", "-rpath", "-Xlinker", "@executable_path/Frameworks",
+                    "-Xlinker", "-rpath", "-Xlinker", "/usr/lib/swift"
+                ])
+            ])
     ]
 )
