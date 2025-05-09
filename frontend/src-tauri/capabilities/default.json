@@ -29,6 +29,12 @@
       ]
     },
     "sign-in-with-apple:default",
-    "store:allow-get-region"
+    "store:allow-get-region",
+    "store:allow-get-products",
+    "store:allow-purchase",
+    "store:allow-verify-purchase",
+    "store:allow-get-transactions",
+    "store:allow-restore-purchases",
+    "store:allow-get-subscription-status"
   ]
 }

@@ -41,10 +41,27 @@ export async function getStoreRegion(): Promise<string> {
  * Returns true for US regions, false for all others or on errors.
  */
 export async function allowExternalBilling(): Promise<boolean> {
-  const regionCode = await getStoreRegion();
-  const isAllowed = US_CODES.includes(regionCode);
-  console.log("[Region Gate] Is US region:", isAllowed, "Valid US codes:", US_CODES);
-  return isAllowed;
+  try {
+    // Check if we're on iOS
+    const { platform } = await import("@tauri-apps/plugin-os");
+    const currentPlatform = await platform();
+    
+    // Only apply the region check on iOS
+    if (currentPlatform !== "ios") {
+      // For non-iOS platforms, always allow external billing
+      return true;
+    }
+    
+    // On iOS, check the App Store region
+    const regionCode = await getStoreRegion();
+    const isAllowed = US_CODES.includes(regionCode);
+    console.log("[Region Gate] Is US region:", isAllowed, "Valid US codes:", US_CODES);
+    return isAllowed;
+  } catch (error) {
+    console.error("[Region Gate] Error checking external billing:", error);
+    // On error, assume non-US to be safe
+    return false;
+  }
 }
 
 /**

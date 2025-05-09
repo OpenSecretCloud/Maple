@@ -32,7 +32,15 @@ impl<R: Runtime, T: Manager<R>> crate::StoreExt<R> for T {
 /// Initializes the plugin.
 pub fn init<R: Runtime>() -> TauriPlugin<R> {
   Builder::new("store")
-    .invoke_handler(tauri::generate_handler![commands::get_region])
+    .invoke_handler(tauri::generate_handler![
+      commands::get_region,
+      commands::get_products,
+      commands::purchase,
+      commands::verify_purchase,
+      commands::get_transactions,
+      commands::restore_purchases,
+      commands::get_subscription_status
+    ])
     .setup(|app, api| {
       #[cfg(feature = "mobile")]
       let store = mobile::init(app, api)?;

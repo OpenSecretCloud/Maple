@@ -295,6 +295,18 @@
       "type": "string",
       "oneOf": [
         {
+          "description": "Enables the get_products command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-products",
+          "markdownDescription": "Enables the get_products command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_products command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-products",
+          "markdownDescription": "Denies the get_products command without any pre-configured scope."
+        },
+        {
           "description": "Enables the get_region command without any pre-configured scope.",
           "type": "string",
           "const": "allow-get-region",
@@ -305,6 +317,66 @@
           "type": "string",
           "const": "deny-get-region",
           "markdownDescription": "Denies the get_region command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_subscription_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-subscription-status",
+          "markdownDescription": "Enables the get_subscription_status command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_subscription_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-subscription-status",
+          "markdownDescription": "Denies the get_subscription_status command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_transactions command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-transactions",
+          "markdownDescription": "Enables the get_transactions command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_transactions command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-transactions",
+          "markdownDescription": "Denies the get_transactions command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the purchase command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-purchase",
+          "markdownDescription": "Enables the purchase command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the purchase command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-purchase",
+          "markdownDescription": "Denies the purchase command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the restore_purchases command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-restore-purchases",
+          "markdownDescription": "Enables the restore_purchases command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the restore_purchases command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-restore-purchases",
+          "markdownDescription": "Denies the restore_purchases command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the verify_purchase command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-verify-purchase",
+          "markdownDescription": "Enables the verify_purchase command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the verify_purchase command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-verify-purchase",
+          "markdownDescription": "Denies the verify_purchase command without any pre-configured scope."
         }
       ]
     }

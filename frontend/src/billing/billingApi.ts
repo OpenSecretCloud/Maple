@@ -300,3 +300,47 @@ export async function fetchTeamPlanAvailable(thirdPartyToken: string): Promise<b
     throw error;
   }
 }
+
+/**
+ * Syncs an Apple in-app purchase transaction with the backend
+ * @param thirdPartyToken Authentication token
+ * @param transactionId Apple transaction ID
+ * @param productId Apple product ID
+ */
+export async function syncAppleTransaction(
+  thirdPartyToken: string,
+  transactionId: number,
+  productId: string
+): Promise<void> {
+  try {
+    console.log("[BillingAPI] Syncing Apple transaction:", { transactionId, productId });
+    const response = await fetch(
+      `${import.meta.env.VITE_MAPLE_BILLING_API_URL}/v1/maple/subscription/apple-sync`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${thirdPartyToken}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          transaction_id: transactionId,
+          product_id: productId
+        })
+      }
+    );
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error("Apple transaction sync error response:", errorText);
+      if (response.status === 401) {
+        throw new Error("Unauthorized");
+      }
+      throw new Error(`Failed to sync Apple transaction: ${errorText}`);
+    }
+    
+    console.log("[BillingAPI] Apple transaction sync successful");
+  } catch (error) {
+    console.error("Error syncing Apple transaction:", error);
+    throw error;
+  }
+}

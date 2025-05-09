@@ -1,10 +1,10 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, Suspense } from "react";
 import { useOpenSecret } from "@opensecret/react";
 import { TopNav } from "@/components/TopNav";
 import { FullPageMain } from "@/components/FullPageMain";
 import { getBillingService } from "@/billing/billingService";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { MarketingHeader } from "@/components/MarketingHeader";
 import { Loader2, Check, AlertTriangle, Bitcoin } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -12,6 +12,37 @@ import { useLocalState } from "@/state/useLocalState";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { type } from "@tauri-apps/plugin-os";
+import { ApplePayButton } from "@/components/ApplePayButton";
+
+// Wrapper for Apple Pay button to handle success/error/cancel
+function ApplePayButtonWrapper({ productId, className }: { productId: string, className?: string }) {
+  const queryClient = useQueryClient();
+  const [error, setError] = useState<string | null>(null);
+  
+  const handleSuccess = async (transactionId: number) => {
+    try {
+      // Refresh billing status after successful purchase
+      await queryClient.invalidateQueries({ queryKey: ["billingStatus"] });
+    } catch (error) {
+      console.error("Error handling successful Apple Pay transaction:", error);
+    }
+  };
+  
+  return (
+    <div className="flex flex-col">
+      <ApplePayButton
+        productId={productId}
+        className={className}
+        onSuccess={handleSuccess}
+        onError={(error) => setError(error.message)}
+        text="Subscribe with"
+      />
+      {error && (
+        <div className="text-xs text-red-500 mt-1">{error}</div>
+      )}
+    </div>
+  );
+}
 
 type PricingSearchParams = {
   selected_plan?: string;
@@ -834,33 +865,50 @@ function PricingPage() {
                         )}
                       </div>
 
-                      <button
-                        onClick={() => handleButtonClick(product)}
-                        disabled={
-                          loadingProductId === product.id ||
-                          (useBitcoin && product.name === "Team") ||
-                          (isIOS &&
-                            !product.name.toLowerCase().includes("free") &&
-                            !externalBillingAllowed)
-                        }
-                        className={`w-full 
-                          dark:bg-white/90 dark:text-black dark:hover:bg-[hsl(var(--purple))]/80 dark:hover:text-[hsl(var(--foreground))] dark:active:bg-white/80
-                          bg-background text-foreground hover:bg-[hsl(var(--purple))] hover:text-[hsl(var(--foreground))] active:bg-background/80 
-                          border border-[hsl(var(--purple))]/30 hover:border-[hsl(var(--purple))]
-                          px-4 sm:px-8 py-3 sm:py-4 rounded-lg text-lg sm:text-xl font-light 
-                          transition-all duration-300 shadow-[0_0_15px_rgba(var(--purple-rgb),0.2)] 
-                          hover:shadow-[0_0_25px_rgba(var(--purple-rgb),0.3)] disabled:opacity-50 
-                          disabled:cursor-not-allowed flex items-center justify-center gap-2 
-                          group-hover:bg-[hsl(var(--purple))] group-hover:text-[hsl(var(--foreground))] dark:group-hover:text-[hsl(var(--foreground))] dark:group-hover:bg-[hsl(var(--purple))]/80 ${
-                            isTeamPlan && !isTeamPlanAvailable && !isIOS
-                              ? "!opacity-100 !cursor-pointer hover:!bg-[hsl(var(--purple))]"
-                              : ""
-                          }`}
-                      >
-                        {useBitcoin && product.name === "Team"
-                          ? "Not Available"
-                          : getButtonText(product)}
-                      </button>
+                      {/* Show Apple Pay button for paid plans on iOS in non-US regions */}
+                      {isIOS && 
+                       !externalBillingAllowed && 
+                       !product.name.toLowerCase().includes("free") && 
+                       !product.name.toLowerCase().includes("team") ? (
+                        <div className="w-full flex flex-col gap-2">
+                          {/* ApplePayButton will be dynamically imported below */}
+                          <ApplePayButtonWrapper 
+                            productId={`com.opensecret.maple.${product.name.toLowerCase()}.monthly`}
+                            className="w-full"
+                          />
+                          <div className="text-xs text-center text-[hsl(var(--muted-foreground))]">
+                            In-app purchase required for your region
+                          </div>
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => handleButtonClick(product)}
+                          disabled={
+                            loadingProductId === product.id ||
+                            (useBitcoin && product.name === "Team") ||
+                            (isIOS &&
+                              !product.name.toLowerCase().includes("free") &&
+                              !externalBillingAllowed)
+                          }
+                          className={`w-full 
+                            dark:bg-white/90 dark:text-black dark:hover:bg-[hsl(var(--purple))]/80 dark:hover:text-[hsl(var(--foreground))] dark:active:bg-white/80
+                            bg-background text-foreground hover:bg-[hsl(var(--purple))] hover:text-[hsl(var(--foreground))] active:bg-background/80 
+                            border border-[hsl(var(--purple))]/30 hover:border-[hsl(var(--purple))]
+                            px-4 sm:px-8 py-3 sm:py-4 rounded-lg text-lg sm:text-xl font-light 
+                            transition-all duration-300 shadow-[0_0_15px_rgba(var(--purple-rgb),0.2)] 
+                            hover:shadow-[0_0_25px_rgba(var(--purple-rgb),0.3)] disabled:opacity-50 
+                            disabled:cursor-not-allowed flex items-center justify-center gap-2 
+                            group-hover:bg-[hsl(var(--purple))] group-hover:text-[hsl(var(--foreground))] dark:group-hover:text-[hsl(var(--foreground))] dark:group-hover:bg-[hsl(var(--purple))]/80 ${
+                              isTeamPlan && !isTeamPlanAvailable && !isIOS
+                                ? "!opacity-100 !cursor-pointer hover:!bg-[hsl(var(--purple))]"
+                                : ""
+                            }`}
+                        >
+                          {useBitcoin && product.name === "Team"
+                            ? "Not Available"
+                            : getButtonText(product)}
+                        </button>
+                      )}
                     </div>
                   </div>
                 );

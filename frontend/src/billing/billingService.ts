@@ -7,8 +7,10 @@ import {
   createZapriteCheckoutSession,
   BillingStatus,
   BillingProduct,
-  fetchTeamPlanAvailable
+  fetchTeamPlanAvailable,
+  syncAppleTransaction
 } from "./billingApi";
+import { allowExternalBilling } from "../utils/region-gate";
 
 const TOKEN_STORAGE_KEY = "maple_billing_token";
 
@@ -19,7 +21,7 @@ class BillingService {
     this.os = os;
   }
 
-  private async getStoredToken(): Promise<string | null> {
+  async getStoredToken(): Promise<string | null> {
     return sessionStorage.getItem(TOKEN_STORAGE_KEY);
   }
 
@@ -94,6 +96,53 @@ class BillingService {
 
   async getTeamPlanAvailable(): Promise<boolean> {
     return this.executeWithToken((token) => fetchTeamPlanAvailable(token));
+  }
+  
+  /**
+   * Sync an Apple in-app purchase transaction with our backend
+   */
+  async syncAppleTransaction(
+    transactionId: number,
+    productId: string
+  ): Promise<void> {
+    return this.executeWithToken((token) =>
+      syncAppleTransaction(token, transactionId, productId)
+    );
+  }
+  
+  /**
+   * Check if Apple Pay should be shown as a payment option
+   * On iOS, this is true if external billing is NOT allowed
+   */
+  async shouldShowApplePay(): Promise<boolean> {
+    try {
+      // Check if we're on iOS
+      const { type } = await import("@tauri-apps/plugin-os");
+      const platform = await type();
+      
+      if (platform !== "ios") {
+        // Not on iOS, don't show Apple Pay
+        return false;
+      }
+      
+      // Check if external billing is allowed based on region
+      const isExternalBillingAllowed = await allowExternalBilling();
+      
+      // We need to show Apple Pay if external billing is NOT allowed
+      return !isExternalBillingAllowed;
+    } catch (error) {
+      console.error("Error checking if Apple Pay should be shown:", error);
+      // Default to not showing Apple Pay on errors
+      return false;
+    }
+  }
+  
+  /**
+   * Check if Apple Pay should be the only payment option (non-US regions)
+   * In non-US App Store regions, Apple requires using their IAP system
+   */
+  async isApplePayRequired(): Promise<boolean> {
+    return this.shouldShowApplePay();
   }
 
   clearToken(): void {
