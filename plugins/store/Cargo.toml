@@ -1,0 +1,18 @@
+[package]
+name = "store"
+version = "0.1.0"
+edition = "2021"
+description = "Check the App Store region for conditional UI elements"
+links = "store"
+
+[dependencies]
+tauri = { version = "2.1.0" }
+thiserror = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+
+[features]
+default = []
+mobile = []
+
+[build-dependencies]
+tauri-plugin = { version = "2.0.2", features = ["build"] }

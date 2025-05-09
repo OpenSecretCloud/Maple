@@ -1,10 +1,10 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, Suspense } from "react";
 import { useOpenSecret } from "@opensecret/react";
 import { TopNav } from "@/components/TopNav";
 import { FullPageMain } from "@/components/FullPageMain";
 import { getBillingService } from "@/billing/billingService";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { MarketingHeader } from "@/components/MarketingHeader";
 import { Loader2, Check, AlertTriangle, Bitcoin } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -12,6 +12,37 @@ import { useLocalState } from "@/state/useLocalState";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { type } from "@tauri-apps/plugin-os";
+import { ApplePayButton } from "@/components/ApplePayButton";
+
+// Wrapper for Apple Pay button to handle success/error/cancel
+function ApplePayButtonWrapper({ productId, className }: { productId: string, className?: string }) {
+  const queryClient = useQueryClient();
+  const [error, setError] = useState<string | null>(null);
+  
+  const handleSuccess = async (transactionId: number) => {
+    try {
+      // Refresh billing status after successful purchase
+      await queryClient.invalidateQueries({ queryKey: ["billingStatus"] });
+    } catch (error) {
+      console.error("Error handling successful Apple Pay transaction:", error);
+    }
+  };
+  
+  return (
+    <div className="flex flex-col">
+      <ApplePayButton
+        productId={productId}
+        className={className}
+        onSuccess={handleSuccess}
+        onError={(error) => setError(error.message)}
+        text="Subscribe with"
+      />
+      {error && (
+        <div className="text-xs text-red-500 mt-1">{error}</div>
+      )}
+    </div>
+  );
+}
 
 type PricingSearchParams = {
   selected_plan?: string;
@@ -148,7 +179,10 @@ function PricingPage() {
   const isLoggedIn = !!os.auth.user;
   const { selected_plan } = Route.useSearch();
 
-  // Check if the app is running on iOS
+  // Check if the app is running on iOS and check if external billing is allowed
+  const [externalBillingAllowed, setExternalBillingAllowed] = useState(true);
+  const [storeRegion, setStoreRegion] = useState<string | null>(null);
+
   useEffect(() => {
     const checkPlatform = async () => {
       try {
@@ -160,7 +194,24 @@ function PricingPage() {
         if (isTauriEnv) {
           // Only check platform type if we're in a Tauri environment
           const platform = await type();
-          setIsIOS(platform === "ios");
+          const isIosDevice = platform === "ios";
+          setIsIOS(isIosDevice);
+
+          // If we're on iOS, check if external billing is allowed
+          if (isIosDevice) {
+            try {
+              // Import dynamically to prevent issues on non-Tauri environments
+              const { getStoreRegion, isUSRegion } = await import("@/utils/region-gate");
+              const region = await getStoreRegion();
+              setStoreRegion(region);
+              const allowed = isUSRegion(region);
+              setExternalBillingAllowed(allowed);
+              console.log("Store region:", region, "External billing allowed:", allowed);
+            } catch (err) {
+              console.error("Error checking store region:", err);
+              setExternalBillingAllowed(false); // Default to false if there's an error
+            }
+          }
         } else {
           setIsIOS(false);
         }
@@ -185,12 +236,15 @@ function PricingPage() {
     enabled: isLoggedIn
   });
 
-  // Auto-enable Bitcoin toggle for Zaprite users (except on iOS)
+  // Auto-enable Bitcoin toggle for Zaprite users (except on iOS or if external billing is not allowed)
   useEffect(() => {
-    if (freshBillingStatus?.payment_provider === "zaprite" && !isIOS) {
+    if (
+      freshBillingStatus?.payment_provider === "zaprite" &&
+      (!isIOS || (isIOS && externalBillingAllowed))
+    ) {
       setUseBitcoin(true);
     }
-  }, [freshBillingStatus?.payment_provider, isIOS]);
+  }, [freshBillingStatus?.payment_provider, isIOS, externalBillingAllowed]);
 
   // Always try to fetch portal URL if logged in
   const { data: portalUrl } = useQuery({
@@ -245,6 +299,11 @@ function PricingPage() {
   const { success, canceled } = Route.useSearch();
 
   const getButtonText = (product: Product) => {
+    // For iOS with paid plans (not Free) in non-US regions, show "Coming Soon"
+    if (isIOS && !product.name.toLowerCase().includes("free") && !externalBillingAllowed) {
+      return "Coming Soon";
+    }
+
     if (loadingProductId === product.id) {
       return (
         <>
@@ -422,6 +481,13 @@ function PricingPage() {
 
   const handleButtonClick = useCallback(
     (product: Product) => {
+      // This check is now redundant since we disable the button and show "Coming Soon"
+      // But keep it as a safeguard
+      if (isIOS && !product.name.toLowerCase().includes("free") && !externalBillingAllowed) {
+        // Don't allow any action on paid plans if on iOS and external billing not allowed
+        return;
+      }
+
       if (!isLoggedIn) {
         const targetPlanName = product.name.toLowerCase();
         const isTeamPlan = targetPlanName.includes("team");
@@ -500,7 +566,8 @@ function PricingPage() {
       navigate,
       portalUrl,
       newHandleSubscribe,
-      isIOS
+      isIOS,
+      externalBillingAllowed
     ]
   );
 
@@ -646,7 +713,7 @@ function PricingPage() {
           </div>
         )}
 
-        {!isIOS && (
+        {(!isIOS || (isIOS && externalBillingAllowed)) && (
           <div className="w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex justify-center">
             <div className="inline-flex items-center gap-4 px-6 py-2.5 rounded-full bg-[hsl(var(--marketing-card))]/50 backdrop-blur-sm border border-[hsl(var(--marketing-card-border))]">
               <div className="flex items-center gap-2 text-[hsl(var(--bitcoin))] text-base font-light">
@@ -659,6 +726,29 @@ function PricingPage() {
                 onCheckedChange={setUseBitcoin}
                 className="data-[state=checked]:bg-[hsl(var(--bitcoin))] data-[state=unchecked]:border-foreground/30 scale-100"
               />
+            </div>
+          </div>
+        )}
+
+        {isIOS && !externalBillingAllowed && (
+          <div className="w-full max-w-7xl mx-auto mt-4 px-4 sm:px-6 lg:px-8">
+            <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-900/50 text-amber-800 dark:text-amber-100 rounded-lg p-4 flex items-center gap-3">
+              <div className="rounded-full bg-amber-100 dark:bg-amber-800 p-1">
+                <AlertTriangle className="w-5 h-5 text-amber-600 dark:text-amber-200" />
+              </div>
+              <div className="flex flex-col">
+                <p>
+                  Direct purchases are not yet available in your App Store region. Apple only allows
+                  external payment options for US-based App Store accounts.
+                </p>
+                <p className="text-xs mt-1 text-amber-600 dark:text-amber-300">
+                  {storeRegion ? (
+                    <>Detected region: {storeRegion}</>
+                  ) : (
+                    <>Unable to detect App Store region</>
+                  )}
+                </p>
+              </div>
             </div>
           </div>
         )}
@@ -775,29 +865,50 @@ function PricingPage() {
                         )}
                       </div>
 
-                      <button
-                        onClick={() => handleButtonClick(product)}
-                        disabled={
-                          loadingProductId === product.id || (useBitcoin && product.name === "Team")
-                        }
-                        className={`w-full 
-                          dark:bg-white/90 dark:text-black dark:hover:bg-[hsl(var(--purple))]/80 dark:hover:text-[hsl(var(--foreground))] dark:active:bg-white/80
-                          bg-background text-foreground hover:bg-[hsl(var(--purple))] hover:text-[hsl(var(--foreground))] active:bg-background/80 
-                          border border-[hsl(var(--purple))]/30 hover:border-[hsl(var(--purple))]
-                          px-4 sm:px-8 py-3 sm:py-4 rounded-lg text-lg sm:text-xl font-light 
-                          transition-all duration-300 shadow-[0_0_15px_rgba(var(--purple-rgb),0.2)] 
-                          hover:shadow-[0_0_25px_rgba(var(--purple-rgb),0.3)] disabled:opacity-50 
-                          disabled:cursor-not-allowed flex items-center justify-center gap-2 
-                          group-hover:bg-[hsl(var(--purple))] group-hover:text-[hsl(var(--foreground))] dark:group-hover:text-[hsl(var(--foreground))] dark:group-hover:bg-[hsl(var(--purple))]/80 ${
-                            isTeamPlan && !isTeamPlanAvailable && !isIOS
-                              ? "!opacity-100 !cursor-pointer hover:!bg-[hsl(var(--purple))]"
-                              : ""
-                          }`}
-                      >
-                        {useBitcoin && product.name === "Team"
-                          ? "Not Available"
-                          : getButtonText(product)}
-                      </button>
+                      {/* Show Apple Pay button for paid plans on iOS in non-US regions */}
+                      {isIOS && 
+                       !externalBillingAllowed && 
+                       !product.name.toLowerCase().includes("free") && 
+                       !product.name.toLowerCase().includes("team") ? (
+                        <div className="w-full flex flex-col gap-2">
+                          {/* ApplePayButton will be dynamically imported below */}
+                          <ApplePayButtonWrapper 
+                            productId={`com.opensecret.maple.${product.name.toLowerCase()}.monthly`}
+                            className="w-full"
+                          />
+                          <div className="text-xs text-center text-[hsl(var(--muted-foreground))]">
+                            In-app purchase required for your region
+                          </div>
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => handleButtonClick(product)}
+                          disabled={
+                            loadingProductId === product.id ||
+                            (useBitcoin && product.name === "Team") ||
+                            (isIOS &&
+                              !product.name.toLowerCase().includes("free") &&
+                              !externalBillingAllowed)
+                          }
+                          className={`w-full 
+                            dark:bg-white/90 dark:text-black dark:hover:bg-[hsl(var(--purple))]/80 dark:hover:text-[hsl(var(--foreground))] dark:active:bg-white/80
+                            bg-background text-foreground hover:bg-[hsl(var(--purple))] hover:text-[hsl(var(--foreground))] active:bg-background/80 
+                            border border-[hsl(var(--purple))]/30 hover:border-[hsl(var(--purple))]
+                            px-4 sm:px-8 py-3 sm:py-4 rounded-lg text-lg sm:text-xl font-light 
+                            transition-all duration-300 shadow-[0_0_15px_rgba(var(--purple-rgb),0.2)] 
+                            hover:shadow-[0_0_25px_rgba(var(--purple-rgb),0.3)] disabled:opacity-50 
+                            disabled:cursor-not-allowed flex items-center justify-center gap-2 
+                            group-hover:bg-[hsl(var(--purple))] group-hover:text-[hsl(var(--foreground))] dark:group-hover:text-[hsl(var(--foreground))] dark:group-hover:bg-[hsl(var(--purple))]/80 ${
+                              isTeamPlan && !isTeamPlanAvailable && !isIOS
+                                ? "!opacity-100 !cursor-pointer hover:!bg-[hsl(var(--purple))]"
+                                : ""
+                            }`}
+                        >
+                          {useBitcoin && product.name === "Team"
+                            ? "Not Available"
+                            : getButtonText(product)}
+                        </button>
+                      )}
                     </div>
                   </div>
                 );

@@ -120,7 +120,7 @@ function OAuthCallback() {
     };
 
     processCallback();
-  }, [handleGitHubCallback, handleGoogleCallback, navigate, provider]);
+  }, [handleGitHubCallback, handleGoogleCallback, navigate, provider, handleSuccessfulAuth]);
 
   // If this is a Tauri app auth flow (desktop or mobile), show a different UI
   if (localStorage.getItem("redirect-to-native") === "true") {
