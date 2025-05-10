@@ -1,13 +1,14 @@
 import { useOpenSecret } from "@opensecret/react";
 import { useState } from "react";
 import { BillingStatus } from "@/billing/billingApi";
-import { LocalStateContext, Chat, HistoryItem } from "./LocalStateContextDef";
+import { LocalStateContext, Chat, HistoryItem, Project } from "./LocalStateContextDef";
 
 export {
   LocalStateContext,
   type Chat,
   type ChatMessage,
   type HistoryItem,
+  type Project,
   type LocalState
 } from "./LocalStateContextDef";
 
@@ -41,7 +42,8 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
               id: chat.id,
               title: chat.title,
               updated_at: Date.now(),
-              created_at: Date.now()
+              created_at: Date.now(),
+              projectId: chat.projectId
             };
           } else {
             return item;
@@ -54,7 +56,8 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
             id: chat.id,
             title: chat.title,
             updated_at: Date.now(),
-            created_at: Date.now()
+            created_at: Date.now(),
+            projectId: chat.projectId
           },
           ...historyList
         ];
@@ -81,8 +84,13 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
     setLocalState((prev) => ({ ...prev, isSearchVisible: visible }));
   }
 
-  async function addChat(title: string = "New Chat") {
-    const newChat = { id: window.crypto.randomUUID(), title, messages: [] };
+  async function addChat(title: string = "New Chat", projectId?: string) {
+    const newChat = {
+      id: window.crypto.randomUUID(),
+      title,
+      messages: [],
+      projectId
+    };
     await persistChat(newChat);
     return newChat.id;
   }
@@ -135,7 +143,8 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
               id: chat.id,
               title: chat.title,
               updated_at: item.updated_at,
-              created_at: item.created_at
+              created_at: item.created_at,
+              projectId: chat.projectId
             };
           })
         );
@@ -190,6 +199,127 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
     }
   }
 
+  // Project-related functions
+  async function getProjects(): Promise<Project[]> {
+    try {
+      const projectsStr = await get("projects");
+      if (!projectsStr) return [];
+      return JSON.parse(projectsStr) as Project[];
+    } catch (error) {
+      console.error("Error fetching projects:", error);
+      return [];
+    }
+  }
+
+  async function getProjectById(projectId: string): Promise<Project | undefined> {
+    try {
+      const projects = await getProjects();
+      return projects.find((p) => p.id === projectId);
+    } catch (error) {
+      console.error("Error fetching project:", error);
+      return undefined;
+    }
+  }
+
+  async function createProject(
+    name: string,
+    description?: string,
+    systemPrompt?: string
+  ): Promise<Project> {
+    try {
+      const projects = await getProjects();
+      const newProject: Project = {
+        id: window.crypto.randomUUID(),
+        name,
+        description,
+        systemPrompt,
+        created_at: Date.now(),
+        updated_at: Date.now()
+      };
+      await put("projects", JSON.stringify([...projects, newProject]));
+      return newProject;
+    } catch (error) {
+      console.error("Error creating project:", error);
+      throw new Error("Error creating project");
+    }
+  }
+
+  async function updateProject(project: Project): Promise<void> {
+    try {
+      const projects = await getProjects();
+      const updatedProjects = projects.map((p) =>
+        p.id === project.id ? { ...project, updated_at: Date.now() } : p
+      );
+      await put("projects", JSON.stringify(updatedProjects));
+    } catch (error) {
+      console.error("Error updating project:", error);
+      throw new Error("Error updating project");
+    }
+  }
+
+  async function deleteProject(projectId: string): Promise<void> {
+    try {
+      const projects = await getProjects();
+      const updatedProjects = projects.filter((p) => p.id !== projectId);
+      await put("projects", JSON.stringify(updatedProjects));
+
+      // Remove project reference from all chats in this project
+      const historyList = await fetchOrCreateHistoryList();
+      const updatedHistory = historyList.map((item) => {
+        if (item.projectId === projectId) {
+          return { ...item, projectId: undefined };
+        }
+        return item;
+      });
+      await put("history_list", JSON.stringify(updatedHistory));
+
+      // Update all chat objects that were in this project
+      for (const item of historyList) {
+        if (item.projectId === projectId) {
+          try {
+            const chat = await getChatById(item.id);
+            if (chat) {
+              await persistChat({ ...chat, projectId: undefined });
+            }
+          } catch (error) {
+            console.error(`Error updating chat ${item.id}:`, error);
+          }
+        }
+      }
+    } catch (error) {
+      console.error("Error deleting project:", error);
+      throw new Error("Error deleting project");
+    }
+  }
+
+  async function addChatToProject(chatId: string, projectId: string): Promise<void> {
+    try {
+      const chat = await getChatById(chatId);
+      if (!chat) throw new Error("Chat not found");
+
+      const projects = await getProjects();
+      if (!projects.some((p) => p.id === projectId)) {
+        throw new Error("Project not found");
+      }
+
+      await persistChat({ ...chat, projectId });
+    } catch (error) {
+      console.error("Error adding chat to project:", error);
+      throw new Error("Error adding chat to project");
+    }
+  }
+
+  async function removeChatFromProject(chatId: string): Promise<void> {
+    try {
+      const chat = await getChatById(chatId);
+      if (!chat) throw new Error("Chat not found");
+      await persistChat({ ...chat, projectId: undefined });
+    } catch (error) {
+      console.error("Error removing chat from project:", error);
+      throw new Error("Error removing chat from project");
+    }
+  }
+
   function setDraftMessage(chatId: string, draft: string) {
     if (!chatId?.trim()) {
       console.error("Invalid chatId provided to setDraftMessage");
@@ -235,6 +365,15 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
         clearHistory,
         deleteChat,
         renameChat,
+        // Project functions
+        getProjects,
+        getProjectById,
+        createProject,
+        updateProject,
+        deleteProject,
+        addChatToProject,
+        removeChatFromProject,
+        // Draft messages
         draftMessages: localState.draftMessages,
         setDraftMessage,
         clearDraftMessage
