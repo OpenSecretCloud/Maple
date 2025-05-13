@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { AsteriskIcon, Check, Copy, UserIcon, ChevronDown } from "lucide-react";
 import ChatBox from "@/components/ChatBox";
@@ -81,6 +81,150 @@ function ChatComponent() {
   const [error, setError] = useState("");
 
   const chatContainerRef = useRef<HTMLDivElement>(null);
+
+  // System prompt to guide the assistant's behavior - using useMemo to avoid recreating on each render
+  const systemPrompt = useMemo(() => ({
+    role: "system" as const,
+    content:
+      "You are a helpful, friendly assistant. Respond conversationally to the user's messages. Follow these rules carefully:\n\n1. DO NOT use tools unless absolutely necessary for specific computational tasks or when the user EXPLICITLY asks you to use a tool.\n\n2. For greetings like 'hello' or casual conversation, NEVER use tools - just have a natural conversation.\n\n3. For mathematical calculations (like addition, subtraction), DO use the appropriate tool directly without explaining that you're going to use it - just call the function.\n\n4. When calling tools, DO NOT show your reasoning or explain what you're doing - just make the function call directly.\n\n5. DO NOT say things like \"I'll use the add function\" or \"Here's the JSON for the function call\" - just make the actual function call.\n\n6. After receiving tool results, present them clearly without technical explanations.\n\nRemember: For math questions, call tools directly. For conversation, never use tools."
+  }), []);
+
+  // Helper function to execute tool calls and get follow-up completion
+  const executeToolsAndGetCompletion = useCallback(
+    async (
+      toolCalls: AssistantToolCall[],
+      messagesWithToolCalls: ChatMessage[]
+    ): Promise<{
+      finalMessages: ChatMessage[];
+      finalText: string;
+    }> => {
+      // Log the tool calls for debugging
+      console.log("Executing tool calls:", JSON.stringify(toolCalls, null, 2));
+
+      // Execute each tool call
+      for (const call of toolCalls) {
+        try {
+          console.log(
+            `Processing tool call: ${call.function.name} with args: ${call.function.arguments}`
+          );
+
+          // Check if tool call has all required fields
+          if (!call.id || !call.function?.name) {
+            console.error("Invalid tool call format:", call);
+            messagesWithToolCalls.push({
+              role: "tool",
+              tool_call_id: call.id || `error-${Date.now()}`,
+              content: JSON.stringify({ error: "Invalid tool call format" })
+            } as ChatMessage);
+            continue;
+          }
+
+          // Ensure arguments are valid JSON
+          let args;
+          try {
+            args = JSON.parse(call.function.arguments || "{}");
+          } catch (parseError) {
+            console.error("Failed to parse arguments:", call.function.arguments, parseError);
+            args = {};
+          }
+
+          const executor = toolExecutors[call.function.name as ToolName];
+          if (!executor) {
+            console.warn(`Unknown tool: ${call.function.name}`);
+          }
+
+          const result = executor
+            ? executor(args)
+            : { error: `Unknown tool: ${call.function.name}` };
+          console.log(`Tool execution result:`, result);
+
+          // Add the tool result to the message list
+          messagesWithToolCalls.push({
+            role: "tool",
+            tool_call_id: call.id,
+            content: JSON.stringify(result)
+          } as ChatMessage);
+        } catch (err) {
+          const error = err as Error;
+          console.error(`Error executing tool ${call.function.name}:`, error);
+          messagesWithToolCalls.push({
+            role: "tool",
+            tool_call_id: call.id || `error-${Date.now()}`,
+            content: JSON.stringify({
+              error: `Tool execution failed: ${error.message || "Unknown error"}`
+            })
+          } as ChatMessage);
+        }
+      }
+
+      // Get follow-up completion from the model - include systemPrompt for behavior guardrails
+      console.log("Getting final response after tool execution...");
+      const toolResponseStream = await openai.beta.chat.completions.stream({
+        model,
+        messages: [
+          // Add system prompt to guide behavior
+          systemPrompt,
+          // Map messages including tool calls and results
+          ...messagesWithToolCalls.map((msg) => {
+            if (msg.role === "assistant" && "tool_calls" in msg && msg.tool_calls) {
+              return {
+                role: "assistant" as const,
+                content: "",
+                stop_reason: "tool_calls",
+                tool_calls: msg.tool_calls.map((tc) => ({
+                  id: tc.id,
+                  type: "function" as const,
+                  function: {
+                    name: tc.function.name,
+                    arguments: tc.function.arguments
+                  }
+                }))
+              };
+            } else if (msg.role === "tool") {
+              return {
+                role: "tool" as const,
+                tool_call_id: msg.tool_call_id,
+                content: msg.content
+              };
+            } else {
+              return {
+                role: msg.role as "user" | "assistant" | "system",
+                content: msg.content || ""
+              };
+            }
+          })
+        ],
+        tool_choice: "none", // Explicitly disable further tool use
+        temperature: 0.9,
+        top_p: 1,
+        stream: true
+      });
+
+      // Stream in the final response after tool execution
+      let finalText = "";
+      for await (const chunk of toolResponseStream) {
+        const content = chunk.choices[0]?.delta?.content || "";
+        finalText += content;
+        setCurrentStreamingMessage(finalText);
+      }
+
+      // Get the final completion
+      const finalCompletion = await toolResponseStream.finalChatCompletion();
+      console.log("Final text after tool execution:", finalCompletion);
+
+      // Extract content from the completion
+      finalText = finalCompletion.choices[0].message.content || "";
+
+      // Construct final message list
+      const finalMessages = [
+        ...messagesWithToolCalls,
+        { role: "assistant", content: finalText } as ChatMessage
+      ];
+
+      return { finalMessages, finalText };
+    },
+    [model, openai, systemPrompt]
+  );
 
   // Memoize the scroll handler
   const handleScroll = useCallback(() => {
@@ -321,13 +465,6 @@ function ChatComponent() {
           }
         }
 
-        // Define a system prompt to guide the assistant's behavior
-        const systemPrompt = {
-          role: "system" as const,
-          content:
-            "You are a helpful, friendly assistant. Respond conversationally to the user's messages. Follow these rules carefully:\n\n1. DO NOT use tools unless absolutely necessary for specific computational tasks or when the user EXPLICITLY asks you to use a tool.\n\n2. For greetings like 'hello' or casual conversation, NEVER use tools - just have a natural conversation.\n\n3. For mathematical calculations (like addition, subtraction), DO use the appropriate tool directly without explaining that you're going to use it - just call the function.\n\n4. When calling tools, DO NOT show your reasoning or explain what you're doing - just make the function call directly.\n\n5. DO NOT say things like \"I'll use the add function\" or \"Here's the JSON for the function call\" - just make the actual function call.\n\n6. After receiving tool results, present them clearly without technical explanations.\n\nRemember: For math questions, call tools directly. For conversation, never use tools."
-        };
-
         // Stream the chat response (happens in parallel with title generation)
         const stream = openai.beta.chat.completions.stream({
           model,
@@ -396,133 +533,18 @@ function ChatComponent() {
           }));
           setCurrentStreamingMessage(undefined);
 
-          // 2. Execute tool calls and append results
+          // 2. Prepare messages with tool calls
           const messagesWithToolCalls = [
             ...newMessages,
             { role: "assistant", tool_calls: toolCalls } as ChatMessage
           ];
 
-          // Log the tool calls for debugging
-          console.log("Executing tool calls:", JSON.stringify(toolCalls, null, 2));
-
-          for (const call of toolCalls) {
-            try {
-              console.log(
-                `Processing tool call: ${call.function.name} with args: ${call.function.arguments}`
-              );
-
-              // Check if tool call has all required fields
-              if (!call.id || !call.function?.name) {
-                console.error("Invalid tool call format:", call);
-                messagesWithToolCalls.push({
-                  role: "tool",
-                  tool_call_id: call.id || `error-${Date.now()}`,
-                  content: JSON.stringify({ error: "Invalid tool call format" })
-                } as ChatMessage);
-                continue;
-              }
-
-              // Ensure arguments are valid JSON
-              let args;
-              try {
-                args = JSON.parse(call.function.arguments || "{}");
-              } catch (parseError) {
-                console.error("Failed to parse arguments:", call.function.arguments, parseError);
-                args = {};
-              }
-
-              const executor = toolExecutors[call.function.name as ToolName];
-              if (!executor) {
-                console.warn(`Unknown tool: ${call.function.name}`);
-              }
-
-              const result = executor
-                ? executor(args)
-                : { error: `Unknown tool: ${call.function.name}` };
-              console.log(`Tool execution result:`, result);
-
-              // Add the tool result to the message list
-              messagesWithToolCalls.push({
-                role: "tool",
-                tool_call_id: call.id,
-                content: JSON.stringify(result)
-              } as ChatMessage);
-            } catch (err) {
-              const error = err as Error;
-              console.error(`Error executing tool ${call.function.name}:`, error);
-              messagesWithToolCalls.push({
-                role: "tool",
-                tool_call_id: call.id || `error-${Date.now()}`,
-                content: JSON.stringify({
-                  error: `Tool execution failed: ${error.message || "Unknown error"}`
-                })
-              } as ChatMessage);
-            }
-          }
-
-          // 3. Ask model to finish the reply (disable further tool use)
           try {
-            // Use streaming API to handle any stream_options consistently
-            const stream = await openai.beta.chat.completions.stream({
-              model,
-              messages: [
-                // No system prompt, just map the messages directly
-                ...messagesWithToolCalls.map((msg) => {
-                  if (msg.role === "assistant" && "tool_calls" in msg && msg.tool_calls) {
-                    // Ensure tool_calls have all required fields
-                    const validatedToolCalls = msg.tool_calls.map((tc) => ({
-                      id: tc.id || `call-${Date.now()}`,
-                      type: "function" as const, // Use const assertion to match expected literal type
-                      function: {
-                        name: tc.function?.name || "",
-                        arguments: tc.function?.arguments || "{}"
-                      }
-                    }));
-
-                    return {
-                      role: "assistant" as const,
-                      content: "",
-                      stop_reason: "tool_calls",
-                      tool_calls: validatedToolCalls
-                    };
-                  } else if (msg.role === "tool") {
-                    return {
-                      role: "tool" as const,
-                      tool_call_id: msg.tool_call_id,
-                      content: msg.content
-                    };
-                  } else {
-                    return {
-                      role: msg.role as "user" | "assistant" | "system",
-                      content: msg.content || ""
-                    };
-                  }
-                })
-              ],
-              tool_choice: "none", // Explicitly disable further tool use
-              temperature: 0.9,
-              top_p: 1,
-              stream: true
-            });
-
-            // Get the final completion
-            const chatCompletion = await stream.finalChatCompletion();
-
-            // Extract content from the completion
-            const finalText = chatCompletion.choices[0].message.content || "";
-
-            // Update chat with assistant's final response
-            const finalMessages = [
-              ...messagesWithToolCalls,
-              { role: "assistant", content: finalText } as ChatMessage
-            ];
-
-            // Create an updated chat reference with the latest messages
-            const updatedToolChat = {
-              ...localChat,
-              messages: finalMessages,
-              title: localChat.title
-            };
+            // 3. Execute tools and get completion using the helper function
+            const { finalMessages } = await executeToolsAndGetCompletion(
+              toolCalls,
+              messagesWithToolCalls
+            );
 
             // Log the tool call sequence to help debugging
             console.log("Tool Call Sequence:", [
@@ -539,6 +561,13 @@ function ChatComponent() {
               ...prev,
               messages: finalMessages
             }));
+
+            // Create an updated chat reference with the latest messages
+            const updatedToolChat = {
+              ...localChat,
+              messages: finalMessages,
+              title: localChat.title
+            };
 
             // Persist the chat with the updated messages
             await persistChat(updatedToolChat);
@@ -611,71 +640,12 @@ function ChatComponent() {
             ]
           }));
 
-          // 2. Execute tool calls and append results
+          // 2. Prepare messages with tool calls
           const messagesWithToolCalls = [
             ...newMessages,
             { role: "assistant", tool_calls: toolCalls } as ChatMessage
           ];
 
-          // Log the tool calls for debugging
-          console.log("Executing tool calls:", JSON.stringify(toolCalls, null, 2));
-
-          for (const call of toolCalls) {
-            try {
-              console.log(
-                `Processing tool call: ${call.function.name} with args: ${call.function.arguments}`
-              );
-
-              // Check if tool call has all required fields
-              if (!call.id || !call.function?.name) {
-                console.error("Invalid tool call format:", call);
-                messagesWithToolCalls.push({
-                  role: "tool",
-                  tool_call_id: call.id || `error-${Date.now()}`,
-                  content: JSON.stringify({ error: "Invalid tool call format" })
-                } as ChatMessage);
-                continue;
-              }
-
-              // Ensure arguments are valid JSON
-              let args;
-              try {
-                args = JSON.parse(call.function.arguments || "{}");
-              } catch (parseError) {
-                console.error("Failed to parse arguments:", call.function.arguments, parseError);
-                args = {};
-              }
-
-              const executor = toolExecutors[call.function.name as ToolName];
-              if (!executor) {
-                console.warn(`Unknown tool: ${call.function.name}`);
-              }
-
-              const result = executor
-                ? executor(args)
-                : { error: `Unknown tool: ${call.function.name}` };
-              console.log(`Tool execution result:`, result);
-
-              // Add the tool result to the message list
-              messagesWithToolCalls.push({
-                role: "tool",
-                tool_call_id: call.id,
-                content: JSON.stringify(result)
-              } as ChatMessage);
-            } catch (err) {
-              const error = err as Error;
-              console.error(`Error executing tool ${call.function.name}:`, error);
-              messagesWithToolCalls.push({
-                role: "tool",
-                tool_call_id: call.id || `error-${Date.now()}`,
-                content: JSON.stringify({
-                  error: `Tool execution failed: ${error.message || "Unknown error"}`
-                })
-              } as ChatMessage);
-            }
-          }
-
-          // 3. Ask model to finish the reply (disable further tool use)
           try {
             // Show updated tool call results in the UI immediately
             setLocalChat((prev) => ({
@@ -683,69 +653,11 @@ function ChatComponent() {
               messages: messagesWithToolCalls
             }));
 
-            // Use streaming API to handle any stream_options consistently
-            console.log("Getting final response after tool execution...");
-            const toolResponseStream = await openai.beta.chat.completions.stream({
-              model,
-              messages: [
-                // Add system prompt to guide behavior
-                systemPrompt,
-                // Map messages including tool calls and results
-                ...messagesWithToolCalls.map((msg) => {
-                  if (msg.role === "assistant" && "tool_calls" in msg && msg.tool_calls) {
-                    return {
-                      role: "assistant" as const,
-                      content: "",
-                      stop_reason: "tool_calls",
-                      tool_calls: msg.tool_calls.map((tc) => ({
-                        id: tc.id,
-                        type: "function" as const,
-                        function: {
-                          name: tc.function.name,
-                          arguments: tc.function.arguments
-                        }
-                      }))
-                    };
-                  } else if (msg.role === "tool") {
-                    return {
-                      role: "tool" as const,
-                      tool_call_id: msg.tool_call_id,
-                      content: msg.content
-                    };
-                  } else {
-                    return {
-                      role: msg.role as "user" | "assistant" | "system",
-                      content: msg.content || ""
-                    };
-                  }
-                })
-              ],
-              tool_choice: "none", // Explicitly disable further tool use
-              temperature: 0.9,
-              top_p: 1,
-              stream: true
-            });
-
-            // Stream in the final response after tool execution
-            let finalText = "";
-            for await (const chunk of toolResponseStream) {
-              const content = chunk.choices[0]?.delta?.content || "";
-              finalText += content;
-              setCurrentStreamingMessage(finalText);
-            }
-
-            // Get the final completion
-            const finalCompletion = await toolResponseStream.finalChatCompletion();
-            console.log("Final text after tool execution:", finalCompletion);
-
-            // Extract content from the completion
-            finalText = finalCompletion.choices[0].message.content || "";
-
-            // Update chat with assistant's final response
-            const finalMessages = [
-              ...messagesWithToolCalls,
-              { role: "assistant", content: finalText } as ChatMessage
-            ];
+            // 3. Execute tools and get completion using the helper function
+            const { finalMessages } = await executeToolsAndGetCompletion(
+              toolCalls,
+              messagesWithToolCalls
+            );
 
             // Create an updated chat reference with the latest messages
             const updatedToolChat = {
@@ -828,7 +740,7 @@ function ChatComponent() {
     // We intentionally don't include freshBillingStatus in the dependency array
     // even though it's used in the closure to avoid re-creating the function
     // on every billing status change
-    [localChat, model, openai, persistChat, queryClient, setUserPrompt, chatId]
+    [localChat, model, openai, persistChat, queryClient, setUserPrompt, chatId, executeToolsAndGetCompletion, systemPrompt]
   );
 
   return (
