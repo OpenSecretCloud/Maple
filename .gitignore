@@ -34,6 +34,9 @@ package-lock.json
 /tests/blob-report/
 /tests/playwright/.cache/
 
+# rust
+frontend/src-tauri/target/
+frontend/src-tauri/debug/
 
 # Logs
 frontend/logs
