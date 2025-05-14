@@ -2,7 +2,9 @@ import { createFileRoute } from "@tanstack/react-router";
 import { TopNav } from "@/components/TopNav";
 import { FullPageMain } from "@/components/FullPageMain";
 import { MarketingHeader } from "@/components/MarketingHeader";
-import { Monitor, Apple, Terminal, Globe, Smartphone } from "lucide-react";
+import { Monitor, Terminal, Globe, Smartphone } from "lucide-react";
+import { Apple } from "@/components/icons/Apple";
+import { Android } from "@/components/icons/Android";
 import packageJson from "../../package.json";
 
 // Get version from package.json
@@ -129,6 +131,51 @@ function DownloadPage() {
           </div>
         </section>
 
+        {/* Mobile Apps Section */}
+        <section className="w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 mb-12">
+          <div className="flex items-center gap-3 mb-6">
+            <Smartphone className="w-7 h-7" />
+            <span className="text-3xl font-light">Mobile Apps</span>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 max-w-3xl mx-auto">
+            <div className="flex flex-col border border-[hsl(var(--marketing-card-border))] bg-[hsl(var(--marketing-card))]/75 text-foreground p-6 rounded-lg hover:border-foreground/30 transition-all duration-300">
+              <div className="p-3 rounded-full bg-[hsl(var(--marketing-card))]/50 border border-[hsl(var(--purple))]/30 w-fit mb-4">
+                <Apple className="w-6 h-6 text-[hsl(var(--purple))]" />
+              </div>
+              <h3 className="text-xl font-medium mb-2">iOS</h3>
+              <p className="text-[hsl(var(--marketing-text-muted))] mb-6 flex-grow">
+                Download our native iOS app for iPhones and iPads.
+              </p>
+              <div className="flex justify-center">
+                <a
+                  href="https://apps.apple.com/us/app/id6743764835"
+                  className="inline-block"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  <img
+                    src="/app-store-badge.svg"
+                    alt="Download on the App Store"
+                    className="h-12"
+                  />
+                </a>
+              </div>
+            </div>
+            <div className="flex flex-col border border-[hsl(var(--marketing-card-border))] bg-[hsl(var(--marketing-card))]/75 text-foreground p-6 rounded-lg hover:border-foreground/30 transition-all duration-300">
+              <div className="p-3 rounded-full bg-[hsl(var(--marketing-card))]/50 border border-[hsl(var(--purple))]/30 w-fit mb-4">
+                <Android className="w-6 h-6 text-[hsl(var(--purple))]" />
+              </div>
+              <h3 className="text-xl font-medium mb-2">Android</h3>
+              <p className="text-[hsl(var(--marketing-text-muted))] mb-6 flex-grow">
+                Android app coming soon.
+              </p>
+              <div className="text-center text-[hsl(var(--marketing-text-muted))]">
+                Stay tuned for our Android app.
+              </div>
+            </div>
+          </div>
+        </section>
+
         {/* Web Access Section */}
         <section className="w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12 mb-12">
           <div className="flex flex-col p-4 sm:p-8 rounded-2xl bg-gradient-to-b from-[hsl(var(--marketing-card))] to-[hsl(var(--marketing-card))]/80 border-2 border-[hsl(var(--purple))] shadow-[0_0_30px_rgba(148,105,248,0.2)]">
@@ -181,15 +228,6 @@ function DownloadPage() {
                 </div>
               </div>
             </div>
-          </div>
-        </section>
-
-        {/* Mobile Coming Soon Section */}
-        <section className="w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 mb-12">
-          <div className="flex items-center gap-3">
-            <Smartphone className="w-7 h-7" />
-            <span className="text-3xl font-light">Mobile Apps</span>
-            <span className="text-2xl text-[hsl(var(--marketing-text-muted))]">Coming soon!</span>
           </div>
         </section>
       </FullPageMain>

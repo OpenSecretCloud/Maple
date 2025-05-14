@@ -358,7 +358,7 @@ export function Marketing() {
           </div>
         </div>
 
-        <div className="flex justify-center mt-8">
+        <div className="flex flex-col sm:flex-row justify-center items-center gap-4 mt-8">
           <Link
             to="/downloads"
             className="inline-flex items-center gap-2 py-2 px-4 rounded-lg text-center font-medium transition-all duration-300 
@@ -366,8 +366,16 @@ export function Marketing() {
               text-[hsl(var(--marketing-text-muted))] hover:text-foreground"
           >
             <Laptop className="h-4 w-4" />
-            <span>Download</span>
+            <span>Desktop</span>
           </Link>
+          <a
+            href="https://apps.apple.com/us/app/id6743764835"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-block"
+          >
+            <img src="/app-store-badge.svg" alt="Download on the App Store" className="h-10 w-auto" />
+          </a>
         </div>
       </section>
 
