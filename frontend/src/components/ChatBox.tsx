@@ -22,13 +22,17 @@ function TokenWarning({
   currentInput,
   chatId,
   className,
-  billingStatus
+  billingStatus,
+  onCompress,
+  isCompressing = false
 }: {
   messages: ChatMessage[];
   currentInput: string;
   chatId?: string;
   className?: string;
   billingStatus?: BillingStatus;
+  onCompress?: () => void;
+  isCompressing?: boolean;
 }) {
   const totalTokens =
     messages.reduce((acc, msg) => acc + estimateTokenCount(msg.content), 0) +
@@ -37,7 +41,7 @@ function TokenWarning({
   const navigate = useNavigate();
 
   // Check if user is on starter plan
-  const isStarter = billingStatus?.product_name.toLowerCase().includes("starter") || false;
+  const isStarter = billingStatus?.product_name?.toLowerCase().includes("starter") || false;
 
   // Token thresholds for different plan types
   const STARTER_WARNING_THRESHOLD = 4000;
@@ -60,6 +64,19 @@ function TokenWarning({
     }
   };
 
+  // Determine button text based on compression state
+  const getButtonText = () => {
+    if (isCompressing) {
+      return { desktop: "Compressing...", mobile: "Compressing..." };
+    }
+    if (onCompress) {
+      return { desktop: "Compress chat", mobile: "Compress" };
+    }
+    return { desktop: "Start a new chat", mobile: "New chat" };
+  };
+
+  const buttonText = getButtonText();
+
   return (
     <div
       className={cn(
@@ -71,15 +88,19 @@ function TokenWarning({
     >
       <div className="flex items-center gap-2 min-w-0">
         <span className="text-[11px] font-semibold text-foreground/70 shrink-0">Tip:</span>
-        <span className="min-w-0">Long chats cause you to reach your usage limits faster.</span>
+        <span className="min-w-0">This chat is getting long. Compress it to save tokens.</span>
       </div>
       {chatId && (
         <button
-          onClick={handleNewChat}
-          className="font-medium text-primary hover:text-primary/80 hover:underline transition-colors whitespace-nowrap shrink-0 ml-4"
+          onClick={!isCompressing ? onCompress || handleNewChat : undefined}
+          disabled={isCompressing}
+          className={cn(
+            "font-medium text-primary transition-colors whitespace-nowrap shrink-0 ml-4",
+            isCompressing ? "opacity-70 cursor-default" : "hover:text-primary/80 hover:underline"
+          )}
         >
-          <span className="hidden md:inline">Start a new chat</span>
-          <span className="md:hidden">New chat</span>
+          <span className="hidden md:inline">{buttonText.desktop}</span>
+          <span className="md:hidden">{buttonText.mobile}</span>
           <span className="sr-only">, to reduce token usage</span>
         </button>
       )}
@@ -91,12 +112,16 @@ export default function Component({
   onSubmit,
   startTall,
   messages = [],
-  isStreaming = false
+  isStreaming = false,
+  onCompress,
+  isSummarizing = false
 }: {
   onSubmit: (input: string) => void;
   startTall?: boolean;
   messages?: ChatMessage[];
   isStreaming?: boolean;
+  onCompress?: () => void;
+  isSummarizing?: boolean;
 }) {
   const [inputValue, setInputValue] = useState("");
   const {
@@ -271,6 +296,8 @@ export default function Component({
         currentInput={inputValue}
         chatId={chatId}
         billingStatus={freshBillingStatus}
+        onCompress={onCompress}
+        isCompressing={isSummarizing}
       />
       <form
         className={cn(

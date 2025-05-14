@@ -12,6 +12,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { InfoPopover } from "@/components/InfoPopover";
 import { Button } from "@/components/ui/button";
 import { BillingStatus } from "@/billing/billingApi";
+import { useNavigate } from "@tanstack/react-router";
 
 export const Route = createFileRoute("/_auth/chat/$chatId")({
   component: ChatComponent
@@ -70,12 +71,14 @@ function SystemMessage({ text, loading }: { text: string; loading?: boolean }) {
 
 function ChatComponent() {
   const { chatId } = Route.useParams();
-  const { model, persistChat, getChatById, userPrompt, setUserPrompt } = useLocalState();
+  const { model, persistChat, getChatById, userPrompt, setUserPrompt, addChat } = useLocalState();
   const openai = useOpenAI();
   const queryClient = useQueryClient();
   const [showScrollButton, setShowScrollButton] = useState(false);
+  const navigate = useNavigate();
 
   const [error, setError] = useState("");
+  const [isSummarizing, setIsSummarizing] = useState(false);
 
   const chatContainerRef = useRef<HTMLDivElement>(null);
 
@@ -167,12 +170,19 @@ function ChatComponent() {
   const userPromptEffectRan = useRef(false);
 
   useEffect(() => {
+    // Make sure we don't run this more than once per mount
     if (userPromptEffectRan.current) return;
     userPromptEffectRan.current = true;
+
+    // Check if we have a user prompt to send
     if (userPrompt) {
-      console.log("User prompt found, sending to chat");
+      console.log("User prompt found for chatId:", chatId, "sending to chat");
       console.log("USER PROMPT:", userPrompt);
-      sendMessage(userPrompt);
+
+      // Set a small delay to ensure all state is properly initialized
+      setTimeout(() => {
+        sendMessage(userPrompt);
+      }, 100);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -421,6 +431,106 @@ function ChatComponent() {
     [localChat, model, openai, persistChat, queryClient, setUserPrompt, chatId]
   );
 
+  // Chat compression function
+  const compressChat = useCallback(async () => {
+    try {
+      setIsSummarizing(true);
+
+      // 1. Build summarization prompt with detailed instructions
+      const summarizerSystem = `You are "Summarizer-v1", an expert summarization assistant.
+
+TASK
+• First, write a concise paragraph (3–5 sentences) summarizing the overall conversation.
+• Then, produce 10–20 markdown bullet points, each ≤ 30 words.
+• Break complex ideas into multiple bullets for clarity.
+
+CONTENT TO CAPTURE
+1. **Key Information** – essential facts, data points, and statements.
+2. **Decisions and Conclusions** – final choices or outcomes.
+3. **Open Questions and Action Items** – unresolved issues or tasks to be completed.
+4. **User Preferences and Priorities** – expressed likes, dislikes, or priorities.
+
+STYLE & RULES
+• Do **not** mention the assistant, the user, message counts, or dates.
+• Do **not** quote anyone verbatim; paraphrase.
+• Avoid passive voice; start each bullet with a strong noun or verb.
+• Use present tense where possible ("Decide to migrate…", "User prefers…").
+• No headings or extra text—*just* the paragraph summary followed by the bullet list.
+
+END OF INSTRUCTIONS`;
+
+      const summarizationMessages = [
+        { role: "system" as const, content: summarizerSystem },
+        ...localChat.messages
+      ];
+
+      // 2. Stream the summary
+      let summary = "";
+      const stream = openai.beta.chat.completions.stream({
+        model,
+        messages: summarizationMessages,
+        temperature: 0.3,
+        max_tokens: 600,
+        stream: true
+      });
+
+      for await (const chunk of stream) {
+        summary += chunk.choices[0]?.delta?.content ?? "";
+      }
+      await stream.finalChatCompletion();
+
+      // 3. Build initial message for the new chat
+      const initialMsg =
+        `Below is the summary of our previous chats:\n\n${summary}\n\n` +
+        `I will follow up with additional conversations based on our previous chat summary`;
+
+      // Try a completely different approach - work directly with storage
+
+      // 1. First create a new chat with the title directly inherited from the original chat
+      console.log("Creating new chat with summary from original chat");
+      const inheritedTitle = localChat.title; // Use the exact same title as the original chat
+      const id = await addChat(inheritedTitle);
+
+      // 2. Completely reset user prompt
+      setUserPrompt("");
+
+      // 3. Take the direct storage approach instead of relying on React state/effects
+      // Create a fake user message directly in storage that the next page will read
+      const initialChatData: Chat = {
+        id: id,
+        title: inheritedTitle,
+        messages: [{ role: "user" as const, content: initialMsg }]
+      };
+
+      // Explicitly persist this chat with the initial message directly
+      await persistChat(initialChatData);
+
+      // 4. Force refetch of both chat data and history list when navigating
+      queryClient.invalidateQueries({
+        queryKey: ["chat", id],
+        refetchType: "all"
+      });
+
+      // Make sure history list is also invalidated to show the new chat
+      queryClient.invalidateQueries({
+        queryKey: ["chatHistory"],
+        refetchType: "all"
+      });
+
+      // 5. Reset the flag for good measure
+      userPromptEffectRan.current = false;
+
+      // 6. Navigate to the new chat which should now have the initial message
+      console.log("Navigating to new chat with pre-persisted message:", id);
+      navigate({ to: "/chat/$chatId", params: { chatId: id } });
+    } catch (e) {
+      console.error("compressChat failed:", e);
+      setError("Could not compress chat – please try again.");
+    } finally {
+      setIsSummarizing(false);
+    }
+  }, [localChat, model, openai, addChat, navigate, setUserPrompt]);
+
   return (
     <div className="grid h-dvh w-full grid-cols-1 md:grid-cols-[280px_1fr]">
       <Sidebar chatId={chatId} isOpen={isSidebarOpen} onToggle={toggleSidebar} />
@@ -471,7 +581,13 @@ function ChatComponent() {
         {/* Place the chat box inline (below messages) in normal flow */}
         <div className="w-full max-w-[45rem] mx-auto flex flex-col gap-2 px-2 pb-2">
           {error && <AlertDestructive title="Error" description={error} />}
-          <ChatBox onSubmit={sendMessage} messages={localChat.messages} isStreaming={isLoading} />
+          <ChatBox
+            onSubmit={sendMessage}
+            messages={localChat.messages}
+            isStreaming={isLoading || isSummarizing}
+            onCompress={compressChat}
+            isSummarizing={isSummarizing}
+          />
         </div>
       </main>
     </div>
