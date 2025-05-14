@@ -8,7 +8,7 @@ import { useQuery } from "@tanstack/react-query";
 import { getBillingService } from "@/billing/billingService";
 import { BillingStatus } from "@/billing/billingApi";
 import { Route as ChatRoute } from "@/routes/_auth.chat.$chatId";
-import { ChatMessage } from "@/state/LocalStateContext";
+import { ChatMessage } from "@/state/LocalStateContextDef";
 import { useNavigate, useRouter } from "@tanstack/react-router";
 
 // Rough token estimation function
@@ -31,8 +31,13 @@ function TokenWarning({
   billingStatus?: BillingStatus;
 }) {
   const totalTokens =
-    messages.reduce((acc, msg) => acc + estimateTokenCount(msg.content), 0) +
-    (currentInput ? estimateTokenCount(currentInput) : 0);
+    messages.reduce((acc, msg) => {
+      // Only count content if it exists
+      if (msg.content) {
+        return acc + estimateTokenCount(msg.content);
+      }
+      return acc;
+    }, 0) + (currentInput ? estimateTokenCount(currentInput) : 0);
 
   const navigate = useNavigate();
 

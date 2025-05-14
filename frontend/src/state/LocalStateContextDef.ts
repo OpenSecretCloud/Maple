@@ -1,10 +1,29 @@
 import { createContext } from "react";
 import { BillingStatus } from "@/billing/billingApi";
 
-export type ChatMessage = {
-  role: "user" | "assistant";
-  content: string;
-};
+export interface BaseMessage {
+  role: "user" | "assistant" | "tool";
+  content?: string; // optional for tool_call placeholder
+}
+
+export interface AssistantToolCall {
+  id: string;
+  type: "function";
+  function: {
+    name: string;
+    arguments: string; // JSON string per spec
+  };
+}
+
+export type ChatMessage =
+  | (BaseMessage & { role: "user" | "assistant"; content: string })
+  | (BaseMessage & {
+      role: "assistant";
+      content: string;
+      tool_calls?: AssistantToolCall[];
+      stop_reason?: string;
+    })
+  | (BaseMessage & { role: "tool"; tool_call_id: string; content: string });
 
 export type Chat = {
   id: string;
