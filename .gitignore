@@ -65,3 +65,12 @@ frontend/*.local
 *.tsbuildinfo
 
 **/.claude/settings.local.json
+
+# Rust build directories
+target/
+**/target/
+plugins/*/target/
+
+# iOS build artifacts 
+frontend/src-tauri/gen/apple/build/
+frontend/src-tauri/gen/apple/DerivedData/

@@ -88,7 +88,8 @@ function PricingTier({
   ctaText,
   popular = false,
   productId = "", // Add productId parameter
-  isIOS = false // Add iOS detection parameter
+  isIOS = false, // Add iOS detection parameter
+  externalBillingAllowed = true // Add external billing parameter with default to true
 }: {
   name: string;
   price: string;
@@ -98,6 +99,7 @@ function PricingTier({
   popular?: boolean;
   productId?: string; // Add type for productId
   isIOS?: boolean; // Add type for iOS detection
+  externalBillingAllowed?: boolean; // Add type for external billing
 }) {
   const isTeamPlan = name.toLowerCase().includes("team");
   const isFreeplan = name.toLowerCase().includes("free");
@@ -133,19 +135,49 @@ function PricingTier({
           </div>
         ))}
       </div>
-      {/* For iOS devices, disable paid plans with "Coming Soon" text */}
+      {/* For iOS devices, check if external billing is allowed */}
       {isIOS && !isFreeplan ? (
-        <button
-          disabled={true}
-          className="mt-auto py-3 px-6 rounded-lg text-center font-medium transition-all duration-300 
-            dark:bg-white/90 dark:text-black dark:hover:bg-[hsl(var(--purple))]/80 dark:hover:text-[hsl(var(--foreground))] dark:active:bg-white/80
-            bg-background text-foreground hover:bg-[hsl(var(--purple))] hover:text-[hsl(var(--foreground))] active:bg-background/80 
-            border border-[hsl(var(--purple))]/30 hover:border-[hsl(var(--purple))]
-            shadow-[0_0_15px_rgba(var(--purple-rgb),0.2)] hover:shadow-[0_0_25px_rgba(var(--purple-rgb),0.3)]
-            opacity-50 cursor-not-allowed"
-        >
-          Coming Soon
-        </button>
+        externalBillingAllowed ? (
+          // If external billing is allowed, handle product selection normally
+          productId ? (
+            <button
+              onClick={() => {
+                window.location.href = `/signup?next=/pricing&selected_plan=${productId}`;
+              }}
+              className="mt-auto py-3 px-6 rounded-lg text-center font-medium transition-all duration-300 
+                dark:bg-white/90 dark:text-black dark:hover:bg-[hsl(var(--purple))]/80 dark:hover:text-[hsl(var(--foreground))] dark:active:bg-white/80
+                bg-background text-foreground hover:bg-[hsl(var(--purple))] hover:text-[hsl(var(--foreground))] active:bg-background/80 
+                border border-[hsl(var(--purple))]/30 hover:border-[hsl(var(--purple))]
+                shadow-[0_0_15px_rgba(var(--purple-rgb),0.2)] hover:shadow-[0_0_25px_rgba(var(--purple-rgb),0.3)]"
+            >
+              {ctaText}
+            </button>
+          ) : (
+            <Link
+              to="/signup"
+              className="mt-auto py-3 px-6 rounded-lg text-center font-medium transition-all duration-300 
+                dark:bg-white/90 dark:text-black dark:hover:bg-[hsl(var(--purple))]/80 dark:hover:text-[hsl(var(--foreground))] dark:active:bg-white/80
+                bg-background text-foreground hover:bg-[hsl(var(--purple))] hover:text-[hsl(var(--foreground))] active:bg-background/80 
+                border border-[hsl(var(--purple))]/30 hover:border-[hsl(var(--purple))]
+                shadow-[0_0_15px_rgba(var(--purple-rgb),0.2)] hover:shadow-[0_0_25px_rgba(var(--purple-rgb),0.3)]"
+            >
+              {ctaText}
+            </Link>
+          )
+        ) : (
+          // If external billing is not allowed, show "Coming Soon" text
+          <button
+            disabled={true}
+            className="mt-auto py-3 px-6 rounded-lg text-center font-medium transition-all duration-300 
+              dark:bg-white/90 dark:text-black dark:hover:bg-[hsl(var(--purple))]/80 dark:hover:text-[hsl(var(--foreground))] dark:active:bg-white/80
+              bg-background text-foreground hover:bg-[hsl(var(--purple))] hover:text-[hsl(var(--foreground))] active:bg-background/80 
+              border border-[hsl(var(--purple))]/30 hover:border-[hsl(var(--purple))]
+              shadow-[0_0_15px_rgba(var(--purple-rgb),0.2)] hover:shadow-[0_0_25px_rgba(var(--purple-rgb),0.3)]
+              opacity-50 cursor-not-allowed"
+          >
+            Coming Soon
+          </button>
+        )
       ) : isTeamPlan ? (
         // For team plans, add "Contact Us" button that opens email
         <button
@@ -195,8 +227,9 @@ function PricingTier({
 
 export function Marketing() {
   const [isIOS, setIsIOS] = useState(false);
+  const [externalBillingAllowed, setExternalBillingAllowed] = useState(true);
 
-  // Check if the app is running on iOS
+  // Check if the app is running on iOS and check if external billing is allowed
   useEffect(() => {
     const checkPlatform = async () => {
       try {
@@ -208,7 +241,22 @@ export function Marketing() {
         if (isTauriEnv) {
           // Only check platform type if we're in a Tauri environment
           const platform = await type();
-          setIsIOS(platform === "ios");
+          const isIosDevice = platform === "ios";
+          setIsIOS(isIosDevice);
+
+          // If we're on iOS, check if external billing is allowed
+          if (isIosDevice) {
+            try {
+              // Import dynamically to prevent issues on non-Tauri environments
+              const { allowExternalBilling } = await import("@/utils/region-gate");
+              const allowed = await allowExternalBilling();
+              setExternalBillingAllowed(allowed);
+              console.log("External billing allowed (Marketing):", allowed);
+            } catch (err) {
+              console.error("Error checking store region:", err);
+              setExternalBillingAllowed(false); // Default to false if there's an error
+            }
+          }
         } else {
           setIsIOS(false);
         }
@@ -669,6 +717,7 @@ export function Marketing() {
               ctaText="Start Chatting"
               productId={getProductId("Starter")}
               isIOS={isIOS}
+              externalBillingAllowed={externalBillingAllowed}
             />
             <PricingTier
               name="Pro"
@@ -684,6 +733,7 @@ export function Marketing() {
               popular={true}
               productId={getProductId("Pro")}
               isIOS={isIOS}
+              externalBillingAllowed={externalBillingAllowed}
             />
             <PricingTier
               name="Team"
@@ -698,6 +748,7 @@ export function Marketing() {
               ctaText="Contact Us"
               productId={getProductId("Team")}
               isIOS={isIOS}
+              externalBillingAllowed={externalBillingAllowed}
             />
           </div>
         </div>
