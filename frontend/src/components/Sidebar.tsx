@@ -1,19 +1,34 @@
-import { Search, SquarePenIcon, PanelRightClose, PanelRightOpen, XCircle } from "lucide-react";
+import {
+  Search,
+  SquarePenIcon,
+  PanelRightClose,
+  PanelRightOpen,
+  XCircle,
+  // FolderIcon, // Unused icon
+  FolderPlusIcon,
+  ChevronDown,
+  ChevronRight
+} from "lucide-react";
 import { Button } from "./ui/button";
 import { useLocation, useRouter } from "@tanstack/react-router";
 import { ChatHistoryList } from "./ChatHistoryList";
 import { AccountMenu } from "./AccountMenu";
-import { useRef, useEffect, KeyboardEvent } from "react";
+import { useRef, useEffect, KeyboardEvent, useState } from "react";
 import { cn, useClickOutside, useIsMobile } from "@/utils/utils";
 import { Input } from "./ui/input";
 import { useLocalState } from "@/state/useLocalState";
+import { ProjectsSidebar } from "./ProjectsSidebar";
+import { ProjectDialog } from "./ProjectDialog";
+import { Separator } from "./ui/separator";
 
 export function Sidebar({
   chatId,
+  projectId,
   isOpen,
   onToggle
 }: {
   chatId?: string;
+  projectId?: string;
   isOpen: boolean;
   onToggle: () => void;
 }) {
@@ -21,8 +36,13 @@ export function Sidebar({
   const location = useLocation();
   const { searchQuery, setSearchQuery, isSearchVisible, setIsSearchVisible } = useLocalState();
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const [isProjectsExpanded, setIsProjectsExpanded] = useState(true);
+  const [isProjectDialogOpen, setIsProjectDialogOpen] = useState(false);
 
-  async function addChat() {
+  // Use the centralized hook for mobile detection once
+  const isMobile = useIsMobile();
+
+  async function handleAddChat() {
     // If sidebar is open, close it
     if (isOpen) {
       onToggle();
@@ -40,6 +60,19 @@ export function Sidebar({
       }
     }
   }
+
+  // Get the mobile status once at component level
+
+  const navigateToProject = async (projectId: string) => {
+    try {
+      await router.navigate({ to: `/project/$projectId`, params: { projectId } });
+      if (isOpen && isMobile) {
+        onToggle();
+      }
+    } catch (error) {
+      console.error("Navigation to project failed:", error);
+    }
+  };
 
   const toggleSearch = () => {
     setIsSearchVisible(!isSearchVisible);
@@ -80,8 +113,7 @@ export function Sidebar({
     }
   });
 
-  // Use the centralized hook for mobile detection
-  const isMobile = useIsMobile();
+  // Already have isMobile from above
 
   // This effect closes the sidebar on mobile when navigating,
   // but preserves search state between navigations
@@ -108,9 +140,9 @@ export function Sidebar({
         isOpen ? "block w-[280px]" : "hidden md:block md:w-[280px]"
       ])}
     >
-      <div className="h-full border-r border-input dark:bg-background bg-[hsl(var(--footer-bg))] backdrop-blur-lg flex flex-col gap-4 px-4 py-4 md:py-8 items-stretch w-[280px]">
-        <div className="flex justify-between items-center">
-          <Button variant="outline" size="icon" className="md:w-full gap-2" onClick={addChat}>
+      <div className="h-full border-r border-input dark:bg-background bg-[hsl(var(--footer-bg))] backdrop-blur-lg flex flex-col gap-2 px-4 py-4 md:py-6 items-stretch w-[280px]">
+        <div className="flex justify-between items-center mb-1">
+          <Button variant="outline" size="icon" className="md:w-full gap-2" onClick={handleAddChat}>
             <SquarePenIcon className="w-4 h-4" />
             <span className="hidden md:block">New Chat</span>
           </Button>
@@ -118,18 +150,57 @@ export function Sidebar({
             <PanelRightOpen className="h-4 w-4" />
           </Button>
         </div>
-        <div className="flex justify-between items-center">
-          <h2 className="font-semibold">History</h2>
+
+        {/* Projects Section */}
+        <div className="flex items-center justify-between mt-1">
+          <button
+            className="flex items-center gap-1 text-sm font-semibold"
+            onClick={() => setIsProjectsExpanded(!isProjectsExpanded)}
+          >
+            {isProjectsExpanded ? (
+              <ChevronDown className="h-4 w-4" />
+            ) : (
+              <ChevronRight className="h-4 w-4" />
+            )}
+            Projects
+          </button>
           <Button
             variant="ghost"
             size="icon"
-            className="h-8 w-8"
+            className="h-6 w-6"
+            onClick={() => setIsProjectDialogOpen(true)}
+            title="Create new project"
+          >
+            <FolderPlusIcon className="h-4 w-4" />
+          </Button>
+        </div>
+
+        {isProjectsExpanded && (
+          <div className="pl-2">
+            <ProjectsSidebar
+              currentProjectId={projectId}
+              onProjectSelect={navigateToProject}
+              onCreateProject={() => setIsProjectDialogOpen(true)}
+            />
+          </div>
+        )}
+
+        <Separator className="my-2" />
+
+        {/* History Section */}
+        <div className="flex justify-between items-center">
+          <h2 className="font-semibold text-sm">History</h2>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7"
             onClick={toggleSearch}
             aria-label={isSearchVisible ? "Hide search" : "Search chat history"}
           >
             <Search className="h-4 w-4" />
           </Button>
         </div>
+
         {isSearchVisible && (
           <div className="relative transition-all duration-200 ease-in-out">
             <Input
@@ -153,10 +224,23 @@ export function Sidebar({
             )}
           </div>
         )}
-        <nav className="flex flex-col gap-2 px-4 -mx-4 h-full overflow-y-auto">
-          <ChatHistoryList currentChatId={chatId} searchQuery={searchQuery} />
+
+        <nav className="flex flex-col gap-1 h-full overflow-y-auto -mx-4 px-4">
+          <ChatHistoryList
+            currentChatId={chatId}
+            currentProjectId={projectId}
+            searchQuery={searchQuery}
+          />
         </nav>
+
         <AccountMenu />
+
+        {/* Project Dialog */}
+        <ProjectDialog
+          open={isProjectDialogOpen}
+          onOpenChange={setIsProjectDialogOpen}
+          onSuccess={navigateToProject}
+        />
       </div>
     </div>
   );

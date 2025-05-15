@@ -2,14 +2,24 @@ import { createContext } from "react";
 import { BillingStatus } from "@/billing/billingApi";
 
 export type ChatMessage = {
-  role: "user" | "assistant";
+  role: "user" | "assistant" | "system";
   content: string;
+};
+
+export type Project = {
+  id: string;
+  name: string;
+  description?: string;
+  systemPrompt?: string;
+  created_at: number;
+  updated_at: number;
 };
 
 export type Chat = {
   id: string;
   title: string;
   messages: ChatMessage[];
+  projectId?: string;
 };
 
 export type HistoryItem = {
@@ -17,6 +27,7 @@ export type HistoryItem = {
   title: string;
   updated_at: number;
   created_at: number;
+  projectId?: string;
 };
 
 export type LocalState = {
@@ -33,13 +44,21 @@ export type LocalState = {
   setIsSearchVisible: (visible: boolean) => void;
   setBillingStatus: (status: BillingStatus) => void;
   setUserPrompt: (prompt: string) => void;
-  addChat: (title?: string) => Promise<string>;
+  addChat: (title?: string, projectId?: string) => Promise<string>;
   getChatById: (id: string) => Promise<Chat | undefined>;
   persistChat: (chat: Chat) => Promise<void>;
   fetchOrCreateHistoryList: () => Promise<HistoryItem[]>;
   clearHistory: () => Promise<void>;
   deleteChat: (chatId: string) => Promise<void>;
   renameChat: (chatId: string, newTitle: string) => Promise<void>;
+  /** Project-related functions */
+  getProjects: () => Promise<Project[]>;
+  getProjectById: (projectId: string) => Promise<Project | undefined>;
+  createProject: (name: string, description?: string, systemPrompt?: string) => Promise<Project>;
+  updateProject: (project: Project) => Promise<void>;
+  deleteProject: (projectId: string) => Promise<void>;
+  addChatToProject: (chatId: string, projectId: string) => Promise<void>;
+  removeChatFromProject: (chatId: string) => Promise<void>;
   /** Map of chat IDs to their draft messages */
   draftMessages: Map<string, string>;
   /** Sets a draft message for a specific chat */
@@ -65,6 +84,13 @@ export const LocalStateContext = createContext<LocalState>({
   clearHistory: async () => void 0,
   deleteChat: async () => void 0,
   renameChat: async () => void 0,
+  getProjects: async () => [],
+  getProjectById: async () => undefined,
+  createProject: async () => ({ id: "", name: "", created_at: 0, updated_at: 0 }),
+  updateProject: async () => void 0,
+  deleteProject: async () => void 0,
+  addChatToProject: async () => void 0,
+  removeChatFromProject: async () => void 0,
   draftMessages: new Map(),
   setDraftMessage: () => void 0,
   clearDraftMessage: () => void 0

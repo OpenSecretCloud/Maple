@@ -70,7 +70,8 @@ function SystemMessage({ text, loading }: { text: string; loading?: boolean }) {
 
 function ChatComponent() {
   const { chatId } = Route.useParams();
-  const { model, persistChat, getChatById, userPrompt, setUserPrompt } = useLocalState();
+  const { model, persistChat, getChatById, userPrompt, setUserPrompt, getProjectById } =
+    useLocalState();
   const openai = useOpenAI();
   const queryClient = useQueryClient();
   const [showScrollButton, setShowScrollButton] = useState(false);
@@ -133,6 +134,7 @@ function ChatComponent() {
     id: chatId,
     title: "New Chat",
     messages: []
+    // projectId will be added when the chat data is loaded
   });
 
   const [currentStreamingMessage, setCurrentStreamingMessage] = useState<string>();
@@ -141,6 +143,24 @@ function ChatComponent() {
 
   const toggleSidebar = useCallback(() => setIsSidebarOpen((prev) => !prev), []);
 
+  // Pre-fetch project data if the chat belongs to a project
+  useEffect(() => {
+    if (queryChat?.projectId) {
+      console.log(
+        "Pre-fetching project data for chat:",
+        queryChat.id,
+        "project:",
+        queryChat.projectId
+      );
+      // Pre-fetch the project to have the system prompt ready
+      queryClient.prefetchQuery({
+        queryKey: ["project", queryChat.projectId],
+        queryFn: () => getProjectById(queryChat.projectId as string)
+      });
+    }
+  }, [queryChat, getProjectById, queryClient]);
+
+  // Setup local chat state when the query result comes in
   useEffect(() => {
     if (queryChat && !isPending) {
       console.debug("Chat loaded from query:", queryChat);
@@ -154,7 +174,7 @@ function ChatComponent() {
         const messages = userPrompt
           ? ([{ role: "user", content: userPrompt }] as ChatMessage[])
           : [];
-        setLocalChat((localChat) => ({ ...localChat, messages }));
+        setLocalChat((localChat) => ({ ...localChat, messages, projectId: queryChat.projectId }));
         return;
       }
       setLocalChat(queryChat);
@@ -261,10 +281,59 @@ function ChatComponent() {
           return simpleTitleFromMessage;
         }
       }
+
+      // Fetch project system prompt if chat is part of a project
+      async function getSystemPrompt(): Promise<string | undefined> {
+        if (!localChat?.projectId) return undefined;
+
+        try {
+          // Try to get project from cache first
+          const cachedProject = queryClient.getQueryData(["project", localChat.projectId]) as
+            | {
+                systemPrompt?: string;
+              }
+            | undefined;
+
+          if (cachedProject?.systemPrompt) {
+            console.log("Using cached system prompt for project:", localChat.projectId);
+            return cachedProject.systemPrompt;
+          }
+
+          // If not in cache, fetch it
+          console.log("Fetching system prompt for project:", localChat.projectId);
+          const project = await getProjectById(localChat.projectId);
+
+          // Cache the project for future use
+          if (project) {
+            queryClient.setQueryData(["project", localChat.projectId], project);
+          }
+
+          return project?.systemPrompt;
+        } catch (error) {
+          console.error("Failed to get project system prompt:", error);
+          return undefined;
+        }
+      }
+
       if (!input.trim() || !localChat) return;
       setError("");
 
-      const newMessages = [...localChat.messages, { role: "user", content: input } as ChatMessage];
+      // Create system message if project has a system prompt
+      const systemPrompt = await getSystemPrompt();
+      // Create the appropriate system message
+      const systemMessage = systemPrompt
+        ? {
+            role: "system" as const,
+            content: systemPrompt
+          }
+        : {
+            role: "system" as const,
+            content:
+              "You are Maple AI, a friendly AI Assistant. Respond to the input as a friendly AI assistant, generating human-like text, and follow the instructions in the input if applicable. Keep the response concise and engaging. Use a conversational tone and provide helpful and informative responses. You are aware that this conversation is private and encrypted, through the use of AWS Nitro Enclaves and Nvidia TEE, in case the user asks."
+          };
+
+      const userMessage = { role: "user" as const, content: input };
+      const newMessages = [...localChat.messages, userMessage];
 
       setLocalChat((prev) => ({
         ...prev,
@@ -318,9 +387,13 @@ function ChatComponent() {
         }
 
         // Stream the chat response (happens in parallel with title generation)
+        const messagesForAPI = [systemMessage, ...newMessages];
+
+        // Using project system prompt if available, default otherwise
+
         const stream = openai.beta.chat.completions.stream({
           model,
-          messages: newMessages,
+          messages: messagesForAPI,
           stream: true
         });
 
@@ -418,12 +491,17 @@ function ChatComponent() {
     // We intentionally don't include freshBillingStatus in the dependency array
     // even though it's used in the closure to avoid re-creating the function
     // on every billing status change
-    [localChat, model, openai, persistChat, queryClient, setUserPrompt, chatId]
+    [localChat, model, openai, persistChat, queryClient, setUserPrompt, chatId, getProjectById]
   );
 
   return (
     <div className="grid h-dvh w-full grid-cols-1 md:grid-cols-[280px_1fr]">
-      <Sidebar chatId={chatId} isOpen={isSidebarOpen} onToggle={toggleSidebar} />
+      <Sidebar
+        chatId={chatId}
+        projectId={localChat?.projectId}
+        isOpen={isSidebarOpen}
+        onToggle={toggleSidebar}
+      />
       <main className="flex h-dvh flex-col bg-card/90 backdrop-blur-lg bg-center overflow-hidden">
         {!isSidebarOpen && (
           <div className="fixed top-4 left-4 z-20 md:hidden">
