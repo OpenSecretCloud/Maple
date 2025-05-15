@@ -11,5 +11,13 @@ export default defineConfig({
     alias: {
       "@": path.resolve(__dirname, "./src")
     }
+  },
+  // TODO: REMOVE AFTER TESTING - This configuration is only for ngrok testing
+  server: {
+    // Allow specific hosts for development
+    allowedHosts: [
+      'localhost',
+      'dea1-37-19-200-146.ngrok-free.app' // Remove this line after testing
+    ]
   }
 });
