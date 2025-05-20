@@ -78,9 +78,32 @@ export async function fetchProducts(): Promise<BillingProduct[]> {
 }
 
 export async function fetchPortalUrl(thirdPartyToken: string): Promise<string> {
+  let returnUrl = window.location.origin;
+
+  try {
+    // Check if we're in a Tauri environment
+    const isTauri = await import("@tauri-apps/api/core")
+      .then((m) => m.isTauri())
+      .catch(() => false);
+
+    if (isTauri) {
+      // For iOS, use the actual website origin instead of tauri://localhost
+      const { type } = await import("@tauri-apps/plugin-os");
+      const platform = await type();
+
+      if (platform === "ios") {
+        console.log("[Billing] iOS detected, using trymaple.ai as return URL");
+        returnUrl = "https://trymaple.ai";
+      }
+    }
+  } catch (error) {
+    console.error("[Billing] Error determining platform:", error);
+  }
+
   const requestBody = {
-    return_url: window.location.origin
+    return_url: returnUrl
   };
+
   const response = await fetch(
     `${import.meta.env.VITE_MAPLE_BILLING_API_URL}/v1/maple/subscription/portal`,
     {

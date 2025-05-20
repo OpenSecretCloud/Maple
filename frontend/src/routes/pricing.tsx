@@ -495,7 +495,26 @@ function PricingPage() {
       // For all other cases (upgrades/downgrades between paid plans, or downgrades to free),
       // use portal URL if it exists
       if (portalUrl) {
-        window.open(portalUrl, "_blank");
+        // We already know if we're on iOS from the isIOS state variable
+        if (isIOS) {
+          console.log("[Billing] iOS detected, using opener plugin to launch Safari for portal");
+
+          // Use the Tauri opener plugin for iOS
+          import("@tauri-apps/api/core")
+            .then((coreModule) => {
+              return coreModule.invoke("plugin:opener|open_url", { url: portalUrl });
+            })
+            .then(() => {
+              console.log("[Billing] Successfully opened portal URL in external browser");
+            })
+            .catch((err) => {
+              console.error("[Billing] Failed to open external browser:", err);
+              alert("Failed to open browser. Please try again.");
+            });
+        } else {
+          // Default browser opening for non-iOS platforms
+          window.open(portalUrl, "_blank");
+        }
         return;
       }
 
