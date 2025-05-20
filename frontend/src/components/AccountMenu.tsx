@@ -85,6 +85,41 @@ export function AccountMenu() {
       setIsPortalLoading(true);
       const billingService = getBillingService();
       const url = await billingService.getPortalUrl();
+
+      // Check if we're in a Tauri environment on iOS
+      try {
+        const isTauri = await import("@tauri-apps/api/core")
+          .then((m) => m.isTauri())
+          .catch(() => false);
+
+        if (isTauri) {
+          const { type } = await import("@tauri-apps/plugin-os");
+          const platform = await type();
+          const { invoke } = await import("@tauri-apps/api/core");
+
+          if (platform === "ios") {
+            console.log("[Billing] iOS detected, using opener plugin to launch Safari for portal");
+
+            // Use the opener plugin directly - with NO fallback for iOS
+            await invoke("plugin:opener|open_url", { url })
+              .then(() => {
+                console.log("[Billing] Successfully opened portal URL in external browser");
+              })
+              .catch((err: Error) => {
+                console.error("[Billing] Failed to open external browser:", err);
+                alert("Failed to open browser. Please try again.");
+              });
+
+            // Add a small delay to ensure the browser has time to open
+            await new Promise((resolve) => setTimeout(resolve, 300));
+            return;
+          }
+        }
+      } catch (err) {
+        console.error("[Billing] Error checking platform:", err);
+      }
+
+      // Default browser opening for non-iOS platforms
       window.open(url, "_blank");
     } catch (error) {
       console.error("Error fetching portal URL:", error);

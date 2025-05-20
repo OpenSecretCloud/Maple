@@ -374,7 +374,11 @@ export function Marketing() {
             rel="noopener noreferrer"
             className="inline-block"
           >
-            <img src="/app-store-badge.svg" alt="Download on the App Store" className="h-10 w-auto" />
+            <img
+              src="/app-store-badge.svg"
+              alt="Download on the App Store"
+              className="h-10 w-auto"
+            />
           </a>
         </div>
       </section>
