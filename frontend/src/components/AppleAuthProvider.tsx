@@ -207,6 +207,15 @@ export function AppleAuthProvider({
           }
 
           if (code && state) {
+            // Validate state for CSRF protection
+            const storedState = sessionStorage.getItem("apple_auth_state");
+            if (state !== storedState) {
+              throw new Error("Invalid state parameter - potential CSRF attack");
+            }
+
+            // Clear the stored state after validation
+            sessionStorage.removeItem("apple_auth_state");
+
             // Call the OpenSecret SDK to handle the authentication
             await os.handleAppleCallback(code, state, inviteCode || "");
 
@@ -232,9 +241,16 @@ export function AppleAuthProvider({
       // Listen for authorization failures
       document.addEventListener("AppleIDSignInOnFailure", (event) => {
         const failureEvent = event as AppleSignInFailureEvent;
-        console.error("[Apple Auth] Sign In failed:", failureEvent.detail.error);
+        const errorMessage = failureEvent.detail.error;
+        console.error("[Apple Auth] Sign In failed:", errorMessage);
+
+        // Don't show error for user closing the popup - they already know
+        if (errorMessage === "popup_closed_by_user") {
+          return;
+        }
+
         if (onError) {
-          onError(new Error(failureEvent.detail.error || "Apple authentication failed"));
+          onError(new Error(errorMessage || "Apple authentication failed"));
         }
       });
 
@@ -271,6 +287,15 @@ export function AppleAuthProvider({
         const state = authResult.authorization.state;
 
         if (code && state) {
+          // Validate state for CSRF protection
+          const storedState = sessionStorage.getItem("apple_auth_state");
+          if (state !== storedState) {
+            throw new Error("Invalid state parameter - potential CSRF attack");
+          }
+
+          // Clear the stored state after validation
+          sessionStorage.removeItem("apple_auth_state");
+
           // Call the OpenSecret SDK to handle the authentication
           await os.handleAppleCallback(code, state, inviteCode || "");
 
@@ -287,6 +312,12 @@ export function AppleAuthProvider({
       // If not returned directly, it will be handled by the event listener
     } catch (error) {
       console.error("[Apple Auth] Sign In failed:", error);
+
+      // Don't show error for user closing the popup
+      if (error instanceof Error && error.message === "popup_closed_by_user") {
+        return;
+      }
+
       if (onError && error instanceof Error) {
         onError(error);
       }
@@ -300,7 +331,9 @@ export function AppleAuthProvider({
 
   // Render Apple Sign In button for web
   return children ? (
-    <div onClick={handleAppleSignIn}>{children}</div>
+    <div onClick={handleAppleSignIn} className={className}>
+      {children}
+    </div>
   ) : (
     <Button onClick={handleAppleSignIn} className={className || "w-full"}>
       <Apple className="mr-2 h-4 w-4" />
