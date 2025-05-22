@@ -191,7 +191,7 @@ function SignupPage() {
   const handleAppleSignup = async () => {
     try {
       const isTauriEnv = await isTauri();
-      
+
       if (isTauriEnv && isIOS) {
         // Native iOS implementation using Apple Sign In plugin
         console.log("[OAuth] Initiating native Sign in with Apple for iOS");
@@ -311,8 +311,8 @@ function SignupPage() {
             Sign up with Apple
           </Button>
         ) : (
-          <AppleAuthProvider 
-            onError={(error) => setError(error.message)} 
+          <AppleAuthProvider
+            onError={(error) => setError(error.message)}
             redirectAfterLogin={(plan) => {
               if (plan) {
                 navigate({ to: "/pricing", search: { selected_plan: plan } });

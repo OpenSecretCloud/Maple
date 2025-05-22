@@ -95,7 +95,7 @@ function OAuthCallback() {
       const urlParams = new URLSearchParams(window.location.search);
       const code = urlParams.get("code");
       const state = urlParams.get("state");
-      
+
       // For Apple, we might get form data instead of URL parameters
       // Apple uses form_post with POST request in some scenarios
       let appleData = null;
@@ -116,13 +116,13 @@ function OAuthCallback() {
         try {
           // Handle the callback based on the provider
           if (provider === "github") {
-            await handleGitHubCallback(code, state, "");
+            await handleGitHubCallback(code || "", state || "", "");
           } else if (provider === "google") {
-            await handleGoogleCallback(code, state, "");
+            await handleGoogleCallback(code || "", state || "", "");
           } else if (provider === "apple") {
             // This handles the redirect flow (backup for non-popup scenarios)
             // Most Apple auth will now be handled client-side in the AppleAuthProvider component
-            await handleAppleCallback(code, state, "");
+            await handleAppleCallback(code || "", state || "", "");
           } else {
             throw new Error(`Unsupported provider: ${provider}`);
           }
