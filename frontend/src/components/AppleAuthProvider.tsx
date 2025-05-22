@@ -83,6 +83,7 @@ export function AppleAuthProvider({
   const appleScriptLoaded = useRef(false);
   const appleAuthInitialized = useRef(false);
   const rawNonceRef = useRef<string>("");
+  const isInitializing = useRef(false);
 
   // Load Apple Sign In JS SDK on mount (but don't initialize auth yet)
   useEffect(() => {
@@ -98,7 +99,7 @@ export function AppleAuthProvider({
       "https://appleid.cdn-apple.com/appleauth/static/jsapi/appleid/1/en_US/appleid.auth.js";
     script.async = true;
     script.onload = () => {
-      console.log("[Apple Auth] SDK loaded successfully");
+      // SDK loaded successfully
     };
     document.head.appendChild(script);
 
@@ -118,11 +119,16 @@ export function AppleAuthProvider({
       return;
     }
 
+    // Prevent double initialization
+    if (isInitializing.current || appleAuthInitialized.current) {
+      return;
+    }
+    isInitializing.current = true;
+
     try {
       try {
         // First we need to get the proper state and auth URL from the backend
         const initiateResult = await os.initiateAppleAuth(inviteCode || "");
-        console.log("[Apple Auth] Initiating result");
 
         // Generate the nonce for Apple
         rawNonceRef.current = uuidv4();
@@ -144,7 +150,7 @@ export function AppleAuthProvider({
         window.AppleID.auth.init({
           clientId: "cloud.opensecret.maple.services", // Apple Services ID
           scope: "name email",
-          redirectURI: "https://trymaple.ai/auth/apple/callback",
+          redirectURI: window.location.origin + "/auth/apple/callback",
           state: state, // Use the state from the backend
           nonce: hashedNonce,
           usePopup: true // Using popup to capture authentication on client side
@@ -156,20 +162,12 @@ export function AppleAuthProvider({
         }
       }
 
-      console.log(
-        "[Apple Auth] Using redirectURI:",
-        window.location.origin + "/auth/apple/callback"
-      );
-
       // Add event listeners for Apple Sign In response
       document.addEventListener("AppleIDSignInOnSuccess", async (event) => {
         // Handle successful response
         try {
           // Cast event to AppleSignInSuccessEvent
           const appleEvent = event as AppleSignInSuccessEvent;
-
-          // Log the entire event for debugging
-          console.log("[Apple Auth] Success");
 
           // Access the data - the structure might vary
           let code, state;
@@ -208,8 +206,6 @@ export function AppleAuthProvider({
             }
           }
 
-          console.log("[Apple Auth] Parsed data");
-
           if (code && state) {
             // Call the OpenSecret SDK to handle the authentication
             await os.handleAppleCallback(code, state, inviteCode || "");
@@ -241,8 +237,12 @@ export function AppleAuthProvider({
           onError(new Error(failureEvent.detail.error || "Apple authentication failed"));
         }
       });
+
+      appleAuthInitialized.current = true;
+      isInitializing.current = false;
     } catch (error) {
       console.error("[Apple Auth] Failed to initialize Apple Sign In:", error);
+      isInitializing.current = false;
       if (onError && error instanceof Error) {
         onError(error);
       }
@@ -265,15 +265,10 @@ export function AppleAuthProvider({
       // Add additional handling to be more robust
       const authResult = await window.AppleID.auth.signIn();
 
-      // Log the direct result from signIn (might contain data in some cases)
-      console.log("[Apple Auth] Direct signIn");
-
       // Some implementations might return the data directly
       if (authResult && authResult.authorization && authResult.authorization.code) {
         const code = authResult.authorization.code;
         const state = authResult.authorization.state;
-
-        console.log("[Apple Auth] Found authorization in direct result");
 
         if (code && state) {
           // Call the OpenSecret SDK to handle the authentication
