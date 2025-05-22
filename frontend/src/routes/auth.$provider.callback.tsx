@@ -17,6 +17,8 @@ function formatProviderName(provider: string): string {
       return "GitHub";
     case "google":
       return "Google";
+    case "apple":
+      return "Apple";
     default:
       return provider.charAt(0).toUpperCase() + provider.slice(1);
   }
@@ -26,7 +28,7 @@ function OAuthCallback() {
   const [isProcessing, setIsProcessing] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const navigate = useNavigate();
-  const { handleGitHubCallback, handleGoogleCallback } = useOpenSecret();
+  const { handleGitHubCallback, handleGoogleCallback, handleAppleCallback } = useOpenSecret();
   const processedRef = useRef(false);
 
   // Helper functions for the callback process
@@ -94,13 +96,33 @@ function OAuthCallback() {
       const code = urlParams.get("code");
       const state = urlParams.get("state");
 
-      if (code && state) {
+      // For Apple, we might get form data instead of URL parameters
+      // Apple uses form_post with POST request in some scenarios
+      let appleData = null;
+      if (provider === "apple" && !code) {
+        // Check if we have Apple data in sessionStorage from form_post
+        const appleFormData = sessionStorage.getItem("apple_form_data");
+        if (appleFormData) {
+          try {
+            appleData = JSON.parse(appleFormData);
+            sessionStorage.removeItem("apple_form_data");
+          } catch (e) {
+            console.error("Failed to parse Apple form data:", e);
+          }
+        }
+      }
+
+      if ((code && state) || (provider === "apple" && appleData)) {
         try {
-          // Get the auth token from localStorage based on the provider
+          // Handle the callback based on the provider
           if (provider === "github") {
-            await handleGitHubCallback(code, state, "");
+            await handleGitHubCallback(code || "", state || "", "");
           } else if (provider === "google") {
-            await handleGoogleCallback(code, state, "");
+            await handleGoogleCallback(code || "", state || "", "");
+          } else if (provider === "apple") {
+            // This handles the redirect flow (backup for non-popup scenarios)
+            // Most Apple auth will now be handled client-side in the AppleAuthProvider component
+            await handleAppleCallback(code || "", state || "", "");
           } else {
             throw new Error(`Unsupported provider: ${provider}`);
           }
@@ -120,7 +142,7 @@ function OAuthCallback() {
     };
 
     processCallback();
-  }, [handleGitHubCallback, handleGoogleCallback, navigate, provider]);
+  }, [handleGitHubCallback, handleGoogleCallback, handleAppleCallback, navigate, provider]);
 
   // If this is a Tauri app auth flow (desktop or mobile), show a different UI
   if (localStorage.getItem("redirect-to-native") === "true") {

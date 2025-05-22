@@ -15,6 +15,7 @@ import { v4 as uuidv4 } from "uuid";
 import type { AppleCredential } from "@/types/apple-sign-in";
 import { sha256 } from "@noble/hashes/sha256";
 import { bytesToHex } from "@noble/hashes/utils";
+import { AppleAuthProvider } from "@/components/AppleAuthProvider";
 
 type SignupSearchParams = {
   next?: string;
@@ -189,74 +190,98 @@ function SignupPage() {
 
   const handleAppleSignup = async () => {
     try {
-      // Only iOS supports native Apple Sign In
-      console.log("[OAuth] Initiating native Sign in with Apple for iOS");
+      const isTauriEnv = await isTauri();
 
-      try {
-        // Generate random UUIDs for state and nonce
-        const state = uuidv4();
-        const rawNonce = uuidv4();
+      if (isTauriEnv && isIOS) {
+        // Native iOS implementation using Apple Sign In plugin
+        console.log("[OAuth] Initiating native Sign in with Apple for iOS");
 
-        // SHA-256 hash the nonce before sending to Apple
-        // Apple requires the nonce to be hashed with SHA-256
-        const hashedNonce = bytesToHex(sha256(new TextEncoder().encode(rawNonce)));
+        try {
+          // Generate random UUIDs for state and nonce
+          const state = uuidv4();
+          const rawNonce = uuidv4();
 
-        // Invoke the Apple Sign in plugin
-        // This will show the native Apple authentication UI
-        const result = await invoke<AppleCredential>(
-          "plugin:sign-in-with-apple|get_apple_id_credential",
-          {
-            payload: {
-              scope: ["email", "fullName"],
-              state,
-              nonce: hashedNonce, // Send the hashed nonce to Apple
-              // Disable debug mode in production
-              options: {
-                debug: false
+          // SHA-256 hash the nonce before sending to Apple
+          // Apple requires the nonce to be hashed with SHA-256
+          const hashedNonce = bytesToHex(sha256(new TextEncoder().encode(rawNonce)));
+
+          // Invoke the Apple Sign in plugin
+          // This will show the native Apple authentication UI
+          const result = await invoke<AppleCredential>(
+            "plugin:sign-in-with-apple|get_apple_id_credential",
+            {
+              payload: {
+                scope: ["email", "fullName"],
+                state,
+                nonce: hashedNonce, // Send the hashed nonce to Apple
+                // Disable debug mode in production
+                options: {
+                  debug: false
+                }
               }
             }
-          }
-        );
-
-        console.log("[OAuth] Apple Sign-In result:", result);
-
-        // Format the response for the API
-        const appleUser = {
-          user_identifier: result.user,
-          identity_token: result.identityToken,
-          email: result.email,
-          given_name: result.fullName?.givenName,
-          family_name: result.fullName?.familyName,
-          nonce: rawNonce // Pass the original raw nonce to backend
-        };
-
-        // Send to backend via SDK
-        try {
-          await os.handleAppleNativeSignIn(appleUser, "");
-          // Redirect after successful signup
-          if (selected_plan) {
-            navigate({
-              to: "/pricing",
-              search: { selected_plan }
-            });
-          } else {
-            navigate({ to: next || "/" });
-          }
-        } catch (backendError) {
-          console.error("[OAuth] Backend processing failed:", backendError);
-          setError(
-            backendError instanceof Error
-              ? backendError.message
-              : "Failed to process Apple authentication"
           );
+
+          console.log("[OAuth] Apple Sign-In result:", result);
+
+          // Format the response for the API
+          const appleUser = {
+            user_identifier: result.user,
+            identity_token: result.identityToken,
+            email: result.email,
+            given_name: result.fullName?.givenName,
+            family_name: result.fullName?.familyName,
+            nonce: rawNonce // Pass the original raw nonce to backend
+          };
+
+          // Send to backend via SDK
+          try {
+            await os.handleAppleNativeSignIn(appleUser, "");
+            // Redirect after successful signup
+            if (selected_plan) {
+              navigate({
+                to: "/pricing",
+                search: { selected_plan }
+              });
+            } else {
+              navigate({ to: next || "/" });
+            }
+          } catch (backendError) {
+            console.error("[OAuth] Backend processing failed:", backendError);
+            setError(
+              backendError instanceof Error
+                ? backendError.message
+                : "Failed to process Apple authentication"
+            );
+          }
+        } catch (error) {
+          console.error("[OAuth] Failed to authenticate with Apple:", error);
+          const errorMessage =
+            error instanceof Error
+              ? `Apple Sign In error: ${error.message}`
+              : "Failed to authenticate with Apple. Please try again.";
+          setError(errorMessage);
         }
-      } catch (error) {
-        console.error("[OAuth] Failed to authenticate with Apple:", error);
-        const errorMessage =
-          error instanceof Error
-            ? `Apple Sign In error: ${error.message}`
-            : "Failed to authenticate with Apple. Please try again.";
-        setError(errorMessage);
+      } else if (isTauriEnv) {
+        // For Tauri (desktop), redirect to the web app's desktop-auth route
+        let desktopAuthUrl = "https://trymaple.ai/desktop-auth?provider=apple";
+
+        // If there's a selected plan, add it to the URL
+        if (selected_plan) {
+          desktopAuthUrl += `&selected_plan=${encodeURIComponent(selected_plan)}`;
+        }
+
+        // Use the opener plugin by directly invoking the command
+        console.log("[OAuth] Opening URL in external browser:", desktopAuthUrl);
+        invoke("plugin:opener|open_url", { url: desktopAuthUrl }).catch((error: Error) => {
+          console.error("[OAuth] Failed to open external browser:", error);
+          setError("Failed to open authentication page in browser");
+        });
+      } else {
+        // Web flow - use AppleAuthProvider component which will initiate the flow
+        console.log("[OAuth] Using web flow for Apple Sign In");
+        // The AppleAuthProvider component handles everything
+        // It will be triggered by the onClick event on the button
       }
     } catch (error) {
       console.error("Failed to initiate Apple signup:", error);
@@ -280,11 +305,24 @@ function SignupPage() {
           <Google className="mr-2 h-4 w-4" />
           Sign up with Google
         </Button>
-        {isIOS && (
+        {isIOS ? (
           <Button onClick={handleAppleSignup} className="w-full">
             <Apple className="mr-2 h-4 w-4" />
             Sign up with Apple
           </Button>
+        ) : (
+          <AppleAuthProvider
+            onError={(error) => setError(error.message)}
+            redirectAfterLogin={(plan) => {
+              if (plan) {
+                navigate({ to: "/pricing", search: { selected_plan: plan } });
+              } else {
+                navigate({ to: next || "/" });
+              }
+            }}
+            selectedPlan={selected_plan}
+            inviteCode=""
+          />
         )}
         <div className="text-center text-sm">
           Already have an account?{" "}
