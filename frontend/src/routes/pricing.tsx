@@ -256,12 +256,6 @@ function PricingPage() {
 
     const targetPlanName = product.name.toLowerCase();
     const isTeamPlan = targetPlanName.includes("team");
-    const isFreePlan = targetPlanName.includes("free");
-
-    // For iOS, show "Coming Soon" for all paid plans
-    if (isIOS && !isFreePlan) {
-      return "Coming Soon";
-    }
 
     // Always show Contact Us for team plan when not logged in
     if (!isLoggedIn) {
@@ -293,7 +287,7 @@ function PricingPage() {
     }
 
     // For free plan
-    if (isFreePlan) {
+    if (targetPlanName.includes("free")) {
       if (isCurrentPlan) {
         return "Start Chatting";
       }
@@ -428,24 +422,17 @@ function PricingPage() {
 
   const handleButtonClick = useCallback(
     (product: Product) => {
-      const targetPlanName = product.name.toLowerCase();
-      const isTeamPlan = targetPlanName.includes("team");
-      const isFreePlan = targetPlanName.includes("free");
-
-      // For iOS, disable subscription actions for paid plans
-      if (isIOS && !isFreePlan) {
-        // Do nothing for paid plans on iOS
-        return;
-      }
-
       if (!isLoggedIn) {
+        const targetPlanName = product.name.toLowerCase();
+        const isTeamPlan = targetPlanName.includes("team");
+
         // For team plan, redirect to email when not logged in
         if (isTeamPlan) {
           window.location.href = "mailto:support@opensecret.cloud";
           return;
         }
 
-        if (!isFreePlan) {
+        if (!targetPlanName.includes("free")) {
           // For paid plans, redirect to signup with the plan selection
           navigate({
             to: "/signup",
@@ -459,6 +446,9 @@ function PricingPage() {
         navigate({ to: "/signup" });
         return;
       }
+
+      const targetPlanName = product.name.toLowerCase();
+      const isTeamPlan = targetPlanName.includes("team");
 
       // For team plan, ALWAYS redirect to email if not whitelisted
       // regardless of current subscription status
@@ -478,7 +468,7 @@ function PricingPage() {
 
       const currentPlanName = freshBillingStatus?.product_name?.toLowerCase();
       const isCurrentlyOnFreePlan = currentPlanName?.includes("free");
-      const isTargetFreePlan = isFreePlan;
+      const isTargetFreePlan = targetPlanName.includes("free");
 
       // If on free plan and clicking free plan, go home
       if (isCurrentlyOnFreePlan && isTargetFreePlan) {
@@ -536,18 +526,11 @@ function PricingPage() {
   useEffect(() => {
     let isSubscribed = true;
 
-    // If user is logged in and there's a selected plan, trigger checkout
+    // If user is logged in and there's a selected plan, trigger checkout (except on iOS for paid plans)
     if (isLoggedIn && selected_plan && !isBillingStatusLoading) {
       if (loadingProductId) return; // Prevent multiple triggers
       const product = products?.find((p) => p.id === selected_plan);
-
-      // Skip checkout for paid plans on iOS
       if (product && isSubscribed) {
-        const isFreePlan = product.name.toLowerCase().includes("free");
-        if (isIOS && !isFreePlan) {
-          // Don't trigger checkout for paid plans on iOS
-          return;
-        }
         handleButtonClick(product);
       }
     }
@@ -573,9 +556,9 @@ function PricingPage() {
         <FullPageMain>
           <MarketingHeader
             title={
-              <span className="text-6xl font-light mb-0">
+              <h2 className="text-6xl font-light mb-0">
                 Simple, <span className="text-[hsl(var(--purple))]">Transparent</span> Pricing
-              </span>
+              </h2>
             }
             subtitle={
               <div className="space-y-2">
@@ -647,9 +630,9 @@ function PricingPage() {
       <FullPageMain>
         <MarketingHeader
           title={
-            <span className="text-6xl font-light mb-0">
+            <h2 className="text-6xl font-light mb-0">
               Simple, <span className="text-[hsl(var(--purple))]">Transparent</span> Pricing
-            </span>
+            </h2>
           }
           subtitle={
             <div className="space-y-2">
@@ -678,18 +661,6 @@ function PricingPage() {
                 <AlertTriangle className="w-5 h-5 text-amber-600 dark:text-amber-200" />
               </div>
               <p>Payment canceled. Your subscription remains unchanged.</p>
-            </div>
-          </div>
-        )}
-
-        {/* iOS Subscription Banner */}
-        {isIOS && (
-          <div className="w-full max-w-7xl mx-auto mt-4 px-4 sm:px-6 lg:px-8">
-            <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-900/50 text-amber-800 dark:text-amber-100 rounded-lg p-4 flex items-center gap-3">
-              <div className="rounded-full bg-amber-100 dark:bg-amber-800 p-1">
-                <AlertTriangle className="w-5 h-5 text-amber-600 dark:text-amber-200" />
-              </div>
-              <p>Subscription purchases are not yet available in app.</p>
             </div>
           </div>
         )}
@@ -826,9 +797,7 @@ function PricingPage() {
                       <button
                         onClick={() => handleButtonClick(product)}
                         disabled={
-                          loadingProductId === product.id ||
-                          (useBitcoin && product.name === "Team") ||
-                          (isIOS && !product.name.toLowerCase().includes("free"))
+                          loadingProductId === product.id || (useBitcoin && product.name === "Team")
                         }
                         className={`w-full 
                           dark:bg-white/90 dark:text-black dark:hover:bg-[hsl(var(--purple))]/80 dark:hover:text-[hsl(var(--foreground))] dark:active:bg-white/80
@@ -841,10 +810,6 @@ function PricingPage() {
                           group-hover:bg-[hsl(var(--purple))] group-hover:text-[hsl(var(--foreground))] dark:group-hover:text-[hsl(var(--foreground))] dark:group-hover:bg-[hsl(var(--purple))]/80 ${
                             isTeamPlan && !isTeamPlanAvailable && !isIOS
                               ? "!opacity-100 !cursor-pointer hover:!bg-[hsl(var(--purple))]"
-                              : ""
-                          } ${
-                            isIOS && !product.name.toLowerCase().includes("free")
-                              ? "opacity-50 cursor-not-allowed hover:bg-background hover:text-foreground dark:hover:bg-white/90 dark:hover:text-black group-hover:bg-background group-hover:text-foreground dark:group-hover:bg-white/90 dark:group-hover:text-black"
                               : ""
                           }`}
                       >
