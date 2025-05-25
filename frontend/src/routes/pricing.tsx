@@ -665,22 +665,20 @@ function PricingPage() {
           </div>
         )}
 
-        {!isIOS && (
-          <div className="w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex justify-center">
-            <div className="inline-flex items-center gap-4 px-6 py-2.5 rounded-full bg-[hsl(var(--marketing-card))]/50 backdrop-blur-sm border border-[hsl(var(--marketing-card-border))]">
-              <div className="flex items-center gap-2 text-[hsl(var(--bitcoin))] text-base font-light">
-                <Bitcoin className="w-4.5 h-4.5" />
-                <span>Pay with Bitcoin</span>
-              </div>
-              <Switch
-                id="bitcoin-toggle"
-                checked={useBitcoin}
-                onCheckedChange={setUseBitcoin}
-                className="data-[state=checked]:bg-[hsl(var(--bitcoin))] data-[state=unchecked]:border-foreground/30 scale-100"
-              />
+        <div className="w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex justify-center">
+          <div className="inline-flex items-center gap-4 px-6 py-2.5 rounded-full bg-[hsl(var(--marketing-card))]/50 backdrop-blur-sm border border-[hsl(var(--marketing-card-border))]">
+            <div className="flex items-center gap-2 text-[hsl(var(--bitcoin))] text-base font-light">
+              <Bitcoin className="w-4.5 h-4.5" />
+              <span>Pay with Bitcoin</span>
             </div>
+            <Switch
+              id="bitcoin-toggle"
+              checked={useBitcoin}
+              onCheckedChange={setUseBitcoin}
+              className="data-[state=checked]:bg-[hsl(var(--bitcoin))] data-[state=unchecked]:border-foreground/30 scale-100"
+            />
           </div>
-        )}
+        </div>
 
         <div className="pt-8 w-full max-w-7xl mx-auto grid grid-cols-1 md:grid-cols-4 gap-4 md:gap-4 lg:gap-6 px-4 sm:px-6 lg:px-8">
           {products &&
