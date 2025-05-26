@@ -338,7 +338,7 @@ export default function Component({
               className="flex items-center gap-1.5 text-xs font-medium transition-colors text-muted-foreground hover:text-foreground cursor-pointer"
               title="System Prompt"
             >
-              <Bot className="size-4" />
+              <Bot className="size-5" />
               {systemPromptValue.trim() && (
                 <div className="size-2 bg-primary rounded-full" title="System prompt active" />
               )}
