@@ -64,9 +64,10 @@ function Index() {
 
   const toggleSidebar = useCallback(() => setIsSidebarOpen((prev) => !prev), []);
 
-  async function handleSubmit(input: string) {
+  async function handleSubmit(input: string, systemPrompt?: string) {
     if (input.trim() === "") return;
     localState.setUserPrompt(input.trim());
+    localState.setSystemPrompt(systemPrompt?.trim() || null);
     const id = await localState.addChat();
     navigate({ to: "/chat/$chatId", params: { chatId: id } });
   }

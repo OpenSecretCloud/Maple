@@ -1,4 +1,4 @@
-import { Blend, CornerRightUp } from "lucide-react";
+import { Blend, CornerRightUp, Bot } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { useEffect, useRef, useState } from "react";
@@ -116,7 +116,7 @@ export default function Component({
   onCompress,
   isSummarizing = false
 }: {
-  onSubmit: (input: string) => void;
+  onSubmit: (input: string, systemPrompt?: string) => void;
   startTall?: boolean;
   messages?: ChatMessage[];
   isStreaming?: boolean;
@@ -124,6 +124,8 @@ export default function Component({
   isSummarizing?: boolean;
 }) {
   const [inputValue, setInputValue] = useState("");
+  const [systemPromptValue, setSystemPromptValue] = useState("");
+  const [isSystemPromptExpanded, setIsSystemPromptExpanded] = useState(false);
   const {
     model,
     billingStatus,
@@ -134,6 +136,7 @@ export default function Component({
   } = useLocalState();
   const [isFocused, setIsFocused] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const systemPromptRef = useRef<HTMLTextAreaElement>(null);
   const lastDraftRef = useRef<string>("");
   const previousChatIdRef = useRef<string | undefined>(undefined);
   const currentInputRef = useRef<string>("");
@@ -157,23 +160,32 @@ export default function Component({
   // Use the centralized hook for mobile detection directly
   const isMobile = useIsMobile();
 
+  // Check if user can use system prompts (paid users only - exclude free plans)
+  const canUseSystemPrompt =
+    freshBillingStatus && !freshBillingStatus.product_name?.toLowerCase().includes("free");
+
+  // Check if system prompt can be edited (only for new chats)
+  const canEditSystemPrompt = canUseSystemPrompt && messages.length === 0;
+
   const handleSubmit = (e?: React.FormEvent) => {
     e?.preventDefault();
     if (!inputValue.trim() || isSubmitDisabled) return;
 
-    // Clear the draft when submitting
+    // Clear the drafts when submitting
     if (chatId) {
       try {
         clearDraftMessage(chatId);
         lastDraftRef.current = "";
         currentInputRef.current = "";
       } catch (error) {
-        console.error("Failed to clear draft message:", error);
+        console.error("Failed to clear draft messages:", error);
         // Continue with submission even if draft clearing fails
       }
     }
 
-    onSubmit(inputValue.trim());
+    // Only pass system prompt if this is the first message
+    const isFirstMessage = messages.length === 0;
+    onSubmit(inputValue.trim(), isFirstMessage ? systemPromptValue.trim() || undefined : undefined);
     setInputValue("");
 
     // Re-focus input after submitting
@@ -189,9 +201,11 @@ export default function Component({
 
   // Handle draft loading and saving only on chat switches
   useEffect(() => {
-    // 1. Save draft from previous chat before switching
+    // 1. Save drafts from previous chat before switching
     if (previousChatIdRef.current && previousChatIdRef.current !== chatId) {
       const oldChatId = previousChatIdRef.current;
+
+      // Save message draft
       const currentInput = currentInputRef.current.trim();
       if (currentInput !== "") {
         setDraftMessage(oldChatId, currentInput);
@@ -200,16 +214,22 @@ export default function Component({
       }
     }
 
-    // 2. Load draft for new chat
+    // 2. Load drafts for new chat
     if (chatId) {
       try {
+        // Load message draft
         const draft = draftMessages.get(chatId) || "";
         setInputValue(draft);
         lastDraftRef.current = draft;
         currentInputRef.current = draft;
+
+        // Reset system prompt for new chat
+        setSystemPromptValue("");
+        setIsSystemPromptExpanded(false);
       } catch (error) {
-        console.error("Failed to load draft message:", error);
+        console.error("Failed to load draft messages:", error);
         setInputValue("");
+        setSystemPromptValue("");
         lastDraftRef.current = "";
         currentInputRef.current = "";
       }
@@ -217,7 +237,7 @@ export default function Component({
 
     // Update previous chat id reference
     previousChatIdRef.current = chatId;
-  }, [chatId, draftMessages, setDraftMessage, clearDraftMessage]);
+  }, [chatId, draftMessages, setDraftMessage, clearDraftMessage, canEditSystemPrompt, messages]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter") {
@@ -236,13 +256,21 @@ export default function Component({
     }
   };
 
-  // Auto-resize effect
+  // Auto-resize effect for main input
   useEffect(() => {
     if (inputRef.current) {
       inputRef.current.style.height = "auto";
       inputRef.current.style.height = `${inputRef.current.scrollHeight}px`;
     }
   }, [inputValue]);
+
+  // Auto-resize effect for system prompt
+  useEffect(() => {
+    if (systemPromptRef.current) {
+      systemPromptRef.current.style.height = "auto";
+      systemPromptRef.current.style.height = `${systemPromptRef.current.scrollHeight}px`;
+    }
+  }, [systemPromptValue]);
 
   // Determine when the submit button should be disabled
   const isSubmitDisabled =
@@ -299,6 +327,44 @@ export default function Component({
         onCompress={onCompress}
         isCompressing={isSummarizing}
       />
+
+      {/* Simple System Prompt Section - just a gear button and input when expanded */}
+      {canEditSystemPrompt && (
+        <div className="mb-2">
+          <div className="flex items-center gap-2 mb-1">
+            <button
+              type="button"
+              onClick={() => setIsSystemPromptExpanded(!isSystemPromptExpanded)}
+              className="flex items-center gap-1.5 text-xs font-medium transition-colors text-muted-foreground hover:text-foreground cursor-pointer"
+              title="System Prompt"
+            >
+              <Bot className="size-4" />
+              {systemPromptValue.trim() && (
+                <div className="size-2 bg-primary rounded-full" title="System prompt active" />
+              )}
+            </button>
+          </div>
+
+          {isSystemPromptExpanded && (
+            <textarea
+              ref={systemPromptRef}
+              value={systemPromptValue}
+              onChange={(e) => setSystemPromptValue(e.target.value)}
+              placeholder="Enter instructions for the AI (e.g., 'You are a helpful coding assistant...')"
+              rows={2}
+              className="w-full p-2 text-sm border border-muted-foreground/20 rounded-md bg-muted/50 placeholder:text-muted-foreground/70 focus:outline-none focus:ring-1 focus:ring-ring resize-none transition-colors"
+              style={{
+                height: "auto",
+                resize: "none",
+                overflowY: "auto",
+                maxHeight: "8rem",
+                minHeight: "3rem"
+              }}
+            />
+          )}
+        </div>
+      )}
+
       <form
         className={cn(
           "p-2 rounded-lg border border-primary bg-background/80 backdrop-blur-lg focus-within:ring-1 focus-within:ring-ring",

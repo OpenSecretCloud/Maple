@@ -14,6 +14,7 @@ export {
 export const LocalStateProvider = ({ children }: { children: React.ReactNode }) => {
   const [localState, setLocalState] = useState({
     userPrompt: "",
+    systemPrompt: null as string | null,
     model:
       import.meta.env.VITE_DEV_MODEL_OVERRIDE || "ibnzterrell/Meta-Llama-3.3-70B-Instruct-AWQ-INT4",
     billingStatus: null as BillingStatus | null,
@@ -67,6 +68,10 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
 
   function setUserPrompt(prompt: string) {
     setLocalState((prev) => ({ ...prev, userPrompt: prompt }));
+  }
+
+  function setSystemPrompt(prompt: string | null) {
+    setLocalState((prev) => ({ ...prev, systemPrompt: prompt }));
   }
 
   function setBillingStatus(status: BillingStatus) {
@@ -221,6 +226,7 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
       value={{
         model: localState.model,
         userPrompt: localState.userPrompt,
+        systemPrompt: localState.systemPrompt,
         billingStatus: localState.billingStatus,
         searchQuery: localState.searchQuery,
         setSearchQuery,
@@ -228,6 +234,7 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
         setIsSearchVisible,
         setBillingStatus,
         setUserPrompt,
+        setSystemPrompt,
         addChat,
         getChatById,
         persistChat,

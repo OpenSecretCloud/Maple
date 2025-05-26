@@ -9,7 +9,6 @@ import { ChatMessage, Chat } from "@/state/LocalStateContext";
 import { AlertDestructive } from "@/components/AlertDestructive";
 import { Sidebar, SidebarToggle } from "@/components/Sidebar";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { InfoPopover } from "@/components/InfoPopover";
 import { Button } from "@/components/ui/button";
 import { BillingStatus } from "@/billing/billingApi";
 import { useNavigate } from "@tanstack/react-router";
@@ -71,7 +70,16 @@ function SystemMessage({ text, loading }: { text: string; loading?: boolean }) {
 
 function ChatComponent() {
   const { chatId } = Route.useParams();
-  const { model, persistChat, getChatById, userPrompt, setUserPrompt, addChat } = useLocalState();
+  const {
+    model,
+    persistChat,
+    getChatById,
+    userPrompt,
+    setUserPrompt,
+    systemPrompt,
+    setSystemPrompt,
+    addChat
+  } = useLocalState();
   const openai = useOpenAI();
   const queryClient = useQueryClient();
   const [showScrollButton, setShowScrollButton] = useState(false);
@@ -154,15 +162,26 @@ function ChatComponent() {
       }
       if (queryChat.messages.length === 0) {
         console.warn("Chat has no messages, using user prompt");
-        const messages = userPrompt
-          ? ([{ role: "user", content: userPrompt }] as ChatMessage[])
-          : [];
+
+        // Build messages array with system prompt first (if exists), then user prompt
+        const messages: ChatMessage[] = [];
+
+        // Check for system prompt from LocalState
+        if (systemPrompt?.trim()) {
+          messages.push({ role: "system", content: systemPrompt.trim() } as ChatMessage);
+        }
+
+        // Add user prompt if exists
+        if (userPrompt) {
+          messages.push({ role: "user", content: userPrompt } as ChatMessage);
+        }
+
         setLocalChat((localChat) => ({ ...localChat, messages }));
         return;
       }
       setLocalChat(queryChat);
     }
-    // I don't want to re-run this effect if the user prompt changes
+    // I don't want to re-run this effect if the user prompt or system prompt changes
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [queryChat, chatId, isPending]);
 
@@ -181,7 +200,7 @@ function ChatComponent() {
 
       // Set a small delay to ensure all state is properly initialized
       setTimeout(() => {
-        sendMessage(userPrompt);
+        sendMessage(userPrompt, systemPrompt || undefined);
       }, 100);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -190,7 +209,7 @@ function ChatComponent() {
   const [isLoading, setIsLoading] = useState(false);
 
   const sendMessage = useCallback(
-    async (input: string) => {
+    async (input: string, systemPrompt?: string) => {
       // Helper function to check if the user is on a free plan
       function isUserOnFreePlan(): boolean {
         try {
@@ -274,7 +293,19 @@ function ChatComponent() {
       if (!input.trim() || !localChat) return;
       setError("");
 
-      const newMessages = [...localChat.messages, { role: "user", content: input } as ChatMessage];
+      // Build new messages array with system prompt if this is the first message
+      let newMessages: ChatMessage[];
+
+      if (localChat.messages.length === 0 && systemPrompt?.trim()) {
+        // First message: add system prompt, then user message
+        newMessages = [
+          { role: "system", content: systemPrompt.trim() } as ChatMessage,
+          { role: "user", content: input } as ChatMessage
+        ];
+      } else {
+        // Subsequent messages: just add user message
+        newMessages = [...localChat.messages, { role: "user", content: input } as ChatMessage];
+      }
 
       setLocalChat((prev) => ({
         ...prev,
@@ -328,6 +359,8 @@ function ChatComponent() {
         }
 
         // Stream the chat response (happens in parallel with title generation)
+        // newMessages already contains system prompt if it was the first message
+
         const stream = openai.beta.chat.completions.stream({
           model,
           messages: newMessages,
@@ -387,8 +420,9 @@ function ChatComponent() {
         const chatCompletion = await stream.finalChatCompletion();
         console.log(chatCompletion);
 
-        // Should be safe to clear this by now
+        // Should be safe to clear these by now
         setUserPrompt("");
+        setSystemPrompt(null);
 
         // React sucks and doesn't get the latest state
         // Use current title from localChat which may have been updated asynchronously
@@ -428,7 +462,7 @@ function ChatComponent() {
     // We intentionally don't include freshBillingStatus in the dependency array
     // even though it's used in the closure to avoid re-creating the function
     // on every billing status change
-    [localChat, model, openai, persistChat, queryClient, setUserPrompt, chatId]
+    [localChat, model, openai, persistChat, queryClient, setUserPrompt, setSystemPrompt, chatId]
   );
 
   // Chat compression function
@@ -544,23 +578,25 @@ END OF INSTRUCTIONS`;
           ref={chatContainerRef}
           className="flex-1 min-h-0 overflow-y-auto flex flex-col relative"
         >
-          <InfoPopover />
           <div className="mt-4 md:mt-8 w-full h-10 flex items-center justify-center">
             <h2 className="text-lg font-semibold self-center truncate max-w-[20rem] mx-[6rem] py-2">
               {localChat.title}
             </h2>
           </div>
           <div className="flex flex-col w-full max-w-[45rem] mx-auto gap-4 px-2 pt-4">
-            {localChat.messages?.map((message, index) => (
-              <div
-                key={index}
-                id={`message-${message.role}-${index}`}
-                className="flex flex-col gap-2"
-              >
-                {message.role === "user" && <UserMessage text={message.content} />}
-                {message.role === "assistant" && <SystemMessage text={message.content} />}
-              </div>
-            ))}
+            {/* Show user and assistant messages, excluding system messages */}
+            {localChat.messages
+              ?.filter((message) => message.role !== "system")
+              .map((message, index) => (
+                <div
+                  key={index}
+                  id={`message-${message.role}-${index}`}
+                  className="flex flex-col gap-2"
+                >
+                  {message.role === "user" && <UserMessage text={message.content} />}
+                  {message.role === "assistant" && <SystemMessage text={message.content} />}
+                </div>
+              ))}
             {(currentStreamingMessage || isLoading) && (
               <div className="flex flex-col gap-2">
                 <SystemMessage text={currentStreamingMessage || ""} loading={isLoading} />

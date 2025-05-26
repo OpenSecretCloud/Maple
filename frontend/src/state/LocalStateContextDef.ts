@@ -2,7 +2,7 @@ import { createContext } from "react";
 import { BillingStatus } from "@/billing/billingApi";
 
 export type ChatMessage = {
-  role: "user" | "assistant";
+  role: "user" | "assistant" | "system";
   content: string;
 };
 
@@ -22,6 +22,7 @@ export type HistoryItem = {
 export type LocalState = {
   model: string;
   userPrompt: string;
+  systemPrompt: string | null;
   billingStatus: BillingStatus | null;
   /** Current search query for filtering chat history */
   searchQuery: string;
@@ -33,6 +34,7 @@ export type LocalState = {
   setIsSearchVisible: (visible: boolean) => void;
   setBillingStatus: (status: BillingStatus) => void;
   setUserPrompt: (prompt: string) => void;
+  setSystemPrompt: (prompt: string | null) => void;
   addChat: (title?: string) => Promise<string>;
   getChatById: (id: string) => Promise<Chat | undefined>;
   persistChat: (chat: Chat) => Promise<void>;
@@ -51,6 +53,7 @@ export type LocalState = {
 export const LocalStateContext = createContext<LocalState>({
   model: "",
   userPrompt: "",
+  systemPrompt: null,
   billingStatus: null,
   searchQuery: "",
   setSearchQuery: () => void 0,
@@ -58,6 +61,7 @@ export const LocalStateContext = createContext<LocalState>({
   setIsSearchVisible: () => void 0,
   setBillingStatus: () => void 0,
   setUserPrompt: () => void 0,
+  setSystemPrompt: () => void 0,
   addChat: async () => "",
   getChatById: async () => undefined,
   persistChat: async () => void 0,
