@@ -1,0 +1,24 @@
+#!/bin/sh
+
+echo "Running pre-commit hook..."
+
+# Navigate to frontend directory
+cd frontend || exit 1
+
+# Check if bun is installed
+if ! command -v bun &> /dev/null; then
+    echo "Error: bun is not installed. Please install bun before committing."
+    exit 1
+fi
+
+# Run the build command
+echo "Running bun build..."
+if ! bun run build; then
+    echo ""
+    echo "Error: Build failed! Please fix the build errors before committing."
+    echo "Run 'cd frontend && bun run build' to see the errors."
+    exit 1
+fi
+
+echo "Build successful! Proceeding with commit..."
+exit 0
