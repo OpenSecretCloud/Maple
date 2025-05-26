@@ -44,6 +44,15 @@ sudo apt install libwebkit2gtk-4.1-dev \
 rustup target add aarch64-apple-darwin x86_64-apple-darwin
 ```
 
+## Setup
+
+1. Clone the repository and run the setup script:
+```bash
+./setup-hooks.sh
+```
+
+This will configure git to use the project's pre-commit hooks, which run `bun run build` before each commit.
+
 ## Development
 
 1. Install dependencies:

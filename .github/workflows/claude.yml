@@ -19,19 +19,64 @@ jobs:
       (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')))
     runs-on: ubuntu-latest
     permissions:
-      contents: read
-      pull-requests: read
-      issues: read
+      contents: write
+      pull-requests: write
+      issues: write
       id-token: write
+      actions: read
+      checks: write
+      statuses: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 1
+          fetch-depth: 0
+
+      - name: Setup git hooks
+        run: |
+          chmod +x ./setup-hooks.sh
+          ./setup-hooks.sh
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: 1.2.2
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin,aarch64-apple-ios
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "frontend/src-tauri -> target"
+          cache-on-failure: true
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev \
+              build-essential \
+              curl \
+              wget \
+              file \
+              libssl-dev \
+              libgtk-3-dev \
+              libayatana-appindicator3-dev \
+              librsvg2-dev
+
+      - name: Install frontend dependencies
+        working-directory: ./frontend
+        run: bun install
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli
 
       - name: Run Claude Code
         id: claude
         uses: anthropics/claude-code-action@beta
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          allowed_tools: "Bash(bun install),Bash(bun run build),Bash(bun run lint),Bash(bun run format),Bash(bun run format:check),Bash(bun run dev),Bash(bun run preview),Bash(bun add),Bash(bun remove),Bash(bun update),Bash(bun test),Bash(cargo build),Bash(cargo test),Bash(cargo tauri build),Bash(bun tauri build),Bash(bun tauri dev),Bash(bun tauri ios build),Bash(bun tauri ios dev),Bash(bun tauri android build),Bash(bun tauri android dev),Bash(git status),Bash(git diff),Bash(git log),Bash(git branch),Bash(git checkout),Bash(git pull),Bash(git push),Bash(git add),Bash(git commit),Bash(git rebase),Bash(git merge),Bash(ls),Bash(cat),Bash(mkdir),Bash(rm),Bash(mv),Bash(cp),Bash(pwd),Bash(cd),Bash(echo),Bash(grep),Bash(find),Bash(sed),Bash(awk),Bash(curl),Bash(wget),Edit,Replace,NotebookEditCell"
 
