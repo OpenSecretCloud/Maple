@@ -1,0 +1,102 @@
+name: BrowserUse Tests
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [master]
+
+jobs:
+  test-invalid-signin:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Cache Bun dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.bun/install/cache
+            frontend/node_modules
+          key: ${{ runner.os }}-bun-${{ hashFiles('frontend/bun.lockb') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
+
+      - name: Install and build frontend
+        env:
+          VITE_OPEN_SECRET_API_URL: https://enclave.secretgpt.ai
+          VITE_MAPLE_BILLING_API_URL: https://billing-dev.opensecret.cloud
+          VITE_CLIENT_ID: ba5a14b5-d915-47b1-b7b1-afda52bc5fc6
+        run: |
+          cd frontend
+          bun install
+          bun run build
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('tests/browseruse/requirements-ci.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ hashFiles('tests/browseruse/requirements-ci.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-playwright-
+
+      - name: Install test dependencies
+        run: |
+          cd tests/browseruse
+          pip install -r requirements-ci.txt
+          playwright install chromium --with-deps --no-shell
+
+      - name: Start dev server
+        env:
+          VITE_OPEN_SECRET_API_URL: https://enclave.secretgpt.ai
+          VITE_MAPLE_BILLING_API_URL: https://billing-dev.opensecret.cloud
+          VITE_CLIENT_ID: ba5a14b5-d915-47b1-b7b1-afda52bc5fc6
+        run: |
+          cd frontend
+          bun run dev &
+          sleep 10  # Give server time to start
+          curl -f http://localhost:5173 || exit 1  # Verify server is running
+
+      - name: Run BrowserUse test
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANONYMIZED_TELEMETRY: false
+        run: |
+          cd tests/browseruse
+          python test_signin_simple.py
+
+      - name: Upload test artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-failure-logs
+          path: |
+            tests/browseruse/logs/
+            tests/browseruse/*.json
+            tests/browseruse/*.png
+          retention-days: 7
