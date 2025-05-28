@@ -1,0 +1,3 @@
+# Minimal requirements for CI
+browser-use>=0.2.4
+langchain-openai>=0.1.0
