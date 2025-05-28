@@ -85,6 +85,8 @@ jobs:
       - name: Run BrowserUse tests
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          BROWSERUSE_TEST_EMAIL: ${{ secrets.BROWSERUSE_TEST_EMAIL }}
+          BROWSERUSE_TEST_PASSWORD: ${{ secrets.BROWSERUSE_TEST_PASSWORD }}
           ANONYMIZED_TELEMETRY: false
         run: |
           cd tests/browseruse

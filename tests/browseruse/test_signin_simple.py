@@ -6,6 +6,8 @@ All login-related tests for BrowserUse.
 import asyncio
 import os
 from base_test import BrowserTestBase
+from browser_use import Controller, ActionResult
+from playwright.async_api import Page
 
 async def test_invalid_email_format():
     """Test login with invalid email format (missing @)."""
@@ -81,6 +83,81 @@ async def test_invalid_credentials_valid_email():
         return False
     finally:
         await base.close()
+
+
+async def test_successful_login():
+    """Test successful login with real credentials from environment variables."""
+    print("🧪 Testing successful login with real credentials...")
+    
+    # Get credentials from environment variables
+    email = os.environ.get('BROWSERUSE_TEST_EMAIL')
+    password = os.environ.get('BROWSERUSE_TEST_PASSWORD')
+    
+    if not email or not password:
+        print("⚠️  Test skipped: BROWSERUSE_TEST_EMAIL and BROWSERUSE_TEST_PASSWORD environment variables not set")
+        return None  # Skip test, not a failure
+    
+    base = BrowserTestBase("successful_login")
+    
+    try:
+        # Create controller with custom action for secure password input
+        controller = Controller()
+        
+        @controller.action('Input the password for Maple login')
+        async def input_password_securely(page: Page) -> ActionResult:
+            """Securely input password without exposing it to the LLM."""
+            # page parameter is automatically provided by browser-use
+            
+            # Get password from environment variable
+            password = os.environ.get('BROWSERUSE_TEST_PASSWORD', '')
+            
+            # Type password directly without logging
+            await page.keyboard.type(password)
+            
+            return ActionResult(
+                success=True,
+                extracted_content="Password entered securely"
+            )
+    
+        # Task that uses email but NOT password in the instruction
+        task = f"""
+        Go to http://localhost:5173 and wait for the page to load.
+        Find and click on the login button or link to go to the login page.
+        Once on the login page, fill in the login form:
+        - Email: {email}
+        - Password: Use the 'Input the password for Maple login' action to enter the password securely
+        
+        After entering credentials, click the sign in button.
+        
+        Wait for the page to load after submission.
+        If login is successful, you should be redirected to the chat interface or dashboard.
+        Report whether login was successful and what page you ended up on.
+        """
+        
+        result = await base.run_task(task, max_steps=15, controller=controller)
+        
+        if result and result.is_done():
+            final_result = result.final_result()
+            result_lower = final_result.lower() if final_result else ""
+            
+            # Check if login was successful (look for chat, dashboard, or success indicators)
+            if ("success" in result_lower or "chat" in result_lower or 
+                "dashboard" in result_lower or "logged in" in result_lower):
+                print("✅ Successfully logged in with real credentials")
+                return True
+            else:
+                print(f"❌ Login failed or unclear result: {final_result}")
+                return False
+        else:
+            print("❌ Test did not complete successfully")
+            return False
+        
+    except Exception as e:
+        print(f"❌ Test failed with exception: {e}")
+        return False
+    finally:
+        await base.close()
+
 
 # For backward compatibility - original test
 async def test_invalid_email():

@@ -49,14 +49,20 @@ class BrowserTestBase:
         
         self.browser_session = BrowserSession(browser_profile=self.browser_profile)
     
-    async def run_task(self, task: str, max_steps: int = 10):
+    async def run_task(self, task: str, max_steps: int = 10, controller=None):
         """Run a browser task and return the result."""
-        agent = Agent(
-            task=task, 
-            llm=self.llm, 
-            browser_session=self.browser_session,
-            save_conversation_path=str(self.logs_dir / "conversation.json")
-        )
+        agent_args = {
+            "task": task,
+            "llm": self.llm,
+            "browser_session": self.browser_session,
+            "save_conversation_path": str(self.logs_dir / "conversation.json")
+        }
+        
+        # Only add controller if it's provided
+        if controller is not None:
+            agent_args["controller"] = controller
+            
+        agent = Agent(**agent_args)
         
         result = await agent.run(max_steps=max_steps)
         
