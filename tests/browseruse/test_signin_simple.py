@@ -189,7 +189,8 @@ async def test_successful_login():
             # Get password from environment variable
             password = os.environ.get('BROWSERUSE_TEST_PASSWORD', '')
             
-            # Type password directly without logging
+            # Clear the field first and type password directly
+            await page.keyboard.press('Control+a')
             await page.keyboard.type(password)
             
             return ActionResult(
@@ -205,9 +206,11 @@ async def test_successful_login():
         STEPS:
         1. Go to http://localhost:5173 and wait for the page to load
         2. Find and click the login button
-        3. Fill in the login form:
-           - For the email field: Use the 'Input the email for Maple login' action
-           - For the password field: Use the 'Input the password for Maple login' action
+        3. Fill in the login form (IMPORTANT: follow these steps exactly):
+           - First, click on the email input field to focus it
+           - Then use the 'Input the email for Maple login' action (this will clear and type the email)
+           - Next, click on the password input field to focus it  
+           - Then use the 'Input the password for Maple login' action (this will clear and type the password)
         4. Submit the form
         5. Wait for the page to load after submission
         
