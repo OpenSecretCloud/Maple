@@ -5,9 +5,26 @@ All login-related tests for BrowserUse.
 
 import asyncio
 import os
+import json
 from base_test import BrowserTestBase
 from browser_use import Controller, ActionResult
 from playwright.async_api import Page
+
+
+def parse_json_result(final_result: str):
+    """Helper to parse JSON from LLM result."""
+    try:
+        # Extract JSON from the result - it might be wrapped in other text
+        json_start = final_result.find('{')
+        json_end = final_result.rfind('}') + 1
+        
+        if json_start != -1 and json_end > json_start:
+            json_str = final_result[json_start:json_end]
+            return json.loads(json_str)
+        else:
+            return None
+    except json.JSONDecodeError:
+        return None
 
 async def test_invalid_email_format():
     """Test login with invalid email format (missing @)."""
@@ -17,27 +34,51 @@ async def test_invalid_email_format():
     
     try:
         task = """
-        Go to http://localhost:5173 and wait 5 seconds for the page to fully load. 
-        Take a screenshot to see what's on the page.
-        Look for ANY text or buttons on the page. If you see "Maple AI" or any navigation links, describe them.
-        If you can find a login button or link (it might say "Login", "Sign In", "Log in", or be in the navigation), click on it.
-        If you're on a login page, try to log in with:
-        - Email: notanemail
-        - Password: Test123!
+        TEST CASE: Invalid Email Format
+        EXPECTED OUTCOME: Login should fail with an error about missing @ symbol in email
         
-        Tell me what you see on the page and if you see any error messages.
+        STEPS:
+        1. Go to http://localhost:5173 and wait for the page to load
+        2. Find and click the login button
+        3. Try to log in with:
+           - Email: notanemail (this is intentionally invalid - missing @)
+           - Password: Test123!
+        4. Submit the form
+        
+        EXPECTED RESULT: You should see an error message about the email format being invalid (missing @ symbol)
+        
+        When complete, provide your result as JSON:
+        {
+          "test_case_passed": true/false (true if you got the expected email format error),
+          "actual_error": "The exact error message shown",
+          "explanation": "What actually happened"
+        }
         """
         
         result = await base.run_task(task)
         
         if result and result.is_done():
             final_result = result.final_result()
-            if final_result and "error" in final_result.lower() and "email" in final_result.lower():
-                print("✅ Successfully found error message about invalid email format")
-                return True
-        
-        print("❌ Did not find expected error message about invalid email format")
-        return False
+            
+            result_data = parse_json_result(final_result)
+            
+            if result_data:
+                test_case_passed = result_data.get('test_case_passed', False)
+                actual_error = result_data.get('actual_error', '')
+                explanation = result_data.get('explanation', '')
+                
+                if test_case_passed:
+                    print(f"✅ Test passed: {explanation}")
+                    print(f"   Error message: {actual_error}")
+                    return True
+                else:
+                    print(f"❌ Test failed: {explanation}")
+                    print(f"   Error message: {actual_error}")
+                    return False
+            else:
+                print(f"❌ Test failed: Could not parse JSON from result")
+                print(f"   Raw result: {final_result}")
+                return False
         
     except Exception as e:
         print(f"❌ Test failed with exception: {e}")
@@ -53,30 +94,52 @@ async def test_invalid_credentials_valid_email():
     
     try:
         task = """
-        Go to http://localhost:5173 and wait for the page to load.
-        Find and click on the login button or link to go to the login page.
-        Once on the login page, try to log in with these credentials:
-        - Email: john.doe@example.com (this is a valid email format)
-        - Password: WrongPassword123!
+        TEST CASE: Invalid Credentials (Valid Email Format)
+        EXPECTED OUTCOME: Login should fail with an error about invalid credentials/password, NOT email format
         
-        Submit the form and tell me what error message appears.
-        I expect to see an error about invalid credentials or incorrect password,
-        NOT about email format since the email is properly formatted.
+        STEPS:
+        1. Go to http://localhost:5173 and wait for the page to load
+        2. Find and click the login button
+        3. Try to log in with:
+           - Email: john.doe@example.com (valid email format)
+           - Password: WrongPassword123! (incorrect password)
+        4. Submit the form
+        
+        EXPECTED RESULT: You should see an error about invalid credentials, wrong password, or authentication failure.
+        IMPORTANT: The error should NOT be about email format since the email is properly formatted.
+        
+        When complete, provide your result as JSON:
+        {
+          "test_case_passed": true/false (true if you got a credential/password error, false if you got an email format error),
+          "actual_error": "The exact error message shown",
+          "explanation": "What actually happened"
+        }
         """
         
         result = await base.run_task(task)
         
         if result and result.is_done():
             final_result = result.final_result()
-            result_lower = final_result.lower() if final_result else ""
             
-            # Check for credential error, not email format error
-            if ("invalid" in result_lower or "incorrect" in result_lower) and "credentials" in result_lower:
-                print("✅ Successfully found error message about invalid credentials")
-                return True
-        
-        print("❌ Did not find expected error message about invalid credentials")
-        return False
+            result_data = parse_json_result(final_result)
+            
+            if result_data:
+                test_case_passed = result_data.get('test_case_passed', False)
+                actual_error = result_data.get('actual_error', '')
+                explanation = result_data.get('explanation', '')
+                
+                if test_case_passed:
+                    print(f"✅ Test passed: {explanation}")
+                    print(f"   Error message: {actual_error}")
+                    return True
+                else:
+                    print(f"❌ Test failed: {explanation}")
+                    print(f"   Error message: {actual_error}")
+                    return False
+            else:
+                print(f"❌ Test failed: Could not parse JSON from result")
+                print(f"   Raw result: {final_result}")
+                return False
         
     except Exception as e:
         print(f"❌ Test failed with exception: {e}")
@@ -103,6 +166,21 @@ async def test_successful_login():
         # Create controller with custom action for secure password input
         controller = Controller()
         
+        @controller.action('Input the email for Maple login')
+        async def input_email_securely(page: Page) -> ActionResult:
+            """Securely input email without LLM interpretation."""
+            # Get email from environment variable
+            email = os.environ.get('BROWSERUSE_TEST_EMAIL', '')
+            
+            # Clear the field first and type email directly
+            await page.keyboard.press('Control+a')
+            await page.keyboard.type(email)
+            
+            return ActionResult(
+                success=True,
+                extracted_content="Email entered securely"
+            )
+        
         @controller.action('Input the password for Maple login')
         async def input_password_securely(page: Page) -> ActionResult:
             """Securely input password without exposing it to the LLM."""
@@ -119,34 +197,53 @@ async def test_successful_login():
                 extracted_content="Password entered securely"
             )
     
-        # Task that uses email but NOT password in the instruction
-        task = f"""
-        Go to http://localhost:5173 and wait for the page to load.
-        Find and click on the login button or link to go to the login page.
-        Once on the login page, fill in the login form:
-        - Email: {email}
-        - Password: Use the 'Input the password for Maple login' action to enter the password securely
+        # Task that doesn't include the actual email or password
+        task = """
+        TEST CASE: Successful Login
+        EXPECTED OUTCOME: Login should succeed and redirect to the chat/dashboard page
         
-        After entering credentials, click the sign in button.
+        STEPS:
+        1. Go to http://localhost:5173 and wait for the page to load
+        2. Find and click the login button
+        3. Fill in the login form:
+           - For the email field: Use the 'Input the email for Maple login' action
+           - For the password field: Use the 'Input the password for Maple login' action
+        4. Submit the form
+        5. Wait for the page to load after submission
         
-        Wait for the page to load after submission.
-        If login is successful, you should be redirected to the chat interface or dashboard.
-        Report whether login was successful and what page you ended up on.
+        EXPECTED RESULT: Login should succeed and you should be redirected to the chat interface or dashboard
+        
+        When complete, provide your result as JSON:
+        {
+          "test_case_passed": true/false (true if login succeeded and you reached the chat/dashboard),
+          "final_page_url": "The URL you ended up on",
+          "explanation": "What actually happened"
+        }
         """
         
         result = await base.run_task(task, max_steps=15, controller=controller)
         
         if result and result.is_done():
             final_result = result.final_result()
-            result_lower = final_result.lower() if final_result else ""
             
-            # Check if login was successful (look for chat, dashboard, or success indicators)
-            if ("success" in result_lower or "chat" in result_lower or 
-                "dashboard" in result_lower or "logged in" in result_lower):
-                print("✅ Successfully logged in with real credentials")
-                return True
+            result_data = parse_json_result(final_result)
+            
+            if result_data:
+                test_case_passed = result_data.get('test_case_passed', False)
+                final_page_url = result_data.get('final_page_url', 'Unknown')
+                explanation = result_data.get('explanation', '')
+                
+                if test_case_passed:
+                    print(f"✅ Test passed: {explanation}")
+                    print(f"   Final page: {final_page_url}")
+                    return True
+                else:
+                    print(f"❌ Test failed: {explanation}")
+                    print(f"   Final page: {final_page_url}")
+                    return False
             else:
-                print(f"❌ Login failed or unclear result: {final_result}")
+                print(f"❌ Test failed: Could not parse JSON from result")
+                print(f"   Raw result: {final_result}")
                 return False
         else:
             print("❌ Test did not complete successfully")
