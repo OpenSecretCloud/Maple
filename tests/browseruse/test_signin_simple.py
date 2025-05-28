@@ -1,116 +1,100 @@
 #!/usr/bin/env python3
 """
-Simple BrowserUse test for invalid sign-in attempts.
-Designed to run in GitHub Actions.
+All login-related tests for BrowserUse.
 """
 
 import asyncio
 import os
-import json
-from pathlib import Path
-from browser_use import Agent, BrowserProfile, BrowserSession
-from browser_use.browser.context import BrowserContextConfig
-from langchain_openai import ChatOpenAI
+from base_test import BrowserTestBase
 
-async def test_invalid_email():
-    """Test login with invalid email format."""
-    task = """
-    Go to http://localhost:5173 and wait 5 seconds for the page to fully load. 
-    Take a screenshot to see what's on the page.
-    Look for ANY text or buttons on the page. If you see "Maple AI" or any navigation links, describe them.
-    If you can find a login button or link (it might say "Login", "Sign In", "Log in", or be in the navigation), click on it.
-    If you're on a login page, try to log in with:
-    - Email: notanemail
-    - Password: Test123!
+async def test_invalid_email_format():
+    """Test login with invalid email format (missing @)."""
+    print("🧪 Testing invalid email format...")
     
-    Tell me what you see on the page and if you see any error messages.
-    """
-    
-    llm = ChatOpenAI(model="gpt-4o", temperature=0)
-    
-    # Configure browser context for SPA loading
-    context_config = BrowserContextConfig(
-        wait_for_network_idle_page_load_time=5.0,  # Wait 5 seconds for network idle
-        minimum_wait_page_load_time=3.0,  # Minimum 3 seconds wait
-        maximum_wait_page_load_time=15.0,  # Maximum 15 seconds wait
-        wait_between_actions=2.0,  # 2 seconds between actions
-    )
-    
-    # Configure browser for GitHub Actions (disable sandbox)
-    # Try with additional args that might help with rendering
-    browser_profile = BrowserProfile(
-        args=[
-            "--no-sandbox", 
-            "--disable-setuid-sandbox",
-            "--disable-gpu",
-            "--disable-dev-shm-usage",
-            "--disable-web-security",
-            "--allow-insecure-localhost"
-        ],
-        headless=True,
-        new_context_config=context_config
-    )
-    
-    browser_session = BrowserSession(browser_profile=browser_profile)
-    
-    # Create logs directory
-    logs_dir = Path("./logs")
-    logs_dir.mkdir(exist_ok=True)
-    
-    # Configure agent with logging
-    agent = Agent(
-        task=task, 
-        llm=llm, 
-        browser_session=browser_session,
-        save_conversation_path=str(logs_dir / "conversation.json")
-    )
+    base = BrowserTestBase("invalid_email_format")
     
     try:
-        result = await agent.run(max_steps=10)
-        print(f"Test result: {result}")
+        task = """
+        Go to http://localhost:5173 and wait 5 seconds for the page to fully load. 
+        Take a screenshot to see what's on the page.
+        Look for ANY text or buttons on the page. If you see "Maple AI" or any navigation links, describe them.
+        If you can find a login button or link (it might say "Login", "Sign In", "Log in", or be in the navigation), click on it.
+        If you're on a login page, try to log in with:
+        - Email: notanemail
+        - Password: Test123!
         
-        # Save the final screenshot if available
-        if hasattr(result, 'screenshot') and result.screenshot:
-            screenshot_path = logs_dir / "final_screenshot.png"
-            with open(screenshot_path, "wb") as f:
-                import base64
-                f.write(base64.b64decode(result.screenshot))
-            print(f"Screenshot saved to: {screenshot_path}")
+        Tell me what you see on the page and if you see any error messages.
+        """
         
-        # Save the full history
-        history_path = logs_dir / "test_history.json"
-        with open(history_path, "w") as f:
-            json.dump(result.to_dict() if hasattr(result, 'to_dict') else str(result), f, indent=2)
-        print(f"History saved to: {history_path}")
+        result = await base.run_task(task)
         
-        # Check if the agent successfully completed the task
         if result and result.is_done():
-            # Check if we found the error message about invalid email format
             final_result = result.final_result()
             if final_result and "error" in final_result.lower() and "email" in final_result.lower():
                 print("✅ Successfully found error message about invalid email format")
                 return True
-            else:
-                print("❌ Did not find expected error message about invalid email format")
-                return False
-        else:
-            print("❌ Agent failed to complete the task")
-            return False
-            
+        
+        print("❌ Did not find expected error message about invalid email format")
+        return False
+        
     except Exception as e:
         print(f"❌ Test failed with exception: {e}")
         return False
+    finally:
+        await base.close()
+
+async def test_invalid_credentials_valid_email():
+    """Test login with valid email format but wrong password."""
+    print("🧪 Testing invalid credentials with valid email...")
+    
+    base = BrowserTestBase("invalid_credentials_valid_email")
+    
+    try:
+        task = """
+        Go to http://localhost:5173 and wait for the page to load.
+        Find and click on the login button or link to go to the login page.
+        Once on the login page, try to log in with these credentials:
+        - Email: john.doe@example.com (this is a valid email format)
+        - Password: WrongPassword123!
+        
+        Submit the form and tell me what error message appears.
+        I expect to see an error about invalid credentials or incorrect password,
+        NOT about email format since the email is properly formatted.
+        """
+        
+        result = await base.run_task(task)
+        
+        if result and result.is_done():
+            final_result = result.final_result()
+            result_lower = final_result.lower() if final_result else ""
+            
+            # Check for credential error, not email format error
+            if ("invalid" in result_lower or "incorrect" in result_lower) and "credentials" in result_lower:
+                print("✅ Successfully found error message about invalid credentials")
+                return True
+        
+        print("❌ Did not find expected error message about invalid credentials")
+        return False
+        
+    except Exception as e:
+        print(f"❌ Test failed with exception: {e}")
+        return False
+    finally:
+        await base.close()
+
+# For backward compatibility - original test
+async def test_invalid_email():
+    """Original test function for backward compatibility."""
+    return await test_invalid_email_format()
 
 async def main():
-    """Run the test."""
+    """Run the original test for backward compatibility."""
     print("🧪 Running invalid sign-in test...")
     
-    # Check for API key
     if not os.getenv("OPENAI_API_KEY"):
         print("❌ Error: OPENAI_API_KEY not set")
         exit(1)
     
-    # Run test
     success = await test_invalid_email()
     
     if success:

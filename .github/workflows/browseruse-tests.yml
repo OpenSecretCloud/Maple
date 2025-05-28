@@ -7,7 +7,7 @@ on:
     branches: [master]
 
 jobs:
-  test-invalid-signin:
+  browseruse-tests:
     runs-on: ubuntu-latest
     
     steps:
@@ -82,13 +82,14 @@ jobs:
           sleep 10  # Give server time to start
           curl -f http://localhost:5173 || exit 1  # Verify server is running
 
-      - name: Run BrowserUse test
+      - name: Run BrowserUse tests
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ANONYMIZED_TELEMETRY: false
         run: |
           cd tests/browseruse
-          python test_signin_simple.py
+          # Run all tests
+          python test_runner.py
 
       - name: Upload test artifacts
         if: failure()
