@@ -47,7 +47,7 @@ async def test_invalid_email_format():
         
         EXPECTED RESULT: You should see an error message about the email format being invalid (missing @ symbol)
         
-        When complete, provide your result as JSON:
+        IMPORTANT: When complete, provide your result as JSON:
         {
           "test_case_passed": true/false (true if you got the expected email format error),
           "actual_error": "The exact error message shown",
@@ -108,7 +108,7 @@ async def test_invalid_credentials_valid_email():
         EXPECTED RESULT: You should see an error about invalid credentials, wrong password, or authentication failure.
         IMPORTANT: The error should NOT be about email format since the email is properly formatted.
         
-        When complete, provide your result as JSON:
+        IMPORTANT: When complete, provide your result as JSON:
         {
           "test_case_passed": true/false (true if you got a credential/password error, false if you got an email format error),
           "actual_error": "The exact error message shown",
@@ -216,7 +216,7 @@ async def test_successful_login():
         
         EXPECTED RESULT: Login should succeed and you should be redirected to the chat interface or dashboard
         
-        When complete, provide your result as JSON:
+        IMPORTANT: When complete, provide your result as JSON:
         {
           "test_case_passed": true/false (true if login succeeded and you reached the chat/dashboard),
           "final_page_url": "The URL you ended up on",
