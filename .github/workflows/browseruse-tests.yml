@@ -104,12 +104,13 @@ jobs:
           python test_runner.py
 
       - name: Upload test artifacts
-        if: failure()
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: test-failure-logs
+          name: browseruse-test-results
           path: |
             tests/browseruse/logs/
             tests/browseruse/*.json
             tests/browseruse/*.png
+            tests/browseruse/test_summary.txt
           retention-days: 7

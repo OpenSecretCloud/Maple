@@ -9,12 +9,19 @@ export const OpenAIProvider = ({ children }: { children: React.ReactNode }) => {
   }
 
   const { aiCustomFetch } = useOpenSecret();
-
   const access_token = window.localStorage.getItem("access_token");
 
   // If we're not logged in we can't set up openai
   if (!access_token) {
-    return <OpenAIContext.Provider value={undefined}>{children}</OpenAIContext.Provider>;
+    return (
+      <OpenAIContext.Provider
+        value={{
+          client: undefined
+        }}
+      >
+        {children}
+      </OpenAIContext.Provider>
+    );
   }
 
   // Custom fetch function that allows us to refresh the access token
@@ -28,7 +35,15 @@ export const OpenAIProvider = ({ children }: { children: React.ReactNode }) => {
     fetch: aiCustomFetch
   });
 
-  return <OpenAIContext.Provider value={openai}>{children}</OpenAIContext.Provider>;
+  return (
+    <OpenAIContext.Provider
+      value={{
+        client: openai
+      }}
+    >
+      {children}
+    </OpenAIContext.Provider>
+  );
 };
 
 export { OpenAIContext } from "./OpenAIContextDef";
