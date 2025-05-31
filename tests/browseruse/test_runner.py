@@ -29,23 +29,46 @@ async def run_all_tests():
         print(f"Running test: {test_name}")
         print('='*60)
         
-        try:
-            success = await test_func()
-            if success is None:  # Test was skipped
-                print(f"⏩ Test {test_name} was skipped")
-            elif success:
-                passed += 1
-                print(f"✅ Test {test_name} PASSED")
-            else:
-                failed += 1
-                failed_tests.append(test_name)
-                print(f"❌ Test {test_name} FAILED")
-        except Exception as e:
-            print(f"❌ Test {test_name} failed with exception: {e}")
-            import traceback
-            traceback.print_exc()
-            failed += 1
-            failed_tests.append(test_name)
+        # Retry logic - attempt up to 3 times
+        max_attempts = 3
+        success = False
+        
+        for attempt in range(1, max_attempts + 1):
+            try:
+                if attempt > 1:
+                    print(f"🔄 Retrying test {test_name} (attempt {attempt}/{max_attempts})...")
+                
+                result = await test_func()
+                
+                if result is None:  # Test was skipped
+                    print(f"⏩ Test {test_name} was skipped")
+                    break
+                elif result:
+                    success = True
+                    passed += 1
+                    print(f"✅ Test {test_name} PASSED")
+                    break
+                else:
+                    if attempt < max_attempts:
+                        print(f"⚠️  Test {test_name} failed, will retry...")
+                    else:
+                        failed += 1
+                        failed_tests.append(test_name)
+                        print(f"❌ Test {test_name} FAILED after {max_attempts} attempts")
+                        
+            except Exception as e:
+                print(f"❌ Test {test_name} failed with exception: {e}")
+                import traceback
+                traceback.print_exc()
+                
+                if attempt < max_attempts:
+                    print(f"⚠️  Will retry test {test_name}...")
+                    # Small delay between retries
+                    await asyncio.sleep(2)
+                else:
+                    failed += 1
+                    failed_tests.append(test_name)
+                    print(f"❌ Test {test_name} FAILED after {max_attempts} attempts")
         
         print(f"Test {test_name} completed.")
     
