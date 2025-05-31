@@ -1,9 +1,7 @@
 name: BrowserUse Tests
 
 on:
-  # Use pull_request_target to allow secrets access for bot PRs
-  # SECURITY: This gives PRs access to secrets, so we must validate the author
-  pull_request_target:
+  pull_request:
     types: [opened, synchronize, reopened]
   push:
     branches: [master]
@@ -11,18 +9,10 @@ on:
 jobs:
   browseruse-tests:
     runs-on: ubuntu-latest
-    # Only run if it's from our own repo OR from specific trusted bots
-    if: |
-      github.event_name == 'push' || 
-      github.event.pull_request.head.repo.full_name == github.repository ||
-      (github.actor == 'claude[bot]' && github.event.pull_request.head.repo.full_name == github.repository)
     
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          # For pull_request_target, we need to explicitly checkout the PR head
-          ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || github.sha }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
