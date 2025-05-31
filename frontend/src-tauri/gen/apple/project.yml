@@ -51,8 +51,8 @@ targets:
           - UIInterfaceOrientationPortraitUpsideDown
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
-        CFBundleShortVersionString: 1.0.9
-        CFBundleVersion: 1.0.9
+        CFBundleShortVersionString: 1.0.10
+        CFBundleVersion: 1.0.10
     entitlements:
       path: maple_iOS/maple_iOS.entitlements
     scheme:
