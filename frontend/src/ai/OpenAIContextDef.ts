@@ -1,4 +1,10 @@
 import { createContext } from "react";
 import OpenAI from "openai";
 
-export const OpenAIContext = createContext<OpenAI | undefined>(undefined);
+export interface OpenAIContextType {
+  client: OpenAI | undefined;
+}
+
+export const OpenAIContext = createContext<OpenAIContextType>({
+  client: undefined
+});

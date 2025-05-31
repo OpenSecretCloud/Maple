@@ -1,7 +1,7 @@
 import { useOpenSecret } from "@opensecret/react";
 import { useState } from "react";
 import { BillingStatus } from "@/billing/billingApi";
-import { LocalStateContext, Chat, HistoryItem } from "./LocalStateContextDef";
+import { LocalStateContext, Chat, HistoryItem, OpenSecretModel } from "./LocalStateContextDef";
 
 export {
   LocalStateContext,
@@ -17,6 +17,7 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
     systemPrompt: null as string | null,
     model:
       import.meta.env.VITE_DEV_MODEL_OVERRIDE || "ibnzterrell/Meta-Llama-3.3-70B-Instruct-AWQ-INT4",
+    availableModels: [] as OpenSecretModel[],
     billingStatus: null as BillingStatus | null,
     searchQuery: "",
     isSearchVisible: false,
@@ -221,10 +222,29 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
     });
   }
 
+  function setModel(model: string) {
+    setLocalState((prev) => {
+      // Validate the model against available models if we have any
+      if (prev.availableModels.length > 0 && !prev.availableModels.find((m) => m.id === model)) {
+        if (import.meta.env.DEV) {
+          console.warn(`Model "${model}" is not in available models list`);
+        }
+      }
+      return { ...prev, model };
+    });
+  }
+
+  function setAvailableModels(models: OpenSecretModel[]) {
+    setLocalState((prev) => ({ ...prev, availableModels: models }));
+  }
+
   return (
     <LocalStateContext.Provider
       value={{
         model: localState.model,
+        availableModels: localState.availableModels,
+        setModel,
+        setAvailableModels,
         userPrompt: localState.userPrompt,
         systemPrompt: localState.systemPrompt,
         billingStatus: localState.billingStatus,
