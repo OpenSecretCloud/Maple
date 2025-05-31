@@ -1,7 +1,7 @@
 import { useOpenSecret } from "@opensecret/react";
 import { useState } from "react";
 import { BillingStatus } from "@/billing/billingApi";
-import { LocalStateContext, Chat, HistoryItem } from "./LocalStateContextDef";
+import { LocalStateContext, Chat, HistoryItem, OpenSecretModel } from "./LocalStateContextDef";
 
 export {
   LocalStateContext,
@@ -12,11 +12,20 @@ export {
 } from "./LocalStateContextDef";
 
 export const LocalStateProvider = ({ children }: { children: React.ReactNode }) => {
+  const llamaModel: OpenSecretModel = {
+    id: "ibnzterrell/Meta-Llama-3.3-70B-Instruct-AWQ-INT4",
+    object: "model",
+    created: Date.now(),
+    owned_by: "ibnzterrell",
+    tasks: ["generate"]
+  };
+
   const [localState, setLocalState] = useState({
     userPrompt: "",
     systemPrompt: null as string | null,
     model:
       import.meta.env.VITE_DEV_MODEL_OVERRIDE || "ibnzterrell/Meta-Llama-3.3-70B-Instruct-AWQ-INT4",
+    availableModels: [llamaModel] as OpenSecretModel[],
     billingStatus: null as BillingStatus | null,
     searchQuery: "",
     isSearchVisible: false,
@@ -221,10 +230,21 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
     });
   }
 
+  function setModel(model: string) {
+    setLocalState((prev) => ({ ...prev, model }));
+  }
+
+  function setAvailableModels(models: OpenSecretModel[]) {
+    setLocalState((prev) => ({ ...prev, availableModels: models }));
+  }
+
   return (
     <LocalStateContext.Provider
       value={{
         model: localState.model,
+        availableModels: localState.availableModels,
+        setModel,
+        setAvailableModels,
         userPrompt: localState.userPrompt,
         systemPrompt: localState.systemPrompt,
         billingStatus: localState.billingStatus,
