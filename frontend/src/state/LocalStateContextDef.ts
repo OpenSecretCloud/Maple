@@ -16,6 +16,7 @@ export type Chat = {
   id: string;
   title: string;
   messages: ChatMessage[];
+  model?: string;
 };
 
 export type HistoryItem = {

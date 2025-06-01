@@ -11,9 +11,12 @@ export {
   type LocalState
 } from "./LocalStateContextDef";
 
+export const DEFAULT_MODEL_ID = "ibnzterrell/Meta-Llama-3.3-70B-Instruct-AWQ-INT4";
+
 export const LocalStateProvider = ({ children }: { children: React.ReactNode }) => {
+  /** The model that should be assumed when a chat doesn't yet have one */
   const llamaModel: OpenSecretModel = {
-    id: "ibnzterrell/Meta-Llama-3.3-70B-Instruct-AWQ-INT4",
+    id: DEFAULT_MODEL_ID,
     object: "model",
     created: Date.now(),
     owned_by: "ibnzterrell",
@@ -23,8 +26,7 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
   const [localState, setLocalState] = useState({
     userPrompt: "",
     systemPrompt: null as string | null,
-    model:
-      import.meta.env.VITE_DEV_MODEL_OVERRIDE || "ibnzterrell/Meta-Llama-3.3-70B-Instruct-AWQ-INT4",
+    model: import.meta.env.VITE_DEV_MODEL_OVERRIDE || DEFAULT_MODEL_ID,
     availableModels: [llamaModel] as OpenSecretModel[],
     billingStatus: null as BillingStatus | null,
     searchQuery: "",
@@ -35,10 +37,16 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
   const { get, put, list, del } = useOpenSecret();
 
   async function persistChat(chat: Chat) {
-    console.log("Persisting chat:", chat);
+    const chatToSave = {
+      /** If a model is missing, assume the default Llama and write it now */
+      model: chat.model || DEFAULT_MODEL_ID,
+      ...chat
+    };
+
+    console.log("Persisting chat:", chatToSave);
     try {
       // Save the chat to storage
-      await put(`chat_${chat.id}`, JSON.stringify(chat));
+      await put(`chat_${chat.id}`, JSON.stringify(chatToSave));
 
       // Now we need to update the history_list
       const historyList = await fetchOrCreateHistoryList();
@@ -49,9 +57,9 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
           if (item.id === chat.id) {
             return {
               id: chat.id,
-              title: chat.title,
+              title: chatToSave.title,
               updated_at: Date.now(),
-              created_at: Date.now()
+              created_at: item.created_at
             };
           } else {
             return item;
@@ -96,7 +104,12 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
   }
 
   async function addChat(title: string = "New Chat") {
-    const newChat = { id: window.crypto.randomUUID(), title, messages: [] };
+    const newChat = {
+      id: window.crypto.randomUUID(),
+      title,
+      messages: [],
+      model: localState.model
+    };
     await persistChat(newChat);
     return newChat.id;
   }

@@ -5,7 +5,7 @@ import ChatBox from "@/components/ChatBox";
 import { useOpenAI } from "@/ai/useOpenAi";
 import { useLocalState } from "@/state/useLocalState";
 import { Markdown } from "@/components/markdown";
-import { ChatMessage, Chat } from "@/state/LocalStateContext";
+import { ChatMessage, Chat, DEFAULT_MODEL_ID } from "@/state/LocalStateContext";
 import { AlertDestructive } from "@/components/AlertDestructive";
 import { Sidebar, SidebarToggle } from "@/components/Sidebar";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -72,6 +72,7 @@ function ChatComponent() {
   const { chatId } = Route.useParams();
   const {
     model,
+    setModel,
     persistChat,
     getChatById,
     userPrompt,
@@ -152,6 +153,9 @@ function ChatComponent() {
 
   const toggleSidebar = useCallback(() => setIsSidebarOpen((prev) => !prev), []);
 
+  // Track if we've already set the model for this chat
+  const modelSetForChatRef = useRef<string | null>(null);
+
   useEffect(() => {
     if (queryChat && !isPending) {
       console.debug("Chat loaded from query:", queryChat);
@@ -184,6 +188,18 @@ function ChatComponent() {
     // I don't want to re-run this effect if the user prompt or system prompt changes
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [queryChat, chatId, isPending]);
+
+  useEffect(() => {
+    if (queryChat && !isPending) {
+      if (modelSetForChatRef.current !== chatId) {
+        const chatModel = queryChat.model || DEFAULT_MODEL_ID;
+        /** ① Set global selector ② also store on local chat state */
+        setModel(chatModel);
+        setLocalChat((prev) => ({ ...prev, model: chatModel }));
+        modelSetForChatRef.current = chatId;
+      }
+    }
+  }, [queryChat, chatId, isPending, setModel]);
 
   // IMPORTANT that this runs only once (because it uses the user's tokens!)
   const userPromptEffectRan = useRef(false);
@@ -427,7 +443,7 @@ function ChatComponent() {
         // React sucks and doesn't get the latest state
         // Use current title from localChat which may have been updated asynchronously
         const currentTitle = localChat.title === "New Chat" ? title : localChat.title;
-        await persistChat({ ...localChat, title: currentTitle, messages: finalMessages });
+        await persistChat({ ...localChat, model, title: currentTitle, messages: finalMessages });
 
         // Invalidate chat history to show the new title in the sidebar
         queryClient.invalidateQueries({
