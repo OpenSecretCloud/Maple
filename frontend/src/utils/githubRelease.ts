@@ -35,7 +35,12 @@ export async function fetchLatestRelease(): Promise<GitHubRelease | null> {
       return null;
     }
     
-    const release: GitHubRelease = await response.json();
+    const data = await response.json();
+    if (!data?.tag_name || !data?.name || !data?.published_at || !data?.html_url) {
+      console.error("Invalid release data format from GitHub API");
+      return null;
+    }
+    const release: GitHubRelease = data;
     return release;
   } catch (error) {
     console.error("Error fetching latest release:", error);
