@@ -120,5 +120,5 @@ jobs:
         uses: anthropics/claude-code-action@beta
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          allowed_tools: "Bash(bun install),Bash(bun run build),Bash(bun run lint),Bash(bun run format),Bash(bun run format:check),Bash(bun run dev),Bash(bun run preview),Bash(bun add),Bash(bun remove),Bash(bun update),Bash(bun test),Bash(cargo build),Bash(cargo test),Bash(cargo tauri build),Bash(bun tauri build),Bash(bun tauri dev),Bash(bun tauri ios build),Bash(bun tauri ios dev),Bash(bun tauri android build),Bash(bun tauri android dev),Bash(git status),Bash(git diff),Bash(git log),Bash(git branch),Bash(git checkout),Bash(git pull),Bash(git push),Bash(git add),Bash(git commit),Bash(git rebase),Bash(git merge),Bash(ls),Bash(cat),Bash(mkdir),Bash(rm),Bash(mv),Bash(cp),Bash(pwd),Bash(cd),Bash(echo),Bash(grep),Bash(find),Bash(sed),Bash(awk),Bash(curl),Bash(wget),Edit,Replace,NotebookEditCell"
+          allowed_tools: "Bash,Edit,Replace,NotebookEditCell"
 
