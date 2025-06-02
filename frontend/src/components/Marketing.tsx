@@ -651,7 +651,7 @@ export function Marketing() {
           {/* Free Account Callout */}
           <div className="text-center mb-8">
             <p className="text-lg text-[hsl(var(--marketing-text-muted))]">
-              Free account comes with 10 free chats per week
+              Free account comes with 10 free messages per week
             </p>
           </div>
 
@@ -661,7 +661,7 @@ export function Marketing() {
               price="$5.99"
               description="Get started with secure AI chat"
               features={[
-                "Enough chats for casual use",
+                "Enough messages for casual use",
                 "AI Naming of Chats",
                 "",
                 "Included from Free",
@@ -679,7 +679,7 @@ export function Marketing() {
               price="$20"
               description="For power users who need more"
               features={[
-                "5x more chats than Starter",
+                "5x more messages than Starter",
                 "Priority support",
                 "Upcoming Pro-only features",
                 "Features from Starter"
@@ -694,7 +694,7 @@ export function Marketing() {
               price="$30"
               description="For teams and businesses"
               features={[
-                "8x more chats than Starter per user",
+                "8x more messages than Starter per user",
                 "Unified billing",
                 "Pool chat credits among team",
                 "Features from Pro"
