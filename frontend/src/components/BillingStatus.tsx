@@ -34,15 +34,15 @@ export function BillingStatus() {
   const getChatsText = () => {
     if (isFree) {
       if (billingStatus.chats_remaining === null || billingStatus.chats_remaining <= 0) {
-        return "You've run out of chats, upgrade to keep chatting!";
+        return "You've run out of messages, upgrade to keep chatting!";
       }
-      return `Free Plan — ${billingStatus.chats_remaining} Chat${billingStatus.chats_remaining === 1 ? "" : "s"} Left This Week`;
+      return `Free Plan — ${billingStatus.chats_remaining} Message${billingStatus.chats_remaining === 1 ? "" : "s"} Left This Week`;
     }
     if (!billingStatus.can_chat) {
       if (isPro) {
         return "Contact us to increase your limits";
       }
-      return "You've run out of chats, upgrade to keep chatting!";
+      return "You've run out of messages, upgrade to keep chatting!";
     }
     return `${billingStatus.product_name} Plan`;
   };

@@ -61,9 +61,10 @@ function PricingFAQ() {
             <p>The plans are sized to grow with your needs.</p>
             <ul className="list-disc list-inside space-y-1 ml-4">
               <li>
-                Free: 10 chats per week, resets Sunday 00:00 UTC. Max length on individual chats.
+                Free: 10 messages per week, resets Sunday 00:00 UTC. Max length on individual
+                messages.
               </li>
-              <li>Starter: Enough chats per month for a casual user</li>
+              <li>Starter: Enough messages per month for a casual user</li>
               <li>Pro: Great for heavier workloads with a high monthly cap</li>
               <li>Enterprise: Message us at team@opensecret.cloud</li>
             </ul>

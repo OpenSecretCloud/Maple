@@ -65,7 +65,7 @@ export function BillingDebugger({ currentStatus, onOverride }: BillingDebuggerPr
         </div>
 
         <div>
-          <label className="block text-sm">Chats Remaining</label>
+          <label className="block text-sm">Messages Remaining</label>
           <Input
             type="number"
             value={debugStatus.chats_remaining ?? ""}
@@ -158,7 +158,7 @@ export function BillingDebugger({ currentStatus, onOverride }: BillingDebuggerPr
             }}
             className="border-yellow-500/30 hover:bg-yellow-500/20"
           >
-            Test Pro + No Chats
+            Test Pro + No Messages
           </Button>
         </div>
       </div>

@@ -312,7 +312,7 @@ export default function Component({
     if (billingStatus === null || freshBillingStatus === undefined)
       return "Type your message here...";
     if (freshBillingStatus.can_chat === false) {
-      return "You've used up all your chats. Upgrade to continue.";
+      return "You've used up all your messages. Upgrade to continue.";
     }
     return "Type your message here...";
   })();
