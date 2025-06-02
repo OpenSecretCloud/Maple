@@ -5,14 +5,56 @@ import { MarketingHeader } from "@/components/MarketingHeader";
 import { Monitor, Terminal, Globe, Smartphone } from "lucide-react";
 import { Apple } from "@/components/icons/Apple";
 import { Android } from "@/components/icons/Android";
+import { useState, useEffect } from "react";
+import { getLatestDownloadInfo } from "@/utils/githubRelease";
 import packageJson from "../../package.json";
 
-// Get version from package.json
-const APP_VERSION = packageJson.version;
-const CURRENT_VERSION = `v${APP_VERSION}`;
-const BASE_DOWNLOAD_URL = `https://github.com/OpenSecretCloud/Maple/releases/download/${CURRENT_VERSION}`;
+interface DownloadUrls {
+  macOS: string;
+  linuxAppImage: string;
+  linuxDeb: string;
+  linuxRpm: string;
+}
+
+// Fallback to package.json version if GitHub API fails
+const FALLBACK_VERSION = packageJson.version;
+const FALLBACK_TAG = `v${FALLBACK_VERSION}`;
+const FALLBACK_BASE_URL = `https://github.com/OpenSecretCloud/Maple/releases/download/${FALLBACK_TAG}`;
+const FALLBACK_URLS: DownloadUrls = {
+  macOS: `${FALLBACK_BASE_URL}/Maple_${FALLBACK_VERSION}_universal.dmg`,
+  linuxAppImage: `${FALLBACK_BASE_URL}/Maple_${FALLBACK_VERSION}_amd64.AppImage`,
+  linuxDeb: `${FALLBACK_BASE_URL}/Maple_${FALLBACK_VERSION}_amd64.deb`,
+  linuxRpm: `${FALLBACK_BASE_URL}/Maple-${FALLBACK_VERSION}-1.x86_64.rpm`,
+};
 
 function DownloadPage() {
+  const [downloadUrls, setDownloadUrls] = useState<DownloadUrls>(FALLBACK_URLS);
+  const [currentVersion, setCurrentVersion] = useState<string>(FALLBACK_VERSION);
+  const [releaseUrl, setReleaseUrl] = useState<string>(
+    `https://github.com/OpenSecretCloud/Maple/releases/tag/${FALLBACK_TAG}`
+  );
+  const [isLoading, setIsLoading] = useState<boolean>(true);
+
+  useEffect(() => {
+    async function loadLatestRelease() {
+      try {
+        const downloadInfo = await getLatestDownloadInfo();
+        if (downloadInfo) {
+          setDownloadUrls(downloadInfo.downloadUrls);
+          setCurrentVersion(downloadInfo.version);
+          setReleaseUrl(downloadInfo.releaseUrl);
+        }
+      } catch (error) {
+        console.error("Failed to load latest release info:", error);
+        // Keep fallback values
+      } finally {
+        setIsLoading(false);
+      }
+    }
+
+    loadLatestRelease();
+  }, []);
+
   return (
     <>
       <TopNav />
@@ -51,7 +93,7 @@ function DownloadPage() {
               </p>
               <div className="flex flex-col gap-3">
                 <a
-                  href={`${BASE_DOWNLOAD_URL}/Maple_${APP_VERSION}_universal.dmg`}
+                  href={downloadUrls.macOS}
                   className="py-3 rounded-lg text-center font-medium transition-all duration-300 
                   dark:bg-white/90 dark:text-black dark:hover:bg-[hsl(var(--purple))]/80 dark:hover:text-[hsl(var(--foreground))] dark:active:bg-white/80
                   bg-background text-foreground hover:bg-[hsl(var(--purple))] hover:text-[hsl(var(--foreground))] active:bg-background/80 
@@ -76,7 +118,7 @@ function DownloadPage() {
               </p>
               <div className="flex flex-col gap-3">
                 <a
-                  href={`${BASE_DOWNLOAD_URL}/Maple_${APP_VERSION}_amd64.AppImage`}
+                  href={downloadUrls.linuxAppImage}
                   className="py-3 rounded-lg text-center font-medium transition-all duration-300 
                   dark:bg-white/90 dark:text-black dark:hover:bg-[hsl(var(--purple))]/80 dark:hover:text-[hsl(var(--foreground))] dark:active:bg-white/80
                   bg-background text-foreground hover:bg-[hsl(var(--purple))] hover:text-[hsl(var(--foreground))] active:bg-background/80 
@@ -87,7 +129,7 @@ function DownloadPage() {
                 </a>
                 <div className="grid grid-cols-2 gap-2">
                   <a
-                    href={`${BASE_DOWNLOAD_URL}/Maple_${APP_VERSION}_amd64.deb`}
+                    href={downloadUrls.linuxDeb}
                     className="py-2 rounded-lg text-center text-sm font-medium transition-all duration-300 
                     dark:bg-white/90 dark:text-black dark:hover:bg-[hsl(var(--purple))]/80 dark:hover:text-[hsl(var(--foreground))] dark:active:bg-white/80
                     bg-background text-foreground hover:bg-[hsl(var(--purple))] hover:text-[hsl(var(--foreground))] active:bg-background/80 
@@ -96,7 +138,7 @@ function DownloadPage() {
                     .deb
                   </a>
                   <a
-                    href={`${BASE_DOWNLOAD_URL}/Maple-${APP_VERSION}-1.x86_64.rpm`}
+                    href={downloadUrls.linuxRpm}
                     className="py-2 rounded-lg text-center text-sm font-medium transition-all duration-300 
                     dark:bg-white/90 dark:text-black dark:hover:bg-[hsl(var(--purple))]/80 dark:hover:text-[hsl(var(--foreground))] dark:active:bg-white/80
                     bg-background text-foreground hover:bg-[hsl(var(--purple))] hover:text-[hsl(var(--foreground))] active:bg-background/80 
@@ -118,9 +160,10 @@ function DownloadPage() {
               for full functionality.
             </p>
             <p className="text-sm">
-              Current version: <span className="font-mono text-foreground">{APP_VERSION}</span> •{" "}
+              Current version: <span className="font-mono text-foreground">{currentVersion}</span>
+              {isLoading && <span className="text-[hsl(var(--marketing-text-muted))]"> (loading...)</span>} •{" "}
               <a
-                href={`https://github.com/OpenSecretCloud/Maple/releases/tag/${CURRENT_VERSION}`}
+                href={releaseUrl}
                 className="text-[hsl(var(--purple))] hover:underline"
                 target="_blank"
                 rel="noopener noreferrer"
