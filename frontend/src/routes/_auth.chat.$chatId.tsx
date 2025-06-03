@@ -273,9 +273,9 @@ function ChatComponent() {
           // Get the user's first message, truncate if too long
           const userContent = userMessage.content.slice(0, 500); // Reduced to 500 chars to optimize token usage
 
-          // Use the OpenAI API to generate a concise title - use the same model as chat
+          // Use the OpenAI API to generate a concise title - use the default model
           const stream = openai.beta.chat.completions.stream({
-            model: model, // Use the same model that's used for chat
+            model: DEFAULT_MODEL_ID, // Use the default model instead of user selected model
             messages: [
               {
                 role: "system",
@@ -525,7 +525,7 @@ END OF INSTRUCTIONS`;
       // 2. Stream the summary
       let summary = "";
       const stream = openai.beta.chat.completions.stream({
-        model,
+        model: DEFAULT_MODEL_ID, // Use the default model instead of user selected model
         messages: summarizationMessages,
         temperature: 0.3,
         max_tokens: 600,
