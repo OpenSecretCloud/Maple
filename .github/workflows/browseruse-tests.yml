@@ -29,7 +29,8 @@ jobs:
         with:
           path: |
             ~/.bun/install/cache
-            frontend/node_modules
+            # Don't cache node_modules - it can hold stale package versions even when
+            # bun.lockb doesn't change, causing issues like missing methods in updated packages
           key: ${{ runner.os }}-bun-${{ hashFiles('frontend/bun.lockb') }}
           restore-keys: |
             ${{ runner.os }}-bun-
@@ -104,12 +105,13 @@ jobs:
           python test_runner.py
 
       - name: Upload test artifacts
-        if: failure()
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: test-failure-logs
+          name: browseruse-test-results
           path: |
             tests/browseruse/logs/
             tests/browseruse/*.json
             tests/browseruse/*.png
+            tests/browseruse/test_summary.txt
           retention-days: 7

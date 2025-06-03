@@ -30,10 +30,17 @@ class BrowserTestBase:
             wait_for_network_idle_page_load_time=5.0,
             minimum_wait_page_load_time=3.0,
             maximum_wait_page_load_time=15.0,
-            wait_between_actions=2.0,
+            wait_between_actions=3.0,
+            slow_mo=500,
         )
         
-        # Configure browser for GitHub Actions
+        # Configure browser - check for local vs CI environment
+        is_ci = os.getenv("CI") == "true" or os.getenv("GITHUB_ACTIONS") == "true"
+        headless = is_ci or os.getenv("BROWSERUSE_HEADLESS", "false").lower() == "true"
+        
+        if not headless:
+            print("🖥️  Running in headed mode - browser will be visible")
+        
         self.browser_profile = BrowserProfile(
             args=[
                 "--no-sandbox", 
@@ -43,8 +50,9 @@ class BrowserTestBase:
                 "--disable-web-security",
                 "--allow-insecure-localhost"
             ],
-            headless=True,
-            new_context_config=self.context_config
+            headless=headless,
+            new_context_config=self.context_config,
+            viewport={"width": 1920, "height": 1080}  # Standard HD viewport
         )
         
         self.browser_session = BrowserSession(browser_profile=self.browser_profile)
@@ -64,21 +72,18 @@ class BrowserTestBase:
             
         agent = Agent(**agent_args)
         
-        result = await agent.run(max_steps=max_steps)
-        
-        # Save artifacts
-        if hasattr(result, 'screenshot') and result.screenshot:
-            screenshot_path = self.logs_dir / "final_screenshot.png"
-            with open(screenshot_path, "wb") as f:
-                import base64
-                f.write(base64.b64decode(result.screenshot))
-        
-        # Save history
-        history_path = self.logs_dir / "test_history.json"
-        with open(history_path, "w") as f:
-            json.dump(result.to_dict() if hasattr(result, 'to_dict') else str(result), f, indent=2)
-        
-        return result
+        try:
+            result = await agent.run(max_steps=max_steps)
+            
+            # Save history
+            history_path = self.logs_dir / "test_history.json"
+            with open(history_path, "w", encoding="utf-8") as f:
+                json.dump(result.to_dict() if hasattr(result, 'to_dict') else str(result), f, indent=2)
+            
+            return result
+        except Exception as e:
+            raise e
+    
     
     async def close(self):
         """Clean up resources."""
