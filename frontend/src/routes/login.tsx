@@ -40,22 +40,25 @@ function LoginPage() {
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isIOS, setIsIOS] = useState(false);
+  const [isTauriEnv, setIsTauriEnv] = useState(false);
 
-  // Check if running on iOS
+  // Check if running on iOS and in Tauri environment
   useEffect(() => {
     const checkPlatform = async () => {
       try {
         // First check if we're in a Tauri environment
-        let isTauriEnv = false;
+        let tauriEnv = false;
         try {
-          isTauriEnv = await isTauri();
+          tauriEnv = await isTauri();
         } catch {
           // Not in Tauri environment
-          isTauriEnv = false;
+          tauriEnv = false;
         }
 
+        setIsTauriEnv(tauriEnv);
+
         // Only check platform type if we're in a Tauri environment
-        if (isTauriEnv) {
+        if (tauriEnv) {
           const platform = await type();
           setIsIOS(platform === "ios");
         } else {
@@ -65,6 +68,7 @@ function LoginPage() {
       } catch (error) {
         console.error("Error checking platform:", error);
         setIsIOS(false);
+        setIsTauriEnv(false);
       }
     };
 
@@ -305,7 +309,7 @@ function LoginPage() {
           <Google className="mr-2 h-4 w-4" />
           Log in with Google
         </Button>
-        {isIOS ? (
+        {isTauriEnv ? (
           <Button onClick={handleAppleLogin} className="w-full">
             <Apple className="mr-2 h-4 w-4" />
             Log in with Apple
