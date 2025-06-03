@@ -17,7 +17,7 @@ export const Route = createFileRoute("/_auth/chat/$chatId")({
   component: ChatComponent
 });
 
-function UserMessage({ text }: { text: string }) {
+function UserMessage({ text, chatId }: { text: string; chatId: string }) {
   return (
     <div className="flex flex-col p-4 rounded-lg bg-muted">
       <div className="rounded-lg flex flex-col md:flex-row gap-4">
@@ -25,14 +25,22 @@ function UserMessage({ text }: { text: string }) {
           <UserIcon />
         </div>
         <div className="flex flex-col gap-2">
-          <Markdown content={text} loading={false} />
+          <Markdown content={text} loading={false} chatId={chatId} />
         </div>
       </div>
     </div>
   );
 }
 
-function SystemMessage({ text, loading }: { text: string; loading?: boolean }) {
+function SystemMessage({
+  text,
+  loading,
+  chatId
+}: {
+  text: string;
+  loading?: boolean;
+  chatId: string;
+}) {
   const [isCopied, setIsCopied] = useState(false);
 
   const handleCopy = useCallback(async () => {
@@ -52,7 +60,7 @@ function SystemMessage({ text, loading }: { text: string; loading?: boolean }) {
           <AsteriskIcon />
         </div>
         <div className="flex flex-col gap-2">
-          <Markdown content={text} loading={loading} />
+          <Markdown content={text} loading={loading} chatId={chatId} />
           <Button
             variant="ghost"
             size="sm"
@@ -609,13 +617,21 @@ END OF INSTRUCTIONS`;
                   id={`message-${message.role}-${index}`}
                   className="flex flex-col gap-2"
                 >
-                  {message.role === "user" && <UserMessage text={message.content} />}
-                  {message.role === "assistant" && <SystemMessage text={message.content} />}
+                  {message.role === "user" && (
+                    <UserMessage text={message.content} chatId={chatId} />
+                  )}
+                  {message.role === "assistant" && (
+                    <SystemMessage text={message.content} chatId={chatId} />
+                  )}
                 </div>
               ))}
             {(currentStreamingMessage || isLoading) && (
               <div className="flex flex-col gap-2">
-                <SystemMessage text={currentStreamingMessage || ""} loading={isLoading} />
+                <SystemMessage
+                  text={currentStreamingMessage || ""}
+                  loading={isLoading}
+                  chatId={chatId}
+                />
               </div>
             )}
           </div>

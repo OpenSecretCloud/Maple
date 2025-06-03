@@ -9,7 +9,7 @@ import RehypeHighlight from "rehype-highlight";
 import { useRef, useState, RefObject, useEffect, useMemo } from "react";
 import React from "react";
 import { Button } from "./ui/button";
-import { Check, Copy } from "lucide-react";
+import { Check, Copy, ChevronDown, ChevronRight, Brain } from "lucide-react";
 
 async function copyToClipboard(text: string) {
   try {
@@ -17,6 +17,144 @@ async function copyToClipboard(text: string) {
   } catch (error) {
     console.error("Failed to copy text: ", error);
   }
+}
+
+interface ThinkingBlockProps {
+  content: string;
+  isThinking: boolean;
+  duration?: number;
+}
+
+function ThinkingBlock({ content, isThinking, duration }: ThinkingBlockProps) {
+  const [isExpanded, setIsExpanded] = useState(false);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const startTimeRef = useRef<number | null>(null);
+
+  // Update elapsed time every second while thinking
+  useEffect(() => {
+    if (!isThinking) {
+      return;
+    }
+
+    // Set start time when thinking begins
+    if (startTimeRef.current === null) {
+      startTimeRef.current = Date.now();
+    }
+
+    // Start counting immediately
+    const elapsed = Math.floor((Date.now() - startTimeRef.current) / 1000);
+    setElapsedSeconds(elapsed);
+
+    const interval = setInterval(() => {
+      const elapsed = Math.floor((Date.now() - startTimeRef.current!) / 1000);
+      setElapsedSeconds(elapsed);
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [isThinking]);
+
+  // Calculate duration text - use actual duration, elapsed time, or estimate based on word count
+  const displayDuration = useMemo(() => {
+    if (duration) return duration;
+    if (isThinking) return elapsedSeconds;
+
+    // Fallback: estimate based on word count
+    const wordCount = content.trim().split(/\s+/).length;
+    // Slower estimation to better match observed times (26 actual vs 23 estimated)
+    const estimatedSeconds = Math.max(1, Math.round(wordCount / 26)); // ~26 words per second
+    return estimatedSeconds;
+  }, [content, duration, isThinking, elapsedSeconds]);
+
+  const durationText = `${displayDuration}`;
+
+  return (
+    <div className="my-3 border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden bg-gray-50 dark:bg-gray-900/50">
+      <button
+        onClick={() => setIsExpanded(!isExpanded)}
+        className="w-full px-4 py-2 flex items-center gap-2 hover:bg-gray-100 dark:hover:bg-gray-800/50 transition-colors text-left"
+        aria-expanded={isExpanded}
+      >
+        <span className="text-gray-500 dark:text-gray-400">
+          {isExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+        </span>
+        <Brain className="h-4 w-4 text-gray-500 dark:text-gray-400" />
+        <span className="text-sm text-gray-600 dark:text-gray-300 font-medium">
+          {isThinking ? (
+            <span className="flex items-center gap-2">
+              Thinking for {durationText} seconds
+              <span className="flex gap-1">
+                <span className="animate-bounce" style={{ animationDelay: "0ms" }}>
+                  .
+                </span>
+                <span className="animate-bounce" style={{ animationDelay: "150ms" }}>
+                  .
+                </span>
+                <span className="animate-bounce" style={{ animationDelay: "300ms" }}>
+                  .
+                </span>
+              </span>
+            </span>
+          ) : (
+            `Thought for ${durationText} seconds`
+          )}
+        </span>
+      </button>
+      {isExpanded && (
+        <div className="px-4 py-3 border-t border-gray-200 dark:border-gray-700">
+          <div className="text-sm text-gray-600 dark:text-gray-400 whitespace-pre-wrap">
+            {content}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+interface ParsedContent {
+  type: "thinking" | "content";
+  content: string;
+  duration?: string; // Store duration as string like "23"
+  id?: string; // Unique ID to track thinking blocks across renders
+}
+
+function parseThinkingTags(content: string): ParsedContent[] {
+  const parts: ParsedContent[] = [];
+  // Pattern to match <think> tags (complete or incomplete)
+  const thinkPattern = /<think>([\s\S]*?)<\/think>|<think>([\s\S]*?)$/g;
+  let lastIndex = 0;
+  let match;
+
+  while ((match = thinkPattern.exec(content)) !== null) {
+    // Add content before the think tag
+    if (match.index > lastIndex) {
+      const beforeContent = content.slice(lastIndex, match.index);
+      if (beforeContent.trim()) {
+        parts.push({ type: "content", content: beforeContent });
+      }
+    }
+
+    // Extract content from either complete or incomplete tag
+    const thinkContent = match[1] || match[2] || "";
+
+    parts.push({
+      type: "thinking",
+      content: thinkContent,
+      duration: undefined, // Let the UI calculate based on word count
+      id: `think-${match.index}` // Unique ID based on position
+    });
+
+    lastIndex = match.index + match[0].length;
+  }
+
+  // Add any remaining content
+  if (lastIndex < content.length) {
+    const remainingContent = content.slice(lastIndex);
+    if (remainingContent.trim()) {
+      parts.push({ type: "content", content: remainingContent });
+    }
+  }
+
+  return parts;
 }
 
 export function PreCode(props: JSX.IntrinsicElements["pre"]) {
@@ -164,6 +302,43 @@ function MarkDownContentToMemo(props: { content: string }) {
 
 export const MarkdownContent = React.memo(MarkDownContentToMemo);
 
+function MarkdownWithThinking({
+  content,
+  loading = false,
+  chatId
+}: {
+  content: string;
+  loading?: boolean;
+  chatId?: string;
+}) {
+  const parsedContent = useMemo(() => {
+    return parseThinkingTags(content);
+  }, [content]);
+
+  return (
+    <>
+      {parsedContent.map((part, index) => {
+        if (part.type === "thinking") {
+          // Check if this is the last part and we're still loading (no closing tag)
+          const isLastPart = index === parsedContent.length - 1;
+          const isThinking = loading && isLastPart && !content.includes("</think>");
+
+          return (
+            <ThinkingBlock
+              key={`${chatId}-${part.id || index}`} // Include chatId in key to reset state
+              content={part.content}
+              isThinking={isThinking}
+              duration={undefined} // Let ThinkingBlock handle duration internally
+            />
+          );
+        } else {
+          return <MarkdownContent key={index} content={part.content} />;
+        }
+      })}
+    </>
+  );
+}
+
 export function Markdown(
   props: {
     content: string;
@@ -172,6 +347,7 @@ export function Markdown(
     fontFamily?: string;
     parentRef?: RefObject<HTMLDivElement>;
     defaultShow?: boolean;
+    chatId?: string;
   } & React.DOMAttributes<HTMLDivElement>
 ) {
   const mdRef = useRef<HTMLDivElement>(null);
@@ -188,16 +364,7 @@ export function Markdown(
       onDoubleClickCapture={props.onDoubleClickCapture}
       dir="auto"
     >
-      {props.loading ? (
-        <>
-          <MarkdownContent content={props.content} />
-          <div className="italic text-muted-foreground animate-pulse">
-            Thinking and encrypting...
-          </div>
-        </>
-      ) : (
-        <MarkdownContent content={props.content} />
-      )}
+      <MarkdownWithThinking content={props.content} loading={props.loading} chatId={props.chatId} />
     </div>
   );
 }
