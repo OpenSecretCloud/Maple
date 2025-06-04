@@ -3,6 +3,7 @@ import { useEffect } from "react";
 import { useOpenSecret } from "@opensecret/react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Loader2 } from "lucide-react";
+import { AppleAuthProvider } from "@/components/AppleAuthProvider";
 
 // Define the search parameters interface
 interface DesktopAuthSearchParams {
@@ -44,16 +45,19 @@ function DesktopAuth() {
           sessionStorage.setItem("selected_plan", selected_plan);
         }
 
-        // Initiate appropriate OAuth flow
+        // For Apple, we don't need to do anything here - the AppleAuthProvider
+        // component will handle the authentication flow with popup
+        if (provider === "apple") {
+          return;
+        }
+
+        // Initiate appropriate OAuth flow for GitHub and Google
         let auth_url;
         if (provider === "github") {
           const result = await os.initiateGitHubAuth("");
           auth_url = result.auth_url;
         } else if (provider === "google") {
           const result = await os.initiateGoogleAuth("");
-          auth_url = result.auth_url;
-        } else if (provider === "apple") {
-          const result = await os.initiateAppleAuth("");
           auth_url = result.auth_url;
         } else {
           throw new Error("Unsupported provider");
@@ -70,6 +74,35 @@ function DesktopAuth() {
 
     initiateAuth();
   }, [os, provider, selected_plan, navigate]);
+
+  // Special handling for Apple OAuth - use popup instead of redirect
+  if (provider === "apple") {
+    return (
+      <Card className="max-w-md mx-auto mt-20">
+        <CardHeader>
+          <CardTitle>Apple Sign In</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <p className="mb-4">Click the button below to sign in with Apple:</p>
+          <AppleAuthProvider
+            onError={(error) => {
+              console.error("Apple auth error:", error);
+              navigate({ to: "/login" });
+            }}
+            redirectAfterLogin={(plan) => {
+              if (plan) {
+                navigate({ to: "/pricing", search: { selected_plan: plan } });
+              } else {
+                navigate({ to: "/" });
+              }
+            }}
+            selectedPlan={selected_plan}
+            inviteCode=""
+          />
+        </CardContent>
+      </Card>
+    );
+  }
 
   return (
     <Card className="max-w-md mx-auto mt-20">
