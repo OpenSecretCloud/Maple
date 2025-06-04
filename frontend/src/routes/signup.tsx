@@ -48,12 +48,7 @@ function SignupPage() {
       try {
         // First check if we're in a Tauri environment
         let tauriEnv = false;
-        try {
-          tauriEnv = await isTauri();
-        } catch {
-          // Not in Tauri environment
-          tauriEnv = false;
-        }
+        tauriEnv = await isTauri();
 
         setIsTauriEnv(tauriEnv);
 
