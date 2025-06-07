@@ -12,6 +12,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { BillingStatus } from "@/billing/billingApi";
 import { useNavigate } from "@tanstack/react-router";
+import { SystemPromptIndicator } from "@/components/SystemPromptIndicator";
 
 export const Route = createFileRoute("/_auth/chat/$chatId")({
   component: ChatComponent
@@ -579,9 +580,14 @@ END OF INSTRUCTIONS`;
           className="flex-1 min-h-0 overflow-y-auto flex flex-col relative"
         >
           <div className="mt-4 md:mt-8 w-full h-10 flex items-center justify-center">
-            <h2 className="text-lg font-semibold self-center truncate max-w-[20rem] mx-[6rem] py-2">
-              {localChat.title}
-            </h2>
+            <div className="flex items-center gap-3 mx-[6rem]">
+              <h2 className="text-lg font-semibold truncate max-w-[20rem] py-2">
+                {localChat.title}
+              </h2>
+              <SystemPromptIndicator
+                systemPrompt={localChat.messages.find((msg) => msg.role === "system")?.content}
+              />
+            </div>
           </div>
           <div className="flex flex-col w-full max-w-[45rem] mx-auto gap-4 px-2 pt-4">
             {/* Show user and assistant messages, excluding system messages */}
