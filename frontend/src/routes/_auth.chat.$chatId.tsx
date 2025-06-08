@@ -8,6 +8,7 @@ import { Markdown } from "@/components/markdown";
 import { ChatMessage, Chat } from "@/state/LocalStateContext";
 import { AlertDestructive } from "@/components/AlertDestructive";
 import { Sidebar, SidebarToggle } from "@/components/Sidebar";
+import { SystemPromptIndicator } from "@/components/SystemPromptIndicator";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { BillingStatus } from "@/billing/billingApi";
@@ -17,12 +18,13 @@ export const Route = createFileRoute("/_auth/chat/$chatId")({
   component: ChatComponent
 });
 
-function UserMessage({ text }: { text: string }) {
+function UserMessage({ text, systemPrompt }: { text: string; systemPrompt?: string }) {
   return (
     <div className="flex flex-col p-4 rounded-lg bg-muted">
       <div className="rounded-lg flex flex-col md:flex-row gap-4">
-        <div>
+        <div className="flex items-center gap-2">
           <UserIcon />
+          {systemPrompt && <SystemPromptIndicator systemPrompt={systemPrompt} />}
         </div>
         <div className="flex flex-col gap-2">
           <Markdown content={text} loading={false} />
@@ -579,24 +581,36 @@ END OF INSTRUCTIONS`;
           className="flex-1 min-h-0 overflow-y-auto flex flex-col relative"
         >
           <div className="mt-4 md:mt-8 w-full h-10 flex items-center justify-center">
-            <h2 className="text-lg font-semibold self-center truncate max-w-[20rem] mx-[6rem] py-2">
+            <h2 className="text-lg font-semibold self-center truncate max-w-[20rem] mx-4 md:mx-[6rem] py-2">
               {localChat.title}
             </h2>
           </div>
           <div className="flex flex-col w-full max-w-[45rem] mx-auto gap-4 px-2 pt-4">
             {/* Show user and assistant messages, excluding system messages */}
-            {localChat.messages
-              ?.filter((message) => message.role !== "system")
-              .map((message, index) => (
+            {(() => {
+              const systemMessage = localChat.messages?.find(
+                (message) => message.role === "system"
+              );
+              const systemPrompt = systemMessage?.content;
+              const nonSystemMessages =
+                localChat.messages?.filter((message) => message.role !== "system") || [];
+
+              return nonSystemMessages.map((message, index) => (
                 <div
                   key={index}
                   id={`message-${message.role}-${index}`}
                   className="flex flex-col gap-2"
                 >
-                  {message.role === "user" && <UserMessage text={message.content} />}
+                  {message.role === "user" && (
+                    <UserMessage
+                      text={message.content}
+                      systemPrompt={index === 0 ? systemPrompt : undefined}
+                    />
+                  )}
                   {message.role === "assistant" && <SystemMessage text={message.content} />}
                 </div>
-              ))}
+              ));
+            })()}
             {(currentStreamingMessage || isLoading) && (
               <div className="flex flex-col gap-2">
                 <SystemMessage text={currentStreamingMessage || ""} loading={isLoading} />
