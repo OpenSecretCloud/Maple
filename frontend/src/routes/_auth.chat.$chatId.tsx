@@ -18,12 +18,13 @@ export const Route = createFileRoute("/_auth/chat/$chatId")({
   component: ChatComponent
 });
 
-function UserMessage({ text }: { text: string }) {
+function UserMessage({ text, systemPrompt }: { text: string; systemPrompt?: string }) {
   return (
     <div className="flex flex-col p-4 rounded-lg bg-muted">
       <div className="rounded-lg flex flex-col md:flex-row gap-4">
-        <div>
+        <div className="flex items-center gap-2">
           <UserIcon />
+          <SystemPromptIndicator systemPrompt={systemPrompt} />
         </div>
         <div className="flex flex-col gap-2">
           <Markdown content={text} loading={false} />
@@ -580,14 +581,7 @@ END OF INSTRUCTIONS`;
           className="flex-1 min-h-0 overflow-y-auto flex flex-col relative"
         >
           <div className="mt-4 md:mt-8 w-full h-10 flex items-center justify-center">
-            <div className="flex items-center gap-3 mx-[6rem]">
-              <h2 className="text-lg font-semibold truncate max-w-[20rem] py-2">
-                {localChat.title}
-              </h2>
-              <SystemPromptIndicator
-                systemPrompt={localChat.messages.find((msg) => msg.role === "system")?.content}
-              />
-            </div>
+            <h2 className="text-lg font-semibold truncate max-w-[20rem] py-2">{localChat.title}</h2>
           </div>
           <div className="flex flex-col w-full max-w-[45rem] mx-auto gap-4 px-2 pt-4">
             {/* Show user and assistant messages, excluding system messages */}
@@ -599,7 +593,14 @@ END OF INSTRUCTIONS`;
                   id={`message-${message.role}-${index}`}
                   className="flex flex-col gap-2"
                 >
-                  {message.role === "user" && <UserMessage text={message.content} />}
+                  {message.role === "user" && (
+                    <UserMessage
+                      text={message.content}
+                      systemPrompt={
+                        localChat.messages.find((msg) => msg.role === "system")?.content
+                      }
+                    />
+                  )}
                   {message.role === "assistant" && <SystemMessage text={message.content} />}
                 </div>
               ))}
