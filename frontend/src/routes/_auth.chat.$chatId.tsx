@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { createFileRoute } from "@tanstack/react-router";
-import { AsteriskIcon, Check, Copy, UserIcon, ChevronDown } from "lucide-react";
+import { AsteriskIcon, Check, Copy, UserIcon, ChevronDown, SquarePenIcon } from "lucide-react";
 import ChatBox from "@/components/ChatBox";
 import { useOpenAI } from "@/ai/useOpenAi";
 import { useLocalState } from "@/state/useLocalState";
@@ -12,6 +12,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { BillingStatus } from "@/billing/billingApi";
 import { useNavigate } from "@tanstack/react-router";
+import { useIsMobile } from "@/utils/utils";
 
 export const Route = createFileRoute("/_auth/chat/$chatId")({
   component: ChatComponent
@@ -84,11 +85,23 @@ function ChatComponent() {
   const queryClient = useQueryClient();
   const [showScrollButton, setShowScrollButton] = useState(false);
   const navigate = useNavigate();
+  const isMobile = useIsMobile();
 
   const [error, setError] = useState("");
   const [isSummarizing, setIsSummarizing] = useState(false);
 
   const chatContainerRef = useRef<HTMLDivElement>(null);
+
+  // Handle mobile new chat
+  const handleMobileNewChat = useCallback(async () => {
+    try {
+      await navigate({ to: "/" });
+      // Ensure element is available after navigation
+      setTimeout(() => document.getElementById("message")?.focus(), 0);
+    } catch (error) {
+      console.error("Navigation failed:", error);
+    }
+  }, [navigate]);
 
   // Memoize the scroll handler
   const handleScroll = useCallback(() => {
@@ -578,7 +591,19 @@ END OF INSTRUCTIONS`;
           ref={chatContainerRef}
           className="flex-1 min-h-0 overflow-y-auto flex flex-col relative"
         >
-          <div className="mt-4 md:mt-8 w-full h-10 flex items-center justify-center">
+          <div className="mt-4 md:mt-8 w-full h-10 flex items-center justify-center relative">
+            {/* Mobile new chat button */}
+            {isMobile && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="absolute right-4 p-2 h-8 w-8"
+                onClick={handleMobileNewChat}
+                aria-label="New chat"
+              >
+                <SquarePenIcon className="h-4 w-4" />
+              </Button>
+            )}
             <h2 className="text-lg font-semibold self-center truncate max-w-[20rem] mx-[6rem] py-2">
               {localChat.title}
             </h2>
