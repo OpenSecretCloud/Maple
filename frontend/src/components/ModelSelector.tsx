@@ -44,10 +44,8 @@ export function ModelSelector() {
     if (!hasFetched.current && os.fetchModels && !isFetching.current) {
       hasFetched.current = true;
       isFetching.current = true;
-      console.log("Fetching models from /v1/models endpoint...");
       os.fetchModels()
         .then((models) => {
-          console.log("Models endpoint response:", models);
           // Filter out embedding models and "latest"
           interface ModelWithTasks extends Model {
             tasks?: string[];
@@ -77,17 +75,14 @@ export function ModelSelector() {
 
             return true;
           });
-          console.log("Filtered models (excluding embed-only):", filteredModels);
 
           // Get current models for merging from ref
           const currentModels = availableModelsRef.current || [];
           const existingModelIds = new Set(currentModels.map((m) => m.id));
           const newModels = filteredModels.filter((m) => !existingModelIds.has(m.id));
-          console.log("New models to add:", newModels);
 
           // Merge with existing models (keeping the hardcoded one)
           setAvailableModels([...currentModels, ...newModels]);
-          console.log("Final available models set:", [...currentModels, ...newModels]);
         })
         .catch((error) => {
           console.error("Failed to fetch models from endpoint:", error);
