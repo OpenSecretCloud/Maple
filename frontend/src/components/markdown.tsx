@@ -122,8 +122,19 @@ interface ParsedContent {
   id?: string; // Unique ID to track thinking blocks across renders
 }
 
-function parseThinkingTags(content: string): ParsedContent[] {
+function parseThinkingTags(content: string, isComplete: boolean = false): ParsedContent[] {
   const parts: ParsedContent[] = [];
+
+  // Check for the edge case: <think> followed by only whitespace and no closing tag
+  if (isComplete && /^<think>\s*$/m.test(content) && !content.includes("</think>")) {
+    // Strip out the incomplete <think> tag and treat everything after as content
+    const strippedContent = content.replace(/^<think>\s*/m, "");
+    if (strippedContent.trim()) {
+      parts.push({ type: "content", content: strippedContent });
+    }
+    return parts;
+  }
+
   // Pattern to match <think> tags (complete or incomplete)
   const thinkPattern = /<think>([\s\S]*?)<\/think>|<think>([\s\S]*?)$/g;
   let lastIndex = 0;
@@ -320,8 +331,9 @@ function MarkdownWithThinking({
   chatId?: string;
 }) {
   const parsedContent = useMemo(() => {
-    return parseThinkingTags(content);
-  }, [content]);
+    // Pass isComplete (which is !loading) to handle the edge case
+    return parseThinkingTags(content, !loading);
+  }, [content, loading]);
 
   return (
     <>
