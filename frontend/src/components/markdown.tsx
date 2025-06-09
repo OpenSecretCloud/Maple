@@ -134,14 +134,17 @@ function parseThinkingTags(content: string): ParsedContent[] {
     }
 
     // Extract content from either complete or incomplete tag
-    const thinkContent = match[1] || match[2] || "";
+    const thinkContent = (match[1] || match[2] || "").trim();
 
-    parts.push({
-      type: "thinking",
-      content: thinkContent,
-      duration: undefined, // Let the UI calculate based on word count
-      id: `think-${match.index}` // Unique ID based on position
-    });
+    // Only add thinking block if it has actual content (not just whitespace)
+    if (thinkContent) {
+      parts.push({
+        type: "thinking",
+        content: thinkContent,
+        duration: undefined, // Let the UI calculate based on word count
+        id: `think-${match.index}` // Unique ID based on position
+      });
+    }
 
     lastIndex = match.index + match[0].length;
   }
