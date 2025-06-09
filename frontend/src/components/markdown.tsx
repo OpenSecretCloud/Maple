@@ -52,7 +52,10 @@ function ThinkingBlock({ content, isThinking, duration }: ThinkingBlockProps) {
       }
     }, 1000);
 
-    return () => clearInterval(interval);
+    return () => {
+      clearInterval(interval);
+      startTimeRef.current = null;
+    };
   }, [isThinking]);
 
   // Calculate duration text - use actual duration, elapsed time, or estimate based on word count
