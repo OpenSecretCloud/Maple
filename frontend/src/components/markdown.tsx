@@ -46,8 +46,10 @@ function ThinkingBlock({ content, isThinking, duration }: ThinkingBlockProps) {
     setElapsedSeconds(elapsed);
 
     const interval = setInterval(() => {
-      const elapsed = Math.floor((Date.now() - startTimeRef.current!) / 1000);
-      setElapsedSeconds(elapsed);
+      if (startTimeRef.current !== null) {
+        const elapsed = Math.floor((Date.now() - startTimeRef.current) / 1000);
+        setElapsedSeconds(elapsed);
+      }
     }, 1000);
 
     return () => clearInterval(interval);
