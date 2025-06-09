@@ -1,4 +1,4 @@
-import { ChevronDown, Check } from "lucide-react";
+import { ChevronDown, Check, Lock } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -9,10 +9,14 @@ import {
 import { useLocalState } from "@/state/useLocalState";
 import { useOpenSecret } from "@opensecret/react";
 import { useEffect, useRef } from "react";
+import { useNavigate } from "@tanstack/react-router";
 import type { Model } from "openai/resources/models.js";
 
 // Model configuration for display names and badges
-const MODEL_CONFIG: Record<string, { displayName: string; badge?: string; disabled?: boolean }> = {
+const MODEL_CONFIG: Record<
+  string,
+  { displayName: string; badge?: string; disabled?: boolean; requiresPro?: boolean }
+> = {
   "ibnzterrell/Meta-Llama-3.3-70B-Instruct-AWQ-INT4": {
     displayName: "Llama 3.3 70B"
   },
@@ -23,13 +27,15 @@ const MODEL_CONFIG: Record<string, { displayName: string; badge?: string; disabl
   },
   "deepseek-r1-70b": {
     displayName: "DeepSeek R1 70B",
-    badge: "BETA"
+    badge: "Pro",
+    requiresPro: true
   }
 };
 
 export function ModelSelector() {
-  const { model, setModel, availableModels, setAvailableModels } = useLocalState();
+  const { model, setModel, availableModels, setAvailableModels, billingStatus } = useLocalState();
   const os = useOpenSecret();
+  const navigate = useNavigate();
   const isFetching = useRef(false);
   const hasFetched = useRef(false);
   const availableModelsRef = useRef(availableModels);
@@ -97,24 +103,45 @@ export function ModelSelector() {
     }
   }, [os, setAvailableModels]);
 
-  const getDisplayName = (modelId: string) => {
+  // Check if user has access to a model based on their plan
+  const hasAccessToModel = (modelId: string) => {
+    const config = MODEL_CONFIG[modelId];
+    if (!config?.requiresPro) return true;
+
+    // Check if user is on Pro or Team plan
+    const planName = billingStatus?.product_name?.toLowerCase() || "";
+    return planName.includes("pro") || planName.includes("team");
+  };
+
+  const getDisplayName = (modelId: string, showLock = false) => {
     const config = MODEL_CONFIG[modelId];
 
     if (config) {
-      if (config.badge) {
-        const badgeClass =
-          config.badge === "Coming Soon"
-            ? "text-[10px] bg-gray-500/10 text-gray-600 px-1.5 py-0.5 rounded-sm font-medium"
-            : "text-[10px] bg-purple-500/10 text-purple-600 px-1.5 py-0.5 rounded-sm font-medium";
+      const elements: React.ReactNode[] = [config.displayName];
 
-        return (
-          <span className="flex items-center gap-1">
-            {config.displayName}
-            <span className={badgeClass}>{config.badge}</span>
+      if (config.badge) {
+        let badgeClass = "text-[10px] px-1.5 py-0.5 rounded-sm font-medium";
+
+        if (config.badge === "Coming Soon") {
+          badgeClass += " bg-gray-500/10 text-gray-600";
+        } else if (config.badge === "Pro") {
+          badgeClass += " bg-gradient-to-r from-purple-500/10 to-blue-500/10 text-purple-600";
+        } else {
+          badgeClass += " bg-purple-500/10 text-purple-600";
+        }
+
+        elements.push(
+          <span key="badge" className={badgeClass}>
+            {config.badge}
           </span>
         );
       }
-      return config.displayName;
+
+      if (showLock && config.requiresPro && !hasAccessToModel(modelId)) {
+        elements.push(<Lock key="lock" className="h-3 w-3 opacity-50" />);
+      }
+
+      return <span className="flex items-center gap-1">{elements}</span>;
     }
 
     // Fallback to model ID if not in config
@@ -143,27 +170,58 @@ export function ModelSelector() {
       <DropdownMenuContent align="end" className="w-64">
         {availableModels &&
           Array.isArray(availableModels) &&
-          // Sort models: enabled first, then disabled
+          // Sort models: available first, then restricted (pro-only), then disabled
           [...availableModels]
             .sort((a, b) => {
-              const aDisabled = MODEL_CONFIG[a.id]?.disabled || false;
-              const bDisabled = MODEL_CONFIG[b.id]?.disabled || false;
+              const aConfig = MODEL_CONFIG[a.id];
+              const bConfig = MODEL_CONFIG[b.id];
+              const aDisabled = aConfig?.disabled || false;
+              const bDisabled = bConfig?.disabled || false;
+              const aRestricted = (aConfig?.requiresPro || false) && !hasAccessToModel(a.id);
+              const bRestricted = (bConfig?.requiresPro || false) && !hasAccessToModel(b.id);
+
+              // Disabled models go last
               if (aDisabled && !bDisabled) return 1;
               if (!aDisabled && bDisabled) return -1;
+
+              // Restricted models go after available but before disabled
+              if (aRestricted && !bRestricted) return 1;
+              if (!aRestricted && bRestricted) return -1;
+
               return 0;
             })
             .map((availableModel) => {
-              const isDisabled = MODEL_CONFIG[availableModel.id]?.disabled || false;
+              const config = MODEL_CONFIG[availableModel.id];
+              const isDisabled = config?.disabled || false;
+              const requiresPro = config?.requiresPro || false;
+              const hasAccess = hasAccessToModel(availableModel.id);
+              const isRestricted = requiresPro && !hasAccess;
+
               return (
                 <DropdownMenuItem
                   key={availableModel.id}
-                  onClick={() => !isDisabled && setModel(availableModel.id)}
-                  className={`flex items-center justify-between ${
+                  onClick={() => {
+                    if (isDisabled) return;
+                    if (isRestricted) {
+                      // Navigate to pricing page for upgrade
+                      navigate({ to: "/pricing" });
+                    } else {
+                      setModel(availableModel.id);
+                    }
+                  }}
+                  className={`flex items-center justify-between group ${
                     isDisabled ? "opacity-50 cursor-not-allowed" : ""
-                  }`}
+                  } ${isRestricted ? "hover:bg-purple-50 dark:hover:bg-purple-950/20" : ""}`}
                   disabled={isDisabled}
                 >
-                  <div className="text-sm">{getDisplayName(availableModel.id)}</div>
+                  <div className="flex items-center gap-2 flex-1">
+                    <div className="text-sm">{getDisplayName(availableModel.id, true)}</div>
+                    {isRestricted && (
+                      <span className="text-[10px] text-purple-600 dark:text-purple-400 opacity-0 group-hover:opacity-100 transition-opacity">
+                        Upgrade?
+                      </span>
+                    )}
+                  </div>
                   {model === availableModel.id && <Check className="h-4 w-4" />}
                 </DropdownMenuItem>
               );

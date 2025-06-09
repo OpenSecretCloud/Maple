@@ -5,6 +5,7 @@ import { Footer } from "./Footer";
 import { useQuery } from "@tanstack/react-query";
 import { getBillingService } from "@/billing/billingService";
 import { useState, useEffect } from "react";
+import { PRICING_PLANS, type PlanFeature } from "@/config/pricingConfig";
 // eslint-disable-next-line
 // @ts-ignore
 import { type } from "@tauri-apps/plugin-os";
@@ -93,7 +94,7 @@ function PricingTier({
   name: string;
   price: string;
   description: string;
-  features: string[];
+  features: PlanFeature[];
   ctaText: string;
   popular?: boolean;
   productId?: string; // Add type for productId
@@ -126,10 +127,14 @@ function PricingTier({
       <div className="flex flex-col gap-3 mb-8">
         {features.map((feature, index) => (
           <div key={index} className="flex items-start gap-2">
-            {feature !== "Included from Free" && feature !== "" && (
-              <Check className="w-5 h-5 text-foreground mt-0.5 flex-shrink-0" />
-            )}
-            <span className="text-foreground/80">{feature}</span>
+            {feature.text !== "" &&
+              (feature.icon ||
+                (feature.included ? (
+                  <Check className="w-5 h-5 text-green-500 mt-0.5 flex-shrink-0" />
+                ) : null))}
+            <span className={`${feature.included ? "text-foreground/80" : "text-foreground/50"}`}>
+              {feature.text}
+            </span>
           </div>
         ))}
       </div>
@@ -655,54 +660,20 @@ export function Marketing() {
             </p>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-            <PricingTier
-              name="Starter"
-              price="$5.99"
-              description="Get started with secure AI chat"
-              features={[
-                "Enough messages for casual use",
-                "AI Naming of Chats",
-                "",
-                "Included from Free",
-                "End-to-end encryption",
-                "Access to core AI features",
-                "Search Chat History",
-                "Rename Chats"
-              ]}
-              ctaText="Start Chatting"
-              productId={getProductId("Starter")}
-              isIOS={isIOS}
-            />
-            <PricingTier
-              name="Pro"
-              price="$20"
-              description="For power users who need more"
-              features={[
-                "5x more messages than Starter",
-                "Priority support",
-                "Upcoming Pro-only features",
-                "Features from Starter"
-              ]}
-              ctaText="Start Chatting"
-              popular={true}
-              productId={getProductId("Pro")}
-              isIOS={isIOS}
-            />
-            <PricingTier
-              name="Team"
-              price="$30"
-              description="For teams and businesses"
-              features={[
-                "8x more messages than Starter per user",
-                "Unified billing",
-                "Pool chat credits among team",
-                "Features from Pro"
-              ]}
-              ctaText="Contact Us"
-              productId={getProductId("Team")}
-              isIOS={isIOS}
-            />
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-8">
+            {PRICING_PLANS.map((plan) => (
+              <PricingTier
+                key={plan.name}
+                name={plan.name}
+                price={plan.price}
+                description={plan.description}
+                features={plan.features}
+                ctaText={plan.ctaText}
+                popular={plan.popular}
+                productId={getProductId(plan.name)}
+                isIOS={isIOS}
+              />
+            ))}
           </div>
         </div>
       </section>
