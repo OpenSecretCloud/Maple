@@ -11,7 +11,7 @@ import { Sidebar, SidebarToggle } from "@/components/Sidebar";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { BillingStatus } from "@/billing/billingApi";
-import { useNavigate } from "@tanstack/react-router";
+import { useNavigate, useLocation } from "@tanstack/react-router";
 import { useIsMobile } from "@/utils/utils";
 
 export const Route = createFileRoute("/_auth/chat/$chatId")({
@@ -85,6 +85,7 @@ function ChatComponent() {
   const queryClient = useQueryClient();
   const [showScrollButton, setShowScrollButton] = useState(false);
   const navigate = useNavigate();
+  const location = useLocation();
   const isMobile = useIsMobile();
 
   const [error, setError] = useState("");
@@ -92,16 +93,21 @@ function ChatComponent() {
 
   const chatContainerRef = useRef<HTMLDivElement>(null);
 
-  // Handle mobile new chat
+  // Handle mobile new chat (matching sidebar behavior)
   const handleMobileNewChat = useCallback(async () => {
-    try {
-      await navigate({ to: "/" });
-      // Ensure element is available after navigation
-      setTimeout(() => document.getElementById("message")?.focus(), 0);
-    } catch (error) {
-      console.error("Navigation failed:", error);
+    // If we're already on "/", focus the chat box
+    if (location.pathname === "/") {
+      document.getElementById("message")?.focus();
+    } else {
+      try {
+        await navigate({ to: "/" });
+        // Ensure element is available after navigation
+        setTimeout(() => document.getElementById("message")?.focus(), 0);
+      } catch (error) {
+        console.error("Navigation failed:", error);
+      }
     }
-  }, [navigate]);
+  }, [navigate, location.pathname]);
 
   // Memoize the scroll handler
   const handleScroll = useCallback(() => {
@@ -595,9 +601,9 @@ END OF INSTRUCTIONS`;
             {/* Mobile new chat button */}
             {isMobile && (
               <Button
-                variant="ghost"
-                size="sm"
-                className="absolute right-4 p-2 h-8 w-8"
+                variant="outline"
+                size="icon"
+                className="absolute right-4"
                 onClick={handleMobileNewChat}
                 aria-label="New chat"
               >
