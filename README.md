@@ -121,7 +121,13 @@ For proper macOS builds and notarization, you need to set up the following GitHu
 6. `APPLE_TEAM_ID` - Your Apple Developer team ID
 
 ### To Create a Release
-1. Update the version in `src-tauri/tauri.conf.json`
+1. Update the version in the following files:
+   - `frontend/package.json`
+   - `frontend/src-tauri/tauri.conf.json`
+   - `frontend/src-tauri/Cargo.toml`
+   - `frontend/src-tauri/gen/apple/project.yml` (CFBundleShortVersionString and CFBundleVersion)
+   - `frontend/src-tauri/gen/apple/maple_iOS/Info.plist` (CFBundleShortVersionString and CFBundleVersion)
+   - Run `cargo check` in `frontend/src-tauri/` to update `Cargo.lock`
 2. Create a new release in GitHub:
    - Go to Releases → Draft a new release
    - Create a new tag (e.g., `v0.1.0`)
