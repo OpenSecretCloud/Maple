@@ -587,23 +587,33 @@ END OF INSTRUCTIONS`;
             {/* Show user and assistant messages, excluding system messages */}
             {localChat.messages
               ?.filter((message) => message.role !== "system")
-              .map((message, index) => (
-                <div
-                  key={index}
-                  id={`message-${message.role}-${index}`}
-                  className="flex flex-col gap-2"
-                >
-                  {message.role === "user" && (
-                    <UserMessage
-                      text={message.content}
-                      systemPrompt={
-                        localChat.messages.find((msg) => msg.role === "system")?.content
-                      }
-                    />
-                  )}
-                  {message.role === "assistant" && <SystemMessage text={message.content} />}
-                </div>
-              ))}
+              .map((message, index) => {
+                // Check if this is the first user message in the filtered array
+                const filteredMessages = localChat.messages.filter((msg) => msg.role !== "system");
+                const isFirstUserMessage =
+                  message.role === "user" &&
+                  filteredMessages.findIndex((msg) => msg.role === "user") === index;
+
+                return (
+                  <div
+                    key={index}
+                    id={`message-${message.role}-${index}`}
+                    className="flex flex-col gap-2"
+                  >
+                    {message.role === "user" && (
+                      <UserMessage
+                        text={message.content}
+                        systemPrompt={
+                          isFirstUserMessage
+                            ? localChat.messages.find((msg) => msg.role === "system")?.content
+                            : undefined
+                        }
+                      />
+                    )}
+                    {message.role === "assistant" && <SystemMessage text={message.content} />}
+                  </div>
+                );
+              })}
             {(currentStreamingMessage || isLoading) && (
               <div className="flex flex-col gap-2">
                 <SystemMessage text={currentStreamingMessage || ""} loading={isLoading} />
