@@ -122,14 +122,14 @@ function UserMessage({
           ) : (
             <>
               <Markdown content={text} loading={false} chatId={chatId} />
-              <div className="flex gap-1 mt-2">
-                <TooltipProvider>
+              <TooltipProvider>
+                <div className="flex gap-1 mt-1">
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <Button
                         variant="ghost"
                         size="sm"
-                        className="h-8 w-8 p-0"
+                        className="h-7 w-7 p-0"
                         onClick={handleEdit}
                         aria-label="Edit message"
                       >
@@ -140,15 +140,13 @@ function UserMessage({
                       Edit
                     </TooltipContent>
                   </Tooltip>
-                </TooltipProvider>
 
-                <TooltipProvider>
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <Button
                         variant="ghost"
                         size="sm"
-                        className="h-8 w-8 p-0"
+                        className="h-7 w-7 p-0"
                         onClick={handleDelete}
                         aria-label="Delete message"
                       >
@@ -159,15 +157,13 @@ function UserMessage({
                       Delete
                     </TooltipContent>
                   </Tooltip>
-                </TooltipProvider>
 
-                <TooltipProvider>
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <Button
                         variant="ghost"
                         size="sm"
-                        className="h-8 w-8 p-0"
+                        className="h-7 w-7 p-0"
                         onClick={handleCopy}
                         aria-label={isCopied ? "Copied" : "Copy message"}
                       >
@@ -178,8 +174,8 @@ function UserMessage({
                       Copy
                     </TooltipContent>
                   </Tooltip>
-                </TooltipProvider>
-              </div>
+                </div>
+              </TooltipProvider>
             </>
           )}
         </div>
@@ -224,14 +220,14 @@ function SystemMessage({
         </div>
         <div className="flex flex-col gap-2 flex-1">
           <Markdown content={text} loading={loading} chatId={chatId} />
-          <div className="flex gap-1 mt-2">
-            <TooltipProvider>
+          <TooltipProvider>
+            <div className="flex gap-1 mt-1">
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Button
                     variant="ghost"
                     size="sm"
-                    className="h-8 w-8 p-0"
+                    className="h-7 w-7 p-0"
                     onClick={handleRegenerate}
                     aria-label="Regenerate response"
                   >
@@ -242,15 +238,13 @@ function SystemMessage({
                   Regenerate
                 </TooltipContent>
               </Tooltip>
-            </TooltipProvider>
 
-            <TooltipProvider>
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Button
                     variant="ghost"
                     size="sm"
-                    className="h-8 w-8 p-0"
+                    className="h-7 w-7 p-0"
                     onClick={handleDelete}
                     aria-label="Delete response"
                   >
@@ -261,15 +255,13 @@ function SystemMessage({
                   Delete
                 </TooltipContent>
               </Tooltip>
-            </TooltipProvider>
 
-            <TooltipProvider>
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Button
                     variant="ghost"
                     size="sm"
-                    className="h-8 w-8 p-0"
+                    className="h-7 w-7 p-0"
                     onClick={handleCopy}
                     aria-label={isCopied ? "Copied" : "Copy to clipboard"}
                   >
@@ -280,8 +272,8 @@ function SystemMessage({
                   Copy
                 </TooltipContent>
               </Tooltip>
-            </TooltipProvider>
-          </div>
+            </div>
+          </TooltipProvider>
         </div>
       </div>
     </div>
@@ -850,34 +842,77 @@ function ChatComponent() {
     async (messageIndex: number) => {
       if (!localChat || isLoading) return;
 
-      // Get visible messages (non-system)
-      const visibleMessages = localChat.messages.filter((m) => m.role !== "system");
+      try {
+        setIsLoading(true);
+        setError("");
 
-      // Find the last user message before this assistant message
-      let lastUserMessageIndex = -1;
-      for (let i = messageIndex - 1; i >= 0; i--) {
-        if (visibleMessages[i].role === "user") {
-          lastUserMessageIndex = i;
-          break;
+        // Get visible messages (non-system)
+        const visibleMessages = localChat.messages.filter((m) => m.role !== "system");
+        const assistantMessage = visibleMessages[messageIndex];
+
+        // Find the actual index of this assistant message in the full messages array
+        const assistantActualIndex = localChat.messages.findIndex((m) => m === assistantMessage);
+
+        if (assistantActualIndex < 0) return;
+
+        // Clear out all messages at and after the assistant message being regenerated
+        const messagesUpToBeforeAssistant = localChat.messages.slice(0, assistantActualIndex);
+
+        // Update local state to remove the assistant message and everything after it
+        setLocalChat((prev) => ({ ...prev, messages: messagesUpToBeforeAssistant }));
+
+        // Regenerate from the existing conversation without adding a new user message
+        const stream = openai.beta.chat.completions.stream({
+          model,
+          messages: messagesUpToBeforeAssistant,
+          stream: true
+        });
+
+        let fullResponse = "";
+        let isFirstChunk = true;
+
+        for await (const chunk of stream) {
+          const content = chunk.choices[0]?.delta?.content || "";
+          fullResponse += content;
+          setCurrentStreamingMessage(fullResponse);
+
+          // Scroll to bottom on first chunk of the response
+          if (isFirstChunk && content.trim()) {
+            requestAnimationFrame(() => {
+              chatContainerRef.current?.scrollTo({
+                top: chatContainerRef.current.scrollHeight,
+                behavior: "smooth"
+              });
+            });
+            isFirstChunk = false;
+          }
         }
-      }
 
-      if (lastUserMessageIndex >= 0) {
-        // Remove the assistant message and all messages after it
-        const messagesUpToUser = localChat.messages.slice(
-          0,
-          localChat.messages.findIndex((m) => m === visibleMessages[lastUserMessageIndex]) + 1
-        );
+        // Add the new assistant response
+        const finalMessages = [
+          ...messagesUpToBeforeAssistant,
+          { role: "assistant", content: fullResponse } as ChatMessage
+        ];
 
-        // Update local state to remove the assistant message
-        setLocalChat((prev) => ({ ...prev, messages: messagesUpToUser }));
+        setLocalChat((prev) => ({ ...prev, messages: finalMessages }));
+        setCurrentStreamingMessage(undefined);
 
-        // Resend the user message
-        const lastUserMessage = visibleMessages[lastUserMessageIndex].content;
-        await sendMessage(lastUserMessage);
+        // Persist the changes
+        await persistChat({ ...localChat, messages: finalMessages });
+
+        // Invalidate queries to reflect changes
+        queryClient.invalidateQueries({
+          queryKey: ["chat", chatId],
+          refetchType: "all"
+        });
+      } catch (error) {
+        console.error("Error regenerating message:", error);
+        setError("Failed to regenerate message. Please try again.");
+      } finally {
+        setIsLoading(false);
       }
     },
-    [localChat, isLoading, sendMessage]
+    [localChat, isLoading, model, openai, persistChat, queryClient, chatId, setError]
   );
 
   const handleCopyMessage = useCallback((text: string) => {
