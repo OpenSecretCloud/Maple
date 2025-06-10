@@ -610,7 +610,7 @@ END OF INSTRUCTIONS`;
                 <SquarePenIcon className="h-4 w-4" />
               </Button>
             )}
-            <h2 className="text-lg font-semibold self-center truncate max-w-[20rem] mx-[6rem] py-2">
+            <h2 className="text-base font-semibold self-center truncate max-w-[20rem] mx-[6rem] py-2">
               {localChat.title}
             </h2>
           </div>
