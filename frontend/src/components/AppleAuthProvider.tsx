@@ -220,7 +220,31 @@ export function AppleAuthProvider({
             // Call the OpenSecret SDK to handle the authentication
             await os.handleAppleCallback(code, state, inviteCode || "");
 
-            // Handle successful login redirection
+            // Check if this is a Tauri app auth flow (desktop or mobile)
+            const isTauriAuth = localStorage.getItem("redirect-to-native") === "true";
+
+            if (isTauriAuth) {
+              // Clear the flag
+              localStorage.removeItem("redirect-to-native");
+
+              // Handle Tauri redirect - redirect back to desktop app
+              const accessToken = localStorage.getItem("access_token") || "";
+              const refreshToken = localStorage.getItem("refresh_token");
+
+              let deepLinkUrl = `cloud.opensecret.maple://auth?access_token=${encodeURIComponent(accessToken)}`;
+
+              if (refreshToken) {
+                deepLinkUrl += `&refresh_token=${encodeURIComponent(refreshToken)}`;
+              }
+
+              setTimeout(() => {
+                window.location.href = deepLinkUrl;
+              }, 1000);
+
+              return;
+            }
+
+            // Handle web flow - regular navigation
             if (onSuccess) {
               onSuccess();
             }
@@ -301,7 +325,31 @@ export function AppleAuthProvider({
           // Call the OpenSecret SDK to handle the authentication
           await os.handleAppleCallback(code, state, inviteCode || "");
 
-          // Handle successful login redirection
+          // Check if this is a Tauri app auth flow (desktop or mobile)
+          const isTauriAuth = localStorage.getItem("redirect-to-native") === "true";
+
+          if (isTauriAuth) {
+            // Clear the flag
+            localStorage.removeItem("redirect-to-native");
+
+            // Handle Tauri redirect - redirect back to desktop app
+            const accessToken = localStorage.getItem("access_token") || "";
+            const refreshToken = localStorage.getItem("refresh_token");
+
+            let deepLinkUrl = `cloud.opensecret.maple://auth?access_token=${encodeURIComponent(accessToken)}`;
+
+            if (refreshToken) {
+              deepLinkUrl += `&refresh_token=${encodeURIComponent(refreshToken)}`;
+            }
+
+            setTimeout(() => {
+              window.location.href = deepLinkUrl;
+            }, 1000);
+
+            return;
+          }
+
+          // Handle web flow - regular navigation
           if (onSuccess) {
             onSuccess();
           }
