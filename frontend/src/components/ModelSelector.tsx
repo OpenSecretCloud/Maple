@@ -25,6 +25,11 @@ const MODEL_CONFIG: Record<
     badge: "Coming Soon",
     disabled: true
   },
+  "leon-se/gemma-3-27b-it-fp8-dynamic": {
+    displayName: "Gemma 3 27B",
+    badge: "Coming Soon",
+    disabled: true
+  },
   "deepseek-r1-70b": {
     displayName: "DeepSeek R1 70B",
     badge: "Pro",
@@ -115,9 +120,10 @@ export function ModelSelector() {
 
   const getDisplayName = (modelId: string, showLock = false) => {
     const config = MODEL_CONFIG[modelId];
+    const elements: React.ReactNode[] = [];
 
     if (config) {
-      const elements: React.ReactNode[] = [config.displayName];
+      elements.push(config.displayName);
 
       if (config.badge) {
         let badgeClass = "text-[10px] px-1.5 py-0.5 rounded-sm font-medium";
@@ -140,13 +146,21 @@ export function ModelSelector() {
       if (showLock && config.requiresPro && !hasAccessToModel(modelId)) {
         elements.push(<Lock key="lock" className="h-3 w-3 opacity-50" />);
       }
-
-      return <span className="flex items-center gap-1">{elements}</span>;
+    } else {
+      // Unknown models: show model ID with "Coming Soon" badge
+      const model = availableModels.find((m) => m.id === modelId);
+      elements.push(model?.id || modelId);
+      elements.push(
+        <span
+          key="badge"
+          className="text-[10px] px-1.5 py-0.5 rounded-sm font-medium bg-gray-500/10 text-gray-600"
+        >
+          Coming Soon
+        </span>
+      );
     }
 
-    // Fallback to model ID if not in config
-    const model = availableModels.find((m) => m.id === modelId);
-    return model?.id || modelId;
+    return <span className="flex items-center gap-1">{elements}</span>;
   };
 
   // Always show the same format, whether dropdown or not
@@ -175,8 +189,9 @@ export function ModelSelector() {
             .sort((a, b) => {
               const aConfig = MODEL_CONFIG[a.id];
               const bConfig = MODEL_CONFIG[b.id];
-              const aDisabled = aConfig?.disabled || false;
-              const bDisabled = bConfig?.disabled || false;
+              // Unknown models are treated as disabled
+              const aDisabled = aConfig?.disabled || !aConfig;
+              const bDisabled = bConfig?.disabled || !bConfig;
               const aRestricted = (aConfig?.requiresPro || false) && !hasAccessToModel(a.id);
               const bRestricted = (bConfig?.requiresPro || false) && !hasAccessToModel(b.id);
 
@@ -192,7 +207,8 @@ export function ModelSelector() {
             })
             .map((availableModel) => {
               const config = MODEL_CONFIG[availableModel.id];
-              const isDisabled = config?.disabled || false;
+              // Unknown models are treated as disabled
+              const isDisabled = config?.disabled || !config;
               const requiresPro = config?.requiresPro || false;
               const hasAccess = hasAccessToModel(availableModel.id);
               const isRestricted = requiresPro && !hasAccess;
