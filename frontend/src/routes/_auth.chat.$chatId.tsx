@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { createFileRoute } from "@tanstack/react-router";
-import { AsteriskIcon, Check, Copy, UserIcon, ChevronDown, Bot, ChevronRight, SquarePenIcon } from "lucide-react";
+import { AsteriskIcon, Check, Copy, UserIcon, ChevronDown, Bot, SquarePenIcon } from "lucide-react";
 import ChatBox from "@/components/ChatBox";
 import { useOpenAI } from "@/ai/useOpenAi";
 import { useLocalState } from "@/state/useLocalState";
@@ -92,8 +92,6 @@ function SystemPromptMessage({ text }: { text: string }) {
     }
   }, [text]);
 
-  const truncatedText = text.length > 100 ? text.slice(0, 100) + "..." : text;
-
   return (
     <div className="group flex flex-col p-4 rounded-lg bg-muted/50">
       <div className="rounded-lg flex flex-col md:flex-row gap-4">
@@ -104,20 +102,39 @@ function SystemPromptMessage({ text }: { text: string }) {
           <div className="flex items-center gap-2">
             <span className="text-sm font-medium text-muted-foreground">System Prompt</span>
           </div>
-          <div className="text-sm text-foreground">{isExpanded ? text : truncatedText}</div>
-          {text.length > 100 && (
-            <Button
-              variant="ghost"
-              size="sm"
-              className="self-start -mx-2 text-xs h-auto p-1 text-primary hover:text-primary/80"
-              onClick={() => setIsExpanded(!isExpanded)}
-            >
-              <ChevronRight
-                className={`h-3 w-3 mr-1 transition-transform ${isExpanded ? "rotate-90" : ""}`}
-              />
-              {isExpanded ? "Show less" : "Show more"}
-            </Button>
-          )}
+          <div className="text-sm text-foreground">
+            {isExpanded ? (
+              <>
+                {text}
+                {text.length > 100 && (
+                  <>
+                    {" "}
+                    <button
+                      className="text-primary hover:text-primary/80 underline cursor-pointer"
+                      onClick={() => setIsExpanded(false)}
+                    >
+                      show less
+                    </button>
+                  </>
+                )}
+              </>
+            ) : (
+              <>
+                {text.length > 100 ? text.slice(0, 100) : text}
+                {text.length > 100 && (
+                  <>
+                    {"... "}
+                    <button
+                      className="text-primary hover:text-primary/80 underline cursor-pointer"
+                      onClick={() => setIsExpanded(true)}
+                    >
+                      see more
+                    </button>
+                  </>
+                )}
+              </>
+            )}
+          </div>
           <Button
             variant="ghost"
             size="sm"
