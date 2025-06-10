@@ -786,10 +786,7 @@ function ChatComponent() {
     async (messageIndex: number, newText: string) => {
       if (!localChat) return;
 
-      // Create new messages array with updated message
-      const updatedMessages = [...localChat.messages];
-
-      // Get visible messages (non-system) and find the actual message to edit
+      // Get visible messages (non-system)
       const visibleMessages = localChat.messages.filter((m) => m.role !== "system");
       const messageToEdit = visibleMessages[messageIndex];
 
@@ -797,6 +794,8 @@ function ChatComponent() {
       const actualIndex = localChat.messages.findIndex((m) => m === messageToEdit);
 
       if (actualIndex >= 0) {
+        // Create new messages array with updated message
+        const updatedMessages = [...localChat.messages];
         updatedMessages[actualIndex] = { ...updatedMessages[actualIndex], content: newText };
 
         // Update local state
@@ -984,7 +983,7 @@ END OF INSTRUCTIONS`;
     } finally {
       setIsSummarizing(false);
     }
-  }, [localChat, model, openai, addChat, navigate, setUserPrompt]);
+  }, [localChat, openai, addChat, navigate, setUserPrompt, persistChat, queryClient]);
 
   return (
     <div className="grid h-dvh w-full grid-cols-1 md:grid-cols-[280px_1fr]">
