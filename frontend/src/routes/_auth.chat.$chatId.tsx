@@ -167,7 +167,7 @@ function UserMessage({
                       <Button
                         variant="ghost"
                         size="sm"
-                        className="h-8 w-8 p-0 group-hover:opacity-100 opacity-0 transition-opacity"
+                        className="h-8 w-8 p-0"
                         onClick={handleCopy}
                         aria-label={isCopied ? "Copied" : "Copy message"}
                       >
@@ -269,7 +269,7 @@ function SystemMessage({
                   <Button
                     variant="ghost"
                     size="sm"
-                    className="h-8 w-8 p-0 group-hover:opacity-100 opacity-0 transition-opacity"
+                    className="h-8 w-8 p-0"
                     onClick={handleCopy}
                     aria-label={isCopied ? "Copied" : "Copy to clipboard"}
                   >
@@ -788,9 +788,13 @@ function ChatComponent() {
 
       // Create new messages array with updated message
       const updatedMessages = [...localChat.messages];
-      const actualIndex = localChat.messages
-        .filter((m) => m.role !== "system")
-        .indexOf(localChat.messages.filter((m) => m.role !== "system")[messageIndex]);
+
+      // Get visible messages (non-system) and find the actual message to edit
+      const visibleMessages = localChat.messages.filter((m) => m.role !== "system");
+      const messageToEdit = visibleMessages[messageIndex];
+
+      // Find the actual index in the full messages array
+      const actualIndex = localChat.messages.findIndex((m) => m === messageToEdit);
 
       if (actualIndex >= 0) {
         updatedMessages[actualIndex] = { ...updatedMessages[actualIndex], content: newText };
