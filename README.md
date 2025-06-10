@@ -55,6 +55,35 @@ This will configure git to use the project's pre-commit hooks, which run `bun ru
 
 ## Development
 
+### Using Just Commands
+
+This project uses [just](https://github.com/casey/just) for common development tasks:
+
+```bash
+# List all available commands
+just
+
+# Install dependencies
+just install
+
+# Start development server
+just dev
+
+# Build the project
+just build
+
+# Format code
+just format
+
+# Run tests
+just test
+
+# Get current version
+just get-version
+```
+
+### Manual Development
+
 1. Install dependencies:
 ```bash
 bun install
@@ -121,13 +150,37 @@ For proper macOS builds and notarization, you need to set up the following GitHu
 6. `APPLE_TEAM_ID` - Your Apple Developer team ID
 
 ### To Create a Release
-1. Update the version in the following files:
-   - `frontend/package.json`
-   - `frontend/src-tauri/tauri.conf.json`
-   - `frontend/src-tauri/Cargo.toml`
-   - `frontend/src-tauri/gen/apple/project.yml` (CFBundleShortVersionString and CFBundleVersion)
-   - `frontend/src-tauri/gen/apple/maple_iOS/Info.plist` (CFBundleShortVersionString and CFBundleVersion)
-   - Run `cargo check` in `frontend/src-tauri/` to update `Cargo.lock`
+
+#### Version Management
+Use the provided `just` commands to manage version updates:
+
+```bash
+# Bump patch version (e.g., 1.0.0 → 1.0.1)
+just bump-patch
+
+# Bump minor version (e.g., 1.0.0 → 1.1.0)
+just bump-minor
+
+# Bump major version (e.g., 1.0.0 → 2.0.0)
+just bump-major
+
+# Set a specific version
+just update-version 1.2.3
+
+# Create a release with automatic git tag
+just release 1.2.3
+```
+
+These commands automatically update all necessary files:
+- `frontend/package.json`
+- `frontend/src-tauri/tauri.conf.json`
+- `frontend/src-tauri/Cargo.toml`
+- `frontend/src-tauri/gen/apple/project.yml`
+- `frontend/src-tauri/gen/apple/maple_iOS/Info.plist`
+- `Cargo.lock` (via cargo check)
+
+#### Creating a GitHub Release
+1. Use one of the version commands above to update the version
 2. Create a new release in GitHub:
    - Go to Releases → Draft a new release
    - Create a new tag (e.g., `v0.1.0`)
