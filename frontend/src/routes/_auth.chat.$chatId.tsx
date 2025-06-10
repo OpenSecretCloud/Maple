@@ -105,30 +105,28 @@ function SystemPromptMessage({ text }: { text: string }) {
             <span className="text-sm font-medium text-muted-foreground">System Prompt</span>
           </div>
           <div className="text-sm text-foreground">{isExpanded ? text : truncatedText}</div>
-          <div className="flex items-center gap-2">
-            {text.length > 100 && (
-              <Button
-                variant="ghost"
-                size="sm"
-                className="self-start -mx-2 text-xs h-auto p-1 text-primary hover:text-primary/80"
-                onClick={() => setIsExpanded(!isExpanded)}
-              >
-                <ChevronRight
-                  className={`h-3 w-3 mr-1 transition-transform ${isExpanded ? "rotate-90" : ""}`}
-                />
-                {isExpanded ? "Show less" : "Show more"}
-              </Button>
-            )}
+          {text.length > 100 && (
             <Button
               variant="ghost"
               size="sm"
-              className="self-start -mx-2 group-hover:opacity-100 opacity-0 transition-opacity h-auto p-1"
-              onClick={handleCopy}
-              aria-label={isCopied ? "Copied" : "Copy to clipboard"}
+              className="self-start -mx-2 text-xs h-auto p-1 text-primary hover:text-primary/80"
+              onClick={() => setIsExpanded(!isExpanded)}
             >
-              {isCopied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+              <ChevronRight
+                className={`h-3 w-3 mr-1 transition-transform ${isExpanded ? "rotate-90" : ""}`}
+              />
+              {isExpanded ? "Show less" : "Show more"}
             </Button>
-          </div>
+          )}
+          <Button
+            variant="ghost"
+            size="sm"
+            className="self-start -mx-2 -mb-2 group-hover:opacity-100 opacity-0 transition-opacity"
+            onClick={handleCopy}
+            aria-label={isCopied ? "Copied" : "Copy to clipboard"}
+          >
+            {isCopied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+          </Button>
         </div>
       </div>
     </div>
