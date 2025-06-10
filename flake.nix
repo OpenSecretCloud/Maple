@@ -25,6 +25,7 @@
           packages = [
             pkgs.bun
             pkgs.just
+            pkgs.jq
             rustToolchain
             
             # Basic build dependencies
