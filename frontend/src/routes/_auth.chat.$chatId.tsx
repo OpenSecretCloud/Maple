@@ -96,7 +96,7 @@ function UserMessage({
     onDelete(messageIndex);
   };
   return (
-    <div className="group flex flex-col p-4 rounded-lg bg-muted">
+    <div className="group flex flex-col p-3 rounded-lg bg-muted">
       <div className="rounded-lg flex flex-col md:flex-row gap-4">
         <div>
           <UserIcon />
@@ -123,20 +123,37 @@ function UserMessage({
             <>
               <Markdown content={text} loading={false} chatId={chatId} />
               <TooltipProvider>
-                <div className="flex gap-1 mt-1">
+                <div className="flex gap-1">
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <Button
                         variant="ghost"
                         size="sm"
-                        className="h-7 w-7 p-0"
+                        className="h-6 w-6 p-0"
+                        onClick={handleCopy}
+                        aria-label={isCopied ? "Copied" : "Copy message"}
+                      >
+                        {isCopied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom" className="text-xs">
+                      Copy
+                    </TooltipContent>
+                  </Tooltip>
+
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 w-6 p-0"
                         onClick={handleEdit}
                         aria-label="Edit message"
                       >
                         <Edit3 className="h-3 w-3" />
                       </Button>
                     </TooltipTrigger>
-                    <TooltipContent side="top" className="text-xs">
+                    <TooltipContent side="bottom" className="text-xs">
                       Edit
                     </TooltipContent>
                   </Tooltip>
@@ -146,32 +163,15 @@ function UserMessage({
                       <Button
                         variant="ghost"
                         size="sm"
-                        className="h-7 w-7 p-0"
+                        className="h-6 w-6 p-0"
                         onClick={handleDelete}
                         aria-label="Delete message"
                       >
                         <Trash2 className="h-3 w-3" />
                       </Button>
                     </TooltipTrigger>
-                    <TooltipContent side="top" className="text-xs">
+                    <TooltipContent side="bottom" className="text-xs">
                       Delete
-                    </TooltipContent>
-                  </Tooltip>
-
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-7 w-7 p-0"
-                        onClick={handleCopy}
-                        aria-label={isCopied ? "Copied" : "Copy message"}
-                      >
-                        {isCopied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent side="top" className="text-xs">
-                      Copy
                     </TooltipContent>
                   </Tooltip>
                 </div>
@@ -213,7 +213,7 @@ function SystemMessage({
   };
 
   return (
-    <div className="group flex flex-col p-4">
+    <div className="group flex flex-col p-3">
       <div className="rounded-lg flex flex-col md:flex-row gap-4">
         <div>
           <AsteriskIcon />
@@ -221,20 +221,37 @@ function SystemMessage({
         <div className="flex flex-col gap-2 flex-1">
           <Markdown content={text} loading={loading} chatId={chatId} />
           <TooltipProvider>
-            <div className="flex gap-1 mt-1">
+            <div className="flex gap-1">
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Button
                     variant="ghost"
                     size="sm"
-                    className="h-7 w-7 p-0"
+                    className="h-6 w-6 p-0"
+                    onClick={handleCopy}
+                    aria-label={isCopied ? "Copied" : "Copy to clipboard"}
+                  >
+                    {isCopied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="bottom" className="text-xs">
+                  Copy
+                </TooltipContent>
+              </Tooltip>
+
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-6 w-6 p-0"
                     onClick={handleRegenerate}
                     aria-label="Regenerate response"
                   >
                     <RotateCcw className="h-3 w-3" />
                   </Button>
                 </TooltipTrigger>
-                <TooltipContent side="top" className="text-xs">
+                <TooltipContent side="bottom" className="text-xs">
                   Regenerate
                 </TooltipContent>
               </Tooltip>
@@ -244,32 +261,15 @@ function SystemMessage({
                   <Button
                     variant="ghost"
                     size="sm"
-                    className="h-7 w-7 p-0"
+                    className="h-6 w-6 p-0"
                     onClick={handleDelete}
                     aria-label="Delete response"
                   >
                     <Trash2 className="h-3 w-3" />
                   </Button>
                 </TooltipTrigger>
-                <TooltipContent side="top" className="text-xs">
+                <TooltipContent side="bottom" className="text-xs">
                   Delete
-                </TooltipContent>
-              </Tooltip>
-
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-7 w-7 p-0"
-                    onClick={handleCopy}
-                    aria-label={isCopied ? "Copied" : "Copy to clipboard"}
-                  >
-                    {isCopied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent side="top" className="text-xs">
-                  Copy
                 </TooltipContent>
               </Tooltip>
             </div>
