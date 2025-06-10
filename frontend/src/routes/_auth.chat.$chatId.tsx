@@ -136,7 +136,7 @@ function UserMessage({
                         {isCopied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
                       </Button>
                     </TooltipTrigger>
-                    <TooltipContent side="bottom" className="text-xs">
+                    <TooltipContent side="bottom" align="end" className="text-xs">
                       Copy
                     </TooltipContent>
                   </Tooltip>
@@ -153,7 +153,7 @@ function UserMessage({
                         <Edit3 className="h-3 w-3" />
                       </Button>
                     </TooltipTrigger>
-                    <TooltipContent side="bottom" className="text-xs">
+                    <TooltipContent side="bottom" align="end" className="text-xs">
                       Edit
                     </TooltipContent>
                   </Tooltip>
@@ -170,7 +170,7 @@ function UserMessage({
                         <Trash2 className="h-3 w-3" />
                       </Button>
                     </TooltipTrigger>
-                    <TooltipContent side="bottom" className="text-xs">
+                    <TooltipContent side="bottom" align="end" className="text-xs">
                       Delete
                     </TooltipContent>
                   </Tooltip>
@@ -234,7 +234,7 @@ function SystemMessage({
                     {isCopied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
                   </Button>
                 </TooltipTrigger>
-                <TooltipContent side="bottom" className="text-xs">
+                <TooltipContent side="bottom" align="end" className="text-xs">
                   Copy
                 </TooltipContent>
               </Tooltip>
@@ -251,7 +251,7 @@ function SystemMessage({
                     <RotateCcw className="h-3 w-3" />
                   </Button>
                 </TooltipTrigger>
-                <TooltipContent side="bottom" className="text-xs">
+                <TooltipContent side="bottom" align="end" className="text-xs">
                   Regenerate
                 </TooltipContent>
               </Tooltip>
@@ -268,7 +268,7 @@ function SystemMessage({
                     <Trash2 className="h-3 w-3" />
                   </Button>
                 </TooltipTrigger>
-                <TooltipContent side="bottom" className="text-xs">
+                <TooltipContent side="bottom" align="end" className="text-xs">
                   Delete
                 </TooltipContent>
               </Tooltip>
