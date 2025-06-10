@@ -1,6 +1,17 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { createFileRoute } from "@tanstack/react-router";
-import { AsteriskIcon, Check, Copy, UserIcon, ChevronDown, Bot, SquarePenIcon } from "lucide-react";
+import {
+  AsteriskIcon,
+  Check,
+  Copy,
+  UserIcon,
+  ChevronDown,
+  Bot,
+  SquarePenIcon,
+  RotateCcw,
+  Trash2,
+  Edit3
+} from "lucide-react";
 import ChatBox from "@/components/ChatBox";
 import { useOpenAI } from "@/ai/useOpenAi";
 import { useLocalState } from "@/state/useLocalState";
@@ -13,6 +24,8 @@ import { Button } from "@/components/ui/button";
 import { BillingStatus } from "@/billing/billingApi";
 import { useNavigate, useLocation } from "@tanstack/react-router";
 import { useIsMobile } from "@/utils/utils";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { Textarea } from "@/components/ui/textarea";
 
 export const Route = createFileRoute("/_auth/chat/$chatId")({
   component: ChatComponent
@@ -35,15 +48,140 @@ function useCopyToClipboard(text: string) {
   return { isCopied, handleCopy };
 }
 
-function UserMessage({ text, chatId }: { text: string; chatId: string }) {
+function UserMessage({
+  text,
+  chatId,
+  messageIndex,
+  onEdit,
+  onDelete,
+  onCopy
+}: {
+  text: string;
+  chatId: string;
+  messageIndex: number;
+  onEdit: (index: number, newText: string) => void;
+  onDelete: (index: number) => void;
+  onCopy: (text: string) => void;
+}) {
+  const [isEditing, setIsEditing] = useState(false);
+  const [editText, setEditText] = useState(text);
+  const [isCopied, setIsCopied] = useState(false);
+
+  const handleEdit = () => {
+    if (isEditing) {
+      onEdit(messageIndex, editText);
+      setIsEditing(false);
+    } else {
+      setIsEditing(true);
+    }
+  };
+
+  const handleCancel = () => {
+    setEditText(text);
+    setIsEditing(false);
+  };
+
+  const handleCopy = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      onCopy(text);
+      setIsCopied(true);
+      setTimeout(() => setIsCopied(false), 2000);
+    } catch (error) {
+      console.error("Failed to copy text: ", error);
+    }
+  }, [text, onCopy]);
+
+  const handleDelete = () => {
+    onDelete(messageIndex);
+  };
   return (
-    <div className="flex flex-col p-4 rounded-lg bg-muted">
+    <div className="group flex flex-col p-4 rounded-lg bg-muted">
       <div className="rounded-lg flex flex-col md:flex-row gap-4">
         <div>
           <UserIcon />
         </div>
-        <div className="flex flex-col gap-2">
-          <Markdown content={text} loading={false} chatId={chatId} />
+        <div className="flex flex-col gap-2 flex-1">
+          {isEditing ? (
+            <div className="flex flex-col gap-2">
+              <Textarea
+                value={editText}
+                onChange={(e) => setEditText(e.target.value)}
+                className="min-h-[80px]"
+                autoFocus
+              />
+              <div className="flex gap-2">
+                <Button size="sm" onClick={handleEdit}>
+                  Save
+                </Button>
+                <Button size="sm" variant="outline" onClick={handleCancel}>
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <>
+              <Markdown content={text} loading={false} chatId={chatId} />
+              <div className="flex gap-1 mt-2">
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-8 w-8 p-0"
+                        onClick={handleEdit}
+                        aria-label="Edit message"
+                      >
+                        <Edit3 className="h-3 w-3" />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent side="top" className="text-xs">
+                      Edit
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-8 w-8 p-0"
+                        onClick={handleDelete}
+                        aria-label="Delete message"
+                      >
+                        <Trash2 className="h-3 w-3" />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent side="top" className="text-xs">
+                      Delete
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-8 w-8 p-0 group-hover:opacity-100 opacity-0 transition-opacity"
+                        onClick={handleCopy}
+                        aria-label={isCopied ? "Copied" : "Copy message"}
+                      >
+                        {isCopied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent side="top" className="text-xs">
+                      Copy
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              </div>
+            </>
+          )}
         </div>
       </div>
     </div>
@@ -53,14 +191,30 @@ function UserMessage({ text, chatId }: { text: string; chatId: string }) {
 function SystemMessage({
   text,
   loading,
-  chatId
+  chatId,
+  messageIndex,
+  onRegenerate,
+  onDelete,
+  onCopy
 }: {
   text: string;
   loading?: boolean;
   chatId: string;
+  messageIndex: number;
+  onRegenerate: (index: number) => void;
+  onDelete: (index: number) => void;
+  onCopy: (text: string) => void;
 }) {
   const textWithoutThinking = stripThinkingTags(text);
   const { isCopied, handleCopy } = useCopyToClipboard(textWithoutThinking);
+
+  const handleRegenerate = () => {
+    onRegenerate(messageIndex);
+  };
+
+  const handleDelete = () => {
+    onDelete(messageIndex);
+  };
 
   return (
     <div className="group flex flex-col p-4">
@@ -68,17 +222,66 @@ function SystemMessage({
         <div>
           <AsteriskIcon />
         </div>
-        <div className="flex flex-col gap-2">
+        <div className="flex flex-col gap-2 flex-1">
           <Markdown content={text} loading={loading} chatId={chatId} />
-          <Button
-            variant="ghost"
-            size="sm"
-            className="self-start -mx-2 -mb-2 group-hover:opacity-100 opacity-0 transition-opacity"
-            onClick={handleCopy}
-            aria-label={isCopied ? "Copied" : "Copy to clipboard"}
-          >
-            {isCopied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
-          </Button>
+          <div className="flex gap-1 mt-2">
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-8 w-8 p-0"
+                    onClick={handleRegenerate}
+                    aria-label="Regenerate response"
+                  >
+                    <RotateCcw className="h-3 w-3" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="top" className="text-xs">
+                  Regenerate
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-8 w-8 p-0"
+                    onClick={handleDelete}
+                    aria-label="Delete response"
+                  >
+                    <Trash2 className="h-3 w-3" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="top" className="text-xs">
+                  Delete
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-8 w-8 p-0 group-hover:opacity-100 opacity-0 transition-opacity"
+                    onClick={handleCopy}
+                    aria-label={isCopied ? "Copied" : "Copy to clipboard"}
+                  >
+                    {isCopied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="top" className="text-xs">
+                  Copy
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          </div>
         </div>
       </div>
     </div>
@@ -578,6 +781,107 @@ function ChatComponent() {
     [localChat, model, openai, persistChat, queryClient, setUserPrompt, setSystemPrompt, chatId]
   );
 
+  // Message action handlers
+  const handleEditMessage = useCallback(
+    async (messageIndex: number, newText: string) => {
+      if (!localChat) return;
+
+      // Create new messages array with updated message
+      const updatedMessages = [...localChat.messages];
+      const actualIndex = localChat.messages
+        .filter((m) => m.role !== "system")
+        .indexOf(localChat.messages.filter((m) => m.role !== "system")[messageIndex]);
+
+      if (actualIndex >= 0) {
+        updatedMessages[actualIndex] = { ...updatedMessages[actualIndex], content: newText };
+
+        // Update local state
+        setLocalChat((prev) => ({ ...prev, messages: updatedMessages }));
+
+        // Persist the changes
+        await persistChat({ ...localChat, messages: updatedMessages });
+
+        // Invalidate queries to reflect changes
+        queryClient.invalidateQueries({
+          queryKey: ["chat", chatId],
+          refetchType: "all"
+        });
+      }
+    },
+    [localChat, persistChat, queryClient, chatId]
+  );
+
+  const handleDeleteMessage = useCallback(
+    async (messageIndex: number) => {
+      if (!localChat) return;
+
+      // Get visible messages (non-system)
+      const visibleMessages = localChat.messages.filter((m) => m.role !== "system");
+      const messageToDelete = visibleMessages[messageIndex];
+
+      // Find the actual index in the full messages array
+      const actualIndex = localChat.messages.findIndex((m) => m === messageToDelete);
+
+      if (actualIndex >= 0) {
+        // Create new messages array without the deleted message
+        const updatedMessages = [...localChat.messages];
+        updatedMessages.splice(actualIndex, 1);
+
+        // Update local state
+        setLocalChat((prev) => ({ ...prev, messages: updatedMessages }));
+
+        // Persist the changes
+        await persistChat({ ...localChat, messages: updatedMessages });
+
+        // Invalidate queries to reflect changes
+        queryClient.invalidateQueries({
+          queryKey: ["chat", chatId],
+          refetchType: "all"
+        });
+      }
+    },
+    [localChat, persistChat, queryClient, chatId]
+  );
+
+  const handleRegenerateMessage = useCallback(
+    async (messageIndex: number) => {
+      if (!localChat || isLoading) return;
+
+      // Get visible messages (non-system)
+      const visibleMessages = localChat.messages.filter((m) => m.role !== "system");
+
+      // Find the last user message before this assistant message
+      let lastUserMessageIndex = -1;
+      for (let i = messageIndex - 1; i >= 0; i--) {
+        if (visibleMessages[i].role === "user") {
+          lastUserMessageIndex = i;
+          break;
+        }
+      }
+
+      if (lastUserMessageIndex >= 0) {
+        // Remove the assistant message and all messages after it
+        const messagesUpToUser = localChat.messages.slice(
+          0,
+          localChat.messages.findIndex((m) => m === visibleMessages[lastUserMessageIndex]) + 1
+        );
+
+        // Update local state to remove the assistant message
+        setLocalChat((prev) => ({ ...prev, messages: messagesUpToUser }));
+
+        // Resend the user message
+        const lastUserMessage = visibleMessages[lastUserMessageIndex].content;
+        await sendMessage(lastUserMessage);
+      }
+    },
+    [localChat, isLoading, sendMessage]
+  );
+
+  const handleCopyMessage = useCallback((text: string) => {
+    // Copy functionality is handled within the individual message components
+    console.log("Message copied:", text.substring(0, 50) + "...");
+  }, []);
+
   // Chat compression function
   const compressChat = useCallback(async () => {
     try {
@@ -710,25 +1014,51 @@ END OF INSTRUCTIONS`;
           </div>
           <div className="flex flex-col w-full max-w-[45rem] mx-auto gap-4 px-2 pt-4">
             {/* Show all messages including system messages */}
-            {localChat.messages?.map((message, index) => (
-              <div
-                key={index}
-                id={`message-${message.role}-${index}`}
-                className="flex flex-col gap-2"
-              >
-                {message.role === "system" && <SystemPromptMessage text={message.content} />}
-                {message.role === "user" && <UserMessage text={message.content} chatId={chatId} />}
-                {message.role === "assistant" && (
-                  <SystemMessage text={message.content} chatId={chatId} />
-                )}
-              </div>
-            ))}
+            {localChat.messages?.map((message, index) => {
+              // Get the index among visible (non-system) messages for edit/delete operations
+              const visibleMessages = localChat.messages.filter((m) => m.role !== "system");
+              const visibleIndex = visibleMessages.indexOf(message);
+              
+              return (
+                <div
+                  key={index}
+                  id={`message-${message.role}-${index}`}
+                  className="flex flex-col gap-2"
+                >
+                  {message.role === "system" && <SystemPromptMessage text={message.content} />}
+                  {message.role === "user" && (
+                    <UserMessage
+                      text={message.content}
+                      chatId={chatId}
+                      messageIndex={visibleIndex}
+                      onEdit={handleEditMessage}
+                      onDelete={handleDeleteMessage}
+                      onCopy={handleCopyMessage}
+                    />
+                  )}
+                  {message.role === "assistant" && (
+                    <SystemMessage
+                      text={message.content}
+                      chatId={chatId}
+                      messageIndex={visibleIndex}
+                      onRegenerate={handleRegenerateMessage}
+                      onDelete={handleDeleteMessage}
+                      onCopy={handleCopyMessage}
+                    />
+                  )}
+                </div>
+              );
+            })}
             {(currentStreamingMessage || isLoading) && (
               <div className="flex flex-col gap-2">
                 <SystemMessage
                   text={currentStreamingMessage || ""}
                   loading={isLoading}
                   chatId={chatId}
+                  messageIndex={-1}
+                  onRegenerate={() => {}}
+                  onDelete={() => {}}
+                  onCopy={handleCopyMessage}
                 />
               </div>
             )}
