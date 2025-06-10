@@ -5,7 +5,7 @@ import ChatBox from "@/components/ChatBox";
 import { useOpenAI } from "@/ai/useOpenAi";
 import { useLocalState } from "@/state/useLocalState";
 import { Markdown } from "@/components/markdown";
-import { ChatMessage, Chat } from "@/state/LocalStateContext";
+import { ChatMessage, Chat, DEFAULT_MODEL_ID } from "@/state/LocalStateContext";
 import { AlertDestructive } from "@/components/AlertDestructive";
 import { Sidebar, SidebarToggle } from "@/components/Sidebar";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -18,7 +18,7 @@ export const Route = createFileRoute("/_auth/chat/$chatId")({
   component: ChatComponent
 });
 
-function UserMessage({ text }: { text: string }) {
+function UserMessage({ text, chatId }: { text: string; chatId: string }) {
   return (
     <div className="flex flex-col p-4 rounded-lg bg-muted">
       <div className="rounded-lg flex flex-col md:flex-row gap-4">
@@ -26,14 +26,22 @@ function UserMessage({ text }: { text: string }) {
           <UserIcon />
         </div>
         <div className="flex flex-col gap-2">
-          <Markdown content={text} loading={false} />
+          <Markdown content={text} loading={false} chatId={chatId} />
         </div>
       </div>
     </div>
   );
 }
 
-function SystemMessage({ text, loading }: { text: string; loading?: boolean }) {
+function SystemMessage({
+  text,
+  loading,
+  chatId
+}: {
+  text: string;
+  loading?: boolean;
+  chatId: string;
+}) {
   const [isCopied, setIsCopied] = useState(false);
 
   const handleCopy = useCallback(async () => {
@@ -53,7 +61,7 @@ function SystemMessage({ text, loading }: { text: string; loading?: boolean }) {
           <AsteriskIcon />
         </div>
         <div className="flex flex-col gap-2">
-          <Markdown content={text} loading={loading} />
+          <Markdown content={text} loading={loading} chatId={chatId} />
           <Button
             variant="ghost"
             size="sm"
@@ -73,6 +81,7 @@ function ChatComponent() {
   const { chatId } = Route.useParams();
   const {
     model,
+    setModel,
     persistChat,
     getChatById,
     userPrompt,
@@ -171,6 +180,9 @@ function ChatComponent() {
 
   const toggleSidebar = useCallback(() => setIsSidebarOpen((prev) => !prev), []);
 
+  // Track if we've already set the model for this chat
+  const modelSetForChatRef = useRef<string | null>(null);
+
   useEffect(() => {
     if (queryChat && !isPending) {
       console.debug("Chat loaded from query:", queryChat);
@@ -203,6 +215,18 @@ function ChatComponent() {
     // I don't want to re-run this effect if the user prompt or system prompt changes
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [queryChat, chatId, isPending]);
+
+  useEffect(() => {
+    if (queryChat && !isPending) {
+      if (modelSetForChatRef.current !== chatId) {
+        const chatModel = queryChat.model || DEFAULT_MODEL_ID;
+        /** ① Set global selector ② also store on local chat state */
+        setModel(chatModel);
+        setLocalChat((prev) => ({ ...prev, model: chatModel }));
+        modelSetForChatRef.current = chatId;
+      }
+    }
+  }, [queryChat, chatId, isPending, setModel]);
 
   // IMPORTANT that this runs only once (because it uses the user's tokens!)
   const userPromptEffectRan = useRef(false);
@@ -268,9 +292,9 @@ function ChatComponent() {
           // Get the user's first message, truncate if too long
           const userContent = userMessage.content.slice(0, 500); // Reduced to 500 chars to optimize token usage
 
-          // Use the OpenAI API to generate a concise title - use the same model as chat
+          // Use the OpenAI API to generate a concise title - use the default model
           const stream = openai.beta.chat.completions.stream({
-            model: model, // Use the same model that's used for chat
+            model: DEFAULT_MODEL_ID, // Use the default model instead of user selected model
             messages: [
               {
                 role: "system",
@@ -446,7 +470,7 @@ function ChatComponent() {
         // React sucks and doesn't get the latest state
         // Use current title from localChat which may have been updated asynchronously
         const currentTitle = localChat.title === "New Chat" ? title : localChat.title;
-        await persistChat({ ...localChat, title: currentTitle, messages: finalMessages });
+        await persistChat({ ...localChat, model, title: currentTitle, messages: finalMessages });
 
         // Invalidate chat history to show the new title in the sidebar
         queryClient.invalidateQueries({
@@ -520,7 +544,7 @@ END OF INSTRUCTIONS`;
       // 2. Stream the summary
       let summary = "";
       const stream = openai.beta.chat.completions.stream({
-        model,
+        model: DEFAULT_MODEL_ID, // Use the default model instead of user selected model
         messages: summarizationMessages,
         temperature: 0.3,
         max_tokens: 600,
@@ -624,13 +648,21 @@ END OF INSTRUCTIONS`;
                   id={`message-${message.role}-${index}`}
                   className="flex flex-col gap-2"
                 >
-                  {message.role === "user" && <UserMessage text={message.content} />}
-                  {message.role === "assistant" && <SystemMessage text={message.content} />}
+                  {message.role === "user" && (
+                    <UserMessage text={message.content} chatId={chatId} />
+                  )}
+                  {message.role === "assistant" && (
+                    <SystemMessage text={message.content} chatId={chatId} />
+                  )}
                 </div>
               ))}
             {(currentStreamingMessage || isLoading) && (
               <div className="flex flex-col gap-2">
-                <SystemMessage text={currentStreamingMessage || ""} loading={isLoading} />
+                <SystemMessage
+                  text={currentStreamingMessage || ""}
+                  loading={isLoading}
+                  chatId={chatId}
+                />
               </div>
             )}
           </div>

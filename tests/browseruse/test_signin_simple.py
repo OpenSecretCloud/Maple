@@ -7,8 +7,7 @@ import asyncio
 import os
 import json
 from base_test import BrowserTestBase
-from browser_use import Controller, ActionResult
-from playwright.async_api import Page
+from login_helpers import create_login_controller
 
 
 def parse_json_result(final_result: str):
@@ -47,7 +46,7 @@ async def test_invalid_email_format():
         
         EXPECTED RESULT: You should see an error message about the email format being invalid (missing @ symbol)
         
-        When complete, provide your result as JSON:
+        IMPORTANT: When complete, provide your result as JSON:
         {
           "test_case_passed": true/false (true if you got the expected email format error),
           "actual_error": "The exact error message shown",
@@ -108,7 +107,7 @@ async def test_invalid_credentials_valid_email():
         EXPECTED RESULT: You should see an error about invalid credentials, wrong password, or authentication failure.
         IMPORTANT: The error should NOT be about email format since the email is properly formatted.
         
-        When complete, provide your result as JSON:
+        IMPORTANT: When complete, provide your result as JSON:
         {
           "test_case_passed": true/false (true if you got a credential/password error, false if you got an email format error),
           "actual_error": "The exact error message shown",
@@ -163,40 +162,8 @@ async def test_successful_login():
     base = BrowserTestBase("successful_login")
     
     try:
-        # Create controller with custom action for secure password input
-        controller = Controller()
-        
-        @controller.action('Input the email for Maple login')
-        async def input_email_securely(page: Page) -> ActionResult:
-            """Securely input email without LLM interpretation."""
-            # Get email from environment variable
-            email = os.environ.get('BROWSERUSE_TEST_EMAIL', '')
-            
-            # Clear the field first and type email directly
-            await page.keyboard.press('Control+a')
-            await page.keyboard.type(email)
-            
-            return ActionResult(
-                success=True,
-                extracted_content="Email entered securely"
-            )
-        
-        @controller.action('Input the password for Maple login')
-        async def input_password_securely(page: Page) -> ActionResult:
-            """Securely input password without exposing it to the LLM."""
-            # page parameter is automatically provided by browser-use
-            
-            # Get password from environment variable
-            password = os.environ.get('BROWSERUSE_TEST_PASSWORD', '')
-            
-            # Clear the field first and type password directly
-            await page.keyboard.press('Control+a')
-            await page.keyboard.type(password)
-            
-            return ActionResult(
-                success=True,
-                extracted_content="Password entered securely"
-            )
+        # Use the reusable login controller from login_helpers
+        controller = create_login_controller()
     
         # Task that doesn't include the actual email or password
         task = """
@@ -216,7 +183,7 @@ async def test_successful_login():
         
         EXPECTED RESULT: Login should succeed and you should be redirected to the chat interface or dashboard
         
-        When complete, provide your result as JSON:
+        IMPORTANT: When complete, provide your result as JSON:
         {
           "test_case_passed": true/false (true if login succeeded and you reached the chat/dashboard),
           "final_page_url": "The URL you ended up on",

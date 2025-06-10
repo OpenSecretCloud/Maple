@@ -1,4 +1,4 @@
-import { Blend, CornerRightUp, Bot } from "lucide-react";
+import { CornerRightUp, Bot } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { useEffect, useRef, useState } from "react";
@@ -10,6 +10,7 @@ import { BillingStatus } from "@/billing/billingApi";
 import { Route as ChatRoute } from "@/routes/_auth.chat.$chatId";
 import { ChatMessage } from "@/state/LocalStateContext";
 import { useNavigate, useRouter } from "@tanstack/react-router";
+import { ModelSelector } from "@/components/ModelSelector";
 
 // Rough token estimation function
 function estimateTokenCount(text: string): number {
@@ -126,14 +127,8 @@ export default function Component({
   const [inputValue, setInputValue] = useState("");
   const [systemPromptValue, setSystemPromptValue] = useState("");
   const [isSystemPromptExpanded, setIsSystemPromptExpanded] = useState(false);
-  const {
-    model,
-    billingStatus,
-    setBillingStatus,
-    draftMessages,
-    setDraftMessage,
-    clearDraftMessage
-  } = useLocalState();
+  const { billingStatus, setBillingStatus, draftMessages, setDraftMessage, clearDraftMessage } =
+    useLocalState();
   const [isFocused, setIsFocused] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const systemPromptRef = useRef<HTMLTextAreaElement>(null);
@@ -413,12 +408,7 @@ export default function Component({
           onChange={(e) => setInputValue(e.target.value)}
         />
         <div className="flex items-center pt-0">
-          <div className="gap-2 text-xs opacity-50 flex items-center">
-            <Blend className="size-3" />
-            <span className={cn([startTall ? "" : "truncate max-w-[8rem]"])}>
-              {model.startsWith("ibnzterrell") ? "Llama 3.3 70B" : model}
-            </span>
-          </div>
+          <ModelSelector />
           <Button
             type="submit"
             size="sm"

@@ -12,6 +12,7 @@ import { useLocalState } from "@/state/useLocalState";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { type } from "@tauri-apps/plugin-os";
+import { PRICING_PLANS } from "@/config/pricingConfig";
 
 type PricingSearchParams = {
   selected_plan?: string;
@@ -682,144 +683,201 @@ function PricingPage() {
         </div>
 
         <div className="pt-8 w-full max-w-7xl mx-auto grid grid-cols-1 md:grid-cols-4 gap-4 md:gap-4 lg:gap-6 px-4 sm:px-6 lg:px-8">
-          {products &&
-            [...products]
-              .sort((a, b) => a.default_price.unit_amount - b.default_price.unit_amount)
-              .filter((product) => product.active)
-              .map((product) => {
-                const isCurrentPlan =
-                  isLoggedIn &&
-                  freshBillingStatus?.product_name?.toLowerCase() === product.name.toLowerCase();
-                const isTeamPlan = product.name.toLowerCase().includes("team");
+          {PRICING_PLANS.map((plan) => {
+            // Find the matching product from server data
+            const product = products?.find(
+              (p) => p.name.toLowerCase() === plan.name.toLowerCase() && p.active
+            );
 
-                // Calculate prices
-                const monthlyOriginalPrice = (product.default_price.unit_amount / 100).toFixed(2);
-                const monthlyPrice = monthlyOriginalPrice;
+            // If no product found from server, use plan data
+            if (!product && plan.name !== "Free") return null;
 
-                // Calculate yearly prices for Bitcoin (10% off)
-                const yearlyDiscountedPrice = (
-                  Math.floor(product.default_price.unit_amount * 12 * 0.9) / 100
-                ).toFixed(2);
+            const isCurrentPlan =
+              isLoggedIn &&
+              freshBillingStatus?.product_name?.toLowerCase() === plan.name.toLowerCase();
+            const isTeamPlan = plan.name.toLowerCase().includes("team");
+            const isFreeplan = plan.name.toLowerCase().includes("free");
 
-                // Calculate monthly equivalent of yearly Bitcoin price
-                const monthlyEquivalentPrice = (Number(yearlyDiscountedPrice) / 12).toFixed(2);
+            // Calculate prices
+            let monthlyOriginalPrice = plan.price.replace("$", "");
+            let monthlyPrice = monthlyOriginalPrice;
 
-                const displayPrice = useBitcoin ? monthlyEquivalentPrice : monthlyPrice;
+            if (product) {
+              monthlyOriginalPrice = (product.default_price.unit_amount / 100).toFixed(2);
+              monthlyPrice = monthlyOriginalPrice;
+            }
 
-                return (
-                  <div
-                    key={product.id}
-                    className={`flex flex-col ${
-                      product.name === "Pro" && !isCurrentPlan
-                        ? "border-2 border-[hsl(var(--purple))] bg-gradient-to-b from-[hsl(var(--marketing-card))] to-[hsl(var(--marketing-card))]/80 relative shadow-[0_0_30px_rgba(var(--purple-rgb),0.2)]"
-                        : "border border-[hsl(var(--marketing-card-border))] bg-[hsl(var(--marketing-card))]/75"
-                    } text-foreground p-4 sm:p-6 md:p-8 rounded-lg relative group transition-all duration-300 hover:border-foreground/30 ${
-                      isCurrentPlan ? "ring-2 ring-foreground" : ""
-                    } ${useBitcoin && product.name === "Team" ? "opacity-50 cursor-not-allowed" : ""}`}
-                  >
-                    {product.name === "Pro" && !isCurrentPlan && (
-                      <div className="absolute -top-4 left-1/2 transform -translate-x-1/2 bg-[hsl(var(--purple))] text-[hsl(var(--marketing-card))] px-4 py-1 rounded-full text-sm font-medium text-center min-w-[110px] whitespace-normal">
-                        Most Popular
-                      </div>
-                    )}
-                    {isCurrentPlan && (
-                      <Badge className="absolute -top-3 left-1/2 -translate-x-1/2 bg-foreground text-background font-medium">
-                        Current Plan
-                      </Badge>
-                    )}
-                    {product.name !== "Free" && useBitcoin && product.name !== "Team" && (
-                      <Badge className="absolute -top-3 right-4 bg-gradient-to-r from-pink-500 to-orange-500 text-white">
-                        10% OFF
-                      </Badge>
-                    )}
-                    <div className="grid grid-rows-[auto_1fr_auto_auto] h-full gap-4 sm:gap-6 md:gap-8">
-                      <h3 className="text-xl sm:text-2xl font-medium flex items-center gap-2">
-                        {product.name}
-                        {useBitcoin && product.name !== "Free" && product.name !== "Team"
-                          ? " (Yearly)"
-                          : ""}
-                        {isCurrentPlan && <Check className="w-5 h-5 text-green-500" />}
-                      </h3>
+            // Calculate yearly prices for Bitcoin (10% off)
+            const yearlyDiscountedPrice = product
+              ? (Math.floor(product.default_price.unit_amount * 12 * 0.9) / 100).toFixed(2)
+              : (Number(monthlyOriginalPrice) * 12 * 0.9).toFixed(2);
 
-                      <p className="text-base sm:text-lg font-light text-[hsl(var(--marketing-text-muted))] break-words">
-                        {product.name === "Team" && useBitcoin
-                          ? "Team plan is not available with Bitcoin payment."
-                          : product.description}
-                      </p>
+            // Calculate monthly equivalent of yearly Bitcoin price
+            const monthlyEquivalentPrice = (Number(yearlyDiscountedPrice) / 12).toFixed(2);
 
-                      <div className="flex flex-col">
-                        {product.name !== "Free" ? (
-                          <>
-                            <div className="flex flex-wrap items-center gap-2">
-                              <span className="text-2xl sm:text-3xl font-bold">
-                                ${displayPrice}
-                              </span>
-                              {useBitcoin && product.name !== "Team" && (
-                                <span className="text-lg sm:text-xl line-through text-foreground/50">
-                                  ${monthlyOriginalPrice}
-                                </span>
-                              )}
-                              <div className="flex flex-col text-[hsl(var(--marketing-text-muted))]">
-                                <span className="text-base sm:text-lg font-light">
-                                  {product.name === "Team" ? "per user" : ""}
-                                </span>
-                                <span className="text-base sm:text-lg font-light -mt-1">
-                                  per month
-                                </span>
-                              </div>
-                            </div>
-                            <div className="space-y-0.5 sm:space-y-1 mt-1">
-                              {useBitcoin && product.name !== "Team" && (
-                                <>
-                                  <p className="text-sm sm:text-base text-foreground/90 font-medium">
-                                    {product.name === "Team"
-                                      ? `Billed yearly at $${yearlyDiscountedPrice} per user`
-                                      : `Billed yearly at $${yearlyDiscountedPrice}`}
-                                  </p>
-                                  <p className="text-xs sm:text-sm text-foreground/50">
-                                    Save 10% with annual billing
-                                  </p>
-                                </>
-                              )}
-                            </div>
-                          </>
-                        ) : (
-                          <div className="flex flex-wrap items-center gap-2">
-                            <span className="text-2xl sm:text-3xl font-bold">${monthlyPrice}</span>
-                            <span className="text-base sm:text-lg font-light text-[hsl(var(--marketing-text-muted))]">
-                              per month
-                            </span>
-                          </div>
-                        )}
-                      </div>
+            const displayPrice = useBitcoin && !isFreeplan ? monthlyEquivalentPrice : monthlyPrice;
 
-                      <button
-                        onClick={() => handleButtonClick(product)}
-                        disabled={
-                          loadingProductId === product.id || (useBitcoin && product.name === "Team")
-                        }
-                        className={`w-full 
-                          dark:bg-white/90 dark:text-black dark:hover:bg-[hsl(var(--purple))]/80 dark:hover:text-[hsl(var(--foreground))] dark:active:bg-white/80
-                          bg-background text-foreground hover:bg-[hsl(var(--purple))] hover:text-[hsl(var(--foreground))] active:bg-background/80 
-                          border border-[hsl(var(--purple))]/30 hover:border-[hsl(var(--purple))]
-                          px-4 sm:px-8 py-3 sm:py-4 rounded-lg text-lg sm:text-xl font-light 
-                          transition-all duration-300 shadow-[0_0_15px_rgba(var(--purple-rgb),0.2)] 
-                          hover:shadow-[0_0_25px_rgba(var(--purple-rgb),0.3)] disabled:opacity-50 
-                          disabled:cursor-not-allowed flex items-center justify-center gap-2 
-                          group-hover:bg-[hsl(var(--purple))] group-hover:text-[hsl(var(--foreground))] dark:group-hover:text-[hsl(var(--foreground))] dark:group-hover:bg-[hsl(var(--purple))]/80 ${
-                            isTeamPlan && !isTeamPlanAvailable && !isIOS
-                              ? "!opacity-100 !cursor-pointer hover:!bg-[hsl(var(--purple))]"
-                              : ""
-                          }`}
-                      >
-                        {useBitcoin && product.name === "Team"
-                          ? "Not Available"
-                          : getButtonText(product)}
-                      </button>
-                    </div>
+            return (
+              <div
+                key={plan.name}
+                className={`flex flex-col ${
+                  plan.popular && !isCurrentPlan
+                    ? "border-2 border-[hsl(var(--purple))] bg-gradient-to-b from-[hsl(var(--marketing-card))] to-[hsl(var(--marketing-card))]/80 relative shadow-[0_0_30px_rgba(var(--purple-rgb),0.2)]"
+                    : "border border-[hsl(var(--marketing-card-border))] bg-[hsl(var(--marketing-card))]/75"
+                } text-foreground p-4 sm:p-6 md:p-8 rounded-lg relative group transition-all duration-300 hover:border-foreground/30 ${
+                  isCurrentPlan ? "ring-2 ring-foreground" : ""
+                } ${useBitcoin && isTeamPlan ? "opacity-50 cursor-not-allowed" : ""}`}
+              >
+                {plan.popular && !isCurrentPlan && (
+                  <div className="absolute -top-4 left-1/2 transform -translate-x-1/2 bg-[hsl(var(--purple))] text-[hsl(var(--marketing-card))] px-4 py-1 rounded-full text-sm font-medium text-center min-w-[110px] whitespace-normal">
+                    Most Popular
                   </div>
-                );
-              })}
+                )}
+                {isCurrentPlan && (
+                  <Badge className="absolute -top-3 left-1/2 -translate-x-1/2 bg-foreground text-background font-medium">
+                    Current Plan
+                  </Badge>
+                )}
+                {!isFreeplan && useBitcoin && !isTeamPlan && (
+                  <Badge className="absolute -top-3 right-4 bg-gradient-to-r from-pink-500 to-orange-500 text-white">
+                    10% OFF
+                  </Badge>
+                )}
+                <div className="grid grid-rows-[auto_auto_1fr_auto_auto] h-full gap-4 sm:gap-6 md:gap-8">
+                  <h3 className="text-xl sm:text-2xl font-medium flex items-center gap-2">
+                    {plan.name}
+                    {useBitcoin && !isFreeplan && !isTeamPlan ? " (Yearly)" : ""}
+                    {isCurrentPlan && <Check className="w-5 h-5 text-green-500" />}
+                  </h3>
+
+                  <p className="text-base sm:text-lg font-light text-[hsl(var(--marketing-text-muted))] break-words">
+                    {isTeamPlan && useBitcoin
+                      ? "Team plan is not available with Bitcoin payment."
+                      : plan.description}
+                  </p>
+
+                  {/* Features List */}
+                  <div className="flex flex-col gap-2">
+                    {plan.features.map((feature, index) => (
+                      <div key={index} className="flex items-start gap-2 text-sm">
+                        {feature.text !== "" &&
+                          (feature.icon ||
+                            (feature.included ? (
+                              <Check className="w-4 h-4 text-green-500 mt-0.5 flex-shrink-0" />
+                            ) : null))}
+                        <span
+                          className={`${feature.included ? "text-foreground/80" : "text-foreground/50"}`}
+                        >
+                          {feature.text}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="flex flex-col">
+                    {!isFreeplan ? (
+                      <>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-2xl sm:text-3xl font-bold">${displayPrice}</span>
+                          {useBitcoin && !isTeamPlan && (
+                            <span className="text-lg sm:text-xl line-through text-foreground/50">
+                              ${monthlyOriginalPrice}
+                            </span>
+                          )}
+                          <div className="flex flex-col text-[hsl(var(--marketing-text-muted))]">
+                            <span className="text-base sm:text-lg font-light">
+                              {isTeamPlan ? "per user" : ""}
+                            </span>
+                            <span className="text-base sm:text-lg font-light -mt-1">per month</span>
+                          </div>
+                        </div>
+                        <div className="space-y-0.5 sm:space-y-1 mt-1">
+                          {useBitcoin && !isTeamPlan && (
+                            <>
+                              <p className="text-sm sm:text-base text-foreground/90 font-medium">
+                                {isTeamPlan
+                                  ? `Billed yearly at $${yearlyDiscountedPrice} per user`
+                                  : `Billed yearly at $${yearlyDiscountedPrice}`}
+                              </p>
+                              <p className="text-xs sm:text-sm text-foreground/50">
+                                Save 10% with annual billing
+                              </p>
+                            </>
+                          )}
+                        </div>
+                      </>
+                    ) : (
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-2xl sm:text-3xl font-bold">${monthlyPrice}</span>
+                        <span className="text-base sm:text-lg font-light text-[hsl(var(--marketing-text-muted))]">
+                          per month
+                        </span>
+                      </div>
+                    )}
+                  </div>
+
+                  <button
+                    onClick={() =>
+                      handleButtonClick(
+                        product || {
+                          id: plan.name.toLowerCase(),
+                          name: plan.name,
+                          description: plan.description,
+                          active: true,
+                          default_price: {
+                            id: "",
+                            currency: "usd",
+                            unit_amount: 0,
+                            recurring: {
+                              interval: "month",
+                              interval_count: 1
+                            }
+                          }
+                        }
+                      )
+                    }
+                    disabled={
+                      loadingProductId === (product?.id || plan.name.toLowerCase()) ||
+                      (useBitcoin && isTeamPlan)
+                    }
+                    className={`w-full 
+                      dark:bg-white/90 dark:text-black dark:hover:bg-[hsl(var(--purple))]/80 dark:hover:text-[hsl(var(--foreground))] dark:active:bg-white/80
+                      bg-background text-foreground hover:bg-[hsl(var(--purple))] hover:text-[hsl(var(--foreground))] active:bg-background/80 
+                      border border-[hsl(var(--purple))]/30 hover:border-[hsl(var(--purple))]
+                      px-4 sm:px-8 py-3 sm:py-4 rounded-lg text-lg sm:text-xl font-light 
+                      transition-all duration-300 shadow-[0_0_15px_rgba(var(--purple-rgb),0.2)] 
+                      hover:shadow-[0_0_25px_rgba(var(--purple-rgb),0.3)] disabled:opacity-50 
+                      disabled:cursor-not-allowed flex items-center justify-center gap-2 
+                      group-hover:bg-[hsl(var(--purple))] group-hover:text-[hsl(var(--foreground))] dark:group-hover:text-[hsl(var(--foreground))] dark:group-hover:bg-[hsl(var(--purple))]/80 ${
+                        isTeamPlan && !isTeamPlanAvailable && !isIOS
+                          ? "!opacity-100 !cursor-pointer hover:!bg-[hsl(var(--purple))]"
+                          : ""
+                      }`}
+                  >
+                    {useBitcoin && isTeamPlan
+                      ? "Not Available"
+                      : getButtonText(
+                          product || {
+                            id: plan.name.toLowerCase(),
+                            name: plan.name,
+                            description: plan.description || "",
+                            active: true,
+                            default_price: {
+                              id: "",
+                              currency: "usd",
+                              unit_amount: 0,
+                              recurring: {
+                                interval: "month",
+                                interval_count: 1
+                              }
+                            }
+                          }
+                        )}
+                  </button>
+                </div>
+              </div>
+            );
+          })}
         </div>
 
         <PricingFAQ />

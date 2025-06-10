@@ -1,5 +1,11 @@
 import { createContext } from "react";
 import { BillingStatus } from "@/billing/billingApi";
+import type { Model } from "openai/resources/models.js";
+
+// Extended Model type for OpenSecret API which includes additional properties
+export interface OpenSecretModel extends Model {
+  tasks?: string[];
+}
 
 export type ChatMessage = {
   role: "user" | "assistant" | "system";
@@ -10,6 +16,7 @@ export type Chat = {
   id: string;
   title: string;
   messages: ChatMessage[];
+  model?: string;
 };
 
 export type HistoryItem = {
@@ -21,6 +28,9 @@ export type HistoryItem = {
 
 export type LocalState = {
   model: string;
+  availableModels: OpenSecretModel[];
+  setModel: (model: string) => void;
+  setAvailableModels: (models: OpenSecretModel[]) => void;
   userPrompt: string;
   systemPrompt: string | null;
   billingStatus: BillingStatus | null;
@@ -52,6 +62,9 @@ export type LocalState = {
 
 export const LocalStateContext = createContext<LocalState>({
   model: "",
+  availableModels: [],
+  setModel: () => void 0,
+  setAvailableModels: () => void 0,
   userPrompt: "",
   systemPrompt: null,
   billingStatus: null,

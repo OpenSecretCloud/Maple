@@ -34,6 +34,18 @@ package-lock.json
 /tests/blob-report/
 /tests/playwright/.cache/
 
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+
+# BrowserUse test artifacts
+/tests/browseruse/logs/
+/tests/browseruse/*.json
+/tests/browseruse/*.png
+/tests/browseruse/test_summary.txt
+
 
 # Logs
 frontend/logs

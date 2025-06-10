@@ -9,7 +9,6 @@ export const OpenAIProvider = ({ children }: { children: React.ReactNode }) => {
   }
 
   const { aiCustomFetch } = useOpenSecret();
-
   const access_token = window.localStorage.getItem("access_token");
 
   // If we're not logged in we can't set up openai
