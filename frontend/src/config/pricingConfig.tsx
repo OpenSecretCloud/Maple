@@ -42,6 +42,7 @@ export const PRICING_PLANS: PricingPlan[] = [
         icon: <Check className="w-4 h-4 text-green-500" />
       },
       { text: "Rename Chats", included: true, icon: <Check className="w-4 h-4 text-green-500" /> },
+      { text: "Gemma 3 27B", included: false, icon: <X className="w-4 h-4 text-red-500" /> },
       { text: "DeepSeek R1 70B", included: false, icon: <X className="w-4 h-4 text-red-500" /> }
     ],
     ctaText: "Start Free"
@@ -66,6 +67,7 @@ export const PRICING_PLANS: PricingPlan[] = [
         included: true,
         icon: <Check className="w-4 h-4 text-green-500" />
       },
+      { text: "Gemma 3 27B", included: true, icon: <Check className="w-4 h-4 text-green-500" /> },
       { text: "DeepSeek R1 70B", included: false, icon: <X className="w-4 h-4 text-red-500" /> }
     ],
     ctaText: "Start Chatting"
@@ -90,6 +92,7 @@ export const PRICING_PLANS: PricingPlan[] = [
         included: true,
         icon: <Check className="w-4 h-4 text-green-500" />
       },
+      { text: "Gemma 3 27B", included: true, icon: <Check className="w-4 h-4 text-green-500" /> },
       {
         text: "DeepSeek R1 70B",
         included: true,
@@ -129,6 +132,7 @@ export const PRICING_PLANS: PricingPlan[] = [
         included: true,
         icon: <Check className="w-4 h-4 text-green-500" />
       },
+      { text: "Gemma 3 27B", included: true, icon: <Check className="w-4 h-4 text-green-500" /> },
       {
         text: "DeepSeek R1 70B",
         included: true,
