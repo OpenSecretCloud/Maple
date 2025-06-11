@@ -25,7 +25,7 @@ function UserMessage({ text, chatId }: { text: string; chatId: string }) {
         <div>
           <UserIcon />
         </div>
-        <div className="flex flex-col gap-2">
+        <div className="flex flex-col gap-2 min-w-0">
           <Markdown content={text} loading={false} chatId={chatId} />
         </div>
       </div>
@@ -60,7 +60,7 @@ function SystemMessage({
         <div>
           <AsteriskIcon />
         </div>
-        <div className="flex flex-col gap-2">
+        <div className="flex flex-col gap-2 min-w-0">
           <Markdown content={text} loading={loading} chatId={chatId} />
           <Button
             variant="ghost"

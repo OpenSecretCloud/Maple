@@ -374,7 +374,7 @@ export function Markdown(
 
   return (
     <div
-      className="markdown-body overflow-x-auto max-w-full"
+      className="markdown-body overflow-x-auto max-w-full min-w-0"
       style={{
         fontSize: `${props.fontSize ?? 16}px`,
         fontFamily: props.fontFamily || "inherit"
