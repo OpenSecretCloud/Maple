@@ -7,9 +7,14 @@ export interface OpenSecretModel extends Model {
   tasks?: string[];
 }
 
+export type ChatContentPart =
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string } };
+
 export type ChatMessage = {
   role: "user" | "assistant" | "system";
-  content: string;
+  /** plain text for normal models, or multimodal array for Gemma */
+  content: string | ChatContentPart[];
 };
 
 export type Chat = {
@@ -33,6 +38,7 @@ export type LocalState = {
   setAvailableModels: (models: OpenSecretModel[]) => void;
   userPrompt: string;
   systemPrompt: string | null;
+  userImages: File[];
   billingStatus: BillingStatus | null;
   /** Current search query for filtering chat history */
   searchQuery: string;
@@ -45,6 +51,7 @@ export type LocalState = {
   setBillingStatus: (status: BillingStatus) => void;
   setUserPrompt: (prompt: string) => void;
   setSystemPrompt: (prompt: string | null) => void;
+  setUserImages: (images: File[]) => void;
   addChat: (title?: string) => Promise<string>;
   getChatById: (id: string) => Promise<Chat | undefined>;
   persistChat: (chat: Chat) => Promise<void>;
@@ -67,6 +74,7 @@ export const LocalStateContext = createContext<LocalState>({
   setAvailableModels: () => void 0,
   userPrompt: "",
   systemPrompt: null,
+  userImages: [],
   billingStatus: null,
   searchQuery: "",
   setSearchQuery: () => void 0,
@@ -75,6 +83,7 @@ export const LocalStateContext = createContext<LocalState>({
   setBillingStatus: () => void 0,
   setUserPrompt: () => void 0,
   setSystemPrompt: () => void 0,
+  setUserImages: () => void 0,
   addChat: async () => "",
   getChatById: async () => undefined,
   persistChat: async () => void 0,

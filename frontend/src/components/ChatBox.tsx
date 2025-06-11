@@ -1,4 +1,4 @@
-import { CornerRightUp, Bot } from "lucide-react";
+import { CornerRightUp, Bot, ImageIcon, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { useEffect, useRef, useState } from "react";
@@ -36,8 +36,23 @@ function TokenWarning({
   isCompressing?: boolean;
 }) {
   const totalTokens =
-    messages.reduce((acc, msg) => acc + estimateTokenCount(msg.content), 0) +
-    (currentInput ? estimateTokenCount(currentInput) : 0);
+    messages.reduce((acc, msg) => {
+      if (typeof msg.content === "string") {
+        return acc + estimateTokenCount(msg.content);
+      } else {
+        // For multimodal content, estimate tokens from text parts
+        return (
+          acc +
+          msg.content.reduce((sum, part) => {
+            if (part.type === "text") {
+              return sum + estimateTokenCount(part.text);
+            }
+            // Rough estimate for images
+            return sum + 85;
+          }, 0)
+        );
+      }
+    }, 0) + (currentInput ? estimateTokenCount(currentInput) : 0);
 
   const navigate = useNavigate();
 
@@ -117,7 +132,7 @@ export default function Component({
   onCompress,
   isSummarizing = false
 }: {
-  onSubmit: (input: string, systemPrompt?: string) => void;
+  onSubmit: (input: string, systemPrompt?: string, images?: File[]) => void;
   startTall?: boolean;
   messages?: ChatMessage[];
   isStreaming?: boolean;
@@ -129,6 +144,18 @@ export default function Component({
   const [isSystemPromptExpanded, setIsSystemPromptExpanded] = useState(false);
   const { billingStatus, setBillingStatus, draftMessages, setDraftMessage, clearDraftMessage } =
     useLocalState();
+  const { model } = useLocalState();
+
+  const isGemma = model === "leon-se/gemma-3-27b-it-fp8-dynamic";
+  const [images, setImages] = useState<File[]>([]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleAddImages = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!e.target.files) return;
+    setImages((prev) => [...prev, ...Array.from(e.target.files!)]);
+  };
+
+  const removeImage = (idx: number) => setImages((prev) => prev.filter((_, i) => i !== idx));
   const [isFocused, setIsFocused] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const systemPromptRef = useRef<HTMLTextAreaElement>(null);
@@ -162,6 +189,14 @@ export default function Component({
   // Check if system prompt can be edited (only for new chats)
   const canEditSystemPrompt = canUseSystemPrompt && messages.length === 0;
 
+  // Check if user has access to vision features (Pro or Team plan)
+  const hasVisionAccess =
+    freshBillingStatus &&
+    (freshBillingStatus.product_name?.toLowerCase().includes("pro") ||
+      freshBillingStatus.product_name?.toLowerCase().includes("team"));
+
+  const canUseVision = isGemma && hasVisionAccess;
+
   const handleSubmit = (e?: React.FormEvent) => {
     e?.preventDefault();
     if (!inputValue.trim() || isSubmitDisabled) return;
@@ -180,8 +215,13 @@ export default function Component({
 
     // Only pass system prompt if this is the first message
     const isFirstMessage = messages.length === 0;
-    onSubmit(inputValue.trim(), isFirstMessage ? systemPromptValue.trim() || undefined : undefined);
+    onSubmit(
+      inputValue.trim(),
+      isFirstMessage ? systemPromptValue.trim() || undefined : undefined,
+      images
+    );
     setInputValue("");
+    setImages([]);
 
     // Re-focus input after submitting
     setTimeout(() => {
@@ -376,6 +416,22 @@ export default function Component({
           }
         }}
       >
+        {images.length > 0 && (
+          <div className="mb-2 flex gap-2 items-center flex-wrap">
+            {images.map((f, i) => (
+              <div key={i} className="relative">
+                <img src={URL.createObjectURL(f)} className="w-10 h-10 object-cover rounded-md" />
+                <button
+                  type="button"
+                  onClick={() => removeImage(i)}
+                  className="absolute -top-1 -right-1 bg-background rounded-full shadow-sm"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
         <Label htmlFor="message" className="sr-only">
           Message
         </Label>
@@ -409,6 +465,27 @@ export default function Component({
         />
         <div className="flex items-center pt-0">
           <ModelSelector />
+          {canUseVision && (
+            <>
+              <input
+                type="file"
+                accept="image/*"
+                multiple
+                ref={fileInputRef}
+                onChange={handleAddImages}
+                className="hidden"
+              />
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                className="ml-2"
+                onClick={() => fileInputRef.current?.click()}
+              >
+                <ImageIcon className="h-4 w-4" />
+              </Button>
+            </>
+          )}
           <Button
             type="submit"
             size="sm"

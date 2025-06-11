@@ -1,4 +1,4 @@
-import { ChevronDown, Check, Lock } from "lucide-react";
+import { ChevronDown, Check, Lock, Camera } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -13,16 +13,16 @@ import { useNavigate } from "@tanstack/react-router";
 import type { Model } from "openai/resources/models.js";
 
 // Model configuration for display names and badges
-const MODEL_CONFIG: Record<
-  string,
-  {
-    displayName: string;
-    badge?: string;
-    disabled?: boolean;
-    requiresPro?: boolean;
-    requiresStarter?: boolean;
-  }
-> = {
+type ModelCfg = {
+  displayName: string;
+  badge?: string;
+  disabled?: boolean;
+  requiresPro?: boolean;
+  requiresStarter?: boolean;
+  supportsVision?: boolean;
+};
+
+const MODEL_CONFIG: Record<string, ModelCfg> = {
   "ibnzterrell/Meta-Llama-3.3-70B-Instruct-AWQ-INT4": {
     displayName: "Llama 3.3 70B"
   },
@@ -34,7 +34,8 @@ const MODEL_CONFIG: Record<
   "leon-se/gemma-3-27b-it-fp8-dynamic": {
     displayName: "Gemma 3 27B",
     badge: "Starter",
-    requiresStarter: true
+    requiresStarter: true,
+    supportsVision: true
   },
   "deepseek-r1-70b": {
     displayName: "DeepSeek R1 70B",
@@ -169,6 +170,10 @@ export function ModelSelector() {
         !hasAccessToModel(modelId)
       ) {
         elements.push(<Lock key="lock" className="h-3 w-3 opacity-50" />);
+      }
+
+      if (config.supportsVision) {
+        elements.push(<Camera key="cam" className="h-3 w-3" />);
       }
     } else {
       // Unknown models: show model ID with "Coming Soon" badge
