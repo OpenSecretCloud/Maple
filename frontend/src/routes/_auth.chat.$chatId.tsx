@@ -10,7 +10,8 @@ import {
   SquarePenIcon,
   RotateCcw,
   Trash2,
-  Edit3
+  Edit3,
+  GitBranch
 } from "lucide-react";
 import ChatBox from "@/components/ChatBox";
 import { useOpenAI } from "@/ai/useOpenAi";
@@ -26,6 +27,17 @@ import { useNavigate, useLocation } from "@tanstack/react-router";
 import { useIsMobile } from "@/utils/utils";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger
+} from "@/components/ui/alert-dialog";
 
 export const Route = createFileRoute("/_auth/chat/$chatId")({
   component: ChatComponent
@@ -54,7 +66,8 @@ function UserMessage({
   messageIndex,
   onEdit,
   onDelete,
-  onCopy
+  onCopy,
+  onFork
 }: {
   text: string;
   chatId: string;
@@ -62,6 +75,7 @@ function UserMessage({
   onEdit: (index: number, newText: string) => void;
   onDelete: (index: number) => void;
   onCopy: (text: string) => void;
+  onFork: (index: number) => void;
 }) {
   const [isEditing, setIsEditing] = useState(false);
   const [editText, setEditText] = useState(text);
@@ -94,6 +108,10 @@ function UserMessage({
 
   const handleDelete = () => {
     onDelete(messageIndex);
+  };
+
+  const handleFork = () => {
+    onFork(messageIndex);
   };
   return (
     <div className="group flex flex-col p-3 rounded-lg bg-muted">
@@ -147,33 +165,93 @@ function UserMessage({
                         variant="ghost"
                         size="sm"
                         className="h-6 w-6 p-0"
-                        onClick={handleEdit}
-                        aria-label="Edit message"
+                        onClick={handleFork}
+                        aria-label="Fork chat from here"
                       >
-                        <Edit3 className="h-3 w-3" />
+                        <GitBranch className="h-3 w-3" />
                       </Button>
                     </TooltipTrigger>
                     <TooltipContent side="bottom" align="end" className="text-xs">
-                      Edit
+                      Fork
                     </TooltipContent>
                   </Tooltip>
 
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-6 w-6 p-0"
-                        onClick={handleDelete}
-                        aria-label="Delete message"
-                      >
-                        <Trash2 className="h-3 w-3" />
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent side="bottom" align="end" className="text-xs">
-                      Delete
-                    </TooltipContent>
-                  </Tooltip>
+                  <AlertDialog>
+                    <AlertDialogTrigger asChild>
+                      <div>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-6 w-6 p-0"
+                              aria-label="Edit message"
+                            >
+                              <Edit3 className="h-3 w-3" />
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent side="bottom" align="end" className="text-xs">
+                            Edit
+                          </TooltipContent>
+                        </Tooltip>
+                      </div>
+                    </AlertDialogTrigger>
+                    <AlertDialogContent>
+                      <AlertDialogHeader>
+                        <AlertDialogTitle>Edit Message</AlertDialogTitle>
+                        <AlertDialogDescription>
+                          Editing this message will clear all conversation that happened after it.
+                          This action cannot be undone.
+                        </AlertDialogDescription>
+                      </AlertDialogHeader>
+                      <AlertDialogFooter>
+                        <AlertDialogCancel>Cancel</AlertDialogCancel>
+                        <AlertDialogAction onClick={handleEdit}>
+                          Edit & Clear Future Messages
+                        </AlertDialogAction>
+                      </AlertDialogFooter>
+                    </AlertDialogContent>
+                  </AlertDialog>
+
+                  <AlertDialog>
+                    <AlertDialogTrigger asChild>
+                      <div>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-6 w-6 p-0"
+                              aria-label="Delete message"
+                            >
+                              <Trash2 className="h-3 w-3" />
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent side="bottom" align="end" className="text-xs">
+                            Delete
+                          </TooltipContent>
+                        </Tooltip>
+                      </div>
+                    </AlertDialogTrigger>
+                    <AlertDialogContent>
+                      <AlertDialogHeader>
+                        <AlertDialogTitle>Delete Message</AlertDialogTitle>
+                        <AlertDialogDescription>
+                          Deleting this message will also clear all conversation that happened after
+                          it. This action cannot be undone.
+                        </AlertDialogDescription>
+                      </AlertDialogHeader>
+                      <AlertDialogFooter>
+                        <AlertDialogCancel>Cancel</AlertDialogCancel>
+                        <AlertDialogAction
+                          onClick={handleDelete}
+                          className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                        >
+                          Delete & Clear Future Messages
+                        </AlertDialogAction>
+                      </AlertDialogFooter>
+                    </AlertDialogContent>
+                  </AlertDialog>
                 </div>
               </TooltipProvider>
             </>
@@ -191,7 +269,8 @@ function SystemMessage({
   messageIndex,
   onRegenerate,
   onDelete,
-  onCopy
+  onCopy,
+  onFork
 }: {
   text: string;
   loading?: boolean;
@@ -200,6 +279,7 @@ function SystemMessage({
   onRegenerate: (index: number) => void;
   onDelete: (index: number) => void;
   onCopy: (text: string) => void;
+  onFork: (index: number) => void;
 }) {
   const textWithoutThinking = stripThinkingTags(text);
   const { isCopied, handleCopy } = useCopyToClipboard(textWithoutThinking);
@@ -210,6 +290,10 @@ function SystemMessage({
 
   const handleDelete = () => {
     onDelete(messageIndex);
+  };
+
+  const handleFork = () => {
+    onFork(messageIndex);
   };
 
   return (
@@ -245,33 +329,93 @@ function SystemMessage({
                     variant="ghost"
                     size="sm"
                     className="h-6 w-6 p-0"
-                    onClick={handleRegenerate}
-                    aria-label="Regenerate response"
+                    onClick={handleFork}
+                    aria-label="Fork chat from here"
                   >
-                    <RotateCcw className="h-3 w-3" />
+                    <GitBranch className="h-3 w-3" />
                   </Button>
                 </TooltipTrigger>
                 <TooltipContent side="bottom" align="end" className="text-xs">
-                  Regenerate
+                  Fork
                 </TooltipContent>
               </Tooltip>
 
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-6 w-6 p-0"
-                    onClick={handleDelete}
-                    aria-label="Delete response"
-                  >
-                    <Trash2 className="h-3 w-3" />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent side="bottom" align="end" className="text-xs">
-                  Delete
-                </TooltipContent>
-              </Tooltip>
+              <AlertDialog>
+                <AlertDialogTrigger asChild>
+                  <div>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-6 w-6 p-0"
+                          aria-label="Regenerate response"
+                        >
+                          <RotateCcw className="h-3 w-3" />
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent side="bottom" align="end" className="text-xs">
+                        Regenerate
+                      </TooltipContent>
+                    </Tooltip>
+                  </div>
+                </AlertDialogTrigger>
+                <AlertDialogContent>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>Regenerate Response</AlertDialogTitle>
+                    <AlertDialogDescription>
+                      Regenerating this response will clear all conversation that happened after it.
+                      This action cannot be undone.
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel>Cancel</AlertDialogCancel>
+                    <AlertDialogAction onClick={handleRegenerate}>
+                      Regenerate & Clear Future Messages
+                    </AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
+
+              <AlertDialog>
+                <AlertDialogTrigger asChild>
+                  <div>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-6 w-6 p-0"
+                          aria-label="Delete response"
+                        >
+                          <Trash2 className="h-3 w-3" />
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent side="bottom" align="end" className="text-xs">
+                        Delete
+                      </TooltipContent>
+                    </Tooltip>
+                  </div>
+                </AlertDialogTrigger>
+                <AlertDialogContent>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>Delete Response</AlertDialogTitle>
+                    <AlertDialogDescription>
+                      Deleting this response will also clear all conversation that happened after
+                      it. This action cannot be undone.
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel>Cancel</AlertDialogCancel>
+                    <AlertDialogAction
+                      onClick={handleDelete}
+                      className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                    >
+                      Delete & Clear Future Messages
+                    </AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
             </div>
           </TooltipProvider>
         </div>
@@ -786,15 +930,18 @@ function ChatComponent() {
       const actualIndex = localChat.messages.findIndex((m) => m === messageToEdit);
 
       if (actualIndex >= 0) {
-        // Create new messages array with updated message
+        // Create new messages array - DESTRUCTIVE: clear all messages after this one
         const updatedMessages = [...localChat.messages];
         updatedMessages[actualIndex] = { ...updatedMessages[actualIndex], content: newText };
 
+        // Remove all messages after the edited message
+        const messagesUpToEdit = updatedMessages.slice(0, actualIndex + 1);
+
         // Update local state
-        setLocalChat((prev) => ({ ...prev, messages: updatedMessages }));
+        setLocalChat((prev) => ({ ...prev, messages: messagesUpToEdit }));
 
         // Persist the changes
-        await persistChat({ ...localChat, messages: updatedMessages });
+        await persistChat({ ...localChat, messages: messagesUpToEdit });
 
         // Invalidate queries to reflect changes
         queryClient.invalidateQueries({
@@ -818,15 +965,14 @@ function ChatComponent() {
       const actualIndex = localChat.messages.findIndex((m) => m === messageToDelete);
 
       if (actualIndex >= 0) {
-        // Create new messages array without the deleted message
-        const updatedMessages = [...localChat.messages];
-        updatedMessages.splice(actualIndex, 1);
+        // DESTRUCTIVE: Remove the message and all messages after it
+        const messagesUpToDelete = localChat.messages.slice(0, actualIndex);
 
         // Update local state
-        setLocalChat((prev) => ({ ...prev, messages: updatedMessages }));
+        setLocalChat((prev) => ({ ...prev, messages: messagesUpToDelete }));
 
         // Persist the changes
-        await persistChat({ ...localChat, messages: updatedMessages });
+        await persistChat({ ...localChat, messages: messagesUpToDelete });
 
         // Invalidate queries to reflect changes
         queryClient.invalidateQueries({
@@ -855,7 +1001,7 @@ function ChatComponent() {
 
         if (assistantActualIndex < 0) return;
 
-        // Clear out all messages at and after the assistant message being regenerated
+        // DESTRUCTIVE: Clear out all messages at and after the assistant message being regenerated
         const messagesUpToBeforeAssistant = localChat.messages.slice(0, assistantActualIndex);
 
         // Update local state to remove the assistant message and everything after it
@@ -913,6 +1059,59 @@ function ChatComponent() {
       }
     },
     [localChat, isLoading, model, openai, persistChat, queryClient, chatId, setError]
+  );
+
+  const handleForkMessage = useCallback(
+    async (messageIndex: number) => {
+      if (!localChat) return;
+
+      try {
+        // Get visible messages (non-system)
+        const visibleMessages = localChat.messages.filter((m) => m.role !== "system");
+        const messageToForkFrom = visibleMessages[messageIndex];
+
+        // Find the actual index in the full messages array
+        const actualIndex = localChat.messages.findIndex((m) => m === messageToForkFrom);
+
+        if (actualIndex >= 0) {
+          // Create messages up to and including the fork point
+          const messagesUpToFork = localChat.messages.slice(0, actualIndex + 1);
+
+          // Create a new chat with the forked history
+          const forkTitle = `${localChat.title} (Fork)`;
+          const newChatId = await addChat(forkTitle);
+
+          // Create the new chat with the forked messages
+          const forkedChat: Chat = {
+            id: newChatId,
+            title: forkTitle,
+            messages: messagesUpToFork,
+            model: localChat.model
+          };
+
+          // Persist the forked chat
+          await persistChat(forkedChat);
+
+          // Invalidate queries to refresh chat list
+          queryClient.invalidateQueries({
+            queryKey: ["chatHistory"],
+            refetchType: "all"
+          });
+
+          queryClient.invalidateQueries({
+            queryKey: ["chat", newChatId],
+            refetchType: "all"
+          });
+
+          // Navigate to the new forked chat
+          navigate({ to: "/chat/$chatId", params: { chatId: newChatId } });
+        }
+      } catch (error) {
+        console.error("Error forking chat:", error);
+        setError("Failed to fork chat. Please try again.");
+      }
+    },
+    [localChat, addChat, persistChat, queryClient, navigate, setError]
   );
 
   const handleCopyMessage = useCallback((text: string) => {
@@ -1072,6 +1271,7 @@ END OF INSTRUCTIONS`;
                       onEdit={handleEditMessage}
                       onDelete={handleDeleteMessage}
                       onCopy={handleCopyMessage}
+                      onFork={handleForkMessage}
                     />
                   )}
                   {message.role === "assistant" && (
@@ -1082,6 +1282,7 @@ END OF INSTRUCTIONS`;
                       onRegenerate={handleRegenerateMessage}
                       onDelete={handleDeleteMessage}
                       onCopy={handleCopyMessage}
+                      onFork={handleForkMessage}
                     />
                   )}
                 </div>
@@ -1097,6 +1298,7 @@ END OF INSTRUCTIONS`;
                   onRegenerate={() => {}}
                   onDelete={() => {}}
                   onCopy={handleCopyMessage}
+                  onFork={() => {}}
                 />
               </div>
             )}
