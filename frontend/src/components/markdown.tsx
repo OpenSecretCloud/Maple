@@ -237,10 +237,23 @@ function CustomCode(props: JSX.IntrinsicElements["code"]) {
 
 function ResponsiveTable(props: JSX.IntrinsicElements["table"]) {
   return (
-    <div className="overflow-x-auto max-w-full">
+    <div
+      className="overflow-x-auto"
+      style={{
+        width: "100%",
+        maxWidth: "100%",
+        boxSizing: "border-box"
+      }}
+    >
       <table
         {...props}
-        style={{ ...props.style, tableLayout: "auto", width: "max-content", minWidth: "100%" }}
+        style={{
+          ...props.style,
+          display: "table",
+          width: "max-content",
+          minWidth: "100%",
+          maxWidth: "none"
+        }}
       >
         {props.children}
       </table>
