@@ -130,7 +130,7 @@ function UserMessage({
               />
               <div className="flex gap-2">
                 <Button size="sm" onClick={handleEdit}>
-                  Save
+                  Save & Send
                 </Button>
                 <Button size="sm" variant="outline" onClick={handleCancel}>
                   Cancel
@@ -268,7 +268,6 @@ function SystemMessage({
   chatId,
   messageIndex,
   onRegenerate,
-  onDelete,
   onCopy,
   onFork
 }: {
@@ -277,7 +276,6 @@ function SystemMessage({
   chatId: string;
   messageIndex: number;
   onRegenerate: (index: number) => void;
-  onDelete: (index: number) => void;
   onCopy: (text: string) => void;
   onFork: (index: number) => void;
 }) {
@@ -286,10 +284,6 @@ function SystemMessage({
 
   const handleRegenerate = () => {
     onRegenerate(messageIndex);
-  };
-
-  const handleDelete = () => {
-    onDelete(messageIndex);
   };
 
   const handleFork = () => {
@@ -372,46 +366,6 @@ function SystemMessage({
                     <AlertDialogCancel>Cancel</AlertDialogCancel>
                     <AlertDialogAction onClick={handleRegenerate}>
                       Regenerate & Clear Future Messages
-                    </AlertDialogAction>
-                  </AlertDialogFooter>
-                </AlertDialogContent>
-              </AlertDialog>
-
-              <AlertDialog>
-                <AlertDialogTrigger asChild>
-                  <div>
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="h-6 w-6 p-0"
-                          aria-label="Delete response"
-                        >
-                          <Trash2 className="h-3 w-3" />
-                        </Button>
-                      </TooltipTrigger>
-                      <TooltipContent side="bottom" align="end" className="text-xs">
-                        Delete
-                      </TooltipContent>
-                    </Tooltip>
-                  </div>
-                </AlertDialogTrigger>
-                <AlertDialogContent>
-                  <AlertDialogHeader>
-                    <AlertDialogTitle>Delete Response</AlertDialogTitle>
-                    <AlertDialogDescription>
-                      Deleting this response will also clear all conversation that happened after
-                      it. This action cannot be undone.
-                    </AlertDialogDescription>
-                  </AlertDialogHeader>
-                  <AlertDialogFooter>
-                    <AlertDialogCancel>Cancel</AlertDialogCancel>
-                    <AlertDialogAction
-                      onClick={handleDelete}
-                      className={buttonVariants({ variant: "destructive" })}
-                    >
-                      Delete & Clear Future Messages
                     </AlertDialogAction>
                   </AlertDialogFooter>
                 </AlertDialogContent>
@@ -948,9 +902,14 @@ function ChatComponent() {
           queryKey: ["chat", chatId],
           refetchType: "all"
         });
+
+        // Automatically send to completions API after editing (Save & Send)
+        if (messageToEdit.role === "user") {
+          await sendMessage(newText);
+        }
       }
     },
-    [localChat, persistChat, queryClient, chatId]
+    [localChat, persistChat, queryClient, chatId, sendMessage]
   );
 
   const handleDeleteMessage = useCallback(
@@ -1280,7 +1239,6 @@ END OF INSTRUCTIONS`;
                       chatId={chatId}
                       messageIndex={visibleIndex}
                       onRegenerate={handleRegenerateMessage}
-                      onDelete={handleDeleteMessage}
                       onCopy={handleCopyMessage}
                       onFork={handleForkMessage}
                     />
@@ -1296,7 +1254,6 @@ END OF INSTRUCTIONS`;
                   chatId={chatId}
                   messageIndex={-1}
                   onRegenerate={() => {}}
-                  onDelete={() => {}}
                   onCopy={handleCopyMessage}
                   onFork={() => {}}
                 />
