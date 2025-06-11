@@ -21,7 +21,7 @@ import { ChatMessage, Chat, DEFAULT_MODEL_ID } from "@/state/LocalStateContext";
 import { AlertDestructive } from "@/components/AlertDestructive";
 import { Sidebar, SidebarToggle } from "@/components/Sidebar";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { BillingStatus } from "@/billing/billingApi";
 import { useNavigate, useLocation } from "@tanstack/react-router";
 import { useIsMobile } from "@/utils/utils";
@@ -245,7 +245,7 @@ function UserMessage({
                         <AlertDialogCancel>Cancel</AlertDialogCancel>
                         <AlertDialogAction
                           onClick={handleDelete}
-                          className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                          className={buttonVariants({ variant: "destructive" })}
                         >
                           Delete & Clear Future Messages
                         </AlertDialogAction>
@@ -409,7 +409,7 @@ function SystemMessage({
                     <AlertDialogCancel>Cancel</AlertDialogCancel>
                     <AlertDialogAction
                       onClick={handleDelete}
-                      className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                      className={buttonVariants({ variant: "destructive" })}
                     >
                       Delete & Clear Future Messages
                     </AlertDialogAction>
