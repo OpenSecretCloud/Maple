@@ -3,7 +3,7 @@ import { Button } from "./ui/button";
 import { useLocation, useRouter } from "@tanstack/react-router";
 import { ChatHistoryList } from "./ChatHistoryList";
 import { AccountMenu } from "./AccountMenu";
-import { useRef, useEffect, KeyboardEvent } from "react";
+import { useRef, useEffect, KeyboardEvent, useCallback, useLayoutEffect } from "react";
 import { cn, useClickOutside, useIsMobile } from "@/utils/utils";
 import { Input } from "./ui/input";
 import { useLocalState } from "@/state/useLocalState";
@@ -66,33 +66,54 @@ export function Sidebar({
   const sidebarRef = useRef<HTMLDivElement>(null);
 
   // Modified click outside handler to ignore clicks in dropdowns and dialogs
-  useClickOutside(sidebarRef, (event: MouseEvent | TouchEvent) => {
-    if (isOpen) {
-      // Check if the click was inside a dropdown or dialog
-      const target = event.target as HTMLElement;
-      const isInDropdown = target.closest('[role="menu"]');
-      const isInDialog = target.closest('[role="dialog"]');
-      const isInAlertDialog = target.closest('[role="alertdialog"]');
+  const handleClickOutside = useCallback(
+    (event: MouseEvent | TouchEvent) => {
+      if (isOpen) {
+        // Check if the click was inside a dropdown or dialog
+        const target = event.target as HTMLElement;
+        const isInDropdown = target.closest('[role="menu"]');
+        const isInDialog = target.closest('[role="dialog"]');
+        const isInAlertDialog = target.closest('[role="alertdialog"]');
 
-      if (!isInDropdown && !isInDialog && !isInAlertDialog) {
-        onToggle();
+        if (!isInDropdown && !isInDialog && !isInAlertDialog) {
+          onToggle();
+        }
       }
-    }
-  });
+    },
+    [isOpen, onToggle]
+  );
+
+  useClickOutside(sidebarRef, handleClickOutside);
 
   // Use the centralized hook for mobile detection
   const isMobile = useIsMobile();
 
+  // Track if component is mounted to prevent state updates after unmount
+  const isMountedRef = useRef(true);
+  useLayoutEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
+
   // This effect closes the sidebar on mobile when navigating,
   // but preserves search state between navigations
   useEffect(() => {
+    // Only subscribe if we're on mobile and sidebar is open
+    if (!isMobile || !isOpen) return;
+
     const unsubscribe = router.subscribe("onResolved", () => {
-      // On mobile: close the sidebar when navigating to any page
-      // On desktop: keep the sidebar open
-      if (isOpen && isMobile) {
-        // Always close sidebar on mobile when navigating to preserve screen real estate
-        onToggle();
-      }
+      // Use a microtask to avoid state updates during render
+      queueMicrotask(() => {
+        // Prevent updates if component unmounted
+        if (!isMountedRef.current) return;
+
+        // Double-check conditions after async boundary
+        if (isOpen && isMobile) {
+          onToggle();
+        }
+      });
     });
 
     return () => {

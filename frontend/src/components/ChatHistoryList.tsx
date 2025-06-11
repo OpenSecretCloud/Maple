@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useCallback } from "react";
 import { useLocalState } from "@/state/useLocalState";
 import { Link } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -42,34 +42,40 @@ export function ChatHistoryList({ currentChatId, searchQuery = "" }: ChatHistory
     return chats.filter((chat) => chat.title.toLowerCase().includes(normalizedQuery));
   }, [chats, searchQuery]);
 
-  const handleDeleteChat = async (chatId: string) => {
-    try {
-      await deleteChat(chatId);
-    } catch (error) {
-      console.error("Error deleting chat:", error);
-    }
-    queryClient.invalidateQueries({ queryKey: ["chatHistory"] });
-    if (chatId === currentChatId) {
-      navigate({ to: "/" });
-    }
-  };
+  const handleDeleteChat = useCallback(
+    async (chatId: string) => {
+      try {
+        await deleteChat(chatId);
+      } catch (error) {
+        console.error("Error deleting chat:", error);
+      }
+      queryClient.invalidateQueries({ queryKey: ["chatHistory"] });
+      if (chatId === currentChatId) {
+        navigate({ to: "/" });
+      }
+    },
+    [deleteChat, queryClient, currentChatId, navigate]
+  );
 
-  const handleOpenRenameDialog = (chat: { id: string; title: string }) => {
+  const handleOpenRenameDialog = useCallback((chat: { id: string; title: string }) => {
     setSelectedChat(chat);
     setIsRenameDialogOpen(true);
-  };
+  }, []);
 
-  const handleRenameChat = async (chatId: string, newTitle: string) => {
-    try {
-      await renameChat(chatId, newTitle);
-      // Invalidate both the chat history list and the specific chat
-      queryClient.invalidateQueries({ queryKey: ["chatHistory"] });
-      queryClient.invalidateQueries({ queryKey: ["chat", chatId] });
-    } catch (error) {
-      console.error("Error renaming chat:", error);
-      throw error;
-    }
-  };
+  const handleRenameChat = useCallback(
+    async (chatId: string, newTitle: string) => {
+      try {
+        await renameChat(chatId, newTitle);
+        // Invalidate both the chat history list and the specific chat
+        queryClient.invalidateQueries({ queryKey: ["chatHistory"] });
+        queryClient.invalidateQueries({ queryKey: ["chat", chatId] });
+      } catch (error) {
+        console.error("Error renaming chat:", error);
+        throw error;
+      }
+    },
+    [renameChat, queryClient]
+  );
 
   if (error) {
     return <div>{error.message}</div>;
