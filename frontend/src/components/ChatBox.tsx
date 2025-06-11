@@ -464,7 +464,7 @@ export default function Component({
           onChange={(e) => setInputValue(e.target.value)}
         />
         <div className="flex items-center pt-0">
-          <ModelSelector />
+          <ModelSelector messages={messages} draftImages={images} />
           {canUseVision && (
             <>
               <input

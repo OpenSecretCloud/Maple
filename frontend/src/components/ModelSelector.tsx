@@ -44,13 +44,29 @@ const MODEL_CONFIG: Record<string, ModelCfg> = {
   }
 };
 
-export function ModelSelector() {
+import { ChatMessage } from "@/state/LocalStateContextDef";
+
+export function ModelSelector({
+  messages = [],
+  draftImages = []
+}: {
+  messages?: ChatMessage[];
+  draftImages?: File[];
+}) {
   const { model, setModel, availableModels, setAvailableModels, billingStatus } = useLocalState();
   const os = useOpenSecret();
   const navigate = useNavigate();
   const isFetching = useRef(false);
   const hasFetched = useRef(false);
   const availableModelsRef = useRef(availableModels);
+
+  // Check if chat contains any images or if there are draft images
+  const chatHasImages =
+    draftImages.length > 0 ||
+    messages.some(
+      (msg) =>
+        typeof msg.content !== "string" && msg.content.some((part) => part.type === "image_url")
+    );
 
   // Keep ref updated
   useEffect(() => {
@@ -213,11 +229,20 @@ export function ModelSelector() {
       <DropdownMenuContent align="end" className="w-64">
         {availableModels &&
           Array.isArray(availableModels) &&
-          // Sort models: available first, then restricted (pro-only), then disabled
+          // Sort models: vision-capable first (if images present), then available, then restricted, then disabled
           [...availableModels]
             .sort((a, b) => {
               const aConfig = MODEL_CONFIG[a.id];
               const bConfig = MODEL_CONFIG[b.id];
+
+              // If chat has images, prioritize vision models
+              if (chatHasImages) {
+                const aHasVision = aConfig?.supportsVision || false;
+                const bHasVision = bConfig?.supportsVision || false;
+                if (aHasVision && !bHasVision) return -1;
+                if (!aHasVision && bHasVision) return 1;
+              }
+
               // Unknown models are treated as disabled
               const aDisabled = aConfig?.disabled || !aConfig;
               const bDisabled = bConfig?.disabled || !bConfig;
@@ -247,11 +272,15 @@ export function ModelSelector() {
               const hasAccess = hasAccessToModel(availableModel.id);
               const isRestricted = (requiresPro || requiresStarter) && !hasAccess;
 
+              // Disable non-vision models if chat has images
+              const isDisabledDueToImages = chatHasImages && !config?.supportsVision;
+              const effectivelyDisabled = isDisabled || isDisabledDueToImages;
+
               return (
                 <DropdownMenuItem
                   key={availableModel.id}
                   onClick={() => {
-                    if (isDisabled) return;
+                    if (effectivelyDisabled) return;
                     if (isRestricted) {
                       // Navigate to pricing page for upgrade
                       navigate({ to: "/pricing" });
@@ -260,15 +289,20 @@ export function ModelSelector() {
                     }
                   }}
                   className={`flex items-center justify-between group ${
-                    isDisabled ? "opacity-50 cursor-not-allowed" : ""
+                    effectivelyDisabled ? "opacity-50 cursor-not-allowed" : ""
                   } ${isRestricted ? "hover:bg-purple-50 dark:hover:bg-purple-950/20" : ""}`}
-                  disabled={isDisabled}
+                  disabled={effectivelyDisabled}
                 >
                   <div className="flex items-center gap-2 flex-1">
                     <div className="text-sm">{getDisplayName(availableModel.id, true)}</div>
-                    {isRestricted && (
+                    {isRestricted && !isDisabledDueToImages && (
                       <span className="text-[10px] text-purple-600 dark:text-purple-400 opacity-0 group-hover:opacity-100 transition-opacity">
                         Upgrade?
+                      </span>
+                    )}
+                    {isDisabledDueToImages && (
+                      <span className="text-[10px] text-muted-foreground">
+                        {draftImages.length > 0 ? "Image pending" : "Images in chat"}
                       </span>
                     )}
                   </div>
