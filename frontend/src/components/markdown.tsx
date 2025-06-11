@@ -235,6 +235,14 @@ function CustomCode(props: JSX.IntrinsicElements["code"]) {
   return <code>{props.children}</code>;
 }
 
+function ResponsiveTable(props: JSX.IntrinsicElements["table"]) {
+  return (
+    <div className="overflow-x-auto max-w-full">
+      <table {...props}>{props.children}</table>
+    </div>
+  );
+}
+
 function escapeDollarNumber(text: string) {
   let escapedText = "";
 
@@ -305,6 +313,7 @@ function MarkDownContentToMemo(props: { content: string }) {
       components={{
         pre: (props: JSX.IntrinsicElements["pre"]) => <PreCode {...props} />,
         code: (props: JSX.IntrinsicElements["code"]) => <CustomCode {...props} />,
+        table: (props: JSX.IntrinsicElements["table"]) => <ResponsiveTable {...props} />,
         p: (pProps) => <p {...pProps} dir="auto" />,
         a: (aProps) => {
           const href = aProps.href || "";
