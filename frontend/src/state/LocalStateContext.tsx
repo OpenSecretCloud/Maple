@@ -119,14 +119,14 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
     return newChat.id;
   }
 
-  async function getChatById(id: string) {
+  async function getChatById(id: string): Promise<Chat | undefined> {
     try {
       const chat = await get(`chat_${id}`);
-      if (!chat) throw new Error("Chat not found");
+      if (!chat) return undefined;
       return JSON.parse(chat) as Chat;
     } catch (error) {
       console.error("Error fetching chat:", error);
-      throw new Error("Error fetching chat.");
+      return undefined;
     }
   }
 
@@ -205,8 +205,12 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
 
   async function renameChat(chatId: string, newTitle: string) {
     try {
-      // Get the current chat (getChatById already throws if chat not found)
+      // Get the current chat
       const chat = await getChatById(chatId);
+      if (!chat) {
+        console.error("Chat not found for renaming:", chatId);
+        throw new Error("Chat not found");
+      }
 
       // Update the chat title
       chat.title = newTitle;
@@ -249,7 +253,7 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
   }
 
   function setModel(model: string) {
-    setLocalState((prev) => ({ ...prev, model }));
+    setLocalState((prev) => (prev.model === model ? prev : { ...prev, model }));
   }
 
   function setAvailableModels(models: OpenSecretModel[]) {
