@@ -13,6 +13,8 @@ import { Button } from "@/components/ui/button";
 import { BillingStatus } from "@/billing/billingApi";
 import { useNavigate, useLocation } from "@tanstack/react-router";
 import { useIsMobile } from "@/utils/utils";
+import { fileToDataURL } from "@/utils/file";
+import { ChatContentPart } from "@/state/LocalStateContextDef";
 
 export const Route = createFileRoute("/_auth/chat/$chatId")({
   component: ChatComponent
@@ -35,16 +37,27 @@ function useCopyToClipboard(text: string) {
   return { isCopied, handleCopy };
 }
 
-function UserMessage({ text, chatId }: { text: string; chatId: string }) {
+function renderContent(content: ChatMessage["content"], chatId: string) {
+  if (typeof content === "string") {
+    return <Markdown content={content} loading={false} chatId={chatId} />;
+  }
+  return content.map((p, idx) =>
+    p.type === "text" ? (
+      <Markdown key={idx} content={p.text} loading={false} chatId={chatId} />
+    ) : (
+      <img key={idx} src={p.image_url.url} className="max-w-full rounded-lg" />
+    )
+  );
+}
+
+function UserMessage({ text, chatId }: { text: ChatMessage["content"]; chatId: string }) {
   return (
     <div className="flex flex-col p-4 rounded-lg bg-muted">
       <div className="rounded-lg flex flex-col md:flex-row gap-4">
         <div>
           <UserIcon />
         </div>
-        <div className="flex flex-col gap-2">
-          <Markdown content={text} loading={false} chatId={chatId} />
-        </div>
+        <div className="flex flex-col gap-2">{renderContent(text, chatId)}</div>
       </div>
     </div>
   );
@@ -158,6 +171,8 @@ function ChatComponent() {
     setUserPrompt,
     systemPrompt,
     setSystemPrompt,
+    userImages,
+    setUserImages,
     addChat
   } = useLocalState();
   const openai = useOpenAI();
@@ -310,10 +325,11 @@ function ChatComponent() {
     if (userPrompt) {
       console.log("User prompt found for chatId:", chatId, "sending to chat");
       console.log("USER PROMPT:", userPrompt);
+      console.log("USER IMAGES:", userImages?.length || 0, "images");
 
       // Set a small delay to ensure all state is properly initialized
       setTimeout(() => {
-        sendMessage(userPrompt, systemPrompt || undefined);
+        sendMessage(userPrompt, systemPrompt || undefined, userImages);
       }, 100);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -322,7 +338,7 @@ function ChatComponent() {
   const [isLoading, setIsLoading] = useState(false);
 
   const sendMessage = useCallback(
-    async (input: string, systemPrompt?: string) => {
+    async (input: string, systemPrompt?: string, images?: File[]) => {
       // Helper function to check if the user is on a free plan
       function isUserOnFreePlan(): boolean {
         try {
@@ -347,7 +363,11 @@ function ChatComponent() {
         if (!userMessage) return "New Chat";
 
         // Simple title generation - truncate first message to 50 chars
-        const simpleTitleFromMessage = userMessage.content.slice(0, 50).trim();
+        const messageText =
+          typeof userMessage.content === "string"
+            ? userMessage.content
+            : userMessage.content.find((p) => p.type === "text")?.text || "New Chat";
+        const simpleTitleFromMessage = messageText.slice(0, 50).trim();
 
         // For free plan users, just use the simple title
         // For paid plans, try to generate AI title
@@ -360,7 +380,11 @@ function ChatComponent() {
         try {
           console.log("Using AI title generation for paid plan user");
           // Get the user's first message, truncate if too long
-          const userContent = userMessage.content.slice(0, 500); // Reduced to 500 chars to optimize token usage
+          const userText =
+            typeof userMessage.content === "string"
+              ? userMessage.content
+              : userMessage.content.find((p) => p.type === "text")?.text || "New Chat";
+          const userContent = userText.slice(0, 500); // Reduced to 500 chars to optimize token usage
 
           // Use the OpenAI API to generate a concise title - use the default model
           const stream = openai.beta.chat.completions.stream({
@@ -406,18 +430,29 @@ function ChatComponent() {
       if (!input.trim() || !localChat) return;
       setError("");
 
+      const isGemma = model === "leon-se/gemma-3-27b-it-fp8-dynamic";
+      let userMsg: ChatMessage;
+
+      if (isGemma && images && images.length) {
+        const parts: ChatContentPart[] = [{ type: "text", text: input.trim() }];
+        for (const f of images) {
+          const url = await fileToDataURL(f);
+          parts.push({ type: "image_url", image_url: { url } });
+        }
+        userMsg = { role: "user", content: parts };
+      } else {
+        userMsg = { role: "user", content: input.trim() };
+      }
+
       // Build new messages array with system prompt if this is the first message
       let newMessages: ChatMessage[];
 
       if (localChat.messages.length === 0 && systemPrompt?.trim()) {
         // First message: add system prompt, then user message
-        newMessages = [
-          { role: "system", content: systemPrompt.trim() } as ChatMessage,
-          { role: "user", content: input } as ChatMessage
-        ];
+        newMessages = [{ role: "system", content: systemPrompt.trim() } as ChatMessage, userMsg];
       } else {
         // Subsequent messages: just add user message
-        newMessages = [...localChat.messages, { role: "user", content: input } as ChatMessage];
+        newMessages = [...localChat.messages, userMsg];
       }
 
       setLocalChat((prev) => ({
@@ -476,7 +511,7 @@ function ChatComponent() {
 
         const stream = openai.beta.chat.completions.stream({
           model,
-          messages: newMessages,
+          messages: newMessages as any,
           stream: true
         });
 
@@ -536,6 +571,7 @@ function ChatComponent() {
         // Should be safe to clear these by now
         setUserPrompt("");
         setSystemPrompt(null);
+        setUserImages([]);
 
         // React sucks and doesn't get the latest state
         // Use current title from localChat which may have been updated asynchronously
@@ -575,7 +611,17 @@ function ChatComponent() {
     // We intentionally don't include freshBillingStatus in the dependency array
     // even though it's used in the closure to avoid re-creating the function
     // on every billing status change
-    [localChat, model, openai, persistChat, queryClient, setUserPrompt, setSystemPrompt, chatId]
+    [
+      localChat,
+      model,
+      openai,
+      persistChat,
+      queryClient,
+      setUserPrompt,
+      setSystemPrompt,
+      setUserImages,
+      chatId
+    ]
   );
 
   // Chat compression function
@@ -615,7 +661,7 @@ END OF INSTRUCTIONS`;
       let summary = "";
       const stream = openai.beta.chat.completions.stream({
         model: DEFAULT_MODEL_ID, // Use the default model instead of user selected model
-        messages: summarizationMessages,
+        messages: summarizationMessages as any,
         temperature: 0.3,
         max_tokens: 600,
         stream: true
@@ -716,10 +762,25 @@ END OF INSTRUCTIONS`;
                 id={`message-${message.role}-${index}`}
                 className="flex flex-col gap-2"
               >
-                {message.role === "system" && <SystemPromptMessage text={message.content} />}
+                {message.role === "system" && (
+                  <SystemPromptMessage
+                    text={
+                      typeof message.content === "string"
+                        ? message.content
+                        : message.content.find((p) => p.type === "text")?.text || ""
+                    }
+                  />
+                )}
                 {message.role === "user" && <UserMessage text={message.content} chatId={chatId} />}
                 {message.role === "assistant" && (
-                  <SystemMessage text={message.content} chatId={chatId} />
+                  <SystemMessage
+                    text={
+                      typeof message.content === "string"
+                        ? message.content
+                        : message.content.find((p) => p.type === "text")?.text || ""
+                    }
+                    chatId={chatId}
+                  />
                 )}
               </div>
             ))}

@@ -26,6 +26,7 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
   const [localState, setLocalState] = useState({
     userPrompt: "",
     systemPrompt: null as string | null,
+    userImages: [] as File[],
     model: import.meta.env.VITE_DEV_MODEL_OVERRIDE || DEFAULT_MODEL_ID,
     availableModels: [llamaModel] as OpenSecretModel[],
     billingStatus: null as BillingStatus | null,
@@ -89,6 +90,10 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
 
   function setSystemPrompt(prompt: string | null) {
     setLocalState((prev) => ({ ...prev, systemPrompt: prompt }));
+  }
+
+  function setUserImages(images: File[]) {
+    setLocalState((prev) => ({ ...prev, userImages: images }));
   }
 
   function setBillingStatus(status: BillingStatus) {
@@ -260,6 +265,7 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
         setAvailableModels,
         userPrompt: localState.userPrompt,
         systemPrompt: localState.systemPrompt,
+        userImages: localState.userImages,
         billingStatus: localState.billingStatus,
         searchQuery: localState.searchQuery,
         setSearchQuery,
@@ -268,6 +274,7 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
         setBillingStatus,
         setUserPrompt,
         setSystemPrompt,
+        setUserImages,
         addChat,
         getChatById,
         persistChat,
