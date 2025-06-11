@@ -240,19 +240,17 @@ function ResponsiveTable(props: JSX.IntrinsicElements["table"]) {
     <div
       className="overflow-x-auto"
       style={{
-        width: "100%",
         maxWidth: "100%",
-        boxSizing: "border-box"
+        width: "100%"
       }}
     >
       <table
         {...props}
         style={{
           ...props.style,
-          display: "table",
           width: "max-content",
           minWidth: "100%",
-          maxWidth: "none"
+          maxWidth: "100%"
         }}
       >
         {props.children}
