@@ -15,20 +15,26 @@ import type { Model } from "openai/resources/models.js";
 // Model configuration for display names and badges
 const MODEL_CONFIG: Record<
   string,
-  { displayName: string; badge?: string; disabled?: boolean; requiresPro?: boolean }
+  {
+    displayName: string;
+    badge?: string;
+    disabled?: boolean;
+    requiresPro?: boolean;
+    requiresStarter?: boolean;
+  }
 > = {
   "ibnzterrell/Meta-Llama-3.3-70B-Instruct-AWQ-INT4": {
     displayName: "Llama 3.3 70B"
   },
   "google/gemma-3-27b-it": {
     displayName: "Gemma 3 27B",
-    badge: "Coming Soon",
-    disabled: true
+    badge: "Starter",
+    requiresStarter: true
   },
   "leon-se/gemma-3-27b-it-fp8-dynamic": {
     displayName: "Gemma 3 27B",
-    badge: "Coming Soon",
-    disabled: true
+    badge: "Starter",
+    requiresStarter: true
   },
   "deepseek-r1-70b": {
     displayName: "DeepSeek R1 70B",
@@ -111,11 +117,23 @@ export function ModelSelector() {
   // Check if user has access to a model based on their plan
   const hasAccessToModel = (modelId: string) => {
     const config = MODEL_CONFIG[modelId];
-    if (!config?.requiresPro) return true;
 
-    // Check if user is on Pro or Team plan
+    // If no restrictions, allow access
+    if (!config?.requiresPro && !config?.requiresStarter) return true;
+
     const planName = billingStatus?.product_name?.toLowerCase() || "";
-    return planName.includes("pro") || planName.includes("team");
+
+    // Check if user is on Pro or Team plan (for requiresPro models)
+    if (config?.requiresPro) {
+      return planName.includes("pro") || planName.includes("team");
+    }
+
+    // Check if user is on Starter, Pro, or Team plan (for requiresStarter models)
+    if (config?.requiresStarter) {
+      return planName.includes("starter") || planName.includes("pro") || planName.includes("team");
+    }
+
+    return true;
   };
 
   const getDisplayName = (modelId: string, showLock = false) => {
@@ -132,6 +150,8 @@ export function ModelSelector() {
           badgeClass += " bg-gray-500/10 text-gray-600";
         } else if (config.badge === "Pro") {
           badgeClass += " bg-gradient-to-r from-purple-500/10 to-blue-500/10 text-purple-600";
+        } else if (config.badge === "Starter") {
+          badgeClass += " bg-gradient-to-r from-green-500/10 to-emerald-500/10 text-green-600";
         } else {
           badgeClass += " bg-purple-500/10 text-purple-600";
         }
@@ -143,7 +163,11 @@ export function ModelSelector() {
         );
       }
 
-      if (showLock && config.requiresPro && !hasAccessToModel(modelId)) {
+      if (
+        showLock &&
+        (config.requiresPro || config.requiresStarter) &&
+        !hasAccessToModel(modelId)
+      ) {
         elements.push(<Lock key="lock" className="h-3 w-3 opacity-50" />);
       }
     } else {
@@ -192,8 +216,12 @@ export function ModelSelector() {
               // Unknown models are treated as disabled
               const aDisabled = aConfig?.disabled || !aConfig;
               const bDisabled = bConfig?.disabled || !bConfig;
-              const aRestricted = (aConfig?.requiresPro || false) && !hasAccessToModel(a.id);
-              const bRestricted = (bConfig?.requiresPro || false) && !hasAccessToModel(b.id);
+              const aRestricted =
+                (aConfig?.requiresPro || aConfig?.requiresStarter || false) &&
+                !hasAccessToModel(a.id);
+              const bRestricted =
+                (bConfig?.requiresPro || bConfig?.requiresStarter || false) &&
+                !hasAccessToModel(b.id);
 
               // Disabled models go last
               if (aDisabled && !bDisabled) return 1;
@@ -210,8 +238,9 @@ export function ModelSelector() {
               // Unknown models are treated as disabled
               const isDisabled = config?.disabled || !config;
               const requiresPro = config?.requiresPro || false;
+              const requiresStarter = config?.requiresStarter || false;
               const hasAccess = hasAccessToModel(availableModel.id);
-              const isRestricted = requiresPro && !hasAccess;
+              const isRestricted = (requiresPro || requiresStarter) && !hasAccess;
 
               return (
                 <DropdownMenuItem
