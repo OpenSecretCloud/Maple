@@ -152,7 +152,17 @@ export default function Component({
 
   const handleAddImages = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files) return;
-    setImages((prev) => [...prev, ...Array.from(e.target.files!)]);
+
+    const supportedTypes = ["image/jpeg", "image/jpg", "image/png", "image/webp"];
+    const validFiles = Array.from(e.target.files).filter((file) =>
+      supportedTypes.includes(file.type.toLowerCase())
+    );
+
+    if (validFiles.length < e.target.files.length) {
+      console.warn("Some files were skipped. Only JPEG, PNG, and WebP images are supported.");
+    }
+
+    setImages((prev) => [...prev, ...validFiles]);
   };
 
   const removeImage = (idx: number) => setImages((prev) => prev.filter((_, i) => i !== idx));
@@ -469,7 +479,7 @@ export default function Component({
             <>
               <input
                 type="file"
-                accept="image/*"
+                accept="image/jpeg,image/jpg,image/png,image/webp"
                 multiple
                 ref={fileInputRef}
                 onChange={handleAddImages}
