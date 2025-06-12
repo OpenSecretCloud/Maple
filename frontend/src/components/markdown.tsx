@@ -247,6 +247,20 @@ function CustomCode(props: JSX.IntrinsicElements["code"]) {
   return <code>{props.children}</code>;
 }
 
+function ResponsiveTable({ children, className, ...rest }: JSX.IntrinsicElements["table"]) {
+  // Strip off props added by react-markdown that the DOM doesn't understand
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const { node, inline, ...safeRest } = rest as Record<string, unknown>;
+
+  return (
+    <div className="overflow-x-auto max-w-full w-0 min-w-full rounded-md border border-border/50">
+      <table className={className} {...(safeRest as object)}>
+        {children}
+      </table>
+    </div>
+  );
+}
+
 function escapeDollarNumber(text: string) {
   let escapedText = "";
 
@@ -317,6 +331,7 @@ function MarkDownContentToMemo(props: { content: string }) {
       components={{
         pre: (props: JSX.IntrinsicElements["pre"]) => <PreCode {...props} />,
         code: (props: JSX.IntrinsicElements["code"]) => <CustomCode {...props} />,
+        table: (props: JSX.IntrinsicElements["table"]) => <ResponsiveTable {...props} />,
         p: (pProps) => <p {...pProps} dir="auto" />,
         a: (aProps) => {
           const href = aProps.href || "";
