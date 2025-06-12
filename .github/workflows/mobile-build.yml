@@ -73,6 +73,7 @@ jobs:
           retention-days: 5
 
       - name: Submit to TestFlight
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
         run: |
           # Find the actual path of the IPA file
           IPA_PATH=$(find frontend/src-tauri/gen/apple/build -name "*.ipa" | head -n 1)

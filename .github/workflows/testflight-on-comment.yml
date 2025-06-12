@@ -1,0 +1,153 @@
+name: TestFlight on Comment
+
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  check-comment:
+    if: github.event.issue.pull_request && contains(github.event.comment.body, '@testflight')
+    runs-on: ubuntu-latest
+    outputs:
+      should-deploy: ${{ steps.check.outputs.should-deploy }}
+      pr-number: ${{ steps.check.outputs.pr-number }}
+    steps:
+      - name: Check if comment author has write access
+        uses: actions/github-script@v7
+        id: check
+        with:
+          script: |
+            const { data: permissions } = await github.rest.repos.getCollaboratorPermissionLevel({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              username: context.payload.comment.user.login
+            });
+            
+            const hasWriteAccess = ['admin', 'write'].includes(permissions.permission);
+            
+            if (hasWriteAccess) {
+              core.setOutput('should-deploy', 'true');
+              core.setOutput('pr-number', context.issue.number);
+              
+              // React to the comment to acknowledge
+              await github.rest.reactions.createForIssueComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: context.payload.comment.id,
+                content: 'rocket'
+              });
+              
+              // Post a comment
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: '🚀 TestFlight deployment triggered! Check the [Actions tab](https://github.com/' + context.repo.owner + '/' + context.repo.repo + '/actions) for progress.'
+              });
+            } else {
+              core.setOutput('should-deploy', 'false');
+              
+              // React with thumbs down
+              await github.rest.reactions.createForIssueComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: context.payload.comment.id,
+                content: '-1'
+              });
+            }
+
+  deploy-testflight:
+    needs: check-comment
+    if: needs.check-comment.outputs.should-deploy == 'true'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ format('refs/pull/{0}/head', needs.check-comment.outputs.pr-number) }}
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: 1.2.2
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "frontend/src-tauri -> target"
+          cache-on-failure: true
+
+      - name: Install dependencies (macOS)
+        run: |
+          brew install openssl@3
+
+      - name: Install frontend dependencies
+        working-directory: ./frontend
+        run: bun install
+
+      - name: Setup Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli
+
+      - name: Set up API Key
+        run: |
+          mkdir -p ~/.private_keys
+          echo "${{ secrets.APPLE_API_PRIVATE_KEY }}" | base64 --decode > ~/.private_keys/AuthKey_${{ secrets.APPLE_API_KEY }}.p8
+          chmod 600 ~/.private_keys/AuthKey_${{ secrets.APPLE_API_KEY }}.p8
+          echo "APPLE_API_KEY_PATH=~/.private_keys/AuthKey_${{ secrets.APPLE_API_KEY }}.p8" >> $GITHUB_ENV
+      
+      - name: Build Tauri iOS App
+        working-directory: ./frontend
+        run: |
+          bun tauri ios build --export-method app-store-connect
+        env:
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_PATH: ${{ env.APPLE_API_KEY_PATH }}
+          APPLE_DEVELOPMENT_TEAM: ${{ secrets.APPLE_TEAM_ID }}
+          VITE_OPEN_SECRET_API_URL: https://enclave.trymaple.ai
+          VITE_MAPLE_BILLING_API_URL: https://billing.opensecret.cloud
+          VITE_CLIENT_ID: ba5a14b5-d915-47b1-b7b1-afda52bc5fc6
+
+      - name: Submit to TestFlight
+        run: |
+          # Find the actual path of the IPA file
+          IPA_PATH=$(find frontend/src-tauri/gen/apple/build -name "*.ipa" | head -n 1)
+          echo "Found IPA at: $IPA_PATH"
+          
+          xcrun altool --upload-app --type ios \
+            --file "$IPA_PATH" \
+            --apiKey ${{ secrets.APPLE_API_KEY }} \
+            --apiIssuer ${{ secrets.APPLE_API_ISSUER }}
+
+      - name: Comment on PR with success
+        if: success()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: ${{ needs.check-comment.outputs.pr-number }},
+              body: '✅ TestFlight deployment completed successfully!'
+            });
+
+      - name: Comment on PR with failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: ${{ needs.check-comment.outputs.pr-number }},
+              body: '❌ TestFlight deployment failed. Check the [workflow logs](https://github.com/' + context.repo.owner + '/' + context.repo.repo + '/actions/runs/' + context.runId + ') for details.'
+            });
