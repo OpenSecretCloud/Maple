@@ -4,7 +4,7 @@ import { AsteriskIcon, Check, Copy, UserIcon, ChevronDown, SquarePenIcon } from 
 import ChatBox from "@/components/ChatBox";
 import { useOpenAI } from "@/ai/useOpenAi";
 import { useLocalState } from "@/state/useLocalState";
-import { Markdown } from "@/components/markdown";
+import { Markdown, stripThinkingTags } from "@/components/markdown";
 import { ChatMessage, Chat, DEFAULT_MODEL_ID } from "@/state/LocalStateContext";
 import { AlertDestructive } from "@/components/AlertDestructive";
 import { Sidebar, SidebarToggle } from "@/components/Sidebar";
@@ -46,7 +46,8 @@ function SystemMessage({
 
   const handleCopy = useCallback(async () => {
     try {
-      await navigator.clipboard.writeText(text);
+      const textWithoutThinking = stripThinkingTags(text);
+      await navigator.clipboard.writeText(textWithoutThinking);
       setIsCopied(true);
       setTimeout(() => setIsCopied(false), 2000);
     } catch (error) {

@@ -176,6 +176,18 @@ function parseThinkingTags(content: string, isComplete: boolean = false): Parsed
   return parts;
 }
 
+export function stripThinkingTags(content: string): string {
+  return (
+    parseThinkingTags(content, true) // leverage single source of truth
+      .filter((p) => p.type === "content")
+      .map((p) => p.content)
+      .join("")
+      // collapse ≥3 consecutive blank lines to two
+      .replace(/\n{3,}/g, "\n\n")
+      .trim()
+  );
+}
+
 export function PreCode(props: JSX.IntrinsicElements["pre"]) {
   const ref = useRef<HTMLPreElement>(null);
 
