@@ -147,9 +147,6 @@ export function useChatSession(chatId: string, options: UseChatSessionOptions) {
         return;
       }
 
-      processingRef.current = true;
-      setPhase("streaming");
-
       // Handle images for Gemma model
       const isGemma = model === "leon-se/gemma-3-27b-it-fp8-dynamic";
       let userMessage: ChatMessage;
@@ -164,6 +161,14 @@ export function useChatSession(chatId: string, options: UseChatSessionOptions) {
       } else {
         userMessage = { role: "user", content };
       }
+
+      // Check again after async operations to prevent double execution
+      if (processingRef.current) {
+        return;
+      }
+
+      processingRef.current = true;
+      setPhase("streaming");
 
       const newMessages = [...chat.messages, userMessage];
 
