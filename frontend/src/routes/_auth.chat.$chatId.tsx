@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { createFileRoute } from "@tanstack/react-router";
-import { AsteriskIcon, Check, Copy, UserIcon, ChevronDown, SquarePenIcon } from "lucide-react";
+import { AsteriskIcon, Check, Copy, UserIcon, ChevronDown, Bot, SquarePenIcon } from "lucide-react";
 import ChatBox from "@/components/ChatBox";
 import { useOpenAI } from "@/ai/useOpenAi";
 import { useLocalState } from "@/state/useLocalState";
@@ -17,6 +17,23 @@ import { useIsMobile } from "@/utils/utils";
 export const Route = createFileRoute("/_auth/chat/$chatId")({
   component: ChatComponent
 });
+
+// Custom hook for copy to clipboard functionality
+function useCopyToClipboard(text: string) {
+  const [isCopied, setIsCopied] = useState(false);
+
+  const handleCopy = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setIsCopied(true);
+      setTimeout(() => setIsCopied(false), 2000);
+    } catch (error) {
+      console.error("Failed to copy text: ", error);
+    }
+  }, [text]);
+
+  return { isCopied, handleCopy };
+}
 
 function UserMessage({ text, chatId }: { text: string; chatId: string }) {
   return (
@@ -42,18 +59,8 @@ function SystemMessage({
   loading?: boolean;
   chatId: string;
 }) {
-  const [isCopied, setIsCopied] = useState(false);
-
-  const handleCopy = useCallback(async () => {
-    try {
-      const textWithoutThinking = stripThinkingTags(text);
-      await navigator.clipboard.writeText(textWithoutThinking);
-      setIsCopied(true);
-      setTimeout(() => setIsCopied(false), 2000);
-    } catch (error) {
-      console.error("Failed to copy text: ", error);
-    }
-  }, [text]);
+  const textWithoutThinking = stripThinkingTags(text);
+  const { isCopied, handleCopy } = useCopyToClipboard(textWithoutThinking);
 
   return (
     <div className="group flex flex-col p-4">
@@ -63,6 +70,68 @@ function SystemMessage({
         </div>
         <div className="flex flex-col gap-2">
           <Markdown content={text} loading={loading} chatId={chatId} />
+          <Button
+            variant="ghost"
+            size="sm"
+            className="self-start -mx-2 -mb-2 group-hover:opacity-100 opacity-0 transition-opacity"
+            onClick={handleCopy}
+            aria-label={isCopied ? "Copied" : "Copy to clipboard"}
+          >
+            {isCopied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SystemPromptMessage({ text }: { text: string }) {
+  const [isExpanded, setIsExpanded] = useState(false);
+  const { isCopied, handleCopy } = useCopyToClipboard(text);
+
+  return (
+    <div className="group flex flex-col p-4 rounded-lg bg-muted/50">
+      <div className="rounded-lg flex flex-col md:flex-row gap-4">
+        <div>
+          <Bot className="h-5 w-5 text-muted-foreground" />
+        </div>
+        <div className="flex flex-col gap-2 w-full">
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-medium text-muted-foreground">System Prompt</span>
+          </div>
+          <div className="text-sm text-foreground">
+            {isExpanded ? (
+              <>
+                {text}
+                {text.length > 100 && (
+                  <>
+                    {" "}
+                    <button
+                      className="text-primary hover:text-primary/80 underline cursor-pointer"
+                      onClick={() => setIsExpanded(false)}
+                    >
+                      show less
+                    </button>
+                  </>
+                )}
+              </>
+            ) : (
+              <>
+                {text.length > 100 ? text.slice(0, 100) : text}
+                {text.length > 100 && (
+                  <>
+                    {"... "}
+                    <button
+                      className="text-primary hover:text-primary/80 underline cursor-pointer"
+                      onClick={() => setIsExpanded(true)}
+                    >
+                      see more
+                    </button>
+                  </>
+                )}
+              </>
+            )}
+          </div>
           <Button
             variant="ghost"
             size="sm"
@@ -640,23 +709,20 @@ END OF INSTRUCTIONS`;
             </h2>
           </div>
           <div className="flex flex-col w-full max-w-[45rem] mx-auto gap-4 px-2 pt-4">
-            {/* Show user and assistant messages, excluding system messages */}
-            {localChat.messages
-              ?.filter((message) => message.role !== "system")
-              .map((message, index) => (
-                <div
-                  key={index}
-                  id={`message-${message.role}-${index}`}
-                  className="flex flex-col gap-2"
-                >
-                  {message.role === "user" && (
-                    <UserMessage text={message.content} chatId={chatId} />
-                  )}
-                  {message.role === "assistant" && (
-                    <SystemMessage text={message.content} chatId={chatId} />
-                  )}
-                </div>
-              ))}
+            {/* Show all messages including system messages */}
+            {localChat.messages?.map((message, index) => (
+              <div
+                key={index}
+                id={`message-${message.role}-${index}`}
+                className="flex flex-col gap-2"
+              >
+                {message.role === "system" && <SystemPromptMessage text={message.content} />}
+                {message.role === "user" && <UserMessage text={message.content} chatId={chatId} />}
+                {message.role === "assistant" && (
+                  <SystemMessage text={message.content} chatId={chatId} />
+                )}
+              </div>
+            ))}
             {(currentStreamingMessage || isLoading) && (
               <div className="flex flex-col gap-2">
                 <SystemMessage
