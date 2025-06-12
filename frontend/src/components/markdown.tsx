@@ -136,7 +136,11 @@ function parseThinkingTags(content: string, isComplete: boolean = false): Parsed
   }
 
   // Pattern to match <think> tags (complete or incomplete)
-  const thinkPattern = /<think>([\s\S]*?)<\/think>|<think>([\s\S]*?)$/g;
+  // During streaming (!isComplete), we want to catch <think> as soon as it appears
+  const thinkPattern = isComplete
+    ? /<think>([\s\S]*?)<\/think>|<think>([\s\S]*?)$/g
+    : /<think>([\s\S]*?)(?:<\/think>|$)/g;
+
   let lastIndex = 0;
   let match;
 
@@ -149,16 +153,24 @@ function parseThinkingTags(content: string, isComplete: boolean = false): Parsed
       }
     }
 
-    // Extract content from either complete or incomplete tag
-    const thinkContent = (match[1] || match[2] || "").trim();
+    // Extract content from the match
+    const thinkContent = match[1] || "";
 
-    // Only add thinking block if it has actual content (not just whitespace)
-    if (thinkContent) {
+    // During streaming, even empty think tags should be shown to indicate thinking is starting
+    if (!isComplete && match[0].includes("<think>")) {
       parts.push({
         type: "thinking",
         content: thinkContent,
-        duration: undefined, // Let the UI calculate based on word count
-        id: `think-${match.index}` // Unique ID based on position
+        duration: undefined,
+        id: `think-${match.index}`
+      });
+    } else if (thinkContent.trim()) {
+      // For complete content, only add if there's actual content
+      parts.push({
+        type: "thinking",
+        content: thinkContent,
+        duration: undefined,
+        id: `think-${match.index}`
       });
     }
 
@@ -366,9 +378,14 @@ function MarkdownWithThinking({
     <>
       {parsedContent.map((part, index) => {
         if (part.type === "thinking") {
-          // Check if this is the last part and we're still loading (no closing tag)
+          // Check if this thinking block is still being streamed
           const isLastPart = index === parsedContent.length - 1;
-          const isThinking = loading && isLastPart && !content.includes("</think>");
+          // During streaming, check if this thinking block doesn't have a closing tag
+          const thisThinkingPosition = content.lastIndexOf("<think>");
+          const closingPosition = content.lastIndexOf("</think>");
+
+          // It's actively thinking if we're loading and this think tag hasn't been closed yet
+          const isThinking = loading && isLastPart && closingPosition < thisThinkingPosition;
 
           return (
             <ThinkingBlock
