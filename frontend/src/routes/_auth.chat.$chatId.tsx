@@ -18,6 +18,23 @@ export const Route = createFileRoute("/_auth/chat/$chatId")({
   component: ChatComponent
 });
 
+// Custom hook for copy to clipboard functionality
+function useCopyToClipboard(text: string) {
+  const [isCopied, setIsCopied] = useState(false);
+
+  const handleCopy = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setIsCopied(true);
+      setTimeout(() => setIsCopied(false), 2000);
+    } catch (error) {
+      console.error("Failed to copy text: ", error);
+    }
+  }, [text]);
+
+  return { isCopied, handleCopy };
+}
+
 function UserMessage({ text, chatId }: { text: string; chatId: string }) {
   return (
     <div className="flex flex-col p-4 rounded-lg bg-muted">
@@ -42,18 +59,8 @@ function SystemMessage({
   loading?: boolean;
   chatId: string;
 }) {
-  const [isCopied, setIsCopied] = useState(false);
-
-  const handleCopy = useCallback(async () => {
-    try {
-      const textWithoutThinking = stripThinkingTags(text);
-      await navigator.clipboard.writeText(textWithoutThinking);
-      setIsCopied(true);
-      setTimeout(() => setIsCopied(false), 2000);
-    } catch (error) {
-      console.error("Failed to copy text: ", error);
-    }
-  }, [text]);
+  const textWithoutThinking = stripThinkingTags(text);
+  const { isCopied, handleCopy } = useCopyToClipboard(textWithoutThinking);
 
   return (
     <div className="group flex flex-col p-4">
@@ -80,17 +87,7 @@ function SystemMessage({
 
 function SystemPromptMessage({ text }: { text: string }) {
   const [isExpanded, setIsExpanded] = useState(false);
-  const [isCopied, setIsCopied] = useState(false);
-
-  const handleCopy = useCallback(async () => {
-    try {
-      await navigator.clipboard.writeText(text);
-      setIsCopied(true);
-      setTimeout(() => setIsCopied(false), 2000);
-    } catch (error) {
-      console.error("Failed to copy text: ", error);
-    }
-  }, [text]);
+  const { isCopied, handleCopy } = useCopyToClipboard(text);
 
   return (
     <div className="group flex flex-col p-4 rounded-lg bg-muted/50">
@@ -721,7 +718,9 @@ END OF INSTRUCTIONS`;
               >
                 {message.role === "system" && <SystemPromptMessage text={message.content} />}
                 {message.role === "user" && <UserMessage text={message.content} chatId={chatId} />}
-                {message.role === "assistant" && <SystemMessage text={message.content} chatId={chatId} />}
+                {message.role === "assistant" && (
+                  <SystemMessage text={message.content} chatId={chatId} />
+                )}
               </div>
             ))}
             {(currentStreamingMessage || isLoading) && (
