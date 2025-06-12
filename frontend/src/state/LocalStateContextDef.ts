@@ -13,7 +13,7 @@ export type ChatContentPart =
 
 export type ChatMessage = {
   role: "user" | "assistant" | "system";
-  /** plain text for normal models, or multimodal array for Gemma */
+  /** plain text for normal models, or multimodal array for multimodal models */
   content: string | ChatContentPart[];
 };
 
