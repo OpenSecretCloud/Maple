@@ -176,6 +176,22 @@ function parseThinkingTags(content: string, isComplete: boolean = false): Parsed
   return parts;
 }
 
+export function stripThinkingTags(content: string): string {
+  // Handle the edge case: <think> followed by only whitespace and no closing tag
+  if (/^<think>\s*$/m.test(content) && !content.includes("</think>")) {
+    return content.replace(/^<think>\s*/m, "");
+  }
+
+  // Pattern to match <think> tags (complete or incomplete) and remove them entirely
+  const thinkPattern = /<think>([\s\S]*?)<\/think>|<think>([\s\S]*?)$/g;
+
+  // Replace all thinking tags with empty string and clean up extra whitespace
+  return content
+    .replace(thinkPattern, "")
+    .replace(/\n\s*\n\s*\n/g, "\n\n") // Replace multiple consecutive newlines with double newlines
+    .trim();
+}
+
 export function PreCode(props: JSX.IntrinsicElements["pre"]) {
   const ref = useRef<HTMLPreElement>(null);
 
