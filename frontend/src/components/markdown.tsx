@@ -238,9 +238,9 @@ export function PreCode(props: JSX.IntrinsicElements["pre"]) {
           )}
         </Button>
       </div>
-      <div className="overflow-x-auto max-w-full w-0 min-w-full">
-        <pre ref={ref}>{props.children}</pre>
-      </div>
+      <pre ref={ref} style={{ overflowWrap: "break-word", wordBreak: "break-word" }}>
+        {props.children}
+      </pre>
     </>
   );
 }
