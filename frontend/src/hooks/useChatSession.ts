@@ -1,8 +1,9 @@
 import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Chat, ChatMessage } from "@/state/LocalStateContext";
+import { Chat, ChatMessage, DEFAULT_MODEL_ID } from "@/state/LocalStateContext";
 import { ChatContentPart } from "@/state/LocalStateContextDef";
 import { fileToDataURL } from "@/utils/file";
+import { BillingStatus } from "@/billing/billingApi";
 
 type ChatPhase = "idle" | "streaming" | "persisting";
 
@@ -179,6 +180,19 @@ export function useChatSession(chatId: string, options: UseChatSessionOptions) {
       });
 
       try {
+        // Start title generation in background if needed
+        let titlePromise: Promise<string> | undefined;
+        if (chat.title === "New Chat") {
+          titlePromise = generateTitle(newMessages, openai, queryClient);
+          // Update title in UI as soon as it's ready
+          titlePromise.then((generatedTitle) => {
+            setOptimisticChat((prev) => {
+              if (!prev) return prev;
+              return { ...prev, title: generatedTitle };
+            });
+          });
+        }
+
         // Stream assistant response
         const assistantResponse = await streamAssistant(newMessages);
 
@@ -194,8 +208,8 @@ export function useChatSession(chatId: string, options: UseChatSessionOptions) {
           messages: finalMessages
         }));
 
-        // Generate title if needed
-        const title = chat.title === "New Chat" ? await generateTitle(finalMessages) : chat.title;
+        // Wait for title generation if it was started
+        const title = titlePromise ? await titlePromise : chat.title;
 
         // Persist to backend
         setPhase("persisting");
@@ -205,11 +219,6 @@ export function useChatSession(chatId: string, options: UseChatSessionOptions) {
           model,
           messages: finalMessages
         });
-
-        // Update title in optimistic state if changed
-        if (title !== chat.title) {
-          setOptimisticChat((prev) => ({ ...prev!, title }));
-        }
       } catch (error) {
         setPhase("idle");
         processingRef.current = false;
@@ -237,7 +246,29 @@ export function useChatSession(chatId: string, options: UseChatSessionOptions) {
 }
 
 // Helper to generate chat title
-async function generateTitle(messages: ChatMessage[]): Promise<string> {
+async function generateTitle(
+  messages: ChatMessage[],
+  openai: ReturnType<typeof import("@/ai/useOpenAi").useOpenAI>,
+  queryClient: ReturnType<typeof useQueryClient>
+): Promise<string> {
+  // Helper function to check if the user is on a free plan
+  function isUserOnFreePlan(): boolean {
+    try {
+      const billingStatus = queryClient.getQueryData(["billingStatus"]) as
+        | BillingStatus
+        | undefined;
+
+      return (
+        !billingStatus ||
+        !billingStatus.product_name ||
+        billingStatus.product_name.toLowerCase().includes("free")
+      );
+    } catch (error) {
+      console.log("Error checking billing status, defaulting to free plan", error);
+      return true; // Default to free plan if there's an error
+    }
+  }
+
   const userMessage = messages.find((m) => m.role === "user");
   if (!userMessage) return "New Chat";
 
@@ -252,6 +283,60 @@ async function generateTitle(messages: ChatMessage[]): Promise<string> {
           ).text
         : "New Chat";
 
-  // Simple title for now - just truncate
-  return messageText.slice(0, 50).trim();
+  // Simple title generation - truncate first message to 50 chars
+  const simpleTitleFromMessage = messageText.slice(0, 50).trim();
+
+  // For free plan users, just use the simple title
+  // For paid plans, try to generate AI title
+  if (isUserOnFreePlan()) {
+    console.log("Using simple title generation for free plan user");
+    return simpleTitleFromMessage;
+  }
+
+  // For paid plans, use LLM to generate a smart title
+  try {
+    console.log("Using AI title generation for paid plan user");
+    // Get the user's first message, truncate if too long
+    const userContent = messageText.slice(0, 500); // Reduced to 500 chars to optimize token usage
+
+    // Use the OpenAI API to generate a concise title - use the default model
+    const stream = openai.beta.chat.completions.stream({
+      model: DEFAULT_MODEL_ID, // Use the default model instead of user selected model
+      messages: [
+        {
+          role: "system",
+          content:
+            "You are a helpful assistant that generates concise, meaningful titles (3-5 words) for chat conversations based on the user's first message. Return only the title without quotes or explanations."
+        },
+        {
+          role: "user",
+          content: `Generate a concise, contextual title (3-5 words) for a chat that starts with this message: "${userContent}"`
+        }
+      ],
+      temperature: 0.7,
+      max_tokens: 15, // Keep response very short
+      stream: true
+    });
+
+    let generatedTitle = "";
+    for await (const chunk of stream) {
+      const content = chunk.choices[0]?.delta?.content || "";
+      generatedTitle += content;
+    }
+
+    // Get the final completion
+    await stream.finalChatCompletion();
+
+    // Remove quotes if present and limit length
+    const cleanTitle = generatedTitle
+      .replace(/^["']|["']$/g, "") // Remove leading/trailing quotes
+      .trim()
+      .slice(0, 50);
+
+    console.log("Generated title:", cleanTitle);
+    return cleanTitle || simpleTitleFromMessage; // Fallback if generation fails
+  } catch (error) {
+    console.error("Error generating AI title, falling back to simple title:", error);
+    return simpleTitleFromMessage;
+  }
 }
