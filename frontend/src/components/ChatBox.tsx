@@ -313,7 +313,7 @@ export default function Component({
   })();
 
   return (
-    <div className="flex flex-col w-full">
+    <div className="flex flex-col w-full min-w-0">
       <TokenWarning
         messages={messages}
         currentInput={inputValue}
@@ -347,7 +347,7 @@ export default function Component({
               onChange={(e) => setSystemPromptValue(e.target.value)}
               placeholder="Enter instructions for the AI (e.g., 'You are a helpful coding assistant...')"
               rows={2}
-              className="w-full p-2 text-sm border border-muted-foreground/20 rounded-md bg-muted/50 placeholder:text-muted-foreground/70 focus:outline-none focus:ring-1 focus:ring-ring resize-none transition-colors"
+              className="w-full p-2 text-sm border border-muted-foreground/20 rounded-md bg-muted/50 placeholder:text-muted-foreground/70 focus:outline-none focus:ring-1 focus:ring-ring resize-none transition-colors overflow-x-auto max-w-full min-w-0"
               style={{
                 height: "auto",
                 resize: "none",
@@ -402,6 +402,7 @@ export default function Component({
             "placeholder:text-muted-foreground focus-visible:outline-none",
             "disabled:cursor-not-allowed disabled:opacity-50",
             "!border-0 shadow-none !border-none focus-visible:ring-0 !ring-0",
+            "overflow-x-auto max-w-full min-w-0",
             billingStatus === null && "animate-pulse"
           )}
           value={inputValue}
