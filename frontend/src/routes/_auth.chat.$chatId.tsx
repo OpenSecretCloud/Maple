@@ -81,6 +81,11 @@ function UserMessage({
   const [editText, setEditText] = useState(text);
   const [isCopied, setIsCopied] = useState(false);
 
+  // Keep editText in sync with text prop changes (fixes cross-chat state bug)
+  useEffect(() => {
+    setEditText(text);
+  }, [text]);
+
   const handleEdit = () => {
     if (isEditing) {
       onEdit(messageIndex, editText);
