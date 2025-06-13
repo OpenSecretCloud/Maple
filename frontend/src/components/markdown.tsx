@@ -406,7 +406,9 @@ export function Markdown(
       className="markdown-body"
       style={{
         fontSize: `${props.fontSize ?? 16}px`,
-        fontFamily: props.fontFamily || "inherit"
+        fontFamily: props.fontFamily || "inherit",
+        overflowWrap: "break-word",
+        wordBreak: "break-word"
       }}
       ref={mdRef}
       onContextMenu={props.onContextMenu}
