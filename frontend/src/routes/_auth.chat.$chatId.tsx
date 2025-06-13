@@ -280,7 +280,18 @@ function SystemMessage({
   onFork: (index: number) => void;
 }) {
   const textWithoutThinking = stripThinkingTags(text);
-  const { isCopied, handleCopy } = useCopyToClipboard(textWithoutThinking);
+  const [isCopied, setIsCopied] = useState(false);
+
+  const handleCopy = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(textWithoutThinking);
+      onCopy(textWithoutThinking);
+      setIsCopied(true);
+      setTimeout(() => setIsCopied(false), 2000);
+    } catch (error) {
+      console.error("Failed to copy text: ", error);
+    }
+  }, [textWithoutThinking, onCopy]);
 
   const handleRegenerate = () => {
     onRegenerate(messageIndex);
@@ -1214,7 +1225,7 @@ END OF INSTRUCTIONS`;
               // Get the index among visible (non-system) messages for edit/delete operations
               const visibleMessages = localChat.messages.filter((m) => m.role !== "system");
               const visibleIndex = visibleMessages.indexOf(message);
-              
+
               return (
                 <div
                   key={index}
