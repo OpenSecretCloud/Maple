@@ -154,7 +154,7 @@ function parseThinkingTags(content: string, isComplete: boolean = false): Parsed
     }
 
     // Extract content from the match
-    const thinkContent = match[1] || "";
+    const thinkContent = match[1] ?? match[2] ?? "";
 
     // During streaming, even empty think tags should be shown to indicate thinking is starting
     if (!isComplete && match[0].includes("<think>")) {
