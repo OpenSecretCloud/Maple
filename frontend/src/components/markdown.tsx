@@ -238,7 +238,9 @@ export function PreCode(props: JSX.IntrinsicElements["pre"]) {
           )}
         </Button>
       </div>
-      <pre ref={ref}>{props.children}</pre>
+      <div className="overflow-x-auto max-w-full w-0 min-w-full">
+        <pre ref={ref}>{props.children}</pre>
+      </div>
     </>
   );
 }
