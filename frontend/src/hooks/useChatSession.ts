@@ -5,6 +5,14 @@ import { ChatContentPart } from "@/state/LocalStateContextDef";
 import { fileToDataURL } from "@/utils/file";
 import { BillingStatus } from "@/billing/billingApi";
 
+// Import MODEL_CONFIG to check vision capabilities
+// TODO: Consider extracting to shared constants file
+const MODEL_CONFIG: Record<string, { supportsVision?: boolean }> = {
+  "leon-se/gemma-3-27b-it-fp8-dynamic": {
+    supportsVision: true
+  }
+};
+
 type ChatPhase = "idle" | "streaming" | "persisting";
 
 interface UseChatSessionOptions {
@@ -148,16 +156,25 @@ export function useChatSession(chatId: string, options: UseChatSessionOptions) {
         return;
       }
 
-      // Handle images for Gemma model
-      const isGemma = model === "leon-se/gemma-3-27b-it-fp8-dynamic";
+      // Handle images for vision-capable models
+      const modelSupportsVision = MODEL_CONFIG[model]?.supportsVision || false;
       let userMessage: ChatMessage;
 
-      if (isGemma && images && images.length > 0) {
+      if (modelSupportsVision && images && images.length > 0) {
         const parts: ChatContentPart[] = [{ type: "text", text: content }];
         for (const file of images) {
-          const url = await fileToDataURL(file);
-          parts.push({ type: "image_url", image_url: { url } });
+          try {
+            const url = await fileToDataURL(file);
+            parts.push({ type: "image_url", image_url: { url } });
+          } catch (error) {
+            console.error("[useChatSession] Failed to convert image to data URL:", error);
+            // Continue with other images instead of failing the entire operation
+            // TODO: Consider surfacing this error to the user in the future
+            continue;
+          }
         }
+        // If we have at least text content (and potentially some images), create multimodal message
+        // If no images were successfully processed, the message will just have text
         userMessage = { role: "user", content: parts };
       } else {
         userMessage = { role: "user", content };
