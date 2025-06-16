@@ -47,14 +47,14 @@ function renderContent(content: ChatMessage["content"], chatId: string) {
   );
 }
 
-function UserMessage({ text, chatId }: { text: ChatMessage["content"]; chatId: string }) {
+function UserMessage({ message, chatId }: { message: ChatMessage; chatId: string }) {
   return (
     <div className="flex flex-col p-4 rounded-lg bg-muted">
       <div className="rounded-lg flex flex-col md:flex-row gap-4">
         <div>
           <UserIcon />
         </div>
-        <div className="flex flex-col gap-2">{renderContent(text, chatId)}</div>
+        <div className="flex flex-col gap-2">{renderContent(message.content, chatId)}</div>
       </div>
     </div>
   );
@@ -356,12 +356,18 @@ function ChatComponent() {
   }, [localChat.messages.length, isLoading]);
 
   const sendMessage = useCallback(
-    async (input: string, systemPrompt?: string, images?: File[]) => {
+    async (
+      input: string,
+      systemPrompt?: string,
+      images?: File[],
+      documentText?: string,
+      documentMetadata?: { filename: string; fullContent: string }
+    ) => {
       // Handle system prompt if provided
       const messageContent = systemPrompt ? `[System: ${systemPrompt}]\n\n${input}` : input;
 
       // Use the appendUserMessage from the hook
-      await appendUserMessage(messageContent, images);
+      await appendUserMessage(messageContent, images, documentText, documentMetadata);
 
       // Scroll to bottom after sending
       requestAnimationFrame(() => {
@@ -520,7 +526,7 @@ END OF INSTRUCTIONS`;
                     }
                   />
                 )}
-                {message.role === "user" && <UserMessage text={message.content} chatId={chatId} />}
+                {message.role === "user" && <UserMessage message={message} chatId={chatId} />}
                 {message.role === "assistant" && (
                   <SystemMessage
                     text={

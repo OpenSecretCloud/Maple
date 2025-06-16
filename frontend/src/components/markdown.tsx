@@ -9,7 +9,8 @@ import RehypeHighlight from "rehype-highlight";
 import { useRef, useState, RefObject, useEffect, useMemo } from "react";
 import React from "react";
 import { Button } from "./ui/button";
-import { Check, Copy, ChevronDown, ChevronRight, Brain } from "lucide-react";
+import { Check, Copy, ChevronDown, ChevronRight, Brain, FileTextIcon } from "lucide-react";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "./ui/dialog";
 
 async function copyToClipboard(text: string) {
   try {
@@ -360,6 +361,143 @@ function MarkDownContentToMemo(props: { content: string }) {
 
 export const MarkdownContent = React.memo(MarkDownContentToMemo);
 
+interface DocumentData {
+  document: {
+    filename: string;
+    md_content: string | null;
+    json_content: string | null;
+    html_content: string | null;
+    text_content: string | null;
+    doctags_content: string | null;
+  };
+  status: string;
+  errors: unknown[];
+  processing_time: number;
+  timings: Record<string, unknown>;
+}
+
+function DocumentPreview({ documentData }: { documentData: DocumentData }) {
+  const [isOpen, setIsOpen] = useState(false);
+
+  // Extract content with fallbacks
+  const content =
+    documentData.document.md_content ||
+    documentData.document.json_content ||
+    documentData.document.html_content ||
+    documentData.document.text_content ||
+    documentData.document.doctags_content ||
+    "No content available";
+
+  // Truncate filename if too long for the square button
+  const displayFilename =
+    documentData.document.filename.length > 12
+      ? documentData.document.filename.substring(0, 9) + "..."
+      : documentData.document.filename;
+
+  return (
+    <>
+      <div className="my-3">
+        <Button
+          variant="outline"
+          size="default"
+          className="h-20 w-20 p-2 flex flex-col items-center justify-center gap-1"
+          onClick={() => setIsOpen(true)}
+          title={documentData.document.filename}
+        >
+          <FileTextIcon className="h-6 w-6 flex-shrink-0" />
+          <span className="text-xs truncate max-w-full">{displayFilename}</span>
+        </Button>
+      </div>
+
+      <Dialog open={isOpen} onOpenChange={setIsOpen}>
+        <DialogContent className="max-w-4xl max-h-[80vh] overflow-hidden flex flex-col">
+          <DialogHeader>
+            <DialogTitle>{documentData.document.filename}</DialogTitle>
+          </DialogHeader>
+          <div className="overflow-y-auto flex-1 p-4">
+            <MarkdownContent content={content} />
+          </div>
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+}
+
+function parseDocumentJson(text: string): DocumentData | null {
+  // Try to find JSON that looks like a document
+  const jsonMatch = text.match(
+    /\{"document":\{"filename":[^}]+.*?\}\}(?:,"status":"success"[^}]*\})?/s
+  );
+  if (jsonMatch) {
+    try {
+      return JSON.parse(jsonMatch[0]) as DocumentData;
+    } catch {
+      // If partial match fails, try to extract the full JSON
+      const startIndex = text.indexOf('{"document":');
+      if (startIndex !== -1) {
+        // Find the matching closing brace
+        let braceCount = 0;
+        let endIndex = startIndex;
+        for (let i = startIndex; i < text.length; i++) {
+          if (text[i] === "{") braceCount++;
+          if (text[i] === "}") braceCount--;
+          if (braceCount === 0) {
+            endIndex = i + 1;
+            break;
+          }
+        }
+        try {
+          return JSON.parse(text.substring(startIndex, endIndex)) as DocumentData;
+        } catch (e2) {
+          console.error("Failed to parse document JSON:", e2);
+        }
+      }
+    }
+  }
+  return null;
+}
+
+function parseContentWithDocuments(
+  content: string
+): Array<{ type: "text" | "document"; content: string | DocumentData }> {
+  const parts: Array<{ type: "text" | "document"; content: string | DocumentData }> = [];
+
+  // Check if content starts with "Here is a document:" and contains JSON
+  if (content.startsWith("Here is a document:") && content.includes('{"document":')) {
+    const jsonStartIndex = content.indexOf('{"document":');
+    const beforeJson = content.substring(0, jsonStartIndex).trim();
+
+    // Add the "Here is a document:" text
+    if (beforeJson) {
+      parts.push({ type: "text", content: beforeJson });
+    }
+
+    // Try to parse the document JSON
+    const documentData = parseDocumentJson(content.substring(jsonStartIndex));
+    if (documentData) {
+      parts.push({ type: "document", content: documentData });
+
+      // Find any text after the JSON
+      const jsonMatch = content.substring(jsonStartIndex).match(/\{"document":[\s\S]*?\}\s*\}/);
+      if (jsonMatch) {
+        const afterJsonIndex = jsonStartIndex + jsonMatch[0].length;
+        const afterJson = content.substring(afterJsonIndex).trim();
+        if (afterJson) {
+          parts.push({ type: "text", content: afterJson });
+        }
+      }
+    } else {
+      // If parsing failed, just show as text
+      parts.push({ type: "text", content: content });
+    }
+  } else {
+    // No document detected, treat as regular text
+    parts.push({ type: "text", content: content });
+  }
+
+  return parts;
+}
+
 function MarkdownWithThinking({
   content,
   loading = false,
@@ -396,7 +534,29 @@ function MarkdownWithThinking({
             />
           );
         } else {
-          return <MarkdownContent key={index} content={part.content} />;
+          // Parse content for documents
+          const contentParts = parseContentWithDocuments(part.content);
+          return (
+            <React.Fragment key={index}>
+              {contentParts.map((contentPart, partIndex) => {
+                if (contentPart.type === "document") {
+                  return (
+                    <DocumentPreview
+                      key={`doc-${index}-${partIndex}`}
+                      documentData={contentPart.content as DocumentData}
+                    />
+                  );
+                } else {
+                  return (
+                    <MarkdownContent
+                      key={`text-${index}-${partIndex}`}
+                      content={contentPart.content as string}
+                    />
+                  );
+                }
+              })}
+            </React.Fragment>
+          );
         }
       })}
     </>

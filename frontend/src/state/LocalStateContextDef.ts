@@ -15,6 +15,11 @@ export type ChatMessage = {
   role: "user" | "assistant" | "system";
   /** plain text for normal models, or multimodal array for multimodal models */
   content: string | ChatContentPart[];
+  /** Optional document attachment for user messages */
+  document?: {
+    filename: string;
+    fullContent: string;
+  };
 };
 
 export type Chat = {

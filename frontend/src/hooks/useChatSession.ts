@@ -147,7 +147,12 @@ export function useChatSession(chatId: string, options: UseChatSessionOptions) {
   );
 
   const appendUserMessage = useCallback(
-    async (content: string, images?: File[]) => {
+    async (
+      content: string,
+      images?: File[],
+      documentText?: string,
+      documentMetadata?: { filename: string; fullContent: string }
+    ) => {
       if (phase !== "idle") {
         return;
       }
@@ -160,8 +165,14 @@ export function useChatSession(chatId: string, options: UseChatSessionOptions) {
       const modelSupportsVision = MODEL_CONFIG[model]?.supportsVision || false;
       let userMessage: ChatMessage;
 
+      // If document text is provided, prepend it to the content
+      let finalContent = content;
+      if (documentText) {
+        finalContent = `Here is a document:\n\n${documentText}\n\n${content}`;
+      }
+
       if (modelSupportsVision && images && images.length > 0) {
-        const parts: ChatContentPart[] = [{ type: "text", text: content }];
+        const parts: ChatContentPart[] = [{ type: "text", text: finalContent }];
         for (const file of images) {
           try {
             const url = await fileToDataURL(file);
@@ -177,7 +188,12 @@ export function useChatSession(chatId: string, options: UseChatSessionOptions) {
         // If no images were successfully processed, the message will just have text
         userMessage = { role: "user", content: parts };
       } else {
-        userMessage = { role: "user", content };
+        userMessage = { role: "user", content: finalContent };
+      }
+
+      // Add document metadata if provided
+      if (documentMetadata) {
+        userMessage.document = documentMetadata;
       }
 
       // Check again after async operations to prevent double execution

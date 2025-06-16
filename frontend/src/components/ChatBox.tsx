@@ -1,4 +1,4 @@
-import { CornerRightUp, Bot, ImageIcon, X } from "lucide-react";
+import { CornerRightUp, Bot, ImageIcon, X, FileText } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { useEffect, useRef, useState } from "react";
@@ -11,6 +11,23 @@ import { Route as ChatRoute } from "@/routes/_auth.chat.$chatId";
 import { ChatMessage } from "@/state/LocalStateContext";
 import { useNavigate, useRouter } from "@tanstack/react-router";
 import { ModelSelector } from "@/components/ModelSelector";
+import { useOpenSecret } from "@opensecret/react";
+import type { DocumentResponse } from "@opensecret/react";
+
+interface ParsedDocument {
+  document: {
+    filename: string;
+    md_content: string | null;
+    json_content: string | null;
+    html_content: string | null;
+    text_content: string | null;
+    doctags_content: string | null;
+  };
+  status: string;
+  errors: unknown[];
+  processing_time: number;
+  timings: Record<string, unknown>;
+}
 
 // Rough token estimation function
 function estimateTokenCount(text: string): number {
@@ -132,7 +149,13 @@ export default function Component({
   onCompress,
   isSummarizing = false
 }: {
-  onSubmit: (input: string, systemPrompt?: string, images?: File[]) => void;
+  onSubmit: (
+    input: string,
+    systemPrompt?: string,
+    images?: File[],
+    documentText?: string,
+    documentMetadata?: { filename: string; fullContent: string }
+  ) => void;
   startTall?: boolean;
   messages?: ChatMessage[];
   isStreaming?: boolean;
@@ -148,7 +171,16 @@ export default function Component({
 
   const isGemma = model === "leon-se/gemma-3-27b-it-fp8-dynamic";
   const [images, setImages] = useState<File[]>([]);
+  const [uploadedDocument, setUploadedDocument] = useState<{
+    original: DocumentResponse;
+    parsed: ParsedDocument;
+    cleanedText: string;
+  } | null>(null);
+  const [isUploadingDocument, setIsUploadingDocument] = useState(false);
+  const [documentError, setDocumentError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const documentInputRef = useRef<HTMLInputElement>(null);
+  const os = useOpenSecret();
 
   const handleAddImages = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files) return;
@@ -166,6 +198,70 @@ export default function Component({
   };
 
   const removeImage = (idx: number) => setImages((prev) => prev.filter((_, i) => i !== idx));
+
+  const handleDocumentUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!e.target.files || e.target.files.length === 0) return;
+
+    const file = e.target.files[0];
+    setIsUploadingDocument(true);
+    setDocumentError(null);
+
+    try {
+      const result = await os.uploadDocument(file);
+
+      // Parse the JSON response
+      const parsed = JSON.parse(result.text) as ParsedDocument;
+
+      // Extract content with fallbacks (currently not used since we pass the full JSON)
+      // const content =
+      //   parsed.document.md_content ||
+      //   parsed.document.json_content ||
+      //   parsed.document.html_content ||
+      //   parsed.document.text_content ||
+      //   parsed.document.doctags_content ||
+      //   "";
+
+      // Create a cleaned version of the parsed document with image tags stripped from md_content
+      const cleanedParsed = {
+        ...parsed,
+        document: {
+          ...parsed.document,
+          md_content: parsed.document.md_content
+            ? parsed.document.md_content.replace(/!\[Image\]\([^)]+\)/g, "")
+            : parsed.document.md_content
+        }
+      };
+
+      setUploadedDocument({
+        original: result,
+        parsed: parsed,
+        cleanedText: JSON.stringify(cleanedParsed) // Store the cleaned JSON as a string
+      });
+    } catch (error) {
+      console.error("Document upload failed:", error);
+      if (error instanceof Error) {
+        if (error.message.includes("exceeds maximum limit")) {
+          setDocumentError("File too large. Maximum size is 10MB.");
+        } else if (error.message.includes("401")) {
+          setDocumentError("Authentication required. Please log in to upload documents.");
+        } else if (error.message.includes("403")) {
+          setDocumentError("Usage limit exceeded. Please upgrade your plan.");
+        } else {
+          setDocumentError("Failed to process document. Please try again.");
+        }
+      } else {
+        setDocumentError("An unexpected error occurred.");
+      }
+    } finally {
+      setIsUploadingDocument(false);
+      if (e.target) e.target.value = "";
+    }
+  };
+
+  const removeDocument = () => {
+    setUploadedDocument(null);
+    setDocumentError(null);
+  };
   const [isFocused, setIsFocused] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const systemPromptRef = useRef<HTMLTextAreaElement>(null);
@@ -228,10 +324,25 @@ export default function Component({
     onSubmit(
       inputValue.trim(),
       isFirstMessage ? systemPromptValue.trim() || undefined : undefined,
-      images
+      images,
+      uploadedDocument?.cleanedText, // Now contains the full JSON with cleaned md_content
+      uploadedDocument
+        ? {
+            filename: uploadedDocument.parsed.document.filename,
+            fullContent:
+              uploadedDocument.parsed.document.md_content ||
+              uploadedDocument.parsed.document.json_content ||
+              uploadedDocument.parsed.document.html_content ||
+              uploadedDocument.parsed.document.text_content ||
+              uploadedDocument.parsed.document.doctags_content ||
+              ""
+          }
+        : undefined
     );
     setInputValue("");
     setImages([]);
+    setUploadedDocument(null);
+    setDocumentError(null);
 
     // Re-focus input after submitting
     setTimeout(() => {
@@ -426,20 +537,48 @@ export default function Component({
           }
         }}
       >
-        {images.length > 0 && (
-          <div className="mb-2 flex gap-2 items-center flex-wrap">
-            {images.map((f, i) => (
-              <div key={i} className="relative">
-                <img src={URL.createObjectURL(f)} className="w-10 h-10 object-cover rounded-md" />
+        {(images.length > 0 || uploadedDocument || documentError) && (
+          <div className="mb-2 space-y-2">
+            {images.length > 0 && (
+              <div className="flex gap-2 items-center flex-wrap">
+                {images.map((f, i) => (
+                  <div key={i} className="relative">
+                    <img
+                      src={URL.createObjectURL(f)}
+                      className="w-10 h-10 object-cover rounded-md"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => removeImage(i)}
+                      className="absolute -top-1 -right-1 bg-background rounded-full shadow-sm"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            {uploadedDocument && (
+              <div className="flex items-center gap-2 p-2 bg-muted/50 rounded-md">
+                <FileText className="h-4 w-4 text-muted-foreground" />
+                <span className="text-sm truncate flex-1">
+                  {uploadedDocument.parsed.document.filename} (
+                  {Math.round(uploadedDocument.original.size / 1024)}KB)
+                </span>
                 <button
                   type="button"
-                  onClick={() => removeImage(i)}
-                  className="absolute -top-1 -right-1 bg-background rounded-full shadow-sm"
+                  onClick={removeDocument}
+                  className="text-muted-foreground hover:text-foreground"
                 >
                   <X className="h-3 w-3" />
                 </button>
               </div>
-            ))}
+            )}
+            {documentError && (
+              <div className="text-xs text-destructive p-2 bg-destructive/10 rounded-md">
+                {documentError}
+              </div>
+            )}
           </div>
         )}
         <Label htmlFor="message" className="sr-only">
@@ -496,6 +635,24 @@ export default function Component({
               </Button>
             </>
           )}
+          <input
+            type="file"
+            accept=".pdf,.doc,.docx,.txt,.rtf,.xlsx,.xls,.pptx,.ppt"
+            ref={documentInputRef}
+            onChange={handleDocumentUpload}
+            className="hidden"
+          />
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            className="ml-2"
+            onClick={() => documentInputRef.current?.click()}
+            disabled={isUploadingDocument || !!uploadedDocument}
+            title={uploadedDocument ? "Remove current document first" : "Upload document"}
+          >
+            <FileText className={cn("h-4 w-4", isUploadingDocument && "animate-pulse")} />
+          </Button>
           <Button
             type="submit"
             size="sm"

@@ -64,11 +64,30 @@ function Index() {
 
   const toggleSidebar = useCallback(() => setIsSidebarOpen((prev) => !prev), []);
 
-  async function handleSubmit(input: string, systemPrompt?: string, images?: File[]) {
+  async function handleSubmit(
+    input: string,
+    systemPrompt?: string,
+    images?: File[],
+    documentText?: string,
+    documentMetadata?: { filename: string; fullContent: string }
+  ) {
     if (input.trim() === "") return;
-    localState.setUserPrompt(input.trim());
+
+    // If document text is provided, prepend it to the input
+    const finalInput = documentText
+      ? `Here is a document:\n\n${documentText}\n\n${input.trim()}`
+      : input.trim();
+
+    localState.setUserPrompt(finalInput);
     localState.setSystemPrompt(systemPrompt?.trim() || null);
     localState.setUserImages(images || []);
+
+    // Store document metadata if provided (we'll need to add this to LocalState)
+    if (documentMetadata) {
+      // For now, we'll include it in the prompt until we add proper document storage
+      // TODO: Add document metadata to LocalState
+    }
+
     const id = await localState.addChat();
     navigate({ to: "/chat/$chatId", params: { chatId: id } });
   }
