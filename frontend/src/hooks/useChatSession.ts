@@ -7,7 +7,7 @@ import { BillingStatus } from "@/billing/billingApi";
 
 // Import MODEL_CONFIG to check vision capabilities
 // TODO: Consider extracting to shared constants file
-const MODEL_CONFIG: Record<string, { supportsVision?: boolean }> = {
+export const MODEL_CONFIG: Record<string, { supportsVision?: boolean }> = {
   "leon-se/gemma-3-27b-it-fp8-dynamic": {
     supportsVision: true
   }

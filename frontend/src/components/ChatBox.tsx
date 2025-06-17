@@ -13,6 +13,7 @@ import { useNavigate, useRouter } from "@tanstack/react-router";
 import { ModelSelector } from "@/components/ModelSelector";
 import { useOpenSecret } from "@opensecret/react";
 import type { DocumentResponse } from "@opensecret/react";
+import { MODEL_CONFIG } from "@/hooks/useChatSession";
 
 interface ParsedDocument {
   document: {
@@ -169,7 +170,7 @@ export default function Component({
     useLocalState();
   const { model } = useLocalState();
 
-  const isGemma = model === "leon-se/gemma-3-27b-it-fp8-dynamic";
+  const isGemma = MODEL_CONFIG[model]?.supportsVision || false;
   const [images, setImages] = useState<File[]>([]);
   const [uploadedDocument, setUploadedDocument] = useState<{
     original: DocumentResponse;
