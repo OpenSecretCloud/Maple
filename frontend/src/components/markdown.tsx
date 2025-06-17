@@ -6,6 +6,7 @@ import RemarkBreaks from "remark-breaks";
 import RehypeKatex from "rehype-katex";
 import RemarkGfm from "remark-gfm";
 import RehypeHighlight from "rehype-highlight";
+import RehypeSanitize from "rehype-sanitize";
 import { useRef, useState, RefObject, useEffect, useMemo } from "react";
 import React from "react";
 import { Button } from "./ui/button";
@@ -333,6 +334,7 @@ function MarkDownContentToMemo(props: { content: string }) {
       remarkPlugins={[RemarkMath, RemarkGfm, RemarkBreaks]}
       rehypePlugins={[
         RehypeKatex,
+        RehypeSanitize,
         [
           RehypeHighlight,
           {
