@@ -10,7 +10,7 @@ import RehypeSanitize from "rehype-sanitize";
 import { useRef, useState, RefObject, useEffect, useMemo } from "react";
 import React from "react";
 import { Button } from "./ui/button";
-import { Check, Copy, ChevronDown, ChevronRight, Brain, FileTextIcon } from "lucide-react";
+import { Check, Copy, ChevronDown, ChevronRight, Brain, FileText } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "./ui/dialog";
 
 async function copyToClipboard(text: string) {
@@ -406,7 +406,7 @@ function DocumentPreview({ documentData }: { documentData: DocumentData }) {
           onClick={() => setIsOpen(true)}
           title={documentData.document.filename}
         >
-          <FileTextIcon className="h-6 w-6 flex-shrink-0" />
+          <FileText className="h-6 w-6 flex-shrink-0" />
           <span className="text-xs truncate max-w-full">{displayFilename}</span>
         </Button>
       </div>
@@ -426,37 +426,25 @@ function DocumentPreview({ documentData }: { documentData: DocumentData }) {
 }
 
 function parseDocumentJson(text: string): DocumentData | null {
-  // Try to find JSON that looks like a document
-  const jsonMatch = text.match(
-    /\{"document":\{"filename":[^}]+.*?\}\}(?:,"status":"success"[^}]*\})?/s
-  );
-  if (jsonMatch) {
-    try {
-      return JSON.parse(jsonMatch[0]) as DocumentData;
-    } catch {
-      // If partial match fails, try to extract the full JSON
-      const startIndex = text.indexOf('{"document":');
-      if (startIndex !== -1) {
-        // Find the matching closing brace
-        let braceCount = 0;
-        let endIndex = startIndex;
-        for (let i = startIndex; i < text.length; i++) {
-          if (text[i] === "{") braceCount++;
-          if (text[i] === "}") braceCount--;
-          if (braceCount === 0) {
-            endIndex = i + 1;
-            break;
-          }
-        }
+  const start = text.indexOf('{"document":');
+  if (start === -1) return null;
+
+  let depth = 0;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === "{") depth++;
+    if (ch === "}") {
+      if (--depth === 0) {
         try {
-          return JSON.parse(text.substring(startIndex, endIndex)) as DocumentData;
-        } catch (e2) {
-          console.error("Failed to parse document JSON:", e2);
+          return JSON.parse(text.slice(start, i + 1)) as DocumentData;
+        } catch (e) {
+          console.error("Document JSON parse error", e);
+          return null;
         }
       }
     }
   }
-  return null;
+  return null; // incomplete JSON – wait for more chunks
 }
 
 function parseContentWithDocuments(
