@@ -575,6 +575,8 @@ export default function Component({
               onClick={() => setIsSystemPromptExpanded(!isSystemPromptExpanded)}
               className="flex items-center gap-1.5 text-xs font-medium transition-colors text-muted-foreground hover:text-foreground cursor-pointer"
               title="System Prompt"
+              aria-label="Toggle system prompt"
+              aria-expanded={isSystemPromptExpanded}
             >
               <Bot className="size-6" />
               {systemPromptValue.trim() && (
@@ -634,6 +636,7 @@ export default function Component({
                       type="button"
                       onClick={() => removeImage(i)}
                       className="absolute -top-1 -right-1 bg-background rounded-full shadow-sm"
+                      aria-label={`Remove image ${i + 1}`}
                     >
                       <X className="h-3 w-3" />
                     </button>
@@ -663,6 +666,7 @@ export default function Component({
                   type="button"
                   onClick={removeDocument}
                   className="text-muted-foreground hover:text-foreground"
+                  aria-label="Remove document"
                 >
                   <X className="h-3 w-3" />
                 </button>
@@ -724,6 +728,7 @@ export default function Component({
                 variant="ghost"
                 className="ml-2"
                 onClick={() => fileInputRef.current?.click()}
+                aria-label="Upload images"
               >
                 <ImageIcon className="h-4 w-4" />
               </Button>
@@ -746,6 +751,7 @@ export default function Component({
                 onClick={() => documentInputRef.current?.click()}
                 disabled={isUploadingDocument}
                 title={isUploadingDocument ? "Processing document..." : "Upload document"}
+                aria-label={isUploadingDocument ? "Processing document..." : "Upload document"}
               >
                 {isUploadingDocument ? (
                   <Loader2 className="h-4 w-4 animate-spin" />
@@ -762,6 +768,7 @@ export default function Component({
             disabled={
               (!inputValue.trim() && images.length === 0 && !uploadedDocument) || isSubmitDisabled
             }
+            aria-label="Send message"
           >
             <CornerRightUp className="size-3.5" />
           </Button>

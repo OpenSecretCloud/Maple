@@ -435,6 +435,7 @@ function DocumentPreview({ documentData }: { documentData: DocumentData }) {
           className="h-20 w-20 p-2 flex flex-col items-center justify-center gap-1 overflow-hidden"
           onClick={() => setIsOpen(true)}
           title={documentData.document.filename}
+          aria-label={`Preview document: ${documentData.document.filename}`}
         >
           <FileText className="h-6 w-6 flex-shrink-0" />
           <span className="text-xs truncate w-full text-center px-1">
