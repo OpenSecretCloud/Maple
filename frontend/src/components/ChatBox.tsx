@@ -172,6 +172,7 @@ export default function Component({
 
   const isGemma = MODEL_CONFIG[model]?.supportsVision || false;
   const [images, setImages] = useState<File[]>([]);
+  const [imageUrls, setImageUrls] = useState<Map<File, string>>(new Map());
   const [uploadedDocument, setUploadedDocument] = useState<{
     original: DocumentResponse;
     parsed: ParsedDocument;
@@ -195,10 +196,33 @@ export default function Component({
       console.warn("Some files were skipped. Only JPEG, PNG, and WebP images are supported.");
     }
 
+    // Create object URLs for the new images
+    const newUrlMap = new Map(imageUrls);
+    validFiles.forEach((file) => {
+      if (!newUrlMap.has(file)) {
+        newUrlMap.set(file, URL.createObjectURL(file));
+      }
+    });
+    setImageUrls(newUrlMap);
     setImages((prev) => [...prev, ...validFiles]);
   };
 
-  const removeImage = (idx: number) => setImages((prev) => prev.filter((_, i) => i !== idx));
+  const removeImage = (idx: number) => {
+    setImages((prev) => {
+      const fileToRemove = prev[idx];
+      // Revoke the object URL when removing the image
+      const url = imageUrls.get(fileToRemove);
+      if (url) {
+        URL.revokeObjectURL(url);
+        setImageUrls((prevUrls) => {
+          const newUrls = new Map(prevUrls);
+          newUrls.delete(fileToRemove);
+          return newUrls;
+        });
+      }
+      return prev.filter((_, i) => i !== idx);
+    });
+  };
 
   const handleDocumentUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files || e.target.files.length === 0) return;
@@ -341,7 +365,12 @@ export default function Component({
         : undefined
     );
     setInputValue("");
+
+    // Clean up image URLs when clearing images
+    imageUrls.forEach((url) => URL.revokeObjectURL(url));
+    setImageUrls(new Map());
     setImages([]);
+
     setUploadedDocument(null);
     setDocumentError(null);
 
@@ -463,6 +492,14 @@ export default function Component({
     return () => clearTimeout(timer);
   }, [chatId, isStreaming, isInputDisabled]); // Re-run when chat ID changes, streaming completes, or input state changes
 
+  // Cleanup effect for object URLs
+  useEffect(() => {
+    return () => {
+      // Revoke all object URLs when component unmounts
+      imageUrls.forEach((url) => URL.revokeObjectURL(url));
+    };
+  }, [imageUrls]);
+
   // No longer need token calculation or plan type check since we removed the hard limit
   // Just keeping the TokenWarning component which handles its own calculations
   const placeholderText = (() => {
@@ -545,8 +582,9 @@ export default function Component({
                 {images.map((f, i) => (
                   <div key={i} className="relative">
                     <img
-                      src={URL.createObjectURL(f)}
+                      src={imageUrls.get(f) || ""}
                       className="w-10 h-10 object-cover rounded-md"
+                      alt={`Uploaded image ${i + 1}`}
                     />
                     <button
                       type="button"
