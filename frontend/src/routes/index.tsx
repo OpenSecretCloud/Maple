@@ -71,12 +71,26 @@ function Index() {
     documentText?: string,
     documentMetadata?: { filename: string; fullContent: string }
   ) {
-    if (input.trim() === "") return;
+    // Allow submission if there's text input, images, or a document
+    const hasTextInput = input.trim() !== "";
+    const hasImages = images && images.length > 0;
+    const hasDocument = documentText && documentText.trim() !== "";
 
-    // If document text is provided, prepend it to the input
-    const finalInput = documentText
-      ? `Here is a document:\n\n${documentText}\n\n${input.trim()}`
-      : input.trim();
+    if (!hasTextInput && !hasImages && !hasDocument) {
+      return; // Nothing to submit
+    }
+
+    // Build the final input - handle case where there might be no text input
+    let finalInput = input.trim();
+
+    if (documentText && finalInput) {
+      // If there's both document and text input, combine them
+      finalInput = `Here is a document:\n\n${documentText}\n\n${finalInput}`;
+    } else if (documentText && !finalInput) {
+      // If only document, just use the document text
+      finalInput = documentText;
+    }
+    // If only images with no text, finalInput will be empty string which is fine
 
     localState.setUserPrompt(finalInput);
     localState.setSystemPrompt(systemPrompt?.trim() || null);
