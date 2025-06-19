@@ -410,16 +410,25 @@ END OF INSTRUCTIONS`;
 
       const summarizationMessages = [
         { role: "system" as const, content: summarizerSystem },
-        ...localChat.messages
+        ...localChat.messages.map((msg) => {
+          // Convert content to string for summarization
+          const content =
+            typeof msg.content === "string"
+              ? msg.content
+              : msg.content.map((part) => (part.type === "text" ? part.text : "[image]")).join(" ");
+
+          return {
+            role: msg.role,
+            content: content
+          };
+        })
       ];
 
       // 2. Stream the summary
       let summary = "";
       const stream = openai.beta.chat.completions.stream({
         model: DEFAULT_MODEL_ID, // Use the default model instead of user selected model
-        messages: summarizationMessages as Parameters<
-          typeof openai.beta.chat.completions.stream
-        >[0]["messages"],
+        messages: summarizationMessages,
         temperature: 0.3,
         max_tokens: 600,
         stream: true
