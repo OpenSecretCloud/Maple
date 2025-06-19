@@ -378,6 +378,42 @@ interface DocumentData {
   timings: Record<string, unknown>;
 }
 
+// Type guard to validate DocumentData structure
+function isDocumentData(obj: unknown): obj is DocumentData {
+  if (!obj || typeof obj !== 'object') return false;
+  
+  const data = obj as Record<string, unknown>;
+  
+  // Check top-level properties
+  if (!('document' in data) || !('status' in data) || !('errors' in data) || !('processing_time' in data)) {
+    return false;
+  }
+  
+  // Check document object structure
+  const doc = data.document;
+  if (!doc || typeof doc !== 'object') return false;
+  
+  const docObj = doc as Record<string, unknown>;
+  
+  // Check required document properties
+  if (!('filename' in docObj) || typeof docObj.filename !== 'string') return false;
+  
+  // Check optional content properties (must be string or null)
+  const contentFields = ['md_content', 'json_content', 'html_content', 'text_content', 'doctags_content'];
+  for (const field of contentFields) {
+    if (field in docObj && docObj[field] !== null && typeof docObj[field] !== 'string') {
+      return false;
+    }
+  }
+  
+  // Basic type checks for other fields
+  if (typeof data.status !== 'string') return false;
+  if (!Array.isArray(data.errors)) return false;
+  if (typeof data.processing_time !== 'number') return false;
+  
+  return true;
+}
+
 function DocumentPreview({ documentData }: { documentData: DocumentData }) {
   const [isOpen, setIsOpen] = useState(false);
 
@@ -429,21 +465,65 @@ function parseDocumentJson(text: string): DocumentData | null {
   const start = text.indexOf('{"document":');
   if (start === -1) return null;
 
+  // Try to find a complete JSON object using a more robust approach
+  // We'll attempt to parse progressively larger substrings
+  const jsonStart = text.substring(start);
+  
+  // First, try to parse the entire remaining string
+  try {
+    const parsed = JSON.parse(jsonStart);
+    // Validate the structure using our type guard
+    if (isDocumentData(parsed)) {
+      return parsed;
+    }
+  } catch (e) {
+    // If full parse fails, we need to find the end of the JSON object
+  }
+
+  // Use a state machine approach to properly handle strings and escapes
+  let inString = false;
+  let escapeNext = false;
   let depth = 0;
-  for (let i = start; i < text.length; i++) {
-    const ch = text[i];
-    if (ch === "{") depth++;
-    if (ch === "}") {
-      if (--depth === 0) {
-        try {
-          return JSON.parse(text.slice(start, i + 1)) as DocumentData;
-        } catch (e) {
-          console.error("Document JSON parse error", e);
-          return null;
+  
+  for (let i = 0; i < jsonStart.length; i++) {
+    const ch = jsonStart[i];
+    
+    if (escapeNext) {
+      escapeNext = false;
+      continue;
+    }
+    
+    if (ch === '\\') {
+      escapeNext = true;
+      continue;
+    }
+    
+    if (ch === '"' && !escapeNext) {
+      inString = !inString;
+      continue;
+    }
+    
+    if (!inString) {
+      if (ch === '{') depth++;
+      else if (ch === '}') {
+        depth--;
+        if (depth === 0) {
+          try {
+            const candidate = jsonStart.substring(0, i + 1);
+            const parsed = JSON.parse(candidate);
+            // Validate the structure using our type guard
+            if (isDocumentData(parsed)) {
+              return parsed;
+            }
+          } catch (e) {
+            // Continue searching if this wasn't valid JSON
+            console.error("Document JSON parse error at position", i, e);
+          }
         }
       }
     }
   }
+  
   return null; // incomplete JSON – wait for more chunks
 }
 
