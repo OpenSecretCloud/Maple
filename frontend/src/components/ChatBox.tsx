@@ -329,7 +329,10 @@ export default function Component({
 
   const handleSubmit = (e?: React.FormEvent) => {
     e?.preventDefault();
-    if (!inputValue.trim() || isSubmitDisabled) return;
+
+    // Allow submission if there's text input, images, or a document
+    const hasContent = inputValue.trim() || images.length > 0 || uploadedDocument;
+    if (!hasContent || isSubmitDisabled) return;
 
     // Clear the drafts when submitting
     if (chatId) {
@@ -695,7 +698,9 @@ export default function Component({
             type="submit"
             size="sm"
             className="ml-auto gap-1.5"
-            disabled={!inputValue.trim() || isSubmitDisabled}
+            disabled={
+              (!inputValue.trim() && images.length === 0 && !uploadedDocument) || isSubmitDisabled
+            }
           >
             <CornerRightUp className="size-3.5" />
           </Button>
