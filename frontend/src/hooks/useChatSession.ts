@@ -4,14 +4,7 @@ import { Chat, ChatMessage, DEFAULT_MODEL_ID } from "@/state/LocalStateContext";
 import { ChatContentPart } from "@/state/LocalStateContextDef";
 import { fileToDataURL } from "@/utils/file";
 import { BillingStatus } from "@/billing/billingApi";
-
-// Import MODEL_CONFIG to check vision capabilities
-// TODO: Consider extracting to shared constants file
-export const MODEL_CONFIG: Record<string, { supportsVision?: boolean }> = {
-  "leon-se/gemma-3-27b-it-fp8-dynamic": {
-    supportsVision: true
-  }
-};
+import { MODEL_CONFIG } from "@/components/ModelSelector";
 
 type ChatPhase = "idle" | "streaming" | "persisting";
 

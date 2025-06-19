@@ -22,7 +22,7 @@ type ModelCfg = {
   supportsVision?: boolean;
 };
 
-const MODEL_CONFIG: Record<string, ModelCfg> = {
+export const MODEL_CONFIG: Record<string, ModelCfg> = {
   "ibnzterrell/Meta-Llama-3.3-70B-Instruct-AWQ-INT4": {
     displayName: "Llama 3.3 70B"
   },

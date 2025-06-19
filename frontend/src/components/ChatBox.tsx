@@ -10,10 +10,9 @@ import { BillingStatus } from "@/billing/billingApi";
 import { Route as ChatRoute } from "@/routes/_auth.chat.$chatId";
 import { ChatMessage } from "@/state/LocalStateContext";
 import { useNavigate, useRouter } from "@tanstack/react-router";
-import { ModelSelector } from "@/components/ModelSelector";
+import { ModelSelector, MODEL_CONFIG } from "@/components/ModelSelector";
 import { useOpenSecret } from "@opensecret/react";
 import type { DocumentResponse } from "@opensecret/react";
-import { MODEL_CONFIG } from "@/hooks/useChatSession";
 
 interface ParsedDocument {
   document: {
