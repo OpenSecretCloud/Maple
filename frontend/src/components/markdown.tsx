@@ -452,12 +452,12 @@ function parseContentWithDocuments(
 ): Array<{ type: "text" | "document"; content: string | DocumentData }> {
   const parts: Array<{ type: "text" | "document"; content: string | DocumentData }> = [];
 
-  // Check if content starts with "Here is a document:" and contains JSON
-  if (content.startsWith("Here is a document:") && content.includes('{"document":')) {
+  // Check if content contains document JSON
+  if (content.includes('{"document":')) {
     const jsonStartIndex = content.indexOf('{"document":');
     const beforeJson = content.substring(0, jsonStartIndex).trim();
 
-    // Add the "Here is a document:" text
+    // Add any text before the JSON
     if (beforeJson) {
       parts.push({ type: "text", content: beforeJson });
     }
