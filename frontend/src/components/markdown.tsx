@@ -426,24 +426,20 @@ function DocumentPreview({ documentData }: { documentData: DocumentData }) {
     documentData.document.doctags_content ||
     "No content available";
 
-  // Truncate filename if too long for the square button
-  const displayFilename =
-    documentData.document.filename.length > 12
-      ? documentData.document.filename.substring(0, 9) + "..."
-      : documentData.document.filename;
-
   return (
     <>
       <div className="my-3">
         <Button
           variant="outline"
           size="default"
-          className="h-20 w-20 p-2 flex flex-col items-center justify-center gap-1"
+          className="h-20 w-20 p-2 flex flex-col items-center justify-center gap-1 overflow-hidden"
           onClick={() => setIsOpen(true)}
           title={documentData.document.filename}
         >
           <FileText className="h-6 w-6 flex-shrink-0" />
-          <span className="text-xs truncate max-w-full">{displayFilename}</span>
+          <span className="text-xs truncate w-full text-center px-1">
+            {documentData.document.filename}
+          </span>
         </Button>
       </div>
 
