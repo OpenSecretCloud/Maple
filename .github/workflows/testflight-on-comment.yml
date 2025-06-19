@@ -4,9 +4,14 @@ on:
   issue_comment:
     types: [created]
 
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
 jobs:
   check-comment:
-    if: github.event.issue.pull_request && contains(github.event.comment.body, '@testflight')
+    if: github.event.issue.pull_request && contains(github.event.comment.body, 'testflight build')
     runs-on: ubuntu-latest
     outputs:
       should-deploy: ${{ steps.check.outputs.should-deploy }}
