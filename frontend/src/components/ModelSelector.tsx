@@ -189,7 +189,7 @@ export function ModelSelector({
       }
 
       if (config.supportsVision) {
-        elements.push(<Camera key="cam" className="h-3 w-3" />);
+        elements.push(<Camera key="cam" className="h-3 w-3 opacity-50" />);
       }
     } else {
       // Unknown models: show model ID with "Coming Soon" badge
