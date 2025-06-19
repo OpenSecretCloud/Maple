@@ -298,16 +298,20 @@ async function generateTitle(
   const userMessage = messages.find((m) => m.role === "user");
   if (!userMessage) return "New Chat";
 
-  const messageText =
-    typeof userMessage.content === "string"
-      ? userMessage.content
-      : (userMessage.content as ChatContentPart[]).find((p) => p.type === "text")
-        ? (
-            (userMessage.content as ChatContentPart[]).find((p) => p.type === "text") as {
-              text: string;
-            }
-          ).text
-        : "New Chat";
+  let messageText = "New Chat";
+
+  if (typeof userMessage.content === "string") {
+    messageText = userMessage.content;
+  } else if (Array.isArray(userMessage.content)) {
+    // Find the first text part safely
+    const textPart = userMessage.content.find(
+      (part): part is { type: "text"; text: string } =>
+        part.type === "text" && "text" in part && typeof part.text === "string"
+    );
+    if (textPart) {
+      messageText = textPart.text;
+    }
+  }
 
   // Simple title generation - truncate first message to 50 chars
   const simpleTitleFromMessage = messageText.slice(0, 50).trim();
