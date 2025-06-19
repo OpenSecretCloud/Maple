@@ -85,7 +85,7 @@ function Index() {
 
     if (documentText && finalInput) {
       // If there's both document and text input, combine them
-      finalInput = `Here is a document:\n\n${documentText}\n\n${finalInput}`;
+      finalInput = `${documentText}\n\n${finalInput}`;
     } else if (documentText && !finalInput) {
       // If only document, just use the document text
       finalInput = documentText;
