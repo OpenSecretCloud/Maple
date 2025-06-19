@@ -180,6 +180,7 @@ function ChatComponent() {
   const isMobile = useIsMobile();
 
   const [isSummarizing, setIsSummarizing] = useState(false);
+  const [imageConversionError, setImageConversionError] = useState<string | null>(null);
 
   const chatContainerRef = useRef<HTMLDivElement>(null);
 
@@ -193,7 +194,12 @@ function ChatComponent() {
     getChatById,
     persistChat,
     openai,
-    model
+    model,
+    onImageConversionError: (failedCount) => {
+      setImageConversionError(`${failedCount} image(s) failed to process. Please try again.`);
+      // Clear error after 5 seconds
+      setTimeout(() => setImageConversionError(null), 5000);
+    }
   });
 
   // Handle initial user prompt - using a ref to prevent double execution
@@ -578,6 +584,7 @@ END OF INSTRUCTIONS`;
             isStreaming={isLoading || isPersisting || isSummarizing}
             onCompress={compressChat}
             isSummarizing={isSummarizing}
+            imageConversionError={imageConversionError}
           />
         </div>
       </main>

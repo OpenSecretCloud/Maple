@@ -147,7 +147,8 @@ export default function Component({
   messages = [],
   isStreaming = false,
   onCompress,
-  isSummarizing = false
+  isSummarizing = false,
+  imageConversionError
 }: {
   onSubmit: (
     input: string,
@@ -161,6 +162,7 @@ export default function Component({
   isStreaming?: boolean;
   onCompress?: () => void;
   isSummarizing?: boolean;
+  imageConversionError?: string | null;
 }) {
   const [inputValue, setInputValue] = useState("");
   const [systemPromptValue, setSystemPromptValue] = useState("");
@@ -179,6 +181,7 @@ export default function Component({
   } | null>(null);
   const [isUploadingDocument, setIsUploadingDocument] = useState(false);
   const [documentError, setDocumentError] = useState<string | null>(null);
+  const [imageError, setImageError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const documentInputRef = useRef<HTMLInputElement>(null);
   const os = useOpenSecret();
@@ -192,7 +195,12 @@ export default function Component({
     );
 
     if (validFiles.length < e.target.files.length) {
-      console.warn("Some files were skipped. Only JPEG, PNG, and WebP images are supported.");
+      const skippedCount = e.target.files.length - validFiles.length;
+      setImageError(`${skippedCount} file(s) skipped. Only JPEG, PNG, and WebP images are supported.`);
+      // Clear error after 5 seconds
+      setTimeout(() => setImageError(null), 5000);
+    } else {
+      setImageError(null);
     }
 
     // Create object URLs for the new images
@@ -221,6 +229,8 @@ export default function Component({
       }
       return prev.filter((_, i) => i !== idx);
     });
+    // Clear any image errors when removing images
+    setImageError(null);
   };
 
   const handleDocumentUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -375,6 +385,7 @@ export default function Component({
 
     setUploadedDocument(null);
     setDocumentError(null);
+    setImageError(null);
 
     // Re-focus input after submitting
     setTimeout(() => {
@@ -577,7 +588,7 @@ export default function Component({
           }
         }}
       >
-        {(images.length > 0 || uploadedDocument || documentError) && (
+        {(images.length > 0 || uploadedDocument || documentError || imageError || imageConversionError) && (
           <div className="mb-2 space-y-2">
             {images.length > 0 && (
               <div className="flex gap-2 items-center flex-wrap">
@@ -597,6 +608,11 @@ export default function Component({
                     </button>
                   </div>
                 ))}
+              </div>
+            )}
+            {(imageError || imageConversionError) && (
+              <div className="text-xs text-destructive p-2 bg-destructive/10 rounded-md">
+                {imageError || imageConversionError}
               </div>
             )}
             {uploadedDocument && (
