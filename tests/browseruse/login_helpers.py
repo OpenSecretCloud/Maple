@@ -6,7 +6,6 @@ These helpers provide reusable login functionality across all tests that require
 
 import os
 from browser_use import Controller, ActionResult
-from playwright.async_api import Page
 
 
 def create_login_controller():
@@ -19,7 +18,7 @@ def create_login_controller():
     controller = Controller()
     
     @controller.action('Input the email for Maple login')
-    async def input_email_securely(page: Page) -> ActionResult:
+    async def input_email_securely() -> ActionResult:
         """Securely input email from environment variable."""
         email = os.environ.get('BROWSERUSE_TEST_EMAIL', '')
         if not email:
@@ -28,13 +27,16 @@ def create_login_controller():
                 extracted_content="BROWSERUSE_TEST_EMAIL environment variable not set"
             )
         
+        # Get the page from controller context
+        page = controller.page
+        
         # Clear any existing content and input email
         await page.keyboard.press('Control+a')
         await page.keyboard.type(email)
         return ActionResult(success=True, extracted_content="Email entered securely")
     
     @controller.action('Input the password for Maple login')
-    async def input_password_securely(page: Page) -> ActionResult:
+    async def input_password_securely() -> ActionResult:
         """Securely input password from environment variable."""
         password = os.environ.get('BROWSERUSE_TEST_PASSWORD', '')
         if not password:
@@ -43,13 +45,16 @@ def create_login_controller():
                 extracted_content="BROWSERUSE_TEST_PASSWORD environment variable not set"
             )
         
+        # Get the page from controller context
+        page = controller.page
+        
         # Clear any existing content and input password
         await page.keyboard.press('Control+a')
         await page.keyboard.type(password)
         return ActionResult(success=True, extracted_content="Password entered securely")
     
     @controller.action('wait_2_seconds')
-    async def wait_2_seconds(page: Page) -> ActionResult:
+    async def wait_2_seconds() -> ActionResult:
         """Wait for 2 seconds to let the page stabilize."""
         import asyncio
         await asyncio.sleep(2)
