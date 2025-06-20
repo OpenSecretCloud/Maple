@@ -64,10 +64,44 @@ function Index() {
 
   const toggleSidebar = useCallback(() => setIsSidebarOpen((prev) => !prev), []);
 
-  async function handleSubmit(input: string, systemPrompt?: string) {
-    if (input.trim() === "") return;
-    localState.setUserPrompt(input.trim());
+  async function handleSubmit(
+    input: string,
+    systemPrompt?: string,
+    images?: File[],
+    documentText?: string,
+    documentMetadata?: { filename: string; fullContent: string }
+  ) {
+    // Allow submission if there's text input, images, or a document
+    const hasTextInput = input.trim() !== "";
+    const hasImages = images && images.length > 0;
+    const hasDocument = documentText && documentText.trim() !== "";
+
+    if (!hasTextInput && !hasImages && !hasDocument) {
+      return; // Nothing to submit
+    }
+
+    // Build the final input - handle case where there might be no text input
+    let finalInput = input.trim();
+
+    if (documentText && finalInput) {
+      // If there's both document and text input, combine them
+      finalInput = `${documentText}\n\n${finalInput}`;
+    } else if (documentText && !finalInput) {
+      // If only document, just use the document text
+      finalInput = documentText;
+    }
+    // If only images with no text, finalInput will be empty string which is fine
+
+    localState.setUserPrompt(finalInput);
     localState.setSystemPrompt(systemPrompt?.trim() || null);
+    localState.setUserImages(images || []);
+
+    // Store document metadata if provided (we'll need to add this to LocalState)
+    if (documentMetadata) {
+      // For now, we'll include it in the prompt until we add proper document storage
+      // TODO: Add document metadata to LocalState
+    }
+
     const id = await localState.addChat();
     navigate({ to: "/chat/$chatId", params: { chatId: id } });
   }
