@@ -458,7 +458,7 @@ function DocumentPreview({ documentData }: { documentData: DocumentData }) {
   );
 }
 
-function parseDocumentJson(text: string): DocumentData | null {
+function parseDocumentJson(text: string): { data: DocumentData; endIndex: number } | null {
   const start = text.indexOf('{"document":');
   if (start === -1) return null;
 
@@ -471,7 +471,7 @@ function parseDocumentJson(text: string): DocumentData | null {
     const parsed = JSON.parse(jsonStart);
     // Validate the structure using our type guard
     if (isDocumentData(parsed)) {
-      return parsed;
+      return { data: parsed, endIndex: start + jsonStart.length };
     }
   } catch (e) {
     // If full parse fails, we need to find the end of the JSON object
@@ -510,7 +510,7 @@ function parseDocumentJson(text: string): DocumentData | null {
             const parsed = JSON.parse(candidate);
             // Validate the structure using our type guard
             if (isDocumentData(parsed)) {
-              return parsed;
+              return { data: parsed, endIndex: start + i + 1 };
             }
           } catch (e) {
             // Continue searching if this wasn't valid JSON
@@ -540,18 +540,14 @@ function parseContentWithDocuments(
     }
 
     // Try to parse the document JSON
-    const documentData = parseDocumentJson(content.substring(jsonStartIndex));
-    if (documentData) {
-      parts.push({ type: "document", content: documentData });
+    const parseResult = parseDocumentJson(content);
+    if (parseResult) {
+      parts.push({ type: "document", content: parseResult.data });
 
-      // Find any text after the JSON
-      const jsonMatch = content.substring(jsonStartIndex).match(/\{"document":[\s\S]*?\}\s*\}/);
-      if (jsonMatch) {
-        const afterJsonIndex = jsonStartIndex + jsonMatch[0].length;
-        const afterJson = content.substring(afterJsonIndex).trim();
-        if (afterJson) {
-          parts.push({ type: "text", content: afterJson });
-        }
+      // Find any text after the JSON using the endIndex from parsing
+      const afterJson = content.substring(parseResult.endIndex).trim();
+      if (afterJson) {
+        parts.push({ type: "text", content: afterJson });
       }
     } else {
       // If parsing failed, just show as text
