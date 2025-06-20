@@ -28,7 +28,18 @@ def create_login_controller():
             )
         
         # Get the page from controller context
-        page = controller.page
+        try:
+            page = controller.page
+            if not page:
+                return ActionResult(
+                    success=False,
+                    extracted_content="Page not available in controller context"
+                )
+        except AttributeError:
+            return ActionResult(
+                success=False,
+                extracted_content="Controller does not have page attribute - page may not be initialized yet"
+            )
         
         # Clear any existing content and input email
         await page.keyboard.press('Control+a')
@@ -46,7 +57,18 @@ def create_login_controller():
             )
         
         # Get the page from controller context
-        page = controller.page
+        try:
+            page = controller.page
+            if not page:
+                return ActionResult(
+                    success=False,
+                    extracted_content="Page not available in controller context"
+                )
+        except AttributeError:
+            return ActionResult(
+                success=False,
+                extracted_content="Controller does not have page attribute - page may not be initialized yet"
+            )
         
         # Clear any existing content and input password
         await page.keyboard.press('Control+a')
