@@ -5,6 +5,7 @@ import { sha256 } from "@noble/hashes/sha256";
 import { bytesToHex } from "@noble/hashes/utils";
 import { Button } from "./ui/button";
 import { Apple } from "./icons/Apple";
+import { getBillingService } from "@/billing/billingService";
 
 // Define the props interface
 interface AppleAuthProviderProps {
@@ -220,6 +221,13 @@ export function AppleAuthProvider({
             // Call the OpenSecret SDK to handle the authentication
             await os.handleAppleCallback(code, state, inviteCode || "");
 
+            // Clear any existing billing token to prevent session mixing
+            try {
+              getBillingService().clearToken();
+            } catch (billingError) {
+              console.warn("Failed to clear billing token:", billingError);
+            }
+
             // Check if this is a Tauri app auth flow (desktop or mobile)
             const isTauriAuth = localStorage.getItem("redirect-to-native") === "true";
 
@@ -324,6 +332,13 @@ export function AppleAuthProvider({
 
           // Call the OpenSecret SDK to handle the authentication
           await os.handleAppleCallback(code, state, inviteCode || "");
+
+          // Clear any existing billing token to prevent session mixing
+          try {
+            getBillingService().clearToken();
+          } catch (billingError) {
+            console.warn("Failed to clear billing token:", billingError);
+          }
 
           // Check if this is a Tauri app auth flow (desktop or mobile)
           const isTauriAuth = localStorage.getItem("redirect-to-native") === "true";

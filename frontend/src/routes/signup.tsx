@@ -16,6 +16,7 @@ import type { AppleCredential } from "@/types/apple-sign-in";
 import { sha256 } from "@noble/hashes/sha256";
 import { bytesToHex } from "@noble/hashes/utils";
 import { AppleAuthProvider } from "@/components/AppleAuthProvider";
+import { getBillingService } from "@/billing/billingService";
 
 type SignupSearchParams = {
   next?: string;
@@ -94,6 +95,12 @@ function SignupPage() {
 
     try {
       await os.signUp(email, password, "", "ANON");
+      // Clear any existing billing token to prevent session mixing
+      try {
+        getBillingService().clearToken();
+      } catch (billingError) {
+        console.warn("Failed to clear billing token:", billingError);
+      }
       setTimeout(() => {
         if (selected_plan) {
           navigate({
@@ -236,6 +243,12 @@ function SignupPage() {
           // Send to backend via SDK
           try {
             await os.handleAppleNativeSignIn(appleUser, "");
+            // Clear any existing billing token to prevent session mixing
+            try {
+              getBillingService().clearToken();
+            } catch (billingError) {
+              console.warn("Failed to clear billing token:", billingError);
+            }
             // Redirect after successful signup
             if (selected_plan) {
               navigate({
