@@ -5,6 +5,7 @@ import { AlertDestructive } from "@/components/AlertDestructive";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { getBillingService } from "@/billing/billingService";
 
 export const Route = createFileRoute("/auth/$provider/callback")({
   component: OAuthCallback
@@ -125,6 +126,13 @@ function OAuthCallback() {
             await handleAppleCallback(code || "", state || "", "");
           } else {
             throw new Error(`Unsupported provider: ${provider}`);
+          }
+
+          // Clear any existing billing token to prevent session mixing
+          try {
+            getBillingService().clearToken();
+          } catch (billingError) {
+            console.warn("Failed to clear billing token:", billingError);
           }
 
           // Handle the successful authentication (redirect)
