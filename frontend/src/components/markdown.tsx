@@ -238,7 +238,9 @@ export function PreCode(props: JSX.IntrinsicElements["pre"]) {
           )}
         </Button>
       </div>
-      <pre ref={ref}>{props.children}</pre>
+      <pre ref={ref} style={{ overflowWrap: "break-word", wordBreak: "break-word" }}>
+        {props.children}
+      </pre>
     </>
   );
 }
@@ -404,7 +406,9 @@ export function Markdown(
       className="markdown-body"
       style={{
         fontSize: `${props.fontSize ?? 16}px`,
-        fontFamily: props.fontFamily || "inherit"
+        fontFamily: props.fontFamily || "inherit",
+        overflowWrap: "break-word",
+        wordBreak: "break-word"
       }}
       ref={mdRef}
       onContextMenu={props.onContextMenu}
