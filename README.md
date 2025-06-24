@@ -199,6 +199,18 @@ If there's a new version of the enclave pushed to staging or prod, append the ne
 
 ## iOS Development
 
+Run in emulator: 
+
+```bash
+dotenv -e .env.local -- bun run tauri ios dev 'iPhone 16 Pro'
+```
+
+Run on a connected phone: 
+
+```bash
+dotenv -e .env.local -- bun run tauri ios build
+```
+
 ### Ignoring Local XCode Project Changes
 
 To prevent committing automatic changes to the XCode project file during local development:
