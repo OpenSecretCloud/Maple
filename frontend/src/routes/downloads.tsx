@@ -192,7 +192,7 @@ function DownloadPage() {
               <p className="text-[hsl(var(--marketing-text-muted))] mb-6 flex-grow">
                 Download our native iOS app for iPhones and iPads.
               </p>
-              <div className="flex justify-center">
+              <div className="flex flex-col items-center gap-4">
                 <a
                   href="https://apps.apple.com/us/app/id6743764835"
                   className="inline-block"
@@ -205,6 +205,26 @@ function DownloadPage() {
                     className="h-12"
                   />
                 </a>
+                <div className="w-full border-t border-[hsl(var(--marketing-card-border))] pt-4">
+                  <p className="text-[hsl(var(--marketing-text-muted))] text-sm mb-3 text-center">
+                    Want to test the latest features before they hit the App Store? Join our beta
+                    program.
+                  </p>
+                  <div className="flex justify-center">
+                    <a
+                      href="https://testflight.apple.com/join/zjgtyAeD"
+                      className="inline-block"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      <img
+                        src="/testflight-badge.png"
+                        alt="Available on TestFlight"
+                        className="h-12"
+                      />
+                    </a>
+                  </div>
+                </div>
               </div>
             </div>
             <div className="flex flex-col border border-[hsl(var(--marketing-card-border))] bg-[hsl(var(--marketing-card))]/75 text-foreground p-6 rounded-lg hover:border-foreground/30 transition-all duration-300">
