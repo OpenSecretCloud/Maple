@@ -469,7 +469,40 @@ export default function Component({
     }, 0);
   };
 
-  // Keep currentInputRef in sync with inputValue
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === "Enter") {
+      if (isMobile || e.shiftKey || isStreaming) {
+        // On mobile, when Shift is pressed, or when streaming, allow newline
+        return;
+      } else if (isSubmitDisabled || !inputValue.trim()) {
+        // Prevent form submission when disabled or empty input
+        e.preventDefault();
+        return;
+      } else {
+        // On desktop without Shift and not streaming, submit the form
+        e.preventDefault();
+        handleSubmit();
+      }
+    }
+  };
+
+  // Auto-resize effect for main input
+  useEffect(() => {
+    if (inputRef.current) {
+      inputRef.current.style.height = "auto";
+      inputRef.current.style.height = `${inputRef.current.scrollHeight}px`;
+    }
+  }, [inputValue]);
+
+  // Auto-resize effect for system prompt
+  useEffect(() => {
+    if (systemPromptRef.current) {
+      systemPromptRef.current.style.height = "auto";
+      systemPromptRef.current.style.height = `${systemPromptRef.current.scrollHeight}px`;
+    }
+  }, [systemPromptValue]);
+
+  // Update current input ref when input value changes
   useEffect(() => {
     currentInputRef.current = inputValue;
   }, [inputValue]);
@@ -510,42 +543,9 @@ export default function Component({
       }
     }
 
-    // Update previous chat id reference
+    // 3. Update the previous chat ID
     previousChatIdRef.current = chatId;
-  }, [chatId, draftMessages, setDraftMessage, clearDraftMessage, canEditSystemPrompt, messages]);
-
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Enter") {
-      if (isMobile || e.shiftKey || isStreaming) {
-        // On mobile, when Shift is pressed, or when streaming, allow newline
-        return;
-      } else if (isSubmitDisabled || !inputValue.trim()) {
-        // Prevent form submission when disabled or empty input
-        e.preventDefault();
-        return;
-      } else {
-        // On desktop without Shift and not streaming, submit the form
-        e.preventDefault();
-        handleSubmit();
-      }
-    }
-  };
-
-  // Auto-resize effect for main input
-  useEffect(() => {
-    if (inputRef.current) {
-      inputRef.current.style.height = "auto";
-      inputRef.current.style.height = `${inputRef.current.scrollHeight}px`;
-    }
-  }, [inputValue]);
-
-  // Auto-resize effect for system prompt
-  useEffect(() => {
-    if (systemPromptRef.current) {
-      systemPromptRef.current.style.height = "auto";
-      systemPromptRef.current.style.height = `${systemPromptRef.current.scrollHeight}px`;
-    }
-  }, [systemPromptValue]);
+  }, [chatId, draftMessages, setDraftMessage, clearDraftMessage]);
 
   // Determine when the submit button should be disabled
   const isSubmitDisabled =

@@ -321,16 +321,8 @@ function ChatComponent() {
     hasSetModelRef.current = false;
   }, [chatId]);
 
-  // Update the chat's model when user changes it
-  useEffect(() => {
-    if (hasSetModelRef.current && model !== localChat.model && localChat.id) {
-      // Update the chat with the new model
-      const updatedChat = { ...localChat, model };
-      persistChat(updatedChat).catch((error) => {
-        console.error("Failed to update chat model:", error);
-      });
-    }
-  }, [model, localChat, persistChat]);
+  // Removed auto-persist on model change to prevent unwanted saves
+  // The model will be saved with the chat when messages are sent
 
   const isLoading = phase === "streaming";
   const isPersisting = phase === "persisting";
