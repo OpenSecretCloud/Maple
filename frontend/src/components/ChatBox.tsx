@@ -1,4 +1,4 @@
-import { CornerRightUp, Bot, ImageIcon, X, FileText, Loader2, Plus } from "lucide-react";
+import { CornerRightUp, Bot, Image, X, FileText, Loader2, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import {
@@ -793,7 +793,10 @@ export default function Component({
                   <Plus className="h-4 w-4" />
                 </Button>
               </DropdownMenuTrigger>
-              <DropdownMenuContent align="start" className="w-48">
+              <DropdownMenuContent
+                align="start"
+                className={cn(hasProTeamAccess && canUseDocuments ? "w-44" : "w-56")}
+              >
                 <DropdownMenuItem
                   onClick={() => {
                     if (!hasProTeamAccess) {
@@ -814,7 +817,7 @@ export default function Component({
                     !hasProTeamAccess && "hover:bg-purple-50 dark:hover:bg-purple-950/20"
                   )}
                 >
-                  <ImageIcon className="h-4 w-4" />
+                  <Image className="h-4 w-4 shrink-0" />
                   <span>Upload Images</span>
                   {!hasProTeamAccess && (
                     <>
@@ -842,9 +845,9 @@ export default function Component({
                   )}
                 >
                   {isUploadingDocument ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
+                    <Loader2 className="h-4 w-4 shrink-0 animate-spin" />
                   ) : (
-                    <FileText className="h-4 w-4" />
+                    <FileText className="h-4 w-4 shrink-0" />
                   )}
                   <span>Upload Document</span>
                   {!canUseDocuments && (
