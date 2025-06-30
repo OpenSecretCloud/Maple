@@ -15,9 +15,12 @@ interface UseChatSessionOptions {
   model: string;
 }
 
-export function useChatSession(chatId: string, options: UseChatSessionOptions & {
-  onImageConversionError?: (failedCount: number) => void;
-}) {
+export function useChatSession(
+  chatId: string,
+  options: UseChatSessionOptions & {
+    onImageConversionError?: (failedCount: number) => void;
+  }
+) {
   const { getChatById, persistChat, openai, model, onImageConversionError } = options;
   const queryClient = useQueryClient();
   const [phase, setPhase] = useState<ChatPhase>("idle");
@@ -163,13 +166,13 @@ export function useChatSession(chatId: string, options: UseChatSessionOptions & 
       // If document text is provided, combine it with the content
       let finalContent = content;
       if (documentText) {
-        finalContent = documentText + (content ? `\n\n${content}` : '');
+        finalContent = documentText + (content ? `\n\n${content}` : "");
       }
 
       if (modelSupportsVision && images && images.length > 0) {
         const parts: ChatContentPart[] = [{ type: "text", text: finalContent }];
         let failedImageCount = 0;
-        
+
         for (const file of images) {
           try {
             const url = await fileToDataURL(file);
@@ -180,12 +183,12 @@ export function useChatSession(chatId: string, options: UseChatSessionOptions & 
             continue;
           }
         }
-        
+
         // Notify about failed conversions
         if (failedImageCount > 0 && onImageConversionError) {
           onImageConversionError(failedImageCount);
         }
-        
+
         // If we have at least text content (and potentially some images), create multimodal message
         // If no images were successfully processed, the message will just have text
         userMessage = { role: "user", content: parts };

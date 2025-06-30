@@ -173,9 +173,16 @@ export default function Component({
   const [inputValue, setInputValue] = useState("");
   const [systemPromptValue, setSystemPromptValue] = useState("");
   const [isSystemPromptExpanded, setIsSystemPromptExpanded] = useState(false);
-  const { billingStatus, setBillingStatus, draftMessages, setDraftMessage, clearDraftMessage } =
-    useLocalState();
-  const { model } = useLocalState();
+  const {
+    billingStatus,
+    setBillingStatus,
+    draftMessages,
+    setDraftMessage,
+    clearDraftMessage,
+    model,
+    setModel,
+    availableModels
+  } = useLocalState();
 
   const isGemma = MODEL_CONFIG[model]?.supportsVision || false;
   const [images, setImages] = useState<File[]>([]);
@@ -192,6 +199,35 @@ export default function Component({
   const documentInputRef = useRef<HTMLInputElement>(null);
   const os = useOpenSecret();
   const navigate = useNavigate();
+
+  // Find the first vision-capable model the user has access to
+  const findFirstVisionModel = () => {
+    // Check if user has Pro/Team access
+    if (!hasProTeamAccess) return null;
+
+    // Find first model that supports vision
+    for (const modelId of availableModels.map((m) => m.id)) {
+      const modelConfig = MODEL_CONFIG[modelId];
+      if (modelConfig?.supportsVision) {
+        // Check if user has access to this model
+        const needsStarter = modelConfig.requiresStarter;
+        const needsPro = modelConfig.requiresPro;
+
+        // If no special requirements, or user meets requirements
+        if (!needsStarter && !needsPro) return modelId;
+        if (
+          needsStarter &&
+          (freshBillingStatus?.product_name?.toLowerCase().includes("starter") ||
+            freshBillingStatus?.product_name?.toLowerCase().includes("pro") ||
+            freshBillingStatus?.product_name?.toLowerCase().includes("team"))
+        ) {
+          return modelId;
+        }
+        if (needsPro && hasProTeamAccess) return modelId;
+      }
+    }
+    return null;
+  };
 
   const handleAddImages = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files) return;
@@ -375,7 +411,6 @@ export default function Component({
     (freshBillingStatus.product_name?.toLowerCase().includes("pro") ||
       freshBillingStatus.product_name?.toLowerCase().includes("team"));
 
-  const canUseVision = isGemma && hasProTeamAccess;
   const canUseDocuments = hasProTeamAccess;
 
   const handleSubmit = (e?: React.FormEvent) => {
@@ -759,34 +794,39 @@ export default function Component({
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="start" className="w-48">
-                {isGemma && (
-                  <DropdownMenuItem
-                    onClick={() => {
-                      if (!canUseVision) {
-                        navigate({ to: "/pricing" });
-                      } else {
-                        fileInputRef.current?.click();
+                <DropdownMenuItem
+                  onClick={() => {
+                    if (!hasProTeamAccess) {
+                      navigate({ to: "/pricing" });
+                    } else {
+                      // If not on a vision model, switch to one first
+                      if (!isGemma) {
+                        const visionModelId = findFirstVisionModel();
+                        if (visionModelId) {
+                          setModel(visionModelId);
+                        }
                       }
-                    }}
-                    className={cn(
-                      "flex items-center gap-2 group",
-                      !canUseVision && "hover:bg-purple-50 dark:hover:bg-purple-950/20"
-                    )}
-                  >
-                    <ImageIcon className="h-4 w-4" />
-                    <span>Upload Images</span>
-                    {!canUseVision && (
-                      <>
-                        <span className="ml-auto text-[10px] px-1.5 py-0.5 rounded-sm font-medium bg-gradient-to-r from-purple-500/10 to-blue-500/10 text-purple-600 dark:text-purple-400">
-                          Pro
-                        </span>
-                        <span className="text-[10px] text-purple-600 dark:text-purple-400 opacity-0 group-hover:opacity-100 transition-opacity">
-                          Upgrade?
-                        </span>
-                      </>
-                    )}
-                  </DropdownMenuItem>
-                )}
+                      fileInputRef.current?.click();
+                    }
+                  }}
+                  className={cn(
+                    "flex items-center gap-2 group",
+                    !hasProTeamAccess && "hover:bg-purple-50 dark:hover:bg-purple-950/20"
+                  )}
+                >
+                  <ImageIcon className="h-4 w-4" />
+                  <span>Upload Images</span>
+                  {!hasProTeamAccess && (
+                    <>
+                      <span className="ml-auto text-[10px] px-1.5 py-0.5 rounded-sm font-medium bg-gradient-to-r from-purple-500/10 to-blue-500/10 text-purple-600 dark:text-purple-400">
+                        Pro
+                      </span>
+                      <span className="text-[10px] text-purple-600 dark:text-purple-400 opacity-0 group-hover:opacity-100 transition-opacity">
+                        Upgrade?
+                      </span>
+                    </>
+                  )}
+                </DropdownMenuItem>
                 <DropdownMenuItem
                   onClick={() => {
                     if (!canUseDocuments) {

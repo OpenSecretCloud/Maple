@@ -300,11 +300,6 @@ export function ModelSelector({
                         Upgrade?
                       </span>
                     )}
-                    {isDisabledDueToImages && (
-                      <span className="text-[10px] text-muted-foreground">
-                        {draftImages.length > 0 ? "Image pending" : "Images in chat"}
-                      </span>
-                    )}
                   </div>
                   {model === availableModel.id && <Check className="h-4 w-4" />}
                 </DropdownMenuItem>
