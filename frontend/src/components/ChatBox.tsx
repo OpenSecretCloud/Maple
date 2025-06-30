@@ -191,6 +191,7 @@ export default function Component({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const documentInputRef = useRef<HTMLInputElement>(null);
   const os = useOpenSecret();
+  const navigate = useNavigate();
 
   const handleAddImages = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files) return;
@@ -743,8 +744,8 @@ export default function Component({
             className="hidden"
           />
 
-          {/* Consolidated upload button */}
-          {(canUseVision || (canUseDocuments && !uploadedDocument)) && (
+          {/* Consolidated upload button - show for all users */}
+          {!uploadedDocument && (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button
@@ -758,32 +759,68 @@ export default function Component({
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="start" className="w-48">
-                {canUseVision && (
+                {isGemma && (
                   <DropdownMenuItem
-                    onClick={() => fileInputRef.current?.click()}
-                    className="flex items-center gap-2"
+                    onClick={() => {
+                      if (!canUseVision) {
+                        navigate({ to: "/pricing" });
+                      } else {
+                        fileInputRef.current?.click();
+                      }
+                    }}
+                    className={cn(
+                      "flex items-center gap-2 group",
+                      !canUseVision && "hover:bg-purple-50 dark:hover:bg-purple-950/20"
+                    )}
                   >
                     <ImageIcon className="h-4 w-4" />
                     <span>Upload Images</span>
-                  </DropdownMenuItem>
-                )}
-                {canUseDocuments && !uploadedDocument && (
-                  <DropdownMenuItem
-                    onClick={() => documentInputRef.current?.click()}
-                    disabled={isUploadingDocument}
-                    className="flex items-center gap-2"
-                  >
-                    {isUploadingDocument ? (
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                    ) : (
-                      <FileText className="h-4 w-4" />
-                    )}
-                    <span>Upload Document</span>
-                    {isUploadingDocument && (
-                      <span className="ml-auto text-xs text-muted-foreground">Processing...</span>
+                    {!canUseVision && (
+                      <>
+                        <span className="ml-auto text-[10px] px-1.5 py-0.5 rounded-sm font-medium bg-gradient-to-r from-purple-500/10 to-blue-500/10 text-purple-600 dark:text-purple-400">
+                          Pro
+                        </span>
+                        <span className="text-[10px] text-purple-600 dark:text-purple-400 opacity-0 group-hover:opacity-100 transition-opacity">
+                          Upgrade?
+                        </span>
+                      </>
                     )}
                   </DropdownMenuItem>
                 )}
+                <DropdownMenuItem
+                  onClick={() => {
+                    if (!canUseDocuments) {
+                      navigate({ to: "/pricing" });
+                    } else {
+                      documentInputRef.current?.click();
+                    }
+                  }}
+                  disabled={isUploadingDocument}
+                  className={cn(
+                    "flex items-center gap-2 group",
+                    !canUseDocuments && "hover:bg-purple-50 dark:hover:bg-purple-950/20"
+                  )}
+                >
+                  {isUploadingDocument ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <FileText className="h-4 w-4" />
+                  )}
+                  <span>Upload Document</span>
+                  {!canUseDocuments && (
+                    <>
+                      <span className="ml-auto text-[10px] px-1.5 py-0.5 rounded-sm font-medium bg-gradient-to-r from-purple-500/10 to-blue-500/10 text-purple-600 dark:text-purple-400">
+                        Pro
+                      </span>
+                      <span className="text-[10px] text-purple-600 dark:text-purple-400 opacity-0 group-hover:opacity-100 transition-opacity">
+                        Upgrade?
+                      </span>
+                    </>
+                  )}
+                  {isUploadingDocument && canUseDocuments && (
+                    <span className="ml-auto text-xs text-muted-foreground">Processing...</span>
+                  )}
+                </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
           )}
