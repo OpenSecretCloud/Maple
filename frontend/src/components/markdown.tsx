@@ -380,37 +380,48 @@ interface DocumentData {
 
 // Type guard to validate DocumentData structure
 function isDocumentData(obj: unknown): obj is DocumentData {
-  if (!obj || typeof obj !== 'object') return false;
-  
+  if (!obj || typeof obj !== "object") return false;
+
   const data = obj as Record<string, unknown>;
-  
+
   // Check top-level properties
-  if (!('document' in data) || !('status' in data) || !('errors' in data) || !('processing_time' in data)) {
+  if (
+    !("document" in data) ||
+    !("status" in data) ||
+    !("errors" in data) ||
+    !("processing_time" in data)
+  ) {
     return false;
   }
-  
+
   // Check document object structure
   const doc = data.document;
-  if (!doc || typeof doc !== 'object') return false;
-  
+  if (!doc || typeof doc !== "object") return false;
+
   const docObj = doc as Record<string, unknown>;
-  
+
   // Check required document properties
-  if (!('filename' in docObj) || typeof docObj.filename !== 'string') return false;
-  
+  if (!("filename" in docObj) || typeof docObj.filename !== "string") return false;
+
   // Check optional content properties (must be string or null)
-  const contentFields = ['md_content', 'json_content', 'html_content', 'text_content', 'doctags_content'];
+  const contentFields = [
+    "md_content",
+    "json_content",
+    "html_content",
+    "text_content",
+    "doctags_content"
+  ];
   for (const field of contentFields) {
-    if (field in docObj && docObj[field] !== null && typeof docObj[field] !== 'string') {
+    if (field in docObj && docObj[field] !== null && typeof docObj[field] !== "string") {
       return false;
     }
   }
-  
+
   // Basic type checks for other fields
-  if (typeof data.status !== 'string') return false;
+  if (typeof data.status !== "string") return false;
   if (!Array.isArray(data.errors)) return false;
-  if (typeof data.processing_time !== 'number') return false;
-  
+  if (typeof data.processing_time !== "number") return false;
+
   return true;
 }
 
@@ -465,7 +476,7 @@ function parseDocumentJson(text: string): { data: DocumentData; endIndex: number
   // Try to find a complete JSON object using a more robust approach
   // We'll attempt to parse progressively larger substrings
   const jsonStart = text.substring(start);
-  
+
   // First, try to parse the entire remaining string
   try {
     const parsed = JSON.parse(jsonStart);
@@ -473,7 +484,7 @@ function parseDocumentJson(text: string): { data: DocumentData; endIndex: number
     if (isDocumentData(parsed)) {
       return { data: parsed, endIndex: start + jsonStart.length };
     }
-  } catch (e) {
+  } catch {
     // If full parse fails, we need to find the end of the JSON object
   }
 
@@ -481,28 +492,28 @@ function parseDocumentJson(text: string): { data: DocumentData; endIndex: number
   let inString = false;
   let escapeNext = false;
   let depth = 0;
-  
+
   for (let i = 0; i < jsonStart.length; i++) {
     const ch = jsonStart[i];
-    
+
     if (escapeNext) {
       escapeNext = false;
       continue;
     }
-    
-    if (ch === '\\') {
+
+    if (ch === "\\") {
       escapeNext = true;
       continue;
     }
-    
+
     if (ch === '"' && !escapeNext) {
       inString = !inString;
       continue;
     }
-    
+
     if (!inString) {
-      if (ch === '{') depth++;
-      else if (ch === '}') {
+      if (ch === "{") depth++;
+      else if (ch === "}") {
         depth--;
         if (depth === 0) {
           try {
@@ -520,7 +531,7 @@ function parseDocumentJson(text: string): { data: DocumentData; endIndex: number
       }
     }
   }
-  
+
   return null; // incomplete JSON – wait for more chunks
 }
 

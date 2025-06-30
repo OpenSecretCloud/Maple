@@ -226,7 +226,7 @@ export function ModelSelector({
           <ChevronDown className="h-3 w-3 opacity-50" />
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-64">
+      <DropdownMenuContent align="start" className="w-64">
         {availableModels &&
           Array.isArray(availableModels) &&
           // Sort models: vision-capable first (if images present), then available, then restricted, then disabled

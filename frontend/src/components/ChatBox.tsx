@@ -757,7 +757,7 @@ export default function Component({
                   <Plus className="h-4 w-4" />
                 </Button>
               </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-48">
+              <DropdownMenuContent align="start" className="w-48">
                 {canUseVision && (
                   <DropdownMenuItem
                     onClick={() => fileInputRef.current?.click()}
@@ -765,9 +765,6 @@ export default function Component({
                   >
                     <ImageIcon className="h-4 w-4" />
                     <span>Upload Images</span>
-                    <span className="ml-auto text-xs text-muted-foreground">
-                      {isGemma ? "Vision model" : "Needs vision model"}
-                    </span>
                   </DropdownMenuItem>
                 )}
                 {canUseDocuments && !uploadedDocument && (
