@@ -1,6 +1,12 @@
-import { CornerRightUp, Bot, ImageIcon, X, FileText, Loader2 } from "lucide-react";
+import { CornerRightUp, Bot, ImageIcon, X, FileText, Loader2, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger
+} from "@/components/ui/dropdown-menu";
 import { useEffect, useRef, useState } from "react";
 import { useLocalState } from "@/state/useLocalState";
 import { cn, useIsMobile } from "@/utils/utils";
@@ -192,31 +198,33 @@ export default function Component({
     const supportedTypes = ["image/jpeg", "image/jpg", "image/png", "image/webp"];
     const maxSizeInBytes = 5 * 1024 * 1024; // 5MB for images
     const errors: string[] = [];
-    
+
     const validFiles = Array.from(e.target.files).filter((file) => {
       // Check file type
       if (!supportedTypes.includes(file.type.toLowerCase())) {
         return false;
       }
-      
+
       // Check file size
       if (file.size > maxSizeInBytes) {
         const sizeInMB = (file.size / (1024 * 1024)).toFixed(2);
         errors.push(`${file.name} is too large (${sizeInMB}MB)`);
         return false;
       }
-      
+
       return true;
     });
 
     if (validFiles.length < e.target.files.length) {
       const skippedCount = e.target.files.length - validFiles.length;
       const typeErrors = e.target.files.length - validFiles.length - errors.length;
-      
+
       if (errors.length > 0) {
         setImageError(`${errors.join(", ")}. Max size is 5MB per image.`);
       } else if (typeErrors > 0) {
-        setImageError(`${skippedCount} file(s) skipped. Only JPEG, PNG, and WebP images are supported.`);
+        setImageError(
+          `${skippedCount} file(s) skipped. Only JPEG, PNG, and WebP images are supported.`
+        );
       }
       // Clear error after 5 seconds
       setTimeout(() => setImageError(null), 5000);
@@ -258,16 +266,16 @@ export default function Component({
     if (!e.target.files || e.target.files.length === 0) return;
 
     const file = e.target.files[0];
-    
+
     // Check file size (1MB limit = 1024 * 1024 bytes)
     const maxSizeInBytes = 1 * 1024 * 1024; // 1MB
     if (file.size > maxSizeInBytes) {
       const sizeInMB = (file.size / (1024 * 1024)).toFixed(2);
       setDocumentError(`File too large (${sizeInMB}MB). Maximum size is 1MB.`);
-      e.target.value = ''; // Reset input
+      e.target.value = ""; // Reset input
       return;
     }
-    
+
     setIsUploadingDocument(true);
     setDocumentError(null);
 
@@ -360,13 +368,14 @@ export default function Component({
   // Check if system prompt can be edited (only for new chats)
   const canEditSystemPrompt = canUseSystemPrompt && messages.length === 0;
 
-  // Check if user has access to vision features (Pro or Team plan)
-  const hasVisionAccess =
+  // Check if user has access to Pro/Team features (Pro or Team plan)
+  const hasProTeamAccess =
     freshBillingStatus &&
     (freshBillingStatus.product_name?.toLowerCase().includes("pro") ||
       freshBillingStatus.product_name?.toLowerCase().includes("team"));
 
-  const canUseVision = isGemma && hasVisionAccess;
+  const canUseVision = isGemma && hasProTeamAccess;
+  const canUseDocuments = hasProTeamAccess;
 
   const handleSubmit = (e?: React.FormEvent) => {
     e?.preventDefault();
@@ -621,7 +630,11 @@ export default function Component({
           }
         }}
       >
-        {(images.length > 0 || uploadedDocument || documentError || imageError || imageConversionError) && (
+        {(images.length > 0 ||
+          uploadedDocument ||
+          documentError ||
+          imageError ||
+          imageConversionError) && (
           <div className="mb-2 space-y-2">
             {images.length > 0 && (
               <div className="flex gap-2 items-center flex-wrap">
@@ -712,55 +725,72 @@ export default function Component({
         />
         <div className="flex items-center pt-0">
           <ModelSelector messages={messages} draftImages={images} />
-          {canUseVision && (
-            <>
-              <input
-                type="file"
-                accept="image/jpeg,image/jpg,image/png,image/webp"
-                multiple
-                ref={fileInputRef}
-                onChange={handleAddImages}
-                className="hidden"
-              />
-              <Button
-                type="button"
-                size="sm"
-                variant="ghost"
-                className="ml-2"
-                onClick={() => fileInputRef.current?.click()}
-                aria-label="Upload images"
-              >
-                <ImageIcon className="h-4 w-4" />
-              </Button>
-            </>
-          )}
-          {!uploadedDocument && (
-            <>
-              <input
-                type="file"
-                accept=".pdf,.doc,.docx,.txt,.rtf,.xlsx,.xls,.pptx,.ppt"
-                ref={documentInputRef}
-                onChange={handleDocumentUpload}
-                className="hidden"
-              />
-              <Button
-                type="button"
-                size="sm"
-                variant="ghost"
-                className="ml-2"
-                onClick={() => documentInputRef.current?.click()}
-                disabled={isUploadingDocument}
-                title={isUploadingDocument ? "Processing document..." : "Upload document"}
-                aria-label={isUploadingDocument ? "Processing document..." : "Upload document"}
-              >
-                {isUploadingDocument ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <FileText className="h-4 w-4" />
+
+          {/* Hidden file inputs */}
+          <input
+            type="file"
+            accept="image/jpeg,image/jpg,image/png,image/webp"
+            multiple
+            ref={fileInputRef}
+            onChange={handleAddImages}
+            className="hidden"
+          />
+          <input
+            type="file"
+            accept=".pdf,.doc,.docx,.txt,.rtf,.xlsx,.xls,.pptx,.ppt"
+            ref={documentInputRef}
+            onChange={handleDocumentUpload}
+            className="hidden"
+          />
+
+          {/* Consolidated upload button */}
+          {(canUseVision || (canUseDocuments && !uploadedDocument)) && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  className="ml-2"
+                  aria-label="Upload files"
+                >
+                  <Plus className="h-4 w-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-48">
+                {canUseVision && (
+                  <DropdownMenuItem
+                    onClick={() => fileInputRef.current?.click()}
+                    className="flex items-center gap-2"
+                  >
+                    <ImageIcon className="h-4 w-4" />
+                    <span>Upload Images</span>
+                    <span className="ml-auto text-xs text-muted-foreground">
+                      {isGemma ? "Vision model" : "Needs vision model"}
+                    </span>
+                  </DropdownMenuItem>
                 )}
-              </Button>
-            </>
+                {canUseDocuments && !uploadedDocument && (
+                  <DropdownMenuItem
+                    onClick={() => documentInputRef.current?.click()}
+                    disabled={isUploadingDocument}
+                    className="flex items-center gap-2"
+                  >
+                    {isUploadingDocument ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <FileText className="h-4 w-4" />
+                    )}
+                    <span>Upload Document</span>
+                    {isUploadingDocument && (
+                      <span className="ml-auto text-xs text-muted-foreground">Processing...</span>
+                    )}
+                  </DropdownMenuItem>
+                )}
+              </DropdownMenuContent>
+            </DropdownMenu>
           )}
+
           <Button
             type="submit"
             size="sm"
