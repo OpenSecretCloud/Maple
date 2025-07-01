@@ -158,8 +158,11 @@ Authorization: Bearer <jwt_token>
 ## Implementation Flow
 
 1. **Pricing Page**: Show team plans to all authenticated users
-2. **After Purchase**: Check team status, if has_team_subscription but !team_created, show setup
-3. **Team Setup**: Simple form for team name
+2. **Account Menu Integration**: 
+   - Add "Manage Team" option for users with team plan
+   - Show alert badge if team plan purchased but team not created
+   - All team features accessible from AccountMenu/AccountDialog
+3. **Team Setup**: Simple form for team name when first accessing team management
 4. **Team Dashboard**: Show after creation with member management
 5. **Invite Flow**: Multi-email invite with seat checking
 6. **Member Management**: List, remove, leave functionality
@@ -194,27 +197,25 @@ Authorization: Bearer <jwt_token>
 
 ## Implementation Status
 
-- [ ] Task 1: Remove team_plan_available usage
-- [ ] Task 2: Create team API functions
-- [ ] Task 3: Create type definitions
-- [ ] Task 4: Add team status check after purchase
+- [x] Task 1: Remove team_plan_available usage
+- [x] Task 2: Create team API functions
+- [x] Task 3: Create type definitions
+- [ ] Task 4: Update AccountMenu with team management integration
 - [ ] Task 5: Create TeamSetupDialog
-- [ ] Task 6: Create /team/settings route
-- [ ] Task 7: Create TeamDashboard
-- [ ] Task 8: Implement invite functionality
-- [ ] Task 9: Create TeamMembersList
-- [ ] Task 10: Implement remove member
-- [ ] Task 11: Implement leave team
-- [ ] Task 12: Create invite acceptance route
-- [ ] Task 13: Create InvitePreview
-- [ ] Task 14: Add seat limit warning
-- [ ] Task 15: Update AccountMenu
-- [ ] Task 16: Implement revoke invite
-- [ ] Task 17: Add error handling
-- [ ] Task 18: Create TeamContext
-- [ ] Task 19: Integrate team status
-- [ ] Task 20: Write tests
-- [ ] Task 21: Final review with git diff
+- [ ] Task 6: Create TeamDashboard component
+- [ ] Task 7: Implement invite functionality
+- [ ] Task 8: Create TeamMembersList
+- [ ] Task 9: Implement remove member
+- [ ] Task 10: Implement leave team
+- [ ] Task 11: Create invite acceptance route
+- [ ] Task 12: Create InvitePreview
+- [ ] Task 13: Add seat limit warning
+- [ ] Task 14: Implement revoke invite
+- [ ] Task 15: Add error handling
+- [ ] Task 16: Create TeamContext
+- [ ] Task 17: Integrate team status
+- [ ] Task 18: Write tests
+- [ ] Task 19: Final review with git diff
 
 ## Codebase Investigation Summary
 
