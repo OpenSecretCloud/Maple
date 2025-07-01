@@ -467,15 +467,15 @@ export async function acceptTeamInvite(
     if (response.status === 401) {
       throw new Error("Unauthorized");
     }
-    if (response.status === 400) {
-      try {
-        const errorData = JSON.parse(errorText);
-        throw new Error(errorData.message || errorText);
-      } catch {
-        throw new Error(errorText);
-      }
+    
+    // Try to parse JSON error response for any status code
+    try {
+      const errorData = JSON.parse(errorText);
+      throw new Error(errorData.error || errorData.message || errorText);
+    } catch (parseError) {
+      // If not JSON, use the text as-is
+      throw new Error(errorText || "Failed to accept invitation");
     }
-    throw new Error(`Failed to accept invite: ${errorText}`);
   }
 
   return response.json();

@@ -60,8 +60,7 @@ export function TeamSetupDialog({
       // Call the success callback
       onTeamCreated?.();
 
-      // Close the dialog
-      onOpenChange(false);
+      // Don't close the dialog - let the parent switch to dashboard view
     } catch (err) {
       console.error("Failed to create team:", err);
       setError(err instanceof Error ? err.message : "Failed to create team");
