@@ -775,7 +775,7 @@ export default function Component({
           />
           <input
             type="file"
-            accept=".pdf,.doc,.docx,.txt,.rtf,.xlsx,.xls,.pptx,.ppt"
+            accept=".pdf,.doc,.docx,.txt,.rtf,.xlsx,.xls,.pptx,.ppt,.md"
             ref={documentInputRef}
             onChange={handleDocumentUpload}
             className="hidden"
