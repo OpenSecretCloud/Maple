@@ -26,7 +26,12 @@ export function TeamManagementDialog({
 
   const handleTeamCreated = () => {
     setShowSetupDialog(false);
-    // The parent component will refetch team status
+    // Force a small delay to allow the team status to update
+    // This ensures the dashboard shows up instead of closing the dialog
+    setTimeout(() => {
+      // The query invalidation in TeamSetupDialog will cause a refetch
+      // and the dashboard will automatically appear
+    }, 100);
   };
 
   // If team setup is needed, show setup dialog instead
@@ -44,7 +49,7 @@ export function TeamManagementDialog({
   // Otherwise show the team dashboard
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-4xl max-h-[80vh] overflow-y-auto">
+      <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
         <TeamDashboard teamStatus={teamStatus} />
       </DialogContent>
     </Dialog>

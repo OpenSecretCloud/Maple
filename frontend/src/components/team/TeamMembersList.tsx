@@ -59,14 +59,14 @@ export function TeamMembersList({ teamStatus }: TeamMembersListProps) {
   const currentUserEmail = os.auth.user?.user.email;
   const isAdmin = teamStatus?.role === "admin" || teamStatus?.is_team_admin === true;
 
-  // Fetch team members
+  // Fetch team members only for admins
   const { data: membersData, isLoading } = useQuery({
     queryKey: ["teamMembers"],
     queryFn: async () => {
       const billingService = getBillingService();
       return await billingService.getTeamMembers();
     },
-    enabled: !!teamStatus?.team_created
+    enabled: !!teamStatus?.team_created && isAdmin
   });
 
   const members = membersData?.members || [];
@@ -134,12 +134,18 @@ export function TeamMembersList({ teamStatus }: TeamMembersListProps) {
     }
   };
 
-  const getInitials = (email: string) => {
-    const parts = email.split("@")[0].split(".");
-    if (parts.length > 1) {
+  const getInitials = (email: string | undefined) => {
+    if (!email) return "??";
+    
+    const localPart = email.split("@")[0];
+    if (!localPart) return "??";
+    
+    const parts = localPart.split(".");
+    if (parts.length > 1 && parts[0] && parts[1]) {
       return (parts[0][0] + parts[1][0]).toUpperCase();
     }
-    return email.substring(0, 2).toUpperCase();
+    
+    return localPart.substring(0, 2).toUpperCase();
   };
 
   const getTimeRemaining = (expiresAt: string) => {
@@ -158,6 +164,65 @@ export function TeamMembersList({ teamStatus }: TeamMembersListProps) {
     return `${hours} hour${hours > 1 ? "s" : ""} remaining`;
   };
 
+  // Simplified view for non-admin members
+  if (!isAdmin) {
+    return (
+      <>
+        <Button
+          variant="outline"
+          onClick={() => setLeaveTeamDialog(true)}
+          className="w-full text-destructive hover:text-destructive"
+        >
+          <LogOut className="mr-2 h-4 w-4" />
+          Leave Team
+        </Button>
+
+        {/* Leave Team Dialog */}
+        <AlertDialog
+          open={leaveTeamDialog}
+          onOpenChange={(open) => {
+            if (!open) setErrorMessage(null);
+            setLeaveTeamDialog(open);
+          }}
+        >
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Leave team?</AlertDialogTitle>
+              <AlertDialogDescription>
+                Are you sure you want to leave the team? You will lose access to all team resources
+                and will need to be invited again to rejoin.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            {errorMessage && (
+              <Alert variant="destructive" className="mt-4">
+                <AlertCircle className="h-4 w-4" />
+                <AlertDescription>{errorMessage}</AlertDescription>
+              </Alert>
+            )}
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={isProcessing}>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={handleLeaveTeam}
+                disabled={isProcessing}
+                className="bg-destructive text-white hover:bg-destructive/90"
+              >
+                {isProcessing ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Leaving...
+                  </>
+                ) : (
+                  "Leave Team"
+                )}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      </>
+    );
+  }
+
+  // Admin view with full member list
   if (isLoading) {
     return (
       <Card>

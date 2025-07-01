@@ -145,7 +145,7 @@ export function TeamInviteDialog({ open, onOpenChange, teamStatus }: TeamInviteD
               </Alert>
             )}
 
-            {seatsAvailable === 0 && (
+            {seatsAvailable === 0 && !successMessage && (
               <Alert variant="destructive">
                 <AlertCircle className="h-4 w-4" />
                 <AlertDescription>

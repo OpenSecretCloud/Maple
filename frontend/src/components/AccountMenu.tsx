@@ -98,7 +98,7 @@ export function AccountMenu() {
       const billingService = getBillingService();
       return await billingService.getTeamStatus();
     },
-    enabled: isTeamPlan && !!os.auth.user
+    enabled: isTeamPlan && !!os.auth.user && !!billingStatus
   });
 
   // Show alert badge if user has team plan but hasn't created team yet

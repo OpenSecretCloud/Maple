@@ -33,6 +33,54 @@ export function TeamDashboard({ teamStatus }: TeamDashboardProps) {
   const isAdmin = teamStatus.role === "admin" || teamStatus.is_team_admin === true;
   const seatUsagePercentage = seatsPurchased > 0 ? (seatsUsed / seatsPurchased) * 100 : 0;
 
+  // Simplified view for non-admin members
+  if (!isAdmin) {
+    return (
+      <>
+        <DialogHeader>
+          <DialogTitle>Team Information</DialogTitle>
+          <DialogDescription>
+            You are a member of {teamStatus.team_name}
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="mt-6 space-y-6">
+          {/* Team overview */}
+          <Card>
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle className="text-xl">{teamStatus.team_name}</CardTitle>
+                  <CardDescription>
+                    Joined {new Date(teamStatus.created_at || "").toLocaleDateString()}
+                  </CardDescription>
+                </div>
+                <Badge variant="secondary">
+                  <User className="mr-1 h-3 w-3" />
+                  Member
+                </Badge>
+              </div>
+            </CardHeader>
+          </Card>
+
+          {/* Simple leave team button for members */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-lg">Leave Team</CardTitle>
+              <CardDescription>
+                If you leave the team, you'll need to be invited again to rejoin.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <TeamMembersList teamStatus={teamStatus} />
+            </CardContent>
+          </Card>
+        </div>
+      </>
+    );
+  }
+
+  // Full admin view
   return (
     <>
       <DialogHeader>
