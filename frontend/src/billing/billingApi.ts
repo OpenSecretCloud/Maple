@@ -294,32 +294,3 @@ export async function createZapriteCheckoutSession(
   // Fall back to regular navigation if not on Tauri or if Tauri opener fails
   window.location.href = checkout_url;
 }
-
-export async function fetchTeamPlanAvailable(thirdPartyToken: string): Promise<boolean> {
-  try {
-    const response = await fetch(
-      `${import.meta.env.VITE_MAPLE_BILLING_API_URL}/v1/maple/subscription/team_plan_available`,
-      {
-        headers: {
-          Authorization: `Bearer ${thirdPartyToken}`,
-          "Content-Type": "application/json"
-        }
-      }
-    );
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error("Team plan availability error response:", errorText);
-      if (response.status === 401) {
-        throw new Error("Unauthorized");
-      }
-      throw new Error(`Failed to check team plan availability: ${errorText}`);
-    }
-
-    const { available } = await response.json();
-    return available;
-  } catch (error) {
-    console.error("Error checking team plan availability:", error);
-    throw error;
-  }
-}

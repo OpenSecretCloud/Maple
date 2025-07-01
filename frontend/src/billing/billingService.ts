@@ -6,8 +6,7 @@ import {
   createCheckoutSession,
   createZapriteCheckoutSession,
   BillingStatus,
-  BillingProduct,
-  fetchTeamPlanAvailable
+  BillingProduct
 } from "./billingApi";
 
 const TOKEN_STORAGE_KEY = "maple_billing_token";
@@ -90,10 +89,6 @@ class BillingService {
     return this.executeWithToken((token) =>
       createZapriteCheckoutSession(token, email, productId, successUrl)
     );
-  }
-
-  async getTeamPlanAvailable(): Promise<boolean> {
-    return this.executeWithToken((token) => fetchTeamPlanAvailable(token));
   }
 
   clearToken(): void {

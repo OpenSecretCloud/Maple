@@ -255,21 +255,6 @@ function PricingPage() {
     enabled: isLoggedIn
   });
 
-  // Check team plan availability if user is logged in
-  const { data: isTeamPlanAvailable } = useQuery({
-    queryKey: ["teamPlanAvailable"],
-    queryFn: async () => {
-      const billingService = getBillingService();
-      try {
-        return await billingService.getTeamPlanAvailable();
-      } catch (error) {
-        console.error("Error checking team plan availability:", error);
-        return false;
-      }
-    },
-    enabled: isLoggedIn
-  });
-
   const {
     data: products,
     error: productsError,
@@ -304,11 +289,8 @@ function PricingPage() {
     const targetPlanName = product.name.toLowerCase();
     const isTeamPlan = targetPlanName.includes("team");
 
-    // Always show Contact Us for team plan when not logged in
+    // Show Start Chatting for all plans when not logged in
     if (!isLoggedIn) {
-      if (isTeamPlan) {
-        return "Contact Us";
-      }
       return "Start Chatting";
     }
 
@@ -320,13 +302,8 @@ function PricingPage() {
       return "Contact Us";
     }
 
-    // For team plan, ALWAYS show Contact Us if not whitelisted
-    // regardless of current subscription status
+    // For team plan
     if (isTeamPlan) {
-      if (!isTeamPlanAvailable) {
-        return "Contact Us";
-      }
-      // Only show upgrade/downgrade for team plan if explicitly whitelisted
       if (isCurrentPlan) {
         return "Manage Plan";
       }
@@ -379,18 +356,6 @@ function PricingPage() {
         const email = os.auth.user?.user.email;
         if (!email) {
           throw new Error("User email not found");
-        }
-
-        // Find the product to check if it's a team plan
-        const product = products?.find((p) => p.id === productId);
-        if (product && product.name.toLowerCase().includes("team")) {
-          // Double-check team plan availability before proceeding
-          const isAllowed = await billingService.getTeamPlanAvailable();
-          if (!isAllowed) {
-            throw new Error(
-              "You are not authorized to purchase the Team plan. Please contact support for assistance."
-            );
-          }
         }
 
         try {
@@ -464,20 +429,13 @@ function PricingPage() {
         setLoadingProductId(null);
       }
     },
-    [isLoggedIn, navigate, os.auth.user?.user.email, useBitcoin, products]
+    [isLoggedIn, navigate, os.auth.user?.user.email, useBitcoin]
   );
 
   const handleButtonClick = useCallback(
     (product: Product) => {
       if (!isLoggedIn) {
         const targetPlanName = product.name.toLowerCase();
-        const isTeamPlan = targetPlanName.includes("team");
-
-        // For team plan, redirect to email when not logged in
-        if (isTeamPlan) {
-          window.location.href = "mailto:support@opensecret.cloud";
-          return;
-        }
 
         if (!targetPlanName.includes("free")) {
           // For paid plans, redirect to signup with the plan selection
@@ -495,17 +453,6 @@ function PricingPage() {
       }
 
       const targetPlanName = product.name.toLowerCase();
-      const isTeamPlan = targetPlanName.includes("team");
-
-      // For team plan, ALWAYS redirect to email if not whitelisted
-      // regardless of current subscription status
-      if (isTeamPlan) {
-        if (!isTeamPlanAvailable) {
-          window.location.href = "mailto:support@opensecret.cloud";
-          return;
-        }
-        // Only allow team plan checkout if explicitly whitelisted
-      }
 
       // If user is on Zaprite plan, redirect to email
       if (freshBillingStatus?.payment_provider === "zaprite") {
@@ -559,15 +506,7 @@ function PricingPage() {
       // create checkout session
       newHandleSubscribe(product.id);
     },
-    [
-      isLoggedIn,
-      isTeamPlanAvailable,
-      freshBillingStatus,
-      navigate,
-      portalUrl,
-      newHandleSubscribe,
-      isIOS
-    ]
+    [isLoggedIn, freshBillingStatus, navigate, portalUrl, newHandleSubscribe, isIOS]
   );
 
   useEffect(() => {
@@ -893,11 +832,7 @@ function PricingPage() {
                       transition-all duration-300 shadow-[0_0_15px_rgba(var(--purple-rgb),0.2)] 
                       hover:shadow-[0_0_25px_rgba(var(--purple-rgb),0.3)] disabled:opacity-50 
                       disabled:cursor-not-allowed flex items-center justify-center gap-2 
-                      group-hover:bg-[hsl(var(--purple))] group-hover:text-[hsl(var(--foreground))] dark:group-hover:text-[hsl(var(--foreground))] dark:group-hover:bg-[hsl(var(--purple))]/80 ${
-                        isTeamPlan && !isTeamPlanAvailable && !isIOS
-                          ? "!opacity-100 !cursor-pointer hover:!bg-[hsl(var(--purple))]"
-                          : ""
-                      }`}
+                      group-hover:bg-[hsl(var(--purple))] group-hover:text-[hsl(var(--foreground))] dark:group-hover:text-[hsl(var(--foreground))] dark:group-hover:bg-[hsl(var(--purple))]/80`}
                   >
                     {useBitcoin && isTeamPlan
                       ? "Not Available"
