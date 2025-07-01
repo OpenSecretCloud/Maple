@@ -43,6 +43,7 @@ import { Link } from "@tanstack/react-router";
 import { getBillingService } from "@/billing/billingService";
 import { useState } from "react";
 import type { TeamStatus } from "@/types/team";
+import { TeamManagementDialog } from "@/components/team/TeamManagementDialog";
 
 function ConfirmDeleteDialog() {
   const { clearHistory } = useLocalState();
@@ -80,7 +81,7 @@ export function AccountMenu() {
   const router = useRouter();
   const { billingStatus } = useLocalState();
   const [isPortalLoading, setIsPortalLoading] = useState(false);
-  // const [isTeamDialogOpen, setIsTeamDialogOpen] = useState(false); // TODO: Uncomment when TeamManagementDialog is ready
+  const [isTeamDialogOpen, setIsTeamDialogOpen] = useState(false);
 
   const hasStripeAccount = billingStatus?.stripe_customer_id !== null;
   const productName = billingStatus?.product_name || "";
@@ -193,9 +194,12 @@ export function AccountMenu() {
             </Link>
             <CreditUsage />
             <DropdownMenuTrigger asChild>
-              <Button variant="outline" className="gap-2">
+              <Button variant="outline" className="gap-2 relative">
                 <User className="w-4 h-4" />
                 Account
+                {showTeamSetupAlert && (
+                  <AlertCircle className="absolute -top-1 -right-1 h-4 w-4 text-amber-500 bg-background rounded-full" />
+                )}
               </Button>
             </DropdownMenuTrigger>
           </div>
@@ -224,22 +228,19 @@ export function AccountMenu() {
                 </DropdownMenuItem>
               )}
               {isTeamPlan && (
-                <DropdownMenuItem onClick={() => {/* TODO: setIsTeamDialogOpen(true) */}}>
+                <DropdownMenuItem onClick={() => setIsTeamDialogOpen(true)}>
                   <div className="flex items-center justify-between w-full">
                     <div className="flex items-center">
                       <Users className="mr-2 h-4 w-4" />
                       <span>Manage Team</span>
                     </div>
                     {showTeamSetupAlert && (
-                      <div className="flex items-center">
-                        <AlertCircle className="h-3 w-3 text-amber-500" />
-                        <Badge
-                          variant="secondary"
-                          className="ml-2 py-0 px-1.5 text-xs bg-amber-500 text-white"
-                        >
-                          Setup Required
-                        </Badge>
-                      </div>
+                      <Badge
+                        variant="secondary"
+                        className="py-0 px-1.5 text-xs bg-amber-500 text-white"
+                      >
+                        Setup Required
+                      </Badge>
                     )}
                   </div>
                 </DropdownMenuItem>
@@ -265,12 +266,11 @@ export function AccountMenu() {
           </DropdownMenuContent>
           <AccountDialog />
           <ConfirmDeleteDialog />
-          {/* TODO: Add TeamManagementDialog component */}
-          {/* <TeamManagementDialog 
-            open={isTeamDialogOpen} 
+          <TeamManagementDialog
+            open={isTeamDialogOpen}
             onOpenChange={setIsTeamDialogOpen}
             teamStatus={teamStatus}
-          /> */}
+          />
         </DropdownMenu>
       </Dialog>
     </AlertDialog>

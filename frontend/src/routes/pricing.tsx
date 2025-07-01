@@ -307,7 +307,7 @@ function PricingPage() {
       if (isCurrentPlan) {
         return "Manage Plan";
       }
-      return "Upgrade to Team";
+      return "Upgrade";
     }
 
     // For free plan
