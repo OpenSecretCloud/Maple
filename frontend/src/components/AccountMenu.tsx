@@ -97,8 +97,7 @@ export function AccountMenu() {
       const billingService = getBillingService();
       return await billingService.getTeamStatus();
     },
-    enabled: isTeamPlan && !!os.auth.user,
-    refetchInterval: 30000 // Refetch every 30 seconds to stay updated
+    enabled: isTeamPlan && !!os.auth.user
   });
 
   // Show alert badge if user has team plan but hasn't created team yet
