@@ -6,8 +6,27 @@ import {
   createCheckoutSession,
   createZapriteCheckoutSession,
   BillingStatus,
-  BillingProduct
+  BillingProduct,
+  fetchTeamStatus,
+  createTeam,
+  inviteTeamMembers,
+  fetchTeamMembers,
+  checkTeamInvite,
+  acceptTeamInvite,
+  removeTeamMember,
+  leaveTeam,
+  revokeTeamInvite
 } from "./billingApi";
+import type {
+  TeamStatus,
+  CreateTeamRequest,
+  CreateTeamResponse,
+  InviteMembersRequest,
+  InviteMembersResponse,
+  TeamMembersResponse,
+  CheckInviteResponse,
+  AcceptInviteRequest
+} from "@/types/team";
 
 const TOKEN_STORAGE_KEY = "maple_billing_token";
 
@@ -93,6 +112,43 @@ class BillingService {
 
   clearToken(): void {
     sessionStorage.removeItem(TOKEN_STORAGE_KEY);
+  }
+
+  // Team Management Methods
+  async getTeamStatus(): Promise<TeamStatus> {
+    return this.executeWithToken((token) => fetchTeamStatus(token));
+  }
+
+  async createTeam(data: CreateTeamRequest): Promise<CreateTeamResponse> {
+    return this.executeWithToken((token) => createTeam(token, data));
+  }
+
+  async inviteTeamMembers(data: InviteMembersRequest): Promise<InviteMembersResponse> {
+    return this.executeWithToken((token) => inviteTeamMembers(token, data));
+  }
+
+  async getTeamMembers(): Promise<TeamMembersResponse> {
+    return this.executeWithToken((token) => fetchTeamMembers(token));
+  }
+
+  async checkTeamInvite(inviteId: string): Promise<CheckInviteResponse> {
+    return this.executeWithToken((token) => checkTeamInvite(token, inviteId));
+  }
+
+  async acceptTeamInvite(inviteId: string, data: AcceptInviteRequest): Promise<TeamStatus> {
+    return this.executeWithToken((token) => acceptTeamInvite(token, inviteId, data));
+  }
+
+  async removeTeamMember(userId: string): Promise<void> {
+    return this.executeWithToken((token) => removeTeamMember(token, userId));
+  }
+
+  async leaveTeam(): Promise<void> {
+    return this.executeWithToken((token) => leaveTeam(token));
+  }
+
+  async revokeTeamInvite(inviteId: string): Promise<void> {
+    return this.executeWithToken((token) => revokeTeamInvite(token, inviteId));
   }
 }
 
