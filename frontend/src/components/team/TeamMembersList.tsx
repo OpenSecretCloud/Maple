@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Separator } from "@/components/ui/separator";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -21,7 +22,17 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger
 } from "@/components/ui/dropdown-menu";
-import { Crown, User, Clock, MoreVertical, UserMinus, X, LogOut, Loader2 } from "lucide-react";
+import {
+  Crown,
+  User,
+  Clock,
+  MoreVertical,
+  UserMinus,
+  X,
+  LogOut,
+  Loader2,
+  AlertCircle
+} from "lucide-react";
 import { getBillingService } from "@/billing/billingService";
 import { useOpenSecret } from "@opensecret/react";
 import type { TeamStatus, TeamMember, TeamInvite } from "@/types/team";
@@ -43,6 +54,7 @@ export function TeamMembersList({ teamStatus }: TeamMembersListProps) {
   }>({ open: false });
   const [leaveTeamDialog, setLeaveTeamDialog] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const currentUserEmail = os.auth.user?.user.email;
   const isAdmin = teamStatus?.role === "admin" || teamStatus?.is_team_admin === true;
@@ -62,6 +74,7 @@ export function TeamMembersList({ teamStatus }: TeamMembersListProps) {
 
   const handleRemoveMember = async (userId: string) => {
     setIsProcessing(true);
+    setErrorMessage(null);
     try {
       const billingService = getBillingService();
       await billingService.removeTeamMember(userId);
@@ -73,7 +86,9 @@ export function TeamMembersList({ teamStatus }: TeamMembersListProps) {
       setRemoveMemberDialog({ open: false });
     } catch (error) {
       console.error("Failed to remove member:", error);
-      // TODO: Show error toast
+      const message = error instanceof Error ? error.message : "Failed to remove team member";
+      setErrorMessage(message);
+      // Keep dialog open to show error
     } finally {
       setIsProcessing(false);
     }
@@ -81,6 +96,7 @@ export function TeamMembersList({ teamStatus }: TeamMembersListProps) {
 
   const handleRevokeInvite = async (inviteId: string) => {
     setIsProcessing(true);
+    setErrorMessage(null);
     try {
       const billingService = getBillingService();
       await billingService.revokeTeamInvite(inviteId);
@@ -92,7 +108,8 @@ export function TeamMembersList({ teamStatus }: TeamMembersListProps) {
       setRevokeInviteDialog({ open: false });
     } catch (error) {
       console.error("Failed to revoke invite:", error);
-      // TODO: Show error toast
+      const message = error instanceof Error ? error.message : "Failed to revoke invitation";
+      setErrorMessage(message);
     } finally {
       setIsProcessing(false);
     }
@@ -100,6 +117,7 @@ export function TeamMembersList({ teamStatus }: TeamMembersListProps) {
 
   const handleLeaveTeam = async () => {
     setIsProcessing(true);
+    setErrorMessage(null);
     try {
       const billingService = getBillingService();
       await billingService.leaveTeam();
@@ -109,7 +127,8 @@ export function TeamMembersList({ teamStatus }: TeamMembersListProps) {
       window.location.reload();
     } catch (error) {
       console.error("Failed to leave team:", error);
-      // TODO: Show error toast
+      const message = error instanceof Error ? error.message : "Failed to leave team";
+      setErrorMessage(message);
     } finally {
       setIsProcessing(false);
     }
@@ -280,7 +299,10 @@ export function TeamMembersList({ teamStatus }: TeamMembersListProps) {
       {/* Remove Member Dialog */}
       <AlertDialog
         open={removeMemberDialog.open}
-        onOpenChange={(open) => setRemoveMemberDialog({ open })}
+        onOpenChange={(open) => {
+          if (!open) setErrorMessage(null);
+          setRemoveMemberDialog({ open });
+        }}
       >
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -290,6 +312,12 @@ export function TeamMembersList({ teamStatus }: TeamMembersListProps) {
               will lose access to all team resources immediately.
             </AlertDialogDescription>
           </AlertDialogHeader>
+          {errorMessage && (
+            <Alert variant="destructive" className="mt-4">
+              <AlertCircle className="h-4 w-4" />
+              <AlertDescription>{errorMessage}</AlertDescription>
+            </Alert>
+          )}
           <AlertDialogFooter>
             <AlertDialogCancel disabled={isProcessing}>Cancel</AlertDialogCancel>
             <AlertDialogAction
@@ -315,7 +343,10 @@ export function TeamMembersList({ teamStatus }: TeamMembersListProps) {
       {/* Revoke Invite Dialog */}
       <AlertDialog
         open={revokeInviteDialog.open}
-        onOpenChange={(open) => setRevokeInviteDialog({ open })}
+        onOpenChange={(open) => {
+          if (!open) setErrorMessage(null);
+          setRevokeInviteDialog({ open });
+        }}
       >
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -325,6 +356,12 @@ export function TeamMembersList({ teamStatus }: TeamMembersListProps) {
               They will no longer be able to join the team using this invitation.
             </AlertDialogDescription>
           </AlertDialogHeader>
+          {errorMessage && (
+            <Alert variant="destructive" className="mt-4">
+              <AlertCircle className="h-4 w-4" />
+              <AlertDescription>{errorMessage}</AlertDescription>
+            </Alert>
+          )}
           <AlertDialogFooter>
             <AlertDialogCancel disabled={isProcessing}>Cancel</AlertDialogCancel>
             <AlertDialogAction
@@ -347,7 +384,13 @@ export function TeamMembersList({ teamStatus }: TeamMembersListProps) {
       </AlertDialog>
 
       {/* Leave Team Dialog */}
-      <AlertDialog open={leaveTeamDialog} onOpenChange={setLeaveTeamDialog}>
+      <AlertDialog
+        open={leaveTeamDialog}
+        onOpenChange={(open) => {
+          if (!open) setErrorMessage(null);
+          setLeaveTeamDialog(open);
+        }}
+      >
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Leave team?</AlertDialogTitle>
@@ -356,6 +399,12 @@ export function TeamMembersList({ teamStatus }: TeamMembersListProps) {
               and will need to be invited again to rejoin.
             </AlertDialogDescription>
           </AlertDialogHeader>
+          {errorMessage && (
+            <Alert variant="destructive" className="mt-4">
+              <AlertCircle className="h-4 w-4" />
+              <AlertDescription>{errorMessage}</AlertDescription>
+            </Alert>
+          )}
           <AlertDialogFooter>
             <AlertDialogCancel disabled={isProcessing}>Cancel</AlertDialogCancel>
             <AlertDialogAction

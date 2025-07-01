@@ -24,6 +24,7 @@ import { Route as AuthImport } from './routes/_auth'
 import { Route as IndexImport } from './routes/index'
 import { Route as VerifyCodeImport } from './routes/verify.$code'
 import { Route as PasswordResetConfirmImport } from './routes/password-reset.confirm'
+import { Route as TeamInviteInviteIdImport } from './routes/team.invite.$inviteId'
 import { Route as AuthProviderCallbackImport } from './routes/auth.$provider.callback'
 import { Route as AuthChatChatIdImport } from './routes/_auth.chat.$chatId'
 
@@ -104,6 +105,12 @@ const PasswordResetConfirmRoute = PasswordResetConfirmImport.update({
   id: '/confirm',
   path: '/confirm',
   getParentRoute: () => PasswordResetRoute,
+} as any)
+
+const TeamInviteInviteIdRoute = TeamInviteInviteIdImport.update({
+  id: '/team/invite/$inviteId',
+  path: '/team/invite/$inviteId',
+  getParentRoute: () => rootRoute,
 } as any)
 
 const AuthProviderCallbackRoute = AuthProviderCallbackImport.update({
@@ -227,6 +234,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthProviderCallbackImport
       parentRoute: typeof rootRoute
     }
+    '/team/invite/$inviteId': {
+      id: '/team/invite/$inviteId'
+      path: '/team/invite/$inviteId'
+      fullPath: '/team/invite/$inviteId'
+      preLoaderRoute: typeof TeamInviteInviteIdImport
+      parentRoute: typeof rootRoute
+    }
   }
 }
 
@@ -270,6 +284,7 @@ export interface FileRoutesByFullPath {
   '/verify/$code': typeof VerifyCodeRoute
   '/chat/$chatId': typeof AuthChatChatIdRoute
   '/auth/$provider/callback': typeof AuthProviderCallbackRoute
+  '/team/invite/$inviteId': typeof TeamInviteInviteIdRoute
 }
 
 export interface FileRoutesByTo {
@@ -288,6 +303,7 @@ export interface FileRoutesByTo {
   '/verify/$code': typeof VerifyCodeRoute
   '/chat/$chatId': typeof AuthChatChatIdRoute
   '/auth/$provider/callback': typeof AuthProviderCallbackRoute
+  '/team/invite/$inviteId': typeof TeamInviteInviteIdRoute
 }
 
 export interface FileRoutesById {
@@ -307,6 +323,7 @@ export interface FileRoutesById {
   '/verify/$code': typeof VerifyCodeRoute
   '/_auth/chat/$chatId': typeof AuthChatChatIdRoute
   '/auth/$provider/callback': typeof AuthProviderCallbackRoute
+  '/team/invite/$inviteId': typeof TeamInviteInviteIdRoute
 }
 
 export interface FileRouteTypes {
@@ -327,6 +344,7 @@ export interface FileRouteTypes {
     | '/verify/$code'
     | '/chat/$chatId'
     | '/auth/$provider/callback'
+    | '/team/invite/$inviteId'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -344,6 +362,7 @@ export interface FileRouteTypes {
     | '/verify/$code'
     | '/chat/$chatId'
     | '/auth/$provider/callback'
+    | '/team/invite/$inviteId'
   id:
     | '__root__'
     | '/'
@@ -361,6 +380,7 @@ export interface FileRouteTypes {
     | '/verify/$code'
     | '/_auth/chat/$chatId'
     | '/auth/$provider/callback'
+    | '/team/invite/$inviteId'
   fileRoutesById: FileRoutesById
 }
 
@@ -378,6 +398,7 @@ export interface RootRouteChildren {
   SignupRoute: typeof SignupRoute
   VerifyCodeRoute: typeof VerifyCodeRoute
   AuthProviderCallbackRoute: typeof AuthProviderCallbackRoute
+  TeamInviteInviteIdRoute: typeof TeamInviteInviteIdRoute
 }
 
 const rootRouteChildren: RootRouteChildren = {
@@ -394,6 +415,7 @@ const rootRouteChildren: RootRouteChildren = {
   SignupRoute: SignupRoute,
   VerifyCodeRoute: VerifyCodeRoute,
   AuthProviderCallbackRoute: AuthProviderCallbackRoute,
+  TeamInviteInviteIdRoute: TeamInviteInviteIdRoute,
 }
 
 export const routeTree = rootRoute
@@ -418,7 +440,8 @@ export const routeTree = rootRoute
         "/proof",
         "/signup",
         "/verify/$code",
-        "/auth/$provider/callback"
+        "/auth/$provider/callback",
+        "/team/invite/$inviteId"
       ]
     },
     "/": {
@@ -473,6 +496,9 @@ export const routeTree = rootRoute
     },
     "/auth/$provider/callback": {
       "filePath": "auth.$provider.callback.tsx"
+    },
+    "/team/invite/$inviteId": {
+      "filePath": "team.invite.$inviteId.tsx"
     }
   }
 }
