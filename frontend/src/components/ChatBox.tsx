@@ -304,11 +304,11 @@ export default function Component({
 
     const file = e.target.files[0];
 
-    // Check file size (1MB limit = 1024 * 1024 bytes)
-    const maxSizeInBytes = 1 * 1024 * 1024; // 1MB
+    // Check file size (5MB limit = 1024 * 1024 bytes)
+    const maxSizeInBytes = 5 * 1024 * 1024; // 5MB
     if (file.size > maxSizeInBytes) {
       const sizeInMB = (file.size / (1024 * 1024)).toFixed(2);
-      setDocumentError(`File too large (${sizeInMB}MB). Maximum size is 1MB.`);
+      setDocumentError(`File too large (${sizeInMB}MB). Maximum size is 5MB.`);
       e.target.value = ""; // Reset input
       return;
     }
@@ -351,7 +351,7 @@ export default function Component({
       console.error("Document upload failed:", error);
       if (error instanceof Error) {
         if (error.message.includes("exceeds maximum limit")) {
-          setDocumentError("File too large. Maximum size is 10MB.");
+          setDocumentError("File too large. Maximum size is 5MB.");
         } else if (error.message.includes("401")) {
           setDocumentError("Authentication required. Please log in to upload documents.");
         } else if (error.message.includes("403")) {
@@ -668,6 +668,7 @@ export default function Component({
       >
         {(images.length > 0 ||
           uploadedDocument ||
+          isUploadingDocument ||
           documentError ||
           imageError ||
           imageConversionError) && (
@@ -838,17 +839,12 @@ export default function Component({
                       documentInputRef.current?.click();
                     }
                   }}
-                  disabled={isUploadingDocument}
                   className={cn(
                     "flex items-center gap-2 group",
                     !canUseDocuments && "hover:bg-purple-50 dark:hover:bg-purple-950/20"
                   )}
                 >
-                  {isUploadingDocument ? (
-                    <Loader2 className="h-4 w-4 shrink-0 animate-spin" />
-                  ) : (
-                    <FileText className="h-4 w-4 shrink-0" />
-                  )}
+                  <FileText className="h-4 w-4 shrink-0" />
                   <span>Upload Document</span>
                   {!canUseDocuments && (
                     <>
@@ -859,9 +855,6 @@ export default function Component({
                         Upgrade?
                       </span>
                     </>
-                  )}
-                  {isUploadingDocument && canUseDocuments && (
-                    <span className="ml-auto text-xs text-muted-foreground">Processing...</span>
                   )}
                 </DropdownMenuItem>
               </DropdownMenuContent>
