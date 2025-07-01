@@ -317,7 +317,7 @@ export default function Component({
     setDocumentError(null);
 
     try {
-      const result = await os.uploadDocument(file);
+      const result = await os.uploadDocumentWithPolling(file);
 
       // Parse the JSON response
       const parsed = JSON.parse(result.text) as ParsedDocument;
@@ -702,15 +702,16 @@ export default function Component({
             {isUploadingDocument && !uploadedDocument && (
               <div className="flex items-center gap-2 p-2 bg-muted/50 rounded-md animate-in fade-in duration-200">
                 <Loader2 className="h-4 w-4 text-muted-foreground animate-spin" />
-                <span className="text-sm text-muted-foreground">Processing document...</span>
+                <span className="text-sm text-muted-foreground">
+                  Processing document securely... This may take a minute.
+                </span>
               </div>
             )}
             {uploadedDocument && (
               <div className="flex items-center gap-2 p-2 bg-muted/50 rounded-md">
                 <FileText className="h-4 w-4 text-muted-foreground" />
                 <span className="text-sm truncate flex-1">
-                  {uploadedDocument.parsed.document.filename} (
-                  {Math.round(uploadedDocument.original.size / 1024)}KB)
+                  {uploadedDocument.parsed.document.filename}
                 </span>
                 <button
                   type="button"
