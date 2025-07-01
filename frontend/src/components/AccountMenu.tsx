@@ -1,4 +1,13 @@
-import { LogOut, Trash, User, CreditCard, ArrowUpCircle, Mail } from "lucide-react";
+import {
+  LogOut,
+  Trash,
+  User,
+  CreditCard,
+  ArrowUpCircle,
+  Mail,
+  Users,
+  AlertCircle
+} from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -29,10 +38,11 @@ import {
   AlertDialogTrigger
 } from "@/components/ui/alert-dialog";
 import { useLocalState } from "@/state/useLocalState";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQueryClient, useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { getBillingService } from "@/billing/billingService";
 import { useState } from "react";
+import type { TeamStatus } from "@/types/team";
 
 function ConfirmDeleteDialog() {
   const { clearHistory } = useLocalState();
@@ -70,13 +80,30 @@ export function AccountMenu() {
   const router = useRouter();
   const { billingStatus } = useLocalState();
   const [isPortalLoading, setIsPortalLoading] = useState(false);
+  // const [isTeamDialogOpen, setIsTeamDialogOpen] = useState(false); // TODO: Uncomment when TeamManagementDialog is ready
 
   const hasStripeAccount = billingStatus?.stripe_customer_id !== null;
   const productName = billingStatus?.product_name || "";
   const isPro = productName.toLowerCase().includes("pro");
   const isStarter = productName.toLowerCase().includes("starter");
-  const showUpgrade = !isPro;
-  const showManage = (isPro || isStarter) && hasStripeAccount;
+  const isTeamPlan = productName.toLowerCase().includes("team");
+  const showUpgrade = !isPro && !isTeamPlan;
+  const showManage = (isPro || isStarter || isTeamPlan) && hasStripeAccount;
+
+  // Fetch team status if user has team plan
+  const { data: teamStatus } = useQuery<TeamStatus>({
+    queryKey: ["teamStatus"],
+    queryFn: async () => {
+      const billingService = getBillingService();
+      return await billingService.getTeamStatus();
+    },
+    enabled: isTeamPlan && !!os.auth.user,
+    refetchInterval: 30000 // Refetch every 30 seconds to stay updated
+  });
+
+  // Show alert badge if user has team plan but hasn't created team yet
+  const showTeamSetupAlert =
+    isTeamPlan && teamStatus?.has_team_subscription && !teamStatus?.team_created;
 
   const handleManageSubscription = async () => {
     if (!hasStripeAccount) return;
@@ -197,6 +224,27 @@ export function AccountMenu() {
                   <span>{isPortalLoading ? "Loading..." : "Manage Subscription"}</span>
                 </DropdownMenuItem>
               )}
+              {isTeamPlan && (
+                <DropdownMenuItem onClick={() => {/* TODO: setIsTeamDialogOpen(true) */}}>
+                  <div className="flex items-center justify-between w-full">
+                    <div className="flex items-center">
+                      <Users className="mr-2 h-4 w-4" />
+                      <span>Manage Team</span>
+                    </div>
+                    {showTeamSetupAlert && (
+                      <div className="flex items-center">
+                        <AlertCircle className="h-3 w-3 text-amber-500" />
+                        <Badge
+                          variant="secondary"
+                          className="ml-2 py-0 px-1.5 text-xs bg-amber-500 text-white"
+                        >
+                          Setup Required
+                        </Badge>
+                      </div>
+                    )}
+                  </div>
+                </DropdownMenuItem>
+              )}
               <DropdownMenuItem asChild>
                 <a href="mailto:support@opensecret.cloud">
                   <Mail className="mr-2 h-4 w-4" />
@@ -218,6 +266,12 @@ export function AccountMenu() {
           </DropdownMenuContent>
           <AccountDialog />
           <ConfirmDeleteDialog />
+          {/* TODO: Add TeamManagementDialog component */}
+          {/* <TeamManagementDialog 
+            open={isTeamDialogOpen} 
+            onOpenChange={setIsTeamDialogOpen}
+            teamStatus={teamStatus}
+          /> */}
         </DropdownMenu>
       </Dialog>
     </AlertDialog>
