@@ -360,15 +360,6 @@ export default function Component({
 
   return (
     <div className="flex flex-col w-full">
-      <TokenWarning
-        messages={messages}
-        currentInput={inputValue}
-        chatId={chatId}
-        onCompress={onCompress}
-        isCompressing={isSummarizing}
-        modelId={model}
-      />
-
       {/* Simple System Prompt Section - just a gear button and input when expanded */}
       {canEditSystemPrompt && (
         <div className="mb-2">
@@ -405,6 +396,15 @@ export default function Component({
           )}
         </div>
       )}
+
+      <TokenWarning
+        messages={messages}
+        currentInput={inputValue}
+        chatId={chatId}
+        onCompress={onCompress}
+        isCompressing={isSummarizing}
+        modelId={model}
+      />
 
       <form
         className={cn(
