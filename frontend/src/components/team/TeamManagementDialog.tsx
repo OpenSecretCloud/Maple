@@ -49,7 +49,7 @@ export function TeamManagementDialog({
   // Otherwise show the team dashboard
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
+      <DialogContent className="sm:max-w-lg max-w-[calc(100vw-2rem)] max-h-[90vh] overflow-y-auto">
         <TeamDashboard teamStatus={teamStatus} />
       </DialogContent>
     </Dialog>

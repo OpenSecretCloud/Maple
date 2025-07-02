@@ -467,12 +467,12 @@ export async function acceptTeamInvite(
     if (response.status === 401) {
       throw new Error("Unauthorized");
     }
-    
+
     // Try to parse JSON error response for any status code
     try {
       const errorData = JSON.parse(errorText);
       throw new Error(errorData.error || errorData.message || errorText);
-    } catch (parseError) {
+    } catch {
       // If not JSON, use the text as-is
       throw new Error(errorText || "Failed to accept invitation");
     }
