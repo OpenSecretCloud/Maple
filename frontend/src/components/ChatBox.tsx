@@ -1,7 +1,7 @@
 import { CornerRightUp, Bot } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useMemo } from "react";
 import { useLocalState } from "@/state/useLocalState";
 import { cn, useIsMobile } from "@/utils/utils";
 import { useQuery } from "@tanstack/react-query";
@@ -16,6 +16,12 @@ import { encode } from "gpt-tokenizer";
 function estimateTokenCount(text: string): number {
   // Use gpt-tokenizer for accurate token counting
   return encode(text).length;
+}
+
+// Calculate total tokens for messages and current input
+function calculateTotalTokens(messages: ChatMessage[], currentInput: string): number {
+  return messages.reduce((acc, msg) => acc + estimateTokenCount(msg.content), 0) +
+    (currentInput ? estimateTokenCount(currentInput) : 0);
 }
 
 function TokenWarning({
@@ -35,9 +41,10 @@ function TokenWarning({
   isCompressing?: boolean;
   modelId: string;
 }) {
-  const totalTokens =
-    messages.reduce((acc, msg) => acc + estimateTokenCount(msg.content), 0) +
-    (currentInput ? estimateTokenCount(currentInput) : 0);
+  const totalTokens = useMemo(() => 
+    calculateTotalTokens(messages, currentInput),
+    [messages, currentInput]
+  );
 
   const navigate = useNavigate();
 
@@ -302,9 +309,10 @@ export default function Component({
   }, [systemPromptValue]);
 
   // Calculate token usage percentage
-  const totalTokens =
-    messages.reduce((acc, msg) => acc + estimateTokenCount(msg.content), 0) +
-    (inputValue ? estimateTokenCount(inputValue) : 0);
+  const totalTokens = useMemo(() => 
+    calculateTotalTokens(messages, inputValue),
+    [messages, inputValue]
+  );
   const tokenLimit = getModelTokenLimit(model);
   const tokenPercentage = (totalTokens / tokenLimit) * 100;
   const isAt99Percent = tokenPercentage >= 99;
