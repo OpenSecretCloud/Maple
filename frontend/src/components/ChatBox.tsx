@@ -24,6 +24,23 @@ function calculateTotalTokens(messages: ChatMessage[], currentInput: string): nu
     (currentInput ? estimateTokenCount(currentInput) : 0);
 }
 
+// Custom hook for debouncing values
+function useDebounce<T>(value: T, delay: number): T {
+  const [debouncedValue, setDebouncedValue] = useState(value);
+
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      setDebouncedValue(value);
+    }, delay);
+
+    return () => {
+      clearTimeout(handler);
+    };
+  }, [value, delay]);
+
+  return debouncedValue;
+}
+
 function TokenWarning({
   messages,
   currentInput,
@@ -41,9 +58,12 @@ function TokenWarning({
   isCompressing?: boolean;
   modelId: string;
 }) {
+  // Debounce the current input to avoid calculating on every keystroke
+  const debouncedInput = useDebounce(currentInput, 300);
+  
   const totalTokens = useMemo(() => 
-    calculateTotalTokens(messages, currentInput),
-    [messages, currentInput]
+    calculateTotalTokens(messages, debouncedInput),
+    [messages, debouncedInput]
   );
 
   const navigate = useNavigate();
@@ -308,10 +328,13 @@ export default function Component({
     }
   }, [systemPromptValue]);
 
+  // Debounce input for token calculations to avoid lag while typing
+  const debouncedInputValue = useDebounce(inputValue, 300);
+  
   // Calculate token usage percentage
   const totalTokens = useMemo(() => 
-    calculateTotalTokens(messages, inputValue),
-    [messages, inputValue]
+    calculateTotalTokens(messages, debouncedInputValue),
+    [messages, debouncedInputValue]
   );
   const tokenLimit = getModelTokenLimit(model);
   const tokenPercentage = (totalTokens / tokenLimit) * 100;
