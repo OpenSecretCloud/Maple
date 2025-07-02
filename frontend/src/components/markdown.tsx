@@ -6,10 +6,12 @@ import RemarkBreaks from "remark-breaks";
 import RehypeKatex from "rehype-katex";
 import RemarkGfm from "remark-gfm";
 import RehypeHighlight from "rehype-highlight";
+import RehypeSanitize from "rehype-sanitize";
 import { useRef, useState, RefObject, useEffect, useMemo } from "react";
 import React from "react";
 import { Button } from "./ui/button";
-import { Check, Copy, ChevronDown, ChevronRight, Brain } from "lucide-react";
+import { Check, Copy, ChevronDown, ChevronRight, Brain, FileText } from "lucide-react";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "./ui/dialog";
 
 async function copyToClipboard(text: string) {
   try {
@@ -136,7 +138,11 @@ function parseThinkingTags(content: string, isComplete: boolean = false): Parsed
   }
 
   // Pattern to match <think> tags (complete or incomplete)
-  const thinkPattern = /<think>([\s\S]*?)<\/think>|<think>([\s\S]*?)$/g;
+  // During streaming (!isComplete), we want to catch <think> as soon as it appears
+  const thinkPattern = isComplete
+    ? /<think>([\s\S]*?)<\/think>|<think>([\s\S]*?)$/g
+    : /<think>([\s\S]*?)(?:<\/think>|$)/g;
+
   let lastIndex = 0;
   let match;
 
@@ -149,16 +155,24 @@ function parseThinkingTags(content: string, isComplete: boolean = false): Parsed
       }
     }
 
-    // Extract content from either complete or incomplete tag
-    const thinkContent = (match[1] || match[2] || "").trim();
+    // Extract content from the match
+    const thinkContent = match[1] ?? match[2] ?? "";
 
-    // Only add thinking block if it has actual content (not just whitespace)
-    if (thinkContent) {
+    // During streaming, even empty think tags should be shown to indicate thinking is starting
+    if (!isComplete && match[0].includes("<think>")) {
       parts.push({
         type: "thinking",
         content: thinkContent,
-        duration: undefined, // Let the UI calculate based on word count
-        id: `think-${match.index}` // Unique ID based on position
+        duration: undefined,
+        id: `think-${match.index}`
+      });
+    } else if (thinkContent.trim()) {
+      // For complete content, only add if there's actual content
+      parts.push({
+        type: "thinking",
+        content: thinkContent,
+        duration: undefined,
+        id: `think-${match.index}`
       });
     }
 
@@ -320,6 +334,7 @@ function MarkDownContentToMemo(props: { content: string }) {
       remarkPlugins={[RemarkMath, RemarkGfm, RemarkBreaks]}
       rehypePlugins={[
         RehypeKatex,
+        RehypeSanitize,
         [
           RehypeHighlight,
           {
@@ -348,6 +363,215 @@ function MarkDownContentToMemo(props: { content: string }) {
 
 export const MarkdownContent = React.memo(MarkDownContentToMemo);
 
+interface DocumentData {
+  document: {
+    filename: string;
+    md_content: string | null;
+    json_content: string | null;
+    html_content: string | null;
+    text_content: string | null;
+    doctags_content: string | null;
+  };
+  status: string;
+  errors: unknown[];
+  processing_time: number;
+  timings: Record<string, unknown>;
+}
+
+// Type guard to validate DocumentData structure
+function isDocumentData(obj: unknown): obj is DocumentData {
+  if (!obj || typeof obj !== "object") return false;
+
+  const data = obj as Record<string, unknown>;
+
+  // Check top-level properties
+  if (
+    !("document" in data) ||
+    !("status" in data) ||
+    !("errors" in data) ||
+    !("processing_time" in data)
+  ) {
+    return false;
+  }
+
+  // Check document object structure
+  const doc = data.document;
+  if (!doc || typeof doc !== "object") return false;
+
+  const docObj = doc as Record<string, unknown>;
+
+  // Check required document properties
+  if (!("filename" in docObj) || typeof docObj.filename !== "string") return false;
+
+  // Check optional content properties (must be string or null)
+  const contentFields = [
+    "md_content",
+    "json_content",
+    "html_content",
+    "text_content",
+    "doctags_content"
+  ];
+  for (const field of contentFields) {
+    if (field in docObj && docObj[field] !== null && typeof docObj[field] !== "string") {
+      return false;
+    }
+  }
+
+  // Basic type checks for other fields
+  if (typeof data.status !== "string") return false;
+  if (!Array.isArray(data.errors)) return false;
+  if (typeof data.processing_time !== "number") return false;
+
+  return true;
+}
+
+function DocumentPreview({ documentData }: { documentData: DocumentData }) {
+  const [isOpen, setIsOpen] = useState(false);
+
+  // Extract content with fallbacks
+  const content =
+    documentData.document.md_content ||
+    documentData.document.json_content ||
+    documentData.document.html_content ||
+    documentData.document.text_content ||
+    documentData.document.doctags_content ||
+    "No content available";
+
+  return (
+    <>
+      <div className="my-3">
+        <Button
+          variant="outline"
+          size="default"
+          className="h-20 w-20 p-2 flex flex-col items-center justify-center gap-1 overflow-hidden"
+          onClick={() => setIsOpen(true)}
+          title={documentData.document.filename}
+          aria-label={`Preview document: ${documentData.document.filename}`}
+        >
+          <FileText className="h-6 w-6 flex-shrink-0" />
+          <span className="text-xs truncate w-full text-center px-1">
+            {documentData.document.filename}
+          </span>
+        </Button>
+      </div>
+
+      <Dialog open={isOpen} onOpenChange={setIsOpen}>
+        <DialogContent className="max-w-4xl max-h-[80vh] overflow-hidden flex flex-col">
+          <DialogHeader>
+            <DialogTitle>{documentData.document.filename}</DialogTitle>
+          </DialogHeader>
+          <div className="overflow-y-auto flex-1 p-4">
+            <MarkdownContent content={content} />
+          </div>
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+}
+
+function parseDocumentJson(text: string): { data: DocumentData; endIndex: number } | null {
+  const start = text.indexOf('{"document":');
+  if (start === -1) return null;
+
+  // Try to find a complete JSON object using a more robust approach
+  // We'll attempt to parse progressively larger substrings
+  const jsonStart = text.substring(start);
+
+  // First, try to parse the entire remaining string
+  try {
+    const parsed = JSON.parse(jsonStart);
+    // Validate the structure using our type guard
+    if (isDocumentData(parsed)) {
+      return { data: parsed, endIndex: start + jsonStart.length };
+    }
+  } catch {
+    // If full parse fails, we need to find the end of the JSON object
+  }
+
+  // Use a state machine approach to properly handle strings and escapes
+  let inString = false;
+  let escapeNext = false;
+  let depth = 0;
+
+  for (let i = 0; i < jsonStart.length; i++) {
+    const ch = jsonStart[i];
+
+    if (escapeNext) {
+      escapeNext = false;
+      continue;
+    }
+
+    if (ch === "\\") {
+      escapeNext = true;
+      continue;
+    }
+
+    if (ch === '"' && !escapeNext) {
+      inString = !inString;
+      continue;
+    }
+
+    if (!inString) {
+      if (ch === "{") depth++;
+      else if (ch === "}") {
+        depth--;
+        if (depth === 0) {
+          try {
+            const candidate = jsonStart.substring(0, i + 1);
+            const parsed = JSON.parse(candidate);
+            // Validate the structure using our type guard
+            if (isDocumentData(parsed)) {
+              return { data: parsed, endIndex: start + i + 1 };
+            }
+          } catch (e) {
+            // Continue searching if this wasn't valid JSON
+            console.error("Document JSON parse error at position", i, e);
+          }
+        }
+      }
+    }
+  }
+
+  return null; // incomplete JSON – wait for more chunks
+}
+
+function parseContentWithDocuments(
+  content: string
+): Array<{ type: "text" | "document"; content: string | DocumentData }> {
+  const parts: Array<{ type: "text" | "document"; content: string | DocumentData }> = [];
+
+  // Check if content contains document JSON
+  if (content.includes('{"document":')) {
+    const jsonStartIndex = content.indexOf('{"document":');
+    const beforeJson = content.substring(0, jsonStartIndex).trim();
+
+    // Add any text before the JSON
+    if (beforeJson) {
+      parts.push({ type: "text", content: beforeJson });
+    }
+
+    // Try to parse the document JSON
+    const parseResult = parseDocumentJson(content);
+    if (parseResult) {
+      parts.push({ type: "document", content: parseResult.data });
+
+      // Find any text after the JSON using the endIndex from parsing
+      const afterJson = content.substring(parseResult.endIndex).trim();
+      if (afterJson) {
+        parts.push({ type: "text", content: afterJson });
+      }
+    } else {
+      // If parsing failed, just show as text
+      parts.push({ type: "text", content: content });
+    }
+  } else {
+    // No document detected, treat as regular text
+    parts.push({ type: "text", content: content });
+  }
+
+  return parts;
+}
+
 function MarkdownWithThinking({
   content,
   loading = false,
@@ -366,9 +590,14 @@ function MarkdownWithThinking({
     <>
       {parsedContent.map((part, index) => {
         if (part.type === "thinking") {
-          // Check if this is the last part and we're still loading (no closing tag)
+          // Check if this thinking block is still being streamed
           const isLastPart = index === parsedContent.length - 1;
-          const isThinking = loading && isLastPart && !content.includes("</think>");
+          // During streaming, check if this thinking block doesn't have a closing tag
+          const thisThinkingPosition = content.lastIndexOf("<think>");
+          const closingPosition = content.lastIndexOf("</think>");
+
+          // It's actively thinking if we're loading and this think tag hasn't been closed yet
+          const isThinking = loading && isLastPart && closingPosition < thisThinkingPosition;
 
           return (
             <ThinkingBlock
@@ -379,7 +608,29 @@ function MarkdownWithThinking({
             />
           );
         } else {
-          return <MarkdownContent key={index} content={part.content} />;
+          // Parse content for documents
+          const contentParts = parseContentWithDocuments(part.content);
+          return (
+            <React.Fragment key={index}>
+              {contentParts.map((contentPart, partIndex) => {
+                if (contentPart.type === "document") {
+                  return (
+                    <DocumentPreview
+                      key={`doc-${index}-${partIndex}`}
+                      documentData={contentPart.content as DocumentData}
+                    />
+                  );
+                } else {
+                  return (
+                    <MarkdownContent
+                      key={`text-${index}-${partIndex}`}
+                      content={contentPart.content as string}
+                    />
+                  );
+                }
+              })}
+            </React.Fragment>
+          );
         }
       })}
     </>

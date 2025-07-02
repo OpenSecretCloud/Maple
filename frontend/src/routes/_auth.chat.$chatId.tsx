@@ -5,14 +5,13 @@ import ChatBox from "@/components/ChatBox";
 import { useOpenAI } from "@/ai/useOpenAi";
 import { useLocalState } from "@/state/useLocalState";
 import { Markdown, stripThinkingTags } from "@/components/markdown";
-import { ChatMessage, Chat, DEFAULT_MODEL_ID } from "@/state/LocalStateContext";
-import { AlertDestructive } from "@/components/AlertDestructive";
+import { ChatMessage, DEFAULT_MODEL_ID } from "@/state/LocalStateContext";
 import { Sidebar, SidebarToggle } from "@/components/Sidebar";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
-import { BillingStatus } from "@/billing/billingApi";
 import { useNavigate, useLocation } from "@tanstack/react-router";
 import { useIsMobile } from "@/utils/utils";
+import { useChatSession } from "@/hooks/useChatSession";
 
 export const Route = createFileRoute("/_auth/chat/$chatId")({
   component: ChatComponent
@@ -35,16 +34,27 @@ function useCopyToClipboard(text: string) {
   return { isCopied, handleCopy };
 }
 
-function UserMessage({ text, chatId }: { text: string; chatId: string }) {
+function renderContent(content: ChatMessage["content"], chatId: string) {
+  if (typeof content === "string") {
+    return <Markdown content={content} loading={false} chatId={chatId} />;
+  }
+  return content.map((p, idx) =>
+    p.type === "text" ? (
+      <Markdown key={idx} content={p.text} loading={false} chatId={chatId} />
+    ) : (
+      <img key={idx} src={p.image_url.url} className="max-w-full rounded-lg" />
+    )
+  );
+}
+
+function UserMessage({ message, chatId }: { message: ChatMessage; chatId: string }) {
   return (
     <div className="flex flex-col p-4 rounded-lg bg-muted">
       <div className="rounded-lg flex flex-col md:flex-row gap-4">
         <div>
           <UserIcon />
         </div>
-        <div className="flex flex-col gap-2">
-          <Markdown content={text} loading={false} chatId={chatId} />
-        </div>
+        <div className="flex flex-col gap-2">{renderContent(message.content, chatId)}</div>
       </div>
     </div>
   );
@@ -158,6 +168,8 @@ function ChatComponent() {
     setUserPrompt,
     systemPrompt,
     setSystemPrompt,
+    userImages,
+    setUserImages,
     addChat
   } = useLocalState();
   const openai = useOpenAI();
@@ -167,10 +179,84 @@ function ChatComponent() {
   const location = useLocation();
   const isMobile = useIsMobile();
 
-  const [error, setError] = useState("");
   const [isSummarizing, setIsSummarizing] = useState(false);
+  const [imageConversionError, setImageConversionError] = useState<string | null>(null);
 
   const chatContainerRef = useRef<HTMLDivElement>(null);
+
+  // Use the chat session hook
+  const {
+    chat: localChat,
+    phase,
+    currentStreamingMessage,
+    appendUserMessage
+  } = useChatSession(chatId, {
+    getChatById,
+    persistChat,
+    openai,
+    model,
+    onImageConversionError: (failedCount) => {
+      setImageConversionError(`${failedCount} image(s) failed to process. Please try again.`);
+      // Clear error after 5 seconds
+      setTimeout(() => setImageConversionError(null), 5000);
+    }
+  });
+
+  // Handle initial user prompt - using a ref to prevent double execution
+  const initialPromptProcessedRef = useRef(false);
+
+  // Reset the ref when chatId changes
+  useEffect(() => {
+    initialPromptProcessedRef.current = false;
+  }, [chatId]);
+
+  useEffect(() => {
+    // Check if we have a prompt to process and haven't processed it yet
+    if (
+      userPrompt &&
+      localChat.messages.length === 0 &&
+      phase === "idle" &&
+      !initialPromptProcessedRef.current
+    ) {
+      // Mark as processed immediately
+      initialPromptProcessedRef.current = true;
+
+      // Capture values before clearing
+      const prompt = userPrompt;
+      const sysPrompt = systemPrompt;
+      const images = userImages;
+
+      // Clear state immediately
+      setUserPrompt("");
+      setSystemPrompt(null);
+      setUserImages([]);
+
+      // Combine prompts
+      const finalPrompt = sysPrompt ? `[System: ${sysPrompt}]\n\n${prompt}` : prompt;
+
+      // Send message
+      appendUserMessage(finalPrompt, images).catch((error) => {
+        // Only reset if it wasn't an abort
+        if (!(error instanceof Error) || error.message !== "Stream aborted") {
+          console.error("[ChatComponent] Failed to append message:", error);
+          setUserPrompt(prompt);
+          setSystemPrompt(sysPrompt);
+          setUserImages(images);
+          initialPromptProcessedRef.current = false;
+        }
+      });
+    }
+  }, [
+    userPrompt,
+    systemPrompt,
+    userImages,
+    localChat.messages.length,
+    phase,
+    appendUserMessage,
+    setUserPrompt,
+    setSystemPrompt,
+    setUserImages
+  ]);
 
   // Handle mobile new chat (matching sidebar behavior)
   const handleMobileNewChat = useCallback(async () => {
@@ -217,365 +303,79 @@ function ChatComponent() {
     }
   }, []);
 
-  // Query the chat from the backend, in case it already exists
-  const {
-    isPending,
-    error: queryError,
-    data: queryChat
-  } = useQuery({
-    queryKey: ["chat", chatId],
-    queryFn: () => {
-      return getChatById(chatId);
-    },
-    retry: false
-  });
-
-  useEffect(() => {
-    if (queryError) {
-      console.error("Error fetching chat:", queryError);
-      setError("Error fetching chat. Please try again.");
-    }
-  }, [queryError]);
-
-  // We need to keep a local state so we can stream in chat responses
-  const [localChat, setLocalChat] = useState<Chat>({
-    id: chatId,
-    title: "New Chat",
-    messages: []
-  });
-
-  const [currentStreamingMessage, setCurrentStreamingMessage] = useState<string>();
-
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
   const toggleSidebar = useCallback(() => setIsSidebarOpen((prev) => !prev), []);
 
-  // Track if we've already set the model for this chat
-  const modelSetForChatRef = useRef<string | null>(null);
+  // Set model when chat first loads
+  const hasSetModelRef = useRef(false);
+  useEffect(() => {
+    if (localChat.model && !hasSetModelRef.current) {
+      setModel(localChat.model);
+      hasSetModelRef.current = true;
+    }
+  }, [localChat.model, setModel]);
+
+  // Reset the ref when chatId changes
+  useEffect(() => {
+    hasSetModelRef.current = false;
+  }, [chatId]);
+
+  // Removed auto-persist on model change to prevent unwanted saves
+  // The model will be saved with the chat when messages are sent
+
+  const isLoading = phase === "streaming";
+  const isPersisting = phase === "persisting";
+
+  // Auto-scroll when new messages appear (user message or start of streaming)
+  const prevMessageCountRef = useRef(localChat.messages.length);
+  const prevStreamingRef = useRef(false);
 
   useEffect(() => {
-    if (queryChat && !isPending) {
-      console.debug("Chat loaded from query:", queryChat);
-      if (queryChat.id !== chatId) {
-        console.error("Chat ID mismatch");
-        setLocalChat((localChat) => ({ ...localChat, messages: [] }));
-        return;
-      }
-      if (queryChat.messages.length === 0) {
-        console.warn("Chat has no messages, using user prompt");
+    const messageCount = localChat.messages.length;
+    const hasNewMessage = messageCount > prevMessageCountRef.current;
+    const justStartedStreaming = isLoading && !prevStreamingRef.current;
 
-        // Build messages array with system prompt first (if exists), then user prompt
-        const messages: ChatMessage[] = [];
-
-        // Check for system prompt from LocalState
-        if (systemPrompt?.trim()) {
-          messages.push({ role: "system", content: systemPrompt.trim() } as ChatMessage);
-        }
-
-        // Add user prompt if exists
-        if (userPrompt) {
-          messages.push({ role: "user", content: userPrompt } as ChatMessage);
-        }
-
-        setLocalChat((localChat) => ({ ...localChat, messages }));
-        return;
-      }
-      setLocalChat(queryChat);
-    }
-    // I don't want to re-run this effect if the user prompt or system prompt changes
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [queryChat, chatId, isPending]);
-
-  useEffect(() => {
-    if (queryChat && !isPending) {
-      if (modelSetForChatRef.current !== chatId) {
-        const chatModel = queryChat.model || DEFAULT_MODEL_ID;
-        /** ① Set global selector ② also store on local chat state */
-        setModel(chatModel);
-        setLocalChat((prev) => ({ ...prev, model: chatModel }));
-        modelSetForChatRef.current = chatId;
+    if (hasNewMessage || justStartedStreaming) {
+      // Always scroll for new user messages or when streaming starts
+      const container = chatContainerRef.current;
+      if (container) {
+        requestAnimationFrame(() => {
+          container.scrollTo({
+            top: container.scrollHeight,
+            behavior: "smooth"
+          });
+        });
       }
     }
-  }, [queryChat, chatId, isPending, setModel]);
 
-  // IMPORTANT that this runs only once (because it uses the user's tokens!)
-  const userPromptEffectRan = useRef(false);
-
-  useEffect(() => {
-    // Make sure we don't run this more than once per mount
-    if (userPromptEffectRan.current) return;
-    userPromptEffectRan.current = true;
-
-    // Check if we have a user prompt to send
-    if (userPrompt) {
-      console.log("User prompt found for chatId:", chatId, "sending to chat");
-      console.log("USER PROMPT:", userPrompt);
-
-      // Set a small delay to ensure all state is properly initialized
-      setTimeout(() => {
-        sendMessage(userPrompt, systemPrompt || undefined);
-      }, 100);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const [isLoading, setIsLoading] = useState(false);
+    prevMessageCountRef.current = messageCount;
+    prevStreamingRef.current = isLoading;
+  }, [localChat.messages.length, isLoading]);
 
   const sendMessage = useCallback(
-    async (input: string, systemPrompt?: string) => {
-      // Helper function to check if the user is on a free plan
-      function isUserOnFreePlan(): boolean {
-        try {
-          const billingStatus = queryClient.getQueryData(["billingStatus"]) as
-            | BillingStatus
-            | undefined;
+    async (
+      input: string,
+      systemPrompt?: string,
+      images?: File[],
+      documentText?: string,
+      documentMetadata?: { filename: string; fullContent: string }
+    ) => {
+      // Handle system prompt if provided
+      const messageContent = systemPrompt ? `[System: ${systemPrompt}]\n\n${input}` : input;
 
-          return (
-            !billingStatus ||
-            !billingStatus.product_name ||
-            billingStatus.product_name.toLowerCase().includes("free")
-          );
-        } catch (error) {
-          console.log("Error checking billing status, defaulting to free plan", error);
-          return true; // Default to free plan if there's an error
-        }
-      }
+      // Use the appendUserMessage from the hook
+      await appendUserMessage(messageContent, images, documentText, documentMetadata);
 
-      async function generateChatTitle(messages: ChatMessage[]): Promise<string> {
-        // Find the first user message
-        const userMessage = messages.find((message) => message.role === "user");
-        if (!userMessage) return "New Chat";
-
-        // Simple title generation - truncate first message to 50 chars
-        const simpleTitleFromMessage = userMessage.content.slice(0, 50).trim();
-
-        // For free plan users, just use the simple title
-        // For paid plans, try to generate AI title
-        if (isUserOnFreePlan()) {
-          console.log("Using simple title generation for free plan user");
-          return simpleTitleFromMessage;
-        }
-
-        // For paid plans, use LLM to generate a smart title
-        try {
-          console.log("Using AI title generation for paid plan user");
-          // Get the user's first message, truncate if too long
-          const userContent = userMessage.content.slice(0, 500); // Reduced to 500 chars to optimize token usage
-
-          // Use the OpenAI API to generate a concise title - use the default model
-          const stream = openai.beta.chat.completions.stream({
-            model: DEFAULT_MODEL_ID, // Use the default model instead of user selected model
-            messages: [
-              {
-                role: "system",
-                content:
-                  "You are a helpful assistant that generates concise, meaningful titles (3-5 words) for chat conversations based on the user's first message. Return only the title without quotes or explanations."
-              },
-              {
-                role: "user",
-                content: `Generate a concise, contextual title (3-5 words) for a chat that starts with this message: "${userContent}"`
-              }
-            ],
-            temperature: 0.7,
-            max_tokens: 15, // Keep response very short
-            stream: true
-          });
-
-          let generatedTitle = "";
-          for await (const chunk of stream) {
-            const content = chunk.choices[0]?.delta?.content || "";
-            generatedTitle += content;
-          }
-
-          // Get the final completion
-          await stream.finalChatCompletion();
-
-          // Remove quotes if present and limit length
-          const cleanTitle = generatedTitle
-            .replace(/^["']|["']$/g, "") // Remove surrounding quotes if present
-            .replace(/\n/g, " ") // Remove new lines
-            .trim();
-
-          return cleanTitle || simpleTitleFromMessage; // Fallback to simple title if generation fails
-        } catch (error) {
-          console.error("Failed to generate chat title:", error);
-          // Fallback to simple title method
-          return simpleTitleFromMessage;
-        }
-      }
-      if (!input.trim() || !localChat) return;
-      setError("");
-
-      // Build new messages array with system prompt if this is the first message
-      let newMessages: ChatMessage[];
-
-      if (localChat.messages.length === 0 && systemPrompt?.trim()) {
-        // First message: add system prompt, then user message
-        newMessages = [
-          { role: "system", content: systemPrompt.trim() } as ChatMessage,
-          { role: "user", content: input } as ChatMessage
-        ];
-      } else {
-        // Subsequent messages: just add user message
-        newMessages = [...localChat.messages, { role: "user", content: input } as ChatMessage];
-      }
-
-      setLocalChat((prev) => ({
-        ...prev,
-        messages: newMessages
-      }));
-
-      // Scroll to bottom when user sends message
+      // Scroll to bottom after sending
       requestAnimationFrame(() => {
         chatContainerRef.current?.scrollTo({
           top: chatContainerRef.current.scrollHeight,
           behavior: "smooth"
         });
       });
-
-      setIsLoading(true);
-
-      try {
-        // Start title generation early for paid users if needed
-        let titleGenerationPromise;
-        let title = localChat.title;
-
-        if (title === "New Chat") {
-          const isFreePlan = isUserOnFreePlan();
-
-          if (!isFreePlan) {
-            console.log("Starting async AI title generation for paid user's chat");
-            // Start title generation in parallel for paid users
-            titleGenerationPromise = generateChatTitle(newMessages).then((newTitle) => {
-              // Clean up the title
-              const cleanTitle = newTitle.replace(/"/g, "").replace(/\n/g, " ");
-
-              // Update local chat with generated title immediately when available
-              setLocalChat((prev) => ({
-                ...prev,
-                title: cleanTitle
-              }));
-
-              return cleanTitle;
-            });
-          } else {
-            console.log("Using simple title for free user's chat");
-            // For free users, set the title synchronously
-            const newTitle = await generateChatTitle(newMessages);
-            title = newTitle.replace(/"/g, "").replace(/\n/g, " ");
-
-            setLocalChat((prev) => ({
-              ...prev,
-              title
-            }));
-          }
-        }
-
-        // Stream the chat response (happens in parallel with title generation)
-        // newMessages already contains system prompt if it was the first message
-
-        const stream = openai.beta.chat.completions.stream({
-          model,
-          messages: newMessages,
-          stream: true
-        });
-
-        let fullResponse = "";
-        let isFirstChunk = true;
-
-        for await (const chunk of stream) {
-          const content = chunk.choices[0]?.delta?.content || "";
-          fullResponse += content;
-          setCurrentStreamingMessage(fullResponse);
-
-          // Scroll to bottom on first chunk of the response
-          if (isFirstChunk && content.trim()) {
-            requestAnimationFrame(() => {
-              chatContainerRef.current?.scrollTo({
-                top: chatContainerRef.current.scrollHeight,
-                behavior: "smooth"
-              });
-            });
-            isFirstChunk = false;
-          }
-        }
-
-        // Save scroll position before state updates
-        const container = chatContainerRef.current;
-        const scrollPosition = container?.scrollTop;
-
-        const finalMessages = [
-          ...newMessages,
-          { role: "assistant", content: fullResponse } as ChatMessage
-        ];
-        setLocalChat((prev) => ({
-          ...prev,
-          messages: finalMessages
-        }));
-        setCurrentStreamingMessage(undefined);
-
-        // Restore scroll position after state updates
-        if (container && scrollPosition !== undefined) {
-          // Use requestAnimationFrame to ensure this runs after the render
-          requestAnimationFrame(() => {
-            // Ensure we don't scroll beyond bounds
-            const maxScroll = container.scrollHeight - container.clientHeight;
-            const boundedPosition = Math.min(scrollPosition, maxScroll);
-            container.scrollTop = boundedPosition;
-          });
-        }
-
-        // Wait for title generation to complete if we started it
-        if (titleGenerationPromise) {
-          title = await titleGenerationPromise;
-        }
-
-        const chatCompletion = await stream.finalChatCompletion();
-        console.log(chatCompletion);
-
-        // Should be safe to clear these by now
-        setUserPrompt("");
-        setSystemPrompt(null);
-
-        // React sucks and doesn't get the latest state
-        // Use current title from localChat which may have been updated asynchronously
-        const currentTitle = localChat.title === "New Chat" ? title : localChat.title;
-        await persistChat({ ...localChat, model, title: currentTitle, messages: finalMessages });
-
-        // Invalidate chat history to show the new title in the sidebar
-        queryClient.invalidateQueries({
-          queryKey: ["chatHistory"],
-          refetchType: "all"
-        });
-
-        // Invalidate current chat query to ensure the title update is reflected
-        queryClient.invalidateQueries({
-          queryKey: ["chat", chatId],
-          refetchType: "all"
-        });
-
-        // Only invalidate billing status after everything is complete
-        queryClient.invalidateQueries({
-          queryKey: ["billingStatus"],
-          refetchType: "all"
-        });
-      } catch (error) {
-        // If there's an error, we should still refetch the billing status
-        // to make sure our optimistic update was correct
-        queryClient.invalidateQueries({
-          queryKey: ["billingStatus"],
-          refetchType: "all"
-        });
-        console.error("Error:", error);
-        if (error instanceof Error) setError(error.message);
-      }
-
-      setIsLoading(false);
     },
-    // We intentionally don't include freshBillingStatus in the dependency array
-    // even though it's used in the closure to avoid re-creating the function
-    // on every billing status change
-    [localChat, model, openai, persistChat, queryClient, setUserPrompt, setSystemPrompt, chatId]
+    [appendUserMessage]
   );
 
   // Chat compression function
@@ -608,7 +408,18 @@ END OF INSTRUCTIONS`;
 
       const summarizationMessages = [
         { role: "system" as const, content: summarizerSystem },
-        ...localChat.messages
+        ...localChat.messages.map((msg) => {
+          // Convert content to string for summarization
+          const content =
+            typeof msg.content === "string"
+              ? msg.content
+              : msg.content.map((part) => (part.type === "text" ? part.text : "[image]")).join(" ");
+
+          return {
+            role: msg.role,
+            content: content
+          };
+        })
       ];
 
       // 2. Stream the summary
@@ -643,7 +454,7 @@ END OF INSTRUCTIONS`;
 
       // 3. Take the direct storage approach instead of relying on React state/effects
       // Create a fake user message directly in storage that the next page will read
-      const initialChatData: Chat = {
+      const initialChatData = {
         id: id,
         title: inheritedTitle,
         messages: [{ role: "user" as const, content: initialMsg }]
@@ -664,19 +475,16 @@ END OF INSTRUCTIONS`;
         refetchType: "all"
       });
 
-      // 5. Reset the flag for good measure
-      userPromptEffectRan.current = false;
-
-      // 6. Navigate to the new chat which should now have the initial message
+      // 5. Navigate to the new chat which should now have the initial message
       console.log("Navigating to new chat with pre-persisted message:", id);
       navigate({ to: "/chat/$chatId", params: { chatId: id } });
     } catch (e) {
       console.error("compressChat failed:", e);
-      setError("Could not compress chat – please try again.");
+      // Note: We don't have a setError function anymore since errors are handled by the hook
     } finally {
       setIsSummarizing(false);
     }
-  }, [localChat, model, openai, addChat, navigate, setUserPrompt]);
+  }, [localChat, openai, addChat, navigate, setUserPrompt, persistChat, queryClient]);
 
   return (
     <div className="grid h-dvh w-full grid-cols-1 md:grid-cols-[280px_1fr]">
@@ -716,10 +524,25 @@ END OF INSTRUCTIONS`;
                 id={`message-${message.role}-${index}`}
                 className="flex flex-col gap-2"
               >
-                {message.role === "system" && <SystemPromptMessage text={message.content} />}
-                {message.role === "user" && <UserMessage text={message.content} chatId={chatId} />}
+                {message.role === "system" && (
+                  <SystemPromptMessage
+                    text={
+                      typeof message.content === "string"
+                        ? message.content
+                        : message.content.find((p) => p.type === "text")?.text || ""
+                    }
+                  />
+                )}
+                {message.role === "user" && <UserMessage message={message} chatId={chatId} />}
                 {message.role === "assistant" && (
-                  <SystemMessage text={message.content} chatId={chatId} />
+                  <SystemMessage
+                    text={
+                      typeof message.content === "string"
+                        ? message.content
+                        : message.content.find((p) => p.type === "text")?.text || ""
+                    }
+                    chatId={chatId}
+                  />
                 )}
               </div>
             ))}
@@ -746,13 +569,14 @@ END OF INSTRUCTIONS`;
 
         {/* Place the chat box inline (below messages) in normal flow */}
         <div className="w-full max-w-[45rem] mx-auto flex flex-col gap-2 px-2 pb-2">
-          {error && <AlertDestructive title="Error" description={error} />}
+          {/* Error handling can be added here if needed */}
           <ChatBox
             onSubmit={sendMessage}
             messages={localChat.messages}
-            isStreaming={isLoading || isSummarizing}
+            isStreaming={isLoading || isPersisting || isSummarizing}
             onCompress={compressChat}
             isSummarizing={isSummarizing}
+            imageConversionError={imageConversionError}
           />
         </div>
       </main>

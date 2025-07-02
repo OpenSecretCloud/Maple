@@ -1,4 +1,4 @@
-import { ChevronDown, Check, Lock } from "lucide-react";
+import { ChevronDown, Check, Lock, Camera } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -13,16 +13,16 @@ import { useNavigate } from "@tanstack/react-router";
 import type { Model } from "openai/resources/models.js";
 
 // Model configuration for display names and badges
-const MODEL_CONFIG: Record<
-  string,
-  {
-    displayName: string;
-    badge?: string;
-    disabled?: boolean;
-    requiresPro?: boolean;
-    requiresStarter?: boolean;
-  }
-> = {
+type ModelCfg = {
+  displayName: string;
+  badge?: string;
+  disabled?: boolean;
+  requiresPro?: boolean;
+  requiresStarter?: boolean;
+  supportsVision?: boolean;
+};
+
+export const MODEL_CONFIG: Record<string, ModelCfg> = {
   "ibnzterrell/Meta-Llama-3.3-70B-Instruct-AWQ-INT4": {
     displayName: "Llama 3.3 70B"
   },
@@ -34,7 +34,8 @@ const MODEL_CONFIG: Record<
   "leon-se/gemma-3-27b-it-fp8-dynamic": {
     displayName: "Gemma 3 27B",
     badge: "Starter",
-    requiresStarter: true
+    requiresStarter: true,
+    supportsVision: true
   },
   "deepseek-r1-70b": {
     displayName: "DeepSeek R1 70B",
@@ -43,13 +44,29 @@ const MODEL_CONFIG: Record<
   }
 };
 
-export function ModelSelector() {
+import { ChatMessage } from "@/state/LocalStateContextDef";
+
+export function ModelSelector({
+  messages = [],
+  draftImages = []
+}: {
+  messages?: ChatMessage[];
+  draftImages?: File[];
+}) {
   const { model, setModel, availableModels, setAvailableModels, billingStatus } = useLocalState();
   const os = useOpenSecret();
   const navigate = useNavigate();
   const isFetching = useRef(false);
   const hasFetched = useRef(false);
   const availableModelsRef = useRef(availableModels);
+
+  // Check if chat contains any images or if there are draft images
+  const chatHasImages =
+    draftImages.length > 0 ||
+    messages.some(
+      (msg) =>
+        typeof msg.content !== "string" && msg.content.some((part) => part.type === "image_url")
+    );
 
   // Keep ref updated
   useEffect(() => {
@@ -170,6 +187,10 @@ export function ModelSelector() {
       ) {
         elements.push(<Lock key="lock" className="h-3 w-3 opacity-50" />);
       }
+
+      if (config.supportsVision) {
+        elements.push(<Camera key="cam" className="h-3 w-3 opacity-50" />);
+      }
     } else {
       // Unknown models: show model ID with "Coming Soon" badge
       const model = availableModels.find((m) => m.id === modelId);
@@ -205,14 +226,23 @@ export function ModelSelector() {
           <ChevronDown className="h-3 w-3 opacity-50" />
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-64">
+      <DropdownMenuContent align="start" className="w-64">
         {availableModels &&
           Array.isArray(availableModels) &&
-          // Sort models: available first, then restricted (pro-only), then disabled
+          // Sort models: vision-capable first (if images present), then available, then restricted, then disabled
           [...availableModels]
             .sort((a, b) => {
               const aConfig = MODEL_CONFIG[a.id];
               const bConfig = MODEL_CONFIG[b.id];
+
+              // If chat has images, prioritize vision models
+              if (chatHasImages) {
+                const aHasVision = aConfig?.supportsVision || false;
+                const bHasVision = bConfig?.supportsVision || false;
+                if (aHasVision && !bHasVision) return -1;
+                if (!aHasVision && bHasVision) return 1;
+              }
+
               // Unknown models are treated as disabled
               const aDisabled = aConfig?.disabled || !aConfig;
               const bDisabled = bConfig?.disabled || !bConfig;
@@ -242,11 +272,15 @@ export function ModelSelector() {
               const hasAccess = hasAccessToModel(availableModel.id);
               const isRestricted = (requiresPro || requiresStarter) && !hasAccess;
 
+              // Disable non-vision models if chat has images
+              const isDisabledDueToImages = chatHasImages && !config?.supportsVision;
+              const effectivelyDisabled = isDisabled || isDisabledDueToImages;
+
               return (
                 <DropdownMenuItem
                   key={availableModel.id}
                   onClick={() => {
-                    if (isDisabled) return;
+                    if (effectivelyDisabled) return;
                     if (isRestricted) {
                       // Navigate to pricing page for upgrade
                       navigate({ to: "/pricing" });
@@ -255,13 +289,13 @@ export function ModelSelector() {
                     }
                   }}
                   className={`flex items-center justify-between group ${
-                    isDisabled ? "opacity-50 cursor-not-allowed" : ""
+                    effectivelyDisabled ? "opacity-50 cursor-not-allowed" : ""
                   } ${isRestricted ? "hover:bg-purple-50 dark:hover:bg-purple-950/20" : ""}`}
-                  disabled={isDisabled}
+                  disabled={effectivelyDisabled}
                 >
                   <div className="flex items-center gap-2 flex-1">
                     <div className="text-sm">{getDisplayName(availableModel.id, true)}</div>
-                    {isRestricted && (
+                    {isRestricted && !isDisabledDueToImages && (
                       <span className="text-[10px] text-purple-600 dark:text-purple-400 opacity-0 group-hover:opacity-100 transition-opacity">
                         Upgrade?
                       </span>

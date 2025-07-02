@@ -58,5 +58,9 @@
 	</array>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Maple needs access to your photo library to upload images to your AI conversations.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Maple needs access to your camera to take photos for your AI conversations.</string>
 </dict>
 </plist>

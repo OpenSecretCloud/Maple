@@ -14,4 +14,6 @@ fi
 git config core.hooksPath .githooks
 
 echo "✅ Git hooks configured successfully!"
-echo "The pre-commit hook will now run 'bun run build' before each commit."
+echo "The pre-commit hook will now:"
+echo "  1. Check code formatting with 'bun run format:check'"
+echo "  2. Run 'bun run build' to ensure the project builds"

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -38,17 +38,14 @@ export function RenameChatDialog({
     }
   }, [open, currentTitle]);
 
-  const resetForm = useCallback(() => {
-    setNewTitle(currentTitle);
-    setError(null);
-    setIsLoading(false);
-  }, [currentTitle]);
-
   useEffect(() => {
     if (!open) {
-      resetForm();
+      // Reset form state when dialog closes
+      setNewTitle(currentTitle);
+      setError(null);
+      setIsLoading(false);
     }
-  }, [open, resetForm]);
+  }, [open, currentTitle]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

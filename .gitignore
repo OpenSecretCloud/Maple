@@ -77,3 +77,8 @@ frontend/*.local
 *.tsbuildinfo
 
 **/.claude/settings.local.json
+
+.repo_ignore
+
+# iOS build backups
+frontend/src-tauri/gen/apple/maple.xcodeproj/project.pbxproj.backup

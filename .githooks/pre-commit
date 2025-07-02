@@ -11,6 +11,15 @@ if ! command -v bun &> /dev/null; then
     exit 1
 fi
 
+# Run prettier check
+echo "Checking code formatting with Prettier..."
+if ! bun run format:check; then
+    echo ""
+    echo "Error: Code formatting issues found! Please run 'bun run format' to fix formatting issues."
+    echo "Run 'cd frontend && bun run format:check' to see the formatting issues."
+    exit 1
+fi
+
 # Run the build command
 echo "Running bun build..."
 if ! bun run build; then
@@ -20,5 +29,5 @@ if ! bun run build; then
     exit 1
 fi
 
-echo "Build successful! Proceeding with commit..."
+echo "All checks passed! Proceeding with commit..."
 exit 0
