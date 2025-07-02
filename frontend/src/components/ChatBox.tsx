@@ -1,58 +1,67 @@
 import { CornerRightUp, Bot } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useMemo } from "react";
 import { useLocalState } from "@/state/useLocalState";
 import { cn, useIsMobile } from "@/utils/utils";
 import { useQuery } from "@tanstack/react-query";
 import { getBillingService } from "@/billing/billingService";
-import { BillingStatus } from "@/billing/billingApi";
 import { Route as ChatRoute } from "@/routes/_auth.chat.$chatId";
 import { ChatMessage } from "@/state/LocalStateContext";
 import { useNavigate, useRouter } from "@tanstack/react-router";
-import { ModelSelector } from "@/components/ModelSelector";
+import { ModelSelector, getModelTokenLimit } from "@/components/ModelSelector";
+import { encode } from "gpt-tokenizer";
 
-// Rough token estimation function
+// Accurate token counting using gpt-tokenizer
 function estimateTokenCount(text: string): number {
-  // A very rough estimation: ~4 characters per token on average
-  return Math.ceil(text.length / 4);
+  // Use gpt-tokenizer for accurate token counting
+  return encode(text).length;
+}
+
+// Calculate total tokens for messages and current input
+function calculateTotalTokens(messages: ChatMessage[], currentInput: string): number {
+  return messages.reduce((acc, msg) => acc + estimateTokenCount(msg.content), 0) +
+    (currentInput ? estimateTokenCount(currentInput) : 0);
+}
+
+// Custom hook for debouncing values
+function useDebounce<T>(value: T, delay: number): T {
+  const [debouncedValue, setDebouncedValue] = useState(value);
+
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      setDebouncedValue(value);
+    }, delay);
+
+    return () => {
+      clearTimeout(handler);
+    };
+  }, [value, delay]);
+
+  return debouncedValue;
 }
 
 function TokenWarning({
-  messages,
-  currentInput,
   chatId,
   className,
-  billingStatus,
   onCompress,
-  isCompressing = false
+  isCompressing = false,
+  tokenPercentage
 }: {
-  messages: ChatMessage[];
-  currentInput: string;
   chatId?: string;
   className?: string;
-  billingStatus?: BillingStatus;
   onCompress?: () => void;
   isCompressing?: boolean;
+  tokenPercentage: number;
 }) {
-  const totalTokens =
-    messages.reduce((acc, msg) => acc + estimateTokenCount(msg.content), 0) +
-    (currentInput ? estimateTokenCount(currentInput) : 0);
-
   const navigate = useNavigate();
 
-  // Check if user is on starter plan
-  const isStarter = billingStatus?.product_name?.toLowerCase().includes("starter") || false;
+  // Only show warning if above 50%
+  if (tokenPercentage < 50) return null;
 
-  // Token thresholds for different plan types
-  const STARTER_WARNING_THRESHOLD = 4000;
-  const PRO_WARNING_THRESHOLD = 10000;
-
-  // Different thresholds for starter vs pro users
-  const warningThreshold = isStarter ? STARTER_WARNING_THRESHOLD : PRO_WARNING_THRESHOLD;
-
-  // Only show warning if above the threshold
-  if (totalTokens < warningThreshold) return null;
+  // Determine the severity and behavior based on percentage
+  const isAt95Percent = tokenPercentage >= 95;
+  const isAt99Percent = tokenPercentage >= 99;
 
   const handleNewChat = async (e: React.MouseEvent) => {
     e.preventDefault();
@@ -65,7 +74,17 @@ function TokenWarning({
     }
   };
 
-  // Determine button text based on compression state
+  // Get appropriate message and styling based on threshold
+  const getMessage = () => {
+    if (isAt99Percent) {
+      return "This chat is too long to continue.";
+    } else if (isAt95Percent) {
+      return "Chat is at capacity. Compress to continue.";
+    } else {
+      return "This chat is getting long. Compress it to save tokens.";
+    }
+  };
+
   const getButtonText = () => {
     if (isCompressing) {
       return { desktop: "Compressing...", mobile: "Compressing..." };
@@ -78,26 +97,46 @@ function TokenWarning({
 
   const buttonText = getButtonText();
 
+  // Determine background color based on severity
+  const bgClass = isAt99Percent
+    ? "bg-destructive/20 border border-destructive/30"
+    : isAt95Percent
+      ? "bg-warning/20 border border-warning/30"
+      : "bg-muted/50";
+
   return (
     <div
       className={cn(
         "flex items-center justify-between px-3 py-1.5 mb-1",
-        "bg-muted/50 backdrop-blur-sm rounded-t-lg",
-        "text-xs text-muted-foreground/90",
+        "backdrop-blur-sm rounded-t-lg",
+        "text-xs",
+        bgClass,
+        isAt99Percent
+          ? "text-destructive"
+          : isAt95Percent
+            ? "text-warning-foreground"
+            : "text-muted-foreground/90",
         className
       )}
     >
       <div className="flex items-center gap-2 min-w-0">
-        <span className="text-[11px] font-semibold text-foreground/70 shrink-0">Tip:</span>
-        <span className="min-w-0">This chat is getting long. Compress it to save tokens.</span>
+        <span className="text-[11px] font-semibold shrink-0">
+          {isAt99Percent ? "Error:" : isAt95Percent ? "Warning:" : "Tip:"}
+        </span>
+        <span className="min-w-0">{getMessage()}</span>
       </div>
-      {chatId && (
+      {chatId && !isAt99Percent && (
         <button
           onClick={!isCompressing ? onCompress || handleNewChat : undefined}
           disabled={isCompressing}
           className={cn(
-            "font-medium text-primary transition-colors whitespace-nowrap shrink-0 ml-4",
-            isCompressing ? "opacity-70 cursor-default" : "hover:text-primary/80 hover:underline"
+            "font-medium transition-colors whitespace-nowrap shrink-0 ml-4",
+            isCompressing ? "opacity-70 cursor-default" : "hover:underline",
+            isAt99Percent
+              ? "text-destructive"
+              : isAt95Percent
+                ? "text-warning-foreground hover:text-warning-foreground/80"
+                : "text-primary hover:text-primary/80"
           )}
         >
           <span className="hidden md:inline">{buttonText.desktop}</span>
@@ -127,8 +166,14 @@ export default function Component({
   const [inputValue, setInputValue] = useState("");
   const [systemPromptValue, setSystemPromptValue] = useState("");
   const [isSystemPromptExpanded, setIsSystemPromptExpanded] = useState(false);
-  const { billingStatus, setBillingStatus, draftMessages, setDraftMessage, clearDraftMessage } =
-    useLocalState();
+  const {
+    billingStatus,
+    setBillingStatus,
+    draftMessages,
+    setDraftMessage,
+    clearDraftMessage,
+    model
+  } = useLocalState();
   const [isFocused, setIsFocused] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const systemPromptRef = useRef<HTMLTextAreaElement>(null);
@@ -267,13 +312,26 @@ export default function Component({
     }
   }, [systemPromptValue]);
 
+  // Debounce input for token calculations to avoid lag while typing
+  const debouncedInputValue = useDebounce(inputValue, 300);
+  
+  // Calculate token usage percentage
+  const totalTokens = useMemo(() => 
+    calculateTotalTokens(messages, debouncedInputValue),
+    [messages, debouncedInputValue]
+  );
+  const tokenLimit = getModelTokenLimit(model);
+  const tokenPercentage = (totalTokens / tokenLimit) * 100;
+  const isAt99Percent = tokenPercentage >= 99;
+
   // Determine when the submit button should be disabled
   const isSubmitDisabled =
     (freshBillingStatus !== undefined &&
       (!freshBillingStatus.can_chat ||
         (freshBillingStatus.chats_remaining !== null &&
           freshBillingStatus.chats_remaining <= 0))) ||
-    isStreaming;
+    isStreaming ||
+    isAt99Percent;
 
   // Disable the input box only when the user is out of chats or when streaming
   const isInputDisabled =
@@ -304,6 +362,9 @@ export default function Component({
   // No longer need token calculation or plan type check since we removed the hard limit
   // Just keeping the TokenWarning component which handles its own calculations
   const placeholderText = (() => {
+    if (isAt99Percent) {
+      return "Chat is too long to continue.";
+    }
     if (billingStatus === null || freshBillingStatus === undefined)
       return "Type your message here...";
     if (freshBillingStatus.can_chat === false) {
@@ -314,15 +375,6 @@ export default function Component({
 
   return (
     <div className="flex flex-col w-full">
-      <TokenWarning
-        messages={messages}
-        currentInput={inputValue}
-        chatId={chatId}
-        billingStatus={freshBillingStatus}
-        onCompress={onCompress}
-        isCompressing={isSummarizing}
-      />
-
       {/* Simple System Prompt Section - just a gear button and input when expanded */}
       {canEditSystemPrompt && (
         <div className="mb-2">
@@ -359,6 +411,13 @@ export default function Component({
           )}
         </div>
       )}
+
+      <TokenWarning
+        chatId={chatId}
+        onCompress={onCompress}
+        isCompressing={isSummarizing}
+        tokenPercentage={tokenPercentage}
+      />
 
       <form
         className={cn(
