@@ -11,11 +11,12 @@ import { Route as ChatRoute } from "@/routes/_auth.chat.$chatId";
 import { ChatMessage } from "@/state/LocalStateContext";
 import { useNavigate, useRouter } from "@tanstack/react-router";
 import { ModelSelector } from "@/components/ModelSelector";
+import { encode } from "gpt-tokenizer";
 
-// Rough token estimation function
+// Accurate token counting using gpt-tokenizer
 function estimateTokenCount(text: string): number {
-  // A very rough estimation: ~4 characters per token on average
-  return Math.ceil(text.length / 4);
+  // Use gpt-tokenizer for accurate token counting
+  return encode(text).length;
 }
 
 function TokenWarning({
