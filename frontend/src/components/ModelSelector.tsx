@@ -12,8 +12,8 @@ import { useEffect, useRef } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import type { Model } from "openai/resources/models.js";
 
-// Model configuration for display names and badges
-const MODEL_CONFIG: Record<
+// Model configuration for display names, badges, and token limits
+export const MODEL_CONFIG: Record<
   string,
   {
     displayName: string;
@@ -21,27 +21,40 @@ const MODEL_CONFIG: Record<
     disabled?: boolean;
     requiresPro?: boolean;
     requiresStarter?: boolean;
+    tokenLimit: number;
   }
 > = {
   "ibnzterrell/Meta-Llama-3.3-70B-Instruct-AWQ-INT4": {
-    displayName: "Llama 3.3 70B"
+    displayName: "Llama 3.3 70B",
+    tokenLimit: 70000
   },
   "google/gemma-3-27b-it": {
     displayName: "Gemma 3 27B",
     badge: "Starter",
-    requiresStarter: true
+    requiresStarter: true,
+    tokenLimit: 70000
   },
   "leon-se/gemma-3-27b-it-fp8-dynamic": {
     displayName: "Gemma 3 27B",
     badge: "Starter",
-    requiresStarter: true
+    requiresStarter: true,
+    tokenLimit: 70000
   },
   "deepseek-r1-70b": {
     displayName: "DeepSeek R1 70B",
     badge: "Pro",
-    requiresPro: true
+    requiresPro: true,
+    tokenLimit: 64000
   }
 };
+
+// Default token limit for unknown models
+export const DEFAULT_TOKEN_LIMIT = 64000;
+
+// Get token limit for a specific model
+export function getModelTokenLimit(modelId: string): number {
+  return MODEL_CONFIG[modelId]?.tokenLimit || DEFAULT_TOKEN_LIMIT;
+}
 
 export function ModelSelector() {
   const { model, setModel, availableModels, setAvailableModels, billingStatus } = useLocalState();
