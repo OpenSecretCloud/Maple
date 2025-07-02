@@ -678,15 +678,23 @@ END OF INSTRUCTIONS`;
     }
   }, [localChat, model, openai, addChat, navigate, setUserPrompt]);
 
+  const { sidebarWidth, isSidebarCollapsed } = useLocalState();
+
   return (
-    <div className="grid h-dvh w-full grid-cols-1 md:grid-cols-[280px_1fr]">
+    <div
+      className="grid h-dvh w-full grid-cols-1"
+      style={{
+        gridTemplateColumns: isMobile ? "1fr" : isSidebarCollapsed ? "1fr" : `${sidebarWidth}px 1fr`
+      }}
+    >
       <Sidebar chatId={chatId} isOpen={isSidebarOpen} onToggle={toggleSidebar} />
       <main className="flex h-dvh flex-col bg-card/90 backdrop-blur-lg bg-center overflow-hidden">
-        {!isSidebarOpen && (
-          <div className="fixed top-4 left-4 z-20 md:hidden">
+        {/* Show toggle button on mobile when sidebar is closed, or on desktop when collapsed */}
+        {(!isSidebarOpen && isMobile) || (isSidebarCollapsed && !isMobile) ? (
+          <div className="fixed top-4 left-4 z-20">
             <SidebarToggle onToggle={toggleSidebar} />
           </div>
-        )}
+        ) : null}
         <div
           ref={chatContainerRef}
           className="flex-1 min-h-0 overflow-y-auto flex flex-col relative"

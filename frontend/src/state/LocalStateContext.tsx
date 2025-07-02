@@ -31,6 +31,8 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
     billingStatus: null as BillingStatus | null,
     searchQuery: "",
     isSearchVisible: false,
+    sidebarWidth: 280,
+    isSidebarCollapsed: false,
     draftMessages: new Map<string, string>()
   });
 
@@ -101,6 +103,14 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
 
   function setIsSearchVisible(visible: boolean) {
     setLocalState((prev) => ({ ...prev, isSearchVisible: visible }));
+  }
+
+  function setSidebarWidth(width: number) {
+    setLocalState((prev) => ({ ...prev, sidebarWidth: width }));
+  }
+
+  function setIsSidebarCollapsed(collapsed: boolean) {
+    setLocalState((prev) => ({ ...prev, isSidebarCollapsed: collapsed }));
   }
 
   async function addChat(title: string = "New Chat") {
@@ -265,6 +275,10 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
         setSearchQuery,
         isSearchVisible: localState.isSearchVisible,
         setIsSearchVisible,
+        sidebarWidth: localState.sidebarWidth,
+        setSidebarWidth,
+        isSidebarCollapsed: localState.isSidebarCollapsed,
+        setIsSidebarCollapsed,
         setBillingStatus,
         setUserPrompt,
         setSystemPrompt,

@@ -42,6 +42,14 @@ export type LocalState = {
   isSearchVisible: boolean;
   /** Controls the visibility of the search input */
   setIsSearchVisible: (visible: boolean) => void;
+  /** Current sidebar width in pixels */
+  sidebarWidth: number;
+  /** Updates the sidebar width */
+  setSidebarWidth: (width: number) => void;
+  /** Whether the sidebar is collapsed due to being dragged below minimum width */
+  isSidebarCollapsed: boolean;
+  /** Controls the collapsed state of the sidebar */
+  setIsSidebarCollapsed: (collapsed: boolean) => void;
   setBillingStatus: (status: BillingStatus) => void;
   setUserPrompt: (prompt: string) => void;
   setSystemPrompt: (prompt: string | null) => void;
@@ -72,6 +80,10 @@ export const LocalStateContext = createContext<LocalState>({
   setSearchQuery: () => void 0,
   isSearchVisible: false,
   setIsSearchVisible: () => void 0,
+  sidebarWidth: 280,
+  setSidebarWidth: () => void 0,
+  isSidebarCollapsed: false,
+  setIsSidebarCollapsed: () => void 0,
   setBillingStatus: () => void 0,
   setUserPrompt: () => void 0,
   setSystemPrompt: () => void 0,
