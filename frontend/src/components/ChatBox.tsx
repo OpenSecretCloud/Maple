@@ -42,35 +42,19 @@ function useDebounce<T>(value: T, delay: number): T {
 }
 
 function TokenWarning({
-  messages,
-  currentInput,
   chatId,
   className,
   onCompress,
   isCompressing = false,
-  modelId
+  tokenPercentage
 }: {
-  messages: ChatMessage[];
-  currentInput: string;
   chatId?: string;
   className?: string;
   onCompress?: () => void;
   isCompressing?: boolean;
-  modelId: string;
+  tokenPercentage: number;
 }) {
-  // Debounce the current input to avoid calculating on every keystroke
-  const debouncedInput = useDebounce(currentInput, 300);
-  
-  const totalTokens = useMemo(() => 
-    calculateTotalTokens(messages, debouncedInput),
-    [messages, debouncedInput]
-  );
-
   const navigate = useNavigate();
-
-  // Get model-specific token limit
-  const tokenLimit = getModelTokenLimit(modelId);
-  const tokenPercentage = (totalTokens / tokenLimit) * 100;
 
   // Only show warning if above 50%
   if (tokenPercentage < 50) return null;
@@ -429,12 +413,10 @@ export default function Component({
       )}
 
       <TokenWarning
-        messages={messages}
-        currentInput={inputValue}
         chatId={chatId}
         onCompress={onCompress}
         isCompressing={isSummarizing}
-        modelId={model}
+        tokenPercentage={tokenPercentage}
       />
 
       <form
