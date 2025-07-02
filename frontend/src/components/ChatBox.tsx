@@ -299,6 +299,41 @@ export default function Component({
     setImageError(null);
   };
 
+  // Helper function to read text file and format as ParsedDocument
+  const processTextFileLocally = async (file: File): Promise<ParsedDocument> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+
+      reader.onload = (event) => {
+        const content = event.target?.result as string;
+
+        // Create a ParsedDocument structure matching the expected format
+        const parsedDocument: ParsedDocument = {
+          document: {
+            filename: file.name,
+            md_content: null,
+            json_content: null,
+            html_content: null,
+            text_content: content,
+            doctags_content: null
+          },
+          status: "completed",
+          errors: [],
+          processing_time: 0,
+          timings: {}
+        };
+
+        resolve(parsedDocument);
+      };
+
+      reader.onerror = () => {
+        reject(new Error("Failed to read file"));
+      };
+
+      reader.readAsText(file);
+    });
+  };
+
   const handleDocumentUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files || e.target.files.length === 0) return;
 
@@ -317,10 +352,19 @@ export default function Component({
     setDocumentError(null);
 
     try {
-      const result = await os.uploadDocumentWithPolling(file);
+      let parsed: ParsedDocument;
+      let result: DocumentResponse | undefined;
 
-      // Parse the JSON response
-      const parsed = JSON.parse(result.text) as ParsedDocument;
+      // Check if it's a text file (.txt or .md)
+      if (file.type === "text/plain" || file.name.endsWith(".txt") || file.name.endsWith(".md")) {
+        // Process text files locally
+        parsed = await processTextFileLocally(file);
+      } else {
+        // Upload other document types to the processing endpoint
+        result = await os.uploadDocumentWithPolling(file);
+        // Parse the JSON response
+        parsed = JSON.parse(result.text) as ParsedDocument;
+      }
 
       // Extract content with fallbacks (currently not used since we pass the full JSON)
       // const content =
@@ -342,8 +386,18 @@ export default function Component({
         }
       };
 
+      // For locally processed text files, create a mock original response
+      const originalResponse =
+        file.type === "text/plain" || file.name.endsWith(".txt") || file.name.endsWith(".md")
+          ? ({
+              text: JSON.stringify(parsed),
+              filename: file.name,
+              size: file.size
+            } as DocumentResponse)
+          : result!;
+
       setUploadedDocument({
-        original: result,
+        original: originalResponse,
         parsed: parsed,
         cleanedText: JSON.stringify(cleanedParsed) // Store the cleaned JSON as a string
       });
