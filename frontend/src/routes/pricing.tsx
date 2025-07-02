@@ -118,6 +118,23 @@ function PricingFAQ() {
 
         <details className="group">
           <summary className="cursor-pointer text-lg font-medium hover:text-foreground/80">
+            Which file types are supported for document and image upload?
+          </summary>
+          <div className="mt-4 text-[hsl(var(--marketing-text-muted))] space-y-2">
+            <p>We support a range of file types with potential to add more in the future.</p>
+            <p>
+              <strong>Images:</strong> .jpg, .png, .webp
+            </p>
+            <p>
+              <strong>Documents:</strong> .pdf, .doc, .docx, .txt, .rtf, .xlsx, .xls, .pptx, .ppt,
+              .md
+            </p>
+            <p>There is a 1 file limit per chat prompt with a 5MB file size limit per file.</p>
+          </div>
+        </details>
+
+        <details className="group">
+          <summary className="cursor-pointer text-lg font-medium hover:text-foreground/80">
             How did you build this?
           </summary>
           <p className="mt-4 text-[hsl(var(--marketing-text-muted))]">
