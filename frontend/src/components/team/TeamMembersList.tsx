@@ -1,9 +1,7 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Separator } from "@/components/ui/separator";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import {
@@ -24,7 +22,6 @@ import {
 } from "@/components/ui/dropdown-menu";
 import {
   Crown,
-  User,
   Clock,
   MoreVertical,
   UserMinus,
@@ -134,20 +131,6 @@ export function TeamMembersList({ teamStatus }: TeamMembersListProps) {
     }
   };
 
-  const getInitials = (email: string | undefined) => {
-    if (!email) return "??";
-    
-    const localPart = email.split("@")[0];
-    if (!localPart) return "??";
-    
-    const parts = localPart.split(".");
-    if (parts.length > 1 && parts[0] && parts[1]) {
-      return (parts[0][0] + parts[1][0]).toUpperCase();
-    }
-    
-    return localPart.substring(0, 2).toUpperCase();
-  };
-
   const getTimeRemaining = (expiresAt: string) => {
     const now = new Date();
     const expires = new Date(expiresAt);
@@ -225,141 +208,131 @@ export function TeamMembersList({ teamStatus }: TeamMembersListProps) {
   // Admin view with full member list
   if (isLoading) {
     return (
-      <Card>
-        <CardContent className="flex items-center justify-center py-8">
-          <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-        </CardContent>
-      </Card>
+      <div className="flex items-center justify-center py-8">
+        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+      </div>
     );
   }
 
   return (
     <>
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-lg">Team Members</CardTitle>
-          <CardDescription>
+      <div className="space-y-4">
+        <div>
+          <h3 className="text-lg font-semibold">Team Members</h3>
+          <p className="text-sm text-muted-foreground">
             {members.length} active {members.length === 1 ? "member" : "members"}
             {pendingInvites.length > 0 && ` • ${pendingInvites.length} pending invites`}
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          {/* Active Members */}
-          <div className="space-y-3">
-            {members.map((member: TeamMember) => {
-              const isCurrentUser = member.email === currentUserEmail;
-              const memberIsAdmin = member.role === "admin";
+          </p>
+        </div>
+        {/* Active Members */}
+        <div className="space-y-3">
+          {members.map((member: TeamMember) => {
+            const isCurrentUser = member.email === currentUserEmail;
+            const memberIsAdmin = member.role === "admin";
 
-              return (
-                <div key={member.user_id} className="flex items-center justify-between">
-                  <div className="flex items-center gap-3">
-                    <Avatar className="h-9 w-9">
-                      <AvatarFallback className="text-xs">
-                        {getInitials(member.email)}
-                      </AvatarFallback>
-                    </Avatar>
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <p className="text-sm font-medium">{member.email}</p>
-                        {memberIsAdmin && (
-                          <Badge variant="default" className="h-5">
-                            <Crown className="mr-1 h-3 w-3" />
-                            Admin
-                          </Badge>
-                        )}
-                        {isCurrentUser && (
-                          <Badge variant="secondary" className="h-5">
-                            You
-                          </Badge>
-                        )}
-                      </div>
-                      <p className="text-xs text-muted-foreground">
-                        Joined {new Date(member.joined_at).toLocaleDateString()}
-                      </p>
+            return (
+              <div
+                key={member.user_id}
+                className="flex items-center justify-between gap-2 overflow-hidden"
+              >
+                <div className="min-w-0 flex-1 overflow-hidden">
+                  <div className="flex items-center gap-2 overflow-hidden">
+                    <p className="text-sm font-medium truncate">{member.email}</p>
+                    <div className="flex items-center gap-1 flex-shrink-0">
+                      {memberIsAdmin && (
+                        <Badge variant="default" className="h-5">
+                          <Crown className="mr-1 h-3 w-3" />
+                          Admin
+                        </Badge>
+                      )}
+                      {isCurrentUser && (
+                        <Badge variant="secondary" className="h-5">
+                          You
+                        </Badge>
+                      )}
                     </div>
                   </div>
+                  <p className="text-xs text-muted-foreground">
+                    Joined {new Date(member.joined_at).toLocaleDateString()}
+                  </p>
+                </div>
 
-                  {!isCurrentUser && isAdmin && (
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button variant="ghost" size="icon" className="h-8 w-8">
-                          <MoreVertical className="h-4 w-4" />
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
-                        <DropdownMenuItem
-                          onClick={() => setRemoveMemberDialog({ open: true, member })}
-                          className="text-destructive"
-                        >
-                          <UserMinus className="mr-2 h-4 w-4" />
-                          Remove from team
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  )}
+                {!isCurrentUser && isAdmin && (
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button variant="ghost" size="icon" className="h-8 w-8">
+                        <MoreVertical className="h-4 w-4" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuItem
+                        onClick={() => setRemoveMemberDialog({ open: true, member })}
+                        className="text-destructive"
+                      >
+                        <UserMinus className="mr-2 h-4 w-4" />
+                        Remove from team
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                )}
 
-                  {isCurrentUser && !isAdmin && (
+                {isCurrentUser && !isAdmin && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setLeaveTeamDialog(true)}
+                    className="text-destructive hover:text-destructive"
+                  >
+                    <LogOut className="mr-2 h-4 w-4" />
+                    Leave team
+                  </Button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Pending Invites */}
+        {pendingInvites.length > 0 && (
+          <>
+            <Separator />
+            <div className="space-y-3">
+              <h4 className="text-sm font-medium text-muted-foreground">Pending Invites</h4>
+              {pendingInvites.map((invite: TeamInvite) => (
+                <div
+                  key={invite.invite_id}
+                  className="flex items-center justify-between gap-2 overflow-hidden"
+                >
+                  <div className="min-w-0 flex-1 overflow-hidden">
+                    <p className="text-sm font-medium truncate">{invite.email}</p>
+                    <p className="text-xs text-muted-foreground flex items-center gap-1">
+                      <Clock className="h-3 w-3" />
+                      {getTimeRemaining(invite.expires_at)}
+                    </p>
+                  </div>
+
+                  {isAdmin && (
                     <Button
                       variant="ghost"
-                      size="sm"
-                      onClick={() => setLeaveTeamDialog(true)}
-                      className="text-destructive hover:text-destructive"
+                      size="icon"
+                      className="h-8 w-8"
+                      onClick={() => setRevokeInviteDialog({ open: true, invite })}
                     >
-                      <LogOut className="mr-2 h-4 w-4" />
-                      Leave team
+                      <X className="h-4 w-4" />
                     </Button>
                   )}
                 </div>
-              );
-            })}
-          </div>
+              ))}
+            </div>
+          </>
+        )}
 
-          {/* Pending Invites */}
-          {pendingInvites.length > 0 && (
-            <>
-              <Separator />
-              <div className="space-y-3">
-                <h4 className="text-sm font-medium text-muted-foreground">Pending Invites</h4>
-                {pendingInvites.map((invite: TeamInvite) => (
-                  <div key={invite.invite_id} className="flex items-center justify-between">
-                    <div className="flex items-center gap-3">
-                      <Avatar className="h-9 w-9">
-                        <AvatarFallback className="text-xs bg-muted">
-                          <User className="h-4 w-4 text-muted-foreground" />
-                        </AvatarFallback>
-                      </Avatar>
-                      <div>
-                        <p className="text-sm font-medium">{invite.email}</p>
-                        <p className="text-xs text-muted-foreground flex items-center gap-1">
-                          <Clock className="h-3 w-3" />
-                          {getTimeRemaining(invite.expires_at)}
-                        </p>
-                      </div>
-                    </div>
-
-                    {isAdmin && (
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-8 w-8"
-                        onClick={() => setRevokeInviteDialog({ open: true, invite })}
-                      >
-                        <X className="h-4 w-4" />
-                      </Button>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </>
-          )}
-
-          {members.length === 0 && pendingInvites.length === 0 && (
-            <p className="text-sm text-muted-foreground text-center py-4">
-              No team members yet. Start by inviting your team!
-            </p>
-          )}
-        </CardContent>
-      </Card>
+        {members.length === 0 && pendingInvites.length === 0 && (
+          <p className="text-sm text-muted-foreground text-center py-4">
+            No team members yet. Start by inviting your team!
+          </p>
+        )}
+      </div>
 
       {/* Remove Member Dialog */}
       <AlertDialog
@@ -390,7 +363,7 @@ export function TeamMembersList({ teamStatus }: TeamMembersListProps) {
                 removeMemberDialog.member && handleRemoveMember(removeMemberDialog.member.user_id)
               }
               disabled={isProcessing}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              className="bg-destructive text-white hover:bg-destructive/90"
             >
               {isProcessing ? (
                 <>
@@ -475,7 +448,7 @@ export function TeamMembersList({ teamStatus }: TeamMembersListProps) {
             <AlertDialogAction
               onClick={handleLeaveTeam}
               disabled={isProcessing}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              className="bg-destructive text-white hover:bg-destructive/90"
             >
               {isProcessing ? (
                 <>
