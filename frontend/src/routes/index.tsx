@@ -13,6 +13,10 @@ import { VerificationModal } from "@/components/VerificationModal";
 import { TopNav } from "@/components/TopNav";
 import { Marketing } from "@/components/Marketing";
 import { SimplifiedFooter } from "@/components/SimplifiedFooter";
+import { TeamManagementDialog } from "@/components/team/TeamManagementDialog";
+import { useQuery } from "@tanstack/react-query";
+import { getBillingService } from "@/billing/billingService";
+import type { TeamStatus } from "@/types/team";
 
 const homeVariants = cva("grid h-full w-full overflow-hidden", {
   variants: {
@@ -29,12 +33,14 @@ const homeVariants = cva("grid h-full w-full overflow-hidden", {
 type IndexSearchOptions = {
   login?: string;
   next?: string;
+  team_setup?: boolean;
 };
 
 function validateSearch(search: Record<string, unknown>): IndexSearchOptions {
   return {
     login: search?.login === "true" ? "true" : undefined,
-    next: search.next ? (search.next as string) : undefined
+    next: search.next ? (search.next as string) : undefined,
+    team_setup: search?.team_setup === true || search?.team_setup === "true"
   };
 }
 
@@ -47,7 +53,7 @@ function Index() {
   const navigate = useNavigate();
   const localState = useLocalState();
 
-  const { login, next } = Route.useSearch();
+  const { login, next, team_setup } = Route.useSearch();
 
   const os = useOpenSecret();
 
@@ -61,6 +67,26 @@ function Index() {
   }, [login, next, navigate]);
 
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [teamDialogOpen, setTeamDialogOpen] = useState(false);
+
+  // Fetch team status for the dialog
+  const { data: teamStatus } = useQuery<TeamStatus>({
+    queryKey: ["teamStatus"],
+    queryFn: async () => {
+      const billingService = getBillingService();
+      return await billingService.getTeamStatus();
+    },
+    enabled: !!os.auth.user
+  });
+
+  // Auto-open team dialog if team_setup is true
+  useEffect(() => {
+    if (team_setup && os.auth.user && teamStatus) {
+      setTeamDialogOpen(true);
+      // Clear the query param to prevent re-opening on refresh
+      navigate({ to: "/", replace: true });
+    }
+  }, [team_setup, os.auth.user, teamStatus, navigate]);
 
   const toggleSidebar = useCallback(() => setIsSidebarOpen((prev) => !prev), []);
 
@@ -159,6 +185,15 @@ function Index() {
 
         <VerificationModal />
       </main>
+
+      {/* Team Management Dialog */}
+      {os.auth.user && (
+        <TeamManagementDialog
+          open={teamDialogOpen}
+          onOpenChange={setTeamDialogOpen}
+          teamStatus={teamStatus}
+        />
+      )}
     </div>
   );
 }
