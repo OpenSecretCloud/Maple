@@ -204,7 +204,7 @@ export function AccountMenu() {
             </DropdownMenuTrigger>
           </div>
           <DropdownMenuContent className="w-[calc(280px-2rem)]">
-            <DropdownMenuLabel>Maple AI</DropdownMenuLabel>
+            <DropdownMenuLabel>{teamStatus?.team_name || "Maple AI"}</DropdownMenuLabel>
             <DropdownMenuSeparator />
             <DropdownMenuGroup>
               <DialogTrigger asChild>
