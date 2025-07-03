@@ -276,6 +276,14 @@ function PricingPage() {
   // Handle payment callback status from URL params
   const { success, canceled } = Route.useSearch();
 
+  // Check if team plan purchase and redirect after success
+  useEffect(() => {
+    if (success && freshBillingStatus?.product_name?.toLowerCase().includes("team")) {
+      // Redirect to home with team_setup param
+      navigate({ to: "/", search: { team_setup: true }, replace: true });
+    }
+  }, [success, freshBillingStatus, navigate]);
+
   const getButtonText = (product: Product) => {
     if (loadingProductId === product.id) {
       return (
