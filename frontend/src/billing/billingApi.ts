@@ -552,3 +552,46 @@ export async function revokeTeamInvite(thirdPartyToken: string, inviteId: string
     throw new Error(`Failed to revoke invite: ${errorText}`);
   }
 }
+
+export async function updateTeamName(
+  thirdPartyToken: string,
+  name: string
+): Promise<{ team_id: string; name: string; updated_at: string }> {
+  const response = await fetch(
+    `${import.meta.env.VITE_MAPLE_BILLING_API_URL}/v1/maple/team/update`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${thirdPartyToken}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ name: name.trim() })
+    }
+  );
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error("Update team name error response:", errorText);
+    if (response.status === 401) {
+      throw new Error("Unauthorized");
+    }
+    if (response.status === 400) {
+      // Parse error message for user-friendly display
+      try {
+        const errorData = JSON.parse(errorText);
+        throw new Error(errorData.message || errorText);
+      } catch {
+        if (errorText.includes("team admin")) {
+          throw new Error("You are not a team admin");
+        }
+        if (errorText.includes("between 1 and 100 characters")) {
+          throw new Error("Team name must be between 1 and 100 characters");
+        }
+        throw new Error(errorText);
+      }
+    }
+    throw new Error(`Failed to update team name: ${errorText}`);
+  }
+
+  return response.json();
+}

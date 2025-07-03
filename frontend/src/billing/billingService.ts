@@ -15,7 +15,8 @@ import {
   acceptTeamInvite,
   removeTeamMember,
   leaveTeam,
-  revokeTeamInvite
+  revokeTeamInvite,
+  updateTeamName
 } from "./billingApi";
 import type {
   TeamStatus,
@@ -149,6 +150,12 @@ class BillingService {
 
   async revokeTeamInvite(inviteId: string): Promise<void> {
     return this.executeWithToken((token) => revokeTeamInvite(token, inviteId));
+  }
+
+  async updateTeamName(
+    name: string
+  ): Promise<{ team_id: string; name: string; updated_at: string }> {
+    return this.executeWithToken((token) => updateTeamName(token, name));
   }
 }
 
