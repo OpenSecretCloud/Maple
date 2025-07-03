@@ -81,12 +81,6 @@ export function TeamInviteDialog({ open, onOpenChange, teamStatus }: TeamInviteD
 
       // Clear the form
       setEmails("");
-
-      // Close dialog after a short delay
-      setTimeout(() => {
-        onOpenChange(false);
-        setSuccessMessage(null);
-      }, 2000);
     } catch (err) {
       console.error("Failed to invite members:", err);
       setError(err instanceof Error ? err.message : "Failed to send invites");
@@ -97,13 +91,13 @@ export function TeamInviteDialog({ open, onOpenChange, teamStatus }: TeamInviteD
 
   const handleOpenChange = (newOpen: boolean) => {
     if (!isInviting) {
-      onOpenChange(newOpen);
-      // Reset form when closing
-      if (!newOpen) {
+      // Reset form when opening
+      if (newOpen && !open) {
         setEmails("");
         setError(null);
         setSuccessMessage(null);
       }
+      onOpenChange(newOpen);
     }
   };
 
