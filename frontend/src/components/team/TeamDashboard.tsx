@@ -108,15 +108,9 @@ export function TeamDashboard({ teamStatus }: TeamDashboardProps) {
             </div>
             <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
               <div
-                className="h-full transition-all"
+                className="h-full transition-all bg-emerald-500"
                 style={{
-                  width: `${Math.min(seatUsagePercentage, 100)}%`,
-                  backgroundColor:
-                    seatUsagePercentage >= 90
-                      ? "rgb(239, 68, 68)"
-                      : seatUsagePercentage >= 75
-                        ? "rgb(245, 158, 11)"
-                        : "rgb(16, 185, 129)"
+                  width: `${Math.min(seatUsagePercentage, 100)}%`
                 }}
               />
             </div>
