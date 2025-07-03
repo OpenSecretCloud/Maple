@@ -4,11 +4,14 @@ import { Button } from "@/components/ui/button";
 import { BillingDebugger } from "./BillingDebugger";
 import { useLocalState } from "@/state/useLocalState";
 import { getBillingService } from "@/billing/billingService";
+import { useOpenSecret } from "@opensecret/react";
+import type { TeamStatus } from "@/types/team";
 
 export function BillingStatus() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { setBillingStatus } = useLocalState();
+  const os = useOpenSecret();
 
   const { data: billingStatus, isLoading } = useQuery({
     queryKey: ["billingStatus"],
@@ -20,12 +23,28 @@ export function BillingStatus() {
     }
   });
 
+  // Check if user has team plan
+  const isTeamPlan = billingStatus?.product_name?.toLowerCase().includes("team");
+
+  // Fetch team status if user has team plan
+  const { data: teamStatus } = useQuery<TeamStatus>({
+    queryKey: ["teamStatus"],
+    queryFn: async () => {
+      const billingService = getBillingService();
+      return await billingService.getTeamStatus();
+    },
+    enabled: isTeamPlan && !!os.auth.user && !!billingStatus
+  });
+
   if (isLoading || !billingStatus) {
-    return (
-      <Button variant="default" disabled className="opacity-50 h-auto whitespace-normal py-2">
-        Loading...
-      </Button>
-    );
+    return import.meta.env.DEV ? (
+      <BillingDebugger
+        currentStatus={billingStatus || null}
+        onOverride={(newStatus) => {
+          queryClient.setQueryData(["billingStatus"], newStatus);
+        }}
+      />
+    ) : null;
   }
 
   const isFree = billingStatus.product_name.toLowerCase().includes("free");
@@ -44,8 +63,26 @@ export function BillingStatus() {
       }
       return "You've run out of messages, upgrade to keep chatting!";
     }
+
+    // Show team name for team plans
+    if (isTeamPlan && teamStatus?.team_name) {
+      return teamStatus.team_name;
+    }
+
     return `${billingStatus.product_name} Plan`;
   };
+
+  // Only show billing status for free plan or when they can't chat
+  if (!isFree && billingStatus.can_chat) {
+    return import.meta.env.DEV ? (
+      <BillingDebugger
+        currentStatus={billingStatus}
+        onOverride={(newStatus) => {
+          queryClient.setQueryData(["billingStatus"], newStatus);
+        }}
+      />
+    ) : null;
+  }
 
   return (
     <div className="flex flex-col items-center gap-2 w-full">
