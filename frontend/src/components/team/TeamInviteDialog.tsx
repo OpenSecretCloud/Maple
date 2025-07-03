@@ -91,11 +91,20 @@ export function TeamInviteDialog({ open, onOpenChange, teamStatus }: TeamInviteD
 
   const handleOpenChange = (newOpen: boolean) => {
     if (!isInviting) {
-      // Reset form when opening
       if (newOpen && !open) {
+        // Reset form when opening
         setEmails("");
         setError(null);
         setSuccessMessage(null);
+      } else if (!newOpen && open) {
+        // When closing, delay clearing success message to prevent flash
+        onOpenChange(newOpen);
+        setTimeout(() => {
+          setEmails("");
+          setError(null);
+          setSuccessMessage(null);
+        }, 300); // Wait for dialog close animation
+        return;
       }
       onOpenChange(newOpen);
     }
@@ -139,7 +148,7 @@ export function TeamInviteDialog({ open, onOpenChange, teamStatus }: TeamInviteD
               </Alert>
             )}
 
-            {seatsAvailable === 0 && !successMessage && (
+            {seatsAvailable === 0 && !successMessage && !isInviting && (
               <Alert variant="destructive">
                 <AlertCircle className="h-4 w-4" />
                 <AlertDescription>
