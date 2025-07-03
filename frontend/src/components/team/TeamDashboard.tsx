@@ -121,18 +121,6 @@ export function TeamDashboard({ teamStatus }: TeamDashboardProps) {
               />
             </div>
           </div>
-
-          {/* Compact stats */}
-          <div className="grid grid-cols-2 gap-2 text-xs">
-            <div className="flex justify-between items-center">
-              <span className="text-muted-foreground">Active Members</span>
-              <span className="font-medium">{teamStatus.members_count || 0}</span>
-            </div>
-            <div className="flex justify-between items-center">
-              <span className="text-muted-foreground">Pending Invites</span>
-              <span className="font-medium">{teamStatus.pending_invites_count || 0}</span>
-            </div>
-          </div>
         </div>
 
         {/* Action buttons */}
