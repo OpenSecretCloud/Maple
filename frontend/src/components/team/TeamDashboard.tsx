@@ -3,7 +3,7 @@ import { DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/di
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
-import { UserPlus, AlertTriangle, Crown, User, Pencil, Check, X } from "lucide-react";
+import { UserPlus, AlertTriangle, Crown, User, Pencil, Check, X, Loader2 } from "lucide-react";
 import { TeamInviteDialog } from "./TeamInviteDialog";
 import { TeamMembersList } from "./TeamMembersList";
 import { getBillingService } from "@/billing/billingService";
@@ -162,24 +162,30 @@ export function TeamDashboard({ teamStatus }: TeamDashboardProps) {
                       autoFocus
                       disabled={isSavingName}
                     />
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      className="h-7 w-7 p-0"
-                      onClick={handleSaveName}
-                      disabled={isSavingName}
-                    >
-                      <Check className="h-3.5 w-3.5" />
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      className="h-7 w-7 p-0"
-                      onClick={handleCancelEdit}
-                      disabled={isSavingName}
-                    >
-                      <X className="h-3.5 w-3.5" />
-                    </Button>
+                    {isSavingName ? (
+                      <div className="h-7 w-7 flex items-center justify-center">
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      </div>
+                    ) : (
+                      <>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-7 w-7 p-0"
+                          onClick={handleSaveName}
+                        >
+                          <Check className="h-3.5 w-3.5" />
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-7 w-7 p-0"
+                          onClick={handleCancelEdit}
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </Button>
+                      </>
+                    )}
                   </div>
                   <div className="flex items-center justify-between text-xs">
                     <span className="text-muted-foreground">
