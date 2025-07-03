@@ -14,6 +14,21 @@ import { Switch } from "@/components/ui/switch";
 import { type } from "@tauri-apps/plugin-os";
 import { PRICING_PLANS } from "@/config/pricingConfig";
 
+// File type constants for upload features
+const SUPPORTED_IMAGE_FORMATS = [".jpg", ".png", ".webp"];
+const SUPPORTED_DOCUMENT_FORMATS = [
+  ".pdf",
+  ".doc",
+  ".docx",
+  ".txt",
+  ".rtf",
+  ".xlsx",
+  ".xls",
+  ".pptx",
+  ".ppt",
+  ".md"
+];
+
 type PricingSearchParams = {
   selected_plan?: string;
   success?: boolean;
@@ -114,6 +129,36 @@ function PricingFAQ() {
             No. When you chat with AI in Maple, nobody knows what is being said back and forth. Thus
             data is not able to be used for training new AI models by any company.
           </p>
+        </details>
+
+        <details className="group">
+          <summary className="cursor-pointer text-lg font-medium hover:text-foreground/80">
+            Which file types are supported for document and image upload?
+          </summary>
+          <div className="mt-4 text-[hsl(var(--marketing-text-muted))] space-y-4">
+            <p>We support a range of file types with potential to add more in the future.</p>
+            <div>
+              <strong>Images:</strong>
+              <ul className="list-disc list-inside ml-4 mt-2 space-y-1">
+                {SUPPORTED_IMAGE_FORMATS.map((format) => (
+                  <li key={format}>
+                    <code className="bg-foreground/10 px-1 py-0.5 rounded text-sm">{format}</code>
+                  </li>
+                ))}
+              </ul>
+            </div>
+            <div>
+              <strong>Documents:</strong>
+              <ul className="list-disc list-inside ml-4 mt-2 space-y-1">
+                {SUPPORTED_DOCUMENT_FORMATS.map((format) => (
+                  <li key={format}>
+                    <code className="bg-foreground/10 px-1 py-0.5 rounded text-sm">{format}</code>
+                  </li>
+                ))}
+              </ul>
+            </div>
+            <p>There is a 1 file limit per chat prompt with a 5MB file size limit per file.</p>
+          </div>
         </details>
 
         <details className="group">
