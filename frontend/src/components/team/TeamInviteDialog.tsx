@@ -188,27 +188,27 @@ export function TeamInviteDialog({ open, onOpenChange, teamStatus }: TeamInviteD
             )}
 
             {seatsAvailable === 0 && !successMessage && !isInviting && (
-              <Alert variant="destructive">
-                <AlertCircle className="h-4 w-4" />
-                <AlertDescription className="space-y-2">
-                  <span>
+              <>
+                <Alert variant="destructive">
+                  <AlertCircle className="h-4 w-4" />
+                  <AlertDescription>
                     No seats available. Please purchase additional seats or remove existing members
                     before inviting new ones.
-                  </span>
-                  {hasStripeAccount && (
-                    <Button
-                      variant="link"
-                      size="sm"
-                      className="h-auto p-0 text-destructive-foreground underline-offset-4 hover:underline"
-                      onClick={handleManageSubscription}
-                      disabled={isPortalLoading}
-                    >
-                      <CreditCard className="mr-1 h-3 w-3" />
-                      {isPortalLoading ? "Loading..." : "Manage Subscription"}
-                    </Button>
-                  )}
-                </AlertDescription>
-              </Alert>
+                  </AlertDescription>
+                </Alert>
+                {hasStripeAccount && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="w-full"
+                    onClick={handleManageSubscription}
+                    disabled={isPortalLoading}
+                  >
+                    <CreditCard className="mr-2 h-4 w-4" />
+                    {isPortalLoading ? "Loading..." : "Manage Subscription"}
+                  </Button>
+                )}
+              </>
             )}
 
             {error && (
