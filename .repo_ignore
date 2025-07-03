@@ -1,0 +1,111 @@
+# Global ignore defaults
+**/node_modules/
+**/.npm/
+**/__pycache__/
+**/.pytest_cache/
+**/.mypy_cache/
+
+# Build caches
+**/.gradle/
+**/.nuget/
+**/.cargo/
+**/.stack-work/
+**/.ccache/
+
+# IDE and Editor caches
+**/.idea/
+**/.vscode/
+**/*.swp
+**/*~
+
+# Temp files
+**/*.tmp
+**/*.temp
+**/*.bak
+
+**/*.meta
+**/package-lock.json
+
+
+# Dependencies
+node_modules/
+frontend/node_modules/
+
+# Build outputs
+/frontend/dist/
+/frontend/build/
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+*.key
+
+# IDE files
+.vscode/
+.idea/
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Operating system files
+.DS_Store
+Thumbs.db
+
+# JavaScript
+package-lock.json
+
+# tests
+/tests/test-results/
+/tests/playwright-report/
+/tests/blob-report/
+/tests/playwright/.cache/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+
+# BrowserUse test artifacts
+/tests/browseruse/logs/
+/tests/browseruse/*.json
+/tests/browseruse/*.png
+/tests/browseruse/test_summary.txt
+
+
+# Logs
+frontend/logs
+frontend/*.log
+frontend/npm-debug.log*
+frontend/yarn-debug.log*
+frontend/yarn-error.log*
+frontend/pnpm-debug.log*
+frontend/lerna-debug.log*
+
+frontend/dist
+frontend/dist-ssr
+frontend/*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+.million
+
+# Build caching apparently?
+*.tsbuildinfo
+
+**/.claude/settings.local.json
+
+frontend/src-tauri
+.venv/
