@@ -40,7 +40,7 @@ function validateSearch(search: Record<string, unknown>): IndexSearchOptions {
   return {
     login: search?.login === "true" ? "true" : undefined,
     next: search.next ? (search.next as string) : undefined,
-    team_setup: search?.team_setup === true || search?.team_setup === "true"
+    team_setup: search?.team_setup === true || search?.team_setup === "true" ? true : undefined
   };
 }
 
