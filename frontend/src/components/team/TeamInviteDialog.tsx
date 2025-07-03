@@ -12,8 +12,11 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Loader2, AlertCircle, UserPlus, Info } from "lucide-react";
+import { Loader2, AlertCircle, UserPlus, Info, CreditCard } from "lucide-react";
 import { getBillingService } from "@/billing/billingService";
+import { useLocalState } from "@/state/useLocalState";
+import { isTauri } from "@tauri-apps/api/core";
+import { type } from "@tauri-apps/plugin-os";
 import type { TeamStatus } from "@/types/team";
 
 interface TeamInviteDialogProps {
@@ -27,9 +30,45 @@ export function TeamInviteDialog({ open, onOpenChange, teamStatus }: TeamInviteD
   const [isInviting, setIsInviting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const [isPortalLoading, setIsPortalLoading] = useState(false);
   const queryClient = useQueryClient();
+  const { billingStatus } = useLocalState();
 
   const seatsAvailable = teamStatus?.seats_available || 0;
+  const hasStripeAccount = billingStatus?.stripe_customer_id !== null;
+
+  const handleManageSubscription = async () => {
+    if (!hasStripeAccount) return;
+
+    try {
+      setIsPortalLoading(true);
+      const billingService = getBillingService();
+      const url = await billingService.getPortalUrl();
+
+      // Check if we're in a Tauri environment on iOS
+      try {
+        const isTauriEnv = await isTauri();
+        if (isTauriEnv) {
+          const platform = await type();
+          if (platform === "ios") {
+            // For iOS, use the opener plugin
+            const { invoke } = await import("@tauri-apps/api/core");
+            await invoke("plugin:opener|open_url", { url });
+            return;
+          }
+        }
+      } catch {
+        // Not in Tauri or error checking, continue with web flow
+      }
+
+      // Web or desktop flow
+      window.open(url, "_blank", "noopener,noreferrer");
+    } catch (error) {
+      console.error("Failed to open billing portal:", error);
+    } finally {
+      setIsPortalLoading(false);
+    }
+  };
 
   const handleInvite = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -151,9 +190,23 @@ export function TeamInviteDialog({ open, onOpenChange, teamStatus }: TeamInviteD
             {seatsAvailable === 0 && !successMessage && !isInviting && (
               <Alert variant="destructive">
                 <AlertCircle className="h-4 w-4" />
-                <AlertDescription>
-                  No seats available. Please purchase additional seats or remove existing members
-                  before inviting new ones.
+                <AlertDescription className="space-y-2">
+                  <span>
+                    No seats available. Please purchase additional seats or remove existing members
+                    before inviting new ones.
+                  </span>
+                  {hasStripeAccount && (
+                    <Button
+                      variant="link"
+                      size="sm"
+                      className="h-auto p-0 text-destructive-foreground underline-offset-4 hover:underline"
+                      onClick={handleManageSubscription}
+                      disabled={isPortalLoading}
+                    >
+                      <CreditCard className="mr-1 h-3 w-3" />
+                      {isPortalLoading ? "Loading..." : "Manage Subscription"}
+                    </Button>
+                  )}
                 </AlertDescription>
               </Alert>
             )}
