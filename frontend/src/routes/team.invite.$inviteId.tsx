@@ -41,11 +41,11 @@ function TeamInviteAcceptance() {
     retry: false
   });
 
-  // Redirect to login if not authenticated
+  // Redirect to signup if not authenticated
   useEffect(() => {
     if (!isLoggedIn && !checkingInvite) {
       navigate({
-        to: "/login",
+        to: "/signup",
         search: {
           next: `/team/invite/${inviteId}`
         }
