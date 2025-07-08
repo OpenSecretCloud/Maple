@@ -168,7 +168,7 @@ function TokenWarning({
         </span>
         <span className="min-w-0">{getMessage()}</span>
       </div>
-      {chatId && !isAt99Percent && (
+      {chatId && (
         <button
           onClick={!isCompressing ? onCompress || handleNewChat : undefined}
           disabled={isCompressing}
