@@ -13,6 +13,7 @@ import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { type } from "@tauri-apps/plugin-os";
 import { PRICING_PLANS } from "@/config/pricingConfig";
+import { VerificationModal } from "@/components/VerificationModal";
 
 // File type constants for upload features
 const SUPPORTED_IMAGE_FORMATS = [".jpg", ".png", ".webp"];
@@ -373,6 +374,14 @@ function PricingPage() {
         return;
       }
 
+      // Check if email is verified before proceeding to checkout
+      if (!os.auth.user?.user.email_verified) {
+        setCheckoutError(
+          "Please verify your email before purchasing a subscription. Check your inbox for the verification email."
+        );
+        return;
+      }
+
       setLoadingProductId(productId);
       try {
         const billingService = getBillingService();
@@ -464,7 +473,7 @@ function PricingPage() {
         setLoadingProductId(null);
       }
     },
-    [isLoggedIn, navigate, os.auth.user?.user.email, useBitcoin, products]
+    [isLoggedIn, navigate, os.auth.user?.user.email, os.auth.user?.user.email_verified, useBitcoin, products]
   );
 
   const handleButtonClick = useCallback(
@@ -927,6 +936,7 @@ function PricingPage() {
 
         <PricingFAQ />
       </FullPageMain>
+      <VerificationModal />
     </>
   );
 }
