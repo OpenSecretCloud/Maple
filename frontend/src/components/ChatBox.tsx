@@ -41,6 +41,9 @@ function estimateTokenCount(text: string): number {
   return encode(text).length;
 }
 
+// Estimated token count for images (varies by model and image size)
+const IMAGE_TOKEN_ESTIMATE = 85;
+
 // Calculate total tokens for messages and current input
 function calculateTotalTokens(messages: ChatMessage[], currentInput: string): number {
   return (
@@ -56,7 +59,7 @@ function calculateTotalTokens(messages: ChatMessage[], currentInput: string): nu
               return sum + estimateTokenCount(part.text);
             }
             // Rough estimate for images
-            return sum + 85;
+            return sum + IMAGE_TOKEN_ESTIMATE;
           }, 0)
         );
       }
