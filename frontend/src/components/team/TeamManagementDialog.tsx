@@ -17,25 +17,26 @@ export function TeamManagementDialog({
 }: TeamManagementDialogProps) {
   const [showSetupDialog, setShowSetupDialog] = useState(false);
 
+  // Determine if we should show the setup dialog
+  const needsSetup = teamStatus?.has_team_subscription && !teamStatus?.team_created;
+
   // Check if team needs to be set up when dialog opens
   useEffect(() => {
-    if (open && teamStatus?.has_team_subscription && !teamStatus?.team_created) {
+    if (open && needsSetup) {
       setShowSetupDialog(true);
+    } else if (!needsSetup) {
+      // Reset state when team is created
+      setShowSetupDialog(false);
     }
-  }, [open, teamStatus]);
+  }, [open, needsSetup]);
 
   const handleTeamCreated = () => {
-    setShowSetupDialog(false);
-    // Force a small delay to allow the team status to update
-    // This ensures the dashboard shows up instead of closing the dialog
-    setTimeout(() => {
-      // The query invalidation in TeamSetupDialog will cause a refetch
-      // and the dashboard will automatically appear
-    }, 100);
+    // Don't update state here - let the effect handle it when teamStatus updates
+    // This prevents race conditions without setTimeout
   };
 
-  // If team setup is needed, show setup dialog instead
-  if (showSetupDialog || (teamStatus?.has_team_subscription && !teamStatus?.team_created)) {
+  // Show setup dialog if explicitly set or if team needs setup
+  if (showSetupDialog && needsSetup) {
     return (
       <TeamSetupDialog
         open={open}

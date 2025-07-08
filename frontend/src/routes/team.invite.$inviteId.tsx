@@ -153,8 +153,8 @@ function TeamInviteAcceptance() {
                 </div>
                 <CardTitle className="text-center">Welcome to the Team!</CardTitle>
                 <CardDescription className="text-center">
-                  You've successfully joined {inviteData.team_name}. Redirecting you to the
-                  dashboard...
+                  You've successfully joined {inviteData?.team_name || "the team"}. Redirecting you
+                  to the dashboard...
                 </CardDescription>
               </CardHeader>
             </Card>
