@@ -304,7 +304,8 @@ import type {
   InviteMembersResponse,
   TeamMembersResponse,
   CheckInviteResponse,
-  AcceptInviteRequest
+  AcceptInviteRequest,
+  UpdateTeamNameResponse
 } from "@/types/team";
 
 export async function fetchTeamStatus(thirdPartyToken: string): Promise<TeamStatus> {
@@ -385,7 +386,8 @@ export async function inviteTeamMembers(
       try {
         const errorData = JSON.parse(errorText);
         throw new Error(errorData.message || errorText);
-      } catch {
+      } catch (parseError) {
+        console.error("Failed to parse error response:", parseError);
         throw new Error(errorText);
       }
     }
@@ -472,7 +474,8 @@ export async function acceptTeamInvite(
     try {
       const errorData = JSON.parse(errorText);
       throw new Error(errorData.error || errorData.message || errorText);
-    } catch {
+    } catch (parseError) {
+      console.error("Failed to parse error response:", parseError);
       // If not JSON, use the text as-is
       throw new Error(errorText || "Failed to accept invitation");
     }
@@ -556,7 +559,7 @@ export async function revokeTeamInvite(thirdPartyToken: string, inviteId: string
 export async function updateTeamName(
   thirdPartyToken: string,
   name: string
-): Promise<{ team_id: string; name: string; updated_at: string }> {
+): Promise<UpdateTeamNameResponse> {
   const response = await fetch(
     `${import.meta.env.VITE_MAPLE_BILLING_API_URL}/v1/maple/team/update`,
     {
@@ -580,7 +583,8 @@ export async function updateTeamName(
       try {
         const errorData = JSON.parse(errorText);
         throw new Error(errorData.message || errorText);
-      } catch {
+      } catch (parseError) {
+        console.error("Failed to parse error response:", parseError);
         if (errorText.includes("team admin")) {
           throw new Error("You are not a team admin");
         }

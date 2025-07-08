@@ -26,7 +26,8 @@ import type {
   InviteMembersResponse,
   TeamMembersResponse,
   CheckInviteResponse,
-  AcceptInviteRequest
+  AcceptInviteRequest,
+  UpdateTeamNameResponse
 } from "@/types/team";
 
 const TOKEN_STORAGE_KEY = "maple_billing_token";
@@ -152,9 +153,7 @@ class BillingService {
     return this.executeWithToken((token) => revokeTeamInvite(token, inviteId));
   }
 
-  async updateTeamName(
-    name: string
-  ): Promise<{ team_id: string; name: string; updated_at: string }> {
+  async updateTeamName(name: string): Promise<UpdateTeamNameResponse> {
     return this.executeWithToken((token) => updateTeamName(token, name));
   }
 }

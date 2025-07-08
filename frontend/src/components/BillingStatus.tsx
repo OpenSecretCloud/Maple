@@ -72,31 +72,23 @@ export function BillingStatus() {
     return `${billingStatus.product_name} Plan`;
   };
 
-  // Only show billing status for free plan or when they can't chat
-  if (!isFree && billingStatus.can_chat) {
-    return import.meta.env.DEV ? (
-      <BillingDebugger
-        currentStatus={billingStatus}
-        onOverride={(newStatus) => {
-          queryClient.setQueryData(["billingStatus"], newStatus);
-        }}
-      />
-    ) : null;
-  }
-
-  return (
-    <div className="flex flex-col items-center gap-2 w-full">
-      <Button
-        variant="default"
-        onClick={() =>
-          !billingStatus.can_chat && isPro
-            ? (window.location.href = "mailto:team@opensecret.cloud")
-            : navigate({ to: "/pricing" })
-        }
-        className="h-auto whitespace-normal py-2"
-      >
-        {getChatsText()}
-      </Button>
+  // Build the content
+  const content = (
+    <>
+      {/* Only show billing status button for free plan or when they can't chat */}
+      {(isFree || !billingStatus.can_chat) && (
+        <Button
+          variant="default"
+          onClick={() =>
+            !billingStatus.can_chat && isPro
+              ? (window.location.href = "mailto:team@opensecret.cloud")
+              : navigate({ to: "/pricing" })
+          }
+          className="h-auto whitespace-normal py-2"
+        >
+          {getChatsText()}
+        </Button>
+      )}
       {import.meta.env.DEV && (
         <BillingDebugger
           currentStatus={billingStatus}
@@ -105,6 +97,13 @@ export function BillingStatus() {
           }}
         />
       )}
-    </div>
+    </>
   );
+
+  // Return early if no visible content (except debugger in dev)
+  if (!isFree && billingStatus.can_chat && !import.meta.env.DEV) {
+    return null;
+  }
+
+  return <div className="flex flex-col items-center gap-2 w-full">{content}</div>;
 }

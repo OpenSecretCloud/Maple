@@ -104,9 +104,11 @@ export function TeamDashboard({ teamStatus }: TeamDashboardProps) {
             <div className="flex items-center justify-between gap-2">
               <div className="min-w-0 flex-1">
                 <h3 className="font-medium truncate">{teamStatus.team_name}</h3>
-                <p className="text-xs text-muted-foreground">
-                  Member since {new Date(teamStatus.created_at || "").toLocaleDateString()}
-                </p>
+                {teamStatus.created_at && (
+                  <p className="text-xs text-muted-foreground">
+                    Member since {new Date(teamStatus.created_at).toLocaleDateString()}
+                  </p>
+                )}
               </div>
               <Badge variant="secondary" className="h-5 text-xs">
                 <User className="mr-1 h-2.5 w-2.5" />
@@ -207,9 +209,9 @@ export function TeamDashboard({ teamStatus }: TeamDashboardProps) {
                   </Button>
                 </div>
               )}
-              {!isEditingName && (
+              {!isEditingName && teamStatus.created_at && (
                 <p className="text-xs text-muted-foreground">
-                  Created {new Date(teamStatus.created_at || "").toLocaleDateString()}
+                  Created {new Date(teamStatus.created_at).toLocaleDateString()}
                 </p>
               )}
             </div>

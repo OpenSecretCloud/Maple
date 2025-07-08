@@ -13,7 +13,11 @@ function PaymentSuccessPage() {
   const isLoggedIn = !!os.auth.user;
 
   // Fetch billing status to check if it's a team plan
-  const { data: billingStatus, isLoading } = useQuery({
+  const {
+    data: billingStatus,
+    isLoading,
+    isError
+  } = useQuery({
     queryKey: ["billingStatus", "payment-success"],
     queryFn: async () => {
       const billingService = getBillingService();
@@ -31,6 +35,13 @@ function PaymentSuccessPage() {
         <Loader2 className="h-8 w-8 animate-spin" />
       </div>
     );
+  }
+
+  // If there's an error fetching billing status, redirect to home
+  // The billing status will be fetched again on the home page
+  if (isError || !billingStatus) {
+    console.error("Failed to fetch billing status after payment, redirecting to home");
+    return <Navigate to="/" />;
   }
 
   // Check if user has a team plan

@@ -167,7 +167,9 @@ export function TeamInviteDialog({ open, onOpenChange, teamStatus }: TeamInviteD
                 id="emails"
                 value={emails}
                 onChange={(e) => setEmails(e.target.value)}
-                placeholder="john@example.com&#10;jane@example.com&#10;or comma-separated: john@example.com, jane@example.com"
+                placeholder={`john@example.com
+jane@example.com
+or comma-separated: john@example.com, jane@example.com`}
                 disabled={isInviting}
                 rows={5}
                 className="resize-none"

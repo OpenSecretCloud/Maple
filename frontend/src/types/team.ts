@@ -62,3 +62,9 @@ export interface CheckInviteResponse {
 export interface AcceptInviteRequest {
   email: string;
 }
+
+export interface UpdateTeamNameResponse {
+  team_id: string;
+  name: string;
+  updated_at: string;
+}
