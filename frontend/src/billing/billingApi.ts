@@ -295,31 +295,307 @@ export async function createZapriteCheckoutSession(
   window.location.href = checkout_url;
 }
 
-export async function fetchTeamPlanAvailable(thirdPartyToken: string): Promise<boolean> {
-  try {
-    const response = await fetch(
-      `${import.meta.env.VITE_MAPLE_BILLING_API_URL}/v1/maple/subscription/team_plan_available`,
-      {
-        headers: {
-          Authorization: `Bearer ${thirdPartyToken}`,
-          "Content-Type": "application/json"
-        }
-      }
-    );
+// Team Management API Functions
+import type {
+  TeamStatus,
+  CreateTeamRequest,
+  CreateTeamResponse,
+  InviteMembersRequest,
+  InviteMembersResponse,
+  TeamMembersResponse,
+  CheckInviteResponse,
+  AcceptInviteRequest,
+  UpdateTeamNameResponse
+} from "@/types/team";
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error("Team plan availability error response:", errorText);
-      if (response.status === 401) {
-        throw new Error("Unauthorized");
+export async function fetchTeamStatus(thirdPartyToken: string): Promise<TeamStatus> {
+  const response = await fetch(
+    `${import.meta.env.VITE_MAPLE_BILLING_API_URL}/v1/maple/team/status`,
+    {
+      headers: {
+        Authorization: `Bearer ${thirdPartyToken}`,
+        "Content-Type": "application/json"
       }
-      throw new Error(`Failed to check team plan availability: ${errorText}`);
+    }
+  );
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error("Team status error response:", errorText);
+    if (response.status === 401) {
+      throw new Error("Unauthorized");
+    }
+    throw new Error(`Failed to fetch team status: ${errorText}`);
+  }
+
+  return response.json();
+}
+
+export async function createTeam(
+  thirdPartyToken: string,
+  data: CreateTeamRequest
+): Promise<CreateTeamResponse> {
+  const response = await fetch(
+    `${import.meta.env.VITE_MAPLE_BILLING_API_URL}/v1/maple/team/create`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${thirdPartyToken}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(data)
+    }
+  );
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error("Create team error response:", errorText);
+    if (response.status === 401) {
+      throw new Error("Unauthorized");
+    }
+    throw new Error(`Failed to create team: ${errorText}`);
+  }
+
+  return response.json();
+}
+
+export async function inviteTeamMembers(
+  thirdPartyToken: string,
+  data: InviteMembersRequest
+): Promise<InviteMembersResponse> {
+  const response = await fetch(
+    `${import.meta.env.VITE_MAPLE_BILLING_API_URL}/v1/maple/team/invites`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${thirdPartyToken}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(data)
+    }
+  );
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error("Invite members error response:", errorText);
+    if (response.status === 401) {
+      throw new Error("Unauthorized");
+    }
+    if (response.status === 400) {
+      // Parse error message for user-friendly display
+      try {
+        const errorData = JSON.parse(errorText);
+        throw new Error(errorData.message || errorText);
+      } catch (parseError) {
+        console.error("Failed to parse error response:", parseError);
+        throw new Error(errorText);
+      }
+    }
+    throw new Error(`Failed to invite members: ${errorText}`);
+  }
+
+  return response.json();
+}
+
+export async function fetchTeamMembers(thirdPartyToken: string): Promise<TeamMembersResponse> {
+  const response = await fetch(
+    `${import.meta.env.VITE_MAPLE_BILLING_API_URL}/v1/maple/team/members`,
+    {
+      headers: {
+        Authorization: `Bearer ${thirdPartyToken}`,
+        "Content-Type": "application/json"
+      }
+    }
+  );
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error("Fetch team members error response:", errorText);
+    if (response.status === 401) {
+      throw new Error("Unauthorized");
+    }
+    throw new Error(`Failed to fetch team members: ${errorText}`);
+  }
+
+  return response.json();
+}
+
+export async function checkTeamInvite(
+  thirdPartyToken: string,
+  inviteId: string
+): Promise<CheckInviteResponse> {
+  const response = await fetch(
+    `${import.meta.env.VITE_MAPLE_BILLING_API_URL}/v1/maple/team/invites/${inviteId}/check`,
+    {
+      headers: {
+        Authorization: `Bearer ${thirdPartyToken}`,
+        "Content-Type": "application/json"
+      }
+    }
+  );
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error("Check invite error response:", errorText);
+    if (response.status === 401) {
+      throw new Error("Unauthorized");
+    }
+    throw new Error(`Failed to check invite: ${errorText}`);
+  }
+
+  return response.json();
+}
+
+export async function acceptTeamInvite(
+  thirdPartyToken: string,
+  inviteId: string,
+  data: AcceptInviteRequest
+): Promise<TeamStatus> {
+  const response = await fetch(
+    `${import.meta.env.VITE_MAPLE_BILLING_API_URL}/v1/maple/team/invites/${inviteId}/accept`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${thirdPartyToken}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(data)
+    }
+  );
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error("Accept invite error response:", errorText);
+    if (response.status === 401) {
+      throw new Error("Unauthorized");
     }
 
-    const { available } = await response.json();
-    return available;
-  } catch (error) {
-    console.error("Error checking team plan availability:", error);
-    throw error;
+    // Try to parse JSON error response for any status code
+    try {
+      const errorData = JSON.parse(errorText);
+      throw new Error(errorData.error || errorData.message || errorText);
+    } catch (parseError) {
+      console.error("Failed to parse error response:", parseError);
+      // If not JSON, use the text as-is
+      throw new Error(errorText || "Failed to accept invitation");
+    }
   }
+
+  return response.json();
+}
+
+export async function removeTeamMember(thirdPartyToken: string, userId: string): Promise<void> {
+  const response = await fetch(
+    `${import.meta.env.VITE_MAPLE_BILLING_API_URL}/v1/maple/team/members/${userId}`,
+    {
+      method: "DELETE",
+      headers: {
+        Authorization: `Bearer ${thirdPartyToken}`,
+        "Content-Type": "application/json"
+      }
+    }
+  );
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error("Remove member error response:", errorText);
+    if (response.status === 401) {
+      throw new Error("Unauthorized");
+    }
+    if (response.status === 403) {
+      throw new Error("Only team admins can remove members");
+    }
+    throw new Error(`Failed to remove member: ${errorText}`);
+  }
+}
+
+export async function leaveTeam(thirdPartyToken: string): Promise<void> {
+  const response = await fetch(
+    `${import.meta.env.VITE_MAPLE_BILLING_API_URL}/v1/maple/team/leave`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${thirdPartyToken}`,
+        "Content-Type": "application/json"
+      }
+    }
+  );
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error("Leave team error response:", errorText);
+    if (response.status === 401) {
+      throw new Error("Unauthorized");
+    }
+    throw new Error(`Failed to leave team: ${errorText}`);
+  }
+}
+
+export async function revokeTeamInvite(thirdPartyToken: string, inviteId: string): Promise<void> {
+  const response = await fetch(
+    `${import.meta.env.VITE_MAPLE_BILLING_API_URL}/v1/maple/team/invites/${inviteId}`,
+    {
+      method: "DELETE",
+      headers: {
+        Authorization: `Bearer ${thirdPartyToken}`,
+        "Content-Type": "application/json"
+      }
+    }
+  );
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error("Revoke invite error response:", errorText);
+    if (response.status === 401) {
+      throw new Error("Unauthorized");
+    }
+    if (response.status === 403) {
+      throw new Error("Only team admins can revoke invites");
+    }
+    throw new Error(`Failed to revoke invite: ${errorText}`);
+  }
+}
+
+export async function updateTeamName(
+  thirdPartyToken: string,
+  name: string
+): Promise<UpdateTeamNameResponse> {
+  const response = await fetch(
+    `${import.meta.env.VITE_MAPLE_BILLING_API_URL}/v1/maple/team/update`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${thirdPartyToken}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ name: name.trim() })
+    }
+  );
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error("Update team name error response:", errorText);
+    if (response.status === 401) {
+      throw new Error("Unauthorized");
+    }
+    if (response.status === 400) {
+      // Parse error message for user-friendly display
+      try {
+        const errorData = JSON.parse(errorText);
+        throw new Error(errorData.message || errorText);
+      } catch (parseError) {
+        console.error("Failed to parse error response:", parseError);
+        if (errorText.includes("team admin")) {
+          throw new Error("You are not a team admin");
+        }
+        if (errorText.includes("between 1 and 100 characters")) {
+          throw new Error("Team name must be between 1 and 100 characters");
+        }
+        throw new Error(errorText);
+      }
+    }
+    throw new Error(`Failed to update team name: ${errorText}`);
+  }
+
+  return response.json();
 }
