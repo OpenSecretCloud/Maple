@@ -195,6 +195,10 @@ function PricingPage() {
   const isLoggedIn = !!os.auth.user;
   const { selected_plan } = Route.useSearch();
 
+  // Date after which payments are available in iOS app
+  const IOS_PAYMENT_AVAILABILITY_DATE = new Date("2025-07-16T00:00:00Z");
+  const isIOSPaymentAvailable = new Date() >= IOS_PAYMENT_AVAILABILITY_DATE;
+
   // Check if the app is running on iOS
   useEffect(() => {
     const checkPlatform = async () => {
@@ -296,6 +300,12 @@ function PricingPage() {
 
     const targetPlanName = product.name.toLowerCase();
     const isTeamPlan = targetPlanName.includes("team");
+    const isFreeplan = targetPlanName.includes("free");
+
+    // Show "Not available in app" for iOS paid plans before availability date
+    if (isIOS && !isFreeplan && !isIOSPaymentAvailable) {
+      return "Not available in app";
+    }
 
     // Show Start Chatting for all plans when not logged in
     if (!isLoggedIn) {
@@ -442,9 +452,15 @@ function PricingPage() {
 
   const handleButtonClick = useCallback(
     (product: Product) => {
-      if (!isLoggedIn) {
-        const targetPlanName = product.name.toLowerCase();
+      const targetPlanName = product.name.toLowerCase();
+      const isFreeplan = targetPlanName.includes("free");
 
+      // Disable clicks for iOS paid plans before availability date
+      if (isIOS && !isFreeplan && !isIOSPaymentAvailable) {
+        return;
+      }
+
+      if (!isLoggedIn) {
         if (!targetPlanName.includes("free")) {
           // For paid plans, redirect to signup with the plan selection
           navigate({
@@ -459,8 +475,6 @@ function PricingPage() {
         navigate({ to: "/signup" });
         return;
       }
-
-      const targetPlanName = product.name.toLowerCase();
 
       // If user is on Zaprite plan, redirect to email
       if (freshBillingStatus?.payment_provider === "zaprite") {
@@ -514,7 +528,15 @@ function PricingPage() {
       // create checkout session
       newHandleSubscribe(product.id);
     },
-    [isLoggedIn, freshBillingStatus, navigate, portalUrl, newHandleSubscribe, isIOS]
+    [
+      isLoggedIn,
+      freshBillingStatus,
+      navigate,
+      portalUrl,
+      newHandleSubscribe,
+      isIOS,
+      isIOSPaymentAvailable
+    ]
   );
 
   useEffect(() => {
@@ -830,7 +852,8 @@ function PricingPage() {
                     }
                     disabled={
                       loadingProductId === (product?.id || plan.name.toLowerCase()) ||
-                      (useBitcoin && isTeamPlan)
+                      (useBitcoin && isTeamPlan) ||
+                      (isIOS && !isFreeplan && !isIOSPaymentAvailable)
                     }
                     className={`w-full 
                       dark:bg-white/90 dark:text-black dark:hover:bg-[hsl(var(--purple))]/80 dark:hover:text-[hsl(var(--foreground))] dark:active:bg-white/80
