@@ -94,12 +94,12 @@ export const PRICING_PLANS: PricingPlan[] = [
     description: "For power users who need more",
     features: [
       {
-        text: "All features from Starter",
+        text: "All features from Free",
         included: true,
         icon: <Check className="w-4 h-4 text-green-500" />
       },
       {
-        text: "5x more messages than Starter",
+        text: "Generous usage for power users",
         included: true,
         icon: <Check className="w-4 h-4 text-green-500" />
       },
@@ -145,7 +145,7 @@ export const PRICING_PLANS: PricingPlan[] = [
         icon: <Check className="w-4 h-4 text-green-500" />
       },
       {
-        text: "8x more messages than Starter per user",
+        text: "Even more usage per team member",
         included: true,
         icon: <Check className="w-4 h-4 text-green-500" />
       },
