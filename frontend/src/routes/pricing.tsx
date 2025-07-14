@@ -310,6 +310,15 @@ function PricingPage() {
       return "Contact Us";
     }
 
+    // If user is on Stripe plan but Bitcoin toggle is on, show special message
+    if (
+      freshBillingStatus?.payment_provider === "stripe" &&
+      useBitcoin &&
+      !targetPlanName.includes("free")
+    ) {
+      return "Cancel Stripe First";
+    }
+
     // For team plan
     if (isTeamPlan) {
       if (isCurrentPlan) {
@@ -468,6 +477,33 @@ function PricingPage() {
         return;
       }
 
+      // If user is on Stripe plan but Bitcoin toggle is on, redirect to portal to cancel
+      if (
+        freshBillingStatus?.payment_provider === "stripe" &&
+        useBitcoin &&
+        !targetPlanName.includes("free")
+      ) {
+        if (portalUrl) {
+          if (isIOS) {
+            console.log("[Billing] iOS detected, using opener plugin to launch Safari for portal");
+            import("@tauri-apps/api/core")
+              .then((coreModule) => {
+                return coreModule.invoke("plugin:opener|open_url", { url: portalUrl });
+              })
+              .then(() => {
+                console.log("[Billing] Successfully opened portal URL in external browser");
+              })
+              .catch((err) => {
+                console.error("[Billing] Failed to open external browser:", err);
+                alert("Failed to open browser. Please try again.");
+              });
+          } else {
+            window.open(portalUrl, "_blank");
+          }
+        }
+        return;
+      }
+
       const currentPlanName = freshBillingStatus?.product_name?.toLowerCase();
       const isCurrentlyOnFreePlan = currentPlanName?.includes("free");
       const isTargetFreePlan = targetPlanName.includes("free");
@@ -514,7 +550,7 @@ function PricingPage() {
       // create checkout session
       newHandleSubscribe(product.id);
     },
-    [isLoggedIn, freshBillingStatus, navigate, portalUrl, newHandleSubscribe, isIOS]
+    [isLoggedIn, freshBillingStatus, navigate, portalUrl, newHandleSubscribe, isIOS, useBitcoin]
   );
 
   useEffect(() => {
