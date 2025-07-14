@@ -688,7 +688,7 @@ function PricingPage() {
             return true;
           });
 
-          const gridColumns = filteredPlans.length === 4 ? "md:grid-cols-4" : "md:grid-cols-3";
+          const gridColumns = filteredPlans.length === 4 ? "lg:grid-cols-4" : "lg:grid-cols-3";
 
           return (
             <div
