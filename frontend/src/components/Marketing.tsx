@@ -660,7 +660,7 @@ export function Marketing() {
             </p>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8">
             {PRICING_PLANS.filter((plan) => {
               // Always hide Starter plan on marketing page
               return plan.name.toLowerCase() !== "starter";

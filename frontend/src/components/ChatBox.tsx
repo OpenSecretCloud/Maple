@@ -263,6 +263,7 @@ export default function Component({
           needsStarter &&
           (freshBillingStatus?.product_name?.toLowerCase().includes("starter") ||
             freshBillingStatus?.product_name?.toLowerCase().includes("pro") ||
+            freshBillingStatus?.product_name?.toLowerCase().includes("max") ||
             freshBillingStatus?.product_name?.toLowerCase().includes("team"))
         ) {
           return modelId;
@@ -503,10 +504,11 @@ export default function Component({
   // Check if system prompt can be edited (only for new chats)
   const canEditSystemPrompt = canUseSystemPrompt && messages.length === 0;
 
-  // Check if user has access to Pro/Team features (Pro or Team plan)
+  // Check if user has access to Pro/Team/Max features (Pro, Max, or Team plan)
   const hasProTeamAccess =
     freshBillingStatus &&
     (freshBillingStatus.product_name?.toLowerCase().includes("pro") ||
+      freshBillingStatus.product_name?.toLowerCase().includes("max") ||
       freshBillingStatus.product_name?.toLowerCase().includes("team"));
 
   const canUseDocuments = hasProTeamAccess;

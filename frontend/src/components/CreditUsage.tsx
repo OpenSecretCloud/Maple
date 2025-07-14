@@ -15,6 +15,12 @@ export function CreditUsage() {
   );
   const roundedPercent = Math.round(percentUsed);
 
+  // For Max plan users, only show if usage is 90% or higher
+  const isMaxPlan = billingStatus.product_name?.toLowerCase().includes("max");
+  if (isMaxPlan && percentUsed < 90) {
+    return null;
+  }
+
   // Set bar color based on usage
   const getBarColor = () => {
     if (percentUsed >= 90) return "rgb(239, 68, 68)"; // Tailwind red-500

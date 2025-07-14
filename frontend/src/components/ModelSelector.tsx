@@ -171,14 +171,19 @@ export function ModelSelector({
 
     const planName = billingStatus?.product_name?.toLowerCase() || "";
 
-    // Check if user is on Pro or Team plan (for requiresPro models)
+    // Check if user is on Pro, Max, or Team plan (for requiresPro models)
     if (config?.requiresPro) {
-      return planName.includes("pro") || planName.includes("team");
+      return planName.includes("pro") || planName.includes("max") || planName.includes("team");
     }
 
-    // Check if user is on Starter, Pro, or Team plan (for requiresStarter models)
+    // Check if user is on Starter, Pro, Max, or Team plan (for requiresStarter models)
     if (config?.requiresStarter) {
-      return planName.includes("starter") || planName.includes("pro") || planName.includes("team");
+      return (
+        planName.includes("starter") ||
+        planName.includes("pro") ||
+        planName.includes("max") ||
+        planName.includes("team")
+      );
     }
 
     return true;
