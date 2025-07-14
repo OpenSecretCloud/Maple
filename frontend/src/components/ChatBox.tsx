@@ -228,7 +228,7 @@ export default function Component({
     availableModels
   } = useLocalState();
 
-  const isGemma = MODEL_CONFIG[model]?.supportsVision || false;
+  const supportsVision = MODEL_CONFIG[model]?.supportsVision || false;
   const [images, setImages] = useState<File[]>([]);
   const [imageUrls, setImageUrls] = useState<Map<File, string>>(new Map());
   const [uploadedDocument, setUploadedDocument] = useState<{
@@ -917,7 +917,7 @@ export default function Component({
                       navigate({ to: "/pricing" });
                     } else {
                       // If not on a vision model, switch to one first
-                      if (!isGemma) {
+                      if (!supportsVision) {
                         const visionModelId = findFirstVisionModel();
                         if (visionModelId) {
                           setModel(visionModelId);

@@ -44,6 +44,12 @@ export const PRICING_PLANS: PricingPlan[] = [
       { text: "Rename Chats", included: true, icon: <Check className="w-4 h-4 text-green-500" /> },
       { text: "Gemma 3 27B", included: false, icon: <X className="w-4 h-4 text-red-500" /> },
       { text: "DeepSeek R1 70B", included: false, icon: <X className="w-4 h-4 text-red-500" /> },
+      {
+        text: "Mistral Small 3.1 24B",
+        included: false,
+        icon: <X className="w-4 h-4 text-red-500" />
+      },
+      { text: "Qwen 2.5 72B", included: false, icon: <X className="w-4 h-4 text-red-500" /> },
       { text: "Image Upload", included: false, icon: <X className="w-4 h-4 text-red-500" /> },
       { text: "Document Upload", included: false, icon: <X className="w-4 h-4 text-red-500" /> }
     ],
@@ -71,6 +77,12 @@ export const PRICING_PLANS: PricingPlan[] = [
       },
       { text: "Gemma 3 27B", included: true, icon: <Check className="w-4 h-4 text-green-500" /> },
       { text: "DeepSeek R1 70B", included: false, icon: <X className="w-4 h-4 text-red-500" /> },
+      {
+        text: "Mistral Small 3.1 24B",
+        included: false,
+        icon: <X className="w-4 h-4 text-red-500" />
+      },
+      { text: "Qwen 2.5 72B", included: false, icon: <X className="w-4 h-4 text-red-500" /> },
       { text: "Image Upload", included: false, icon: <X className="w-4 h-4 text-red-500" /> },
       { text: "Document Upload", included: false, icon: <X className="w-4 h-4 text-red-500" /> }
     ],
@@ -99,6 +111,16 @@ export const PRICING_PLANS: PricingPlan[] = [
       { text: "Gemma 3 27B", included: true, icon: <Check className="w-4 h-4 text-green-500" /> },
       {
         text: "DeepSeek R1 70B",
+        included: true,
+        icon: <Check className="w-4 h-4 text-green-500" />
+      },
+      {
+        text: "Mistral Small 3.1 24B",
+        included: true,
+        icon: <Check className="w-4 h-4 text-green-500" />
+      },
+      {
+        text: "Qwen 2.5 72B",
         included: true,
         icon: <Check className="w-4 h-4 text-green-500" />
       },
@@ -140,6 +162,16 @@ export const PRICING_PLANS: PricingPlan[] = [
       { text: "Gemma 3 27B", included: true, icon: <Check className="w-4 h-4 text-green-500" /> },
       {
         text: "DeepSeek R1 70B",
+        included: true,
+        icon: <Check className="w-4 h-4 text-green-500" />
+      },
+      {
+        text: "Mistral Small 3.1 24B",
+        included: true,
+        icon: <Check className="w-4 h-4 text-green-500" />
+      },
+      {
+        text: "Qwen 2.5 72B",
         included: true,
         icon: <Check className="w-4 h-4 text-green-500" />
       },
