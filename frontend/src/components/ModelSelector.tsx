@@ -133,6 +133,11 @@ export function ModelSelector({
               return false;
             }
 
+            // Filter out transcription models like Whisper
+            if (modelWithTasks.tasks.includes("transcribe")) {
+              return false;
+            }
+
             return true;
           });
 
