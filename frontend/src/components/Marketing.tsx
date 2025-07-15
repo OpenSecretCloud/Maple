@@ -653,12 +653,6 @@ export function Marketing() {
             </p>
           </div>
 
-          {/* Free Account Callout */}
-          <div className="text-center mb-8">
-            <p className="text-lg text-[hsl(var(--marketing-text-muted))]">
-              Free account comes with 10 free messages per week
-            </p>
-          </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8">
             {PRICING_PLANS.filter((plan) => {
