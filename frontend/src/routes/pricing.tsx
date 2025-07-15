@@ -81,7 +81,7 @@ function PricingFAQ() {
                 messages.
               </li>
               <li>Pro: Generous usage for power users with a high monthly cap</li>
-              <li>Max: 10x more usage than Pro for maximum power users</li>
+              <li>Max: 20x more usage than Pro for maximum power users</li>
               <li>Team: Even more usage per team member with unified billing</li>
               <li>Enterprise: Message us at team@opensecret.cloud</li>
             </ul>
