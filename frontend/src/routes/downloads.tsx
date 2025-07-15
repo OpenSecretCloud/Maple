@@ -8,6 +8,7 @@ import { Android } from "@/components/icons/Android";
 import { useState, useEffect } from "react";
 import { getLatestDownloadInfo } from "@/utils/githubRelease";
 import packageJson from "../../package.json";
+import { ExternalLink } from "@/components/ExternalLink";
 
 interface DownloadUrls {
   macOS: string;
@@ -165,14 +166,9 @@ function DownloadPage() {
                 <span className="text-[hsl(var(--marketing-text-muted))]"> (loading...)</span>
               )}{" "}
               •{" "}
-              <a
-                href={releaseUrl}
-                className="text-[hsl(var(--purple))] hover:underline"
-                target="_blank"
-                rel="noopener noreferrer"
-              >
+              <ExternalLink href={releaseUrl} className="text-[hsl(var(--purple))] hover:underline">
                 Release notes
-              </a>
+              </ExternalLink>
             </p>
           </div>
         </section>
@@ -193,36 +189,32 @@ function DownloadPage() {
                 Download our native iOS app for iPhones and iPads.
               </p>
               <div className="flex flex-col items-center gap-4">
-                <a
+                <ExternalLink
                   href="https://apps.apple.com/us/app/id6743764835"
                   className="inline-block"
-                  target="_blank"
-                  rel="noopener noreferrer"
                 >
                   <img
                     src="/app-store-badge.svg"
                     alt="Download on the App Store"
                     className="h-12"
                   />
-                </a>
+                </ExternalLink>
                 <div className="w-full border-t border-[hsl(var(--marketing-card-border))] pt-4">
                   <p className="text-[hsl(var(--marketing-text-muted))] text-sm mb-3 text-center">
                     Want to test the latest features before they hit the App Store? Join our beta
                     program.
                   </p>
                   <div className="flex justify-center">
-                    <a
+                    <ExternalLink
                       href="https://testflight.apple.com/join/zjgtyAeD"
                       className="inline-block"
-                      target="_blank"
-                      rel="noopener noreferrer"
                     >
                       <img
                         src="/testflight-badge.png"
                         alt="Available on TestFlight"
                         className="h-12"
                       />
-                    </a>
+                    </ExternalLink>
                   </div>
                 </div>
               </div>

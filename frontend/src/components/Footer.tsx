@@ -1,5 +1,6 @@
 import { Github, Twitter, Mail } from "lucide-react";
 import { DiscordIcon } from "./icons/DiscordIcon";
+import { ExternalLink } from "./ExternalLink";
 
 export function Footer() {
   return (
@@ -13,33 +14,27 @@ export function Footer() {
               Private AI chat with end-to-end encryption. Your conversations stay yours.
             </p>
             <div className="flex gap-5 text-[hsl(var(--marketing-text-muted))]">
-              <a
+              <ExternalLink
                 href="https://twitter.com/TryMapleAI"
-                target="_blank"
-                rel="noopener noreferrer"
                 className="dark:hover:text-[hsl(var(--blue))] hover:text-[hsl(var(--purple))] transition-colors"
                 aria-label="Twitter"
               >
                 <Twitter className="h-5 w-5" />
-              </a>
-              <a
+              </ExternalLink>
+              <ExternalLink
                 href="https://github.com/OpenSecretCloud"
-                target="_blank"
-                rel="noopener noreferrer"
                 className="dark:hover:text-[hsl(var(--blue))] hover:text-[hsl(var(--purple))] transition-colors"
                 aria-label="GitHub"
               >
                 <Github className="h-5 w-5" />
-              </a>
-              <a
+              </ExternalLink>
+              <ExternalLink
                 href="https://discord.gg/ch2gjZAMGy"
-                target="_blank"
-                rel="noopener noreferrer"
                 className="dark:hover:text-[hsl(var(--blue))] hover:text-[hsl(var(--purple))] transition-colors"
                 aria-label="Discord"
               >
                 <DiscordIcon className="h-5 w-5" />
-              </a>
+              </ExternalLink>
               <a
                 href="mailto:team@opensecret.cloud"
                 className="dark:hover:text-[hsl(var(--blue))] hover:text-[hsl(var(--green))] transition-colors"
@@ -74,64 +69,52 @@ export function Footer() {
 
           <div className="flex flex-col gap-4">
             <h3 className="text-foreground text-lg font-medium">Resources</h3>
-            <a
+            <ExternalLink
               href="https://blog.trymaple.ai"
-              target="_blank"
-              rel="noopener noreferrer"
               className="text-[hsl(var(--marketing-text-muted))] hover:text-foreground transition-colors"
             >
               Blog
-            </a>
-            <a
+            </ExternalLink>
+            <ExternalLink
               href="https://opensecret.cloud"
-              target="_blank"
-              rel="noopener noreferrer"
               className="text-[hsl(var(--marketing-text-muted))] hover:text-foreground transition-colors"
             >
               OpenSecret
-            </a>
-            <a
+            </ExternalLink>
+            <ExternalLink
               href="https://discord.gg/ch2gjZAMGy"
-              target="_blank"
-              rel="noopener noreferrer"
               className="text-[hsl(var(--marketing-text-muted))] hover:text-foreground transition-colors"
             >
               Community
-            </a>
+            </ExternalLink>
           </div>
 
           <div className="flex flex-col gap-4">
             <h3 className="text-foreground text-lg font-medium">Legal</h3>
-            <a
+            <ExternalLink
               href="https://opensecret.cloud/terms"
-              target="_blank"
-              rel="noopener noreferrer"
               className="text-[hsl(var(--marketing-text-muted))] hover:text-foreground transition-colors"
             >
               Terms of Service
-            </a>
-            <a
+            </ExternalLink>
+            <ExternalLink
               href="https://opensecret.cloud/privacy"
-              target="_blank"
-              rel="noopener noreferrer"
               className="text-[hsl(var(--marketing-text-muted))] hover:text-foreground transition-colors"
             >
               Privacy Policy
-            </a>
+            </ExternalLink>
           </div>
         </div>
 
         <div className="mt-12 pt-8 border-t border-[hsl(var(--marketing-card-border))] text-center">
           <p className="text-[hsl(var(--marketing-text-muted))]/50 font-light">
             © {new Date().getFullYear()} Maple AI. All rights reserved. Powered by{" "}
-            <a
+            <ExternalLink
               href="https://opensecret.cloud"
-              target="_blank"
-              rel="noopener noreferrer"
               className="text-[hsl(var(--purple))] hover:text-[hsl(var(--purple))]/80 transition-colors"
             >
               OpenSecret
-            </a>
+            </ExternalLink>
           </p>
         </div>
       </div>
