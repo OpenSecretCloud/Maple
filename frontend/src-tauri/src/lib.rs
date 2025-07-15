@@ -162,8 +162,19 @@ pub fn run() {
                         // Check for our menu ID - works the same on all platforms now
                         if event.id().0 == check_updates_id {
                             log::info!(
-                                "Check for updates menu item clicked - triggering update check..."
+                                "Check for updates menu item clicked - clearing dismissal flags and triggering update check..."
                             );
+
+                            // Clear the dismissal flags to ensure the user always gets prompted
+                            // even if they previously dismissed an update
+                            UPDATE_DOWNLOADED.store(false, Ordering::SeqCst);
+                            {
+                                match CURRENT_VERSION.lock() {
+                                    Ok(mut version) => version.clear(),
+                                    Err(e) => log::error!("Failed to lock CURRENT_VERSION mutex when clearing: {}", e)
+                                }
+                            }
+                            log::info!("Dismissal flags cleared - user will be prompted for any available updates");
 
                             // Clone the app handle to use in the async task
                             let app_handle_clone = app_handle_for_menu.clone();
