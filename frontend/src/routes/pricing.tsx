@@ -714,7 +714,7 @@ function PricingPage() {
                 let monthlyPrice = monthlyOriginalPrice;
 
                 if (product) {
-                  monthlyOriginalPrice = (product.default_price.unit_amount / 100).toFixed(2);
+                  monthlyOriginalPrice = (product.default_price.unit_amount / 100).toFixed(0);
                   monthlyPrice = monthlyOriginalPrice;
                 }
 
