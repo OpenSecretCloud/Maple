@@ -194,12 +194,12 @@ function TeamsPage() {
             <div className="flex justify-center">
               <div className="max-w-md w-full">
                 <PricingTier
-                  name={PRICING_PLANS.find(plan => plan.name === "Team")!.name}
-                  price={PRICING_PLANS.find(plan => plan.name === "Team")!.price}
-                  description={PRICING_PLANS.find(plan => plan.name === "Team")!.description}
-                  features={PRICING_PLANS.find(plan => plan.name === "Team")!.features}
-                  ctaText={PRICING_PLANS.find(plan => plan.name === "Team")!.ctaText}
-                  popular={PRICING_PLANS.find(plan => plan.name === "Team")!.popular}
+                  name={PRICING_PLANS.find((plan) => plan.name === "Team")!.name}
+                  price={PRICING_PLANS.find((plan) => plan.name === "Team")!.price}
+                  description={PRICING_PLANS.find((plan) => plan.name === "Team")!.description}
+                  features={PRICING_PLANS.find((plan) => plan.name === "Team")!.features}
+                  ctaText={PRICING_PLANS.find((plan) => plan.name === "Team")!.ctaText}
+                  popular={PRICING_PLANS.find((plan) => plan.name === "Team")!.popular}
                 />
               </div>
             </div>
