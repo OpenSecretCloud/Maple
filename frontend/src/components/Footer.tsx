@@ -1,4 +1,5 @@
 import { Github, Twitter, Mail } from "lucide-react";
+import { Link } from "@tanstack/react-router";
 import { DiscordIcon } from "./icons/DiscordIcon";
 
 export function Footer() {
@@ -52,24 +53,30 @@ export function Footer() {
 
           <div className="flex flex-col gap-4">
             <h3 className="text-foreground text-lg font-medium">Product</h3>
-            <a
-              href="/pricing"
+            <Link
+              to="/pricing"
               className="text-[hsl(var(--marketing-text-muted))] hover:text-foreground transition-colors"
             >
               Pricing
-            </a>
-            <a
-              href="/downloads"
+            </Link>
+            <Link
+              to="/downloads"
               className="text-[hsl(var(--marketing-text-muted))] hover:text-foreground transition-colors"
             >
               Downloads
-            </a>
-            <a
-              href="/proof"
+            </Link>
+            <Link
+              to="/proof"
               className="text-[hsl(var(--marketing-text-muted))] hover:text-foreground transition-colors"
             >
               Security Proof
-            </a>
+            </Link>
+            <Link
+              to="/teams"
+              className="text-[hsl(var(--marketing-text-muted))] hover:text-foreground transition-colors"
+            >
+              Teams
+            </Link>
           </div>
 
           <div className="flex flex-col gap-4">
