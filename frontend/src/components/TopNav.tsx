@@ -4,6 +4,7 @@ import { Button } from "./ui/button";
 import { useOpenSecret } from "@opensecret/react";
 import { Menu, X } from "lucide-react";
 import { useState } from "react";
+import { ExternalLink } from "./ExternalLink";
 
 export function TopNav() {
   const os = useOpenSecret();
@@ -52,14 +53,12 @@ export function TopNav() {
               <div className="flex items-center gap-6 sm:gap-10">
                 <NavLink to="/pricing">Pricing</NavLink>
                 <NavLink to="/proof">Proof</NavLink>
-                <a
+                <ExternalLink
                   href="https://blog.trymaple.ai/tag/guides/"
-                  target="_blank"
-                  rel="noopener noreferrer"
                   className="transition-colors font-light tracking-tight text-lg text-[#E2E2E2]/70 hover:text-[#E2E2E2]"
                 >
                   Guides
-                </a>
+                </ExternalLink>
               </div>
             </div>
 
@@ -103,15 +102,13 @@ export function TopNav() {
               <NavLink to="/proof" onClick={() => setMobileMenuOpen(false)}>
                 Proof
               </NavLink>
-              <a
+              <ExternalLink
                 href="https://blog.trymaple.ai/tag/guides/"
-                target="_blank"
-                rel="noopener noreferrer"
                 className="transition-colors font-light tracking-tight text-lg text-[#E2E2E2]/70 hover:text-[#E2E2E2]"
                 onClick={() => setMobileMenuOpen(false)}
               >
                 Guides
-              </a>
+              </ExternalLink>
             </div>
           </div>
         )}

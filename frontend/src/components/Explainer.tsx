@@ -3,6 +3,7 @@ import { ArrowRight, BotIcon, LockIcon, MinusIcon, ServerIcon, SmartphoneIcon } 
 import { useEffect, useState } from "react";
 import { Loader2, CheckCircle, XCircle } from "lucide-react";
 import { useOpenSecret } from "@opensecret/react";
+import { ExternalLink } from "./ExternalLink";
 
 function ArrowAndLock() {
   return (
@@ -90,14 +91,12 @@ export function InfoContent() {
       </div>
       <div className="w-full pt-4 flex gap-4 items-center justify-between">
         <VerificationStatus />
-        <a
+        <ExternalLink
           href="https://blog.trymaple.ai"
           className="text-center hover:underline font-medium text-sm"
-          target="_blank"
-          rel="noopener noreferrer"
         >
           Learn more
-        </a>
+        </ExternalLink>
       </div>
     </>
   );

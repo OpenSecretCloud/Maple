@@ -5,6 +5,7 @@ import { ParsedAttestationView, useOpenSecret } from "@opensecret/react";
 import { TopNav } from "@/components/TopNav";
 import { FullPageMain } from "@/components/FullPageMain";
 import { MarketingHeader } from "@/components/MarketingHeader";
+import { ExternalLink } from "@/components/ExternalLink";
 
 function MatchIndicator({ isMatch, text = "It's a match!" }: { isMatch: boolean; text?: string }) {
   return (
@@ -47,14 +48,12 @@ function ProofDisplay({
         )}
         <p className="text-sm dark:text-white/70 text-foreground/70">
           For technical details, check out the{" "}
-          <a
+          <ExternalLink
             href="https://docs.aws.amazon.com/enclaves/latest/user/verify-root.html"
-            target="_blank"
-            rel="noopener noreferrer"
             className="underline hover:text-foreground/80 dark:hover:text-white/80"
           >
             AWS Nitro Enclaves documentation
-          </a>
+          </ExternalLink>
           .
         </p>
       </div>

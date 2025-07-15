@@ -15,8 +15,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Loader2, AlertCircle, UserPlus, Info, CreditCard } from "lucide-react";
 import { getBillingService } from "@/billing/billingService";
 import { useLocalState } from "@/state/useLocalState";
-import { isTauri } from "@tauri-apps/api/core";
-import { type } from "@tauri-apps/plugin-os";
+import { openExternalLink } from "@/utils/openExternalLink";
 import type { TeamStatus } from "@/types/team";
 
 interface TeamInviteDialogProps {
@@ -45,24 +44,10 @@ export function TeamInviteDialog({ open, onOpenChange, teamStatus }: TeamInviteD
       const billingService = getBillingService();
       const url = await billingService.getPortalUrl();
 
-      // Check if we're in a Tauri environment on iOS
-      try {
-        const isTauriEnv = await isTauri();
-        if (isTauriEnv) {
-          const platform = await type();
-          if (platform === "ios") {
-            // For iOS, use the opener plugin
-            const { invoke } = await import("@tauri-apps/api/core");
-            await invoke("plugin:opener|open_url", { url });
-            return;
-          }
-        }
-      } catch {
-        // Not in Tauri or error checking, continue with web flow
-      }
-
-      // Web or desktop flow
-      window.open(url, "_blank", "noopener,noreferrer");
+      // Use the cross-platform utility to open the portal URL
+      await openExternalLink(url, { windowFeatures: "noopener,noreferrer" }).catch((err) => {
+        console.error("Failed to open billing portal:", err);
+      });
     } catch (error) {
       console.error("Failed to open billing portal:", error);
     } finally {

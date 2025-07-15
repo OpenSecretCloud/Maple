@@ -9,6 +9,7 @@ import { PRICING_PLANS, type PlanFeature } from "@/config/pricingConfig";
 // eslint-disable-next-line
 // @ts-ignore
 import { type } from "@tauri-apps/plugin-os";
+import { ExternalLink } from "./ExternalLink";
 
 function CTAButton({
   children,
@@ -373,18 +374,13 @@ export function Marketing() {
             <Laptop className="h-4 w-4" />
             <span>Desktop</span>
           </Link>
-          <a
-            href="https://apps.apple.com/us/app/id6743764835"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-block"
-          >
+          <ExternalLink href="https://apps.apple.com/us/app/id6743764835" className="inline-block">
             <img
               src="/app-store-badge.svg"
               alt="Download on the App Store"
               className="h-10 w-auto"
             />
-          </a>
+          </ExternalLink>
         </div>
       </section>
 
