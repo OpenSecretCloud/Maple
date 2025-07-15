@@ -77,7 +77,7 @@ function PricingFAQ() {
             <p>The plans are sized to grow with your needs.</p>
             <ul className="list-disc list-inside space-y-1 ml-4">
               <li>
-                Free: 10 messages per week, resets Sunday 00:00 UTC. Max length on individual
+                Free: 25 messages per week, resets Sunday 00:00 UTC. Max length on individual
                 messages.
               </li>
               <li>Pro: Generous usage for power users with a high monthly cap</li>
