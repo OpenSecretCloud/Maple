@@ -237,6 +237,6 @@ export const PRICING_PLANS: PricingPlan[] = [
         icon: <Check className="w-4 h-4 text-green-500" />
       }
     ],
-    ctaText: "Contact Us"
+    ctaText: "Start Chatting"
   }
 ];

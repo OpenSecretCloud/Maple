@@ -100,7 +100,6 @@ function PricingTier({
   productId?: string; // Add type for productId
   isIOS?: boolean; // Add type for iOS detection
 }) {
-  const isTeamPlan = name.toLowerCase().includes("team");
   const isFreeplan = name.toLowerCase().includes("free");
 
   return (
@@ -151,22 +150,7 @@ function PricingTier({
         >
           Coming Soon
         </button>
-      ) : isTeamPlan ? (
-        // For team plans, add "Contact Us" button that opens email
-        <button
-          onClick={() => {
-            window.location.href = "mailto:support@opensecret.cloud";
-          }}
-          className="mt-auto py-3 px-6 rounded-lg text-center font-medium transition-all duration-300 
-            dark:bg-white/90 dark:text-black dark:hover:bg-[hsl(var(--purple))]/80 dark:hover:text-[hsl(var(--foreground))] dark:active:bg-white/80
-            bg-background text-foreground hover:bg-[hsl(var(--purple))] hover:text-[hsl(var(--foreground))] active:bg-background/80 
-            border border-[hsl(var(--purple))]/30 hover:border-[hsl(var(--purple))]
-            shadow-[0_0_15px_rgba(var(--purple-rgb),0.2)] hover:shadow-[0_0_25px_rgba(var(--purple-rgb),0.3)]"
-        >
-          Contact Us
-        </button>
-      ) : // For non-team plans, redirect to signup with pricing selection
-      productId ? (
+      ) : productId ? (
         // When we have a product ID, create a button that handles the navigation
         <button
           onClick={() => {
@@ -652,7 +636,6 @@ export function Marketing() {
               No hidden fees. Choose the plan that works for your needs.
             </p>
           </div>
-
 
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8">
             {PRICING_PLANS.filter((plan) => {
