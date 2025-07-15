@@ -23,7 +23,8 @@ export function BillingDebugger({ currentStatus, onOverride }: BillingDebuggerPr
     current_period_end: currentStatus?.current_period_end ?? null,
     payment_provider: currentStatus?.payment_provider ?? null,
     total_tokens: currentStatus?.total_tokens ?? null,
-    used_tokens: currentStatus?.used_tokens ?? null
+    used_tokens: currentStatus?.used_tokens ?? null,
+    usage_reset_date: currentStatus?.usage_reset_date ?? null
   });
   const { setBillingStatus } = useLocalState();
 
@@ -126,6 +127,32 @@ export function BillingDebugger({ currentStatus, onOverride }: BillingDebuggerPr
           />
         </div>
 
+        <div>
+          <label className="block text-sm">Usage Reset Date (UTC)</label>
+          <Input
+            type="datetime-local"
+            value={
+              debugStatus.usage_reset_date
+                ? new Date(debugStatus.usage_reset_date).toISOString().slice(0, 16)
+                : ""
+            }
+            onChange={(e) =>
+              setDebugStatus((prev) => ({
+                ...prev,
+                usage_reset_date: e.target.value
+                  ? new Date(e.target.value + "Z").toISOString()
+                  : null
+              }))
+            }
+            placeholder="Enter UTC time"
+            className="w-full bg-transparent border-yellow-500/30"
+          />
+          <span className="text-xs text-muted-foreground">
+            Enter time in UTC (current UTC:{" "}
+            {new Date().toISOString().slice(0, 19).replace("T", " ")})
+          </span>
+        </div>
+
         <div className="space-x-2">
           <Button
             variant="outline"
@@ -151,7 +178,8 @@ export function BillingDebugger({ currentStatus, onOverride }: BillingDebuggerPr
                 current_period_end: null,
                 payment_provider: "stripe",
                 total_tokens: 20000,
-                used_tokens: 18500
+                used_tokens: 18500,
+                usage_reset_date: null
               };
               setDebugStatus(newStatus);
               handleOverride(newStatus);
@@ -159,6 +187,90 @@ export function BillingDebugger({ currentStatus, onOverride }: BillingDebuggerPr
             className="border-yellow-500/30 hover:bg-yellow-500/20"
           >
             Test Pro + No Messages
+          </Button>
+
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              const inThreeHours = new Date();
+              inThreeHours.setHours(inThreeHours.getHours() + 3);
+              const newStatus: BillingStatus = {
+                product_name: "Pro",
+                chats_remaining: null,
+                can_chat: true,
+                is_subscribed: true,
+                stripe_customer_id: "test_customer",
+                product_id: "pro",
+                subscription_status: "active",
+                current_period_end: null,
+                payment_provider: "stripe",
+                total_tokens: 20000,
+                used_tokens: 5000,
+                usage_reset_date: inThreeHours.toISOString()
+              };
+              setDebugStatus(newStatus);
+              handleOverride(newStatus);
+            }}
+            className="border-yellow-500/30 hover:bg-yellow-500/20"
+          >
+            Reset in 3 Hours
+          </Button>
+
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              const tomorrow = new Date();
+              tomorrow.setDate(tomorrow.getDate() + 1);
+              const newStatus: BillingStatus = {
+                product_name: "Pro",
+                chats_remaining: null,
+                can_chat: true,
+                is_subscribed: true,
+                stripe_customer_id: "test_customer",
+                product_id: "pro",
+                subscription_status: "active",
+                current_period_end: null,
+                payment_provider: "stripe",
+                total_tokens: 20000,
+                used_tokens: 15000,
+                usage_reset_date: tomorrow.toISOString()
+              };
+              setDebugStatus(newStatus);
+              handleOverride(newStatus);
+            }}
+            className="border-yellow-500/30 hover:bg-yellow-500/20"
+          >
+            Reset Tomorrow
+          </Button>
+
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              const inFiveDays = new Date();
+              inFiveDays.setDate(inFiveDays.getDate() + 5);
+              const newStatus: BillingStatus = {
+                product_name: "Max",
+                chats_remaining: null,
+                can_chat: true,
+                is_subscribed: true,
+                stripe_customer_id: "test_customer",
+                product_id: "max",
+                subscription_status: "active",
+                current_period_end: null,
+                payment_provider: "zaprite",
+                total_tokens: 200000,
+                used_tokens: 50000,
+                usage_reset_date: inFiveDays.toISOString()
+              };
+              setDebugStatus(newStatus);
+              handleOverride(newStatus);
+            }}
+            className="border-yellow-500/30 hover:bg-yellow-500/20"
+          >
+            Reset in 5 Days
           </Button>
         </div>
       </div>

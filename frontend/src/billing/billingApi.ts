@@ -10,6 +10,7 @@ export type BillingStatus = {
   payment_provider: "stripe" | "zaprite" | null;
   total_tokens: number | null;
   used_tokens: number | null;
+  usage_reset_date: string | null;
 };
 
 type BillingRecurringInfo = {
