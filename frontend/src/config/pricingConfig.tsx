@@ -22,7 +22,7 @@ export const PRICING_PLANS: PricingPlan[] = [
     description: "Try Maple with limited usage",
     features: [
       {
-        text: "10 messages per week",
+        text: "25 messages per week",
         included: true,
         icon: <Check className="w-4 h-4 text-green-500" />
       },
@@ -42,16 +42,16 @@ export const PRICING_PLANS: PricingPlan[] = [
         icon: <Check className="w-4 h-4 text-green-500" />
       },
       { text: "Rename Chats", included: true, icon: <Check className="w-4 h-4 text-green-500" /> },
-      { text: "Gemma 3 27B", included: false, icon: <X className="w-4 h-4 text-red-500" /> },
+      { text: "Image Upload", included: false, icon: <X className="w-4 h-4 text-red-500" /> },
+      { text: "Document Upload", included: false, icon: <X className="w-4 h-4 text-red-500" /> },
       { text: "DeepSeek R1 70B", included: false, icon: <X className="w-4 h-4 text-red-500" /> },
+      { text: "Gemma 3 27B", included: false, icon: <X className="w-4 h-4 text-red-500" /> },
       {
         text: "Mistral Small 3.1 24B",
         included: false,
         icon: <X className="w-4 h-4 text-red-500" />
       },
-      { text: "Qwen 2.5 72B", included: false, icon: <X className="w-4 h-4 text-red-500" /> },
-      { text: "Image Upload", included: false, icon: <X className="w-4 h-4 text-red-500" /> },
-      { text: "Document Upload", included: false, icon: <X className="w-4 h-4 text-red-500" /> }
+      { text: "Qwen 2.5 72B", included: false, icon: <X className="w-4 h-4 text-red-500" /> }
     ],
     ctaText: "Start Free"
   },
@@ -103,17 +103,18 @@ export const PRICING_PLANS: PricingPlan[] = [
         included: true,
         icon: <Check className="w-4 h-4 text-green-500" />
       },
+      { text: "Image Upload", included: true, icon: <Check className="w-4 h-4 text-green-500" /> },
       {
-        text: "Priority support",
+        text: "Document Upload",
         included: true,
         icon: <Check className="w-4 h-4 text-green-500" />
       },
-      { text: "Gemma 3 27B", included: true, icon: <Check className="w-4 h-4 text-green-500" /> },
       {
         text: "DeepSeek R1 70B",
         included: true,
         icon: <Check className="w-4 h-4 text-green-500" />
       },
+      { text: "Gemma 3 27B", included: true, icon: <Check className="w-4 h-4 text-green-500" /> },
       {
         text: "Mistral Small 3.1 24B",
         included: true,
@@ -121,12 +122,6 @@ export const PRICING_PLANS: PricingPlan[] = [
       },
       {
         text: "Qwen 2.5 72B",
-        included: true,
-        icon: <Check className="w-4 h-4 text-green-500" />
-      },
-      { text: "Image Upload", included: true, icon: <Check className="w-4 h-4 text-green-500" /> },
-      {
-        text: "Document Upload",
         included: true,
         icon: <Check className="w-4 h-4 text-green-500" />
       }
@@ -154,15 +149,30 @@ export const PRICING_PLANS: PricingPlan[] = [
         included: true,
         icon: <Check className="w-4 h-4 text-green-500" />
       },
-      { text: "Gemma 3 27B", included: true, icon: <Check className="w-4 h-4 text-green-500" /> },
       {
-        text: "DeepSeek R1 70B",
+        text: "Early Access to features and models",
         included: true,
         icon: <Check className="w-4 h-4 text-green-500" />
       },
       { text: "Image Upload", included: true, icon: <Check className="w-4 h-4 text-green-500" /> },
       {
         text: "Document Upload",
+        included: true,
+        icon: <Check className="w-4 h-4 text-green-500" />
+      },
+      {
+        text: "DeepSeek R1 70B",
+        included: true,
+        icon: <Check className="w-4 h-4 text-green-500" />
+      },
+      { text: "Gemma 3 27B", included: true, icon: <Check className="w-4 h-4 text-green-500" /> },
+      {
+        text: "Mistral Small 3.1 24B",
+        included: true,
+        icon: <Check className="w-4 h-4 text-green-500" />
+      },
+      {
+        text: "Qwen 2.5 72B",
         included: true,
         icon: <Check className="w-4 h-4 text-green-500" />
       }
@@ -180,7 +190,12 @@ export const PRICING_PLANS: PricingPlan[] = [
         icon: <Check className="w-4 h-4 text-green-500" />
       },
       {
-        text: "Even more usage per team member",
+        text: "2x more usage than Pro per team member",
+        included: true,
+        icon: <Check className="w-4 h-4 text-green-500" />
+      },
+      {
+        text: "Priority support",
         included: true,
         icon: <Check className="w-4 h-4 text-green-500" />
       },
@@ -194,12 +209,23 @@ export const PRICING_PLANS: PricingPlan[] = [
         included: true,
         icon: <Check className="w-4 h-4 text-green-500" />
       },
-      { text: "Gemma 3 27B", included: true, icon: <Check className="w-4 h-4 text-green-500" /> },
+      {
+        text: "Early Access to features and models",
+        included: true,
+        icon: <Check className="w-4 h-4 text-green-500" />
+      },
+      { text: "Image Upload", included: true, icon: <Check className="w-4 h-4 text-green-500" /> },
+      {
+        text: "Document Upload",
+        included: true,
+        icon: <Check className="w-4 h-4 text-green-500" />
+      },
       {
         text: "DeepSeek R1 70B",
         included: true,
         icon: <Check className="w-4 h-4 text-green-500" />
       },
+      { text: "Gemma 3 27B", included: true, icon: <Check className="w-4 h-4 text-green-500" /> },
       {
         text: "Mistral Small 3.1 24B",
         included: true,
@@ -207,12 +233,6 @@ export const PRICING_PLANS: PricingPlan[] = [
       },
       {
         text: "Qwen 2.5 72B",
-        included: true,
-        icon: <Check className="w-4 h-4 text-green-500" />
-      },
-      { text: "Image Upload", included: true, icon: <Check className="w-4 h-4 text-green-500" /> },
-      {
-        text: "Document Upload",
         included: true,
         icon: <Check className="w-4 h-4 text-green-500" />
       }
