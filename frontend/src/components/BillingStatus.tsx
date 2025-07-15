@@ -48,7 +48,7 @@ export function BillingStatus() {
   }
 
   const isFree = billingStatus.product_name.toLowerCase().includes("free");
-  const isPro = billingStatus.product_name.toLowerCase().includes("pro");
+  const isMax = billingStatus.product_name.toLowerCase().includes("max");
 
   const getChatsText = () => {
     if (isFree) {
@@ -58,7 +58,7 @@ export function BillingStatus() {
       return `Free Plan — ${billingStatus.chats_remaining} Message${billingStatus.chats_remaining === 1 ? "" : "s"} Left This Week`;
     }
     if (!billingStatus.can_chat) {
-      if (isPro) {
+      if (isMax) {
         return "Contact us to increase your limits";
       }
       return "You've run out of messages, upgrade to keep chatting!";
@@ -80,7 +80,7 @@ export function BillingStatus() {
         <Button
           variant="default"
           onClick={() =>
-            !billingStatus.can_chat && isPro
+            !billingStatus.can_chat && isMax
               ? (window.location.href = "mailto:team@opensecret.cloud")
               : navigate({ to: "/pricing" })
           }

@@ -86,10 +86,11 @@ export function AccountMenu() {
   const hasStripeAccount = billingStatus?.stripe_customer_id !== null;
   const productName = billingStatus?.product_name || "";
   const isPro = productName.toLowerCase().includes("pro");
+  const isMax = productName.toLowerCase().includes("max");
   const isStarter = productName.toLowerCase().includes("starter");
   const isTeamPlan = productName.toLowerCase().includes("team");
-  const showUpgrade = !isPro && !isTeamPlan;
-  const showManage = (isPro || isStarter || isTeamPlan) && hasStripeAccount;
+  const showUpgrade = !isMax && !isTeamPlan;
+  const showManage = (isPro || isMax || isStarter || isTeamPlan) && hasStripeAccount;
 
   // Fetch team status if user has team plan
   const { data: teamStatus } = useQuery<TeamStatus>({

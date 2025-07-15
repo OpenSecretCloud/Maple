@@ -94,12 +94,12 @@ export const PRICING_PLANS: PricingPlan[] = [
     description: "For power users who need more",
     features: [
       {
-        text: "All features from Starter",
+        text: "All features from Free",
         included: true,
         icon: <Check className="w-4 h-4 text-green-500" />
       },
       {
-        text: "5x more messages than Starter",
+        text: "Generous usage for power users",
         included: true,
         icon: <Check className="w-4 h-4 text-green-500" />
       },
@@ -135,6 +135,41 @@ export const PRICING_PLANS: PricingPlan[] = [
     popular: true
   },
   {
+    name: "Max",
+    price: "$100",
+    description: "Maximum usage for power users",
+    features: [
+      {
+        text: "All features from Pro",
+        included: true,
+        icon: <Check className="w-4 h-4 text-green-500" />
+      },
+      {
+        text: "20x more usage than Pro",
+        included: true,
+        icon: <Check className="w-4 h-4 text-green-500" />
+      },
+      {
+        text: "Priority support",
+        included: true,
+        icon: <Check className="w-4 h-4 text-green-500" />
+      },
+      { text: "Gemma 3 27B", included: true, icon: <Check className="w-4 h-4 text-green-500" /> },
+      {
+        text: "DeepSeek R1 70B",
+        included: true,
+        icon: <Check className="w-4 h-4 text-green-500" />
+      },
+      { text: "Image Upload", included: true, icon: <Check className="w-4 h-4 text-green-500" /> },
+      {
+        text: "Document Upload",
+        included: true,
+        icon: <Check className="w-4 h-4 text-green-500" />
+      }
+    ],
+    ctaText: "Start Chatting"
+  },
+  {
     name: "Team",
     price: "$30",
     description: "For teams and businesses",
@@ -145,7 +180,7 @@ export const PRICING_PLANS: PricingPlan[] = [
         icon: <Check className="w-4 h-4 text-green-500" />
       },
       {
-        text: "8x more messages than Starter per user",
+        text: "Even more usage per team member",
         included: true,
         icon: <Check className="w-4 h-4 text-green-500" />
       },

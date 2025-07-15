@@ -660,8 +660,11 @@ export function Marketing() {
             </p>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-8">
-            {PRICING_PLANS.map((plan) => (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8">
+            {PRICING_PLANS.filter((plan) => {
+              // Always hide Starter plan on marketing page
+              return plan.name.toLowerCase() !== "starter";
+            }).map((plan) => (
               <PricingTier
                 key={plan.name}
                 name={plan.name}
