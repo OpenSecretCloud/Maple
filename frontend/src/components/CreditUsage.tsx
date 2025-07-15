@@ -1,4 +1,5 @@
 import { useLocalState } from "@/state/useLocalState";
+import { formatResetDate } from "@/utils/dateFormat";
 
 export function CreditUsage() {
   const { billingStatus } = useLocalState();
@@ -37,7 +38,9 @@ export function CreditUsage() {
           }}
         />
       </div>
-      <div className="mt-1 text-xs text-right">Resets Monthly</div>
+      <div className="mt-1 text-xs text-right">
+        {formatResetDate(billingStatus.usage_reset_date)}
+      </div>
     </div>
   );
 }
