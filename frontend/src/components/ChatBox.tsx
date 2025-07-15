@@ -717,43 +717,42 @@ export default function Component({
   return (
     <div className="flex flex-col w-full">
       {/* Simple System Prompt Section - just a gear button and input when expanded */}
-      {canEditSystemPrompt && (
-        <div className="mb-2">
-          <div className="flex items-center gap-2 mb-1">
-            <button
-              type="button"
-              onClick={() => setIsSystemPromptExpanded(!isSystemPromptExpanded)}
-              className="flex items-center gap-1.5 text-xs font-medium transition-colors text-muted-foreground hover:text-foreground cursor-pointer"
-              title="System Prompt"
-              aria-label="Toggle system prompt"
-              aria-expanded={isSystemPromptExpanded}
-            >
-              <Bot className="size-6" />
-              {systemPromptValue.trim() && (
-                <div className="size-2 bg-primary rounded-full" title="System prompt active" />
-              )}
-            </button>
-          </div>
-
-          {isSystemPromptExpanded && (
-            <textarea
-              ref={systemPromptRef}
-              value={systemPromptValue}
-              onChange={(e) => setSystemPromptValue(e.target.value)}
-              placeholder="Enter instructions for the AI (e.g., 'You are a helpful coding assistant...')"
-              rows={2}
-              className="w-full p-2 text-sm border border-muted-foreground/20 rounded-md bg-muted/50 placeholder:text-muted-foreground/70 focus:outline-none focus:ring-1 focus:ring-ring resize-none transition-colors"
-              style={{
-                height: "auto",
-                resize: "none",
-                overflowY: "auto",
-                maxHeight: "8rem",
-                minHeight: "3rem"
-              }}
-            />
-          )}
+      <div className={cn("mb-2", !canEditSystemPrompt && "invisible")}>
+        <div className="flex items-center gap-2 mb-1">
+          <button
+            type="button"
+            disabled={!canEditSystemPrompt}
+            onClick={() => setIsSystemPromptExpanded(!isSystemPromptExpanded)}
+            className="flex items-center gap-1.5 text-xs font-medium transition-colors text-muted-foreground hover:text-foreground cursor-pointer disabled:cursor-default"
+            title="System Prompt"
+            aria-label="Toggle system prompt"
+            aria-expanded={isSystemPromptExpanded}
+          >
+            <Bot className="size-6" />
+            {systemPromptValue.trim() && (
+              <div className="size-2 bg-primary rounded-full" title="System prompt active" />
+            )}
+          </button>
         </div>
-      )}
+
+        {isSystemPromptExpanded && (
+          <textarea
+            ref={systemPromptRef}
+            value={systemPromptValue}
+            onChange={(e) => setSystemPromptValue(e.target.value)}
+            placeholder="Enter instructions for the AI (e.g., 'You are a helpful coding assistant...')"
+            rows={2}
+            className="w-full p-2 text-sm border border-muted-foreground/20 rounded-md bg-muted/50 placeholder:text-muted-foreground/70 focus:outline-none focus:ring-1 focus:ring-ring resize-none transition-colors"
+            style={{
+              height: "auto",
+              resize: "none",
+              overflowY: "auto",
+              maxHeight: "8rem",
+              minHeight: "3rem"
+            }}
+          />
+        )}
+      </div>
 
       <TokenWarning
         chatId={chatId}
