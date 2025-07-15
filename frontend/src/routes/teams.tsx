@@ -4,6 +4,8 @@ import { FullPageMain } from "@/components/FullPageMain";
 import { MarketingHeader } from "@/components/MarketingHeader";
 import { Shield, Lock, Users, Sparkles, Building2, ArrowRight, FileText } from "lucide-react";
 import { Link } from "@tanstack/react-router";
+import { PricingTier } from "@/components/Marketing";
+import { PRICING_PLANS } from "@/config/pricingConfig";
 
 export const Route = createFileRoute("/teams")({
   component: TeamsPage
@@ -144,6 +146,16 @@ function TeamsPage() {
                   <li>Use AI securely with your data, encrypted</li>
                 </ol>
               </div>
+              <div className="flex justify-center mt-4 mb-8">
+                <a
+                  href="https://blog.trymaple.ai/manage-your-team-on-maple/"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-[hsl(var(--purple))] underline text-lg font-medium hover:text-[hsl(var(--purple))]/80 transition-colors"
+                >
+                  Learn More
+                </a>
+              </div>
             </div>
             <div className="flex flex-col md:flex-row gap-8 items-center justify-center">
               <div className="flex-1 flex flex-col gap-4">
@@ -179,13 +191,18 @@ function TeamsPage() {
             <p className="text-lg text-[hsl(var(--marketing-text-muted))] mb-8">
               $30/month per seat. All features included. Priority support for teams. No hidden fees.
             </p>
-            <Link
-              to="/pricing"
-              search={{ selected_plan: "team" }}
-              className="cta-button-primary inline-flex items-center gap-2 px-8 py-4 text-xl font-light rounded-lg shadow-lg transition-all duration-300"
-            >
-              View Team Pricing <ArrowRight className="w-5 h-5" />
-            </Link>
+            <div className="flex justify-center">
+              <div className="max-w-md w-full">
+                <PricingTier
+                  name={PRICING_PLANS.find(plan => plan.name === "Team")!.name}
+                  price={PRICING_PLANS.find(plan => plan.name === "Team")!.price}
+                  description={PRICING_PLANS.find(plan => plan.name === "Team")!.description}
+                  features={PRICING_PLANS.find(plan => plan.name === "Team")!.features}
+                  ctaText={PRICING_PLANS.find(plan => plan.name === "Team")!.ctaText}
+                  popular={PRICING_PLANS.find(plan => plan.name === "Team")!.popular}
+                />
+              </div>
+            </div>
             <div className="mt-6 text-[hsl(var(--marketing-text-muted))] text-sm">
               Need a larger deployment or have compliance questions?{" "}
               <a href="mailto:team@opensecret.cloud" className="underline hover:text-foreground">

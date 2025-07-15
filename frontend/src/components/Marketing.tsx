@@ -182,6 +182,8 @@ function PricingTier({
   );
 }
 
+export { PricingTier };
+
 export function Marketing() {
   const [isIOS, setIsIOS] = useState(false);
 
