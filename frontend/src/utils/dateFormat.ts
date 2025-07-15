@@ -27,7 +27,10 @@ export function formatResetDate(isoDateString: string | null | undefined): strin
 
     // If reset is today (same calendar day)
     if (daysDiff === 0) {
-      const hoursUntil = Math.ceil(timeDiff / (1000 * 60 * 60));
+      const hoursUntil = Math.floor(timeDiff / (1000 * 60 * 60));
+      if (hoursUntil < 1) {
+        return "Resets in less than 1 hour";
+      }
       if (hoursUntil === 1) {
         return "Resets in 1 hour";
       }
