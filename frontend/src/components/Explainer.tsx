@@ -90,14 +90,25 @@ export function InfoContent() {
       </div>
       <div className="w-full pt-4 flex gap-4 items-center justify-between">
         <VerificationStatus />
-        <a
-          href="https://blog.trymaple.ai"
+        <button
+          onClick={async () => {
+            try {
+              // Use Tauri opener plugin to open external URLs in the device's default browser
+              const { invoke } = await import("@tauri-apps/api/core");
+              await invoke("plugin:opener|open_url", { url: "https://blog.trymaple.ai" });
+            } catch (error) {
+              // Fallback for non-Tauri environments (e.g., web)
+              console.warn(
+                "Failed to open URL with Tauri opener, falling back to window.open:",
+                error
+              );
+              window.open("https://blog.trymaple.ai", "_blank", "noopener,noreferrer");
+            }
+          }}
           className="text-center hover:underline font-medium text-sm"
-          target="_blank"
-          rel="noopener noreferrer"
         >
           Learn more
-        </a>
+        </button>
       </div>
     </>
   );
