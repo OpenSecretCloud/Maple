@@ -78,7 +78,7 @@ function FeatureCard({
   return (
     <div className="feature-card from-[hsl(var(--purple))]/10 to-[hsl(var(--blue))]/10">
       <div className="p-3 rounded-full bg-[hsl(var(--marketing-card))]/50 border border-[hsl(var(--purple))]/30 w-fit">
-        <Icon className="w-6 h-6 text-[hsl(var(--purple))]" alt="" />
+        <Icon className="w-6 h-6 text-[hsl(var(--purple))]" aria-hidden="true" />
       </div>
       <h3 className="text-2xl font-medium text-foreground">{title}</h3>
       <p className="text-lg font-light text-[hsl(var(--marketing-text-muted))]">{description}</p>
