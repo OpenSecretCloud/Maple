@@ -11,7 +11,7 @@ export {
   type LocalState
 } from "./LocalStateContextDef";
 
-export const DEFAULT_MODEL_ID = "ibnzterrell/Meta-Llama-3.3-70B-Instruct-AWQ-INT4";
+export const DEFAULT_MODEL_ID = "llama3-3-70b";
 
 export const LocalStateProvider = ({ children }: { children: React.ReactNode }) => {
   /** The model that should be assumed when a chat doesn't yet have one */
@@ -19,7 +19,7 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
     id: DEFAULT_MODEL_ID,
     object: "model",
     created: Date.now(),
-    owned_by: "ibnzterrell",
+    owned_by: "meta",
     tasks: ["generate"]
   };
 
