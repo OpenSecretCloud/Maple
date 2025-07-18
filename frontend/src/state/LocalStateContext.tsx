@@ -2,6 +2,7 @@ import { useOpenSecret } from "@opensecret/react";
 import { useState } from "react";
 import { BillingStatus } from "@/billing/billingApi";
 import { LocalStateContext, Chat, HistoryItem, OpenSecretModel } from "./LocalStateContextDef";
+import { aliasModelName } from "@/utils/utils";
 
 export {
   LocalStateContext,
@@ -27,7 +28,7 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
     userPrompt: "",
     systemPrompt: null as string | null,
     userImages: [] as File[],
-    model: import.meta.env.VITE_DEV_MODEL_OVERRIDE || DEFAULT_MODEL_ID,
+    model: aliasModelName(import.meta.env.VITE_DEV_MODEL_OVERRIDE) || DEFAULT_MODEL_ID,
     availableModels: [llamaModel] as OpenSecretModel[],
     billingStatus: null as BillingStatus | null,
     searchQuery: "",
@@ -40,7 +41,7 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
   async function persistChat(chat: Chat) {
     const chatToSave = {
       /** If a model is missing, assume the default Llama and write it now */
-      model: chat.model || DEFAULT_MODEL_ID,
+      model: aliasModelName(chat.model) || DEFAULT_MODEL_ID,
       ...chat
     };
 
@@ -123,7 +124,12 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
     try {
       const chat = await get(`chat_${id}`);
       if (!chat) return undefined;
-      return JSON.parse(chat) as Chat;
+      const parsedChat = JSON.parse(chat) as Chat;
+      // Alias the model name for backward compatibility
+      if (parsedChat.model) {
+        parsedChat.model = aliasModelName(parsedChat.model);
+      }
+      return parsedChat;
     } catch (error) {
       console.error("Error fetching chat:", error);
       return undefined;
@@ -253,7 +259,10 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
   }
 
   function setModel(model: string) {
-    setLocalState((prev) => (prev.model === model ? prev : { ...prev, model }));
+    const aliasedModel = aliasModelName(model);
+    setLocalState((prev) =>
+      prev.model === aliasedModel ? prev : { ...prev, model: aliasedModel }
+    );
   }
 
   function setAvailableModels(models: OpenSecretModel[]) {
