@@ -16,6 +16,7 @@ import { PRICING_PLANS } from "@/config/pricingConfig";
 
 // File type constants for upload features
 const SUPPORTED_IMAGE_FORMATS = [".jpg", ".png", ".webp"];
+/* remove doc upload:
 const SUPPORTED_DOCUMENT_FORMATS = [
   ".pdf",
   ".doc",
@@ -28,6 +29,7 @@ const SUPPORTED_DOCUMENT_FORMATS = [
   ".ppt",
   ".md"
 ];
+*/
 
 type PricingSearchParams = {
   selected_plan?: string;
@@ -134,10 +136,10 @@ function PricingFAQ() {
 
         <details className="group">
           <summary className="cursor-pointer text-lg font-medium hover:text-foreground/80">
-            Which file types are supported for document and image upload?
+            Which file types are supported for image upload?
           </summary>
           <div className="mt-4 text-[hsl(var(--marketing-text-muted))] space-y-4">
-            <p>We support a range of file types with potential to add more in the future.</p>
+            <p>We support a range of image file types with potential to add more in the future.</p>
             <div>
               <strong>Images:</strong>
               <ul className="list-disc list-inside ml-4 mt-2 space-y-1">
@@ -148,6 +150,7 @@ function PricingFAQ() {
                 ))}
               </ul>
             </div>
+            {/* remove doc upload:
             <div>
               <strong>Documents:</strong>
               <ul className="list-disc list-inside ml-4 mt-2 space-y-1">
@@ -158,6 +161,7 @@ function PricingFAQ() {
                 ))}
               </ul>
             </div>
+            */}
             <p>There is a 1 file limit per chat prompt with a 5MB file size limit per file.</p>
           </div>
         </details>

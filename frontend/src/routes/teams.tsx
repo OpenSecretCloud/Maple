@@ -88,10 +88,17 @@ function TeamsPage() {
                 title="Pooled Usage"
                 description="Share AI credits across your team and control access from a central dashboard. Add or remove users anytime."
               />
+              {/* remove doc upload:
               <FeatureCard
                 icon={FileText}
                 title="Document & Image Upload"
                 description="Upload documents and images for AI analysis—summarize, extract insights, or translate securely as a team. Supported formats include PDF, DOCX, Excel, JPG, PNG, and more."
+              />
+              */}
+              <FeatureCard
+                icon={FileText}
+                title="Image Upload"
+                description="Upload images for AI analysis—extract text, analyze content, or get insights securely as a team. Supported formats include JPG, PNG, and WebP."
               />
               <FeatureCard
                 icon={Building2}

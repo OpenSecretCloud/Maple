@@ -73,3 +73,18 @@ export function useClickOutside(
     };
   }, [ref, callback]);
 }
+
+/**
+ * Alias old model names to new simplified names
+ * This ensures backward compatibility when the backend changes model names
+ */
+export function aliasModelName(modelName: string | undefined): string {
+  if (!modelName) return "";
+
+  // Map old complicated model name to new simplified name
+  if (modelName === "ibnzterrell/Meta-Llama-3.3-70B-Instruct-AWQ-INT4") {
+    return "llama3-3-70b";
+  }
+
+  return modelName;
+}

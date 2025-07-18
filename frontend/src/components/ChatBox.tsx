@@ -1,4 +1,10 @@
-import { CornerRightUp, Bot, Image, X, FileText, Loader2, Plus } from "lucide-react";
+import {
+  CornerRightUp,
+  Bot,
+  Image,
+  X,
+  Plus /* remove doc upload: , FileText, Loader2 */
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import {
@@ -16,8 +22,10 @@ import { Route as ChatRoute } from "@/routes/_auth.chat.$chatId";
 import { ChatMessage } from "@/state/LocalStateContext";
 import { useNavigate, useRouter } from "@tanstack/react-router";
 import { ModelSelector, MODEL_CONFIG, getModelTokenLimit } from "@/components/ModelSelector";
+/* remove doc upload:
 import { useOpenSecret } from "@opensecret/react";
 import type { DocumentResponse } from "@opensecret/react";
+*/
 import { encode } from "gpt-tokenizer";
 
 interface ParsedDocument {
@@ -232,16 +240,23 @@ export default function Component({
   const [images, setImages] = useState<File[]>([]);
   const [imageUrls, setImageUrls] = useState<Map<File, string>>(new Map());
   const [uploadedDocument, setUploadedDocument] = useState<{
-    original: DocumentResponse;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    original: any; // DocumentResponse;  remove doc upload
     parsed: ParsedDocument;
     cleanedText: string;
   } | null>(null);
+  /* remove doc upload:
   const [isUploadingDocument, setIsUploadingDocument] = useState(false);
   const [documentError, setDocumentError] = useState<string | null>(null);
+  */
   const [imageError, setImageError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  /* remove doc upload:
   const documentInputRef = useRef<HTMLInputElement>(null);
+  */
+  /* remove doc upload:
   const os = useOpenSecret();
+  */
   const navigate = useNavigate();
 
   // Find the first vision-capable model the user has access to
@@ -345,6 +360,7 @@ export default function Component({
   };
 
   // Helper function to read text file and format as ParsedDocument
+  /* remove doc upload:
   const processTextFileLocally = async (file: File): Promise<ParsedDocument> => {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
@@ -378,7 +394,9 @@ export default function Component({
       reader.readAsText(file);
     });
   };
+  */
 
+  /* remove doc upload:
   const handleDocumentUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files || e.target.files.length === 0) return;
 
@@ -471,6 +489,7 @@ export default function Component({
     setUploadedDocument(null);
     setDocumentError(null);
   };
+  */
   const [isFocused, setIsFocused] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const systemPromptRef = useRef<HTMLTextAreaElement>(null);
@@ -511,7 +530,9 @@ export default function Component({
       freshBillingStatus.product_name?.toLowerCase().includes("max") ||
       freshBillingStatus.product_name?.toLowerCase().includes("team"));
 
+  /* remove doc upload:
   const canUseDocuments = hasProTeamAccess;
+  */
 
   const handleSubmit = (e?: React.FormEvent) => {
     e?.preventDefault();
@@ -560,7 +581,9 @@ export default function Component({
     setImages([]);
 
     setUploadedDocument(null);
+    /* remove doc upload:
     setDocumentError(null);
+    */
     setImageError(null);
 
     // Re-focus input after submitting
@@ -780,9 +803,9 @@ export default function Component({
         }}
       >
         {(images.length > 0 ||
-          uploadedDocument ||
+          /* remove doc upload: uploadedDocument ||
           isUploadingDocument ||
-          documentError ||
+          documentError || */
           imageError ||
           imageConversionError) && (
           <div className="mb-2 space-y-2">
@@ -812,6 +835,7 @@ export default function Component({
                 {imageError || imageConversionError}
               </div>
             )}
+            {/* remove doc upload
             {isUploadingDocument && !uploadedDocument && (
               <div className="flex items-center gap-2 p-2 bg-muted/50 rounded-md animate-in fade-in duration-200">
                 <Loader2 className="h-4 w-4 text-muted-foreground animate-spin" />
@@ -841,6 +865,7 @@ export default function Component({
                 {documentError}
               </div>
             )}
+            */}
           </div>
         )}
         <Label htmlFor="message" className="sr-only">
@@ -886,6 +911,7 @@ export default function Component({
             onChange={handleAddImages}
             className="hidden"
           />
+          {/* remove doc upload
           <input
             type="file"
             accept=".pdf,.doc,.docx,.txt,.rtf,.xlsx,.xls,.pptx,.ppt,.md"
@@ -893,9 +919,10 @@ export default function Component({
             onChange={handleDocumentUpload}
             className="hidden"
           />
+          */}
 
           {/* Consolidated upload button - show for all users */}
-          {!uploadedDocument && (
+          {
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button
@@ -908,10 +935,7 @@ export default function Component({
                   <Plus className="h-4 w-4" />
                 </Button>
               </DropdownMenuTrigger>
-              <DropdownMenuContent
-                align="start"
-                className={cn(hasProTeamAccess && canUseDocuments ? "w-44" : "w-56")}
-              >
+              <DropdownMenuContent align="start" className="w-56">
                 <DropdownMenuItem
                   onClick={() => {
                     if (!hasProTeamAccess) {
@@ -945,35 +969,10 @@ export default function Component({
                     </>
                   )}
                 </DropdownMenuItem>
-                <DropdownMenuItem
-                  onClick={() => {
-                    if (!canUseDocuments) {
-                      navigate({ to: "/pricing" });
-                    } else {
-                      documentInputRef.current?.click();
-                    }
-                  }}
-                  className={cn(
-                    "flex items-center gap-2 group",
-                    !canUseDocuments && "hover:bg-purple-50 dark:hover:bg-purple-950/20"
-                  )}
-                >
-                  <FileText className="h-4 w-4 shrink-0" />
-                  <span>Upload Document</span>
-                  {!canUseDocuments && (
-                    <>
-                      <span className="ml-auto text-[10px] px-1.5 py-0.5 rounded-sm font-medium bg-gradient-to-r from-purple-500/10 to-blue-500/10 text-purple-600 dark:text-purple-400">
-                        Pro
-                      </span>
-                      <span className="text-[10px] text-purple-600 dark:text-purple-400 opacity-0 group-hover:opacity-100 transition-opacity">
-                        Upgrade?
-                      </span>
-                    </>
-                  )}
-                </DropdownMenuItem>
+                {/* remove doc upload */}
               </DropdownMenuContent>
             </DropdownMenu>
-          )}
+          }
 
           <Button
             type="submit"
