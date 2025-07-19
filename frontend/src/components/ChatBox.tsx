@@ -946,30 +946,25 @@ export default function Component({
                   )}
                 </DropdownMenuItem>
                 <DropdownMenuItem
-                  onClick={() => {
+                  onClick={(e) => {
+                    e.preventDefault();
+                    // Temporarily disabled - remove this condition when re-enabling
+                    /*
                     if (!canUseDocuments) {
                       navigate({ to: "/pricing" });
                     } else {
                       documentInputRef.current?.click();
                     }
+                    */
                   }}
-                  className={cn(
-                    "flex items-center gap-2 group",
-                    !canUseDocuments && "hover:bg-purple-50 dark:hover:bg-purple-950/20"
-                  )}
+                  className={cn("flex items-center gap-2 cursor-not-allowed opacity-50")}
+                  disabled
                 >
                   <FileText className="h-4 w-4 shrink-0" />
-                  <span>Upload Document</span>
-                  {!canUseDocuments && (
-                    <>
-                      <span className="ml-auto text-[10px] px-1.5 py-0.5 rounded-sm font-medium bg-gradient-to-r from-purple-500/10 to-blue-500/10 text-purple-600 dark:text-purple-400">
-                        Pro
-                      </span>
-                      <span className="text-[10px] text-purple-600 dark:text-purple-400 opacity-0 group-hover:opacity-100 transition-opacity">
-                        Upgrade?
-                      </span>
-                    </>
-                  )}
+                  <div className="flex flex-col">
+                    <span>Upload Document</span>
+                    <span className="text-xs text-muted-foreground">Temporarily Unavailable</span>
+                  </div>
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
