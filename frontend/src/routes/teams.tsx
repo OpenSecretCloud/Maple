@@ -90,8 +90,8 @@ function TeamsPage() {
               />
               <FeatureCard
                 icon={FileText}
-                title="Document & Image Upload"
-                description="Upload documents and images for AI analysis—summarize, extract insights, or translate securely as a team. Supported formats include PDF, DOCX, Excel, JPG, PNG, and more."
+                title="Advanced Model Access"
+                description="Teams get priority access to the latest AI models, including advanced language models for complex analysis, coding assistance, and creative tasks."
               />
               <FeatureCard
                 icon={Building2}
