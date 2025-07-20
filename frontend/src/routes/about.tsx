@@ -7,7 +7,7 @@ export const Route = createFileRoute("/about")({
   component: About
 });
 
-function About() {
+function About(): JSX.Element {
   return (
     <>
       <TopNav />
@@ -28,17 +28,32 @@ function About() {
 
         <div className="flex flex-col gap-8 text-foreground pt-8 max-w-4xl mx-auto">
           {/* Maple Trees Section */}
-          <div className="flex flex-col gap-6 dark:border-white/10 border-[hsl(var(--marketing-card-border))] dark:bg-black/75 bg-[hsl(var(--marketing-card))]/80 dark:text-white p-8 border rounded-lg">
+          <div
+            className={
+              "flex flex-col gap-6 dark:border-white/10 " +
+              "border-[hsl(var(--marketing-card-border))] dark:bg-black/75 " +
+              "bg-[hsl(var(--marketing-card))]/80 dark:text-white p-8 border rounded-lg"
+            }
+          >
             <h3 className="text-2xl font-medium">Our Inspiration</h3>
             <p className="text-lg leading-relaxed">
-              Maple trees communicate securely underground, allowing them to share resources and
-              adapt to harsh conditions. This is how Maple AI got its name. We need to have Freedom
-              of Thought with AI that is built on privacy and confidentiality.
+              Just as maple trees form vast underground networks, sharing resources and
+              communicating through their interconnected root systems to thrive in challenging
+              environments, Maple AI draws inspiration from this natural model of secure,
+              decentralized intelligence. We believe AI should preserve the fundamental right to
+              freedom of thought while maintaining the highest standards of privacy and
+              confidentiality.
             </p>
           </div>
 
           {/* Founders Section */}
-          <div className="flex flex-col gap-6 dark:border-white/10 border-[hsl(var(--marketing-card-border))] dark:bg-black/75 bg-[hsl(var(--marketing-card))]/80 dark:text-white p-8 border rounded-lg">
+          <div
+            className={
+              "flex flex-col gap-6 dark:border-white/10 " +
+              "border-[hsl(var(--marketing-card-border))] dark:bg-black/75 " +
+              "bg-[hsl(var(--marketing-card))]/80 dark:text-white p-8 border rounded-lg"
+            }
+          >
             <h3 className="text-2xl font-medium">Founders</h3>
             <div className="grid md:grid-cols-2 gap-8">
               {/* Founder 1 */}
@@ -76,7 +91,13 @@ function About() {
           </div>
 
           {/* OpenSecret Company Section */}
-          <div className="flex flex-col gap-6 dark:border-white/10 border-[hsl(var(--marketing-card-border))] dark:bg-black/75 bg-[hsl(var(--marketing-card))]/80 dark:text-white p-8 border rounded-lg">
+          <div
+            className={
+              "flex flex-col gap-6 dark:border-white/10 " +
+              "border-[hsl(var(--marketing-card-border))] dark:bg-black/75 " +
+              "bg-[hsl(var(--marketing-card))]/80 dark:text-white p-8 border rounded-lg"
+            }
+          >
             <h3 className="text-2xl font-medium">Built by OpenSecret</h3>
             <div className="flex flex-col md:flex-row items-center gap-6">
               <div className="w-24 h-24 bg-gradient-to-br from-[hsl(var(--purple))] to-[hsl(var(--blue))] rounded-lg flex items-center justify-center">
@@ -100,7 +121,13 @@ function About() {
           </div>
 
           {/* Developer Programs Section */}
-          <div className="flex flex-col gap-6 dark:border-white/10 border-[hsl(var(--marketing-card-border))] dark:bg-black/75 bg-[hsl(var(--marketing-card))]/80 dark:text-white p-8 border rounded-lg">
+          <div
+            className={
+              "flex flex-col gap-6 dark:border-white/10 " +
+              "border-[hsl(var(--marketing-card-border))] dark:bg-black/75 " +
+              "bg-[hsl(var(--marketing-card))]/80 dark:text-white p-8 border rounded-lg"
+            }
+          >
             <h3 className="text-2xl font-medium">Developer Programs</h3>
             <div className="flex flex-wrap justify-center gap-8">
               {/* Nvidia Inception */}
