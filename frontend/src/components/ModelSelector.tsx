@@ -28,6 +28,10 @@ export const MODEL_CONFIG: Record<string, ModelCfg> = {
     displayName: "Llama 3.3 70B",
     tokenLimit: 70000
   },
+  "llama3-3-70b": {
+    displayName: "Llama 3.3 70B",
+    tokenLimit: 70000
+  },
   "google/gemma-3-27b-it": {
     displayName: "Gemma 3 27B",
     badge: "Starter",
@@ -112,9 +116,6 @@ export function ModelSelector({
           }
           const filteredModels = models.filter((model) => {
             if (model.id === "latest") return false;
-
-            // Filter out duplicate llama model
-            if (model.id === "llama3-3-70b") return false;
 
             // Filter out models with lowercase 'instruct' or 'embed' in their ID
             if (model.id.includes("instruct") || model.id.includes("embed")) {
