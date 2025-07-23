@@ -105,6 +105,12 @@ export function Footer() {
             >
               Community
             </a>
+            <Link
+              to="/about"
+              className="text-[hsl(var(--marketing-text-muted))] hover:text-foreground transition-colors"
+            >
+              About
+            </Link>
           </div>
 
           <div className="flex flex-col gap-4">

@@ -21,6 +21,7 @@ import { Route as PasswordResetImport } from './routes/password-reset'
 import { Route as LoginImport } from './routes/login'
 import { Route as DownloadsImport } from './routes/downloads'
 import { Route as DesktopAuthImport } from './routes/desktop-auth'
+import { Route as AboutImport } from './routes/about'
 import { Route as AuthImport } from './routes/_auth'
 import { Route as IndexImport } from './routes/index'
 import { Route as VerifyCodeImport } from './routes/verify.$code'
@@ -91,6 +92,12 @@ const DesktopAuthRoute = DesktopAuthImport.update({
   getParentRoute: () => rootRoute,
 } as any)
 
+const AboutRoute = AboutImport.update({
+  id: '/about',
+  path: '/about',
+  getParentRoute: () => rootRoute,
+} as any)
+
 const AuthRoute = AuthImport.update({
   id: '/_auth',
   getParentRoute: () => rootRoute,
@@ -148,6 +155,13 @@ declare module '@tanstack/react-router' {
       path: ''
       fullPath: ''
       preLoaderRoute: typeof AuthImport
+      parentRoute: typeof rootRoute
+    }
+    '/about': {
+      id: '/about'
+      path: '/about'
+      fullPath: '/about'
+      preLoaderRoute: typeof AboutImport
       parentRoute: typeof rootRoute
     }
     '/desktop-auth': {
@@ -285,6 +299,7 @@ const PasswordResetRouteWithChildren = PasswordResetRoute._addFileChildren(
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '': typeof AuthRouteWithChildren
+  '/about': typeof AboutRoute
   '/desktop-auth': typeof DesktopAuthRoute
   '/downloads': typeof DownloadsRoute
   '/login': typeof LoginRoute
@@ -305,6 +320,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '': typeof AuthRouteWithChildren
+  '/about': typeof AboutRoute
   '/desktop-auth': typeof DesktopAuthRoute
   '/downloads': typeof DownloadsRoute
   '/login': typeof LoginRoute
@@ -326,6 +342,7 @@ export interface FileRoutesById {
   __root__: typeof rootRoute
   '/': typeof IndexRoute
   '/_auth': typeof AuthRouteWithChildren
+  '/about': typeof AboutRoute
   '/desktop-auth': typeof DesktopAuthRoute
   '/downloads': typeof DownloadsRoute
   '/login': typeof LoginRoute
@@ -348,6 +365,7 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | ''
+    | '/about'
     | '/desktop-auth'
     | '/downloads'
     | '/login'
@@ -367,6 +385,7 @@ export interface FileRouteTypes {
   to:
     | '/'
     | ''
+    | '/about'
     | '/desktop-auth'
     | '/downloads'
     | '/login'
@@ -386,6 +405,7 @@ export interface FileRouteTypes {
     | '__root__'
     | '/'
     | '/_auth'
+    | '/about'
     | '/desktop-auth'
     | '/downloads'
     | '/login'
@@ -407,6 +427,7 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AuthRoute: typeof AuthRouteWithChildren
+  AboutRoute: typeof AboutRoute
   DesktopAuthRoute: typeof DesktopAuthRoute
   DownloadsRoute: typeof DownloadsRoute
   LoginRoute: typeof LoginRoute
@@ -425,6 +446,7 @@ export interface RootRouteChildren {
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AuthRoute: AuthRouteWithChildren,
+  AboutRoute: AboutRoute,
   DesktopAuthRoute: DesktopAuthRoute,
   DownloadsRoute: DownloadsRoute,
   LoginRoute: LoginRoute,
@@ -452,6 +474,7 @@ export const routeTree = rootRoute
       "children": [
         "/",
         "/_auth",
+        "/about",
         "/desktop-auth",
         "/downloads",
         "/login",
@@ -475,6 +498,9 @@ export const routeTree = rootRoute
       "children": [
         "/_auth/chat/$chatId"
       ]
+    },
+    "/about": {
+      "filePath": "about.tsx"
     },
     "/desktop-auth": {
       "filePath": "desktop-auth.tsx"
