@@ -147,11 +147,13 @@ function About(): JSX.Element {
 
               {/* Google Cloud */}
               <div className="flex flex-col items-center gap-3">
-                <div className="w-32 h-16 bg-gradient-to-br from-blue-500 to-blue-600 rounded-lg flex items-center justify-center">
-                  <span className="text-white text-sm font-medium">Google Cloud</span>
-                </div>
+                <img
+                  src="/google-cloud-for-startups.png"
+                  alt="Google Cloud for Startups program logo"
+                  className="w-32 h-16 object-contain"
+                />
                 <span className="text-sm text-[hsl(var(--marketing-text-muted))]">
-                  Developer Program
+                  Google Cloud for Startups
                 </span>
               </div>
             </div>
@@ -160,7 +162,7 @@ function About(): JSX.Element {
           {/* Built in Austin Footer */}
           <div className="text-center py-8">
             <p className="text-lg text-[hsl(var(--marketing-text-muted))]">
-              Built in Austin, TX. Living in Secure Enclaves.
+              Built in Austin. Living in Secure Enclaves.
             </p>
           </div>
         </div>
