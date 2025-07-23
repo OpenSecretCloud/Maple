@@ -135,9 +135,11 @@ function About(): JSX.Element {
             <div className="flex flex-wrap justify-center gap-8">
               {/* Nvidia Inception */}
               <div className="flex flex-col items-center gap-3">
-                <div className="w-32 h-16 bg-gradient-to-br from-green-500 to-green-600 rounded-lg flex items-center justify-center">
-                  <span className="text-white text-sm font-medium">NVIDIA</span>
-                </div>
+                <img
+                  src="/nvidia-inception.png"
+                  alt="NVIDIA Inception Program logo"
+                  className="w-32 h-16 object-contain"
+                />
                 <span className="text-sm text-[hsl(var(--marketing-text-muted))]">
                   Inception Program
                 </span>
