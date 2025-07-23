@@ -37,12 +37,11 @@ function About(): JSX.Element {
           >
             <h3 className="text-2xl font-medium">Our Inspiration</h3>
             <p className="text-lg leading-relaxed">
-              Maple trees form vast underground networks, sharing resources and
-              communicating through their interconnected root systems to thrive in challenging
-              environments. Maple AI draws inspiration from this natural model of secure,
-              decentralized intelligence. We believe AI should preserve the fundamental human right to
-              freedom of thought by upholding the highest standards of privacy and
-              confidentiality.
+              Maple trees form vast underground networks, sharing resources and communicating
+              through their interconnected root systems to thrive in challenging environments. Maple
+              AI draws inspiration from this natural model of secure, decentralized intelligence. We
+              believe AI should preserve the fundamental human right to freedom of thought by
+              upholding the highest standards of privacy and confidentiality.
             </p>
           </div>
 
@@ -67,7 +66,8 @@ function About(): JSX.Element {
                   <h4 className="text-xl font-medium mb-1">Mark Suman</h4>
                   <p className="text-[hsl(var(--marketing-text-muted))] mb-3">CEO</p>
                   <p className="text-sm leading-relaxed max-w-xs">
-                  Early employee in Product and Engineering at multiple startups. 6 years in software engineering at Apple with a focus on AI and Privacy.
+                    Early employee in Product and Engineering at multiple startups. 6 years in
+                    software engineering at Apple with a focus on AI and Privacy.
                   </p>
                 </div>
               </div>
@@ -83,7 +83,8 @@ function About(): JSX.Element {
                   <h4 className="text-xl font-medium mb-1">Anthony Ronning</h4>
                   <p className="text-[hsl(var(--marketing-text-muted))] mb-3">CTO</p>
                   <p className="text-sm leading-relaxed max-w-xs">
-                  Infrastructure engineer in many startups over the last 9 years. Previous experience in defense, security, networking, and bitcoin companies.
+                    Infrastructure engineer in many startups over the last 9 years. Previous
+                    experience in defense, security, networking, and bitcoin companies.
                   </p>
                 </div>
               </div>
@@ -104,12 +105,13 @@ function About(): JSX.Element {
                 src="/opensecret-logo.png"
                 alt="OpenSecret company logo"
                 className="w-24 h-24 rounded-lg object-cover"
-                style={{ objectPosition: 'center' }}
+                style={{ objectPosition: "center" }}
               />
               <div className="flex-1 text-center md:text-left">
                 <p className="text-lg leading-relaxed mb-4">
-                  Maple AI is built by OpenSecret, pioneering the future of privacy-preserving
-                  apps. Whether artificial intelligence or traditional apps, user data is end-to-end encrypted.
+                  Maple AI is built by OpenSecret, pioneering the future of privacy-preserving apps.
+                  Whether artificial intelligence or traditional apps, user data is end-to-end
+                  encrypted.
                 </p>
                 <a
                   href="https://opensecret.cloud"
