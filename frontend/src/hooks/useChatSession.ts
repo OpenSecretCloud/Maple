@@ -26,6 +26,7 @@ export function useChatSession(
   const [phase, setPhase] = useState<ChatPhase>("idle");
   const [optimisticChat, setOptimisticChat] = useState<Chat | null>(null);
   const [currentStreamingMessage, setCurrentStreamingMessage] = useState<string>();
+  const [streamingError, setStreamingError] = useState<string | null>(null);
   const processingRef = useRef(false);
   const abortControllerRef = useRef<AbortController | null>(null);
 
@@ -47,6 +48,7 @@ export function useChatSession(
     setOptimisticChat(null);
     setPhase("idle");
     setCurrentStreamingMessage(undefined);
+    setStreamingError(null);
     processingRef.current = false;
   }, [chatId]);
 
@@ -134,6 +136,31 @@ export function useChatSession(
         if (abortController.signal.aborted) {
           throw new Error("Stream aborted");
         }
+
+        // Handle streaming errors from OpenAI
+        let errorMessage = "An error occurred while streaming the response.";
+        if (error instanceof Error) {
+          if (
+            error.message.includes("stream_error") ||
+            error.message.includes("Stream processing error")
+          ) {
+            errorMessage = "Stream processing error. Please try again.";
+          } else if (error.message.includes("401")) {
+            errorMessage = "Authentication error. Please check your API key.";
+          } else if (error.message.includes("429")) {
+            errorMessage = "Rate limit exceeded. Please wait a moment and try again.";
+          } else if (
+            error.message.includes("500") ||
+            error.message.includes("502") ||
+            error.message.includes("503")
+          ) {
+            errorMessage = "Server error. The AI service is temporarily unavailable.";
+          } else {
+            errorMessage = error.message;
+          }
+        }
+
+        setStreamingError(errorMessage);
         throw error;
       } finally {
         if (abortControllerRef.current === abortController) {
@@ -208,6 +235,7 @@ export function useChatSession(
 
       processingRef.current = true;
       setPhase("streaming");
+      setStreamingError(null); // Clear any previous errors
 
       const newMessages = [...chat.messages, userMessage];
 
@@ -266,7 +294,9 @@ export function useChatSession(
           return;
         }
 
-        throw error;
+        // For streaming errors, we've already set the error state
+        // Don't throw to prevent uncaught promise rejection
+        console.error("Chat streaming error:", error);
       } finally {
         processingRef.current = false;
       }
@@ -279,7 +309,8 @@ export function useChatSession(
     phase,
     currentStreamingMessage,
     appendUserMessage,
-    streamAssistant
+    streamAssistant,
+    streamingError
   };
 }
 

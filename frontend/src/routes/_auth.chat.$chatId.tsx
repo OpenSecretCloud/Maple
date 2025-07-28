@@ -189,7 +189,8 @@ function ChatComponent() {
     chat: localChat,
     phase,
     currentStreamingMessage,
-    appendUserMessage
+    appendUserMessage,
+    streamingError
   } = useChatSession(chatId, {
     getChatById,
     persistChat,
@@ -546,13 +547,9 @@ END OF INSTRUCTIONS`;
                 )}
               </div>
             ))}
-            {(currentStreamingMessage || isLoading) && (
+            {currentStreamingMessage && (
               <div className="flex flex-col gap-2">
-                <SystemMessage
-                  text={currentStreamingMessage || ""}
-                  loading={isLoading}
-                  chatId={chatId}
-                />
+                <SystemMessage text={currentStreamingMessage} loading={isLoading} chatId={chatId} />
               </div>
             )}
           </div>
@@ -568,8 +565,13 @@ END OF INSTRUCTIONS`;
         </div>
 
         {/* Place the chat box inline (below messages) in normal flow */}
-        <div className="w-full max-w-[45rem] mx-auto flex flex-col gap-2 px-2 pb-2">
-          {/* Error handling can be added here if needed */}
+        <div className="w-full max-w-[45rem] mx-auto flex flex-col px-2 pb-2">
+          {/* Display streaming error if present */}
+          {streamingError && (
+            <div className="mb-2 p-3 bg-destructive/10 text-destructive rounded-md text-sm">
+              {streamingError}
+            </div>
+          )}
           <ChatBox
             onSubmit={sendMessage}
             messages={localChat.messages}
