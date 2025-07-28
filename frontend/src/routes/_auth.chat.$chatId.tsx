@@ -231,11 +231,8 @@ function ChatComponent() {
       setSystemPrompt(null);
       setUserImages([]);
 
-      // Combine prompts
-      const finalPrompt = sysPrompt ? `[System: ${sysPrompt}]\n\n${prompt}` : prompt;
-
-      // Send message
-      appendUserMessage(finalPrompt, images).catch((error) => {
+      // Send message with system prompt as separate parameter
+      appendUserMessage(prompt, images, undefined, undefined, sysPrompt || undefined).catch((error) => {
         // Only reset if it wasn't an abort
         if (!(error instanceof Error) || error.message !== "Stream aborted") {
           console.error("[ChatComponent] Failed to append message:", error);
@@ -361,11 +358,8 @@ function ChatComponent() {
       documentText?: string,
       documentMetadata?: { filename: string; fullContent: string }
     ) => {
-      // Handle system prompt if provided
-      const messageContent = systemPrompt ? `[System: ${systemPrompt}]\n\n${input}` : input;
-
-      // Use the appendUserMessage from the hook
-      await appendUserMessage(messageContent, images, documentText, documentMetadata);
+      // Use the appendUserMessage from the hook with system prompt as separate parameter
+      await appendUserMessage(input, images, documentText, documentMetadata, systemPrompt);
 
       // Scroll to bottom after sending
       requestAnimationFrame(() => {
