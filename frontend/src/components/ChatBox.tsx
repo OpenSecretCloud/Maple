@@ -719,7 +719,7 @@ export default function Component({
   return (
     <div className="flex flex-col w-full">
       {/* Simple System Prompt Section - just a gear button and input when expanded */}
-      <div className={cn("mb-2", !canEditSystemPrompt && "invisible")}>
+      <div className={cn(chatId ? "hidden" : !canEditSystemPrompt ? "invisible mb-2" : "mb-2")}>
         <div className="flex items-center gap-2 mb-1">
           <button
             type="button"
