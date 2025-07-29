@@ -176,7 +176,8 @@ export function useChatSession(
       content: string,
       images?: File[],
       documentText?: string,
-      documentMetadata?: { filename: string; fullContent: string }
+      documentMetadata?: { filename: string; fullContent: string },
+      systemPrompt?: string
     ) => {
       if (phase !== "idle") {
         return;
@@ -237,7 +238,12 @@ export function useChatSession(
       setPhase("streaming");
       setStreamingError(null); // Clear any previous errors
 
-      const newMessages = [...chat.messages, userMessage];
+      // Add system message first if provided
+      const newMessages = [...chat.messages];
+      if (systemPrompt && systemPrompt.trim()) {
+        newMessages.push({ role: "system", content: systemPrompt.trim() } as ChatMessage);
+      }
+      newMessages.push(userMessage);
 
       // Update optimistic state immediately
       setOptimisticChat({
