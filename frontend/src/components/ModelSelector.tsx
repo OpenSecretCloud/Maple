@@ -51,6 +51,12 @@ export const MODEL_CONFIG: Record<string, ModelCfg> = {
     requiresPro: true,
     tokenLimit: 64000
   },
+  "deepseek-r1-0528": {
+    displayName: "DeepSeek R1 0528",
+    badge: "Pro",
+    requiresPro: true,
+    tokenLimit: 130000
+  },
   "mistral-small-3-1-24b": {
     displayName: "Mistral Small 3.1 24B",
     badge: "Pro",
