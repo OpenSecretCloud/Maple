@@ -98,11 +98,13 @@ function About(): JSX.Element {
             <div className="grid md:grid-cols-2 gap-8">
               {/* Founder 1 */}
               <div className="flex flex-col items-center text-center gap-4">
-                <img
-                  src="/mark.jpg"
-                  alt="Mark, Co-founder of Maple AI"
-                  className="w-32 h-32 rounded-full object-cover border-4 border-[hsl(var(--purple))]"
-                />
+                <a href="https://x.com/marks_ftw" target="_blank" rel="noopener noreferrer" aria-label="Mark Suman on X">
+                  <img
+                    src="/mark.jpg"
+                    alt="Mark, Co-founder of Maple AI"
+                    className="w-32 h-32 rounded-full object-cover border-4 border-[hsl(var(--purple))]"
+                  />
+                </a>
                 <div>
                   <h4 className="text-xl font-medium mb-1">Mark Suman</h4>
                   <p className="text-[hsl(var(--marketing-text-muted))] mb-3">CEO</p>
@@ -117,9 +119,13 @@ function About(): JSX.Element {
                         className="inline-flex items-center justify-center w-5 h-5"
                         aria-label="Mark Suman on X"
                       >
-                        <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4 text-[hsl(var(--purple))] align-middle">
-                          <rect x="4" y="4" width="16" height="16" rx="2" stroke="currentColor" strokeWidth="2"/>
-                          <path d="M8 8l8 8M16 8l-8 8" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+                        <svg viewBox="0 0 24 24" className="w-4 h-4 align-middle">
+                          <rect x="4" y="4" width="16" height="16" rx="2"
+                            className="fill-[hsl(var(--purple))] stroke-[hsl(var(--purple))] dark:fill-transparent dark:stroke-[hsl(var(--purple))]"
+                            fill="currentColor" stroke="currentColor" strokeWidth="2"/>
+                          <path d="M8 8l8 8M16 8l-8 8"
+                            className="stroke-white dark:stroke-[hsl(var(--purple))]"
+                            stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
                         </svg>
                       </a>
                       <a
@@ -129,7 +135,14 @@ function About(): JSX.Element {
                         className="inline-flex items-center justify-center w-5 h-5"
                         aria-label="Mark Suman on LinkedIn"
                       >
-                        <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4 text-[hsl(var(--purple))] align-middle"><rect x="4" y="4" width="16" height="16" rx="2" stroke="currentColor" strokeWidth="2"/><path d="M8 11v5M8 8v.01M12 16v-5m0 0a2 2 0 1 1 4 0v5" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/></svg>
+                        <svg viewBox="0 0 24 24" className="w-4 h-4 align-middle">
+                          <rect x="4" y="4" width="16" height="16" rx="2"
+                            className="fill-[hsl(var(--purple))] stroke-[hsl(var(--purple))] dark:fill-transparent dark:stroke-[hsl(var(--purple))]"
+                            fill="currentColor" stroke="currentColor" strokeWidth="2"/>
+                          <path d="M8 11v5M8 8v.01M12 16v-5m0 0a2 2 0 1 1 4 0v5"
+                            className="stroke-white dark:stroke-[hsl(var(--purple))]"
+                            stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+                        </svg>
                       </a>
                     </span>
                   </p>
@@ -138,11 +151,13 @@ function About(): JSX.Element {
 
               {/* Founder 2 */}
               <div className="flex flex-col items-center text-center gap-4">
-                <img
-                  src="/anthony.jpg"
-                  alt="Anthony, Co-founder of Maple AI"
-                  className="w-32 h-32 rounded-full object-cover border-4 border-[hsl(var(--blue))]"
-                />
+                <a href="https://x.com/anthonyronning_" target="_blank" rel="noopener noreferrer" aria-label="Anthony Ronning on X">
+                  <img
+                    src="/anthony.jpg"
+                    alt="Anthony, Co-founder of Maple AI"
+                    className="w-32 h-32 rounded-full object-cover border-4 border-[hsl(var(--blue))]"
+                  />
+                </a>
                 <div>
                   <h4 className="text-xl font-medium mb-1">Anthony Ronning</h4>
                   <p className="text-[hsl(var(--marketing-text-muted))] mb-3">CTO</p>
@@ -157,9 +172,13 @@ function About(): JSX.Element {
                         className="inline-flex items-center justify-center w-5 h-5"
                         aria-label="Anthony Ronning on X"
                       >
-                        <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4 text-[hsl(var(--blue))] align-middle">
-                          <rect x="4" y="4" width="16" height="16" rx="2" stroke="currentColor" strokeWidth="2"/>
-                          <path d="M8 8l8 8M16 8l-8 8" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+                        <svg viewBox="0 0 24 24" className="w-4 h-4 align-middle">
+                          <rect x="4" y="4" width="16" height="16" rx="2"
+                            className="fill-[hsl(var(--blue))] stroke-[hsl(var(--blue))] dark:fill-transparent dark:stroke-[hsl(var(--blue))]"
+                            fill="currentColor" stroke="currentColor" strokeWidth="2"/>
+                          <path d="M8 8l8 8M16 8l-8 8"
+                            className="stroke-white dark:stroke-[hsl(var(--blue))]"
+                            stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
                         </svg>
                       </a>
                     </span>
