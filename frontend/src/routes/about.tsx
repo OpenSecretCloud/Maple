@@ -109,6 +109,29 @@ function About(): JSX.Element {
                   <p className="text-sm leading-relaxed max-w-xs">
                     Early employee in Product and Engineering at multiple startups, including Instructure Canvas. Most recently, 6 years in
                     software engineering at Apple with a focus on AI and Privacy.
+                    <span className="inline-flex items-center align-middle ml-2 gap-1">
+                      <a
+                        href="https://x.com/marks_ftw"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center justify-center w-5 h-5"
+                        aria-label="Mark Suman on X"
+                      >
+                        <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4 text-black dark:text-zinc-200 align-middle">
+                          <rect x="4" y="4" width="16" height="16" rx="2" stroke="currentColor" strokeWidth="2"/>
+                          <path d="M8 8l8 8M16 8l-8 8" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+                        </svg>
+                      </a>
+                      <a
+                        href="https://linkedin.com/in/marksuman"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center justify-center w-5 h-5"
+                        aria-label="Mark Suman on LinkedIn"
+                      >
+                        <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4 text-black dark:text-zinc-200 align-middle"><rect x="4" y="4" width="16" height="16" rx="2" stroke="currentColor" strokeWidth="2"/><path d="M8 11v5M8 8v.01M12 16v-5m0 0a2 2 0 1 1 4 0v5" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/></svg>
+                      </a>
+                    </span>
                   </p>
                 </div>
               </div>
@@ -126,6 +149,20 @@ function About(): JSX.Element {
                   <p className="text-sm leading-relaxed max-w-xs">
                     Infrastructure engineer in many startups over the last 9 years. Previous
                     experience in defense, security, networking, and bitcoin companies.
+                    <span className="inline-flex items-center align-middle ml-2 gap-1">
+                      <a
+                        href="https://x.com/anthonyronning_"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center justify-center w-5 h-5"
+                        aria-label="Anthony Ronning on X"
+                      >
+                        <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4 text-black dark:text-zinc-200 align-middle">
+                          <rect x="4" y="4" width="16" height="16" rx="2" stroke="currentColor" strokeWidth="2"/>
+                          <path d="M8 8l8 8M16 8l-8 8" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+                        </svg>
+                      </a>
+                    </span>
                   </p>
                 </div>
               </div>
