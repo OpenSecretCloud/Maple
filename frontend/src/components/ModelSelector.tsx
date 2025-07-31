@@ -52,7 +52,7 @@ export const MODEL_CONFIG: Record<string, ModelCfg> = {
     tokenLimit: 64000
   },
   "deepseek-r1-0528": {
-    displayName: "DeepSeek R1 0528",
+    displayName: "DeepSeek R1 0528 671B",
     badge: "Pro",
     requiresPro: true,
     tokenLimit: 130000
