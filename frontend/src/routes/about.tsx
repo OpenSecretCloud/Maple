@@ -196,7 +196,7 @@ function About(): JSX.Element {
               "bg-[hsl(var(--marketing-card))]/80 dark:text-white p-8 border rounded-lg"
             }
           >
-            <h3 className="text-2xl font-medium">Built by OpenSecret</h3>
+            <h3 className="text-2xl font-medium">Built on OpenSecret</h3>
             <div className="flex flex-col md:flex-row items-center gap-6">
               <img
                 src="/opensecret-logo.png"
@@ -206,7 +206,7 @@ function About(): JSX.Element {
               />
               <div className="flex-1 text-center md:text-left">
                 <p className="text-lg leading-relaxed mb-4">
-                  Maple AI is built by OpenSecret, pioneering the future of privacy-preserving apps.
+                  Maple AI is built on OpenSecret, pioneering the future of privacy-preserving apps.
                   Whether artificial intelligence or traditional apps, user data is end-to-end
                   encrypted.
                 </p>
