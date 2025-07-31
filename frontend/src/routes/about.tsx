@@ -36,25 +36,49 @@ function About(): JSX.Element {
             }
           >
             <h3 className="text-2xl font-medium">Our Inspiration</h3>
-            <p className="text-lg leading-relaxed">
-            Maple trees form vast underground networks of interconnected root systems, 
-            communicating and sharing resources without the knowledge of animals above. 
-            This cooperative approach helps them thrive in challenging environments.
-            </p>
-              
-            <p className="text-lg leading-relaxed">
-              Maple AI draws inspiration from this natural model of secure, decentralized intelligence. 
-              Each account uses a personal encryption key, giving you control over the data. 
-              Whether you are handling sensitive information on behalf of clients or your own personal thoughts, 
-              communication stays between you and the AI. No data is used for training models nor shared with third parties, 
-              not even us.
-            </p>
-            <p className="text-lg leading-relaxed">
-              People shouldn't have to sacrifice their privacy for high-quality AI.
-              Maple upholds the highest standards of privacy and confidentiality, 
-              preserving the fundamental human right to freedom of thought.
-              With confidence in AI, you can work together to thrive in your own challenging environments.
-            </p>
+            <div className="flex flex-col md:flex-row gap-8 items-start">
+              <div className="flex flex-col items-center w-full md:w-48 flex-shrink-0">
+                <img
+                  src="/maple-autumn-forest.jpg"
+                  alt="Maple autumn forest"
+                  className="w-full md:w-48 h-auto rounded-lg object-contain md:object-cover"
+                  style={{ maxHeight: '220px' }}
+                />
+                <span className="block text-xs text-[hsl(var(--marketing-text-muted))] mt-2 text-center">
+                  Autumn Woods <br /> by William Trost Richards
+                </span>
+                <img
+                  src="/maple-app-icon-vector.svg"
+                  alt="Maple App Icon"
+                  className="w-32 h-32 md:w-40 md:h-40 mt-4 rounded-lg object-contain hidden md:block"
+                />
+              </div>
+              <div className="flex flex-col gap-4 flex-1">
+                <p className="text-lg leading-relaxed">
+                Maple trees form underground networks of root systems, 
+                communicating and sharing resources without the knowledge of animals above. 
+                This cooperative approach helps them thrive in challenging environments.
+                </p>
+                <p className="text-lg leading-relaxed">
+                  Maple AI draws inspiration from this natural model of secure, decentralized intelligence. 
+                  Each account uses a personal encryption key, giving you control over the data. 
+                  Whether you are handling sensitive information on behalf of clients or your own personal thoughts, 
+                  communication stays between you and the AI. No data is used for training models nor shared with third parties, 
+                  not even us.
+                </p>
+                <p className="text-lg leading-relaxed">
+                  People shouldn't have to sacrifice their privacy for high-quality AI.
+                  Maple upholds the highest standards of privacy and confidentiality, 
+                  preserving the fundamental human right to freedom of thought.
+                  With confidence in AI, you can work together to thrive in your own challenging environments.
+                </p>
+                <img
+                  src="/maple-app-icon-vector.svg"
+                  alt="Maple App Icon"
+                  className="w-32 h-32 mt-4 rounded-lg object-contain block md:hidden mx-auto"
+                />
+              </div>
+            </div>
           </div>
 
           {/* Founders Section */}
