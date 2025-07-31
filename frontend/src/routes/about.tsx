@@ -21,7 +21,7 @@ function About(): JSX.Element {
           }
           subtitle={
             <p className="text-2xl text-[hsl(var(--marketing-text-muted))] max-w-2xl mx-auto">
-              Building AI with freedom of thought, privacy, and confidentiality.
+              Incredibly powerful AI that doesn't share your data with anyone
             </p>
           }
         />
@@ -37,11 +37,23 @@ function About(): JSX.Element {
           >
             <h3 className="text-2xl font-medium">Our Inspiration</h3>
             <p className="text-lg leading-relaxed">
-              Maple trees form vast underground networks, sharing resources and communicating
-              through their interconnected root systems to thrive in challenging environments. Maple
-              AI draws inspiration from this natural model of secure, decentralized intelligence. We
-              believe AI should preserve the fundamental human right to freedom of thought by
-              upholding the highest standards of privacy and confidentiality.
+            Maple trees form vast underground networks of interconnected root systems, 
+            communicating and sharing resources without the knowledge of animals above. 
+            This cooperative approach helps them thrive in challenging environments.
+            </p>
+              
+            <p className="text-lg leading-relaxed">
+              Maple AI draws inspiration from this natural model of secure, decentralized intelligence. 
+              Each account uses a personal encryption key, giving you control over the data. 
+              Whether you are handling sensitive information on behalf of clients or your own personal thoughts, 
+              communication stays between you and the AI. No data is used for training models nor shared with third parties, 
+              not even us.
+            </p>
+            <p className="text-lg leading-relaxed">
+              People shouldn't have to sacrifice their privacy for high-quality AI.
+              Maple upholds the highest standards of privacy and confidentiality, 
+              preserving the fundamental human right to freedom of thought.
+              With confidence in AI, you can work together to thrive in your own challenging environments.
             </p>
           </div>
 
@@ -54,6 +66,11 @@ function About(): JSX.Element {
             }
           >
             <h3 className="text-2xl font-medium">Founders</h3>
+            <p className="text-lg leading-relaxed">
+              Our team has combined over 30 years experience building scalable cloud and local app solutions
+              that take privacy and security seriously. We have successfully built in the fields of data storage, 
+              defense, fintech, education, security, therapy, computer vision, and consumer technology.
+            </p>
             <div className="grid md:grid-cols-2 gap-8">
               {/* Founder 1 */}
               <div className="flex flex-col items-center text-center gap-4">
@@ -66,7 +83,7 @@ function About(): JSX.Element {
                   <h4 className="text-xl font-medium mb-1">Mark Suman</h4>
                   <p className="text-[hsl(var(--marketing-text-muted))] mb-3">CEO</p>
                   <p className="text-sm leading-relaxed max-w-xs">
-                    Early employee in Product and Engineering at multiple startups. 6 years in
+                    Early employee in Product and Engineering at multiple startups, including Instructure Canvas. Most recently, 6 years in
                     software engineering at Apple with a focus on AI and Privacy.
                   </p>
                 </div>
