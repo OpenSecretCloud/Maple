@@ -135,17 +135,28 @@ export function Footer() {
         </div>
 
         <div className="mt-12 pt-8 border-t border-[hsl(var(--marketing-card-border))] text-center">
-          <p className="text-[hsl(var(--marketing-text-muted))]/50 font-light">
-            © {new Date().getFullYear()} Maple AI. All rights reserved. Powered by{" "}
-            <a
-              href="https://opensecret.cloud"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-[hsl(var(--purple))] hover:text-[hsl(var(--purple))]/80 transition-colors"
-            >
-              OpenSecret
-            </a>
-          </p>
+          <div className="flex flex-col items-center gap-4">
+            <iframe
+              src="https://status.trymaple.ai/badge?theme=system"
+              width="250"
+              height="30"
+              frameBorder="0"
+              scrolling="no"
+              style={{ colorScheme: "normal", marginLeft: "58px" }}
+              title="BetterStack Status"
+            />
+            <p className="text-[hsl(var(--marketing-text-muted))]/50 font-light">
+              © {new Date().getFullYear()} Maple AI. All rights reserved. Powered by{" "}
+              <a
+                href="https://opensecret.cloud"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-[hsl(var(--purple))] hover:text-[hsl(var(--purple))]/80 transition-colors"
+              >
+                OpenSecret
+              </a>
+            </p>
+          </div>
         </div>
       </div>
     </div>
