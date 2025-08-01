@@ -327,7 +327,7 @@ function ChatComponent() {
   const isLoading = phase === "streaming";
   const isPersisting = phase === "persisting";
 
-  // Auto-scroll when new messages appear (user message or start of streaming)
+  // Auto-scroll when user messages are added or streaming starts
   const prevMessageCountRef = useRef(localChat.messages.length);
   const prevStreamingRef = useRef(false);
 
@@ -336,8 +336,22 @@ function ChatComponent() {
     const hasNewMessage = messageCount > prevMessageCountRef.current;
     const justStartedStreaming = isLoading && !prevStreamingRef.current;
 
-    if (hasNewMessage || justStartedStreaming) {
-      // Always scroll for new user messages or when streaming starts
+    // Only auto-scroll for user messages or when streaming starts
+    // Don't auto-scroll when assistant messages are added (streaming completion)
+    let shouldAutoScroll = false;
+
+    if (justStartedStreaming) {
+      // Always scroll when streaming starts
+      shouldAutoScroll = true;
+    } else if (hasNewMessage) {
+      // Only scroll for new user messages, not assistant messages
+      const latestMessage = localChat.messages[localChat.messages.length - 1];
+      if (latestMessage?.role === "user") {
+        shouldAutoScroll = true;
+      }
+    }
+
+    if (shouldAutoScroll) {
       const container = chatContainerRef.current;
       if (container) {
         requestAnimationFrame(() => {
