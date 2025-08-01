@@ -118,7 +118,7 @@ function About(): JSX.Element {
                         href="https://x.com/marks_ftw"
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="inline-flex items-center justify-center w-5 h-5"
+                        className="inline-flex items-center justify-center rounded-md p-1 bg-[hsl(var(--purple))] text-white dark:bg-transparent dark:text-[hsl(var(--purple))] dark:border dark:border-[hsl(var(--purple))] transition-colors"
                         aria-label="Mark Suman on X"
                       >
                         <X className="w-3 h-3 align-middle" />
@@ -127,10 +127,10 @@ function About(): JSX.Element {
                         href="https://linkedin.com/in/marksuman"
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="inline-flex items-center justify-center w-5 h-5"
+                        className="inline-flex items-center justify-center rounded-md p-1 bg-[hsl(var(--purple))] text-white dark:bg-transparent dark:text-[hsl(var(--purple))] dark:border dark:border-[hsl(var(--purple))] transition-colors"
                         aria-label="Mark Suman on LinkedIn"
                       >
-                        <LinkedIn className="w-4 h-4 align-middle" />
+                        <LinkedIn className="w-3 h-3 align-middle" />
                       </a>
                     </span>
                   </p>
@@ -157,7 +157,7 @@ function About(): JSX.Element {
                         href="https://x.com/anthonyronning_"
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="inline-flex items-center justify-center w-5 h-5"
+                        className="inline-flex items-center justify-center rounded-md p-1 bg-[hsl(var(--blue))] text-white dark:bg-transparent dark:text-[hsl(var(--blue))] dark:border dark:border-[hsl(var(--blue))] transition-colors"
                         aria-label="Anthony Ronning on X"
                       >
                         <X className="w-3 h-3 align-middle" />
