@@ -14,6 +14,7 @@ import { Switch } from "@/components/ui/switch";
 import { type } from "@tauri-apps/plugin-os";
 import { PRICING_PLANS } from "@/config/pricingConfig";
 import { VerificationModal } from "@/components/VerificationModal";
+import packageJson from "../../package.json";
 
 // File type constants for upload features
 const SUPPORTED_IMAGE_FORMATS = [".jpg", ".png", ".webp"];
@@ -32,6 +33,7 @@ interface Product {
   };
   description?: string;
   active?: boolean;
+  is_available?: boolean;
 }
 
 function PricingSkeletonCard() {
@@ -172,10 +174,6 @@ function PricingPage() {
   const isLoggedIn = !!os.auth.user;
   const { selected_plan } = Route.useSearch();
 
-  // Date after which payments are available in iOS app
-  const IOS_PAYMENT_AVAILABILITY_DATE = new Date("2025-07-21T00:00:00Z");
-  const isIOSPaymentAvailable = new Date() >= IOS_PAYMENT_AVAILABILITY_DATE;
-
   // Check if the app is running on iOS
   useEffect(() => {
     const checkPlatform = async () => {
@@ -241,10 +239,17 @@ function PricingPage() {
     error: productsError,
     isLoading: productsLoading
   } = useQuery({
-    queryKey: ["products"],
+    queryKey: ["products", isIOS],
     queryFn: async () => {
       try {
         const billingService = getBillingService();
+        // Only send version for iOS builds
+        if (isIOS) {
+          // Get version from package.json
+          const version = `v${packageJson.version}`;
+          console.log("[Billing] Fetching products with version:", version);
+          return await billingService.getProducts(version);
+        }
         return await billingService.getProducts();
       } catch (error) {
         console.error("Error fetching products:", error);
@@ -279,8 +284,8 @@ function PricingPage() {
     const isTeamPlan = targetPlanName.includes("team");
     const isFreeplan = targetPlanName.includes("free");
 
-    // Show "Not available in app" for iOS paid plans before availability date
-    if (isIOS && !isFreeplan && !isIOSPaymentAvailable) {
+    // Show "Not available in app" for iOS paid plans if server says not available
+    if (isIOS && !isFreeplan && product.is_available === false) {
       return "Not available in app";
     }
 
@@ -438,8 +443,8 @@ function PricingPage() {
       const targetPlanName = product.name.toLowerCase();
       const isFreeplan = targetPlanName.includes("free");
 
-      // Disable clicks for iOS paid plans before availability date
-      if (isIOS && !isFreeplan && !isIOSPaymentAvailable) {
+      // Disable clicks for iOS paid plans if server says not available
+      if (isIOS && !isFreeplan && product.is_available === false) {
         return;
       }
 
@@ -511,15 +516,7 @@ function PricingPage() {
       // create checkout session
       newHandleSubscribe(product.id);
     },
-    [
-      isLoggedIn,
-      freshBillingStatus,
-      navigate,
-      portalUrl,
-      newHandleSubscribe,
-      isIOS,
-      isIOSPaymentAvailable
-    ]
+    [isLoggedIn, freshBillingStatus, navigate, portalUrl, newHandleSubscribe, isIOS]
   );
 
   useEffect(() => {
@@ -859,7 +856,7 @@ function PricingPage() {
                         disabled={
                           loadingProductId === (product?.id || plan.name.toLowerCase()) ||
                           (useBitcoin && isTeamPlan) ||
-                          (isIOS && !isFreeplan && !isIOSPaymentAvailable)
+                          (isIOS && !isFreeplan && product?.is_available === false)
                         }
                         className={`w-full 
                       dark:bg-white/90 dark:text-black dark:hover:bg-[hsl(var(--purple))]/80 dark:hover:text-[hsl(var(--foreground))] dark:active:bg-white/80

@@ -31,6 +31,7 @@ export type BillingProduct = {
   description: string;
   active: boolean;
   default_price: BillingPriceInfo;
+  is_available?: boolean;
 };
 
 export async function fetchBillingStatus(thirdPartyToken: string): Promise<BillingStatus> {
@@ -61,16 +62,17 @@ export async function fetchBillingStatus(thirdPartyToken: string): Promise<Billi
   }
 }
 
-export async function fetchProducts(): Promise<BillingProduct[]> {
+export async function fetchProducts(version?: string): Promise<BillingProduct[]> {
   try {
-    const response = await fetch(
-      `${import.meta.env.VITE_MAPLE_BILLING_API_URL}/v1/maple/products`,
-      {
-        headers: {
-          "Content-Type": "application/json"
-        }
+    const url = new URL(`${import.meta.env.VITE_MAPLE_BILLING_API_URL}/v1/maple/products`);
+    if (version) {
+      url.searchParams.append("version", version);
+    }
+    const response = await fetch(url.toString(), {
+      headers: {
+        "Content-Type": "application/json"
       }
-    );
+    });
     return response.json() as Promise<BillingProduct[]>;
   } catch (error) {
     console.error("Error fetching billing products:", error);
