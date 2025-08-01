@@ -87,8 +87,8 @@ class BillingService {
     return this.executeWithToken((token) => fetchPortalUrl(token));
   }
 
-  async getProducts(): Promise<BillingProduct[]> {
-    return fetchProducts();
+  async getProducts(version?: string): Promise<BillingProduct[]> {
+    return fetchProducts(version);
   }
 
   async createCheckoutSession(
