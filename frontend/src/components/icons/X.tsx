@@ -14,7 +14,10 @@ export function X(props: React.SVGProps<SVGSVGElement>) {
     >
       <title>X</title>
       {/* The path is scaled down from the original 1200x1227 to fit 24x24 */}
-      <path d="M14.283 10.16L22.018 0H20.1l-6.6 8.91L7.07 0H0l9.378 13.6L0 24h1.918l6.86-8.91L16.855 24H24l-9.71-13.84zm-2.418 4.01l-.77-1.09L2.88 1.56h3.27l6.04 8.6.77 1.09 7.09 10.01h-3.27l-6.09-8.6z" fill="currentColor"/>
+      <path
+        d="M14.283 10.16L22.018 0H20.1l-6.6 8.91L7.07 0H0l9.378 13.6L0 24h1.918l6.86-8.91L16.855 24H24l-9.71-13.84zm-2.418 4.01l-.77-1.09L2.88 1.56h3.27l6.04 8.6.77 1.09 7.09 10.01h-3.27l-6.09-8.6z"
+        fill="currentColor"
+      />
     </svg>
   );
-} 
+}

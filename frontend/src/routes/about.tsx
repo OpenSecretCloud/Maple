@@ -44,7 +44,7 @@ function About(): JSX.Element {
                   src="/maple-autumn-forest.jpg"
                   alt="Maple autumn forest"
                   className="w-full md:w-48 h-auto rounded-lg object-contain md:object-cover"
-                  style={{ maxHeight: '220px' }}
+                  style={{ maxHeight: "220px" }}
                 />
                 <span className="block text-xs text-[hsl(var(--marketing-text-muted))] mt-2 text-center">
                   Autumn Woods <br /> by William Trost Richards
@@ -57,22 +57,22 @@ function About(): JSX.Element {
               </div>
               <div className="flex flex-col gap-4 flex-1">
                 <p className="text-lg leading-relaxed">
-                Maple trees form underground networks of root systems, 
-                communicating and sharing resources without the knowledge of animals above. 
-                This cooperative approach helps them thrive in challenging environments.
+                  Maple trees form underground networks of root systems, communicating and sharing
+                  resources without the knowledge of animals above. This cooperative approach helps
+                  them thrive in challenging environments.
                 </p>
                 <p className="text-lg leading-relaxed">
-                  Maple AI draws inspiration from this natural model of secure, decentralized intelligence. 
-                  Each account uses a personal encryption key, giving you control over the data. 
-                  Whether you are handling sensitive information on behalf of clients or your own personal thoughts, 
-                  communication stays between you and the AI. No data is used for training models nor shared with third parties, 
-                  not even us.
+                  Maple AI draws inspiration from this natural model of secure, decentralized
+                  intelligence. Each account uses a personal encryption key, giving you control over
+                  the data. Whether you are handling sensitive information on behalf of clients or
+                  your own personal thoughts, communication stays between you and the AI. No data is
+                  used for training models nor shared with third parties, not even us.
                 </p>
                 <p className="text-lg leading-relaxed">
-                  People shouldn't have to sacrifice their privacy for high-quality AI.
-                  Maple upholds the highest standards of privacy and confidentiality, 
-                  preserving the fundamental human right to freedom of thought.
-                  With confidence in AI, you can work together to thrive in your own challenging environments.
+                  People shouldn't have to sacrifice their privacy for high-quality AI. Maple
+                  upholds the highest standards of privacy and confidentiality, preserving the
+                  fundamental human right to freedom of thought. With confidence in AI, you can work
+                  together to thrive in your own challenging environments.
                 </p>
                 <img
                   src="/maple-app-icon-vector.svg"
@@ -93,14 +93,20 @@ function About(): JSX.Element {
           >
             <h3 className="text-2xl font-medium">Founders</h3>
             <p className="text-lg leading-relaxed">
-              Our team has combined over 30 years experience building scalable cloud and local app solutions
-              that take privacy and security seriously. We have successfully built in the fields of data storage, 
-              defense, fintech, education, security, therapy, computer vision, and consumer technology.
+              Our team has combined over 30 years experience building scalable cloud and local app
+              solutions that take privacy and security seriously. We have successfully built in the
+              fields of data storage, defense, fintech, education, security, therapy, computer
+              vision, and consumer technology.
             </p>
             <div className="grid md:grid-cols-2 gap-8">
               {/* Founder 1 */}
               <div className="flex flex-col items-center text-center gap-4">
-                <a href="https://x.com/marks_ftw" target="_blank" rel="noopener noreferrer" aria-label="Mark Suman on X">
+                <a
+                  href="https://x.com/marks_ftw"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  aria-label="Mark Suman on X"
+                >
                   <img
                     src="/mark.jpg"
                     alt="Mark, Co-founder of Maple AI"
@@ -111,8 +117,9 @@ function About(): JSX.Element {
                   <h4 className="text-xl font-medium mb-1">Mark Suman</h4>
                   <p className="text-[hsl(var(--marketing-text-muted))] mb-3">CEO</p>
                   <p className="text-sm leading-relaxed max-w-xs">
-                    Early employee in Product and Engineering at multiple startups, including Instructure Canvas. Most recently, 6 years in
-                    software engineering at Apple with a focus on AI and Privacy.
+                    Early employee in Product and Engineering at multiple startups, including
+                    Instructure Canvas. Most recently, 6 years in software engineering at Apple with
+                    a focus on AI and Privacy.
                     <span className="inline-flex items-center align-middle ml-2 gap-1">
                       <a
                         href="https://x.com/marks_ftw"
@@ -139,7 +146,12 @@ function About(): JSX.Element {
 
               {/* Founder 2 */}
               <div className="flex flex-col items-center text-center gap-4">
-                <a href="https://x.com/anthonyronning_" target="_blank" rel="noopener noreferrer" aria-label="Anthony Ronning on X">
+                <a
+                  href="https://x.com/anthonyronning_"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  aria-label="Anthony Ronning on X"
+                >
                   <img
                     src="/anthony.jpg"
                     alt="Anthony, Co-founder of Maple AI"
