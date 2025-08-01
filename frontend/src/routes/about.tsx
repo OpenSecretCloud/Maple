@@ -2,6 +2,8 @@ import { createFileRoute } from "@tanstack/react-router";
 import { TopNav } from "@/components/TopNav";
 import { FullPageMain } from "@/components/FullPageMain";
 import { MarketingHeader } from "@/components/MarketingHeader";
+import { X } from "@/components/icons/X";
+import { LinkedIn } from "@/components/icons/LinkedIn";
 
 export const Route = createFileRoute("/about")({
   component: About
@@ -119,14 +121,7 @@ function About(): JSX.Element {
                         className="inline-flex items-center justify-center w-5 h-5"
                         aria-label="Mark Suman on X"
                       >
-                        <svg viewBox="0 0 24 24" className="w-4 h-4 align-middle">
-                          <rect x="4" y="4" width="16" height="16" rx="2"
-                            className="fill-[hsl(var(--purple))] stroke-[hsl(var(--purple))] dark:fill-transparent dark:stroke-[hsl(var(--purple))]"
-                            fill="currentColor" stroke="currentColor" strokeWidth="2"/>
-                          <path d="M8 8l8 8M16 8l-8 8"
-                            className="stroke-white dark:stroke-[hsl(var(--purple))]"
-                            stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-                        </svg>
+                        <X className="w-3 h-3 align-middle" />
                       </a>
                       <a
                         href="https://linkedin.com/in/marksuman"
@@ -135,14 +130,7 @@ function About(): JSX.Element {
                         className="inline-flex items-center justify-center w-5 h-5"
                         aria-label="Mark Suman on LinkedIn"
                       >
-                        <svg viewBox="0 0 24 24" className="w-4 h-4 align-middle">
-                          <rect x="4" y="4" width="16" height="16" rx="2"
-                            className="fill-[hsl(var(--purple))] stroke-[hsl(var(--purple))] dark:fill-transparent dark:stroke-[hsl(var(--purple))]"
-                            fill="currentColor" stroke="currentColor" strokeWidth="2"/>
-                          <path d="M8 11v5M8 8v.01M12 16v-5m0 0a2 2 0 1 1 4 0v5"
-                            className="stroke-white dark:stroke-[hsl(var(--purple))]"
-                            stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-                        </svg>
+                        <LinkedIn className="w-4 h-4 align-middle" />
                       </a>
                     </span>
                   </p>
@@ -172,14 +160,7 @@ function About(): JSX.Element {
                         className="inline-flex items-center justify-center w-5 h-5"
                         aria-label="Anthony Ronning on X"
                       >
-                        <svg viewBox="0 0 24 24" className="w-4 h-4 align-middle">
-                          <rect x="4" y="4" width="16" height="16" rx="2"
-                            className="fill-[hsl(var(--blue))] stroke-[hsl(var(--blue))] dark:fill-transparent dark:stroke-[hsl(var(--blue))]"
-                            fill="currentColor" stroke="currentColor" strokeWidth="2"/>
-                          <path d="M8 8l8 8M16 8l-8 8"
-                            className="stroke-white dark:stroke-[hsl(var(--blue))]"
-                            stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-                        </svg>
+                        <X className="w-3 h-3 align-middle" />
                       </a>
                     </span>
                   </p>
