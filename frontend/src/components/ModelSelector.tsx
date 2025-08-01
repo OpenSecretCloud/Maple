@@ -15,7 +15,7 @@ import type { Model } from "openai/resources/models.js";
 // Model configuration for display names, badges, and token limits
 type ModelCfg = {
   displayName: string;
-  badge?: string;
+  badges?: string[];
   disabled?: boolean;
   requiresPro?: boolean;
   requiresStarter?: boolean;
@@ -34,33 +34,39 @@ export const MODEL_CONFIG: Record<string, ModelCfg> = {
   },
   "google/gemma-3-27b-it": {
     displayName: "Gemma 3 27B",
-    badge: "Starter",
+    badges: ["Starter"],
     requiresStarter: true,
     tokenLimit: 70000
   },
   "leon-se/gemma-3-27b-it-fp8-dynamic": {
     displayName: "Gemma 3 27B",
-    badge: "Starter",
+    badges: ["Starter"],
     requiresStarter: true,
     supportsVision: true,
     tokenLimit: 70000
   },
   "deepseek-r1-70b": {
     displayName: "DeepSeek R1 70B",
-    badge: "Pro",
+    badges: ["Pro"],
     requiresPro: true,
     tokenLimit: 64000
   },
+  "deepseek-r1-0528": {
+    displayName: "DeepSeek R1 0528 671B",
+    badges: ["Pro", "Beta"],
+    requiresPro: true,
+    tokenLimit: 130000
+  },
   "mistral-small-3-1-24b": {
     displayName: "Mistral Small 3.1 24B",
-    badge: "Pro",
+    badges: ["Pro"],
     requiresPro: true,
     supportsVision: true,
     tokenLimit: 128000
   },
   "qwen2-5-72b": {
     displayName: "Qwen 2.5 72B",
-    badge: "Pro",
+    badges: ["Pro"],
     requiresPro: true,
     tokenLimit: 128000
   }
@@ -197,24 +203,28 @@ export function ModelSelector({
     if (config) {
       elements.push(config.displayName);
 
-      if (config.badge) {
-        let badgeClass = "text-[10px] px-1.5 py-0.5 rounded-sm font-medium";
+      if (config.badges && config.badges.length > 0) {
+        config.badges.forEach((badge, index) => {
+          let badgeClass = "text-[10px] px-1.5 py-0.5 rounded-sm font-medium";
 
-        if (config.badge === "Coming Soon") {
-          badgeClass += " bg-gray-500/10 text-gray-600";
-        } else if (config.badge === "Pro") {
-          badgeClass += " bg-gradient-to-r from-purple-500/10 to-blue-500/10 text-purple-600";
-        } else if (config.badge === "Starter") {
-          badgeClass += " bg-gradient-to-r from-green-500/10 to-emerald-500/10 text-green-600";
-        } else {
-          badgeClass += " bg-purple-500/10 text-purple-600";
-        }
+          if (badge === "Coming Soon") {
+            badgeClass += " bg-gray-500/10 text-gray-600";
+          } else if (badge === "Pro") {
+            badgeClass += " bg-gradient-to-r from-purple-500/10 to-blue-500/10 text-purple-600";
+          } else if (badge === "Starter") {
+            badgeClass += " bg-gradient-to-r from-green-500/10 to-emerald-500/10 text-green-600";
+          } else if (badge === "Beta") {
+            badgeClass += " bg-gradient-to-r from-yellow-500/10 to-orange-500/10 text-yellow-600";
+          } else {
+            badgeClass += " bg-purple-500/10 text-purple-600";
+          }
 
-        elements.push(
-          <span key="badge" className={badgeClass}>
-            {config.badge}
-          </span>
-        );
+          elements.push(
+            <span key={`badge-${index}`} className={badgeClass}>
+              {badge}
+            </span>
+          );
+        });
       }
 
       if (
@@ -263,7 +273,7 @@ export function ModelSelector({
           <ChevronDown className="h-3 w-3 opacity-50" />
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="w-64">
+      <DropdownMenuContent align="start" className="w-72">
         {availableModels &&
           Array.isArray(availableModels) &&
           // Sort models: vision-capable first (if images present), then available, then restricted, then disabled
