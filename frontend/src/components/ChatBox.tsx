@@ -945,17 +945,16 @@ export default function Component({
                     </>
                   )}
                 </DropdownMenuItem>
+                {/* Document upload temporarily removed - will be re-added later
                 <DropdownMenuItem
                   onClick={(e) => {
                     e.preventDefault();
                     // Temporarily disabled - remove this condition when re-enabling
-                    /*
-                    if (!canUseDocuments) {
-                      navigate({ to: "/pricing" });
-                    } else {
-                      documentInputRef.current?.click();
-                    }
-                    */
+                    // if (!canUseDocuments) {
+                    //   navigate({ to: "/pricing" });
+                    // } else {
+                    //   documentInputRef.current?.click();
+                    // }
                   }}
                   className={cn("flex items-center gap-2 cursor-not-allowed opacity-50")}
                   disabled
@@ -966,6 +965,7 @@ export default function Component({
                     <span className="text-xs text-muted-foreground">Temporarily Unavailable</span>
                   </div>
                 </DropdownMenuItem>
+                */}
               </DropdownMenuContent>
             </DropdownMenu>
           )}
