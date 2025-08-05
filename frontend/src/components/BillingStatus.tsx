@@ -20,14 +20,13 @@ export function BillingStatus() {
       const status = await billingService.getBillingStatus();
       setBillingStatus(status);
       return status;
-    },
-    enabled: !!os.auth.user
+    }
   });
 
   // Check if user has team plan
-  const isTeamPlan = billingStatus?.product_name?.toLowerCase().includes("team") ?? false;
+  const isTeamPlan = billingStatus?.product_name?.toLowerCase().includes("team");
 
-  // Fetch team status only if user has team plan
+  // Fetch team status if user has team plan
   const { data: teamStatus } = useQuery<TeamStatus>({
     queryKey: ["teamStatus"],
     queryFn: async () => {

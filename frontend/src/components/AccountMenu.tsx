@@ -79,29 +79,20 @@ function ConfirmDeleteDialog() {
 export function AccountMenu() {
   const os = useOpenSecret();
   const router = useRouter();
+  const { billingStatus } = useLocalState();
   const [isPortalLoading, setIsPortalLoading] = useState(false);
   const [isTeamDialogOpen, setIsTeamDialogOpen] = useState(false);
-
-  // Fetch billing status directly instead of relying on local state
-  const { data: billingStatus } = useQuery({
-    queryKey: ["billingStatus"],
-    queryFn: async () => {
-      const billingService = getBillingService();
-      return await billingService.getBillingStatus();
-    },
-    enabled: !!os.auth.user
-  });
 
   const hasStripeAccount = billingStatus?.stripe_customer_id !== null;
   const productName = billingStatus?.product_name || "";
   const isPro = productName.toLowerCase().includes("pro");
   const isMax = productName.toLowerCase().includes("max");
   const isStarter = productName.toLowerCase().includes("starter");
-  const isTeamPlan = productName.toLowerCase().includes("team") ?? false;
+  const isTeamPlan = productName.toLowerCase().includes("team");
   const showUpgrade = !isMax && !isTeamPlan;
   const showManage = (isPro || isMax || isStarter || isTeamPlan) && hasStripeAccount;
 
-  // Fetch team status only if user has team plan
+  // Fetch team status if user has team plan
   const { data: teamStatus } = useQuery<TeamStatus>({
     queryKey: ["teamStatus"],
     queryFn: async () => {
