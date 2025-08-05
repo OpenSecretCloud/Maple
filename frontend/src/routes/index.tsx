@@ -17,6 +17,7 @@ import { TeamManagementDialog } from "@/components/team/TeamManagementDialog";
 import { useQuery } from "@tanstack/react-query";
 import { getBillingService } from "@/billing/billingService";
 import type { TeamStatus } from "@/types/team";
+import type { BillingStatus as BillingStatusType } from "@/billing/billingApi";
 
 const homeVariants = cva("grid h-full w-full overflow-hidden", {
   variants: {
@@ -69,14 +70,27 @@ function Index() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [teamDialogOpen, setTeamDialogOpen] = useState(false);
 
-  // Fetch team status for the dialog
+  // Fetch billing status first to check if user has team plan
+  const { data: billingStatus } = useQuery<BillingStatusType>({
+    queryKey: ["billingStatus"],
+    queryFn: async () => {
+      const billingService = getBillingService();
+      return await billingService.getBillingStatus();
+    },
+    enabled: !!os.auth.user
+  });
+
+  // Check if user has team plan
+  const isTeamPlan = billingStatus?.product_name?.toLowerCase().includes("team") ?? false;
+
+  // Fetch team status only if user has team plan
   const { data: teamStatus } = useQuery<TeamStatus>({
     queryKey: ["teamStatus"],
     queryFn: async () => {
       const billingService = getBillingService();
       return await billingService.getTeamStatus();
     },
-    enabled: !!os.auth.user
+    enabled: isTeamPlan && !!os.auth.user && !!billingStatus
   });
 
   // Auto-open team dialog if team_setup is true
