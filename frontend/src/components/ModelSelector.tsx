@@ -91,7 +91,8 @@ export function ModelSelector({
   messages?: ChatMessage[];
   draftImages?: File[];
 }) {
-  const { model, setModel, availableModels, setAvailableModels } = useLocalState();
+  const { model, setModel, availableModels, setAvailableModels, setBillingStatus } =
+    useLocalState();
   const os = useOpenSecret();
   const navigate = useNavigate();
   const isFetching = useRef(false);
@@ -103,7 +104,9 @@ export function ModelSelector({
     queryKey: ["billingStatus"],
     queryFn: async () => {
       const billingService = getBillingService();
-      return await billingService.getBillingStatus();
+      const status = await billingService.getBillingStatus();
+      setBillingStatus(status);
+      return status;
     },
     enabled: !!os.auth.user
   });
