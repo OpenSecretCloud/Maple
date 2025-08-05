@@ -81,7 +81,7 @@ function Index() {
   });
 
   // Check if user has team plan
-  const isTeamPlan = billingStatus?.product_name?.toLowerCase().includes("team");
+  const isTeamPlan = billingStatus?.product_name?.toLowerCase().includes("team") ?? false;
 
   // Fetch team status only if user has team plan
   const { data: teamStatus } = useQuery<TeamStatus>({
