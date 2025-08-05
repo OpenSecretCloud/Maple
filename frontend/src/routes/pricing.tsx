@@ -14,6 +14,7 @@ import { Switch } from "@/components/ui/switch";
 import { type } from "@tauri-apps/plugin-os";
 import { PRICING_PLANS } from "@/config/pricingConfig";
 import { VerificationModal } from "@/components/VerificationModal";
+import packageJson from "../../package.json";
 
 // File type constants for upload features
 const SUPPORTED_IMAGE_FORMATS = [".jpg", ".png", ".webp"];
@@ -32,6 +33,7 @@ interface Product {
   };
   description?: string;
   active?: boolean;
+  is_available?: boolean;
 }
 
 function PricingSkeletonCard() {
@@ -237,10 +239,17 @@ function PricingPage() {
     error: productsError,
     isLoading: productsLoading
   } = useQuery({
-    queryKey: ["products"],
+    queryKey: ["products", isIOS],
     queryFn: async () => {
       try {
         const billingService = getBillingService();
+        // Only send version for iOS builds
+        if (isIOS) {
+          // Get version from package.json
+          const version = `v${packageJson.version}`;
+          console.log("[Billing] Fetching products with version:", version);
+          return await billingService.getProducts(version);
+        }
         return await billingService.getProducts();
       } catch (error) {
         console.error("Error fetching products:", error);
@@ -273,6 +282,12 @@ function PricingPage() {
 
     const targetPlanName = product.name.toLowerCase();
     const isTeamPlan = targetPlanName.includes("team");
+    const isFreeplan = targetPlanName.includes("free");
+
+    // Show "Not available in app" for iOS paid plans if server says not available
+    if (isIOS && !isFreeplan && product.is_available === false) {
+      return "Not available in app";
+    }
 
     // Show Start Chatting for all plans when not logged in
     if (!isLoggedIn) {
@@ -425,9 +440,15 @@ function PricingPage() {
 
   const handleButtonClick = useCallback(
     (product: Product) => {
-      if (!isLoggedIn) {
-        const targetPlanName = product.name.toLowerCase();
+      const targetPlanName = product.name.toLowerCase();
+      const isFreeplan = targetPlanName.includes("free");
 
+      // Disable clicks for iOS paid plans if server says not available
+      if (isIOS && !isFreeplan && product.is_available === false) {
+        return;
+      }
+
+      if (!isLoggedIn) {
         if (!targetPlanName.includes("free")) {
           // For paid plans, redirect to signup with the plan selection
           navigate({
@@ -442,8 +463,6 @@ function PricingPage() {
         navigate({ to: "/signup" });
         return;
       }
-
-      const targetPlanName = product.name.toLowerCase();
 
       // If user is on Zaprite plan, redirect to email
       if (freshBillingStatus?.payment_provider === "zaprite") {
@@ -836,7 +855,8 @@ function PricingPage() {
                         }
                         disabled={
                           loadingProductId === (product?.id || plan.name.toLowerCase()) ||
-                          (useBitcoin && isTeamPlan)
+                          (useBitcoin && isTeamPlan) ||
+                          (isIOS && !isFreeplan && product?.is_available === false)
                         }
                         className={`w-full 
                       dark:bg-white/90 dark:text-black dark:hover:bg-[hsl(var(--purple))]/80 dark:hover:text-[hsl(var(--foreground))] dark:active:bg-white/80
