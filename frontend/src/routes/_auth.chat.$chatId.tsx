@@ -233,16 +233,18 @@ function ChatComponent() {
       setUserImages([]);
 
       // Send message with system prompt as separate parameter
-      appendUserMessage(prompt, images, undefined, undefined, sysPrompt || undefined).catch((error) => {
-        // Only reset if it wasn't an abort
-        if (!(error instanceof Error) || error.message !== "Stream aborted") {
-          console.error("[ChatComponent] Failed to append message:", error);
-          setUserPrompt(prompt);
-          setSystemPrompt(sysPrompt);
-          setUserImages(images);
-          initialPromptProcessedRef.current = false;
+      appendUserMessage(prompt, images, undefined, undefined, sysPrompt || undefined).catch(
+        (error) => {
+          // Only reset if it wasn't an abort
+          if (!(error instanceof Error) || error.message !== "Stream aborted") {
+            console.error("[ChatComponent] Failed to append message:", error);
+            setUserPrompt(prompt);
+            setSystemPrompt(sysPrompt);
+            setUserImages(images);
+            initialPromptProcessedRef.current = false;
+          }
         }
-      });
+      );
     }
   }, [
     userPrompt,
