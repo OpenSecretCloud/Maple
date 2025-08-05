@@ -43,7 +43,7 @@ async def test_model_selector():
         post_login_task = """
 10. Once logged in, wait for the page to fully load with the `wait_2_seconds` action
 11. Look at the chat interface and verify you can see text that says "Model:" at the bottom of the chatbox component.
-12. Click on the Model button dropdown.
+12. Use the 'Click model selector button' action to click on the model selector dropdown button. This will use the exact data-testid attribute to avoid clicking the wrong element.
 13. Once the dropdown opens, you should see a list of available models
 14. Click on a different model name in the dropdown (e.g., if "Llama 3.3 70B" is selected, click on "Gemma 3 27B" or vice versa). There should be at least 2 models available. Refresh if you have to. If it never shows up then fail the test case.
 15. Verify the dropdown closes and the selected model name is now shown in the button

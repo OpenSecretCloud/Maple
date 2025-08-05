@@ -55,6 +55,22 @@ def create_login_controller():
         await asyncio.sleep(2)
         return ActionResult(success=True, extracted_content="Waited 2 seconds")
     
+    @controller.action('Click model selector button')
+    async def click_model_selector(page: Page) -> ActionResult:
+        """Click the model selector button using its data-testid attribute."""
+        try:
+            # Wait for the element to be available and click it
+            await page.wait_for_selector('[data-testid="model-selector-button"]', timeout=5000)
+            await page.click('[data-testid="model-selector-button"]')
+            
+            # Wait a moment for the dropdown to appear
+            import asyncio
+            await asyncio.sleep(1)
+            
+            return ActionResult(success=True, extracted_content="Successfully clicked model selector button")
+        except Exception as e:
+            return ActionResult(success=False, extracted_content=f"Failed to click model selector: {str(e)}")
+    
     return controller
 
 

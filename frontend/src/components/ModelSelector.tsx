@@ -268,7 +268,13 @@ export function ModelSelector({
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button variant="ghost" size="sm" className="h-8 gap-1 px-2">
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-8 gap-1 px-2"
+          data-testid="model-selector-button"
+          aria-label={`Current model: ${MODEL_CONFIG[model]?.displayName || model}. Click to change model.`}
+        >
           {modelDisplay}
           <ChevronDown className="h-3 w-3 opacity-50" />
         </Button>
