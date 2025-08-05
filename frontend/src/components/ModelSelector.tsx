@@ -10,8 +10,6 @@ import { useLocalState } from "@/state/useLocalState";
 import { useOpenSecret } from "@opensecret/react";
 import { useEffect, useRef } from "react";
 import { useNavigate } from "@tanstack/react-router";
-import { useQuery } from "@tanstack/react-query";
-import { getBillingService } from "@/billing/billingService";
 import type { Model } from "openai/resources/models.js";
 
 // Model configuration for display names, badges, and token limits
@@ -91,25 +89,12 @@ export function ModelSelector({
   messages?: ChatMessage[];
   draftImages?: File[];
 }) {
-  const { model, setModel, availableModels, setAvailableModels, setBillingStatus } =
-    useLocalState();
+  const { model, setModel, availableModels, setAvailableModels, billingStatus } = useLocalState();
   const os = useOpenSecret();
   const navigate = useNavigate();
   const isFetching = useRef(false);
   const hasFetched = useRef(false);
   const availableModelsRef = useRef(availableModels);
-
-  // Fetch billing status directly instead of relying on local state
-  const { data: billingStatus } = useQuery({
-    queryKey: ["billingStatus"],
-    queryFn: async () => {
-      const billingService = getBillingService();
-      const status = await billingService.getBillingStatus();
-      setBillingStatus(status);
-      return status;
-    },
-    enabled: !!os.auth.user
-  });
 
   // Check if chat contains any images or if there are draft images
   const chatHasImages =
