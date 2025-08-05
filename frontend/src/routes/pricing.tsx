@@ -337,9 +337,7 @@ function PricingPage() {
 
       // Check if email is verified before proceeding to checkout
       if (!os.auth.user?.user.email_verified) {
-        setCheckoutError(
-          "Please verify your email before purchasing a subscription. Check your inbox for the verification email."
-        );
+        console.log("Email verification required before checkout");
         return;
       }
 
