@@ -97,7 +97,7 @@ export function AccountMenu() {
   const isPro = productName.toLowerCase().includes("pro");
   const isMax = productName.toLowerCase().includes("max");
   const isStarter = productName.toLowerCase().includes("starter");
-  const isTeamPlan = productName.toLowerCase().includes("team");
+  const isTeamPlan = productName.toLowerCase().includes("team") ?? false;
   const showUpgrade = !isMax && !isTeamPlan;
   const showManage = (isPro || isMax || isStarter || isTeamPlan) && hasStripeAccount;
 
