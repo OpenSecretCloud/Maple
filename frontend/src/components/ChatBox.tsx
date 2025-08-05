@@ -904,6 +904,7 @@ export default function Component({
                   variant="ghost"
                   className="ml-2"
                   aria-label="Upload files"
+                  data-testid="file-upload-button"
                 >
                   <Plus className="h-4 w-4" />
                 </Button>
