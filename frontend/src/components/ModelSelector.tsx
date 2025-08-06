@@ -266,7 +266,6 @@ export function ModelSelector({
   // Always show the same format, whether dropdown or not
   const modelDisplay = (
     <div className="flex items-center gap-1">
-      <span className="text-xs text-muted-foreground">Model:</span>
       <div className="text-xs font-medium">{getDisplayName(model)}</div>
     </div>
   );
