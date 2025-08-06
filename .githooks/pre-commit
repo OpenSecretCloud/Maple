@@ -2,12 +2,16 @@
 
 echo "Running pre-commit hook..."
 
+# Add bun to PATH
+export PATH="$HOME/.bun/bin:$PATH"
+
 # Navigate to frontend directory
 cd frontend || exit 1
 
 # Check if bun is installed
 if ! command -v bun &> /dev/null; then
     echo "Error: bun is not installed. Please install bun before committing."
+    echo "$HOME/.bun/bin/bun"
     exit 1
 fi
 

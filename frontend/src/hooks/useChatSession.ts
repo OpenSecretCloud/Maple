@@ -115,6 +115,8 @@ export function useChatSession(
         });
 
         let fullResponse = "";
+        let reasoningContent = "";
+        let hasStartedReasoning = false;
         setCurrentStreamingMessage("");
 
         for await (const chunk of stream) {
@@ -125,13 +127,59 @@ export function useChatSession(
           }
 
           const content = chunk.choices[0]?.delta?.content || "";
+          // Handle OpenAI reasoning content (GPT-OSS and similar models)
+          // Reasoning comes via response.reasoning_text.delta events
+          const reasoning =
+            (chunk as { reasoning_text?: { delta?: string } })?.reasoning_text?.delta || "";
+
+          // Accumulate reasoning content
+          if (reasoning) {
+            if (!hasStartedReasoning) {
+              reasoningContent += "<think>";
+              hasStartedReasoning = true;
+            }
+            reasoningContent += reasoning;
+          }
+
+          // Accumulate regular content
           fullResponse += content;
-          setCurrentStreamingMessage(fullResponse);
+
+          // Combine reasoning and content for display
+          let displayContent = "";
+          if (reasoningContent) {
+            // If we have reasoning content but it's still streaming (no closing tag), show as-is
+            // If reasoning is complete, close the think tag
+            if (
+              hasStartedReasoning &&
+              !reasoning &&
+              reasoningContent &&
+              !reasoningContent.includes("</think>")
+            ) {
+              displayContent = reasoningContent + "</think>";
+            } else {
+              displayContent = reasoningContent;
+            }
+            if (fullResponse) {
+              displayContent += fullResponse;
+            }
+          } else {
+            displayContent = fullResponse;
+          }
+
+          setCurrentStreamingMessage(displayContent);
         }
+
+        // Close reasoning tag if it was left open
+        if (hasStartedReasoning && reasoningContent && !reasoningContent.includes("</think>")) {
+          reasoningContent += "</think>";
+        }
+
+        // Combine final reasoning and content
+        const finalResponse = reasoningContent ? reasoningContent + fullResponse : fullResponse;
 
         await stream.finalChatCompletion();
         setCurrentStreamingMessage(undefined);
-        return fullResponse;
+        return finalResponse;
       } catch (error) {
         if (abortController.signal.aborted) {
           throw new Error("Stream aborted");
