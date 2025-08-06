@@ -49,6 +49,11 @@ export const PRICING_PLANS: PricingPlan[] = [
         included: false,
         icon: <X className="w-4 h-4 text-red-500" />
       },
+      {
+        text: "OpenAI GPT-OSS 120B",
+        included: false,
+        icon: <X className="w-4 h-4 text-red-500" />
+      },
       { text: "Gemma 3 27B", included: false, icon: <X className="w-4 h-4 text-red-500" /> },
       {
         text: "Mistral Small 3.1 24B",
@@ -87,6 +92,11 @@ export const PRICING_PLANS: PricingPlan[] = [
         icon: <X className="w-4 h-4 text-red-500" />
       },
       {
+        text: "OpenAI GPT-OSS 120B",
+        included: false,
+        icon: <X className="w-4 h-4 text-red-500" />
+      },
+      {
         text: "Mistral Small 3.1 24B",
         included: false,
         icon: <X className="w-4 h-4 text-red-500" />
@@ -119,6 +129,11 @@ export const PRICING_PLANS: PricingPlan[] = [
       },
       {
         text: "DeepSeek R1 0528 671B",
+        included: true,
+        icon: <Check className="w-4 h-4 text-green-500" />
+      },
+      {
+        text: "OpenAI GPT-OSS 120B",
         included: true,
         icon: <Check className="w-4 h-4 text-green-500" />
       },
@@ -170,6 +185,11 @@ export const PRICING_PLANS: PricingPlan[] = [
       },
       {
         text: "DeepSeek R1 0528 671B",
+        included: true,
+        icon: <Check className="w-4 h-4 text-green-500" />
+      },
+      {
+        text: "OpenAI GPT-OSS 120B",
         included: true,
         icon: <Check className="w-4 h-4 text-green-500" />
       },
@@ -230,6 +250,11 @@ export const PRICING_PLANS: PricingPlan[] = [
       },
       {
         text: "DeepSeek R1 0528 671B",
+        included: true,
+        icon: <Check className="w-4 h-4 text-green-500" />
+      },
+      {
+        text: "OpenAI GPT-OSS 120B",
         included: true,
         icon: <Check className="w-4 h-4 text-green-500" />
       },

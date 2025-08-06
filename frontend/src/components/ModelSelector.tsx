@@ -53,9 +53,15 @@ export const MODEL_CONFIG: Record<string, ModelCfg> = {
   },
   "deepseek-r1-0528": {
     displayName: "DeepSeek R1 0528 671B",
-    badges: ["Pro", "Beta"],
+    badges: ["Pro", "New"],
     requiresPro: true,
     tokenLimit: 130000
+  },
+  "gpt-oss-120b": {
+    displayName: "OpenAI GPT-OSS 120B",
+    badges: ["Pro", "New"],
+    requiresPro: true,
+    tokenLimit: 128000
   },
   "mistral-small-3-1-24b": {
     displayName: "Mistral Small 3.1 24B",
@@ -213,6 +219,8 @@ export function ModelSelector({
             badgeClass += " bg-gradient-to-r from-purple-500/10 to-blue-500/10 text-purple-600";
           } else if (badge === "Starter") {
             badgeClass += " bg-gradient-to-r from-green-500/10 to-emerald-500/10 text-green-600";
+          } else if (badge === "New") {
+            badgeClass += " bg-gradient-to-r from-blue-500/10 to-cyan-500/10 text-blue-600";
           } else if (badge === "Beta") {
             badgeClass += " bg-gradient-to-r from-yellow-500/10 to-orange-500/10 text-yellow-600";
           } else {
