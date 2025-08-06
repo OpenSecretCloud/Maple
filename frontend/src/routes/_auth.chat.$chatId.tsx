@@ -327,17 +327,44 @@ function ChatComponent() {
   const isLoading = phase === "streaming";
   const isPersisting = phase === "persisting";
 
-  // Auto-scroll when new messages appear (user message or start of streaming)
+  // Auto-scroll when user messages are added or streaming starts
   const prevMessageCountRef = useRef(localChat.messages.length);
   const prevStreamingRef = useRef(false);
+  const streamStartedRef = useRef(false);
 
   useEffect(() => {
     const messageCount = localChat.messages.length;
     const hasNewMessage = messageCount > prevMessageCountRef.current;
     const justStartedStreaming = isLoading && !prevStreamingRef.current;
+    const justStoppedStreaming = !isLoading && prevStreamingRef.current;
 
-    if (hasNewMessage || justStartedStreaming) {
-      // Always scroll for new user messages or when streaming starts
+    // Track when streaming actually starts
+    if (justStartedStreaming) {
+      streamStartedRef.current = true;
+    }
+
+    // Only auto-scroll for user messages or when streaming starts
+    // Don't auto-scroll when assistant messages are added (streaming completion)
+    let shouldAutoScroll = false;
+
+    if (justStartedStreaming) {
+      // Always scroll when streaming starts
+      shouldAutoScroll = true;
+    } else if (hasNewMessage && !justStoppedStreaming) {
+      // Only scroll for new user messages, not assistant messages
+      // Also don't scroll if we just stopped streaming (assistant message completion)
+      const latestMessage = localChat.messages[localChat.messages.length - 1];
+      if (latestMessage?.role === "user") {
+        shouldAutoScroll = true;
+      }
+    }
+
+    // Reset stream tracking when streaming stops
+    if (justStoppedStreaming) {
+      streamStartedRef.current = false;
+    }
+
+    if (shouldAutoScroll) {
       const container = chatContainerRef.current;
       if (container) {
         requestAnimationFrame(() => {
@@ -351,7 +378,7 @@ function ChatComponent() {
 
     prevMessageCountRef.current = messageCount;
     prevStreamingRef.current = isLoading;
-  }, [localChat.messages.length, isLoading]);
+  }, [localChat.messages.length, isLoading, localChat.messages]);
 
   const sendMessage = useCallback(
     async (
