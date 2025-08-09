@@ -39,7 +39,7 @@ export type HistoryItem = {
 export type LocalState = {
   model: string;
   availableModels: OpenSecretModel[];
-  setModel: (model: string) => void;
+  setModel: (model: string) => Promise<void>;
   setAvailableModels: (models: OpenSecretModel[]) => void;
   userPrompt: string;
   systemPrompt: string | null;
@@ -75,7 +75,7 @@ export type LocalState = {
 export const LocalStateContext = createContext<LocalState>({
   model: "",
   availableModels: [],
-  setModel: () => void 0,
+  setModel: async () => void 0,
   setAvailableModels: () => void 0,
   userPrompt: "",
   systemPrompt: null,

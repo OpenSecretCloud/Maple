@@ -11,6 +11,7 @@ import { useOpenSecret } from "@opensecret/react";
 import { useEffect, useRef } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import type { Model } from "openai/resources/models.js";
+import { hasAccessToModel as checkModelAccess } from "@/utils/modelDefaults";
 
 // Model configuration for display names, badges, and token limits
 type ModelCfg = {
@@ -177,29 +178,7 @@ export function ModelSelector({
 
   // Check if user has access to a model based on their plan
   const hasAccessToModel = (modelId: string) => {
-    const config = MODEL_CONFIG[modelId];
-
-    // If no restrictions, allow access
-    if (!config?.requiresPro && !config?.requiresStarter) return true;
-
-    const planName = billingStatus?.product_name?.toLowerCase() || "";
-
-    // Check if user is on Pro, Max, or Team plan (for requiresPro models)
-    if (config?.requiresPro) {
-      return planName.includes("pro") || planName.includes("max") || planName.includes("team");
-    }
-
-    // Check if user is on Starter, Pro, Max, or Team plan (for requiresStarter models)
-    if (config?.requiresStarter) {
-      return (
-        planName.includes("starter") ||
-        planName.includes("pro") ||
-        planName.includes("max") ||
-        planName.includes("team")
-      );
-    }
-
-    return true;
+    return checkModelAccess(modelId, billingStatus);
   };
 
   const getDisplayName = (modelId: string, showLock = false) => {

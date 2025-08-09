@@ -1,8 +1,9 @@
 import { useOpenSecret } from "@opensecret/react";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { BillingStatus } from "@/billing/billingApi";
 import { LocalStateContext, Chat, HistoryItem, OpenSecretModel } from "./LocalStateContextDef";
 import { aliasModelName } from "@/utils/utils";
+import { getDefaultModelForUser } from "@/utils/modelDefaults";
 
 export {
   LocalStateContext,
@@ -37,6 +38,55 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
   });
 
   const { get, put, list, del } = useOpenSecret();
+
+  // Load last used model when component mounts
+  useEffect(() => {
+    async function loadLastUsedModel() {
+      try {
+        const lastUsedModel = await get("last_used_model");
+        if (lastUsedModel) {
+          const aliasedModel = aliasModelName(lastUsedModel);
+          setLocalState((prev) => ({
+            ...prev,
+            model: aliasedModel
+          }));
+        }
+      } catch (error) {
+        console.error("Error loading last used model:", error);
+      }
+    }
+
+    loadLastUsedModel();
+  }, [get]);
+
+  // Update default model when billing status changes
+  useEffect(() => {
+    async function updateDefaultModel() {
+      if (localState.billingStatus) {
+        try {
+          const lastUsedModel = await get("last_used_model");
+          const defaultModel = getDefaultModelForUser(
+            localState.billingStatus,
+            lastUsedModel || null
+          );
+
+          // Only update if the current model is still the initial default
+          // and we have a better default based on the user's plan
+          if (localState.model === DEFAULT_MODEL_ID || !lastUsedModel) {
+            const aliasedModel = aliasModelName(defaultModel);
+            setLocalState((prev) => ({
+              ...prev,
+              model: aliasedModel
+            }));
+          }
+        } catch (error) {
+          console.error("Error updating default model:", error);
+        }
+      }
+    }
+
+    updateDefaultModel();
+  }, [localState.billingStatus, localState.model, get]);
 
   async function persistChat(chat: Chat) {
     const chatToSave = {
@@ -258,11 +308,18 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
     });
   }
 
-  function setModel(model: string) {
+  async function setModel(model: string) {
     const aliasedModel = aliasModelName(model);
     setLocalState((prev) =>
       prev.model === aliasedModel ? prev : { ...prev, model: aliasedModel }
     );
+
+    // Persist the last used model
+    try {
+      await put("last_used_model", aliasedModel);
+    } catch (error) {
+      console.error("Error saving last used model:", error);
+    }
   }
 
   function setAvailableModels(models: OpenSecretModel[]) {
