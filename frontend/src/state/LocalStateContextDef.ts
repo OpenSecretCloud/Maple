@@ -75,7 +75,7 @@ export type LocalState = {
 export const LocalStateContext = createContext<LocalState>({
   model: "",
   availableModels: [],
-  setModel: async () => void 0,
+  setModel: () => Promise.resolve(),
   setAvailableModels: () => void 0,
   userPrompt: "",
   systemPrompt: null,

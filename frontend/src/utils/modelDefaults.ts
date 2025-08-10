@@ -1,37 +1,62 @@
 import { BillingStatus } from "@/billing/billingApi";
-import { MODEL_CONFIG } from "@/components/ModelSelector";
+import { MODEL_CONFIG } from "@/utils/modelConfig";
+
+type PlanTier = "free" | "starter" | "pro";
+
+/**
+ * Extracts the plan tier from billing status
+ */
+function getPlanTier(billingStatus: BillingStatus | null): PlanTier {
+  if (!billingStatus) return "free";
+
+  const planName = billingStatus.product_name?.toLowerCase() || "";
+
+  if (planName.includes("pro") || planName.includes("max") || planName.includes("team")) {
+    return "pro";
+  }
+
+  if (planName.includes("starter")) {
+    return "starter";
+  }
+
+  return "free";
+}
 
 /**
  * Determines the default model for a user based on their plan type and usage history
  */
 export function getDefaultModelForUser(
   billingStatus: BillingStatus | null,
-  lastUsedModel: string | null
+  lastUsedModel: string | null,
+  previousPlanTier?: PlanTier
 ): string {
-  // If user has a last used model, prefer that
-  if (lastUsedModel && MODEL_CONFIG[lastUsedModel]) {
-    return lastUsedModel;
-  }
+  const currentPlanTier = getPlanTier(billingStatus);
 
-  // If no billing status, assume free plan
-  if (!billingStatus) {
-    return "llama3-3-70b"; // Llama 3.3 70B for free users
-  }
-
-  const planName = billingStatus.product_name?.toLowerCase() || "";
-
-  // Pro, Max, or Team plan users get GPT-OSS 120B
-  if (planName.includes("pro") || planName.includes("max") || planName.includes("team")) {
+  // Handle plan upgrade scenario: if user upgraded from Free to Pro/Max/Team,
+  // set GPT-OSS as default even if they had Llama before
+  if (previousPlanTier === "free" && currentPlanTier === "pro") {
     return "gpt-oss-120b";
   }
 
-  // Starter plan users get Gemma 3
-  if (planName.includes("starter")) {
-    return "google/gemma-3-27b-it";
+  // If user has a last used model and it's still valid, prefer that
+  if (
+    lastUsedModel &&
+    MODEL_CONFIG[lastUsedModel] &&
+    hasAccessToModel(lastUsedModel, billingStatus)
+  ) {
+    return lastUsedModel;
   }
 
-  // Free plan users get Llama 3.3 (default fallback)
-  return "llama3-3-70b";
+  // Default models based on plan tier
+  switch (currentPlanTier) {
+    case "pro":
+      return "gpt-oss-120b";
+    case "starter":
+      return "google/gemma-3-27b-it";
+    case "free":
+    default:
+      return "llama3-3-70b";
+  }
 }
 
 /**
@@ -43,21 +68,15 @@ export function hasAccessToModel(modelId: string, billingStatus: BillingStatus |
   // If no restrictions, allow access
   if (!config?.requiresPro && !config?.requiresStarter) return true;
 
-  const planName = billingStatus?.product_name?.toLowerCase() || "";
+  const planTier = getPlanTier(billingStatus);
 
-  // Check if user is on Pro, Max, or Team plan (for requiresPro models)
+  // Check if user has required plan tier
   if (config?.requiresPro) {
-    return planName.includes("pro") || planName.includes("max") || planName.includes("team");
+    return planTier === "pro";
   }
 
-  // Check if user is on Starter, Pro, Max, or Team plan (for requiresStarter models)
   if (config?.requiresStarter) {
-    return (
-      planName.includes("starter") ||
-      planName.includes("pro") ||
-      planName.includes("max") ||
-      planName.includes("team")
-    );
+    return planTier === "starter" || planTier === "pro";
   }
 
   return true;

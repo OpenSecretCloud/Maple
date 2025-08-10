@@ -3,7 +3,8 @@ import { useState, useEffect } from "react";
 import { BillingStatus } from "@/billing/billingApi";
 import { LocalStateContext, Chat, HistoryItem, OpenSecretModel } from "./LocalStateContextDef";
 import { aliasModelName } from "@/utils/utils";
-import { getDefaultModelForUser } from "@/utils/modelDefaults";
+import { getDefaultModelForUser, hasAccessToModel } from "@/utils/modelDefaults";
+import { MODEL_CONFIG } from "@/utils/modelConfig";
 
 export {
   LocalStateContext,
@@ -34,21 +35,55 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
     billingStatus: null as BillingStatus | null,
     searchQuery: "",
     isSearchVisible: false,
-    draftMessages: new Map<string, string>()
+    draftMessages: new Map<string, string>(),
+    previousPlanTier: null as "free" | "starter" | "pro" | null
   });
 
   const { get, put, list, del } = useOpenSecret();
+
+  // Helper function to extract plan tier from billing status
+  function getPlanTier(billingStatus: BillingStatus | null): "free" | "starter" | "pro" {
+    if (!billingStatus) return "free";
+
+    const planName = billingStatus.product_name?.toLowerCase() || "";
+
+    if (planName.includes("pro") || planName.includes("max") || planName.includes("team")) {
+      return "pro";
+    }
+
+    if (planName.includes("starter")) {
+      return "starter";
+    }
+
+    return "free";
+  }
 
   // Load last used model when component mounts
   useEffect(() => {
     async function loadLastUsedModel() {
       try {
-        const lastUsedModel = await get("last_used_model");
+        const [lastUsedModel, storedPlanTier] = await Promise.all([
+          get("last_used_model"),
+          get("previous_plan_tier")
+        ]);
+
         if (lastUsedModel) {
           const aliasedModel = aliasModelName(lastUsedModel);
+          // Validate stored model before using it
+          if (
+            MODEL_CONFIG[aliasedModel] &&
+            hasAccessToModel(aliasedModel, localState.billingStatus)
+          ) {
+            setLocalState((prev) => ({
+              ...prev,
+              model: aliasedModel,
+              previousPlanTier: storedPlanTier || null
+            }));
+          }
+        } else if (storedPlanTier) {
           setLocalState((prev) => ({
             ...prev,
-            model: aliasedModel
+            previousPlanTier: storedPlanTier
           }));
         }
       } catch (error) {
@@ -57,7 +92,7 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
     }
 
     loadLastUsedModel();
-  }, [get]);
+  }, [get, localState.billingStatus]); // Add billingStatus as dependency for validation
 
   // Update default model when billing status changes
   useEffect(() => {
@@ -65,18 +100,40 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
       if (localState.billingStatus) {
         try {
           const lastUsedModel = await get("last_used_model");
+          const currentPlanTier = getPlanTier(localState.billingStatus);
+
+          // Store current plan tier for future upgrade detection
+          if (currentPlanTier !== localState.previousPlanTier) {
+            await put("previous_plan_tier", currentPlanTier);
+          }
+
           const defaultModel = getDefaultModelForUser(
             localState.billingStatus,
-            lastUsedModel || null
+            lastUsedModel || null,
+            localState.previousPlanTier || undefined
           );
 
-          // Only update if the current model is still the initial default
-          // and we have a better default based on the user's plan
-          if (localState.model === DEFAULT_MODEL_ID || !lastUsedModel) {
+          // Update model if:
+          // 1. Current model is the initial default, OR
+          // 2. No last used model, OR
+          // 3. User upgraded from Free to Pro (override Llama with GPT-OSS)
+          const shouldUpdate =
+            localState.model === DEFAULT_MODEL_ID ||
+            !lastUsedModel ||
+            (localState.previousPlanTier === "free" && currentPlanTier === "pro");
+
+          if (shouldUpdate) {
             const aliasedModel = aliasModelName(defaultModel);
             setLocalState((prev) => ({
               ...prev,
-              model: aliasedModel
+              model: aliasedModel,
+              previousPlanTier: currentPlanTier
+            }));
+          } else {
+            // Just update the plan tier tracking
+            setLocalState((prev) => ({
+              ...prev,
+              previousPlanTier: currentPlanTier
             }));
           }
         } catch (error) {
@@ -86,7 +143,7 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
     }
 
     updateDefaultModel();
-  }, [localState.billingStatus, localState.model, get]);
+  }, [localState.billingStatus, get, put, localState.previousPlanTier]);
 
   async function persistChat(chat: Chat) {
     const chatToSave = {
@@ -315,11 +372,10 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
     );
 
     // Persist the last used model
-    try {
-      await put("last_used_model", aliasedModel);
-    } catch (error) {
-      console.error("Error saving last used model:", error);
-    }
+    await put("last_used_model", aliasedModel).catch((err) => {
+      console.error("Error saving last used model:", err);
+      throw err; // Propagate error to caller
+    });
   }
 
   function setAvailableModels(models: OpenSecretModel[]) {
