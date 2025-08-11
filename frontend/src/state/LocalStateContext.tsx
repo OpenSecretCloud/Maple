@@ -74,10 +74,7 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
     if (localState.billingStatus && !hasInitializedDefaultModel) {
       const tierBasedDefault = getDefaultModelForUserTier(localState.billingStatus);
       // Only update if the current model is still the default (hasn't been changed by user)
-      if (
-        localState.model === DEFAULT_MODEL_ID ||
-        localState.model === aliasModelName(import.meta.env.VITE_DEV_MODEL_OVERRIDE)
-      ) {
+      if (localState.model === DEFAULT_MODEL_ID) {
         setLocalState((prev) => ({ ...prev, model: tierBasedDefault }));
       }
       setHasInitializedDefaultModel(true);
@@ -86,12 +83,14 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
 
   async function persistChat(chat: Chat) {
     const chatToSave = {
+      ...chat,
       /** If a model is missing, use the tier-based default or fallback to Llama */
-      model: aliasModelName(chat.model) || getDefaultModelForUserTier(localState.billingStatus),
-      ...chat
+      model: aliasModelName(chat.model) || getDefaultModelForUserTier(localState.billingStatus)
     };
 
-    console.log("Persisting chat:", chatToSave);
+    if (import.meta.env.DEV) {
+      console.debug("Persisting chat:", { id: chatToSave.id, title: chatToSave.title });
+    }
     try {
       // Save the chat to storage
       await put(`chat_${chat.id}`, JSON.stringify(chatToSave));
@@ -143,7 +142,7 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
     setLocalState((prev) => ({ ...prev, userImages: images }));
   }
 
-  function setBillingStatus(status: BillingStatus) {
+  function setBillingStatus(status: BillingStatus | null) {
     setLocalState((prev) => ({ ...prev, billingStatus: status }));
   }
 
