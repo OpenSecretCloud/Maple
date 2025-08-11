@@ -157,7 +157,7 @@ function TeamsPage() {
         {/* Security Section */}
         <section className="w-full py-16">
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div className="text-center mb-16">
+            <div className="text-center mb-8">
               <h2 className="text-4xl font-light mb-4">
                 Security by <span className="text-[hsl(var(--purple))] font-medium">Design</span>
               </h2>
@@ -167,6 +167,16 @@ function TeamsPage() {
                 sensitive client information at a firm or non-profit, Teams protects it all.
               </p>
             </div>
+            
+            {/* Centered Image */}
+            <div className="flex justify-center mb-8">
+              <img 
+                src="/audio-hardware-engineers.jpg" 
+                alt="Two audio hardware engineers collaborating at work using secure Maple AI"
+                className="max-w-2xl w-full h-auto rounded-lg shadow-lg"
+              />
+            </div>
+            
             <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
               <FeatureCard
                 icon={Shield}
