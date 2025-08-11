@@ -39,13 +39,13 @@ function TeamsPage() {
         <MarketingHeader
           title={
             <span>
-              Confidential AI for <span className="text-[hsl(var(--purple))]">Teams</span>
+              Secure AI for <span className="text-[hsl(var(--purple))]">Teams</span>
             </span>
           }
           subtitle={
             <span>
-              Secure, private AI for organizations that value trust. Collaborate with
-              confidence—Maple Teams keeps your data safe, even from us.
+              Protect your trade secrets while using the best open AI models. <br />
+              No data is shared with advertisers, competitors, or third parties. Period. 
             </span>
           }
         />
@@ -76,10 +76,8 @@ function TeamsPage() {
                 <span className="text-[hsl(var(--purple))] font-medium">Maple Teams?</span>
               </h2>
               <p className="text-xl text-[hsl(var(--marketing-text-muted))] max-w-2xl mx-auto">
-                Maple Teams is built for organizations that handle sensitive data—law firms, therapy
-                practices, non-profits, and businesses that demand privacy. Share AI access, pool
-                usage, and collaborate securely with end-to-end encryption and confidential
-                computing.
+              Experience the productivity gains of AI without the data tracking. Maple Teams can scale AI 
+              across your entire organization to meet your needs.
               </p>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
@@ -110,8 +108,9 @@ function TeamsPage() {
                 Security by <span className="text-[hsl(var(--purple))] font-medium">Design</span>
               </h2>
               <p className="text-xl text-[hsl(var(--marketing-text-muted))] max-w-2xl mx-auto">
-                Maple Teams is built from the ground up for privacy and compliance. Your data is
-                protected at every step—by cryptography, hardware, and open-source transparency.
+              You don't share company secrets with competitors, so why should your AI? 
+                Whether you're designing products in a highly competitive market or dealing with 
+                sensitive client information at a firm or non-profit, Teams protects it all.
               </p>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
