@@ -100,6 +100,60 @@ function TeamsPage() {
           </div>
         </section>
 
+        {/* AI Models Section */}
+        <section className="w-full py-16">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div className="text-center mb-12">
+              <h2 className="text-4xl font-light mb-4">
+                Powerful AI models.{" "}
+                <span className="text-[hsl(var(--purple))] font-medium">No data sharing.</span>
+              </h2>
+              <p className="text-xl text-[hsl(var(--marketing-text-muted))] max-w-2xl mx-auto">
+              We use open-source models from the biggest providers.
+              </p>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8">
+              <div className="flex flex-col items-center">
+                <img 
+                  src="/badge-openai-logo.png" 
+                  alt="OpenAI" 
+                  className="w-72 h-24 object-contain mb-4"
+                />
+                <span className="text-lg font-medium text-foreground">OpenAI GPT-OSS</span>
+              </div>
+              <div className="flex flex-col items-center">
+                <img 
+                  src="/badge-google-logo.png" 
+                  alt="Google" 
+                  className="w-72 h-24 object-contain mb-4"
+                />
+                <span className="text-lg font-medium text-foreground">Google Gemma</span>
+              </div>
+              <div className="flex flex-col items-center">
+                <img 
+                  src="/badge-deepseek-logo.png" 
+                  alt="DeepSeek" 
+                  className="w-72 h-24 object-contain mb-4"
+                />
+                <span className="text-lg font-medium text-foreground">DeepSeek R1</span>
+              </div>
+              <div className="flex flex-col items-center">
+                <img 
+                  src="/badge-meta-logo.png" 
+                  alt="Meta" 
+                  className="w-72 h-24 object-contain mb-4"
+                />
+                <span className="text-lg font-medium text-foreground">Meta Llama</span>
+              </div>
+            </div>
+            <div className="text-center">
+              <p className="text-xl text-[hsl(var(--marketing-text-muted))] max-w-2xl mx-auto">
+              <br />None of your data is shared with these companies.<br />Get the best without the mess.
+              </p>
+            </div>
+          </div>
+        </section>
+
         {/* Security Section */}
         <section className="w-full py-16">
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
