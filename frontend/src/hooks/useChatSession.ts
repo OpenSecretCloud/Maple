@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Chat, ChatMessage, DEFAULT_MODEL_ID } from "@/state/LocalStateContext";
+import { Chat, ChatMessage, FREE_USER_DEFAULT_MODEL_ID } from "@/state/LocalStateContext";
 import { ChatContentPart } from "@/state/LocalStateContextDef";
 import { fileToDataURL } from "@/utils/file";
 import { BillingStatus } from "@/billing/billingApi";
@@ -380,7 +380,7 @@ async function generateTitle(
 
     // Use the OpenAI API to generate a concise title - use the default model
     const stream = openai.beta.chat.completions.stream({
-      model: DEFAULT_MODEL_ID, // Use the default model instead of user selected model
+      model: FREE_USER_DEFAULT_MODEL_ID, // Use the free user default model for title generation
       messages: [
         {
           role: "system",

@@ -1,5 +1,5 @@
 import { useOpenSecret } from "@opensecret/react";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { BillingStatus } from "@/billing/billingApi";
 import { LocalStateContext, Chat, HistoryItem, OpenSecretModel } from "./LocalStateContextDef";
 import { aliasModelName } from "@/utils/utils";
@@ -12,15 +12,43 @@ export {
   type LocalState
 } from "./LocalStateContextDef";
 
-export const DEFAULT_MODEL_ID = "llama3-3-70b";
+export const FREE_USER_DEFAULT_MODEL_ID = "llama3-3-70b";
+export const PAID_USER_DEFAULT_MODEL_ID = "deepseek-r1-0528";
+
+// Get default model based on user's billing status
+export function getDefaultModelId(billingStatus: BillingStatus | null): string {
+  // If no billing status, assume free user
+  if (!billingStatus) {
+    return FREE_USER_DEFAULT_MODEL_ID;
+  }
+
+  // Check if user has any paid plan (starter, pro, max, or team)
+  const planName = billingStatus.product_name?.toLowerCase() || "";
+  const isPaidUser =
+    billingStatus.is_subscribed &&
+    (planName.includes("starter") ||
+      planName.includes("pro") ||
+      planName.includes("max") ||
+      planName.includes("team"));
+
+  return isPaidUser ? PAID_USER_DEFAULT_MODEL_ID : FREE_USER_DEFAULT_MODEL_ID;
+}
 
 export const LocalStateProvider = ({ children }: { children: React.ReactNode }) => {
   /** The model that should be assumed when a chat doesn't yet have one */
   const llamaModel: OpenSecretModel = {
-    id: DEFAULT_MODEL_ID,
+    id: FREE_USER_DEFAULT_MODEL_ID,
     object: "model",
     created: Date.now(),
     owned_by: "meta",
+    tasks: ["generate"]
+  };
+
+  const deepSeekModel: OpenSecretModel = {
+    id: PAID_USER_DEFAULT_MODEL_ID,
+    object: "model",
+    created: Date.now(),
+    owned_by: "deepseek",
     tasks: ["generate"]
   };
 
@@ -28,20 +56,37 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
     userPrompt: "",
     systemPrompt: null as string | null,
     userImages: [] as File[],
-    model: aliasModelName(import.meta.env.VITE_DEV_MODEL_OVERRIDE) || DEFAULT_MODEL_ID,
-    availableModels: [llamaModel] as OpenSecretModel[],
+    model: aliasModelName(import.meta.env.VITE_DEV_MODEL_OVERRIDE) || FREE_USER_DEFAULT_MODEL_ID,
+    availableModels: [llamaModel, deepSeekModel] as OpenSecretModel[],
     billingStatus: null as BillingStatus | null,
     searchQuery: "",
     isSearchVisible: false,
     draftMessages: new Map<string, string>()
   });
 
+  // Update default model when billing status changes (only if model hasn't been explicitly set by user)
+  useEffect(() => {
+    // Only update if we're still using the default model and not overridden by dev env
+    if (!import.meta.env.VITE_DEV_MODEL_OVERRIDE) {
+      const currentModel = localState.model;
+      const isCurrentlyDefault =
+        currentModel === FREE_USER_DEFAULT_MODEL_ID || currentModel === PAID_USER_DEFAULT_MODEL_ID;
+
+      if (isCurrentlyDefault) {
+        const newDefaultModel = getDefaultModelId(localState.billingStatus);
+        if (currentModel !== newDefaultModel) {
+          setLocalState((prev) => ({ ...prev, model: newDefaultModel }));
+        }
+      }
+    }
+  }, [localState.billingStatus, localState.model]);
+
   const { get, put, list, del } = useOpenSecret();
 
   async function persistChat(chat: Chat) {
     const chatToSave = {
-      /** If a model is missing, assume the default Llama and write it now */
-      model: aliasModelName(chat.model) || DEFAULT_MODEL_ID,
+      /** If a model is missing, assume the appropriate default model based on billing status */
+      model: aliasModelName(chat.model) || getDefaultModelId(localState.billingStatus),
       ...chat
     };
 

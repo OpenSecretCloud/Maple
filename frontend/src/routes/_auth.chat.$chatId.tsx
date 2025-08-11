@@ -5,7 +5,7 @@ import ChatBox from "@/components/ChatBox";
 import { useOpenAI } from "@/ai/useOpenAi";
 import { useLocalState } from "@/state/useLocalState";
 import { Markdown, stripThinkingTags } from "@/components/markdown";
-import { ChatMessage, DEFAULT_MODEL_ID } from "@/state/LocalStateContext";
+import { ChatMessage, FREE_USER_DEFAULT_MODEL_ID } from "@/state/LocalStateContext";
 import { Sidebar, SidebarToggle } from "@/components/Sidebar";
 import { useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
@@ -422,7 +422,7 @@ END OF INSTRUCTIONS`;
       // 2. Stream the summary
       let summary = "";
       const stream = openai.beta.chat.completions.stream({
-        model: DEFAULT_MODEL_ID, // Use the default model instead of user selected model
+        model: FREE_USER_DEFAULT_MODEL_ID, // Use the free user default model for summarization
         messages: summarizationMessages,
         temperature: 0.3,
         max_tokens: 600,
