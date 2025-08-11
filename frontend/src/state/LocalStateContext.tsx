@@ -1,5 +1,5 @@
 import { useOpenSecret } from "@opensecret/react";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { BillingStatus } from "@/billing/billingApi";
 import { LocalStateContext, Chat, HistoryItem, OpenSecretModel } from "./LocalStateContextDef";
 import { aliasModelName } from "@/utils/utils";
@@ -13,6 +13,34 @@ export {
 } from "./LocalStateContextDef";
 
 export const DEFAULT_MODEL_ID = "llama3-3-70b";
+
+/**
+ * Determines the default model based on user's billing status
+ * Free users: Llama 3.3 70B (existing default)
+ * Starter users: Gemma 3 27B
+ * Pro/Team users: DeepSeek R1 0528 671B
+ */
+export function getDefaultModelForUserTier(billingStatus: BillingStatus | null): string {
+  if (!billingStatus) {
+    // No billing status = free user
+    return DEFAULT_MODEL_ID; // "llama3-3-70b"
+  }
+
+  const planName = billingStatus.product_name?.toLowerCase() || "";
+
+  // Pro and Team users get DeepSeek 671B
+  if (planName.includes("pro") || planName.includes("max") || planName.includes("team")) {
+    return "deepseek-r1-0528";
+  }
+
+  // Starter users get Gemma
+  if (planName.includes("starter")) {
+    return "google/gemma-3-27b-it";
+  }
+
+  // Default fallback for free users or unknown plans
+  return DEFAULT_MODEL_ID;
+}
 
 export const LocalStateProvider = ({ children }: { children: React.ReactNode }) => {
   /** The model that should be assumed when a chat doesn't yet have one */
@@ -38,10 +66,28 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
 
   const { get, put, list, del } = useOpenSecret();
 
+  // Track if this is the first time billing status is set (fresh app launch)
+  const [hasInitializedDefaultModel, setHasInitializedDefaultModel] = useState(false);
+
+  // Update default model when billing status is first loaded (fresh app launch only)
+  useEffect(() => {
+    if (localState.billingStatus && !hasInitializedDefaultModel) {
+      const tierBasedDefault = getDefaultModelForUserTier(localState.billingStatus);
+      // Only update if the current model is still the default (hasn't been changed by user)
+      if (
+        localState.model === DEFAULT_MODEL_ID ||
+        localState.model === aliasModelName(import.meta.env.VITE_DEV_MODEL_OVERRIDE)
+      ) {
+        setLocalState((prev) => ({ ...prev, model: tierBasedDefault }));
+      }
+      setHasInitializedDefaultModel(true);
+    }
+  }, [localState.billingStatus, hasInitializedDefaultModel, localState.model]);
+
   async function persistChat(chat: Chat) {
     const chatToSave = {
-      /** If a model is missing, assume the default Llama and write it now */
-      model: aliasModelName(chat.model) || DEFAULT_MODEL_ID,
+      /** If a model is missing, use the tier-based default or fallback to Llama */
+      model: aliasModelName(chat.model) || getDefaultModelForUserTier(localState.billingStatus),
       ...chat
     };
 
@@ -114,7 +160,7 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
       id: window.crypto.randomUUID(),
       title,
       messages: [],
-      model: localState.model
+      model: localState.model || getDefaultModelForUserTier(localState.billingStatus)
     };
     await persistChat(newChat);
     return newChat.id;
