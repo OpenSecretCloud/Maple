@@ -43,7 +43,6 @@ export const PRICING_PLANS: PricingPlan[] = [
       },
       { text: "Rename Chats", included: true, icon: <Check className="w-4 h-4 text-green-500" /> },
       { text: "Image Upload", included: false, icon: <X className="w-4 h-4 text-red-500" /> },
-      { text: "DeepSeek R1 70B", included: false, icon: <X className="w-4 h-4 text-red-500" /> },
       {
         text: "DeepSeek R1 0528 671B",
         included: false,
@@ -85,7 +84,6 @@ export const PRICING_PLANS: PricingPlan[] = [
         icon: <Check className="w-4 h-4 text-green-500" />
       },
       { text: "Gemma 3 27B", included: true, icon: <Check className="w-4 h-4 text-green-500" /> },
-      { text: "DeepSeek R1 70B", included: false, icon: <X className="w-4 h-4 text-red-500" /> },
       {
         text: "DeepSeek R1 0528 671B",
         included: false,
@@ -122,11 +120,6 @@ export const PRICING_PLANS: PricingPlan[] = [
         icon: <Check className="w-4 h-4 text-green-500" />
       },
       { text: "Image Upload", included: true, icon: <Check className="w-4 h-4 text-green-500" /> },
-      {
-        text: "DeepSeek R1 70B",
-        included: true,
-        icon: <Check className="w-4 h-4 text-green-500" />
-      },
       {
         text: "DeepSeek R1 0528 671B",
         included: true,
@@ -178,11 +171,6 @@ export const PRICING_PLANS: PricingPlan[] = [
         icon: <Check className="w-4 h-4 text-green-500" />
       },
       { text: "Image Upload", included: true, icon: <Check className="w-4 h-4 text-green-500" /> },
-      {
-        text: "DeepSeek R1 70B",
-        included: true,
-        icon: <Check className="w-4 h-4 text-green-500" />
-      },
       {
         text: "DeepSeek R1 0528 671B",
         included: true,
@@ -243,11 +231,6 @@ export const PRICING_PLANS: PricingPlan[] = [
         icon: <Check className="w-4 h-4 text-green-500" />
       },
       { text: "Image Upload", included: true, icon: <Check className="w-4 h-4 text-green-500" /> },
-      {
-        text: "DeepSeek R1 70B",
-        included: true,
-        icon: <Check className="w-4 h-4 text-green-500" />
-      },
       {
         text: "DeepSeek R1 0528 671B",
         included: true,
