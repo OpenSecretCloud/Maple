@@ -85,7 +85,7 @@ function TeamsPage() {
             <div className="flex justify-center mb-8">
               <img 
                 src="/maple-teams-startup-office.jpg" 
-                alt="Two audio hardware engineers collaborating at work using secure Maple AI"
+                alt="A company office with different departments of Accounting, Finance, Marketing, Engineering, and Sales"
                 className="max-w-xl w-full h-auto rounded-lg shadow-lg"
               />
             </div>
