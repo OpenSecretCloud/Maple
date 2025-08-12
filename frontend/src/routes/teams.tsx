@@ -39,13 +39,13 @@ function TeamsPage() {
         <MarketingHeader
           title={
             <span>
-              Confidential AI for <span className="text-[hsl(var(--purple))]">Teams</span>
+              Secure AI for <span className="text-[hsl(var(--purple))]">Teams</span>
             </span>
           }
           subtitle={
             <span>
-              Secure, private AI for organizations that value trust. Collaborate with
-              confidence—Maple Teams keeps your data safe, even from us.
+              Protect your trade secrets while using AI. <br />
+              No data is shared with advertisers, competitors, or third parties. Period.
             </span>
           }
         />
@@ -70,18 +70,26 @@ function TeamsPage() {
         {/* Features Section */}
         <section className="w-full py-16 dark:bg-[hsl(var(--section-alt))] bg-[hsl(var(--section-alt))]">
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div className="text-center mb-16">
+            <div className="text-center mb-8">
               <h2 className="text-4xl font-light mb-4">
                 Why Choose{" "}
                 <span className="text-[hsl(var(--purple))] font-medium">Maple Teams?</span>
               </h2>
               <p className="text-xl text-[hsl(var(--marketing-text-muted))] max-w-2xl mx-auto">
-                Maple Teams is built for organizations that handle sensitive data—law firms, therapy
-                practices, non-profits, and businesses that demand privacy. Share AI access, pool
-                usage, and collaborate securely with end-to-end encryption and confidential
-                computing.
+                Experience the productivity gains of AI without the data tracking.
+                <br /> Maple Teams scales AI across your entire organization to meet your needs.
               </p>
             </div>
+
+            {/* Centered Image */}
+            <div className="flex justify-center mb-8">
+              <img
+                src="/maple-teams-startup-office.jpg"
+                alt="A company office with different departments of Accounting, Finance, Marketing, Engineering, and Sales"
+                className="max-w-xl w-full h-auto rounded-lg shadow-lg"
+              />
+            </div>
+
             <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
               <FeatureCard
                 icon={Users}
@@ -102,18 +110,76 @@ function TeamsPage() {
           </div>
         </section>
 
+        {/* AI Models Section */}
+        <section className="w-full py-16">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div className="text-center mb-12">
+              <h2 className="text-4xl font-light mb-4">
+                Powerful AI models.{" "}
+                <span className="text-[hsl(var(--purple))] font-medium">No data sharing.</span>
+              </h2>
+              <p className="text-xl text-[hsl(var(--marketing-text-muted))] max-w-2xl mx-auto">
+                We use open-source models from the biggest providers.
+              </p>
+            </div>
+            {(() => {
+              const models = [
+                { src: "/badge-openai-logo.png", alt: "OpenAI", label: "OpenAI GPT-OSS" },
+                { src: "/badge-google-logo.png", alt: "Google", label: "Google Gemma" },
+                { src: "/badge-deepseek-logo.png", alt: "DeepSeek", label: "DeepSeek R1" },
+                { src: "/badge-meta-logo.png", alt: "Meta", label: "Meta Llama" }
+              ];
+              return (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8">
+                  {models.map((model) => (
+                    <div key={model.label} className="flex flex-col items-center">
+                      <img
+                        src={model.src}
+                        alt={model.alt}
+                        loading="lazy"
+                        decoding="async"
+                        className="w-72 h-24 object-contain mb-4"
+                      />
+                      <span className="text-lg font-medium text-foreground">{model.label}</span>
+                    </div>
+                  ))}
+                </div>
+              );
+            })()}
+            <div className="text-center">
+              <p className="text-xl text-[hsl(var(--marketing-text-muted))] max-w-2xl mx-auto">
+                <br />
+                None of your data is transmitted to these companies.
+                <br />
+                Get the best without the mess.
+              </p>
+            </div>
+          </div>
+        </section>
+
         {/* Security Section */}
         <section className="w-full py-16">
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div className="text-center mb-16">
+            <div className="text-center mb-8">
               <h2 className="text-4xl font-light mb-4">
                 Security by <span className="text-[hsl(var(--purple))] font-medium">Design</span>
               </h2>
               <p className="text-xl text-[hsl(var(--marketing-text-muted))] max-w-2xl mx-auto">
-                Maple Teams is built from the ground up for privacy and compliance. Your data is
-                protected at every step—by cryptography, hardware, and open-source transparency.
+                You don't share company secrets with competitors, so why should your AI? Whether
+                you're designing products in a highly competitive market or dealing with sensitive
+                client information at a firm or non-profit, Teams protects it all.
               </p>
             </div>
+
+            {/* Centered Image */}
+            <div className="flex justify-center mb-8">
+              <img
+                src="/audio-hardware-engineers.jpg"
+                alt="Two audio hardware engineers collaborating at work using secure Maple AI"
+                className="max-w-2xl w-full h-auto rounded-lg shadow-lg"
+              />
+            </div>
+
             <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
               <FeatureCard
                 icon={Shield}
@@ -164,10 +230,17 @@ function TeamsPage() {
                   <span className="text-xl font-medium">For Businesses</span>
                 </div>
                 <p className="text-[hsl(var(--marketing-text-muted))]">
-                  Maple Teams is trusted by organizations in law, healthcare, finance, and
-                  consulting. Draft contracts, analyze client data, and collaborate on sensitive
-                  projects with full privacy and compliance.
+                  Maple Teams is trusted by organizations in big tech, legal, higher education,
+                  healthcare, finance, consulting, and more. Draft contracts, analyze client data,
+                  and collaborate on sensitive projects with full privacy and compliance.
                 </p>
+                <div className="flex justify-center mt-4">
+                  <img
+                    src="/legal-office.jpg"
+                    alt="Legal professionals working in a modern law office with secure AI assistance"
+                    className="max-w-md w-full h-auto rounded-lg shadow-md"
+                  />
+                </div>
               </div>
               <div className="flex-1 flex flex-col gap-4">
                 <div className="flex items-center gap-3">
@@ -179,6 +252,13 @@ function TeamsPage() {
                   information, collaborate on grant writing, and protect the privacy of those they
                   serve—no IT headaches, just secure, private AI for your mission.
                 </p>
+                <div className="flex justify-center mt-4">
+                  <img
+                    src="/social-worker-office.jpg"
+                    alt="Social workers collaborating in a non-profit office using secure AI tools"
+                    className="max-w-md w-full h-auto rounded-lg shadow-md"
+                  />
+                </div>
               </div>
             </div>
           </div>
@@ -189,7 +269,7 @@ function TeamsPage() {
           <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
             <h2 className="text-3xl font-light mb-4">Simple, Transparent Pricing</h2>
             <p className="text-lg text-[hsl(var(--marketing-text-muted))] mb-8">
-              $30/month per seat. All features included. Priority support for teams. No hidden fees.
+              $30/month per seat. All features included. No hidden fees. Cancel anytime.
             </p>
             <div className="flex justify-center">
               <div className="max-w-md w-full">
