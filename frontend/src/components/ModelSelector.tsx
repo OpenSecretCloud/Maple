@@ -32,18 +32,12 @@ export const MODEL_CONFIG: Record<string, ModelCfg> = {
     displayName: "Llama 3.3 70B",
     tokenLimit: 70000
   },
-  "google/gemma-3-27b-it": {
-    displayName: "Gemma 3 27B",
-    badges: ["Starter"],
-    requiresStarter: true,
-    tokenLimit: 70000
-  },
   "leon-se/gemma-3-27b-it-fp8-dynamic": {
     displayName: "Gemma 3 27B",
     badges: ["Starter"],
     requiresStarter: true,
     supportsVision: true,
-    tokenLimit: 70000
+    tokenLimit: 20000
   },
   "deepseek-r1-0528": {
     displayName: "DeepSeek R1 0528 671B",
