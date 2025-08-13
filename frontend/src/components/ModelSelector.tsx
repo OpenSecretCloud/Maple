@@ -32,12 +32,6 @@ export const MODEL_CONFIG: Record<string, ModelCfg> = {
     displayName: "Llama 3.3 70B",
     tokenLimit: 70000
   },
-  "google/gemma-3-27b-it": {
-    displayName: "Gemma 3 27B",
-    badges: ["Starter"],
-    requiresStarter: true,
-    tokenLimit: 20000
-  },
   "leon-se/gemma-3-27b-it-fp8-dynamic": {
     displayName: "Gemma 3 27B",
     badges: ["Starter"],
