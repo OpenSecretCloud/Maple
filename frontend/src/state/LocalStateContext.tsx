@@ -28,7 +28,16 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
     userPrompt: "",
     systemPrompt: null as string | null,
     userImages: [] as File[],
-    model: aliasModelName(import.meta.env.VITE_DEV_MODEL_OVERRIDE) || DEFAULT_MODEL_ID,
+    model:
+      aliasModelName(import.meta.env.VITE_DEV_MODEL_OVERRIDE) ||
+      (() => {
+        try {
+          return localStorage.getItem("selectedModel") || DEFAULT_MODEL_ID;
+        } catch (error) {
+          console.error("Failed to load model from localStorage:", error);
+          return DEFAULT_MODEL_ID;
+        }
+      })(),
     availableModels: [llamaModel] as OpenSecretModel[],
     billingStatus: null as BillingStatus | null,
     searchQuery: "",
@@ -260,9 +269,18 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
 
   function setModel(model: string) {
     const aliasedModel = aliasModelName(model);
-    setLocalState((prev) =>
-      prev.model === aliasedModel ? prev : { ...prev, model: aliasedModel }
-    );
+    setLocalState((prev) => {
+      if (prev.model === aliasedModel) return prev;
+
+      // Save to localStorage when model changes
+      try {
+        localStorage.setItem("selectedModel", aliasedModel);
+      } catch (error) {
+        console.error("Failed to save model to localStorage:", error);
+      }
+
+      return { ...prev, model: aliasedModel };
+    });
   }
 
   function setAvailableModels(models: OpenSecretModel[]) {
