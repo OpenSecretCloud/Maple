@@ -1,5 +1,5 @@
 import { useOpenSecret } from "@opensecret/react";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { BillingStatus } from "@/billing/billingApi";
 import { LocalStateContext, Chat, HistoryItem, OpenSecretModel } from "./LocalStateContextDef";
 import { aliasModelName } from "@/utils/utils";
@@ -13,6 +13,40 @@ export {
 } from "./LocalStateContextDef";
 
 export const DEFAULT_MODEL_ID = "llama3-3-70b";
+const LAST_MODEL_STORAGE_KEY = "maple_last_model";
+
+/**
+ * Get the last used model from localStorage, with fallback logic
+ */
+function getInitialModel(): string {
+  // First priority: dev override
+  const devOverride = aliasModelName(import.meta.env.VITE_DEV_MODEL_OVERRIDE);
+  if (devOverride) return devOverride;
+
+  // Second priority: last used model from localStorage
+  try {
+    const lastModel = localStorage.getItem(LAST_MODEL_STORAGE_KEY);
+    if (lastModel) {
+      return aliasModelName(lastModel) || DEFAULT_MODEL_ID;
+    }
+  } catch (error) {
+    console.warn("Could not read last model from localStorage:", error);
+  }
+
+  // Final fallback: default model
+  return DEFAULT_MODEL_ID;
+}
+
+/**
+ * Save the model selection to localStorage
+ */
+function saveModelToStorage(model: string) {
+  try {
+    localStorage.setItem(LAST_MODEL_STORAGE_KEY, model);
+  } catch (error) {
+    console.warn("Could not save model to localStorage:", error);
+  }
+}
 
 export const LocalStateProvider = ({ children }: { children: React.ReactNode }) => {
   /** The model that should be assumed when a chat doesn't yet have one */
@@ -28,7 +62,7 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
     userPrompt: "",
     systemPrompt: null as string | null,
     userImages: [] as File[],
-    model: aliasModelName(import.meta.env.VITE_DEV_MODEL_OVERRIDE) || DEFAULT_MODEL_ID,
+    model: getInitialModel(),
     availableModels: [llamaModel] as OpenSecretModel[],
     billingStatus: null as BillingStatus | null,
     searchQuery: "",
@@ -37,6 +71,11 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
   });
 
   const { get, put, list, del } = useOpenSecret();
+
+  // Save model to localStorage whenever it changes
+  useEffect(() => {
+    saveModelToStorage(localState.model);
+  }, [localState.model]);
 
   async function persistChat(chat: Chat) {
     const chatToSave = {
@@ -260,9 +299,12 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
 
   function setModel(model: string) {
     const aliasedModel = aliasModelName(model);
-    setLocalState((prev) =>
-      prev.model === aliasedModel ? prev : { ...prev, model: aliasedModel }
-    );
+
+    // Only update state and save if the model actually changed
+    if (localState.model !== aliasedModel) {
+      setLocalState((prev) => ({ ...prev, model: aliasedModel }));
+      saveModelToStorage(aliasedModel);
+    }
   }
 
   function setAvailableModels(models: OpenSecretModel[]) {
