@@ -327,17 +327,17 @@ function ChatComponent() {
   const isLoading = phase === "streaming";
   const isPersisting = phase === "persisting";
 
-  // Auto-scroll when new messages appear (user message or start of streaming)
-  const prevMessageCountRef = useRef(localChat.messages.length);
-  const prevStreamingRef = useRef(false);
+  // Auto-scroll when user sends message (new user message appears)
+  const prevUserMessageCountRef = useRef(
+    localChat.messages.filter((m) => m.role === "user").length
+  );
 
   useEffect(() => {
-    const messageCount = localChat.messages.length;
-    const hasNewMessage = messageCount > prevMessageCountRef.current;
-    const justStartedStreaming = isLoading && !prevStreamingRef.current;
+    const userMessageCount = localChat.messages.filter((m) => m.role === "user").length;
+    const hasNewUserMessage = userMessageCount > prevUserMessageCountRef.current;
 
-    if (hasNewMessage || justStartedStreaming) {
-      // Always scroll for new user messages or when streaming starts
+    if (hasNewUserMessage) {
+      // Scroll when user sends a message
       const container = chatContainerRef.current;
       if (container) {
         requestAnimationFrame(() => {
@@ -349,9 +349,32 @@ function ChatComponent() {
       }
     }
 
-    prevMessageCountRef.current = messageCount;
-    prevStreamingRef.current = isLoading;
-  }, [localChat.messages.length, isLoading]);
+    prevUserMessageCountRef.current = userMessageCount;
+  }, [localChat.messages]);
+
+  // Auto-scroll when assistant starts streaming (currentStreamingMessage appears)
+  const prevHadStreamingMessage = useRef(false);
+
+  useEffect(() => {
+    const hasStreamingMessage = !!currentStreamingMessage;
+    const justStartedStreaming = hasStreamingMessage && !prevHadStreamingMessage.current;
+
+    if (justStartedStreaming) {
+      // Scroll when assistant starts streaming
+      const container = chatContainerRef.current;
+      if (container) {
+        // Small delay to ensure the streaming message box is rendered
+        setTimeout(() => {
+          container.scrollTo({
+            top: container.scrollHeight,
+            behavior: "smooth"
+          });
+        }, 100);
+      }
+    }
+
+    prevHadStreamingMessage.current = hasStreamingMessage;
+  }, [currentStreamingMessage]);
 
   const sendMessage = useCallback(
     async (
@@ -363,14 +386,7 @@ function ChatComponent() {
     ) => {
       // Use the appendUserMessage from the hook with system prompt as separate parameter
       await appendUserMessage(input, images, documentText, documentMetadata, systemPrompt);
-
-      // Scroll to bottom after sending
-      requestAnimationFrame(() => {
-        chatContainerRef.current?.scrollTo({
-          top: chatContainerRef.current.scrollHeight,
-          behavior: "smooth"
-        });
-      });
+      // Note: Auto-scrolling is handled by the effect that watches for streaming start
     },
     [appendUserMessage]
   );

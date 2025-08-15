@@ -563,10 +563,12 @@ export default function Component({
     setDocumentError(null);
     setImageError(null);
 
-    // Re-focus input after submitting
-    setTimeout(() => {
-      inputRef.current?.focus();
-    }, 0);
+    // Re-focus input after submitting (desktop only)
+    if (!isMobile) {
+      setTimeout(() => {
+        inputRef.current?.focus();
+      }, 0);
+    }
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -678,6 +680,11 @@ export default function Component({
 
   // Auto-focus effect - runs on mount, when chat ID changes, and after streaming completes
   useEffect(() => {
+    // Skip auto-focus on mobile to prevent keyboard popup
+    if (isMobile) {
+      return;
+    }
+
     // Skip if user is already focused on an input elsewhere
     if (document.activeElement?.matches("input, textarea")) {
       return;
@@ -692,7 +699,7 @@ export default function Component({
     }, 100);
 
     return () => clearTimeout(timer);
-  }, [chatId, isStreaming, isInputDisabled]); // Re-run when chat ID changes, streaming completes, or input state changes
+  }, [chatId, isStreaming, isInputDisabled, isMobile]); // Re-run when chat ID changes, streaming completes, or input state changes
 
   // Cleanup effect for object URLs
   useEffect(() => {
