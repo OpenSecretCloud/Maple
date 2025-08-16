@@ -316,7 +316,8 @@ export function useChatSession(
     currentStreamingMessage,
     appendUserMessage,
     streamAssistant,
-    streamingError
+    streamingError,
+    isPending
   };
 }
 
