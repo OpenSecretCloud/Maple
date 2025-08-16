@@ -190,7 +190,8 @@ function ChatComponent() {
     phase,
     currentStreamingMessage,
     appendUserMessage,
-    streamingError
+    streamingError,
+    isPending
   } = useChatSession(chatId, {
     getChatById,
     persistChat,
@@ -587,7 +588,7 @@ END OF INSTRUCTIONS`;
           <ChatBox
             onSubmit={sendMessage}
             messages={localChat.messages}
-            isStreaming={isLoading || isPersisting || isSummarizing}
+            isStreaming={isLoading || isPersisting || isSummarizing || isPending}
             onCompress={compressChat}
             isSummarizing={isSummarizing}
             imageConversionError={imageConversionError}
