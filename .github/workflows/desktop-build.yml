@@ -127,6 +127,8 @@ jobs:
 
       - name: Install Tauri CLI
         run: cargo install tauri-cli
+        env:
+          CARGO_CFG_TARGET_OS: linux
 
       - name: Build Tauri App (Linux)
         working-directory: ./frontend

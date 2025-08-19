@@ -101,6 +101,8 @@ jobs:
 
       - name: Install Tauri CLI
         run: cargo install tauri-cli
+        env:
+          CARGO_CFG_TARGET_OS: darwin
 
       - name: Set up API Key
         run: |
