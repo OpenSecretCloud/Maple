@@ -110,7 +110,7 @@ jobs:
       - name: Install Tauri CLI
         run: |
           if ! command -v cargo-tauri &> /dev/null; then
-            cargo install tauri-cli
+            CARGO_CFG_TARGET_OS=linux cargo install tauri-cli
           else
             echo "Tauri CLI already installed"
           fi

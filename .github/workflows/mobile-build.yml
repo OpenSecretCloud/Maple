@@ -43,6 +43,10 @@ jobs:
 
       - name: Install Tauri CLI
         run: cargo install tauri-cli
+        env:
+          # Workaround for getrandom v0.2.16 (https://github.com/rust-random/getrandom/issues/641)
+          # cargo install builds for the host; on macOS runners target_os is "macos"
+          CARGO_CFG_TARGET_OS: macos
 
       - name: Set up API Key
         run: |
