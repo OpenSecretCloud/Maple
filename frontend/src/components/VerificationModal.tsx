@@ -79,6 +79,13 @@ export function VerificationModal() {
     }
   };
 
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      handleVerifyCode();
+    }
+  };
+
   return (
     <Dialog open={isOpen} onOpenChange={handleOpenChange}>
       <DialogContent className="sm:max-w-[425px] [&>button]:hidden">
@@ -97,6 +104,7 @@ export function VerificationModal() {
                 id="verification-code"
                 value={verificationCode}
                 onChange={(e) => setVerificationCode(e.target.value)}
+                onKeyDown={handleKeyDown}
                 placeholder="Enter verification code"
               />
               <Button onClick={handleVerifyCode} disabled={isVerifying || !verificationCode.trim()}>
