@@ -8,6 +8,7 @@ import { Sidebar, SidebarToggle } from "@/components/Sidebar";
 import { cva } from "class-variance-authority";
 import { InfoContent } from "@/components/Explainer";
 import { useState, useCallback, useEffect } from "react";
+import { useTranslation } from 'react-i18next';
 import { Card, CardHeader } from "@/components/ui/card";
 import { VerificationModal } from "@/components/VerificationModal";
 import { TopNav } from "@/components/TopNav";
@@ -50,6 +51,7 @@ export const Route = createFileRoute("/")({
 });
 
 function Index() {
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const localState = useLocalState();
 
@@ -162,7 +164,7 @@ function Index() {
                   />
                 </Link>
                 <h2 className="text-2xl font-light leading-none tracking-tight text-center text-balance text-foreground dark:text-white">
-                  Private AI Chat
+                  {t('app.description')}
                 </h2>
               </div>
               <div className="self-center">

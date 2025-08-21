@@ -4,8 +4,10 @@ import { Button } from "./ui/button";
 import { useOpenSecret } from "@opensecret/react";
 import { Menu, X } from "lucide-react";
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 
 export function TopNav() {
+  const { t } = useTranslation();
   const os = useOpenSecret();
   const navigate = useNavigate();
   const matchRoute = useMatchRoute();
@@ -50,9 +52,9 @@ export function TopNav() {
             {/* Desktop Navigation */}
             <div className="hidden sm:flex items-center justify-between">
               <div className="flex items-center gap-6 sm:gap-10">
-                <NavLink to="/pricing">Pricing</NavLink>
+                <NavLink to="/pricing">{t('navigation.pricing')}</NavLink>
                 <NavLink to="/proof">Proof</NavLink>
-                <NavLink to="/teams">Teams</NavLink>
+                <NavLink to="/teams">{t('navigation.teams')}</NavLink>
                 <a
                   href="https://blog.trymaple.ai/tag/guides/"
                   target="_blank"
@@ -71,14 +73,14 @@ export function TopNav() {
                   onClick={() => navigate({ to: "/" })}
                   className="bg-[#9469F8] text-[#111111] hover:bg-[#A57FF9] transition-colors"
                 >
-                  Chat
+                  {t('navigation.chat')}
                 </Button>
               ) : (
                 <Button
                   onClick={() => navigate({ to: "/login" })}
                   className="bg-[#111111] border border-[#3FDBFF]/20 text-[#E2E2E2] hover:border-[#3FDBFF]/80 hover:bg-[#111111] transition-colors"
                 >
-                  Log In
+                  {t('auth.login')}
                 </Button>
               )}
 
@@ -99,13 +101,13 @@ export function TopNav() {
           <div className="sm:hidden absolute left-4 right-4 sm:left-8 sm:right-8 mt-2 p-6 rounded-xl border border-[#E2E2E2]/10 bg-[#111111]/95 backdrop-blur-md">
             <div className="flex flex-col gap-6">
               <NavLink to="/pricing" onClick={() => setMobileMenuOpen(false)}>
-                Pricing
+                {t('navigation.pricing')}
               </NavLink>
               <NavLink to="/proof" onClick={() => setMobileMenuOpen(false)}>
                 Proof
               </NavLink>
               <NavLink to="/teams" onClick={() => setMobileMenuOpen(false)}>
-                Teams
+                {t('navigation.teams')}
               </NavLink>
               <a
                 href="https://blog.trymaple.ai/tag/guides/"

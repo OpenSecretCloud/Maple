@@ -62,5 +62,12 @@
 	<string>Maple needs access to your photo library to upload images to your AI conversations.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Maple needs access to your camera to take photos for your AI conversations.</string>
+	<key>CFBundleLocalizations</key>
+	<array>
+		<string>en</string>
+		<string>fr</string>
+		<string>es</string>
+		<string>pt</string>
+	</array>
 </dict>
 </plist>
