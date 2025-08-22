@@ -6,9 +6,8 @@ import { useOpenSecret } from "@opensecret/react";
 import { useLocalState } from "@/state/useLocalState";
 import { Sidebar, SidebarToggle } from "@/components/Sidebar";
 import { cva } from "class-variance-authority";
-import { InfoContent } from "@/components/Explainer";
+import { ConditionalInfoCard } from "@/components/ConditionalInfoCard";
 import { useState, useCallback, useEffect } from "react";
-import { Card, CardHeader } from "@/components/ui/card";
 import { VerificationModal } from "@/components/VerificationModal";
 import { TopNav } from "@/components/TopNav";
 import { Marketing } from "@/components/Marketing";
@@ -171,11 +170,7 @@ function Index() {
               <div className="col-span-3">
                 {os.auth.user && <ChatBox startTall={true} onSubmit={handleSubmit} />}
               </div>
-              <Card className="bg-card/80 backdrop-blur-sm">
-                <CardHeader>
-                  <InfoContent />
-                </CardHeader>
-              </Card>
+              <ConditionalInfoCard />
               <SimplifiedFooter />
             </div>
           </>

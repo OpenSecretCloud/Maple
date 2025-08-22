@@ -1,8 +1,4 @@
-import { Link } from "@tanstack/react-router";
 import { ArrowRight, BotIcon, LockIcon, MinusIcon, ServerIcon, SmartphoneIcon } from "lucide-react";
-import { useEffect, useState } from "react";
-import { Loader2, CheckCircle, XCircle } from "lucide-react";
-import { useOpenSecret } from "@opensecret/react";
 
 function ArrowAndLock() {
   return (
@@ -19,48 +15,6 @@ function ArrowAndLock() {
         <ArrowRight className="h-4 w-4 text-muted-foreground rotate-90" />
       </div>
     </>
-  );
-}
-
-function VerificationStatus() {
-  const [status, setStatus] = useState<"loading" | "verified" | "failed">("loading");
-  const os = useOpenSecret();
-
-  useEffect(() => {
-    async function verify() {
-      try {
-        const verified = await os.getAttestation();
-        await new Promise((resolve) => setTimeout(resolve, 800));
-        setStatus(verified ? "verified" : "failed");
-      } catch (error) {
-        console.error("Verification failed:", error);
-        setStatus("failed");
-      }
-    }
-    verify();
-  }, [os]);
-
-  return (
-    <Link to="/proof" className="flex items-center gap-1 text-sm font-medium hover:underline">
-      {status === "loading" && (
-        <>
-          <Loader2 className="h-3 w-3 animate-spin" />
-          <span className="text-muted-foreground">Verifying...</span>
-        </>
-      )}
-      {status === "verified" && (
-        <>
-          <CheckCircle className="h-3 w-3 text-green-700 dark:text-green-500" />
-          <span className="text-green-700 dark:text-green-500">Verified</span>
-        </>
-      )}
-      {status === "failed" && (
-        <>
-          <XCircle className="h-3 w-3 text-red-700 dark:text-red-500" />
-          <span className="text-red-700 dark:text-red-500">Verification failed</span>
-        </>
-      )}
-    </Link>
   );
 }
 
@@ -88,8 +42,7 @@ export function InfoContent() {
           <span className="text-center text-sm text-muted-foreground">AI cloud</span>
         </div>
       </div>
-      <div className="w-full pt-4 flex gap-4 items-center justify-between">
-        <VerificationStatus />
+      <div className="w-full pt-4 flex justify-center">
         <a
           href="https://blog.trymaple.ai"
           className="text-center hover:underline font-medium text-sm"
