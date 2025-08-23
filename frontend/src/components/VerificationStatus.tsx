@@ -8,21 +8,33 @@ export function VerificationStatus() {
   const os = useOpenSecret();
 
   useEffect(() => {
+    let cancelled = false;
     async function verify() {
       try {
         const verified = await os.getAttestation();
         await new Promise((resolve) => setTimeout(resolve, 800));
+        if (cancelled) return;
         setStatus(verified ? "verified" : "failed");
       } catch (error) {
+        if (cancelled) return;
         console.error("Verification failed:", error);
         setStatus("failed");
       }
     }
     verify();
+    return () => {
+      cancelled = true;
+    };
   }, [os]);
 
   return (
-    <Link to="/proof" className="flex items-center gap-1 text-sm font-medium hover:underline">
+    <Link
+      to="/proof"
+      className="flex items-center gap-1 text-sm font-medium hover:underline"
+      target="_blank"
+      rel="noopener noreferrer"
+      aria-live="polite"
+    >
       {status === "loading" && (
         <>
           <Loader2 className="h-3 w-3 animate-spin" />

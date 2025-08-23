@@ -48,6 +48,7 @@ export function InfoContent() {
           className="text-center hover:underline font-medium text-sm"
           target="_blank"
           rel="noopener noreferrer"
+          aria-label="Learn more about Maple's encryption"
         >
           Learn more
         </a>
