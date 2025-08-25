@@ -27,13 +27,12 @@ export function ApiKeyDashboard({ showCreditSuccessMessage = false }: ApiKeyDash
   const { billingStatus } = useLocalState();
   const navigate = useNavigate();
 
-  // Check if user has a paid plan
+  // Check if user has API access (Pro, Team, or Max plans only - not Starter)
   const productName = billingStatus?.product_name || "";
   const isPro = productName.toLowerCase().includes("pro");
   const isMax = productName.toLowerCase().includes("max");
-  const isStarter = productName.toLowerCase().includes("starter");
   const isTeamPlan = productName.toLowerCase().includes("team");
-  const hasPaidPlan = isPro || isMax || isStarter || isTeamPlan;
+  const hasApiAccess = isPro || isMax || isTeamPlan;
 
   // Fetch API keys
   const {
@@ -89,8 +88,8 @@ export function ApiKeyDashboard({ showCreditSuccessMessage = false }: ApiKeyDash
     );
   }
 
-  // Show upgrade prompt for free users
-  if (!hasPaidPlan) {
+  // Show upgrade prompt for users without API access (Free and Starter plans)
+  if (!hasApiAccess) {
     return (
       <>
         <DialogHeader>
@@ -146,8 +145,8 @@ export function ApiKeyDashboard({ showCreditSuccessMessage = false }: ApiKeyDash
 
           <div className="space-y-3">
             <p className="text-sm text-muted-foreground text-center">
-              Starting at just <span className="font-semibold text-foreground">$7/month</span> with
-              the Starter plan
+              Starting at just <span className="font-semibold text-foreground">$20/month</span> with
+              the Pro plan
             </p>
 
             <Button onClick={() => navigate({ to: "/pricing" })} className="w-full" size="lg">
