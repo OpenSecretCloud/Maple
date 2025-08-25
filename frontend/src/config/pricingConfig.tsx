@@ -64,7 +64,8 @@ export const PRICING_PLANS: PricingPlan[] = [
         text: "Qwen3 Coder 480B",
         included: false,
         icon: <X className="w-4 h-4 text-red-500" />
-      }
+      },
+      { text: "API Access", included: false, icon: <X className="w-4 h-4 text-red-500" /> }
     ],
     ctaText: "Start Free"
   },
@@ -110,7 +111,8 @@ export const PRICING_PLANS: PricingPlan[] = [
         included: false,
         icon: <X className="w-4 h-4 text-red-500" />
       },
-      { text: "Image Upload", included: false, icon: <X className="w-4 h-4 text-red-500" /> }
+      { text: "Image Upload", included: false, icon: <X className="w-4 h-4 text-red-500" /> },
+      { text: "API Access", included: false, icon: <X className="w-4 h-4 text-red-500" /> }
     ],
     ctaText: "Start Chatting"
   },
@@ -153,6 +155,11 @@ export const PRICING_PLANS: PricingPlan[] = [
       },
       {
         text: "Qwen3 Coder 480B",
+        included: true,
+        icon: <Check className="w-4 h-4 text-green-500" />
+      },
+      {
+        text: "API Access",
         included: true,
         icon: <Check className="w-4 h-4 text-green-500" />
       }
@@ -209,6 +216,11 @@ export const PRICING_PLANS: PricingPlan[] = [
       },
       {
         text: "Qwen3 Coder 480B",
+        included: true,
+        icon: <Check className="w-4 h-4 text-green-500" />
+      },
+      {
+        text: "API Access",
         included: true,
         icon: <Check className="w-4 h-4 text-green-500" />
       }
@@ -274,6 +286,11 @@ export const PRICING_PLANS: PricingPlan[] = [
       },
       {
         text: "Qwen3 Coder 480B",
+        included: true,
+        icon: <Check className="w-4 h-4 text-green-500" />
+      },
+      {
+        text: "API Access",
         included: true,
         icon: <Check className="w-4 h-4 text-green-500" />
       }
