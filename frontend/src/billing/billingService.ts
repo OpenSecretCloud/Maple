@@ -16,7 +16,18 @@ import {
   removeTeamMember,
   leaveTeam,
   revokeTeamInvite,
-  updateTeamName
+  updateTeamName,
+  fetchApiCreditBalance,
+  fetchApiCreditSettings,
+  purchaseApiCredits,
+  purchaseApiCreditsZaprite,
+  updateApiCreditSettings,
+  ApiCreditBalance,
+  ApiCreditSettings,
+  PurchaseCreditsRequest,
+  PurchaseCreditsZapriteRequest,
+  CheckoutResponse,
+  UpdateCreditSettingsRequest
 } from "./billingApi";
 import type {
   TeamStatus,
@@ -155,6 +166,27 @@ class BillingService {
 
   async updateTeamName(name: string): Promise<UpdateTeamNameResponse> {
     return this.executeWithToken((token) => updateTeamName(token, name));
+  }
+
+  // API Credits methods
+  async getApiCreditBalance(): Promise<ApiCreditBalance> {
+    return this.executeWithToken((token) => fetchApiCreditBalance(token));
+  }
+
+  async getApiCreditSettings(): Promise<ApiCreditSettings> {
+    return this.executeWithToken((token) => fetchApiCreditSettings(token));
+  }
+
+  async purchaseApiCredits(data: PurchaseCreditsRequest): Promise<CheckoutResponse> {
+    return this.executeWithToken((token) => purchaseApiCredits(token, data));
+  }
+
+  async purchaseApiCreditsZaprite(data: PurchaseCreditsZapriteRequest): Promise<CheckoutResponse> {
+    return this.executeWithToken((token) => purchaseApiCreditsZaprite(token, data));
+  }
+
+  async updateApiCreditSettings(data: UpdateCreditSettingsRequest): Promise<ApiCreditSettings> {
+    return this.executeWithToken((token) => updateApiCreditSettings(token, data));
   }
 }
 
