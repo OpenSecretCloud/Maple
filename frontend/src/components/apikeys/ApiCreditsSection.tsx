@@ -2,7 +2,8 @@ import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Loader2, CreditCard, Bitcoin, Coins, CheckCircle } from "lucide-react";
+import { Input } from "@/components/ui/input";
+import { Loader2, CreditCard, Bitcoin, Coins, CheckCircle, Edit } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { getBillingService } from "@/billing/billingService";
 import { useOpenSecret } from "@opensecret/react";
@@ -14,7 +15,7 @@ interface CreditPackage {
 }
 
 const CREDIT_PACKAGES: CreditPackage[] = [
-  { credits: 10000, price: 10, label: "10,000 credits" },
+  { credits: 20000, price: 20, label: "20,000 credits" },
   { credits: 50000, price: 50, label: "50,000 credits" },
   { credits: 100000, price: 100, label: "100,000 credits" },
   { credits: 500000, price: 500, label: "500,000 credits" }
@@ -29,6 +30,8 @@ export function ApiCreditsSection({ showSuccessMessage = false }: ApiCreditsSect
   const [isPurchasing, setIsPurchasing] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState<"stripe" | "zaprite" | null>(null);
   const [showSuccess, setShowSuccess] = useState(showSuccessMessage);
+  const [showCustomAmount, setShowCustomAmount] = useState(false);
+  const [customAmount, setCustomAmount] = useState("");
   const { auth } = useOpenSecret();
 
   useEffect(() => {
@@ -59,6 +62,20 @@ export function ApiCreditsSection({ showSuccessMessage = false }: ApiCreditsSect
   };
 
   const handlePurchase = async (method: "stripe" | "zaprite") => {
+    // Validate custom amount if in custom mode
+    let finalPackage = selectedPackage;
+    if (showCustomAmount) {
+      const amount = parseInt(customAmount);
+      if (isNaN(amount) || amount < 10 || amount > 1000) {
+        return; // Invalid amount, don't proceed
+      }
+      finalPackage = {
+        credits: amount * 1000,
+        price: amount,
+        label: `${formatCredits(amount * 1000)} credits`
+      };
+    }
+
     setIsPurchasing(true);
     setPaymentMethod(method);
 
@@ -103,7 +120,7 @@ export function ApiCreditsSection({ showSuccessMessage = false }: ApiCreditsSect
 
       if (method === "stripe") {
         const response = await billingService.purchaseApiCredits({
-          credits: selectedPackage.credits,
+          credits: finalPackage.credits,
           success_url: successUrl,
           cancel_url: cancelUrl || successUrl
         });
@@ -114,7 +131,7 @@ export function ApiCreditsSection({ showSuccessMessage = false }: ApiCreditsSect
         // For Zaprite, we need the user's email
         const email = auth.user?.user.email || "";
         const response = await billingService.purchaseApiCreditsZaprite({
-          credits: selectedPackage.credits,
+          credits: finalPackage.credits,
           email,
           success_url: successUrl
         });
@@ -185,9 +202,13 @@ export function ApiCreditsSection({ showSuccessMessage = false }: ApiCreditsSect
           {CREDIT_PACKAGES.map((pkg) => (
             <button
               key={pkg.credits}
-              onClick={() => setSelectedPackage(pkg)}
+              onClick={() => {
+                setSelectedPackage(pkg);
+                setShowCustomAmount(false);
+                setCustomAmount("");
+              }}
               className={`p-3 rounded-lg border text-left transition-colors ${
-                selectedPackage.credits === pkg.credits
+                selectedPackage.credits === pkg.credits && !showCustomAmount
                   ? "border-primary bg-primary/10"
                   : "border-border hover:border-muted-foreground"
               }`}
@@ -198,11 +219,73 @@ export function ApiCreditsSection({ showSuccessMessage = false }: ApiCreditsSect
           ))}
         </div>
 
+        {/* Custom Amount Button */}
+        <div className="mb-4">
+          <button
+            onClick={() => {
+              setShowCustomAmount(!showCustomAmount);
+              if (!showCustomAmount) {
+                setCustomAmount("");
+              }
+            }}
+            className={`w-full p-3 rounded-lg border text-left transition-colors flex items-center justify-between ${
+              showCustomAmount
+                ? "border-primary bg-primary/10"
+                : "border-border hover:border-muted-foreground"
+            }`}
+          >
+            <div>
+              <p className="font-medium text-sm">Custom Amount</p>
+              <p className="text-xs text-muted-foreground">$10 - $1,000</p>
+            </div>
+            <Edit className="h-4 w-4" />
+          </button>
+
+          {showCustomAmount && (
+            <div className="mt-3 space-y-2">
+              <Input
+                type="number"
+                placeholder="Enter amount ($10-$1000)"
+                value={customAmount}
+                onChange={(e) => setCustomAmount(e.target.value)}
+                onKeyDown={(e) => {
+                  // Prevent decimal point
+                  if (e.key === ".") {
+                    e.preventDefault();
+                  }
+                }}
+                min="10"
+                max="1000"
+                step="1"
+                className="text-center"
+              />
+              {customAmount && (
+                <p className="text-xs text-center text-muted-foreground">
+                  {(() => {
+                    const amount = parseInt(customAmount);
+                    if (isNaN(amount) || amount < 10) {
+                      return "Minimum $10 required";
+                    } else if (amount > 1000) {
+                      return "Maximum $1,000 allowed";
+                    } else {
+                      return `${formatCredits(amount * 1000)} credits for $${amount}`;
+                    }
+                  })()}
+                </p>
+              )}
+            </div>
+          )}
+        </div>
+
         {/* Payment Methods */}
         <div className="flex gap-2">
           <Button
             onClick={() => handlePurchase("stripe")}
-            disabled={isPurchasing}
+            disabled={
+              isPurchasing ||
+              (showCustomAmount &&
+                (!customAmount || parseInt(customAmount) < 10 || parseInt(customAmount) > 1000))
+            }
             className="flex-1"
             size="sm"
           >
@@ -216,7 +299,11 @@ export function ApiCreditsSection({ showSuccessMessage = false }: ApiCreditsSect
 
           <Button
             onClick={() => handlePurchase("zaprite")}
-            disabled={isPurchasing}
+            disabled={
+              isPurchasing ||
+              (showCustomAmount &&
+                (!customAmount || parseInt(customAmount) < 10 || parseInt(customAmount) > 1000))
+            }
             variant="outline"
             className="flex-1"
             size="sm"
