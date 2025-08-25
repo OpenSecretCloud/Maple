@@ -95,7 +95,6 @@ export function AccountMenu() {
   const isTeamPlan = productName.toLowerCase().includes("team");
   const showUpgrade = !isMax && !isTeamPlan;
   const showManage = (isPro || isMax || isStarter || isTeamPlan) && hasStripeAccount;
-  const hasPaidPlan = isPro || isMax || isStarter || isTeamPlan;
 
   // Detect iOS platform
   useEffect(() => {
@@ -274,7 +273,7 @@ export function AccountMenu() {
                   </div>
                 </DropdownMenuItem>
               )}
-              {hasPaidPlan && !isIOS && (
+              {!isIOS && (
                 <DropdownMenuItem onClick={() => setIsApiKeyDialogOpen(true)}>
                   <Key className="mr-2 h-4 w-4" />
                   <span>API Keys</span>
