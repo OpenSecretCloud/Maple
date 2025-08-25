@@ -1,13 +1,16 @@
 import { useState } from "react";
 import { DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { Plus, Loader2 } from "lucide-react";
+import { Card } from "@/components/ui/card";
+import { Plus, Loader2, Sparkles, Zap, Shield, Rocket } from "lucide-react";
 import { CreateApiKeyDialog } from "./CreateApiKeyDialog";
 import { ApiKeysList } from "./ApiKeysList";
 import { ApiCreditsSection } from "./ApiCreditsSection";
 import { useOpenSecret } from "@opensecret/react";
 import { useQuery } from "@tanstack/react-query";
 import { Separator } from "@/components/ui/separator";
+import { useLocalState } from "@/state/useLocalState";
+import { useNavigate } from "@tanstack/react-router";
 
 interface ApiKey {
   name: string;
@@ -21,6 +24,16 @@ interface ApiKeyDashboardProps {
 export function ApiKeyDashboard({ showCreditSuccessMessage = false }: ApiKeyDashboardProps) {
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
   const { listApiKeys, auth } = useOpenSecret();
+  const { billingStatus } = useLocalState();
+  const navigate = useNavigate();
+
+  // Check if user has a paid plan
+  const productName = billingStatus?.product_name || "";
+  const isPro = productName.toLowerCase().includes("pro");
+  const isMax = productName.toLowerCase().includes("max");
+  const isStarter = productName.toLowerCase().includes("starter");
+  const isTeamPlan = productName.toLowerCase().includes("team");
+  const hasPaidPlan = isPro || isMax || isStarter || isTeamPlan;
 
   // Fetch API keys
   const {
@@ -72,6 +85,81 @@ export function ApiKeyDashboard({ showCreditSuccessMessage = false }: ApiKeyDash
             Failed to load API keys. Please try again.
           </DialogDescription>
         </DialogHeader>
+      </>
+    );
+  }
+
+  // Show upgrade prompt for free users
+  if (!hasPaidPlan) {
+    return (
+      <>
+        <DialogHeader>
+          <DialogTitle className="text-base flex items-center gap-2">
+            <Sparkles className="h-5 w-5 text-amber-500" />
+            Unlock API Access
+          </DialogTitle>
+          <DialogDescription>
+            Upgrade to a paid plan to access powerful API features
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="mt-6 space-y-4">
+          <Card className="p-6 bg-gradient-to-br from-amber-500/10 to-orange-500/10 border-amber-500/20">
+            <div className="space-y-4">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-amber-500/20 rounded-lg">
+                  <Zap className="h-5 w-5 text-amber-500" />
+                </div>
+                <div>
+                  <h3 className="font-semibold">Programmatic Access</h3>
+                  <p className="text-sm text-muted-foreground">
+                    Integrate Maple directly into your applications and workflows
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-blue-500/20 rounded-lg">
+                  <Shield className="h-5 w-5 text-blue-500" />
+                </div>
+                <div>
+                  <h3 className="font-semibold">Secure API Keys</h3>
+                  <p className="text-sm text-muted-foreground">
+                    Create and manage multiple API keys with granular control
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-green-500/20 rounded-lg">
+                  <Rocket className="h-5 w-5 text-green-500" />
+                </div>
+                <div>
+                  <h3 className="font-semibold">Pay-As-You-Go Credits</h3>
+                  <p className="text-sm text-muted-foreground">
+                    Purchase credits for API usage at just $1 per 1,000 credits
+                  </p>
+                </div>
+              </div>
+            </div>
+          </Card>
+
+          <div className="space-y-3">
+            <p className="text-sm text-muted-foreground text-center">
+              Starting at just <span className="font-semibold text-foreground">$7/month</span> with
+              the Starter plan
+            </p>
+
+            <Button onClick={() => navigate({ to: "/pricing" })} className="w-full" size="lg">
+              <Sparkles className="mr-2 h-4 w-4" />
+              View Pricing Plans
+            </Button>
+
+            <p className="text-xs text-muted-foreground text-center">
+              Unlock API access, increased limits, and premium features
+            </p>
+          </div>
+        </div>
       </>
     );
   }
