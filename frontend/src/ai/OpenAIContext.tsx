@@ -1,5 +1,6 @@
+import React, { useContext, useMemo } from "react";
 import OpenAI from "openai";
-import { useOpenSecret } from "@opensecret/react";
+import { OpenSecretContext, type OpenSecretContextType } from "@opensecret/react";
 import { OpenAIContext } from "./OpenAIContextDef";
 
 export const OpenAIProvider = ({ children }: { children: React.ReactNode }) => {
@@ -8,24 +9,28 @@ export const OpenAIProvider = ({ children }: { children: React.ReactNode }) => {
     throw new Error("VITE_OPEN_SECRET_API_URL must be set");
   }
 
-  const { aiCustomFetch } = useOpenSecret();
+  const { aiCustomFetch } = useContext(OpenSecretContext as React.Context<OpenSecretContextType>);
   const access_token = window.localStorage.getItem("access_token");
 
-  // If we're not logged in we can't set up openai
-  if (!access_token) {
-    return <OpenAIContext.Provider value={undefined}>{children}</OpenAIContext.Provider>;
-  }
+  // Memoize the OpenAI client to prevent recreating it on every render
+  const openai = useMemo(() => {
+    // If we're not logged in or don't have aiCustomFetch, return undefined
+    if (!access_token || !aiCustomFetch) {
+      return undefined;
+    }
 
-  // Custom fetch function that allows us to refresh the access token
-  const openai = new OpenAI({
-    baseURL: `${url}/v1/`,
-    dangerouslyAllowBrowser: true,
-    apiKey: "not-a-real-api-key",
-    defaultHeaders: {
-      "Accept-Encoding": "identity"
-    },
-    fetch: aiCustomFetch
-  });
+
+    // Custom fetch function that allows us to refresh the access token
+    return new OpenAI({
+      baseURL: `${url}/v1/`,
+      dangerouslyAllowBrowser: true,
+      apiKey: "not-a-real-api-key",
+      defaultHeaders: {
+        "Accept-Encoding": "identity"
+      },
+      fetch: aiCustomFetch as any
+    });
+  }, [url, aiCustomFetch, access_token]);
 
   return <OpenAIContext.Provider value={openai}>{children}</OpenAIContext.Provider>;
 };
