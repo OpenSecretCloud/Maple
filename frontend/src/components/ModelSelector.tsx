@@ -63,6 +63,12 @@ export const MODEL_CONFIG: Record<string, ModelCfg> = {
     badges: ["Pro"],
     requiresPro: true,
     tokenLimit: 128000
+  },
+  "qwen3-coder-480b": {
+    displayName: "Qwen3 Coder 480B",
+    badges: ["Pro", "New"],
+    requiresPro: true,
+    tokenLimit: 128000
   }
 };
 
