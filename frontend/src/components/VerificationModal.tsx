@@ -15,7 +15,11 @@ import { AlertDestructive } from "./AlertDestructive";
 
 export function VerificationModal() {
   const os = useOpenSecret();
-  const [isOpen, setIsOpen] = useState(false);
+  const [isOpen, setIsOpen] = useState(() => {
+    if (!os.auth.user) return false;
+    // Skip email verification in local development
+    return !import.meta.env.DEV && !os.auth.user.user.email_verified;
+  });
   const [isResending, setIsResending] = useState(false);
   const [justResent, setJustResent] = useState(false);
   const [verificationCode, setVerificationCode] = useState("");
