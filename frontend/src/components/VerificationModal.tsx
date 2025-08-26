@@ -31,13 +31,15 @@ export function VerificationModal() {
       setError(null);
       setJustResent(false);
     } else {
-      setIsOpen(!os.auth.user.user.email_verified);
+      // Skip email verification in local development
+      const shouldRequireVerification = !import.meta.env.DEV && !os.auth.user.user.email_verified;
+      setIsOpen(shouldRequireVerification);
     }
   }, [os.auth.user]);
 
   const handleOpenChange = (open: boolean) => {
-    // Only allow closing if the email is verified
-    if (!open && os.auth.user?.user.email_verified) {
+    // Allow closing if the email is verified or in local development
+    if (!open && (os.auth.user?.user.email_verified || import.meta.env.DEV)) {
       setIsOpen(false);
       // Reset form state when modal closes
       setVerificationCode("");
