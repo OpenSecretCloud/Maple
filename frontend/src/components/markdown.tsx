@@ -223,7 +223,7 @@ export function PreCode(props: JSX.IntrinsicElements["pre"]) {
   }, []);
 
   return (
-    <>
+    <div className="w-full">
       <div className="flex justify-end pt-2 mb-1">
         <Button
           variant="ghost"
@@ -252,8 +252,10 @@ export function PreCode(props: JSX.IntrinsicElements["pre"]) {
           )}
         </Button>
       </div>
-      <pre ref={ref}>{props.children}</pre>
-    </>
+      <pre ref={ref} className="w-full overflow-x-auto">
+        {props.children}
+      </pre>
+    </div>
   );
 }
 
@@ -655,7 +657,8 @@ export function Markdown(
       className="markdown-body"
       style={{
         fontSize: `${props.fontSize ?? 16}px`,
-        fontFamily: props.fontFamily || "inherit"
+        fontFamily: props.fontFamily || "inherit",
+        wordBreak: "break-word"
       }}
       ref={mdRef}
       onContextMenu={props.onContextMenu}
