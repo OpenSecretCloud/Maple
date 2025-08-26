@@ -1,3 +1,4 @@
 # Minimal requirements for CI
 browser-use==0.6.1
 langchain-openai>=0.1.0
+playwright==1.54.0  # Needed for playwright CLI command to install browser binaries
