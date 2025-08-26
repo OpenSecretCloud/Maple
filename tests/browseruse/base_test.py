@@ -39,7 +39,9 @@ class BrowserTestBase:
                 "--disable-dev-shm-usage",
                 "--disable-web-security",
                 "--allow-insecure-localhost",
-                "--disable-blink-features=AutomationControlled"  # Help with detection
+                "--disable-blink-features=AutomationControlled",  # Help with detection
+                "--disable-extensions",  # Disable extensions to speed up startup
+                "--disable-plugins"  # Disable plugins
             ],
             headless=headless,
             # Browser timing parameters
@@ -48,7 +50,9 @@ class BrowserTestBase:
             maximum_wait_page_load_time=10.0,  # Reduced from 15.0
             wait_between_actions=1.0,  # Reduced from 3.0
             slow_mo=100,  # Reduced from 500
-            viewport={"width": 1920, "height": 1080}  # Standard HD viewport
+            viewport={"width": 1920, "height": 1080},  # Standard HD viewport
+            # Disable browser extensions that slow down startup
+            use_extensions=False
         )
         
         # Create browser session with the profile
