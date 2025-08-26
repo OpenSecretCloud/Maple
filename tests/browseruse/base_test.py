@@ -6,9 +6,7 @@ Base class for BrowserUse tests - handles browser setup only.
 import os
 import json
 from pathlib import Path
-from browser_use import Agent, BrowserProfile, BrowserSession
-from browser_use.browser.context import BrowserContextConfig
-from langchain_openai import ChatOpenAI
+from browser_use import Agent, Browser, ChatOpenAI
 
 class BrowserTestBase:
     """Base class that handles browser setup and teardown."""
@@ -25,15 +23,6 @@ class BrowserTestBase:
         # Initialize LLM
         self.llm = ChatOpenAI(model="gpt-4o", temperature=0)
         
-        # Configure browser context for SPA loading
-        self.context_config = BrowserContextConfig(
-            wait_for_network_idle_page_load_time=5.0,
-            minimum_wait_page_load_time=3.0,
-            maximum_wait_page_load_time=15.0,
-            wait_between_actions=3.0,
-            slow_mo=500,
-        )
-        
         # Configure browser - check for local vs CI environment
         is_ci = os.getenv("CI") == "true" or os.getenv("GITHUB_ACTIONS") == "true"
         headless = is_ci or os.getenv("BROWSERUSE_HEADLESS", "false").lower() == "true"
@@ -41,7 +30,8 @@ class BrowserTestBase:
         if not headless:
             print("🖥️  Running in headed mode - browser will be visible")
         
-        self.browser_profile = BrowserProfile(
+        # Create browser with new API
+        self.browser = Browser(
             args=[
                 "--no-sandbox", 
                 "--disable-setuid-sandbox",
@@ -51,18 +41,21 @@ class BrowserTestBase:
                 "--allow-insecure-localhost"
             ],
             headless=headless,
-            new_context_config=self.context_config,
+            # Browser timing parameters
+            wait_for_network_idle_page_load_time=5.0,
+            minimum_wait_page_load_time=3.0,
+            maximum_wait_page_load_time=15.0,
+            wait_between_actions=3.0,
+            slow_mo=500,
             viewport={"width": 1920, "height": 1080}  # Standard HD viewport
         )
-        
-        self.browser_session = BrowserSession(browser_profile=self.browser_profile)
     
     async def run_task(self, task: str, max_steps: int = 10, controller=None):
         """Run a browser task and return the result."""
         agent_args = {
             "task": task,
             "llm": self.llm,
-            "browser_session": self.browser_session,
+            "browser": self.browser,
             "save_conversation_path": str(self.logs_dir / "conversation.json")
         }
         
@@ -87,5 +80,5 @@ class BrowserTestBase:
     
     async def close(self):
         """Clean up resources."""
-        if hasattr(self, 'browser_session'):
-            await self.browser_session.close()
+        if hasattr(self, 'browser'):
+            await self.browser.close()
