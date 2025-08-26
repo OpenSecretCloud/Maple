@@ -6,7 +6,7 @@ Base class for BrowserUse tests - handles browser setup only.
 import os
 import json
 from pathlib import Path
-from browser_use import Agent, Browser, ChatOpenAI
+from browser_use import Agent, BrowserSession, ChatOpenAI
 
 class BrowserTestBase:
     """Base class that handles browser setup and teardown."""
@@ -31,7 +31,7 @@ class BrowserTestBase:
             print("🖥️  Running in headed mode - browser will be visible")
         
         # Create browser with new API
-        self.browser = Browser(
+        self.browser = BrowserSession(
             args=[
                 "--no-sandbox", 
                 "--disable-setuid-sandbox",
