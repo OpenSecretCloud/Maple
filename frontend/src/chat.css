@@ -774,24 +774,30 @@
 .markdown-body .highlight pre,
 .markdown-body pre {
   padding: 16px 16px 8px 16px;
-  overflow: auto;
+  overflow-x: auto;
+  overflow-y: hidden;
   font-size: 85%;
   line-height: 1.45;
   border-radius: 6px;
   direction: ltr;
+  width: 100%;
+  min-width: 100%;
+  box-sizing: border-box;
 }
 
 .markdown-body pre code,
 .markdown-body pre tt {
-  display: inline-block;
-  max-width: 100%;
+  display: block;
   padding: 0;
   margin: 0;
-  overflow-x: scroll;
+  overflow-x: visible;
   line-height: inherit;
   word-wrap: normal;
   background-color: transparent;
   border: 0;
+  white-space: pre;
+  width: max-content;
+  min-width: 100%;
 }
 
 .markdown-body .csv-data td,
@@ -1076,8 +1082,9 @@
 
 .markdown-body pre code {
   display: block;
-  overflow-x: auto;
+  overflow-x: visible;
   padding: 1em;
+  box-sizing: border-box;
 }
 
 .markdown-body code {
@@ -1087,6 +1094,7 @@
 .markdown-body .hljs,
 .markdown-body pre {
   @apply text-foreground bg-muted;
+  transition: none;
 }
 
 /* Theme: Tokyo-night-Dark
