@@ -6,7 +6,7 @@ Base class for BrowserUse tests - handles browser setup only.
 import os
 import json
 from pathlib import Path
-from browser_use import Agent, BrowserSession, ChatOpenAI
+from browser_use import Agent, BrowserSession, BrowserProfile, ChatOpenAI
 
 class BrowserTestBase:
     """Base class that handles browser setup and teardown."""
@@ -30,8 +30,8 @@ class BrowserTestBase:
         if not headless:
             print("🖥️  Running in headed mode - browser will be visible")
         
-        # Create browser with new API
-        self.browser = BrowserSession(
+        # Create browser profile with configuration
+        self.browser_profile = BrowserProfile(
             args=[
                 "--no-sandbox", 
                 "--disable-setuid-sandbox",
@@ -49,6 +49,9 @@ class BrowserTestBase:
             slow_mo=500,
             viewport={"width": 1920, "height": 1080}  # Standard HD viewport
         )
+        
+        # Create browser session with the profile
+        self.browser = BrowserSession(browser_profile=self.browser_profile)
     
     async def run_task(self, task: str, max_steps: int = 10, controller=None):
         """Run a browser task and return the result."""
