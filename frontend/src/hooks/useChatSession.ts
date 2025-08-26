@@ -101,43 +101,41 @@ export function useChatSession(
 
   const streamAssistant = useCallback(
     async (messages: ChatMessage[]): Promise<string> => {
-      // Create new abort controller for this stream
+      // Legacy path using Chat Completions (kept for backward compatibility)
       const abortController = new AbortController();
       abortControllerRef.current = abortController;
 
       try {
-        const stream = openai.beta.chat.completions.stream({
+        const stream = await openai.chat.completions.create({
           model,
-          messages: messages as Parameters<
-            typeof openai.beta.chat.completions.stream
-          >[0]["messages"],
+          messages: messages as Parameters<typeof openai.chat.completions.create>[0]["messages"],
           stream: true
-        });
+        } as any);
 
         let fullResponse = "";
         setCurrentStreamingMessage("");
 
-        for await (const chunk of stream) {
-          // Check if we should abort
+        for await (const chunk of stream as any) {
           if (abortController.signal.aborted) {
-            stream.controller.abort();
-            throw new Error("Stream aborted");
+            break;
           }
-
-          const content = chunk.choices[0]?.delta?.content || "";
-          fullResponse += content;
-          setCurrentStreamingMessage(fullResponse);
+          const content = chunk.choices?.[0]?.delta?.content || "";
+          if (content) {
+            fullResponse += content;
+            setCurrentStreamingMessage(fullResponse);
+          }
         }
 
-        await stream.finalChatCompletion();
         setCurrentStreamingMessage(undefined);
+        if (abortController.signal.aborted) {
+          throw new Error("Stream aborted");
+        }
         return fullResponse;
       } catch (error) {
         if (abortController.signal.aborted) {
           throw new Error("Stream aborted");
         }
 
-        // Handle streaming errors from OpenAI
         let errorMessage = "An error occurred while streaming the response.";
         if (error instanceof Error) {
           if (
@@ -159,7 +157,6 @@ export function useChatSession(
             errorMessage = error.message;
           }
         }
-
         setStreamingError(errorMessage);
         throw error;
       } finally {
@@ -252,45 +249,104 @@ export function useChatSession(
       });
 
       try {
-        // Start title generation in background if needed
-        let titlePromise: Promise<string> | undefined;
-        if (chat.title === "New Chat") {
-          titlePromise = generateTitle(newMessages, openai, queryClient);
-          // Update title in UI as soon as it's ready
-          titlePromise.then((generatedTitle) => {
-            setOptimisticChat((prev) => {
-              if (!prev) return prev;
-              return { ...prev, title: generatedTitle };
+        // const useResponses = import.meta.env.VITE_USE_RESPONSES === "true";
+        const useResponses = true;
+
+        if (useResponses) {
+          // Responses API path (no client-side title generation, server persists/title)
+          const abortController = new AbortController();
+          abortControllerRef.current = abortController;
+
+          setCurrentStreamingMessage("");
+
+          let accumulated = "";
+          const inputText = typeof finalContent === "string" ? finalContent : String(finalContent);
+          const instructions = systemPrompt?.trim() || undefined;
+
+          let stream: any;
+          try {
+            stream = await openai.responses.create({
+              model,
+              input: inputText,
+              instructions,
+              stream: true
+            } as any);
+          } catch (error) {
+            console.error("Error creating stream:", error);
+            if (error instanceof Error) {
+              console.error("Error details:", error.message, error.stack);
+            }
+            setStreamingError("Failed to create response stream");
+            setPhase("idle");
+            processingRef.current = false;
+            return;
+          }
+
+          try {
+            for await (const event of stream) {
+              if (abortController.signal.aborted) break;
+              
+              // Handle different event types based on OpenAI Responses API spec
+              if (event.type === "response.created") {
+                // Response started, could capture the ID here if needed
+              } else if (event.type === "response.output_item.added") {
+                // New output item started
+              } else if (event.type === "response.output_text.delta") {
+                const delta = event.delta || "";
+                if (delta) {
+                  accumulated += delta;
+                  setCurrentStreamingMessage(accumulated);
+                }
+              } else if (event.type === "response.output_text.done") {
+                // Text output completed
+              } else if (event.type === "response.completed" || event.type === "response.done") {
+                // Response completed
+                const finalMessages = [
+                  ...newMessages,
+                  { role: "assistant", content: accumulated } as ChatMessage
+                ];
+                setOptimisticChat((prev) => ({ ...prev!, messages: finalMessages }));
+                setCurrentStreamingMessage(undefined);
+                setPhase("idle");
+                queryClient.invalidateQueries({ queryKey: ["chatHistory"] });
+                break;
+              } else if (event.type === "error") {
+                setStreamingError(event.message || "Streaming error");
+                break;
+              }
+            }
+          } finally {
+            // Clean up but don't throw in finally block
+            if (abortController.signal.aborted) {
+              console.log("Stream was aborted");
+            }
+          }
+        } else {
+          // Legacy completions path
+          // Start title generation in background if needed
+          throw new Error("Completions API is deprecated");
+          let titlePromise: Promise<string> | undefined;
+          if (chat.title === "New Chat") {
+            titlePromise = generateTitle(newMessages, openai, queryClient);
+            titlePromise.then((generatedTitle) => {
+              setOptimisticChat((prev) => {
+                if (!prev) return prev;
+                return { ...prev, title: generatedTitle };
+              });
             });
-          });
+          }
+
+          const assistantResponse = await streamAssistant(newMessages);
+          const finalMessages = [
+            ...newMessages,
+            { role: "assistant", content: assistantResponse } as ChatMessage
+          ];
+          setOptimisticChat((prev) => ({ ...prev!, messages: finalMessages }));
+
+          const title = titlePromise ? await titlePromise : chat.title;
+          setPhase("persisting");
+          await persistMutation.mutateAsync({ id: chatId, title, model, messages: finalMessages });
         }
-
-        // Stream assistant response
-        const assistantResponse = await streamAssistant(newMessages);
-
-        // Add assistant message
-        const finalMessages = [
-          ...newMessages,
-          { role: "assistant", content: assistantResponse } as ChatMessage
-        ];
-
-        // Update optimistic state with assistant message
-        setOptimisticChat((prev) => ({
-          ...prev!,
-          messages: finalMessages
-        }));
-
-        // Wait for title generation if it was started
-        const title = titlePromise ? await titlePromise : chat.title;
-
-        // Persist to backend
-        setPhase("persisting");
-        await persistMutation.mutateAsync({
-          id: chatId,
-          title,
-          model,
-          messages: finalMessages
-        });
       } catch (error) {
         setPhase("idle");
         processingRef.current = false;
@@ -380,7 +436,7 @@ async function generateTitle(
     const userContent = messageText.slice(0, 500); // Reduced to 500 chars to optimize token usage
 
     // Use the OpenAI API to generate a concise title - use the default model
-    const stream = openai.beta.chat.completions.stream({
+    const stream = await openai.chat.completions.create({
       model: DEFAULT_MODEL_ID, // Use the default model instead of user selected model
       messages: [
         {
@@ -396,16 +452,13 @@ async function generateTitle(
       temperature: 0.7,
       max_tokens: 15, // Keep response very short
       stream: true
-    });
+    } as any);
 
     let generatedTitle = "";
-    for await (const chunk of stream) {
-      const content = chunk.choices[0]?.delta?.content || "";
-      generatedTitle += content;
+    for await (const chunk of stream as any) {
+      const content = chunk.choices?.[0]?.delta?.content || "";
+      if (content) generatedTitle += content;
     }
-
-    // Get the final completion
-    await stream.finalChatCompletion();
 
     // Remove quotes if present and limit length
     const cleanTitle = generatedTitle
