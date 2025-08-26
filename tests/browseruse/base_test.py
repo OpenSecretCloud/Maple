@@ -38,15 +38,16 @@ class BrowserTestBase:
                 "--disable-gpu",
                 "--disable-dev-shm-usage",
                 "--disable-web-security",
-                "--allow-insecure-localhost"
+                "--allow-insecure-localhost",
+                "--disable-blink-features=AutomationControlled"  # Help with detection
             ],
             headless=headless,
             # Browser timing parameters
-            wait_for_network_idle_page_load_time=5.0,
-            minimum_wait_page_load_time=3.0,
-            maximum_wait_page_load_time=15.0,
-            wait_between_actions=3.0,
-            slow_mo=500,
+            wait_for_network_idle_page_load_time=3.0,  # Reduced from 5.0
+            minimum_wait_page_load_time=1.0,  # Reduced from 3.0
+            maximum_wait_page_load_time=10.0,  # Reduced from 15.0
+            wait_between_actions=1.0,  # Reduced from 3.0
+            slow_mo=100,  # Reduced from 500
             viewport={"width": 1920, "height": 1080}  # Standard HD viewport
         )
         
@@ -83,5 +84,6 @@ class BrowserTestBase:
     
     async def close(self):
         """Clean up resources."""
-        if hasattr(self, 'browser'):
-            await self.browser.close()
+        # BrowserSession in browser-use 0.6.x doesn't have a close() method
+        # The browser session is automatically cleaned up
+        pass
