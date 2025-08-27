@@ -297,7 +297,7 @@ export function ApiCreditsSection({ showSuccessMessage = false }: ApiCreditsSect
         </div>
 
         {/* Payment Methods */}
-        <div className="flex gap-2">
+        <div className="flex flex-col sm:flex-row gap-2">
           <Button
             onClick={() => handlePurchase("stripe")}
             disabled={
@@ -305,8 +305,8 @@ export function ApiCreditsSection({ showSuccessMessage = false }: ApiCreditsSect
               (showCustomAmount &&
                 (!customAmount || parseInt(customAmount) < 10 || parseInt(customAmount) > 1000))
             }
-            className="flex-1"
-            size="sm"
+            className="flex-1 w-full sm:w-auto"
+            size="default"
           >
             {isPurchasing && paymentMethod === "stripe" ? (
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -325,8 +325,8 @@ export function ApiCreditsSection({ showSuccessMessage = false }: ApiCreditsSect
                 (!customAmount || parseInt(customAmount) < 10 || parseInt(customAmount) > 1000))
             }
             variant="outline"
-            className="flex-1"
-            size="sm"
+            className="flex-1 w-full sm:w-auto"
+            size="default"
             title={!userEmail ? "Email required for Bitcoin payments" : undefined}
           >
             {isPurchasing && paymentMethod === "zaprite" ? (
