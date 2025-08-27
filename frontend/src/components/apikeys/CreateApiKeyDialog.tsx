@@ -49,9 +49,27 @@ export function CreateApiKeyDialog({ open, onOpenChange, onKeyCreated }: CreateA
       const response = await createApiKey(trimmedName);
       setCreatedKey(response.key);
       console.log("API key created successfully");
-    } catch (error) {
+    } catch (error: any) {
       console.error("Failed to create API key:", error);
-      setError(error instanceof Error ? error.message : "Failed to create API key");
+
+      // Handle specific error cases with user-friendly messages
+      if (error?.status === 409 || error?.message?.toLowerCase().includes("conflict")) {
+        setError(
+          `An API key named "${trimmedName}" already exists. Please choose a different name.`
+        );
+      } else if (error?.status === 400 || error?.message?.toLowerCase().includes("invalid")) {
+        setError(
+          "Invalid API key name. Please use only letters, numbers, spaces, hyphens, and underscores."
+        );
+      } else if (error?.status === 401 || error?.message?.toLowerCase().includes("unauthorized")) {
+        setError("You are not authorized to create API keys. Please check your subscription plan.");
+      } else if (error?.status === 429 || error?.message?.toLowerCase().includes("limit")) {
+        setError(
+          "You've reached the maximum number of API keys. Please delete an existing key first."
+        );
+      } else {
+        setError(error?.message || "Failed to create API key. Please try again.");
+      }
     } finally {
       setIsCreating(false);
     }
@@ -103,6 +121,13 @@ export function CreateApiKeyDialog({ open, onOpenChange, onKeyCreated }: CreateA
 
         {!createdKey ? (
           <>
+            {error && (
+              <Alert variant="destructive">
+                <AlertCircle className="h-4 w-4" />
+                <AlertDescription>{error}</AlertDescription>
+              </Alert>
+            )}
+
             <div className="space-y-4">
               <div className="space-y-2">
                 <Label htmlFor="key-name">Key Name</Label>
@@ -119,12 +144,9 @@ export function CreateApiKeyDialog({ open, onOpenChange, onKeyCreated }: CreateA
                   disabled={isCreating}
                   maxLength={100}
                 />
-                <div className="flex items-center justify-between text-xs">
-                  <span className="text-muted-foreground">
-                    {keyName.trim().length}/100 characters
-                  </span>
-                  {error && <span className="text-destructive">{error}</span>}
-                </div>
+                <span className="text-xs text-muted-foreground">
+                  {keyName.trim().length}/100 characters
+                </span>
               </div>
             </div>
 
