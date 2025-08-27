@@ -34,6 +34,7 @@ export type HistoryItem = {
   title: string;
   updated_at: number;
   created_at: number;
+  isResponsesAPI?: boolean; // True if this chat is from the Responses API
 };
 
 export type LocalState = {

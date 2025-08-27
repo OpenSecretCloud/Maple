@@ -201,6 +201,10 @@ function ChatComponent() {
       setImageConversionError(`${failedCount} image(s) failed to process. Please try again.`);
       // Clear error after 5 seconds
       setTimeout(() => setImageConversionError(null), 5000);
+    },
+    onThreadCreated: (threadId) => {
+      // Update URL to the thread ID without causing a navigation
+      navigate(`/chat/${threadId}`, { replace: true });
     }
   });
 
@@ -438,7 +442,7 @@ END OF INSTRUCTIONS`;
 
       // 2. Stream the summary
       let summary = "";
-      const stream = openai.beta.chat.completions.stream({
+      const stream = await openai.chat.completions.create({
         model: DEFAULT_MODEL_ID, // Use the default model instead of user selected model
         messages: summarizationMessages,
         temperature: 0.3,
@@ -446,10 +450,9 @@ END OF INSTRUCTIONS`;
         stream: true
       });
 
-      for await (const chunk of stream) {
+      for await (const chunk of stream as any) {
         summary += chunk.choices[0]?.delta?.content ?? "";
       }
-      await stream.finalChatCompletion();
 
       // 3. Build initial message for the new chat
       const initialMsg =
