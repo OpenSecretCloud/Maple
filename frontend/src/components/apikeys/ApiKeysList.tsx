@@ -38,7 +38,6 @@ export function ApiKeysList({ apiKeys, onKeyDeleted }: ApiKeysListProps) {
       onKeyDeleted();
     } catch (error) {
       console.error("Failed to delete API key:", error);
-      console.error("Failed to delete API key. Please try again.");
     } finally {
       setIsDeleting(false);
       setDeleteKeyName(null);

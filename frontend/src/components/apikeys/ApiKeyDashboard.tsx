@@ -28,6 +28,7 @@ export function ApiKeyDashboard({ showCreditSuccessMessage = false }: ApiKeyDash
   const navigate = useNavigate();
 
   // Check if user has API access (Pro, Team, or Max plans only - not Starter)
+  const isBillingLoading = billingStatus === null;
   const productName = billingStatus?.product_name || "";
   const isPro = productName.toLowerCase().includes("pro");
   const isMax = productName.toLowerCase().includes("max");
@@ -61,12 +62,13 @@ export function ApiKeyDashboard({ showCreditSuccessMessage = false }: ApiKeyDash
     refetch();
   };
 
-  if (isLoading) {
+  // Show loading state if billing status or API keys are loading
+  if (isBillingLoading || isLoading) {
     return (
       <>
         <DialogHeader>
           <DialogTitle className="text-base">API Key Management</DialogTitle>
-          <DialogDescription>Loading API keys...</DialogDescription>
+          <DialogDescription>Loading...</DialogDescription>
         </DialogHeader>
         <div className="flex items-center justify-center py-8">
           <Loader2 className="h-6 w-6 animate-spin" />
