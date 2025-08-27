@@ -138,13 +138,42 @@ Code changes (initial):
 ---
 
 ## Future Work
-1) Load and migrate legacy chats to Responses
-   - Provide a migration UI: select legacy thread → create new Responses thread → seed context
-   - Mark legacy items as migrated; keep references for back‑links
-2) Unify chat interface (single‑page UX)
-   - Start on home page; push `chatId` into URL
-   - Avoid full page remount across chat navigation
-   - Smoothly switch between threads without losing stream state
+
+### 1. Load and migrate legacy chats to Responses
+- Provide a migration UI: select legacy thread → create new Responses thread → seed context
+- Mark legacy items as migrated; keep references for back‑links
+
+### 2. Improve Chat Handoff (Medium Refactor)
+**Problem:** Currently when starting a chat from home route, we create a local chat ID, store prompt/images in context, navigate to chat route, then chat route reads the handoff data and starts streaming. This is clunky and causes unnecessary route transitions.
+
+**Solution:** Make the home route (`/`) handle both empty and active chat states:
+- When user sends first message from home:
+  - Start streaming immediately in place (no navigation)
+  - Get response ID from server via `response.created` event
+  - Use `window.history.replaceState` to update URL to `/chat/[id]` without page reload
+  - Continue streaming in the same component instance
+- Benefits:
+  - Delete handoff logic (userPrompt, systemPrompt, userImages context state)
+  - Delete duplicate chat rendering logic between home and chat routes
+  - Smoother UX with no visible navigation flash
+
+### 3. Unified Chat Component (Larger Refactor)  
+**Problem:** Duplicate logic between home and chat routes for rendering and managing chats.
+
+**Solution:** Create a single `<ChatInterface>` component that works for both new and existing chats:
+- Home route renders: `<ChatInterface chatId={null} />`
+- Chat route renders: `<ChatInterface chatId={params.chatId} />`
+- Component handles:
+  - If `chatId` is null and message sent → create response, update URL via `replaceState`
+  - If `chatId` exists → load from Responses API or legacy storage
+  - All streaming, rendering, and state management in one place
+- Benefits:
+  - Single source of truth for chat UI logic
+  - Delete all handoff/navigation code
+  - Cleaner separation of concerns
+  - With Responses API, we ALWAYS have server state - no need for complex local persistence
+
+**Note:** Once fully on Responses API, we can delete the completions API code entirely. Every chat exists on the server, we only need to support loading (not appending to) legacy chats from storage.
 
 ---
 
