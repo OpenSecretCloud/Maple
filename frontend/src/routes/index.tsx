@@ -105,7 +105,8 @@ function Index() {
       // Clear the query param to prevent re-opening on refresh
       navigate({ to: "/", replace: true });
       // Clear success message after 5 seconds
-      setTimeout(() => setShowCreditSuccess(false), 5000);
+      const timer = setTimeout(() => setShowCreditSuccess(false), 5000);
+      return () => clearTimeout(timer);
     }
   }, [credits_success, os.auth.user, navigate, queryClient]);
 

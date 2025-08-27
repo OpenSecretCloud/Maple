@@ -67,7 +67,6 @@ export function CreateApiKeyDialog({ open, onOpenChange, onKeyCreated }: CreateA
       setTimeout(() => setCopied(false), 2000);
     } catch (error) {
       console.error("Failed to copy:", error);
-      console.error("Failed to copy API key");
     }
   };
 
@@ -84,7 +83,14 @@ export function CreateApiKeyDialog({ open, onOpenChange, onKeyCreated }: CreateA
   };
 
   return (
-    <Dialog open={open} onOpenChange={handleClose}>
+    <Dialog
+      open={open}
+      onOpenChange={(newOpen) => {
+        if (!newOpen) {
+          handleClose();
+        }
+      }}
+    >
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>Create API Key</DialogTitle>

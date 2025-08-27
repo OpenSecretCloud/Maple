@@ -32,7 +32,10 @@ export function ApiCreditsSection({ showSuccessMessage = false }: ApiCreditsSect
   const [showSuccess, setShowSuccess] = useState(showSuccessMessage);
   const [showCustomAmount, setShowCustomAmount] = useState(false);
   const [customAmount, setCustomAmount] = useState("");
+  const [purchaseError, setPurchaseError] = useState<string | null>(null);
   const { auth } = useOpenSecret();
+
+  const userEmail = auth.user?.user.email;
 
   useEffect(() => {
     if (showSuccessMessage) {
@@ -62,6 +65,9 @@ export function ApiCreditsSection({ showSuccessMessage = false }: ApiCreditsSect
   };
 
   const handlePurchase = async (method: "stripe" | "zaprite") => {
+    // Clear any previous errors
+    setPurchaseError(null);
+
     // Validate custom amount if in custom mode
     let finalPackage = selectedPackage;
     if (showCustomAmount) {
@@ -129,10 +135,15 @@ export function ApiCreditsSection({ showSuccessMessage = false }: ApiCreditsSect
         window.location.href = response.checkout_url;
       } else {
         // For Zaprite, we need the user's email
-        const email = auth.user?.user.email || "";
+        if (!userEmail) {
+          setPurchaseError("Email is required for Bitcoin payments");
+          setIsPurchasing(false);
+          setPaymentMethod(null);
+          return;
+        }
         const response = await billingService.purchaseApiCreditsZaprite({
           credits: finalPackage.credits,
-          email,
+          email: userEmail,
           success_url: successUrl
         });
 
@@ -141,6 +152,7 @@ export function ApiCreditsSection({ showSuccessMessage = false }: ApiCreditsSect
       }
     } catch (error) {
       console.error("Failed to create checkout session:", error);
+      setPurchaseError("Failed to create checkout session. Please try again.");
     } finally {
       setIsPurchasing(false);
       setPaymentMethod(null);
@@ -174,6 +186,13 @@ export function ApiCreditsSection({ showSuccessMessage = false }: ApiCreditsSect
           <AlertDescription className="text-sm">
             Payment successful! Your credits have been added to your account.
           </AlertDescription>
+        </Alert>
+      )}
+
+      {/* Error Message */}
+      {purchaseError && (
+        <Alert className="border-destructive/50 bg-destructive/10">
+          <AlertDescription className="text-sm text-destructive">{purchaseError}</AlertDescription>
         </Alert>
       )}
 
@@ -301,12 +320,14 @@ export function ApiCreditsSection({ showSuccessMessage = false }: ApiCreditsSect
             onClick={() => handlePurchase("zaprite")}
             disabled={
               isPurchasing ||
+              !userEmail ||
               (showCustomAmount &&
                 (!customAmount || parseInt(customAmount) < 10 || parseInt(customAmount) > 1000))
             }
             variant="outline"
             className="flex-1"
             size="sm"
+            title={!userEmail ? "Email required for Bitcoin payments" : undefined}
           >
             {isPurchasing && paymentMethod === "zaprite" ? (
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />
