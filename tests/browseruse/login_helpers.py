@@ -6,6 +6,7 @@ These helpers provide reusable login functionality across all tests that require
 
 import os
 from browser_use import Controller, ActionResult
+from browser_use import BrowserSession
 from playwright.async_api import Page
 
 
@@ -19,7 +20,7 @@ def create_login_controller():
     controller = Controller()
     
     @controller.action('Input the email for Maple login')
-    async def input_email_securely(page: Page) -> ActionResult:
+    async def input_email_securely(browser_session: BrowserSession, page: Page) -> ActionResult:
         """Securely input email from environment variable."""
         email = os.environ.get('BROWSERUSE_TEST_EMAIL', '')
         if not email:
@@ -34,7 +35,7 @@ def create_login_controller():
         return ActionResult(success=True, extracted_content="Email entered securely")
     
     @controller.action('Input the password for Maple login')
-    async def input_password_securely(page: Page) -> ActionResult:
+    async def input_password_securely(browser_session: BrowserSession, page: Page) -> ActionResult:
         """Securely input password from environment variable."""
         password = os.environ.get('BROWSERUSE_TEST_PASSWORD', '')
         if not password:
@@ -49,14 +50,14 @@ def create_login_controller():
         return ActionResult(success=True, extracted_content="Password entered securely")
     
     @controller.action('wait_2_seconds')
-    async def wait_2_seconds(page: Page) -> ActionResult:
+    async def wait_2_seconds(browser_session: BrowserSession, page: Page) -> ActionResult:
         """Wait for 2 seconds to let the page stabilize."""
         import asyncio
         await asyncio.sleep(2)
         return ActionResult(success=True, extracted_content="Waited 2 seconds")
     
     @controller.action('Click model selector button')
-    async def click_model_selector(page: Page) -> ActionResult:
+    async def click_model_selector(browser_session: BrowserSession, page: Page) -> ActionResult:
         """Click the model selector button using its data-testid attribute."""
         try:
             # Wait for the element to be available and click it
