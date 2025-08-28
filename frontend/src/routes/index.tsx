@@ -128,8 +128,9 @@ function Index() {
       // TODO: Add document metadata to LocalState
     }
 
-    const id = await localState.addChat();
-    navigate({ to: "/chat/$chatId", params: { chatId: id } });
+    // With Responses API, we don't pre-create chats. Navigate to a "new" chat
+    // and let the chat route handle creating the response when the message is sent
+    navigate({ to: "/chat/$chatId", params: { chatId: "new" } });
   }
 
   return (

@@ -1,9 +1,10 @@
 import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Chat, ChatMessage, DEFAULT_MODEL_ID } from "@/state/LocalStateContext";
+import { Chat, ChatMessage } from "@/state/LocalStateContext";
+// import { DEFAULT_MODEL_ID } from "@/state/LocalStateContext"; // Commented out - used in legacy code
 import { ChatContentPart } from "@/state/LocalStateContextDef";
 import { fileToDataURL } from "@/utils/file";
-import { BillingStatus } from "@/billing/billingApi";
+// import { BillingStatus } from "@/billing/billingApi"; // Commented out - used in legacy title generation
 import { MODEL_CONFIG } from "@/components/ModelSelector";
 
 type ChatPhase = "idle" | "streaming" | "persisting";
@@ -13,6 +14,7 @@ interface UseChatSessionOptions {
   persistChat: (chat: Chat) => Promise<void>;
   openai: ReturnType<typeof import("@/ai/useOpenAi").useOpenAI>;
   model: string;
+  onThreadCreated?: (threadId: string) => void; // Callback when a new thread is created
 }
 
 export function useChatSession(
@@ -21,7 +23,7 @@ export function useChatSession(
     onImageConversionError?: (failedCount: number) => void;
   }
 ) {
-  const { getChatById, persistChat, openai, model, onImageConversionError } = options;
+  const { getChatById, persistChat, openai, model, onImageConversionError, onThreadCreated } = options;
   const queryClient = useQueryClient();
   const [phase, setPhase] = useState<ChatPhase>("idle");
   const [optimisticChat, setOptimisticChat] = useState<Chat | null>(null);
@@ -29,6 +31,7 @@ export function useChatSession(
   const [streamingError, setStreamingError] = useState<string | null>(null);
   const processingRef = useRef(false);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const threadIdRef = useRef<string | null>(null); // Track the actual thread ID
 
   // Query the chat from backend
   const { data: serverChat, isPending } = useQuery({
@@ -50,6 +53,15 @@ export function useChatSession(
     setCurrentStreamingMessage(undefined);
     setStreamingError(null);
     processingRef.current = false;
+    
+    // Reset thread ID when navigating to a different chat
+    // But keep it if we're loading an existing thread
+    if (chatId === "new") {
+      threadIdRef.current = null;
+    } else if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(chatId)) {
+      // This is an existing thread ID
+      threadIdRef.current = chatId;
+    }
   }, [chatId]);
 
   // Cleanup on unmount
@@ -98,79 +110,6 @@ export function useChatSession(
       },
     [optimisticChat, serverChat, chatId]
   );
-
-  const streamAssistant = useCallback(
-    async (messages: ChatMessage[]): Promise<string> => {
-      // Create new abort controller for this stream
-      const abortController = new AbortController();
-      abortControllerRef.current = abortController;
-
-      try {
-        const stream = openai.beta.chat.completions.stream({
-          model,
-          messages: messages as Parameters<
-            typeof openai.beta.chat.completions.stream
-          >[0]["messages"],
-          stream: true
-        });
-
-        let fullResponse = "";
-        setCurrentStreamingMessage("");
-
-        for await (const chunk of stream) {
-          // Check if we should abort
-          if (abortController.signal.aborted) {
-            stream.controller.abort();
-            throw new Error("Stream aborted");
-          }
-
-          const content = chunk.choices[0]?.delta?.content || "";
-          fullResponse += content;
-          setCurrentStreamingMessage(fullResponse);
-        }
-
-        await stream.finalChatCompletion();
-        setCurrentStreamingMessage(undefined);
-        return fullResponse;
-      } catch (error) {
-        if (abortController.signal.aborted) {
-          throw new Error("Stream aborted");
-        }
-
-        // Handle streaming errors from OpenAI
-        let errorMessage = "An error occurred while streaming the response.";
-        if (error instanceof Error) {
-          if (
-            error.message.includes("stream_error") ||
-            error.message.includes("Stream processing error")
-          ) {
-            errorMessage = "Stream processing error. Please try again.";
-          } else if (error.message.includes("401")) {
-            errorMessage = "Authentication error. Please check your API key.";
-          } else if (error.message.includes("429")) {
-            errorMessage = "Rate limit exceeded. Please wait a moment and try again.";
-          } else if (
-            error.message.includes("500") ||
-            error.message.includes("502") ||
-            error.message.includes("503")
-          ) {
-            errorMessage = "Server error. The AI service is temporarily unavailable.";
-          } else {
-            errorMessage = error.message;
-          }
-        }
-
-        setStreamingError(errorMessage);
-        throw error;
-      } finally {
-        if (abortControllerRef.current === abortController) {
-          abortControllerRef.current = null;
-        }
-      }
-    },
-    [openai, model]
-  );
-
   const appendUserMessage = useCallback(
     async (
       content: string,
@@ -252,45 +191,130 @@ export function useChatSession(
       });
 
       try {
-        // Start title generation in background if needed
-        let titlePromise: Promise<string> | undefined;
-        if (chat.title === "New Chat") {
-          titlePromise = generateTitle(newMessages, openai, queryClient);
-          // Update title in UI as soon as it's ready
-          titlePromise.then((generatedTitle) => {
-            setOptimisticChat((prev) => {
-              if (!prev) return prev;
-              return { ...prev, title: generatedTitle };
-            });
-          });
+        // const useResponses = import.meta.env.VITE_USE_RESPONSES === "true";
+        const useResponses = true;
+
+        if (useResponses) {
+          // Responses API path (no client-side title generation, server persists/title)
+          const abortController = new AbortController();
+          abortControllerRef.current = abortController;
+
+          setCurrentStreamingMessage("");
+
+          let accumulated = "";
+          const inputText = typeof finalContent === "string" ? finalContent : String(finalContent);
+          const instructions = systemPrompt?.trim() || undefined;
+
+          let stream: any;
+          try {
+            // Use the thread ID if we have it (for follow-up messages in the same session)
+            // or use the chatId if it's a valid UUID (for loading existing threads)
+            const effectiveThreadId = threadIdRef.current || 
+              (chatId !== "new" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(chatId) ? chatId : null);
+            
+            const requestParams: any = {
+              model,
+              input: inputText,
+              instructions,
+              stream: true,
+              store: true // Ensure messages are persisted
+            };
+            
+            // If we have a thread ID, this is a continuation
+            if (effectiveThreadId) {
+              requestParams.previous_response_id = effectiveThreadId;
+              console.log("Continuing thread with previous_response_id:", effectiveThreadId);
+            } else {
+              console.log("Starting new thread (no previous_response_id)");
+            }
+            
+            console.log("Creating response with params:", requestParams);
+            stream = await openai.responses.create(requestParams);
+          } catch (error) {
+            console.error("Error creating stream:", error);
+            if (error instanceof Error) {
+              console.error("Error details:", error.message, error.stack);
+            }
+            setStreamingError("Failed to create response stream");
+            setPhase("idle");
+            processingRef.current = false;
+            return;
+          }
+
+          let responseId: string | null = null;
+          
+          try {
+            for await (const event of stream) {
+              if (abortController.signal.aborted) break;
+              
+              // Handle different event types based on OpenAI Responses API spec
+              if (event.type === "response.created") {
+                // Capture the response ID
+                responseId = event.response?.id;
+                console.log("Response created with ID:", responseId);
+                
+                // For new chats, store the thread ID for follow-up messages
+                if (chatId === "new" && !threadIdRef.current && responseId) {
+                  console.log("New thread created with ID:", responseId);
+                  threadIdRef.current = responseId;
+                  // Call the callback to update the URL via React Router
+                  if (onThreadCreated) {
+                    onThreadCreated(responseId);
+                  }
+                }
+              } else if (event.type === "response.output_item.added") {
+                // New output item started
+              } else if (event.type === "response.output_text.delta") {
+                const delta = event.delta || "";
+                if (delta) {
+                  accumulated += delta;
+                  setCurrentStreamingMessage(accumulated);
+                }
+              } else if (event.type === "response.output_text.done") {
+                // Text output completed
+              } else if (event.type === "response.completed" || event.type === "response.done") {
+                // Response completed
+                const finalMessages = [
+                  ...newMessages,
+                  { role: "assistant", content: accumulated } as ChatMessage
+                ];
+                setOptimisticChat((prev) => ({ ...prev!, messages: finalMessages }));
+                setCurrentStreamingMessage(undefined);
+                setPhase("idle");
+                
+                // Store messages locally for display purposes (Responses API maintains real context)
+                // This is a temporary solution until we have a thread history endpoint
+                if (threadIdRef.current) {
+                  try {
+                    localStorage.setItem(
+                      `responses_chat_${threadIdRef.current}`,
+                      JSON.stringify({
+                        messages: finalMessages,
+                        lastUpdated: Date.now()
+                      })
+                    );
+                  } catch (error) {
+                    console.error("Failed to store messages locally:", error);
+                  }
+                }
+                
+                queryClient.invalidateQueries({ queryKey: ["chatHistory"] });
+                break;
+              } else if (event.type === "error") {
+                setStreamingError(event.message || "Streaming error");
+                break;
+              }
+            }
+          } finally {
+            // Clean up but don't throw in finally block
+            if (abortController.signal.aborted) {
+              console.log("Stream was aborted");
+            }
+          }
+        } else {
+          // Legacy completions path is deprecated
+          throw new Error("Completions API is deprecated - please use Responses API");
         }
-
-        // Stream assistant response
-        const assistantResponse = await streamAssistant(newMessages);
-
-        // Add assistant message
-        const finalMessages = [
-          ...newMessages,
-          { role: "assistant", content: assistantResponse } as ChatMessage
-        ];
-
-        // Update optimistic state with assistant message
-        setOptimisticChat((prev) => ({
-          ...prev!,
-          messages: finalMessages
-        }));
-
-        // Wait for title generation if it was started
-        const title = titlePromise ? await titlePromise : chat.title;
-
-        // Persist to backend
-        setPhase("persisting");
-        await persistMutation.mutateAsync({
-          id: chatId,
-          title,
-          model,
-          messages: finalMessages
-        });
       } catch (error) {
         setPhase("idle");
         processingRef.current = false;
@@ -307,7 +331,7 @@ export function useChatSession(
         processingRef.current = false;
       }
     },
-    [chat, model, phase, streamAssistant, persistMutation, chatId, openai, queryClient]
+    [chat, model, phase, persistMutation, chatId, openai, queryClient]
   );
 
   return {
@@ -315,108 +339,7 @@ export function useChatSession(
     phase,
     currentStreamingMessage,
     appendUserMessage,
-    streamAssistant,
     streamingError,
     isPending
   };
-}
-
-// Helper to generate chat title
-async function generateTitle(
-  messages: ChatMessage[],
-  openai: ReturnType<typeof import("@/ai/useOpenAi").useOpenAI>,
-  queryClient: ReturnType<typeof useQueryClient>
-): Promise<string> {
-  // Helper function to check if the user is on a free plan
-  function isUserOnFreePlan(): boolean {
-    try {
-      const billingStatus = queryClient.getQueryData(["billingStatus"]) as
-        | BillingStatus
-        | undefined;
-
-      return (
-        !billingStatus ||
-        !billingStatus.product_name ||
-        billingStatus.product_name.toLowerCase().includes("free")
-      );
-    } catch (error) {
-      console.log("Error checking billing status, defaulting to free plan", error);
-      return true; // Default to free plan if there's an error
-    }
-  }
-
-  const userMessage = messages.find((m) => m.role === "user");
-  if (!userMessage) return "New Chat";
-
-  let messageText = "New Chat";
-
-  if (typeof userMessage.content === "string") {
-    messageText = userMessage.content;
-  } else if (Array.isArray(userMessage.content)) {
-    // Find the first text part safely
-    const textPart = userMessage.content.find(
-      (part): part is { type: "text"; text: string } =>
-        part.type === "text" && "text" in part && typeof part.text === "string"
-    );
-    if (textPart) {
-      messageText = textPart.text;
-    }
-  }
-
-  // Simple title generation - truncate first message to 50 chars
-  const simpleTitleFromMessage = messageText.slice(0, 50).trim();
-
-  // For free plan users, just use the simple title
-  // For paid plans, try to generate AI title
-  if (isUserOnFreePlan()) {
-    console.log("Using simple title generation for free plan user");
-    return simpleTitleFromMessage;
-  }
-
-  // For paid plans, use LLM to generate a smart title
-  try {
-    console.log("Using AI title generation for paid plan user");
-    // Get the user's first message, truncate if too long
-    const userContent = messageText.slice(0, 500); // Reduced to 500 chars to optimize token usage
-
-    // Use the OpenAI API to generate a concise title - use the default model
-    const stream = openai.beta.chat.completions.stream({
-      model: DEFAULT_MODEL_ID, // Use the default model instead of user selected model
-      messages: [
-        {
-          role: "system",
-          content:
-            "You are a helpful assistant that generates concise, meaningful titles (3-5 words) for chat conversations based on the user's first message. Return only the title without quotes or explanations."
-        },
-        {
-          role: "user",
-          content: `Generate a concise, contextual title (3-5 words) for a chat that starts with this message: "${userContent}"`
-        }
-      ],
-      temperature: 0.7,
-      max_tokens: 15, // Keep response very short
-      stream: true
-    });
-
-    let generatedTitle = "";
-    for await (const chunk of stream) {
-      const content = chunk.choices[0]?.delta?.content || "";
-      generatedTitle += content;
-    }
-
-    // Get the final completion
-    await stream.finalChatCompletion();
-
-    // Remove quotes if present and limit length
-    const cleanTitle = generatedTitle
-      .replace(/^["']|["']$/g, "") // Remove leading/trailing quotes
-      .trim()
-      .slice(0, 50);
-
-    console.log("Generated title:", cleanTitle);
-    return cleanTitle || simpleTitleFromMessage; // Fallback if generation fails
-  } catch (error) {
-    console.error("Error generating AI title, falling back to simple title:", error);
-    return simpleTitleFromMessage;
-  }
 }

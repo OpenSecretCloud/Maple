@@ -48,6 +48,22 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
   const { get, put, list, del } = useOpenSecret();
 
   async function persistChat(chat: Chat) {
+    // Check if this is a Responses API chat by checking if it exists in the responses list
+    // If it is, skip local persistence as it's managed server-side
+    try {
+      const { fetchResponsesList } = await import("@opensecret/react");
+      const responsesData = await fetchResponsesList({ limit: 100 });
+      const isResponsesChat = responsesData?.data?.some((r: any) => r.id === chat.id);
+      
+      if (isResponsesChat) {
+        console.log(`Skipping local persistence for Responses API chat: ${chat.id}`);
+        return; // Don't persist Responses API chats locally
+      }
+    } catch (error) {
+      // If we can't check, continue with local persistence
+      console.error("Error checking if chat is from Responses API:", error);
+    }
+
     const chatToSave = {
       /** If a model is missing, assume the default Llama and write it now */
       model: aliasModelName(chat.model) || DEFAULT_MODEL_ID,
@@ -130,22 +146,94 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
   }
 
   async function getChatById(id: string): Promise<Chat | undefined> {
+    // Special case: "new" means we're creating a new chat
+    if (id === "new") {
+      return undefined; // Return undefined for new chats
+    }
+    
+    // First, try to fetch from local storage (legacy chats)
     try {
       const chat = await get(`chat_${id}`);
-      if (!chat) return undefined;
-      const parsedChat = JSON.parse(chat) as Chat;
-      // Alias the model name for backward compatibility
-      if (parsedChat.model) {
-        parsedChat.model = aliasModelName(parsedChat.model);
+      if (chat) {
+        const parsedChat = JSON.parse(chat) as Chat;
+        // Alias the model name for backward compatibility
+        if (parsedChat.model) {
+          parsedChat.model = aliasModelName(parsedChat.model);
+        }
+        return parsedChat;
       }
-      return parsedChat;
     } catch (error) {
-      console.error("Error fetching chat:", error);
-      return undefined;
+      console.error("Error fetching chat from local storage:", error);
     }
+
+    // If not found locally, create a placeholder for Responses API chats
+    // This is a temporary workaround. The Responses API tracks conversations server-side
+    // but doesn't yet provide an endpoint to fetch the full thread history.
+    // For now, we'll return a placeholder that allows continuing the conversation.
+    
+    try {
+      // Check if this ID exists in the responses list (indicating it's a Responses API chat)
+      const { fetchResponsesList } = await import("@opensecret/react");
+      const responsesData = await fetchResponsesList({ limit: 100 });
+      const responseChat = responsesData?.data?.find((r: any) => r.id === id);
+      
+      if (responseChat) {
+        // Try to load locally stored messages for display
+        // Note: The server maintains the real context, this is just for UI
+        let messages: ChatMessage[] = [];
+        try {
+          const stored = localStorage.getItem(`responses_chat_${id}`);
+          if (stored) {
+            const parsed = JSON.parse(stored);
+            messages = parsed.messages || [];
+            console.log(`Loaded ${messages.length} messages from local storage for chat ${id}`);
+          }
+        } catch (error) {
+          console.error("Failed to load local messages:", error);
+        }
+        
+        console.log(`Found Responses API chat ${id}, returning with ${messages.length} local messages`);
+        
+        return {
+          id: responseChat.id,
+          title: responseChat.title || "Chat",
+          messages, // Use locally stored messages for display
+          model: aliasModelName(responseChat.model) || DEFAULT_MODEL_ID,
+          // Flag to indicate this is a Responses API chat (for UI purposes)
+          isResponsesChat: true
+        } as Chat & { isResponsesChat?: boolean };
+      }
+    } catch (error) {
+      console.error("Error checking responses list:", error);
+    }
+    
+    return undefined;
   }
 
   async function fetchOrCreateHistoryList() {
+    const allChats: HistoryItem[] = [];
+    
+    // 1. First, fetch chats from the Responses API
+    try {
+      const { fetchResponsesList } = await import("@opensecret/react");
+      const responsesData = await fetchResponsesList({ limit: 50 });
+      console.log("Responses API data:", responsesData);
+      if (responsesData && responsesData.data) {
+        // Convert Responses API format to HistoryItem format
+        const responsesChats = responsesData.data.map((response) => ({
+          id: response.id,
+          title: response.title || "New Chat", // Title should be included in list response
+          created_at: response.created_at * 1000, // Convert to milliseconds
+          updated_at: response.created_at * 1000, // Use created_at since updated_at not in response
+          isResponsesAPI: true // Flag to identify these are from Responses API
+        }));
+        allChats.push(...responsesChats);
+      }
+    } catch (error) {
+      console.error("Error fetching responses list:", error);
+    }
+    
+    // 2. Then, fetch legacy chats from local storage
     let historyList = "[]";
     try {
       const existingHistory = await get("history_list");
@@ -157,7 +245,7 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
     }
 
     // Parse the history_list item
-    let parsedHistory: HistoryItem[];
+    let parsedHistory: HistoryItem[] = [];
     try {
       parsedHistory = JSON.parse(historyList) as HistoryItem[];
       if (!Array.isArray(parsedHistory)) {
@@ -191,14 +279,31 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
         newHistoryList.sort((a, b) => b.updated_at - a.updated_at);
 
         await put("history_list", JSON.stringify(newHistoryList));
-        return newHistoryList;
+        parsedHistory = newHistoryList;
       } catch (error) {
         console.error("Error creating new history list:", error);
-        return [];
+        parsedHistory = [];
       }
     }
 
-    return parsedHistory;
+    // Combine both sources, deduplicate by ID (Responses API takes precedence)
+    const chatMap = new Map<string, HistoryItem>();
+    
+    // Add legacy chats first
+    parsedHistory.forEach(chat => {
+      chatMap.set(chat.id, chat);
+    });
+    
+    // Add Responses API chats (will override any duplicates from legacy)
+    allChats.forEach(chat => {
+      chatMap.set(chat.id, chat);
+    });
+    
+    // Convert back to array and sort by updated_at
+    const dedupedChats = Array.from(chatMap.values());
+    dedupedChats.sort((a, b) => (b.updated_at || 0) - (a.updated_at || 0));
+
+    return dedupedChats;
   }
 
   async function clearHistory() {
