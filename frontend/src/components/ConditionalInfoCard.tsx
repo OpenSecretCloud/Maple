@@ -5,9 +5,19 @@ import { useChatCount } from "@/hooks/useChatCount";
 export function ConditionalInfoCard() {
   const { hasMinChats, isLoading } = useChatCount();
 
-  // While loading, don't render anything to prevent flash
+  // While loading, render transparent placeholder to maintain footer position
   if (isLoading) {
-    return null;
+    return (
+      <>
+        {/* Desktop: Transparent placeholder with same height */}
+        <div className="hidden md:block" aria-hidden="true">
+          <Card className="bg-transparent border-transparent shadow-none">
+            <CardHeader className="py-[88px]" />
+          </Card>
+        </div>
+        {/* Mobile: No placeholder needed */}
+      </>
+    );
   }
 
   return (
