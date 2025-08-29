@@ -276,7 +276,7 @@ export function AccountMenu() {
               {!isIOS && (
                 <DropdownMenuItem onClick={() => setIsApiKeyDialogOpen(true)}>
                   <Key className="mr-2 h-4 w-4" />
-                  <span>API Keys</span>
+                  <span>API Management</span>
                 </DropdownMenuItem>
               )}
               <DropdownMenuItem asChild>

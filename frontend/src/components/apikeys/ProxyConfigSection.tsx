@@ -148,22 +148,26 @@ export function ProxyConfigSection({ apiKeys, onRequestNewApiKey }: ProxyConfigS
   const isRunning = proxyStatus?.running || false;
 
   return (
-    <div className="space-y-4">
+    <>
       {/* Show message alerts */}
       {message && (
         <Alert
-          className={message.type === "error" ? "border-destructive/50" : "border-green-500/50"}
+          className={`${
+            message.type === "error" ? "border-destructive/50" : "border-green-500/50"
+          } mb-3`}
         >
-          {message.type === "error" ? (
-            <AlertCircle className="h-4 w-4" />
-          ) : (
-            <CheckCircle className="h-4 w-4 text-green-500" />
-          )}
-          <AlertDescription className="text-xs">{message.text}</AlertDescription>
+          <div className="flex items-start gap-2">
+            {message.type === "error" ? (
+              <AlertCircle className="h-4 w-4 flex-shrink-0" />
+            ) : (
+              <CheckCircle className="h-4 w-4 text-green-500 flex-shrink-0" />
+            )}
+            <AlertDescription className="text-xs">{message.text}</AlertDescription>
+          </div>
         </Alert>
       )}
 
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between mb-3">
         <h3 className="text-sm font-medium flex items-center gap-2">
           <Server className="h-4 w-4" />
           Local OpenAI Proxy
@@ -320,12 +324,11 @@ export function ProxyConfigSection({ apiKeys, onRequestNewApiKey }: ProxyConfigS
       {/* Usage Examples */}
       {isRunning && (
         <div className="space-y-3">
-          <Alert>
-            <AlertCircle className="h-4 w-4" />
-            <AlertDescription className="text-xs">
+          <Card className="p-3">
+            <div className="text-xs">
               <strong>Python Example:</strong>
-              <pre className="mt-2 text-xs bg-muted p-2 rounded overflow-x-auto">
-                {`from openai import OpenAI
+              <pre className="mt-2 text-xs bg-background p-2 rounded border overflow-x-auto">
+                <code>{`from openai import OpenAI
 client = OpenAI(
   base_url="http://${config.host}:${config.port}/v1",
   api_key="anything"  # API key handled by proxy
@@ -338,28 +341,27 @@ response = client.chat.completions.create(
 )
 
 for chunk in response:
-    print(chunk.choices[0].delta.content or "", end="")`}
+    print(chunk.choices[0].delta.content or "", end="")`}</code>
               </pre>
-            </AlertDescription>
-          </Alert>
+            </div>
+          </Card>
 
-          <Alert>
-            <AlertCircle className="h-4 w-4" />
-            <AlertDescription className="text-xs">
+          <Card className="p-3">
+            <div className="text-xs">
               <strong>cURL Example:</strong>
-              <pre className="mt-2 text-xs bg-muted p-2 rounded overflow-x-auto">
-                {`curl -N http://${config.host}:${config.port}/v1/chat/completions \\
+              <pre className="mt-2 text-xs bg-background p-2 rounded border overflow-x-auto">
+                <code>{`curl -N http://${config.host}:${config.port}/v1/chat/completions \\
   -H "Content-Type: application/json" \\
   -d '{
     "model": "llama3-3-70b",
     "messages": [{"role": "user", "content": "Hello!"}],
     "stream": true
-  }'`}
+  }'`}</code>
               </pre>
-            </AlertDescription>
-          </Alert>
+            </div>
+          </Card>
         </div>
       )}
-    </div>
+    </>
   );
 }
