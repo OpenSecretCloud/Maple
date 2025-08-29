@@ -49,26 +49,27 @@ export function CreateApiKeyDialog({ open, onOpenChange, onKeyCreated }: CreateA
       const response = await createApiKey(trimmedName);
       setCreatedKey(response.key);
       console.log("API key created successfully");
-    } catch (error: any) {
+    } catch (error) {
       console.error("Failed to create API key:", error);
 
       // Handle specific error cases with user-friendly messages
-      if (error?.status === 409 || error?.message?.toLowerCase().includes("conflict")) {
+      const err = error as { status?: number; message?: string };
+      if (err?.status === 409 || err?.message?.toLowerCase().includes("conflict")) {
         setError(
           `An API key named "${trimmedName}" already exists. Please choose a different name.`
         );
-      } else if (error?.status === 400 || error?.message?.toLowerCase().includes("invalid")) {
+      } else if (err?.status === 400 || err?.message?.toLowerCase().includes("invalid")) {
         setError(
           "Invalid API key name. Please use only letters, numbers, spaces, hyphens, and underscores."
         );
-      } else if (error?.status === 401 || error?.message?.toLowerCase().includes("unauthorized")) {
+      } else if (err?.status === 401 || err?.message?.toLowerCase().includes("unauthorized")) {
         setError("You are not authorized to create API keys. Please check your subscription plan.");
-      } else if (error?.status === 429 || error?.message?.toLowerCase().includes("limit")) {
+      } else if (err?.status === 429 || err?.message?.toLowerCase().includes("limit")) {
         setError(
           "You've reached the maximum number of API keys. Please delete an existing key first."
         );
       } else {
-        setError(error?.message || "Failed to create API key. Please try again.");
+        setError(err?.message || "Failed to create API key. Please try again.");
       }
     } finally {
       setIsCreating(false);

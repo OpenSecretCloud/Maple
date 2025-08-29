@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -6,11 +6,13 @@ import { Plus, Loader2, Sparkles, Zap, Shield, Rocket } from "lucide-react";
 import { CreateApiKeyDialog } from "./CreateApiKeyDialog";
 import { ApiKeysList } from "./ApiKeysList";
 import { ApiCreditsSection } from "./ApiCreditsSection";
+import { ProxyConfigSection } from "./ProxyConfigSection";
 import { useOpenSecret } from "@opensecret/react";
 import { useQuery } from "@tanstack/react-query";
 import { Separator } from "@/components/ui/separator";
 import { useLocalState } from "@/state/useLocalState";
 import { useNavigate } from "@tanstack/react-router";
+import { proxyService } from "@/services/proxyService";
 
 interface ApiKey {
   name: string;
@@ -23,9 +25,14 @@ interface ApiKeyDashboardProps {
 
 export function ApiKeyDashboard({ showCreditSuccessMessage = false }: ApiKeyDashboardProps) {
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
-  const { listApiKeys, auth } = useOpenSecret();
+  const [isDesktop, setIsDesktop] = useState(false);
+  const { listApiKeys, auth, createApiKey } = useOpenSecret();
   const { billingStatus } = useLocalState();
   const navigate = useNavigate();
+
+  useEffect(() => {
+    proxyService.isTauriDesktop().then(setIsDesktop);
+  }, []);
 
   // Check if user has API access (Pro, Team, or Max plans only - not Starter)
   const isBillingLoading = billingStatus === null;
@@ -60,6 +67,19 @@ export function ApiKeyDashboard({ showCreditSuccessMessage = false }: ApiKeyDash
 
   const handleKeyDeleted = () => {
     refetch();
+  };
+
+  const handleProxyApiKeyRequest = async (name: string): Promise<string> => {
+    // Create a new API key for the proxy directly
+    try {
+      const response = await createApiKey(name);
+      // Refetch to update the list
+      await refetch();
+      return response.key;
+    } catch (error) {
+      console.error("Failed to create API key for proxy:", error);
+      throw error;
+    }
   };
 
   // Show loading state if billing status or API keys are loading
@@ -203,6 +223,17 @@ export function ApiKeyDashboard({ showCreditSuccessMessage = false }: ApiKeyDash
             </p>
           </div>
         </div>
+
+        {/* Proxy Configuration Section - Desktop Only */}
+        {isDesktop && (
+          <>
+            <Separator />
+            <ProxyConfigSection
+              apiKeys={apiKeys || []}
+              onRequestNewApiKey={handleProxyApiKeyRequest}
+            />
+          </>
+        )}
       </div>
 
       {/* Create dialog */}

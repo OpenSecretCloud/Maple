@@ -1,7 +1,8 @@
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 use tauri_plugin_deep_link::DeepLinkExt;
 use tauri_plugin_opener;
-use tauri_plugin_sign_in_with_apple;
+
+mod proxy;
 
 // This handles incoming deep links
 fn handle_deep_link_event(url: &str, app: &tauri::AppHandle) {
@@ -22,7 +23,31 @@ pub fn run() {
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_os::init())
+        .plugin(tauri_plugin_fs::init())
+        .manage(proxy::ProxyState::new())
+        .invoke_handler(tauri::generate_handler![
+            proxy::start_proxy,
+            proxy::stop_proxy,
+            proxy::get_proxy_status,
+            proxy::load_proxy_config,
+            proxy::save_proxy_settings,
+            proxy::test_proxy_port,
+        ])
         .setup(|app| {
+            // Initialize proxy auto-start
+            {
+                let app_handle_proxy = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    // Small delay to ensure app is fully initialized
+                    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                    
+                    // Create a new State wrapper for the async context
+                    if let Err(e) = proxy::init_proxy_on_startup_simple(app_handle_proxy).await {
+                        log::error!("Failed to initialize proxy: {}", e);
+                    }
+                });
+            }
+            
             // Set up the deep link handler
             // Use a cloned handle with 'static lifetime
             let app_handle = app.handle().clone();
