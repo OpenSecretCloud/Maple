@@ -14,7 +14,8 @@ import { TopNav } from "@/components/TopNav";
 import { Marketing } from "@/components/Marketing";
 import { SimplifiedFooter } from "@/components/SimplifiedFooter";
 import { TeamManagementDialog } from "@/components/team/TeamManagementDialog";
-import { useQuery } from "@tanstack/react-query";
+import { ApiKeyManagementDialog } from "@/components/apikeys/ApiKeyManagementDialog";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { getBillingService } from "@/billing/billingService";
 import type { TeamStatus } from "@/types/team";
 
@@ -34,13 +35,16 @@ type IndexSearchOptions = {
   login?: string;
   next?: string;
   team_setup?: boolean;
+  credits_success?: boolean;
 };
 
 function validateSearch(search: Record<string, unknown>): IndexSearchOptions {
   return {
     login: search?.login === "true" ? "true" : undefined,
     next: search.next ? (search.next as string) : undefined,
-    team_setup: search?.team_setup === true || search?.team_setup === "true" ? true : undefined
+    team_setup: search?.team_setup === true || search?.team_setup === "true" ? true : undefined,
+    credits_success:
+      search?.credits_success === true || search?.credits_success === "true" ? true : undefined
   };
 }
 
@@ -52,8 +56,9 @@ export const Route = createFileRoute("/")({
 function Index() {
   const navigate = useNavigate();
   const localState = useLocalState();
+  const queryClient = useQueryClient();
 
-  const { login, next, team_setup } = Route.useSearch();
+  const { login, next, team_setup, credits_success } = Route.useSearch();
 
   const os = useOpenSecret();
 
@@ -68,6 +73,8 @@ function Index() {
 
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [teamDialogOpen, setTeamDialogOpen] = useState(false);
+  const [apiKeyDialogOpen, setApiKeyDialogOpen] = useState(false);
+  const [showCreditSuccess, setShowCreditSuccess] = useState(false);
 
   // Fetch team status for the dialog
   const { data: teamStatus } = useQuery<TeamStatus>({
@@ -87,6 +94,21 @@ function Index() {
       navigate({ to: "/", replace: true });
     }
   }, [team_setup, os.auth.user, teamStatus, navigate]);
+
+  // Handle credits_success - open API key dialog and refresh balance
+  useEffect(() => {
+    if (credits_success && os.auth.user) {
+      setApiKeyDialogOpen(true);
+      setShowCreditSuccess(true);
+      // Refresh the credit balance
+      queryClient.invalidateQueries({ queryKey: ["apiCreditBalance"] });
+      // Clear the query param to prevent re-opening on refresh
+      navigate({ to: "/", replace: true });
+      // Clear success message after 5 seconds
+      const timer = setTimeout(() => setShowCreditSuccess(false), 5000);
+      return () => clearTimeout(timer);
+    }
+  }, [credits_success, os.auth.user, navigate, queryClient]);
 
   const toggleSidebar = useCallback(() => setIsSidebarOpen((prev) => !prev), []);
 
@@ -192,6 +214,15 @@ function Index() {
           open={teamDialogOpen}
           onOpenChange={setTeamDialogOpen}
           teamStatus={teamStatus}
+        />
+      )}
+
+      {/* API Key Management Dialog */}
+      {os.auth.user && (
+        <ApiKeyManagementDialog
+          open={apiKeyDialogOpen}
+          onOpenChange={setApiKeyDialogOpen}
+          showCreditSuccessMessage={showCreditSuccess}
         />
       )}
     </div>
