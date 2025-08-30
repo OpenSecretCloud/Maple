@@ -2,8 +2,9 @@
 
 echo "Running pre-commit hook..."
 
-# Navigate to frontend directory
-cd frontend || exit 1
+# Navigate to frontend directory from repo root
+REPO_ROOT=$(git rev-parse --show-toplevel)
+cd "$REPO_ROOT/frontend" || exit 1
 
 # Check if bun is installed
 if ! command -v bun &> /dev/null; then
