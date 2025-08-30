@@ -132,6 +132,7 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          working-directory: .
           claude_args: |
             --allowedTools "Bash,Edit,Replace,NotebookEditCell,MultiEdit,Write,Read,Grep,Glob,LS,WebSearch,WebFetch,Task,TodoWrite,BashOutput,KillBash"
             --max-turns 25
