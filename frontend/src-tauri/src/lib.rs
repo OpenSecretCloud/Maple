@@ -22,6 +22,7 @@ pub fn run() {
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_os::init())
+        .plugin(tauri_plugin_localization::init())
         .setup(|app| {
             // Set up the deep link handler
             // Use a cloned handle with 'static lifetime
@@ -204,7 +205,8 @@ pub fn run() {
         )
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_os::init());
+        .plugin(tauri_plugin_os::init())
+        .plugin(tauri_plugin_localization::init());
 
     // Only add the Apple Sign In plugin on iOS
     #[cfg(all(not(desktop), target_os = "ios"))]
