@@ -67,7 +67,13 @@ pub async fn start_proxy(
     state: State<'_, ProxyState>,
     config: ProxyConfig,
 ) -> Result<ProxyStatus, String> {
-    log::info!("Starting proxy with config: {:?}", config);
+    log::info!(
+        "Starting proxy on {}:{} (cors={}, auto_start={})",
+        config.host,
+        config.port,
+        config.enable_cors,
+        config.auto_start
+    );
 
     // Check if proxy is already running
     let mut running = state.running.lock().await;
@@ -78,20 +84,19 @@ pub async fn start_proxy(
     // Update config
     let mut stored_config = state.config.lock().await;
     *stored_config = config.clone();
+    drop(stored_config); // Release config lock early
 
     // Use backend URL from config or fall back to production
-    let backend_url = config.backend_url.clone()
+    let backend_url = config
+        .backend_url
+        .clone()
         .unwrap_or_else(|| "https://enclave.trymaple.ai".to_string());
-    
+
     // Create maple-proxy config
-    let proxy_config = Config::new(
-        config.host.clone(),
-        config.port,
-        backend_url,
-    )
-    .with_api_key(config.api_key.clone())
-    .with_debug(false)
-    .with_cors(config.enable_cors);
+    let proxy_config = Config::new(config.host.clone(), config.port, backend_url)
+        .with_api_key(config.api_key.clone())
+        .with_debug(false)
+        .with_cors(config.enable_cors);
 
     // Try to bind to the address first to check if port is available
     let addr = proxy_config
@@ -122,6 +127,8 @@ pub async fn start_proxy(
     // Store the handle
     let mut handle_guard = state.handle.lock().await;
     *handle_guard = Some(handle);
+    drop(handle_guard); // Release handle lock early
+
     *running = true;
 
     // Save config to disk
@@ -150,6 +157,7 @@ pub async fn stop_proxy(state: State<'_, ProxyState>) -> Result<ProxyStatus, Str
     if let Some(handle) = handle_guard.take() {
         handle.abort();
     }
+    drop(handle_guard); // Release handle lock before taking config lock to avoid deadlock
 
     *running = false;
 
@@ -210,12 +218,16 @@ pub async fn test_proxy_port(host: String, port: u16) -> Result<bool, String> {
 async fn get_config_path() -> Result<PathBuf> {
     // Use a hardcoded app name for the data directory
     let app_name = "maple";
-    let home_dir = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE"))
+    let home_dir = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
         .map_err(|_| anyhow!("Failed to get home directory"))?;
-    
-    let app_dir = PathBuf::from(home_dir)
-        .join(".config")
-        .join(app_name);
+
+    // Note: We use ~/.config on all platforms for simplicity.
+    // This works well on Linux and macOS (our currently supported platforms).
+    // While macOS traditionally uses ~/Library/Application Support, many modern
+    // cross-platform tools use ~/.config on macOS as well.
+    // If Windows support is added in the future, consider using %APPDATA% instead.
+    let app_dir = PathBuf::from(home_dir).join(".config").join(app_name);
 
     // Ensure directory exists
     tokio::fs::create_dir_all(&app_dir).await?;
@@ -226,7 +238,18 @@ async fn get_config_path() -> Result<PathBuf> {
 async fn save_proxy_config(config: &ProxyConfig) -> Result<()> {
     let path = get_config_path().await?;
     let json = serde_json::to_string_pretty(config)?;
-    tokio::fs::write(path, json).await?;
+
+    // Write the config file
+    tokio::fs::write(&path, json).await?;
+
+    // Set restrictive permissions on Unix systems (owner read/write only)
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = std::fs::Permissions::from_mode(0o600);
+        tokio::fs::set_permissions(&path, perms).await?;
+    }
+
     Ok(())
 }
 
@@ -246,18 +269,22 @@ async fn load_saved_proxy_config() -> Result<ProxyConfig> {
 pub async fn init_proxy_on_startup_simple(app_handle: AppHandle) -> Result<()> {
     // Load saved config
     let config = load_saved_proxy_config().await?;
-    
+
     // Check if auto-start is enabled and we have an API key
     if config.auto_start && !config.api_key.is_empty() {
         log::info!("Auto-starting proxy from saved config");
-        
+
         // Get the proxy state from the app handle
         let proxy_state: tauri::State<ProxyState> = app_handle.state();
-        
+
         // Try to start the proxy
         match start_proxy(proxy_state, config.clone()).await {
             Ok(_) => {
-                log::info!("Proxy auto-started successfully on {}:{}", config.host, config.port);
+                log::info!(
+                    "Proxy auto-started successfully on {}:{}",
+                    config.host,
+                    config.port
+                );
                 // Optionally emit an event to notify the frontend
                 let _ = app_handle.emit("proxy-autostarted", &config);
             }
@@ -270,7 +297,6 @@ pub async fn init_proxy_on_startup_simple(app_handle: AppHandle) -> Result<()> {
     } else {
         log::info!("Proxy auto-start is disabled or no API key configured");
     }
-    
+
     Ok(())
 }
-

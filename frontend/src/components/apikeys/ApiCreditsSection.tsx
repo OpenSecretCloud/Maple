@@ -7,6 +7,7 @@ import { Loader2, CreditCard, Bitcoin, Coins, CheckCircle, Edit } from "lucide-r
 import { useQuery } from "@tanstack/react-query";
 import { getBillingService } from "@/billing/billingService";
 import { useOpenSecret } from "@opensecret/react";
+import { MIN_PURCHASE_CREDITS, MIN_PURCHASE_AMOUNT } from "@/billing/billingApi";
 
 interface CreditPackage {
   credits: number;
@@ -338,7 +339,9 @@ export function ApiCreditsSection({ showSuccessMessage = false }: ApiCreditsSect
           </Button>
         </div>
 
-        <p className="text-xs text-muted-foreground mt-3">Minimum purchase: 10,000 credits ($10)</p>
+        <p className="text-xs text-muted-foreground mt-3">
+          Minimum purchase: {MIN_PURCHASE_CREDITS.toLocaleString()} credits (${MIN_PURCHASE_AMOUNT})
+        </p>
       </Card>
     </div>
   );

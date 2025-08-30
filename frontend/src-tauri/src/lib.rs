@@ -40,14 +40,14 @@ pub fn run() {
                 tauri::async_runtime::spawn(async move {
                     // Small delay to ensure app is fully initialized
                     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-                    
+
                     // Create a new State wrapper for the async context
                     if let Err(e) = proxy::init_proxy_on_startup_simple(app_handle_proxy).await {
                         log::error!("Failed to initialize proxy: {}", e);
                     }
                 });
             }
-            
+
             // Set up the deep link handler
             // Use a cloned handle with 'static lifetime
             let app_handle = app.handle().clone();

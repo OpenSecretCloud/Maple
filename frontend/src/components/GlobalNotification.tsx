@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { CheckCircle, AlertCircle, X, Server } from "lucide-react";
 import { cn } from "@/utils/utils";
 
@@ -19,10 +19,11 @@ interface GlobalNotificationProps {
 export function GlobalNotification({ notification, onDismiss }: GlobalNotificationProps) {
   const [isVisible, setIsVisible] = useState(false);
   const [isLeaving, setIsLeaving] = useState(false);
+  const dismissTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const handleDismiss = useCallback(() => {
     setIsLeaving(true);
-    setTimeout(() => {
+    dismissTimeoutRef.current = setTimeout(() => {
       setIsVisible(false);
       onDismiss();
     }, 200); // Match animation duration
@@ -45,6 +46,15 @@ export function GlobalNotification({ notification, onDismiss }: GlobalNotificati
       setIsVisible(false);
     }
   }, [notification, handleDismiss]);
+
+  // Cleanup dismiss timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (dismissTimeoutRef.current) {
+        clearTimeout(dismissTimeoutRef.current);
+      }
+    };
+  }, []);
 
   if (!notification || !isVisible) return null;
 

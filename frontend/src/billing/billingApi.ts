@@ -1,3 +1,8 @@
+// API Credit Purchase Constants
+export const MIN_PURCHASE_CREDITS = 10000;
+export const MIN_PURCHASE_AMOUNT = 10;
+export const MIN_PURCHASE_ERROR = `Minimum purchase is ${MIN_PURCHASE_CREDITS.toLocaleString()} credits ($${MIN_PURCHASE_AMOUNT})`;
+
 export type BillingStatus = {
   is_subscribed: boolean;
   stripe_customer_id: string | null;
@@ -714,7 +719,7 @@ export async function purchaseApiCredits(
       throw new Error("Unauthorized");
     }
     if (response.status === 400) {
-      throw new Error("Minimum purchase is 10,000 credits ($10)");
+      throw new Error(MIN_PURCHASE_ERROR);
     }
     throw new Error(`Failed to create checkout session: ${errorText}`);
   }
@@ -745,7 +750,7 @@ export async function purchaseApiCreditsZaprite(
       throw new Error("Unauthorized");
     }
     if (response.status === 400) {
-      throw new Error("Minimum purchase is 10,000 credits ($10)");
+      throw new Error(MIN_PURCHASE_ERROR);
     }
     throw new Error(`Failed to create Zaprite checkout: ${errorText}`);
   }

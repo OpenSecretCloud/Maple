@@ -7,10 +7,13 @@ export function ProxyEventListener() {
   const { showNotification } = useNotification();
 
   useEffect(() => {
+    let unlistenAutoStarted: (() => void) | null = null;
+    let unlistenAutoStartFailed: (() => void) | null = null;
+
     const setupListeners = async () => {
       try {
         // Listen for proxy auto-start success
-        const unlistenAutoStarted = await listen("proxy-autostarted", (event) => {
+        unlistenAutoStarted = await listen("proxy-autostarted", (event) => {
           const config = event.payload as { host: string; port: number };
           showNotification({
             type: "success",
@@ -22,7 +25,7 @@ export function ProxyEventListener() {
         });
 
         // Listen for proxy auto-start failure
-        const unlistenAutoStartFailed = await listen("proxy-autostart-failed", (event) => {
+        unlistenAutoStartFailed = await listen("proxy-autostart-failed", (event) => {
           const error = event.payload as string;
           showNotification({
             type: "error",
@@ -31,18 +34,18 @@ export function ProxyEventListener() {
             duration: 7000
           });
         });
-
-        // Cleanup listeners on unmount
-        return () => {
-          unlistenAutoStarted();
-          unlistenAutoStartFailed();
-        };
       } catch (error) {
         console.error("Failed to setup proxy event listeners:", error);
       }
     };
 
     setupListeners();
+
+    // Cleanup listeners on unmount
+    return () => {
+      if (unlistenAutoStarted) unlistenAutoStarted();
+      if (unlistenAutoStartFailed) unlistenAutoStartFailed();
+    };
   }, [showNotification]);
 
   return null; // This component doesn't render anything

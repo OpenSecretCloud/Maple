@@ -89,6 +89,17 @@ export function ProxyConfigSection({ apiKeys, onRequestNewApiKey }: ProxyConfigS
         }
       }
 
+      // Validate port range (1-65535)
+      const port = Number(config.port);
+      if (!Number.isInteger(port) || port < 1 || port > 65535) {
+        setMessage({
+          type: "error",
+          text: `Invalid port: ${config.port}. Port must be between 1 and 65535.`
+        });
+        setIsLoading(false);
+        return;
+      }
+
       // Get the backend URL from environment
       const backendUrl = import.meta.env.VITE_OPEN_SECRET_API_URL || "https://enclave.trymaple.ai";
 
@@ -216,10 +227,7 @@ export function ProxyConfigSection({ apiKeys, onRequestNewApiKey }: ProxyConfigS
         {config.api_key && (
           <div>
             <Label className="text-xs">API Key Status</Label>
-            <p className="text-xs text-muted-foreground mt-1">
-              Using dedicated API key: maple-desktop-
-              {new Date().toISOString().split("T")[0].replace(/-/g, "")}
-            </p>
+            <p className="text-xs text-muted-foreground mt-1">API key configured</p>
           </div>
         )}
 
