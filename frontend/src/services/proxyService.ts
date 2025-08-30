@@ -17,8 +17,15 @@ export interface ProxyStatus {
 }
 
 class ProxyService {
+  private validatePort(port: number): void {
+    if (!Number.isInteger(port) || port < 0 || port > 65535) {
+      throw new Error(`Port must be a valid u16 integer (0-65535), got: ${port}`);
+    }
+  }
+
   async startProxy(config: ProxyConfig): Promise<ProxyStatus> {
     try {
+      this.validatePort(config.port);
       return await invoke<ProxyStatus>("start_proxy", { config });
     } catch (error) {
       console.error("Failed to start proxy:", error);
@@ -61,6 +68,7 @@ class ProxyService {
 
   async saveProxySettings(config: ProxyConfig): Promise<void> {
     try {
+      this.validatePort(config.port);
       await invoke("save_proxy_settings", { config });
     } catch (error) {
       console.error("Failed to save proxy settings:", error);
@@ -70,6 +78,7 @@ class ProxyService {
 
   async testProxyPort(host: string, port: number): Promise<boolean> {
     try {
+      this.validatePort(port);
       return await invoke<boolean>("test_proxy_port", { host, port });
     } catch (error) {
       console.error("Failed to test proxy port:", error);

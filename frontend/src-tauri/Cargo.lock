@@ -2731,9 +2731,9 @@ dependencies = [
 
 [[package]]
 name = "maple-proxy"
-version = "0.1.0"
+version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a5e5225d0c95f28063190e734d48922e984e2abef9ad2de41db6f155941bafee"
+checksum = "d0730b3b84047f8cfbe04ccf0f8aef4f8124c847926871f147f121c80add6041"
 dependencies = [
  "anyhow",
  "async-stream",
