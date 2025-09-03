@@ -6,7 +6,8 @@ import {
   ArrowUpCircle,
   Mail,
   Users,
-  AlertCircle
+  AlertCircle,
+  Key
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -41,9 +42,10 @@ import { useLocalState } from "@/state/useLocalState";
 import { useQueryClient, useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { getBillingService } from "@/billing/billingService";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import type { TeamStatus } from "@/types/team";
 import { TeamManagementDialog } from "@/components/team/TeamManagementDialog";
+import { ApiKeyManagementDialog } from "@/components/apikeys/ApiKeyManagementDialog";
 
 function ConfirmDeleteDialog() {
   const { clearHistory } = useLocalState();
@@ -82,6 +84,8 @@ export function AccountMenu() {
   const { billingStatus } = useLocalState();
   const [isPortalLoading, setIsPortalLoading] = useState(false);
   const [isTeamDialogOpen, setIsTeamDialogOpen] = useState(false);
+  const [isApiKeyDialogOpen, setIsApiKeyDialogOpen] = useState(false);
+  const [isIOS, setIsIOS] = useState(false);
 
   const hasStripeAccount = billingStatus?.stripe_customer_id !== null;
   const productName = billingStatus?.product_name || "";
@@ -91,6 +95,29 @@ export function AccountMenu() {
   const isTeamPlan = productName.toLowerCase().includes("team");
   const showUpgrade = !isMax && !isTeamPlan;
   const showManage = (isPro || isMax || isStarter || isTeamPlan) && hasStripeAccount;
+
+  // Detect iOS platform
+  useEffect(() => {
+    const detectPlatform = async () => {
+      try {
+        const isTauri = await import("@tauri-apps/api/core")
+          .then((m) => m.isTauri())
+          .catch(() => false);
+
+        if (isTauri) {
+          const platform = await import("@tauri-apps/plugin-os")
+            .then((m) => m.type())
+            .catch(() => null);
+
+          setIsIOS(platform === "ios");
+        }
+      } catch (error) {
+        console.error("Error detecting platform:", error);
+      }
+    };
+
+    detectPlatform();
+  }, []);
 
   // Fetch team status if user has team plan
   const { data: teamStatus } = useQuery<TeamStatus>({
@@ -246,6 +273,12 @@ export function AccountMenu() {
                   </div>
                 </DropdownMenuItem>
               )}
+              {!isIOS && (
+                <DropdownMenuItem onClick={() => setIsApiKeyDialogOpen(true)}>
+                  <Key className="mr-2 h-4 w-4" />
+                  <span>API Management</span>
+                </DropdownMenuItem>
+              )}
               <DropdownMenuItem asChild>
                 <a href="mailto:support@opensecret.cloud">
                   <Mail className="mr-2 h-4 w-4" />
@@ -272,6 +305,7 @@ export function AccountMenu() {
             onOpenChange={setIsTeamDialogOpen}
             teamStatus={teamStatus}
           />
+          <ApiKeyManagementDialog open={isApiKeyDialogOpen} onOpenChange={setIsApiKeyDialogOpen} />
         </DropdownMenu>
       </Dialog>
     </AlertDialog>

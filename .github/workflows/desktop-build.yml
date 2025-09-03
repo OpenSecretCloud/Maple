@@ -73,8 +73,8 @@ jobs:
           APPLE_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_SIGNING_IDENTITY: ${{ env.CERT_ID }}
-          VITE_OPEN_SECRET_API_URL: https://enclave.trymaple.ai
-          VITE_MAPLE_BILLING_API_URL: https://billing.opensecret.cloud
+          VITE_OPEN_SECRET_API_URL: ${{ github.event_name == 'pull_request' && 'https://enclave.secretgpt.ai' || 'https://enclave.trymaple.ai' }}
+          VITE_MAPLE_BILLING_API_URL: ${{ github.event_name == 'pull_request' && 'https://billing-dev.opensecret.cloud' || 'https://billing.opensecret.cloud' }}
           VITE_CLIENT_ID: ba5a14b5-d915-47b1-b7b1-afda52bc5fc6
         with:
           projectPath: './frontend'
@@ -136,8 +136,8 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          VITE_OPEN_SECRET_API_URL: https://enclave.trymaple.ai
-          VITE_MAPLE_BILLING_API_URL: https://billing.opensecret.cloud
+          VITE_OPEN_SECRET_API_URL: ${{ github.event_name == 'pull_request' && 'https://enclave.secretgpt.ai' || 'https://enclave.trymaple.ai' }}
+          VITE_MAPLE_BILLING_API_URL: ${{ github.event_name == 'pull_request' && 'https://billing-dev.opensecret.cloud' || 'https://billing.opensecret.cloud' }}
           VITE_CLIENT_ID: ba5a14b5-d915-47b1-b7b1-afda52bc5fc6
 
       - name: Upload Linux Builds

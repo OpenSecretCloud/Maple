@@ -1,3 +1,8 @@
+// API Credit Purchase Constants
+export const MIN_PURCHASE_CREDITS = 10000;
+export const MIN_PURCHASE_AMOUNT = 10;
+export const MIN_PURCHASE_ERROR = `Minimum purchase is ${MIN_PURCHASE_CREDITS.toLocaleString()} credits ($${MIN_PURCHASE_AMOUNT})`;
+
 export type BillingStatus = {
   is_subscribed: boolean;
   stripe_customer_id: string | null;
@@ -598,6 +603,184 @@ export async function updateTeamName(
       }
     }
     throw new Error(`Failed to update team name: ${errorText}`);
+  }
+
+  return response.json();
+}
+
+// API Credits Types
+export type ApiCreditBalance = {
+  balance: number;
+  auto_topup_enabled: boolean;
+  auto_topup_threshold: number;
+  auto_topup_amount: number;
+};
+
+export type ApiCreditSettings = {
+  user_id: string;
+  auto_topup_enabled: boolean;
+  auto_topup_threshold: number;
+  auto_topup_amount: number;
+  stripe_customer_id: string | null;
+  stripe_payment_method_id: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type PurchaseCreditsRequest = {
+  credits: number;
+  success_url: string;
+  cancel_url: string;
+};
+
+export type PurchaseCreditsZapriteRequest = {
+  credits: number;
+  email: string;
+  success_url: string;
+};
+
+export type CheckoutResponse = {
+  checkout_url: string;
+};
+
+export type UpdateCreditSettingsRequest = {
+  auto_topup_enabled?: boolean;
+  auto_topup_threshold?: number;
+  auto_topup_amount?: number;
+};
+
+// API Credits Endpoints
+export async function fetchApiCreditBalance(thirdPartyToken: string): Promise<ApiCreditBalance> {
+  const response = await fetch(
+    `${import.meta.env.VITE_MAPLE_BILLING_API_URL}/v1/maple/api-credits/balance`,
+    {
+      headers: {
+        Authorization: `Bearer ${thirdPartyToken}`,
+        "Content-Type": "application/json"
+      }
+    }
+  );
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error("Fetch credit balance error:", errorText);
+    if (response.status === 401) {
+      throw new Error("Unauthorized");
+    }
+    throw new Error(`Failed to fetch credit balance: ${errorText}`);
+  }
+
+  return response.json();
+}
+
+export async function fetchApiCreditSettings(thirdPartyToken: string): Promise<ApiCreditSettings> {
+  const response = await fetch(
+    `${import.meta.env.VITE_MAPLE_BILLING_API_URL}/v1/maple/api-credits/settings`,
+    {
+      headers: {
+        Authorization: `Bearer ${thirdPartyToken}`,
+        "Content-Type": "application/json"
+      }
+    }
+  );
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error("Fetch credit settings error:", errorText);
+    if (response.status === 401) {
+      throw new Error("Unauthorized");
+    }
+    throw new Error(`Failed to fetch credit settings: ${errorText}`);
+  }
+
+  return response.json();
+}
+
+export async function purchaseApiCredits(
+  thirdPartyToken: string,
+  data: PurchaseCreditsRequest
+): Promise<CheckoutResponse> {
+  const response = await fetch(
+    `${import.meta.env.VITE_MAPLE_BILLING_API_URL}/v1/maple/api-credits/purchase`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${thirdPartyToken}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(data)
+    }
+  );
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error("Purchase credits error:", errorText);
+    if (response.status === 401) {
+      throw new Error("Unauthorized");
+    }
+    if (response.status === 400) {
+      throw new Error(MIN_PURCHASE_ERROR);
+    }
+    throw new Error(`Failed to create checkout session: ${errorText}`);
+  }
+
+  return response.json();
+}
+
+export async function purchaseApiCreditsZaprite(
+  thirdPartyToken: string,
+  data: PurchaseCreditsZapriteRequest
+): Promise<CheckoutResponse> {
+  const response = await fetch(
+    `${import.meta.env.VITE_MAPLE_BILLING_API_URL}/v1/maple/api-credits/purchase-zaprite`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${thirdPartyToken}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(data)
+    }
+  );
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error("Purchase credits with Zaprite error:", errorText);
+    if (response.status === 401) {
+      throw new Error("Unauthorized");
+    }
+    if (response.status === 400) {
+      throw new Error(MIN_PURCHASE_ERROR);
+    }
+    throw new Error(`Failed to create Zaprite checkout: ${errorText}`);
+  }
+
+  return response.json();
+}
+
+export async function updateApiCreditSettings(
+  thirdPartyToken: string,
+  data: UpdateCreditSettingsRequest
+): Promise<ApiCreditSettings> {
+  const response = await fetch(
+    `${import.meta.env.VITE_MAPLE_BILLING_API_URL}/v1/maple/api-credits/settings`,
+    {
+      method: "PUT",
+      headers: {
+        Authorization: `Bearer ${thirdPartyToken}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(data)
+    }
+  );
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error("Update credit settings error:", errorText);
+    if (response.status === 401) {
+      throw new Error("Unauthorized");
+    }
+    throw new Error(`Failed to update credit settings: ${errorText}`);
   }
 
   return response.json();
