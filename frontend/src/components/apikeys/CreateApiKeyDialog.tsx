@@ -197,10 +197,17 @@ export function CreateApiKeyDialog({ open, onOpenChange, onKeyCreated }: CreateA
               </div>
 
               <div className="text-xs text-muted-foreground space-y-1">
-                <p>Use this key to authenticate with the Maple API:</p>
-                <code className="block bg-muted p-2 rounded text-xs">
-                  Authorization: Bearer {"{your-api-key}"}
-                </code>
+                <p>
+                  Use this key to authenticate with the Maple API.{" "}
+                  <a
+                    href="https://blog.trymaple.ai/maple-proxy-documentation/"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-primary underline hover:no-underline"
+                  >
+                    Read here
+                  </a>
+                </p>
               </div>
             </div>
 
