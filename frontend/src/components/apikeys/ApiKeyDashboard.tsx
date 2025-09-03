@@ -200,7 +200,15 @@ export function ApiKeyDashboard({ showCreditSuccessMessage = false }: ApiKeyDash
       <DialogHeader>
         <DialogTitle className="text-base">API Access</DialogTitle>
         <DialogDescription>
-          Manage API keys and configure access to Maple services.
+          Manage API keys and configure access to Maple services.{" "}
+          <a
+            href="https://blog.trymaple.ai/maple-proxy-documentation/"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-primary underline hover:no-underline"
+          >
+            Read more
+          </a>
         </DialogDescription>
       </DialogHeader>
 
