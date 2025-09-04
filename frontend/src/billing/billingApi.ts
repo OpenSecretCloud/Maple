@@ -629,6 +629,7 @@ export type ApiCreditSettings = {
 
 export type PurchaseCreditsRequest = {
   credits: number;
+  email: string;
   success_url: string;
   cancel_url: string;
 };
