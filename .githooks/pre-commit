@@ -6,11 +6,6 @@ echo "Running pre-commit hook..."
 REPO_ROOT=$(git rev-parse --show-toplevel)
 cd "$REPO_ROOT/frontend" || exit 1
 
-# Check if bun is installed
-if ! command -v bun &> /dev/null; then
-    echo "Error: bun is not installed. Please install bun before committing."
-    exit 1
-fi
 
 # Run prettier check
 echo "Checking code formatting with Prettier..."
