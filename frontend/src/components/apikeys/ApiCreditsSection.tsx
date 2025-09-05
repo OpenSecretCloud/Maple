@@ -132,6 +132,7 @@ export function ApiCreditsSection({ showSuccessMessage = false }: ApiCreditsSect
       if (method === "stripe") {
         const response = await billingService.purchaseApiCredits({
           credits: finalPackage.credits,
+          email: userEmail || "",
           success_url: successUrl,
           cancel_url: cancelUrl || successUrl
         });
