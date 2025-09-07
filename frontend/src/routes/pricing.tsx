@@ -350,8 +350,8 @@ function PricingPage() {
         return;
       }
 
-      // Check if email is verified before proceeding to checkout
-      if (!os.auth.user?.user.email_verified) {
+      // Check if email is verified before proceeding to checkout (skip in dev mode)
+      if (!import.meta.env.DEV && !os.auth.user?.user.email_verified) {
         console.log("Email verification required before checkout");
         return;
       }
