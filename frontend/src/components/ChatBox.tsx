@@ -1,13 +1,8 @@
-import { CornerRightUp, Bot, Image, X, FileText, Loader2, Plus, Mic } from "lucide-react";
+import { CornerRightUp, Bot, Image, X, FileText, Loader2, Mic } from "lucide-react";
 import RecordRTC from "recordrtc";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger
-} from "@/components/ui/dropdown-menu";
+import { UpgradePromptDialog } from "@/components/UpgradePromptDialog";
 import { useEffect, useRef, useState, useMemo } from "react";
 import { useLocalState } from "@/state/useLocalState";
 import { cn, useIsMobile } from "@/utils/utils";
@@ -243,8 +238,9 @@ export default function Component({
   const [imageError, setImageError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const documentInputRef = useRef<HTMLInputElement>(null);
+  const [upgradeDialogOpen, setUpgradeDialogOpen] = useState(false);
+  const [upgradeFeature, setUpgradeFeature] = useState<"image" | "voice">("image");
   const os = useOpenSecret();
-  const navigate = useNavigate();
 
   // Audio recording state
   const [isRecording, setIsRecording] = useState(false);
@@ -596,7 +592,16 @@ export default function Component({
       freshBillingStatus.product_name?.toLowerCase().includes("max") ||
       freshBillingStatus.product_name?.toLowerCase().includes("team"));
 
-  const canUseDocuments = hasProTeamAccess;
+  // Check if user has access to Starter features (Starter plan and above)
+  const hasStarterAccess =
+    freshBillingStatus &&
+    (freshBillingStatus.product_name?.toLowerCase().includes("starter") ||
+      freshBillingStatus.product_name?.toLowerCase().includes("pro") ||
+      freshBillingStatus.product_name?.toLowerCase().includes("max") ||
+      freshBillingStatus.product_name?.toLowerCase().includes("team"));
+
+  const canUseImages = hasStarterAccess;
+  const canUseVoice = hasProTeamAccess;
 
   const handleSubmit = (e?: React.FormEvent) => {
     e?.preventDefault();
@@ -986,14 +991,51 @@ export default function Component({
             className="hidden"
           />
 
-          {/* Microphone button - only show if whisper model is available */}
+          {/* Image upload button - show for all users */}
+          {!uploadedDocument && (
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              className={cn("ml-2", !canUseImages && "opacity-50")}
+              onClick={() => {
+                if (!canUseImages) {
+                  setUpgradeFeature("image");
+                  setUpgradeDialogOpen(true);
+                } else {
+                  // If not on a vision model, switch to one first
+                  if (!supportsVision) {
+                    const visionModelId = findFirstVisionModel();
+                    if (visionModelId) {
+                      setModel(visionModelId);
+                    }
+                  }
+                  fileInputRef.current?.click();
+                }
+              }}
+              disabled={isInputDisabled}
+              aria-label="Upload images"
+              data-testid="image-upload-button"
+            >
+              <Image className="h-4 w-4" />
+            </Button>
+          )}
+
+          {/* Microphone button - show if whisper model is available */}
           {hasWhisperModel && (
             <Button
               type="button"
               size="sm"
               variant="ghost"
-              className="ml-2"
-              onClick={toggleRecording}
+              className={cn("ml-2", !canUseVoice && "opacity-50")}
+              onClick={() => {
+                if (!canUseVoice) {
+                  setUpgradeFeature("voice");
+                  setUpgradeDialogOpen(true);
+                } else {
+                  toggleRecording();
+                }
+              }}
               disabled={isTranscribing || isInputDisabled}
               aria-label={isRecording ? "Stop recording" : "Start recording"}
               data-testid="mic-button"
@@ -1006,83 +1048,6 @@ export default function Component({
                 <Mic className="h-4 w-4" />
               )}
             </Button>
-          )}
-
-          {/* Consolidated upload button - show for all users */}
-          {!uploadedDocument && (
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="ghost"
-                  className="ml-2"
-                  aria-label="Upload files"
-                  data-testid="file-upload-button"
-                >
-                  <Plus className="h-4 w-4" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent
-                align="start"
-                className={cn(hasProTeamAccess && canUseDocuments ? "w-44" : "w-56")}
-              >
-                <DropdownMenuItem
-                  onClick={() => {
-                    if (!hasProTeamAccess) {
-                      navigate({ to: "/pricing" });
-                    } else {
-                      // If not on a vision model, switch to one first
-                      if (!supportsVision) {
-                        const visionModelId = findFirstVisionModel();
-                        if (visionModelId) {
-                          setModel(visionModelId);
-                        }
-                      }
-                      fileInputRef.current?.click();
-                    }
-                  }}
-                  className={cn(
-                    "flex items-center gap-2 group",
-                    !hasProTeamAccess && "hover:bg-purple-50 dark:hover:bg-purple-950/20"
-                  )}
-                >
-                  <Image className="h-4 w-4 shrink-0" />
-                  <span>Upload Images</span>
-                  {!hasProTeamAccess && (
-                    <>
-                      <span className="ml-auto text-[10px] px-1.5 py-0.5 rounded-sm font-medium bg-gradient-to-r from-purple-500/10 to-blue-500/10 text-purple-600 dark:text-purple-400">
-                        Pro
-                      </span>
-                      <span className="text-[10px] text-purple-600 dark:text-purple-400 opacity-0 group-hover:opacity-100 transition-opacity">
-                        Upgrade?
-                      </span>
-                    </>
-                  )}
-                </DropdownMenuItem>
-                {/* Document upload temporarily removed - will be re-added later
-                <DropdownMenuItem
-                  onClick={(e) => {
-                    e.preventDefault();
-                    // Temporarily disabled - remove this condition when re-enabling
-                    // if (!canUseDocuments) {
-                    //   navigate({ to: "/pricing" });
-                    // } else {
-                    //   documentInputRef.current?.click();
-                    // }
-                  }}
-                  className={cn("flex items-center gap-2 cursor-not-allowed opacity-50")}
-                  disabled
-                >
-                  <FileText className="h-4 w-4 shrink-0" />
-                  <div className="flex flex-col">
-                    <span>Upload Document</span>
-                    <span className="text-xs text-muted-foreground">Temporarily Unavailable</span>
-                  </div>
-                </DropdownMenuItem>
-                */}
-              </DropdownMenuContent>
-            </DropdownMenu>
           )}
 
           <Button
@@ -1098,6 +1063,13 @@ export default function Component({
           </Button>
         </div>
       </form>
+
+      {/* Upgrade prompt dialog */}
+      <UpgradePromptDialog
+        open={upgradeDialogOpen}
+        onOpenChange={setUpgradeDialogOpen}
+        feature={upgradeFeature}
+      />
     </div>
   );
 }

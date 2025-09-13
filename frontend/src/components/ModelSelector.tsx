@@ -8,9 +8,9 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useLocalState } from "@/state/useLocalState";
 import { useOpenSecret } from "@opensecret/react";
-import { useEffect, useRef } from "react";
-import { useNavigate } from "@tanstack/react-router";
+import { useEffect, useRef, useState } from "react";
 import type { Model } from "openai/resources/models.js";
+import { UpgradePromptDialog } from "@/components/UpgradePromptDialog";
 
 // Model configuration for display names, badges, and token limits
 type ModelCfg = {
@@ -98,10 +98,11 @@ export function ModelSelector({
     setHasWhisperModel
   } = useLocalState();
   const os = useOpenSecret();
-  const navigate = useNavigate();
   const isFetching = useRef(false);
   const hasFetched = useRef(false);
   const availableModelsRef = useRef(availableModels);
+  const [upgradeDialogOpen, setUpgradeDialogOpen] = useState(false);
+  const [selectedModelName, setSelectedModelName] = useState<string>("");
 
   // Check if chat contains any images or if there are draft images
   const chatHasImages =
@@ -283,99 +284,105 @@ export function ModelSelector({
   // Always show dropdown even with single model (it may be loading more)
 
   return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button
-          variant="ghost"
-          size="sm"
-          className="h-8 gap-1 px-2"
-          data-testid="model-selector-button"
-          aria-label={`Current model: ${MODEL_CONFIG[model]?.displayName || model}. Click to change model.`}
-        >
-          {modelDisplay}
-          <ChevronDown className="h-3 w-3 opacity-50" />
-        </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="w-72">
-        {availableModels &&
-          Array.isArray(availableModels) &&
-          // Sort models: vision-capable first (if images present), then available, then restricted, then disabled
-          [...availableModels]
-            .sort((a, b) => {
-              const aConfig = MODEL_CONFIG[a.id];
-              const bConfig = MODEL_CONFIG[b.id];
+    <>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-8 gap-1 px-2"
+            data-testid="model-selector-button"
+            aria-label={`Current model: ${MODEL_CONFIG[model]?.displayName || model}. Click to change model.`}
+          >
+            {modelDisplay}
+            <ChevronDown className="h-3 w-3 opacity-50" />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start" className="w-72">
+          {availableModels &&
+            Array.isArray(availableModels) &&
+            // Sort models: vision-capable first (if images present), then available, then restricted, then disabled
+            [...availableModels]
+              .sort((a, b) => {
+                const aConfig = MODEL_CONFIG[a.id];
+                const bConfig = MODEL_CONFIG[b.id];
 
-              // If chat has images, prioritize vision models
-              if (chatHasImages) {
-                const aHasVision = aConfig?.supportsVision || false;
-                const bHasVision = bConfig?.supportsVision || false;
-                if (aHasVision && !bHasVision) return -1;
-                if (!aHasVision && bHasVision) return 1;
-              }
+                // If chat has images, prioritize vision models
+                if (chatHasImages) {
+                  const aHasVision = aConfig?.supportsVision || false;
+                  const bHasVision = bConfig?.supportsVision || false;
+                  if (aHasVision && !bHasVision) return -1;
+                  if (!aHasVision && bHasVision) return 1;
+                }
 
-              // Unknown models are treated as disabled
-              const aDisabled = aConfig?.disabled || !aConfig;
-              const bDisabled = bConfig?.disabled || !bConfig;
-              const aRestricted =
-                (aConfig?.requiresPro || aConfig?.requiresStarter || false) &&
-                !hasAccessToModel(a.id);
-              const bRestricted =
-                (bConfig?.requiresPro || bConfig?.requiresStarter || false) &&
-                !hasAccessToModel(b.id);
+                // Unknown models are treated as disabled
+                const aDisabled = aConfig?.disabled || !aConfig;
+                const bDisabled = bConfig?.disabled || !bConfig;
+                const aRestricted =
+                  (aConfig?.requiresPro || aConfig?.requiresStarter || false) &&
+                  !hasAccessToModel(a.id);
+                const bRestricted =
+                  (bConfig?.requiresPro || bConfig?.requiresStarter || false) &&
+                  !hasAccessToModel(b.id);
 
-              // Disabled models go last
-              if (aDisabled && !bDisabled) return 1;
-              if (!aDisabled && bDisabled) return -1;
+                // Disabled models go last
+                if (aDisabled && !bDisabled) return 1;
+                if (!aDisabled && bDisabled) return -1;
 
-              // Restricted models go after available but before disabled
-              if (aRestricted && !bRestricted) return 1;
-              if (!aRestricted && bRestricted) return -1;
+                // Restricted models go after available but before disabled
+                if (aRestricted && !bRestricted) return 1;
+                if (!aRestricted && bRestricted) return -1;
 
-              return 0;
-            })
-            .map((availableModel) => {
-              const config = MODEL_CONFIG[availableModel.id];
-              // Unknown models are treated as disabled
-              const isDisabled = config?.disabled || !config;
-              const requiresPro = config?.requiresPro || false;
-              const requiresStarter = config?.requiresStarter || false;
-              const hasAccess = hasAccessToModel(availableModel.id);
-              const isRestricted = (requiresPro || requiresStarter) && !hasAccess;
+                return 0;
+              })
+              .map((availableModel) => {
+                const config = MODEL_CONFIG[availableModel.id];
+                // Unknown models are treated as disabled
+                const isDisabled = config?.disabled || !config;
+                const requiresPro = config?.requiresPro || false;
+                const requiresStarter = config?.requiresStarter || false;
+                const hasAccess = hasAccessToModel(availableModel.id);
+                const isRestricted = (requiresPro || requiresStarter) && !hasAccess;
 
-              // Disable non-vision models if chat has images
-              const isDisabledDueToImages = chatHasImages && !config?.supportsVision;
-              const effectivelyDisabled = isDisabled || isDisabledDueToImages;
+                // Disable non-vision models if chat has images
+                const isDisabledDueToImages = chatHasImages && !config?.supportsVision;
+                const effectivelyDisabled = isDisabled || isDisabledDueToImages;
 
-              return (
-                <DropdownMenuItem
-                  key={availableModel.id}
-                  onClick={() => {
-                    if (effectivelyDisabled) return;
-                    if (isRestricted) {
-                      // Navigate to pricing page for upgrade
-                      navigate({ to: "/pricing" });
-                    } else {
-                      setModel(availableModel.id);
-                    }
-                  }}
-                  className={`flex items-center justify-between group ${
-                    effectivelyDisabled ? "opacity-50 cursor-not-allowed" : ""
-                  } ${isRestricted ? "hover:bg-purple-50 dark:hover:bg-purple-950/20" : ""}`}
-                  disabled={effectivelyDisabled}
-                >
-                  <div className="flex items-center gap-2 flex-1">
-                    <div className="text-sm">{getDisplayName(availableModel.id, true)}</div>
-                    {isRestricted && !isDisabledDueToImages && (
-                      <span className="text-[10px] text-purple-600 dark:text-purple-400 opacity-0 group-hover:opacity-100 transition-opacity">
-                        Upgrade?
-                      </span>
-                    )}
-                  </div>
-                  {model === availableModel.id && <Check className="h-4 w-4" />}
-                </DropdownMenuItem>
-              );
-            })}
-      </DropdownMenuContent>
-    </DropdownMenu>
+                return (
+                  <DropdownMenuItem
+                    key={availableModel.id}
+                    onClick={() => {
+                      if (effectivelyDisabled) return;
+                      if (isRestricted) {
+                        // Show upgrade dialog for restricted model
+                        const modelConfig = MODEL_CONFIG[availableModel.id];
+                        setSelectedModelName(modelConfig?.displayName || availableModel.id);
+                        setUpgradeDialogOpen(true);
+                      } else {
+                        setModel(availableModel.id);
+                      }
+                    }}
+                    className={`flex items-center justify-between group ${
+                      effectivelyDisabled ? "opacity-50 cursor-not-allowed" : ""
+                    } ${isRestricted ? "hover:bg-purple-50 dark:hover:bg-purple-950/20" : ""}`}
+                    disabled={effectivelyDisabled}
+                  >
+                    <div className="flex items-center gap-2 flex-1">
+                      <div className="text-sm">{getDisplayName(availableModel.id, true)}</div>
+                    </div>
+                    {model === availableModel.id && <Check className="h-4 w-4" />}
+                  </DropdownMenuItem>
+                );
+              })}
+        </DropdownMenuContent>
+      </DropdownMenu>
+
+      <UpgradePromptDialog
+        open={upgradeDialogOpen}
+        onOpenChange={setUpgradeDialogOpen}
+        feature="model"
+        modelName={selectedModelName}
+      />
+    </>
   );
 }

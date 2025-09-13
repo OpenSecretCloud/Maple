@@ -16,6 +16,10 @@ import { useOpenAI } from "@/ai/useOpenAi";
 import { useLocalState } from "@/state/useLocalState";
 import { Markdown, stripThinkingTags } from "@/components/markdown";
 import { ChatMessage, DEFAULT_MODEL_ID } from "@/state/LocalStateContext";
+import { UpgradePromptDialog } from "@/components/UpgradePromptDialog";
+import { useQuery } from "@tanstack/react-query";
+import { getBillingService } from "@/billing/billingService";
+import { cn } from "@/utils/utils";
 import { Sidebar, SidebarToggle } from "@/components/Sidebar";
 import { useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
@@ -82,10 +86,38 @@ function SystemMessage({
   const textWithoutThinking = stripThinkingTags(text);
   const { isCopied, handleCopy } = useCopyToClipboard(textWithoutThinking);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [upgradeDialogOpen, setUpgradeDialogOpen] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const openai = useOpenAI();
+  const { setBillingStatus } = useLocalState();
+
+  // Fetch billing status to check if user has Pro/Team/Max access
+  const { data: billingStatus } = useQuery({
+    queryKey: ["billingStatus"],
+    queryFn: async () => {
+      const billingService = getBillingService();
+      const status = await billingService.getBillingStatus();
+      setBillingStatus(status);
+      return status;
+    }
+  });
+
+  // Check if user has Pro/Team/Max access for TTS
+  const hasProTeamAccess =
+    billingStatus &&
+    (billingStatus.product_name?.toLowerCase().includes("pro") ||
+      billingStatus.product_name?.toLowerCase().includes("max") ||
+      billingStatus.product_name?.toLowerCase().includes("team"));
+
+  const canUseTTS = hasProTeamAccess;
 
   const handleTTS = useCallback(async () => {
+    // Check if user has access
+    if (!canUseTTS) {
+      setUpgradeDialogOpen(true);
+      return;
+    }
+
     if (isPlaying) {
       // Stop playing
       if (audioRef.current) {
@@ -135,7 +167,7 @@ function SystemMessage({
       console.error("TTS error:", error);
       setIsPlaying(false);
     }
-  }, [textWithoutThinking, isPlaying, openai]);
+  }, [textWithoutThinking, isPlaying, openai, canUseTTS]);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -168,7 +200,7 @@ function SystemMessage({
             <Button
               variant="ghost"
               size="sm"
-              className="h-8 w-8 p-0"
+              className={cn("h-8 w-8 p-0", !canUseTTS && "opacity-50")}
               onClick={handleTTS}
               aria-label={isPlaying ? "Stop audio" : "Play audio"}
             >
@@ -177,6 +209,12 @@ function SystemMessage({
           </div>
         </div>
       </div>
+
+      <UpgradePromptDialog
+        open={upgradeDialogOpen}
+        onOpenChange={setUpgradeDialogOpen}
+        feature="tts"
+      />
     </div>
   );
 }
