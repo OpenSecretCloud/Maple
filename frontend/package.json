@@ -16,7 +16,7 @@
     "mdast-util-gfm-autolink-literal": "2.0.0"
   },
   "dependencies": {
-    "@opensecret/react": "1.4.0",
+    "@opensecret/react": "1.4.3",
     "@radix-ui/react-alert-dialog": "^1.1.1",
     "@radix-ui/react-avatar": "^1.1.0",
     "@radix-ui/react-dialog": "^1.1.1",
@@ -42,6 +42,7 @@
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-markdown": "^9.0.1",
+    "recordrtc": "^5.6.2",
     "rehype-highlight": "^7.0.0",
     "rehype-katex": "^7.0.1",
     "rehype-sanitize": "^6.0.0",
@@ -63,6 +64,7 @@
     "@types/node": "^22.3.0",
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
+    "@types/recordrtc": "^5.6.14",
     "@types/uuid": "^10.0.0",
     "@vitejs/plugin-react": "^4.3.1",
     "autoprefixer": "^10.4.20",

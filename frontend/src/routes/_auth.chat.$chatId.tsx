@@ -1,6 +1,16 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { createFileRoute } from "@tanstack/react-router";
-import { AsteriskIcon, Check, Copy, UserIcon, ChevronDown, Bot, SquarePenIcon } from "lucide-react";
+import {
+  AsteriskIcon,
+  Check,
+  Copy,
+  UserIcon,
+  ChevronDown,
+  Bot,
+  SquarePenIcon,
+  Volume2,
+  Square
+} from "lucide-react";
 import ChatBox from "@/components/ChatBox";
 import { useOpenAI } from "@/ai/useOpenAi";
 import { useLocalState } from "@/state/useLocalState";
@@ -71,6 +81,71 @@ function SystemMessage({
 }) {
   const textWithoutThinking = stripThinkingTags(text);
   const { isCopied, handleCopy } = useCopyToClipboard(textWithoutThinking);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const openai = useOpenAI();
+
+  const handleTTS = useCallback(async () => {
+    if (isPlaying) {
+      // Stop playing
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current = null;
+      }
+      setIsPlaying(false);
+      return;
+    }
+
+    try {
+      setIsPlaying(true);
+
+      // Generate speech using OpenAI TTS
+      const response = await openai.audio.speech.create({
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        model: "kokoro" as any,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        voice: "af_sky+af_bella" as any,
+        input: textWithoutThinking,
+        response_format: "mp3"
+      });
+
+      // Convert response to blob and create audio URL
+      const blob = new Blob([await response.arrayBuffer()], { type: "audio/mp3" });
+      const audioUrl = URL.createObjectURL(blob);
+
+      // Create and play audio
+      const audio = new Audio(audioUrl);
+      audioRef.current = audio;
+
+      audio.onended = () => {
+        setIsPlaying(false);
+        URL.revokeObjectURL(audioUrl);
+        audioRef.current = null;
+      };
+
+      audio.onerror = () => {
+        console.error("Error playing audio");
+        setIsPlaying(false);
+        URL.revokeObjectURL(audioUrl);
+        audioRef.current = null;
+      };
+
+      await audio.play();
+    } catch (error) {
+      console.error("TTS error:", error);
+      setIsPlaying(false);
+    }
+  }, [textWithoutThinking, isPlaying, openai]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current = null;
+      }
+    };
+  }, []);
 
   return (
     <div className="group flex flex-col p-4">
@@ -80,15 +155,26 @@ function SystemMessage({
         </div>
         <div className="flex flex-col gap-2">
           <Markdown content={text} loading={loading} chatId={chatId} />
-          <Button
-            variant="ghost"
-            size="sm"
-            className="self-start -mx-2 -mb-2 group-hover:opacity-100 opacity-0 transition-opacity"
-            onClick={handleCopy}
-            aria-label={isCopied ? "Copied" : "Copy to clipboard"}
-          >
-            {isCopied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
-          </Button>
+          <div className="flex gap-2 items-center">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-8 w-8 p-0"
+              onClick={handleCopy}
+              aria-label={isCopied ? "Copied" : "Copy to clipboard"}
+            >
+              {isCopied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-8 w-8 p-0"
+              onClick={handleTTS}
+              aria-label={isPlaying ? "Stop audio" : "Play audio"}
+            >
+              {isPlaying ? <Square className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}
+            </Button>
+          </div>
         </div>
       </div>
     </div>
@@ -145,7 +231,7 @@ function SystemPromptMessage({ text }: { text: string }) {
           <Button
             variant="ghost"
             size="sm"
-            className="self-start -mx-2 -mb-2 group-hover:opacity-100 opacity-0 transition-opacity"
+            className="h-8 w-8 p-0 self-start"
             onClick={handleCopy}
             aria-label={isCopied ? "Copied" : "Copy to clipboard"}
           >
