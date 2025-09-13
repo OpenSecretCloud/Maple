@@ -28,7 +28,7 @@ export const MODEL_CONFIG: Record<string, ModelCfg> = {
     displayName: "Llama 3.3 70B",
     tokenLimit: 70000
   },
-  "llama3-3-70b": {
+  "llama-3.3-70b": {
     displayName: "Llama 3.3 70B",
     tokenLimit: 70000
   },
@@ -89,7 +89,14 @@ export function ModelSelector({
   messages?: ChatMessage[];
   draftImages?: File[];
 }) {
-  const { model, setModel, availableModels, setAvailableModels, billingStatus } = useLocalState();
+  const {
+    model,
+    setModel,
+    availableModels,
+    setAvailableModels,
+    billingStatus,
+    setHasWhisperModel
+  } = useLocalState();
   const os = useOpenSecret();
   const navigate = useNavigate();
   const isFetching = useRef(false);
@@ -116,12 +123,26 @@ export function ModelSelector({
       isFetching.current = true;
       os.fetchModels()
         .then((models) => {
+          // Check if whisper-large-v3 is available before filtering
+          const hasWhisper = models.some((model) => model.id === "whisper-large-v3");
+          setHasWhisperModel(hasWhisper);
+
           // Filter out embedding models and "latest"
           interface ModelWithTasks extends Model {
             tasks?: string[];
           }
           const filteredModels = models.filter((model) => {
             if (model.id === "latest") return false;
+
+            // Filter out whisper models (transcription)
+            if (model.id.toLowerCase().includes("whisper")) {
+              return false;
+            }
+
+            // Filter out qwen3-coder-30b-a3b
+            if (model.id === "qwen3-coder-30b-a3b") {
+              return false;
+            }
 
             // Filter out models with lowercase 'instruct' or 'embed' in their ID
             if (model.id.includes("instruct") || model.id.includes("embed")) {
@@ -137,11 +158,6 @@ export function ModelSelector({
               modelWithTasks.tasks.includes("embed") &&
               !modelWithTasks.tasks.includes("generate")
             ) {
-              return false;
-            }
-
-            // Filter out transcription models like Whisper
-            if (modelWithTasks.tasks.includes("transcribe")) {
               return false;
             }
 
@@ -167,7 +183,7 @@ export function ModelSelector({
           isFetching.current = false;
         });
     }
-  }, [os, setAvailableModels]);
+  }, [os, setAvailableModels, setHasWhisperModel]);
 
   // Check if user has access to a model based on their plan
   const hasAccessToModel = (modelId: string) => {

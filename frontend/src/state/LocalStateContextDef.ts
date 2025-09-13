@@ -41,6 +41,9 @@ export type LocalState = {
   availableModels: OpenSecretModel[];
   setModel: (model: string) => void;
   setAvailableModels: (models: OpenSecretModel[]) => void;
+  /** Whether the whisper transcription model is available */
+  hasWhisperModel: boolean;
+  setHasWhisperModel: (hasWhisper: boolean) => void;
   userPrompt: string;
   systemPrompt: string | null;
   userImages: File[];
@@ -77,6 +80,8 @@ export const LocalStateContext = createContext<LocalState>({
   availableModels: [],
   setModel: () => void 0,
   setAvailableModels: () => void 0,
+  hasWhisperModel: true,
+  setHasWhisperModel: () => void 0,
   userPrompt: "",
   systemPrompt: null,
   userImages: [],

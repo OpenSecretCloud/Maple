@@ -343,7 +343,7 @@ client = OpenAI(
 )
 
 response = client.chat.completions.create(
-  model="llama3-3-70b",
+  model="llama-3.3-70b",
   messages=[{"role": "user", "content": "Hello!"}],
   stream=True
 )
@@ -361,7 +361,7 @@ for chunk in response:
                 <code>{`curl -N http://${config.host}:${config.port}/v1/chat/completions \\
   -H "Content-Type: application/json" \\
   -d '{
-    "model": "llama3-3-70b",
+    "model": "llama-3.3-70b",
     "messages": [{"role": "user", "content": "Hello!"}],
     "stream": true
   }'`}</code>

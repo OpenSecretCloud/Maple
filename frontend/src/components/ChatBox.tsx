@@ -226,7 +226,8 @@ export default function Component({
     clearDraftMessage,
     model,
     setModel,
-    availableModels
+    availableModels,
+    hasWhisperModel
   } = useLocalState();
 
   const supportsVision = MODEL_CONFIG[model]?.supportsVision || false;
@@ -985,25 +986,27 @@ export default function Component({
             className="hidden"
           />
 
-          {/* Microphone button */}
-          <Button
-            type="button"
-            size="sm"
-            variant="ghost"
-            className="ml-2"
-            onClick={toggleRecording}
-            disabled={isTranscribing || isInputDisabled}
-            aria-label={isRecording ? "Stop recording" : "Start recording"}
-            data-testid="mic-button"
-          >
-            {isTranscribing ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : isRecording ? (
-              <Mic className="h-4 w-4 text-orange-500" />
-            ) : (
-              <Mic className="h-4 w-4" />
-            )}
-          </Button>
+          {/* Microphone button - only show if whisper model is available */}
+          {hasWhisperModel && (
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              className="ml-2"
+              onClick={toggleRecording}
+              disabled={isTranscribing || isInputDisabled}
+              aria-label={isRecording ? "Stop recording" : "Start recording"}
+              data-testid="mic-button"
+            >
+              {isTranscribing ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : isRecording ? (
+                <Mic className="h-4 w-4 text-orange-500" />
+              ) : (
+                <Mic className="h-4 w-4" />
+              )}
+            </Button>
+          )}
 
           {/* Consolidated upload button - show for all users */}
           {!uploadedDocument && (
