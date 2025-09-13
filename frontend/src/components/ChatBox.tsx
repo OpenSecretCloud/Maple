@@ -1,4 +1,5 @@
-import { CornerRightUp, Bot, Image, X, FileText, Loader2, Plus } from "lucide-react";
+import { CornerRightUp, Bot, Image, X, FileText, Loader2, Plus, Mic } from "lucide-react";
+import RecordRTC from "recordrtc";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import {
@@ -244,6 +245,12 @@ export default function Component({
   const os = useOpenSecret();
   const navigate = useNavigate();
 
+  // Audio recording state
+  const [isRecording, setIsRecording] = useState(false);
+  const [isTranscribing, setIsTranscribing] = useState(false);
+  const recorderRef = useRef<RecordRTC | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+
   // Find the first vision-capable model the user has access to
   const findFirstVisionModel = () => {
     // Check if user has Pro/Team access
@@ -470,6 +477,83 @@ export default function Component({
   const removeDocument = () => {
     setUploadedDocument(null);
     setDocumentError(null);
+  };
+
+  // Audio recording functions
+  const startRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          sampleRate: 44100
+        }
+      });
+
+      streamRef.current = stream;
+
+      // Create RecordRTC instance configured for WAV
+      const recorder = new RecordRTC(stream, {
+        type: "audio",
+        mimeType: "audio/wav",
+        recorderType: RecordRTC.StereoAudioRecorder,
+        numberOfAudioChannels: 1, // Mono audio for smaller file size
+        desiredSampRate: 16000, // 16kHz is good for speech
+        timeSlice: 1000 // Get data every second (optional)
+      });
+
+      recorderRef.current = recorder;
+      recorder.startRecording();
+      setIsRecording(true);
+    } catch (error) {
+      console.error("Failed to start recording:", error);
+      alert("Failed to access microphone. Please check your permissions.");
+    }
+  };
+
+  const stopRecording = () => {
+    if (recorderRef.current && isRecording) {
+      recorderRef.current.stopRecording(async () => {
+        const blob = recorderRef.current!.getBlob();
+
+        // Create a proper WAV file
+        const audioFile = new File([blob], "recording.wav", {
+          type: "audio/wav"
+        });
+
+        setIsTranscribing(true);
+        try {
+          const result = await os.transcribeAudio(audioFile, "whisper-large-v3");
+
+          // Append transcribed text to existing input
+          setInputValue((prev) => {
+            const newValue = prev ? `${prev} ${result.text}` : result.text;
+            return newValue;
+          });
+        } catch (error) {
+          console.error("Transcription failed:", error);
+        } finally {
+          setIsTranscribing(false);
+        }
+
+        // Clean up
+        if (streamRef.current) {
+          streamRef.current.getTracks().forEach((track) => track.stop());
+          streamRef.current = null;
+        }
+        recorderRef.current = null;
+      });
+
+      setIsRecording(false);
+    }
+  };
+
+  const toggleRecording = () => {
+    if (isRecording) {
+      stopRecording();
+    } else {
+      startRecording();
+    }
   };
   const [isFocused, setIsFocused] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -900,6 +984,26 @@ export default function Component({
             onChange={handleDocumentUpload}
             className="hidden"
           />
+
+          {/* Microphone button */}
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            className="ml-2"
+            onClick={toggleRecording}
+            disabled={isTranscribing || isInputDisabled}
+            aria-label={isRecording ? "Stop recording" : "Start recording"}
+            data-testid="mic-button"
+          >
+            {isTranscribing ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : isRecording ? (
+              <Mic className="h-4 w-4 text-orange-500" />
+            ) : (
+              <Mic className="h-4 w-4" />
+            )}
+          </Button>
 
           {/* Consolidated upload button - show for all users */}
           {!uploadedDocument && (
