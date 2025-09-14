@@ -238,6 +238,7 @@ export default function Component({
   const [isUploadingDocument, setIsUploadingDocument] = useState(false);
   const [documentError, setDocumentError] = useState<string | null>(null);
   const [imageError, setImageError] = useState<string | null>(null);
+  const [isTauriEnv, setIsTauriEnv] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const documentInputRef = useRef<HTMLInputElement>(null);
   const [upgradeDialogOpen, setUpgradeDialogOpen] = useState(false);
@@ -408,11 +409,7 @@ export default function Component({
       let parsed: ParsedDocument;
       let result: DocumentResponse | undefined;
 
-      // Check if we're in Tauri environment and can process locally
-      const isTauriEnv = await import("@tauri-apps/api/core")
-        .then((m) => m.isTauri())
-        .catch(() => false);
-
+      // Use the existing isTauriEnv state instead of checking again
       if (
         isTauriEnv &&
         (file.type === "application/pdf" ||
@@ -761,6 +758,14 @@ export default function Component({
 
   // Use the centralized hook for mobile detection directly
   const isMobile = useIsMobile();
+
+  // Check if we're in Tauri environment on component mount
+  useEffect(() => {
+    import("@tauri-apps/api/core")
+      .then((m) => m.isTauri())
+      .then(setIsTauriEnv)
+      .catch(() => setIsTauriEnv(false));
+  }, []);
 
   // Check if user can use system prompts (paid users only - exclude free plans)
   const canUseSystemPrompt =
@@ -1248,19 +1253,14 @@ export default function Component({
               </Button>
             )}
 
-            {/* Document upload button */}
-            {!uploadedDocument && (
+            {/* Document upload button - only show in Tauri environments */}
+            {!uploadedDocument && isTauriEnv && (
               <Button
                 type="button"
                 size="sm"
                 variant="ghost"
                 className="ml-1"
-                onClick={async () => {
-                  const isTauriEnv = await import("@tauri-apps/api/core")
-                    .then((m) => m.isTauri())
-                    .catch(() => false);
-
-                  // Enable for Tauri users (desktop/iOS) or users with document permissions
+                onClick={() => {
                   documentInputRef.current?.click();
                 }}
                 disabled={isInputDisabled}
