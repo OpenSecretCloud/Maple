@@ -3,6 +3,7 @@ use tauri_plugin_deep_link::DeepLinkExt;
 use tauri_plugin_opener;
 
 mod proxy;
+mod pdf_extractor;
 
 // This handles incoming deep links
 fn handle_deep_link_event(url: &str, app: &tauri::AppHandle) {
@@ -32,6 +33,7 @@ pub fn run() {
             proxy::load_proxy_config,
             proxy::save_proxy_settings,
             proxy::test_proxy_port,
+            pdf_extractor::extract_document_content,
         ])
         .setup(|app| {
             // Initialize proxy auto-start

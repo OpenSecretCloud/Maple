@@ -408,9 +408,71 @@ export default function Component({
       let parsed: ParsedDocument;
       let result: DocumentResponse | undefined;
 
-      // Check if it's a text file (.txt or .md)
-      if (file.type === "text/plain" || file.name.endsWith(".txt") || file.name.endsWith(".md")) {
-        // Process text files locally
+      // Check if we're in Tauri environment and can process locally
+      const isTauriEnv = await import("@tauri-apps/api/core")
+        .then((m) => m.isTauri())
+        .catch(() => false);
+
+      if (
+        isTauriEnv &&
+        (file.type === "application/pdf" ||
+          file.name.endsWith(".pdf") ||
+          file.type === "text/plain" ||
+          file.name.endsWith(".txt") ||
+          file.name.endsWith(".md"))
+      ) {
+        // Process documents locally using Rust in Tauri
+        const { invoke } = await import("@tauri-apps/api/core");
+
+        // Convert file to base64
+        const reader = new FileReader();
+        const base64Data = await new Promise<string>((resolve, reject) => {
+          reader.onload = () => {
+            const base64 = (reader.result as string).split(",")[1]; // Remove data:type;base64, prefix
+            resolve(base64);
+          };
+          reader.onerror = reject;
+          reader.readAsDataURL(file);
+        });
+
+        // Determine file type
+        let fileType = file.type;
+        if (file.name.endsWith(".pdf")) fileType = "pdf";
+        else if (file.name.endsWith(".txt")) fileType = "txt";
+        else if (file.name.endsWith(".md")) fileType = "md";
+
+        // Call Rust function to extract content
+        const rustResponse = await invoke<{
+          document: { filename: string; text_content: string; page_count: number };
+          status: string;
+          processing_time: number;
+        }>("extract_document_content", {
+          fileBase64: base64Data,
+          filename: file.name,
+          fileType: fileType
+        });
+
+        // Convert Rust response to ParsedDocument format
+        parsed = {
+          document: {
+            filename: rustResponse.document.filename,
+            md_content: null,
+            json_content: null,
+            html_content: null,
+            text_content: rustResponse.document.text_content,
+            doctags_content: null
+          },
+          status: rustResponse.status,
+          errors: [],
+          processing_time: rustResponse.processing_time,
+          timings: {}
+        };
+      } else if (
+        file.type === "text/plain" ||
+        file.name.endsWith(".txt") ||
+        file.name.endsWith(".md")
+      ) {
+        // Process text files locally in browser
         parsed = await processTextFileLocally(file);
       } else {
         // Upload other document types to the processing endpoint
@@ -1150,7 +1212,7 @@ export default function Component({
             />
             <input
               type="file"
-              accept=".pdf,.doc,.docx,.txt,.rtf,.xlsx,.xls,.pptx,.ppt,.md"
+              accept=".pdf,.txt,.md,application/pdf,text/plain,text/markdown"
               ref={documentInputRef}
               onChange={handleDocumentUpload}
               className="hidden"
@@ -1183,6 +1245,29 @@ export default function Component({
                 data-testid="image-upload-button"
               >
                 <Image className="h-4 w-4" />
+              </Button>
+            )}
+
+            {/* Document upload button */}
+            {!uploadedDocument && (
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                className="ml-1"
+                onClick={async () => {
+                  const isTauriEnv = await import("@tauri-apps/api/core")
+                    .then((m) => m.isTauri())
+                    .catch(() => false);
+
+                  // Enable for Tauri users (desktop/iOS) or users with document permissions
+                  documentInputRef.current?.click();
+                }}
+                disabled={isInputDisabled}
+                aria-label="Upload document"
+                data-testid="document-upload-button"
+              >
+                <FileText className="h-4 w-4" />
               </Button>
             )}
 
