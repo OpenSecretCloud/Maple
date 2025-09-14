@@ -6,7 +6,6 @@ use serde::{Deserialize, Serialize};
 pub struct DocumentData {
     pub filename: String,
     pub text_content: String,
-    pub page_count: usize,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -45,21 +44,12 @@ pub async fn extract_document_content(
         }
     };
     
-    // Count pages (for PDFs, count page breaks; for text files, estimate based on lines)
-    let page_count = if file_type.contains("pdf") {
-        text_content.matches('\x0C').count() + 1
-    } else {
-        // Rough estimate: ~50 lines per page
-        (text_content.lines().count() / 50).max(1)
-    };
-    
     let processing_time = start_time.elapsed().as_secs_f64();
     
     Ok(DocumentResponse {
         document: DocumentData {
             filename,
             text_content,
-            page_count,
         },
         status: "completed".to_string(),
         processing_time,

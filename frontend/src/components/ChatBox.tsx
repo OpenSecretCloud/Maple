@@ -440,7 +440,7 @@ export default function Component({
 
         // Call Rust function to extract content
         const rustResponse = await invoke<{
-          document: { filename: string; text_content: string; page_count: number };
+          document: { filename: string; text_content: string };
           status: string;
           processing_time: number;
         }>("extract_document_content", {
