@@ -1261,8 +1261,50 @@ export default function Component({
                 size="sm"
                 variant="ghost"
                 className="ml-1"
-                onClick={() => {
-                  documentInputRef.current?.click();
+                onClick={async () => {
+                  // Use Tauri's native file dialog for better file filtering
+                  try {
+                    const { open } = await import("@tauri-apps/plugin-dialog");
+                    const selected = await open({
+                      multiple: false,
+                      filters: [
+                        {
+                          name: "Documents",
+                          extensions: ["pdf", "txt", "md"]
+                        }
+                      ]
+                    });
+
+                    if (selected && typeof selected === "string") {
+                      // Read the file and convert to File object for processing
+                      const fs = await import("@tauri-apps/plugin-fs");
+                      const fileContent = await fs.readFile(selected);
+
+                      // Get filename from path
+                      const filename = selected.split(/[/\\]/).pop() || "document";
+
+                      // Create a File object from the binary content
+                      const file = new File([fileContent], filename, {
+                        type: filename.endsWith(".pdf")
+                          ? "application/pdf"
+                          : filename.endsWith(".md")
+                            ? "text/markdown"
+                            : "text/plain"
+                      });
+
+                      // Process the file using our existing handler
+                      const fakeEvent = {
+                        target: { files: [file], value: "" },
+                        preventDefault: () => {}
+                      } as unknown as React.ChangeEvent<HTMLInputElement>;
+
+                      await handleDocumentUpload(fakeEvent);
+                    }
+                  } catch (error) {
+                    console.error("Failed to open file dialog:", error);
+                    // Fallback to HTML input
+                    documentInputRef.current?.click();
+                  }
                 }}
                 disabled={isInputDisabled}
                 aria-label="Upload document"
