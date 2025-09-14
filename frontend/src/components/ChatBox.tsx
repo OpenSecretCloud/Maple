@@ -28,8 +28,15 @@ interface ParsedDocument {
   };
   status: string;
   errors: unknown[];
-  processing_time: number;
   timings: Record<string, unknown>;
+}
+
+interface RustDocumentResponse {
+  document: {
+    filename: string;
+    text_content: string;
+  };
+  status: string;
 }
 
 // Accurate token counting using gpt-tokenizer
@@ -373,7 +380,6 @@ export default function Component({
           },
           status: "completed",
           errors: [],
-          processing_time: 0,
           timings: {}
         };
 
@@ -439,11 +445,7 @@ export default function Component({
         else if (file.name.endsWith(".md")) fileType = "md";
 
         // Call Rust function to extract content
-        const rustResponse = await invoke<{
-          document: { filename: string; text_content: string };
-          status: string;
-          processing_time: number;
-        }>("extract_document_content", {
+        const rustResponse = await invoke<RustDocumentResponse>("extract_document_content", {
           fileBase64: base64Data,
           filename: file.name,
           fileType: fileType
@@ -461,7 +463,6 @@ export default function Component({
           },
           status: rustResponse.status,
           errors: [],
-          processing_time: rustResponse.processing_time,
           timings: {}
         };
       } else if (

@@ -12,7 +12,6 @@ pub struct DocumentData {
 pub struct DocumentResponse {
     pub document: DocumentData,
     pub status: String,
-    pub processing_time: f64,
 }
 
 #[tauri::command]
@@ -21,8 +20,6 @@ pub async fn extract_document_content(
     filename: String,
     file_type: String
 ) -> Result<DocumentResponse, String> {
-    let start_time = std::time::Instant::now();
-    
     // Decode base64 file data
     let file_bytes = BASE64
         .decode(&file_base64)
@@ -44,14 +41,11 @@ pub async fn extract_document_content(
         }
     };
     
-    let processing_time = start_time.elapsed().as_secs_f64();
-    
     Ok(DocumentResponse {
         document: DocumentData {
             filename,
             text_content,
         },
         status: "completed".to_string(),
-        processing_time,
     })
 }
