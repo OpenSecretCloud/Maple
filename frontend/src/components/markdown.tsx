@@ -368,16 +368,10 @@ export const MarkdownContent = React.memo(MarkDownContentToMemo);
 interface DocumentData {
   document: {
     filename: string;
-    md_content: string | null;
-    json_content: string | null;
-    html_content: string | null;
     text_content: string | null;
-    doctags_content: string | null;
   };
   status: string;
   errors: unknown[];
-  processing_time: number;
-  timings: Record<string, unknown>;
 }
 
 // Type guard to validate DocumentData structure
@@ -387,12 +381,7 @@ function isDocumentData(obj: unknown): obj is DocumentData {
   const data = obj as Record<string, unknown>;
 
   // Check top-level properties
-  if (
-    !("document" in data) ||
-    !("status" in data) ||
-    !("errors" in data) ||
-    !("processing_time" in data)
-  ) {
+  if (!("document" in data) || !("status" in data) || !("errors" in data)) {
     return false;
   }
 
@@ -405,24 +394,12 @@ function isDocumentData(obj: unknown): obj is DocumentData {
   // Check required document properties
   if (!("filename" in docObj) || typeof docObj.filename !== "string") return false;
 
-  // Check optional content properties (must be string or null)
-  const contentFields = [
-    "md_content",
-    "json_content",
-    "html_content",
-    "text_content",
-    "doctags_content"
-  ];
-  for (const field of contentFields) {
-    if (field in docObj && docObj[field] !== null && typeof docObj[field] !== "string") {
-      return false;
-    }
-  }
+  // Require text_content (must be string)
+  if (!("text_content" in docObj) || typeof docObj.text_content !== "string") return false;
 
   // Basic type checks for other fields
   if (typeof data.status !== "string") return false;
   if (!Array.isArray(data.errors)) return false;
-  if (typeof data.processing_time !== "number") return false;
 
   return true;
 }
@@ -430,14 +407,8 @@ function isDocumentData(obj: unknown): obj is DocumentData {
 function DocumentPreview({ documentData }: { documentData: DocumentData }) {
   const [isOpen, setIsOpen] = useState(false);
 
-  // Extract content with fallbacks
-  const content =
-    documentData.document.md_content ||
-    documentData.document.json_content ||
-    documentData.document.html_content ||
-    documentData.document.text_content ||
-    documentData.document.doctags_content ||
-    "No content available";
+  // Extract content
+  const content = documentData.document.text_content || "No content available";
 
   return (
     <>

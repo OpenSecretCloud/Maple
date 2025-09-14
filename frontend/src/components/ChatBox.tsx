@@ -20,15 +20,10 @@ import { encode } from "gpt-tokenizer";
 interface ParsedDocument {
   document: {
     filename: string;
-    md_content: string | null;
-    json_content: string | null;
-    html_content: string | null;
     text_content: string | null;
-    doctags_content: string | null;
   };
   status: string;
   errors: unknown[];
-  timings: Record<string, unknown>;
 }
 
 interface RustDocumentResponse {
@@ -372,15 +367,10 @@ export default function Component({
         const parsedDocument: ParsedDocument = {
           document: {
             filename: file.name,
-            md_content: null,
-            json_content: null,
-            html_content: null,
-            text_content: content,
-            doctags_content: null
+            text_content: content
           },
           status: "completed",
-          errors: [],
-          timings: {}
+          errors: []
         };
 
         resolve(parsedDocument);
@@ -455,15 +445,10 @@ export default function Component({
         parsed = {
           document: {
             filename: rustResponse.document.filename,
-            md_content: null,
-            json_content: null,
-            html_content: null,
-            text_content: rustResponse.document.text_content,
-            doctags_content: null
+            text_content: rustResponse.document.text_content
           },
           status: rustResponse.status,
-          errors: [],
-          timings: {}
+          errors: []
         };
       } else if (
         file.type === "text/plain" ||
@@ -479,23 +464,17 @@ export default function Component({
         parsed = JSON.parse(result.text) as ParsedDocument;
       }
 
-      // Extract content with fallbacks (currently not used since we pass the full JSON)
-      // const content =
-      //   parsed.document.md_content ||
-      //   parsed.document.json_content ||
-      //   parsed.document.html_content ||
-      //   parsed.document.text_content ||
-      //   parsed.document.doctags_content ||
-      //   "";
+      // Extract content
+      // const content = parsed.document.text_content || "";
 
-      // Create a cleaned version of the parsed document with image tags stripped from md_content
+      // Create a cleaned version of the parsed document
       const cleanedParsed = {
         ...parsed,
         document: {
           ...parsed.document,
-          md_content: parsed.document.md_content
-            ? parsed.document.md_content.replace(/!\[Image\]\([^)]+\)/g, "")
-            : parsed.document.md_content
+          text_content: parsed.document.text_content
+            ? parsed.document.text_content.replace(/!\[Image\]\([^)]+\)/g, "")
+            : parsed.document.text_content
         }
       };
 
@@ -663,13 +642,7 @@ export default function Component({
                   uploadedDocument
                     ? {
                         filename: uploadedDocument.parsed.document.filename,
-                        fullContent:
-                          uploadedDocument.parsed.document.md_content ||
-                          uploadedDocument.parsed.document.json_content ||
-                          uploadedDocument.parsed.document.html_content ||
-                          uploadedDocument.parsed.document.text_content ||
-                          uploadedDocument.parsed.document.doctags_content ||
-                          ""
+                        fullContent: uploadedDocument.parsed.document.text_content || ""
                       }
                     : undefined,
                   true // sentViaVoice flag
@@ -818,17 +791,11 @@ export default function Component({
       inputValue.trim(),
       isFirstMessage ? systemPromptValue.trim() || undefined : undefined,
       images,
-      uploadedDocument?.cleanedText, // Now contains the full JSON with cleaned md_content
+      uploadedDocument?.cleanedText, // Now contains the full JSON with cleaned text_content
       uploadedDocument
         ? {
             filename: uploadedDocument.parsed.document.filename,
-            fullContent:
-              uploadedDocument.parsed.document.md_content ||
-              uploadedDocument.parsed.document.json_content ||
-              uploadedDocument.parsed.document.html_content ||
-              uploadedDocument.parsed.document.text_content ||
-              uploadedDocument.parsed.document.doctags_content ||
-              ""
+            fullContent: uploadedDocument.parsed.document.text_content || ""
           }
         : undefined
     );
@@ -1284,7 +1251,7 @@ export default function Component({
                       const filename = selected.split(/[/\\]/).pop() || "document";
 
                       // Create a File object from the binary content
-                      const file = new File([fileContent], filename, {
+                      const file = new File([new Blob([fileContent])], filename, {
                         type: filename.endsWith(".pdf")
                           ? "application/pdf"
                           : filename.endsWith(".md")
