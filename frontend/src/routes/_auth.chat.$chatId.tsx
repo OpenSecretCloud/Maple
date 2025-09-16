@@ -77,11 +77,13 @@ function UserMessage({ message, chatId }: { message: ChatMessage; chatId: string
 function SystemMessage({
   text,
   loading,
-  chatId
+  chatId,
+  autoPlay = false
 }: {
   text: string;
   loading?: boolean;
   chatId: string;
+  autoPlay?: boolean;
 }) {
   const textWithoutThinking = stripThinkingTags(text);
   const { isCopied, handleCopy } = useCopyToClipboard(textWithoutThinking);
@@ -168,6 +170,14 @@ function SystemMessage({
       setIsPlaying(false);
     }
   }, [textWithoutThinking, isPlaying, openai, canUseTTS]);
+
+  // Auto-play TTS when message is complete and autoPlay is true
+  useEffect(() => {
+    if (autoPlay && !loading && textWithoutThinking && canUseTTS && !isPlaying) {
+      // Only auto-play once when the message completes
+      handleTTS();
+    }
+  }, [autoPlay, loading, canUseTTS]); // Don't include handleTTS to avoid loops
 
   // Cleanup on unmount
   useEffect(() => {
@@ -294,6 +304,8 @@ function ChatComponent() {
     setSystemPrompt,
     userImages,
     setUserImages,
+    sentViaVoice,
+    setSentViaVoice,
     addChat
   } = useLocalState();
   const openai = useOpenAI();
@@ -305,6 +317,8 @@ function ChatComponent() {
 
   const [isSummarizing, setIsSummarizing] = useState(false);
   const [imageConversionError, setImageConversionError] = useState<string | null>(null);
+  const [shouldAutoPlayTTS, setShouldAutoPlayTTS] = useState(false);
+  const [autoPlayMessageIndex, setAutoPlayMessageIndex] = useState<number | null>(null);
 
   const chatContainerRef = useRef<HTMLDivElement>(null);
 
@@ -351,11 +365,18 @@ function ChatComponent() {
       const prompt = userPrompt;
       const sysPrompt = systemPrompt;
       const images = userImages;
+      const wasVoice = sentViaVoice;
+
+      // If sent via voice, set the flag for auto-play TTS
+      if (wasVoice) {
+        setShouldAutoPlayTTS(true);
+      }
 
       // Clear state immediately
       setUserPrompt("");
       setSystemPrompt(null);
       setUserImages([]);
+      setSentViaVoice(false);
 
       // Send message with system prompt as separate parameter
       appendUserMessage(prompt, images, undefined, undefined, sysPrompt || undefined).catch(
@@ -366,6 +387,7 @@ function ChatComponent() {
             setUserPrompt(prompt);
             setSystemPrompt(sysPrompt);
             setUserImages(images);
+            setSentViaVoice(wasVoice);
             initialPromptProcessedRef.current = false;
           }
         }
@@ -375,12 +397,14 @@ function ChatComponent() {
     userPrompt,
     systemPrompt,
     userImages,
+    sentViaVoice,
     localChat.messages.length,
     phase,
     appendUserMessage,
     setUserPrompt,
     setSystemPrompt,
-    setUserImages
+    setUserImages,
+    setSentViaVoice
   ]);
 
   // Handle mobile new chat (matching sidebar behavior)
@@ -478,11 +502,14 @@ function ChatComponent() {
   }, [localChat.messages]);
 
   // Auto-scroll when assistant starts streaming (currentStreamingMessage appears)
+  // and handle TTS auto-play when streaming completes
   const prevHadStreamingMessage = useRef(false);
+  const prevStreamingMessage = useRef<string>("");
 
   useEffect(() => {
     const hasStreamingMessage = !!currentStreamingMessage;
     const justStartedStreaming = hasStreamingMessage && !prevHadStreamingMessage.current;
+    const justFinishedStreaming = !hasStreamingMessage && prevHadStreamingMessage.current;
 
     if (justStartedStreaming) {
       // Scroll when assistant starts streaming
@@ -498,8 +525,29 @@ function ChatComponent() {
       }
     }
 
+    // When streaming just completed and we should auto-play TTS
+    if (justFinishedStreaming && shouldAutoPlayTTS && prevStreamingMessage.current) {
+      // Find the last assistant message index and trigger TTS for it
+      const lastAssistantMessageIndex = localChat.messages
+        .map((m, i) => (m.role === "assistant" ? i : -1))
+        .filter((i) => i >= 0)
+        .pop();
+
+      if (lastAssistantMessageIndex !== undefined) {
+        // Set the message index to auto-play
+        setAutoPlayMessageIndex(lastAssistantMessageIndex);
+        setShouldAutoPlayTTS(false); // Reset the flag
+
+        // Clear the auto-play index after a short delay to prevent re-playing
+        setTimeout(() => {
+          setAutoPlayMessageIndex(null);
+        }, 1000);
+      }
+    }
+
     prevHadStreamingMessage.current = hasStreamingMessage;
-  }, [currentStreamingMessage]);
+    prevStreamingMessage.current = currentStreamingMessage || "";
+  }, [currentStreamingMessage, shouldAutoPlayTTS, localChat.messages]);
 
   const sendMessage = useCallback(
     async (
@@ -507,10 +555,17 @@ function ChatComponent() {
       systemPrompt?: string,
       images?: File[],
       documentText?: string,
-      documentMetadata?: { filename: string; fullContent: string }
+      documentMetadata?: { filename: string; fullContent: string },
+      sentViaVoice?: boolean
     ) => {
+      // Store the voice flag for later use when response completes
+      if (sentViaVoice) {
+        setShouldAutoPlayTTS(true);
+      }
       // Use the appendUserMessage from the hook with system prompt as separate parameter
-      await appendUserMessage(input, images, documentText, documentMetadata, systemPrompt);
+      // Don't await - let it run in background so the recording overlay can disappear immediately
+      appendUserMessage(input, images, documentText, documentMetadata, systemPrompt);
+      // Return immediately so the overlay disappears right after sending
       // Note: Auto-scrolling is handled by the effect that watches for streaming start
     },
     [appendUserMessage]
@@ -680,6 +735,7 @@ END OF INSTRUCTIONS`;
                         : message.content.find((p) => p.type === "text")?.text || ""
                     }
                     chatId={chatId}
+                    autoPlay={index === autoPlayMessageIndex}
                   />
                 )}
               </div>

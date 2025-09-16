@@ -3,6 +3,7 @@ import RecordRTC from "recordrtc";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { UpgradePromptDialog } from "@/components/UpgradePromptDialog";
+import { RecordingOverlay } from "@/components/RecordingOverlay";
 import { useEffect, useRef, useState, useMemo } from "react";
 import { useLocalState } from "@/state/useLocalState";
 import { cn, useIsMobile } from "@/utils/utils";
@@ -201,8 +202,9 @@ export default function Component({
     systemPrompt?: string,
     images?: File[],
     documentText?: string,
-    documentMetadata?: { filename: string; fullContent: string }
-  ) => void;
+    documentMetadata?: { filename: string; fullContent: string },
+    sentViaVoice?: boolean
+  ) => void | Promise<void>;
   startTall?: boolean;
   messages?: ChatMessage[];
   isStreaming?: boolean;
@@ -245,6 +247,7 @@ export default function Component({
   // Audio recording state
   const [isRecording, setIsRecording] = useState(false);
   const [isTranscribing, setIsTranscribing] = useState(false);
+  const [isProcessingSend, setIsProcessingSend] = useState(false);
   const recorderRef = useRef<RecordRTC | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
 
@@ -508,8 +511,15 @@ export default function Component({
     }
   };
 
-  const stopRecording = () => {
+  const stopRecording = (shouldSend: boolean = false) => {
     if (recorderRef.current && isRecording) {
+      // Only hide immediately if canceling, keep visible if sending
+      if (!shouldSend) {
+        setIsRecording(false);
+      } else {
+        setIsProcessingSend(true); // Show processing state
+      }
+
       recorderRef.current.stopRecording(async () => {
         const blob = recorderRef.current!.getBlob();
 
@@ -518,19 +528,57 @@ export default function Component({
           type: "audio/wav"
         });
 
-        setIsTranscribing(true);
-        try {
-          const result = await os.transcribeAudio(audioFile, "whisper-large-v3");
+        if (shouldSend) {
+          setIsTranscribing(true);
+          try {
+            const result = await os.transcribeAudio(audioFile, "whisper-large-v3");
 
-          // Append transcribed text to existing input
-          setInputValue((prev) => {
-            const newValue = prev ? `${prev} ${result.text}` : result.text;
-            return newValue;
-          });
-        } catch (error) {
-          console.error("Transcription failed:", error);
-        } finally {
-          setIsTranscribing(false);
+            // Set the transcribed text
+            const transcribedText = result.text.trim();
+
+            if (transcribedText) {
+              // Directly submit without updating the input field
+              const newValue = inputValue ? `${inputValue} ${transcribedText}` : transcribedText;
+
+              if (newValue.trim()) {
+                // Wait for onSubmit to complete (in case it returns a Promise for navigation)
+                await onSubmit(
+                  newValue.trim(),
+                  messages.length === 0 ? systemPromptValue.trim() || undefined : undefined,
+                  images,
+                  uploadedDocument?.cleanedText,
+                  uploadedDocument
+                    ? {
+                        filename: uploadedDocument.parsed.document.filename,
+                        fullContent:
+                          uploadedDocument.parsed.document.md_content ||
+                          uploadedDocument.parsed.document.json_content ||
+                          uploadedDocument.parsed.document.html_content ||
+                          uploadedDocument.parsed.document.text_content ||
+                          uploadedDocument.parsed.document.doctags_content ||
+                          ""
+                      }
+                    : undefined,
+                  true // sentViaVoice flag
+                );
+
+                // Clear the input and other states
+                setInputValue("");
+                imageUrls.forEach((url) => URL.revokeObjectURL(url));
+                setImageUrls(new Map());
+                setImages([]);
+                setUploadedDocument(null);
+                setDocumentError(null);
+                setImageError(null);
+              }
+            }
+          } catch (error) {
+            console.error("Transcription failed:", error);
+          } finally {
+            setIsTranscribing(false);
+            setIsProcessingSend(false);
+            setIsRecording(false); // Hide overlay after send is complete
+          }
         }
 
         // Clean up
@@ -540,8 +588,6 @@ export default function Component({
         }
         recorderRef.current = null;
       });
-
-      setIsRecording(false);
     }
   };
 
@@ -552,6 +598,26 @@ export default function Component({
       startRecording();
     }
   };
+
+  const handleRecordingSend = () => {
+    stopRecording(true);
+  };
+
+  const handleRecordingCancel = () => {
+    if (recorderRef.current && isRecording) {
+      setIsRecording(false); // Hide overlay immediately
+
+      recorderRef.current.stopRecording(() => {
+        // Clean up without transcribing
+        if (streamRef.current) {
+          streamRef.current.getTracks().forEach((track) => track.stop());
+          streamRef.current = null;
+        }
+        recorderRef.current = null;
+      });
+    }
+  };
+
   const [isFocused, setIsFocused] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const systemPromptRef = useRef<HTMLTextAreaElement>(null);
@@ -814,262 +880,273 @@ export default function Component({
   })();
 
   return (
-    <div className="flex flex-col w-full">
-      {/* Simple System Prompt Section - just a gear button and input when expanded */}
-      <div className={cn(chatId ? "hidden" : !canEditSystemPrompt ? "invisible mb-2" : "mb-2")}>
-        <div className="flex items-center gap-2 mb-1">
-          <button
-            type="button"
-            disabled={!canEditSystemPrompt}
-            onClick={() => setIsSystemPromptExpanded(!isSystemPromptExpanded)}
-            className="flex items-center gap-1.5 text-xs font-medium transition-colors text-muted-foreground hover:text-foreground cursor-pointer disabled:cursor-default"
-            title="System Prompt"
-            aria-label="Toggle system prompt"
-            aria-expanded={isSystemPromptExpanded}
-          >
-            <Bot className="size-6" />
-            {systemPromptValue.trim() && (
-              <div className="size-2 bg-primary rounded-full" title="System prompt active" />
-            )}
-          </button>
+    <div className="flex flex-col w-full relative">
+      {isRecording && (
+        <RecordingOverlay
+          isRecording={isRecording}
+          isProcessing={isProcessingSend}
+          onSend={handleRecordingSend}
+          onCancel={handleRecordingCancel}
+          isCompact={!startTall}
+        />
+      )}
+      <div className={cn("flex flex-col w-full", isRecording && "invisible")}>
+        {/* Simple System Prompt Section - just a gear button and input when expanded */}
+        <div className={cn(chatId ? "hidden" : !canEditSystemPrompt ? "invisible mb-2" : "mb-2")}>
+          <div className="flex items-center gap-2 mb-1">
+            <button
+              type="button"
+              disabled={!canEditSystemPrompt}
+              onClick={() => setIsSystemPromptExpanded(!isSystemPromptExpanded)}
+              className="flex items-center gap-1.5 text-xs font-medium transition-colors text-muted-foreground hover:text-foreground cursor-pointer disabled:cursor-default"
+              title="System Prompt"
+              aria-label="Toggle system prompt"
+              aria-expanded={isSystemPromptExpanded}
+            >
+              <Bot className="size-6" />
+              {systemPromptValue.trim() && (
+                <div className="size-2 bg-primary rounded-full" title="System prompt active" />
+              )}
+            </button>
+          </div>
+
+          {isSystemPromptExpanded && (
+            <textarea
+              ref={systemPromptRef}
+              value={systemPromptValue}
+              onChange={(e) => setSystemPromptValue(e.target.value)}
+              placeholder="Enter instructions for the AI (e.g., 'You are a helpful coding assistant...')"
+              rows={2}
+              className="w-full p-2 text-sm border border-muted-foreground/20 rounded-md bg-muted/50 placeholder:text-muted-foreground/70 focus:outline-none focus:ring-1 focus:ring-ring resize-none transition-colors"
+              style={{
+                height: "auto",
+                resize: "none",
+                overflowY: "auto",
+                maxHeight: "8rem",
+                minHeight: "3rem"
+              }}
+            />
+          )}
         </div>
 
-        {isSystemPromptExpanded && (
+        <TokenWarning
+          chatId={chatId}
+          onCompress={onCompress}
+          isCompressing={isSummarizing}
+          tokenPercentage={tokenPercentage}
+        />
+
+        <form
+          className={cn(
+            "p-2 rounded-lg border border-primary bg-background/80 backdrop-blur-lg focus-within:ring-1 focus-within:ring-ring",
+            isInputDisabled && "opacity-50"
+          )}
+          onSubmit={handleSubmit}
+          onClick={(e) => {
+            if (isInputDisabled) {
+              e.preventDefault();
+              return;
+            }
+            if (!isFocused) {
+              inputRef.current?.focus();
+            }
+          }}
+        >
+          {(images.length > 0 ||
+            uploadedDocument ||
+            isUploadingDocument ||
+            documentError ||
+            imageError ||
+            imageConversionError) && (
+            <div className="mb-2 space-y-2">
+              {images.length > 0 && (
+                <div className="flex gap-2 items-center flex-wrap">
+                  {images.map((f, i) => (
+                    <div key={i} className="relative">
+                      <img
+                        src={imageUrls.get(f) || ""}
+                        className="w-10 h-10 object-cover rounded-md"
+                        alt={`Uploaded image ${i + 1}`}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => removeImage(i)}
+                        className="absolute -top-1 -right-1 bg-background rounded-full shadow-sm"
+                        aria-label={`Remove image ${i + 1}`}
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {(imageError || imageConversionError) && (
+                <div className="text-xs text-destructive p-2 bg-destructive/10 rounded-md">
+                  {imageError || imageConversionError}
+                </div>
+              )}
+              {isUploadingDocument && !uploadedDocument && (
+                <div className="flex items-center gap-2 p-2 bg-muted/50 rounded-md animate-in fade-in duration-200">
+                  <Loader2 className="h-4 w-4 text-muted-foreground animate-spin" />
+                  <span className="text-sm text-muted-foreground">
+                    Processing document securely... This may take a minute.
+                  </span>
+                </div>
+              )}
+              {uploadedDocument && (
+                <div className="flex items-center gap-2 p-2 bg-muted/50 rounded-md">
+                  <FileText className="h-4 w-4 text-muted-foreground" />
+                  <span className="text-sm truncate flex-1">
+                    {uploadedDocument.parsed.document.filename}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={removeDocument}
+                    className="text-muted-foreground hover:text-foreground"
+                    aria-label="Remove document"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </div>
+              )}
+              {documentError && (
+                <div className="text-xs text-destructive p-2 bg-destructive/10 rounded-md">
+                  {documentError}
+                </div>
+              )}
+            </div>
+          )}
+          <Label htmlFor="message" className="sr-only">
+            Message
+          </Label>
           <textarea
-            ref={systemPromptRef}
-            value={systemPromptValue}
-            onChange={(e) => setSystemPromptValue(e.target.value)}
-            placeholder="Enter instructions for the AI (e.g., 'You are a helpful coding assistant...')"
-            rows={2}
-            className="w-full p-2 text-sm border border-muted-foreground/20 rounded-md bg-muted/50 placeholder:text-muted-foreground/70 focus:outline-none focus:ring-1 focus:ring-ring resize-none transition-colors"
+            disabled={isInputDisabled}
+            ref={inputRef}
+            onKeyDown={handleKeyDown}
+            onFocus={() => setIsFocused(true)}
+            onBlur={() => setIsFocused(false)}
+            id="message"
+            name="message"
+            autoComplete="off"
+            placeholder={placeholderText}
+            rows={1}
             style={{
               height: "auto",
               resize: "none",
               overflowY: "auto",
-              maxHeight: "8rem",
-              minHeight: "3rem"
+              maxHeight: "12rem",
+              ...(startTall ? { minHeight: "6rem" } : {})
             }}
+            className={cn(
+              "flex w-full ring-offset-background bg-background/0",
+              "placeholder:text-muted-foreground focus-visible:outline-none",
+              "disabled:cursor-not-allowed disabled:opacity-50",
+              "!border-0 shadow-none !border-none focus-visible:ring-0 !ring-0",
+              billingStatus === null && "animate-pulse"
+            )}
+            value={inputValue}
+            onChange={(e) => setInputValue(e.target.value)}
           />
-        )}
-      </div>
+          <div className="flex items-center pt-0">
+            <ModelSelector messages={messages} draftImages={images} />
 
-      <TokenWarning
-        chatId={chatId}
-        onCompress={onCompress}
-        isCompressing={isSummarizing}
-        tokenPercentage={tokenPercentage}
-      />
+            {/* Hidden file inputs */}
+            <input
+              type="file"
+              accept="image/jpeg,image/jpg,image/png,image/webp"
+              multiple
+              ref={fileInputRef}
+              onChange={handleAddImages}
+              className="hidden"
+            />
+            <input
+              type="file"
+              accept=".pdf,.doc,.docx,.txt,.rtf,.xlsx,.xls,.pptx,.ppt,.md"
+              ref={documentInputRef}
+              onChange={handleDocumentUpload}
+              className="hidden"
+            />
 
-      <form
-        className={cn(
-          "p-2 rounded-lg border border-primary bg-background/80 backdrop-blur-lg focus-within:ring-1 focus-within:ring-ring",
-          isInputDisabled && "opacity-50"
-        )}
-        onSubmit={handleSubmit}
-        onClick={(e) => {
-          if (isInputDisabled) {
-            e.preventDefault();
-            return;
-          }
-          if (!isFocused) {
-            inputRef.current?.focus();
-          }
-        }}
-      >
-        {(images.length > 0 ||
-          uploadedDocument ||
-          isUploadingDocument ||
-          documentError ||
-          imageError ||
-          imageConversionError) && (
-          <div className="mb-2 space-y-2">
-            {images.length > 0 && (
-              <div className="flex gap-2 items-center flex-wrap">
-                {images.map((f, i) => (
-                  <div key={i} className="relative">
-                    <img
-                      src={imageUrls.get(f) || ""}
-                      className="w-10 h-10 object-cover rounded-md"
-                      alt={`Uploaded image ${i + 1}`}
-                    />
-                    <button
-                      type="button"
-                      onClick={() => removeImage(i)}
-                      className="absolute -top-1 -right-1 bg-background rounded-full shadow-sm"
-                      aria-label={`Remove image ${i + 1}`}
-                    >
-                      <X className="h-3 w-3" />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-            {(imageError || imageConversionError) && (
-              <div className="text-xs text-destructive p-2 bg-destructive/10 rounded-md">
-                {imageError || imageConversionError}
-              </div>
-            )}
-            {isUploadingDocument && !uploadedDocument && (
-              <div className="flex items-center gap-2 p-2 bg-muted/50 rounded-md animate-in fade-in duration-200">
-                <Loader2 className="h-4 w-4 text-muted-foreground animate-spin" />
-                <span className="text-sm text-muted-foreground">
-                  Processing document securely... This may take a minute.
-                </span>
-              </div>
-            )}
-            {uploadedDocument && (
-              <div className="flex items-center gap-2 p-2 bg-muted/50 rounded-md">
-                <FileText className="h-4 w-4 text-muted-foreground" />
-                <span className="text-sm truncate flex-1">
-                  {uploadedDocument.parsed.document.filename}
-                </span>
-                <button
-                  type="button"
-                  onClick={removeDocument}
-                  className="text-muted-foreground hover:text-foreground"
-                  aria-label="Remove document"
-                >
-                  <X className="h-3 w-3" />
-                </button>
-              </div>
-            )}
-            {documentError && (
-              <div className="text-xs text-destructive p-2 bg-destructive/10 rounded-md">
-                {documentError}
-              </div>
-            )}
-          </div>
-        )}
-        <Label htmlFor="message" className="sr-only">
-          Message
-        </Label>
-        <textarea
-          disabled={isInputDisabled}
-          ref={inputRef}
-          onKeyDown={handleKeyDown}
-          onFocus={() => setIsFocused(true)}
-          onBlur={() => setIsFocused(false)}
-          id="message"
-          name="message"
-          autoComplete="off"
-          placeholder={placeholderText}
-          rows={1}
-          style={{
-            height: "auto",
-            resize: "none",
-            overflowY: "auto",
-            maxHeight: "12rem",
-            ...(startTall ? { minHeight: "6rem" } : {})
-          }}
-          className={cn(
-            "flex w-full ring-offset-background bg-background/0",
-            "placeholder:text-muted-foreground focus-visible:outline-none",
-            "disabled:cursor-not-allowed disabled:opacity-50",
-            "!border-0 shadow-none !border-none focus-visible:ring-0 !ring-0",
-            billingStatus === null && "animate-pulse"
-          )}
-          value={inputValue}
-          onChange={(e) => setInputValue(e.target.value)}
-        />
-        <div className="flex items-center pt-0">
-          <ModelSelector messages={messages} draftImages={images} />
-
-          {/* Hidden file inputs */}
-          <input
-            type="file"
-            accept="image/jpeg,image/jpg,image/png,image/webp"
-            multiple
-            ref={fileInputRef}
-            onChange={handleAddImages}
-            className="hidden"
-          />
-          <input
-            type="file"
-            accept=".pdf,.doc,.docx,.txt,.rtf,.xlsx,.xls,.pptx,.ppt,.md"
-            ref={documentInputRef}
-            onChange={handleDocumentUpload}
-            className="hidden"
-          />
-
-          {/* Image upload button - show for all users */}
-          {!uploadedDocument && (
-            <Button
-              type="button"
-              size="sm"
-              variant="ghost"
-              className={cn("ml-2", !canUseImages && "opacity-50")}
-              onClick={() => {
-                if (!canUseImages) {
-                  setUpgradeFeature("image");
-                  setUpgradeDialogOpen(true);
-                } else {
-                  // If not on a vision model, switch to one first
-                  if (!supportsVision) {
-                    const visionModelId = findFirstVisionModel();
-                    if (visionModelId) {
-                      setModel(visionModelId);
+            {/* Image upload button - show for all users */}
+            {!uploadedDocument && (
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                className={cn("ml-2", !canUseImages && "opacity-50")}
+                onClick={() => {
+                  if (!canUseImages) {
+                    setUpgradeFeature("image");
+                    setUpgradeDialogOpen(true);
+                  } else {
+                    // If not on a vision model, switch to one first
+                    if (!supportsVision) {
+                      const visionModelId = findFirstVisionModel();
+                      if (visionModelId) {
+                        setModel(visionModelId);
+                      }
                     }
+                    fileInputRef.current?.click();
                   }
-                  fileInputRef.current?.click();
-                }
-              }}
-              disabled={isInputDisabled}
-              aria-label="Upload images"
-              data-testid="image-upload-button"
-            >
-              <Image className="h-4 w-4" />
-            </Button>
-          )}
+                }}
+                disabled={isInputDisabled}
+                aria-label="Upload images"
+                data-testid="image-upload-button"
+              >
+                <Image className="h-4 w-4" />
+              </Button>
+            )}
 
-          {/* Microphone button - show if whisper model is available */}
-          {hasWhisperModel && (
+            {/* Microphone button - show if whisper model is available */}
+            {hasWhisperModel && (
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                className={cn("ml-2", !canUseVoice && "opacity-50")}
+                onClick={() => {
+                  if (!canUseVoice) {
+                    setUpgradeFeature("voice");
+                    setUpgradeDialogOpen(true);
+                  } else {
+                    toggleRecording();
+                  }
+                }}
+                disabled={isTranscribing || isInputDisabled}
+                aria-label={isRecording ? "Stop recording" : "Start recording"}
+                data-testid="mic-button"
+              >
+                {isTranscribing ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : isRecording ? (
+                  <Mic className="h-4 w-4 text-orange-500" />
+                ) : (
+                  <Mic className="h-4 w-4" />
+                )}
+              </Button>
+            )}
+
             <Button
-              type="button"
+              type="submit"
               size="sm"
-              variant="ghost"
-              className={cn("ml-2", !canUseVoice && "opacity-50")}
-              onClick={() => {
-                if (!canUseVoice) {
-                  setUpgradeFeature("voice");
-                  setUpgradeDialogOpen(true);
-                } else {
-                  toggleRecording();
-                }
-              }}
-              disabled={isTranscribing || isInputDisabled}
-              aria-label={isRecording ? "Stop recording" : "Start recording"}
-              data-testid="mic-button"
+              className="ml-auto gap-1.5"
+              disabled={
+                (!inputValue.trim() && images.length === 0 && !uploadedDocument) || isSubmitDisabled
+              }
+              aria-label="Send message"
             >
-              {isTranscribing ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : isRecording ? (
-                <Mic className="h-4 w-4 text-orange-500" />
-              ) : (
-                <Mic className="h-4 w-4" />
-              )}
+              <CornerRightUp className="size-3.5" />
             </Button>
-          )}
+          </div>
+        </form>
 
-          <Button
-            type="submit"
-            size="sm"
-            className="ml-auto gap-1.5"
-            disabled={
-              (!inputValue.trim() && images.length === 0 && !uploadedDocument) || isSubmitDisabled
-            }
-            aria-label="Send message"
-          >
-            <CornerRightUp className="size-3.5" />
-          </Button>
-        </div>
-      </form>
-
-      {/* Upgrade prompt dialog */}
-      <UpgradePromptDialog
-        open={upgradeDialogOpen}
-        onOpenChange={setUpgradeDialogOpen}
-        feature={upgradeFeature}
-      />
+        {/* Upgrade prompt dialog */}
+        <UpgradePromptDialog
+          open={upgradeDialogOpen}
+          onOpenChange={setUpgradeDialogOpen}
+          feature={upgradeFeature}
+        />
+      </div>
     </div>
   );
 }

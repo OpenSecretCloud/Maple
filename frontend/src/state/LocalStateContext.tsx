@@ -28,6 +28,7 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
     userPrompt: "",
     systemPrompt: null as string | null,
     userImages: [] as File[],
+    sentViaVoice: false,
     model:
       aliasModelName(import.meta.env.VITE_DEV_MODEL_OVERRIDE) ||
       (() => {
@@ -105,6 +106,10 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
 
   function setUserImages(images: File[]) {
     setLocalState((prev) => ({ ...prev, userImages: images }));
+  }
+
+  function setSentViaVoice(sentViaVoice: boolean) {
+    setLocalState((prev) => ({ ...prev, sentViaVoice }));
   }
 
   function setBillingStatus(status: BillingStatus) {
@@ -304,6 +309,7 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
         userPrompt: localState.userPrompt,
         systemPrompt: localState.systemPrompt,
         userImages: localState.userImages,
+        sentViaVoice: localState.sentViaVoice,
         billingStatus: localState.billingStatus,
         searchQuery: localState.searchQuery,
         setSearchQuery,
@@ -313,6 +319,7 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
         setUserPrompt,
         setSystemPrompt,
         setUserImages,
+        setSentViaVoice,
         addChat,
         getChatById,
         persistChat,
