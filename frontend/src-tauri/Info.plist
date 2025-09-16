@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>Maple needs access to your microphone to record voice messages for your AI conversations.</string>
+  <key>NSCameraUsageDescription</key>
+  <string>Maple needs access to your camera to take photos for your AI conversations.</string>
+</dict>
+</plist>

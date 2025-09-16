@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useMemo } from "react";
 import { X, CornerRightUp, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/utils/utils";
@@ -50,30 +50,54 @@ export function RecordingOverlay({
     return `${mins}:${secs.toString().padStart(2, "0")}`;
   };
 
-  const generateWaveformBars = () => {
+  // Generate stable bar configurations once when component mounts
+  const waveformBars = useMemo(() => {
     const barCount = 30;
     const bars = [];
 
-    for (let i = 0; i < barCount; i++) {
-      const height = Math.random() * 60 + 20;
-      const animationDelay = Math.random() * 0.5;
+    // Create a pseudo-random but stable pattern
+    const seed = 12345; // Fixed seed for consistency
+    let rand = seed;
+    const pseudoRandom = () => {
+      rand = (rand * 9301 + 49297) % 233280;
+      return rand / 233280;
+    };
 
-      bars.push(
-        <div
-          key={i}
-          className="flex-shrink-0 bg-primary/40 rounded-full transition-all duration-300"
-          style={{
-            width: "2px",
-            height: `${height}%`,
-            animation: isRecording
-              ? `pulse ${1 + Math.random()}s ease-in-out ${animationDelay}s infinite`
-              : "none"
-          }}
-        />
-      );
+    for (let i = 0; i < barCount; i++) {
+      // Create a wave-like pattern with some randomness
+      const baseHeight = 35 + Math.sin((i / barCount) * Math.PI * 2) * 20;
+      const randomVariation = pseudoRandom() * 15;
+      const height = baseHeight + randomVariation;
+
+      // Stagger animations for a more natural flow
+      const animationDuration = 0.8 + pseudoRandom() * 0.4; // 0.8-1.2s
+      const animationDelay = (i / barCount) * 0.3; // Progressive delay
+
+      bars.push({
+        height,
+        animationDuration,
+        animationDelay
+      });
     }
 
     return bars;
+  }, []); // Empty deps = generated once
+
+  const renderWaveformBars = () => {
+    return waveformBars.map((bar, i) => (
+      <div
+        key={i}
+        className="flex-shrink-0 bg-primary/40 rounded-full"
+        style={{
+          width: "2px",
+          height: `${bar.height}%`,
+          animation: isRecording
+            ? `pulse ${bar.animationDuration}s ease-in-out ${bar.animationDelay}s infinite`
+            : "none",
+          transition: "height 0.3s ease-out"
+        }}
+      />
+    ));
   };
 
   if (!isRecording) return null;
@@ -133,7 +157,7 @@ export function RecordingOverlay({
           {/* Waveform visualization - only show when not compact */}
           {!isCompact && (
             <div className="flex items-center justify-center h-12 w-full gap-0.5 px-4">
-              {generateWaveformBars()}
+              {renderWaveformBars()}
             </div>
           )}
 

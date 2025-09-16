@@ -27,6 +27,40 @@ import { useNavigate, useLocation } from "@tanstack/react-router";
 import { useIsMobile } from "@/utils/utils";
 import { useChatSession } from "@/hooks/useChatSession";
 
+// Global audio manager to prevent multiple TTS playing simultaneously
+class AudioManager {
+  private static instance: AudioManager;
+  private currentAudio: HTMLAudioElement | null = null;
+  private currentCleanup: (() => void) | null = null;
+
+  static getInstance(): AudioManager {
+    if (!AudioManager.instance) {
+      AudioManager.instance = new AudioManager();
+    }
+    return AudioManager.instance;
+  }
+
+  stopCurrent() {
+    if (this.currentAudio) {
+      this.currentAudio.pause();
+      this.currentAudio.src = "";
+      this.currentAudio = null;
+    }
+    if (this.currentCleanup) {
+      this.currentCleanup();
+      this.currentCleanup = null;
+    }
+  }
+
+  setCurrentAudio(audio: HTMLAudioElement, cleanup: () => void) {
+    this.stopCurrent(); // Stop any existing audio
+    this.currentAudio = audio;
+    this.currentCleanup = cleanup;
+  }
+}
+
+const audioManager = AudioManager.getInstance();
+
 export const Route = createFileRoute("/_auth/chat/$chatId")({
   component: ChatComponent
 });
@@ -90,6 +124,8 @@ function SystemMessage({
   const [isPlaying, setIsPlaying] = useState(false);
   const [upgradeDialogOpen, setUpgradeDialogOpen] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const audioUrlRef = useRef<string | null>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
   const openai = useOpenAI();
   const { setBillingStatus } = useLocalState();
 
@@ -121,53 +157,105 @@ function SystemMessage({
     }
 
     if (isPlaying) {
-      // Stop playing
+      // Stop playing and cleanup
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+        abortControllerRef.current = null;
+      }
       if (audioRef.current) {
         audioRef.current.pause();
+        audioRef.current.src = "";
         audioRef.current = null;
       }
+      if (audioUrlRef.current) {
+        URL.revokeObjectURL(audioUrlRef.current);
+        audioUrlRef.current = null;
+      }
       setIsPlaying(false);
+      return;
+    }
+
+    // Guard against empty text
+    if (!textWithoutThinking.trim()) {
       return;
     }
 
     try {
       setIsPlaying(true);
 
+      // Create abort controller for this request
+      const abortController = new AbortController();
+      abortControllerRef.current = abortController;
+
       // Generate speech using OpenAI TTS
-      const response = await openai.audio.speech.create({
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        model: "kokoro" as any,
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        voice: "af_sky+af_bella" as any,
-        input: textWithoutThinking,
-        response_format: "mp3"
-      });
+      const response = await openai.audio.speech.create(
+        {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          model: "kokoro" as any,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          voice: "af_sky+af_bella" as any,
+          input: textWithoutThinking,
+          response_format: "mp3"
+        },
+        { signal: abortController.signal }
+      );
 
       // Convert response to blob and create audio URL
       const blob = new Blob([await response.arrayBuffer()], { type: "audio/mp3" });
       const audioUrl = URL.createObjectURL(blob);
+      audioUrlRef.current = audioUrl;
 
       // Create and play audio
       const audio = new Audio(audioUrl);
       audioRef.current = audio;
 
+      // Register with audio manager to stop any other playing audio
+      audioManager.setCurrentAudio(audio, () => {
+        setIsPlaying(false);
+        if (audioUrlRef.current) {
+          URL.revokeObjectURL(audioUrlRef.current);
+          audioUrlRef.current = null;
+        }
+        audioRef.current = null;
+        abortControllerRef.current = null;
+      });
+
       audio.onended = () => {
         setIsPlaying(false);
-        URL.revokeObjectURL(audioUrl);
+        if (audioUrlRef.current) {
+          URL.revokeObjectURL(audioUrlRef.current);
+          audioUrlRef.current = null;
+        }
         audioRef.current = null;
+        abortControllerRef.current = null;
       };
 
       audio.onerror = () => {
         console.error("Error playing audio");
         setIsPlaying(false);
-        URL.revokeObjectURL(audioUrl);
+        if (audioUrlRef.current) {
+          URL.revokeObjectURL(audioUrlRef.current);
+          audioUrlRef.current = null;
+        }
         audioRef.current = null;
+        abortControllerRef.current = null;
       };
 
       await audio.play();
     } catch (error) {
+      // Ignore intentional aborts
+      if (error instanceof Error && error.name === "AbortError") {
+        return;
+      }
       console.error("TTS error:", error);
       setIsPlaying(false);
+      // Cleanup on error
+      if (audioUrlRef.current) {
+        URL.revokeObjectURL(audioUrlRef.current);
+        audioUrlRef.current = null;
+      }
+      audioRef.current = null;
+      abortControllerRef.current = null;
     }
   }, [textWithoutThinking, isPlaying, openai, canUseTTS]);
 
@@ -182,9 +270,21 @@ function SystemMessage({
   // Cleanup on unmount
   useEffect(() => {
     return () => {
+      // Abort any in-flight requests
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+        abortControllerRef.current = null;
+      }
+      // Stop and cleanup audio
       if (audioRef.current) {
         audioRef.current.pause();
+        audioRef.current.src = "";
         audioRef.current = null;
+      }
+      // Revoke object URL to prevent memory leak
+      if (audioUrlRef.current) {
+        URL.revokeObjectURL(audioUrlRef.current);
+        audioUrlRef.current = null;
       }
     };
   }, []);

@@ -248,6 +248,7 @@ export default function Component({
   const [isRecording, setIsRecording] = useState(false);
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [isProcessingSend, setIsProcessingSend] = useState(false);
+  const [audioError, setAudioError] = useState<string | null>(null);
   const recorderRef = useRef<RecordRTC | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
 
@@ -481,12 +482,25 @@ export default function Component({
 
   // Audio recording functions
   const startRecording = async () => {
+    // Prevent duplicate starts
+    if (isRecording || isTranscribing) return;
+
     try {
+      // Check if getUserMedia is available
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        setAudioError(
+          "Microphone access is blocked. Please check your browser permissions or disable Lockdown Mode for this site (Settings > Safari > Advanced > Lockdown Mode)."
+        );
+        setTimeout(() => setAudioError(null), 8000); // Longer timeout for this important message
+        return;
+      }
+
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
-          echoCancellation: true,
+          echoCancellation: false, // Disable to reduce processing overhead
           noiseSuppression: true,
-          sampleRate: 44100
+          autoGainControl: false, // Disable AGC to prevent audio ducking
+          sampleRate: 16000 // Lower sample rate to match output
         }
       });
 
@@ -498,16 +512,37 @@ export default function Component({
         mimeType: "audio/wav",
         recorderType: RecordRTC.StereoAudioRecorder,
         numberOfAudioChannels: 1, // Mono audio for smaller file size
-        desiredSampRate: 16000, // 16kHz is good for speech
-        timeSlice: 1000 // Get data every second (optional)
+        desiredSampRate: 16000 // 16kHz is good for speech
       });
 
       recorderRef.current = recorder;
       recorder.startRecording();
       setIsRecording(true);
+      setAudioError(null); // Clear any previous errors
     } catch (error) {
       console.error("Failed to start recording:", error);
-      alert("Failed to access microphone. Please check your permissions.");
+      const err = error as Error & { name?: string };
+      console.error("Error name:", err.name);
+      console.error("Error message:", err.message);
+
+      // Handle different error types
+      if (err.name === "NotAllowedError" || err.name === "PermissionDeniedError") {
+        setAudioError(
+          "Microphone access denied. Please enable microphone permissions in Settings > Maple."
+        );
+      } else if (err.name === "NotFoundError" || err.name === "DevicesNotFoundError") {
+        setAudioError("No microphone found. Please check your device.");
+      } else if (err.name === "NotReadableError" || err.name === "TrackStartError") {
+        setAudioError("Microphone is already in use by another app.");
+      } else {
+        // Include error details for debugging
+        setAudioError(
+          `Failed to access microphone: ${err.name || "Unknown error"} - ${err.message || "Please try again"}`
+        );
+      }
+
+      // Clear error after 5 seconds
+      setTimeout(() => setAudioError(null), 5000);
     }
   };
 
@@ -521,7 +556,25 @@ export default function Component({
       }
 
       recorderRef.current.stopRecording(async () => {
-        const blob = recorderRef.current!.getBlob();
+        // Safely get blob (recorder might be null by now)
+        const blob = recorderRef.current?.getBlob();
+
+        if (!blob || blob.size === 0) {
+          console.error("No audio recorded or empty recording");
+          if (shouldSend) {
+            setAudioError("No audio was recorded. Please try again.");
+            setTimeout(() => setAudioError(null), 5000);
+          }
+          // Still need to clean up
+          if (streamRef.current) {
+            streamRef.current.getTracks().forEach((track) => track.stop());
+            streamRef.current = null;
+          }
+          recorderRef.current = null;
+          setIsProcessingSend(false);
+          setIsRecording(false);
+          return;
+        }
 
         // Create a proper WAV file
         const audioFile = new File([blob], "recording.wav", {
@@ -574,6 +627,9 @@ export default function Component({
             }
           } catch (error) {
             console.error("Transcription failed:", error);
+            setAudioError("Failed to transcribe audio. Please try again.");
+            // Clear error after 5 seconds
+            setTimeout(() => setAudioError(null), 5000);
           } finally {
             setIsTranscribing(false);
             setIsProcessingSend(false);
@@ -865,6 +921,23 @@ export default function Component({
     };
   }, [imageUrls]);
 
+  // Cleanup audio recording on unmount
+  useEffect(() => {
+    return () => {
+      // Stop any active recording and release microphone
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((track) => track.stop());
+        streamRef.current = null;
+      }
+      // Clean up recorder
+      if (recorderRef.current && isRecording) {
+        recorderRef.current.stopRecording(() => {
+          recorderRef.current = null;
+        });
+      }
+    };
+  }, []);
+
   // No longer need token calculation or plan type check since we removed the hard limit
   // Just keeping the TokenWarning component which handles its own calculations
   const placeholderText = (() => {
@@ -947,7 +1020,17 @@ export default function Component({
               e.preventDefault();
               return;
             }
-            if (!isFocused) {
+            // Don't auto-focus if clicking on a button or interactive element
+            const target = e.target as HTMLElement;
+            const isInteractiveElement =
+              target.tagName === "BUTTON" ||
+              target.closest("button") ||
+              target.tagName === "INPUT" ||
+              target.tagName === "SELECT" ||
+              target.closest('[role="button"]') ||
+              target.closest('[role="combobox"]');
+
+            if (!isInteractiveElement && !isFocused) {
               inputRef.current?.focus();
             }
           }}
@@ -957,7 +1040,8 @@ export default function Component({
             isUploadingDocument ||
             documentError ||
             imageError ||
-            imageConversionError) && (
+            imageConversionError ||
+            audioError) && (
             <div className="mb-2 space-y-2">
               {images.length > 0 && (
                 <div className="flex gap-2 items-center flex-wrap">
@@ -1012,6 +1096,11 @@ export default function Component({
               {documentError && (
                 <div className="text-xs text-destructive p-2 bg-destructive/10 rounded-md">
                   {documentError}
+                </div>
+              )}
+              {audioError && (
+                <div className="text-xs text-destructive p-2 bg-destructive/10 rounded-md">
+                  {audioError}
                 </div>
               )}
             </div>
@@ -1073,7 +1162,7 @@ export default function Component({
                 type="button"
                 size="sm"
                 variant="ghost"
-                className={cn("ml-2", !canUseImages && "opacity-50")}
+                className={cn("ml-1", !canUseImages && "opacity-50")}
                 onClick={() => {
                   if (!canUseImages) {
                     setUpgradeFeature("image");
@@ -1103,7 +1192,7 @@ export default function Component({
                 type="button"
                 size="sm"
                 variant="ghost"
-                className={cn("ml-2", !canUseVoice && "opacity-50")}
+                className={cn("ml-1", !canUseVoice && "opacity-50")}
                 onClick={() => {
                   if (!canUseVoice) {
                     setUpgradeFeature("voice");
