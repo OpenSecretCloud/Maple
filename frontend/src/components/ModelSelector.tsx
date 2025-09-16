@@ -15,6 +15,7 @@ import { UpgradePromptDialog } from "@/components/UpgradePromptDialog";
 // Model configuration for display names, badges, and token limits
 type ModelCfg = {
   displayName: string;
+  shortName: string;
   badges?: string[];
   disabled?: boolean;
   requiresPro?: boolean;
@@ -26,14 +27,17 @@ type ModelCfg = {
 export const MODEL_CONFIG: Record<string, ModelCfg> = {
   "ibnzterrell/Meta-Llama-3.3-70B-Instruct-AWQ-INT4": {
     displayName: "Llama 3.3 70B",
+    shortName: "Llama 3.3",
     tokenLimit: 70000
   },
   "llama-3.3-70b": {
     displayName: "Llama 3.3 70B",
+    shortName: "Llama 3.3",
     tokenLimit: 70000
   },
   "leon-se/gemma-3-27b-it-fp8-dynamic": {
     displayName: "Gemma 3 27B",
+    shortName: "Gemma 3",
     badges: ["Starter"],
     requiresStarter: true,
     supportsVision: true,
@@ -41,18 +45,21 @@ export const MODEL_CONFIG: Record<string, ModelCfg> = {
   },
   "deepseek-r1-0528": {
     displayName: "DeepSeek R1 0528 671B",
+    shortName: "DeepSeek R1",
     badges: ["Pro", "New"],
     requiresPro: true,
     tokenLimit: 130000
   },
   "gpt-oss-120b": {
     displayName: "OpenAI GPT-OSS 120B",
+    shortName: "GPT-OSS",
     badges: ["Pro", "New"],
     requiresPro: true,
     tokenLimit: 128000
   },
   "mistral-small-3-1-24b": {
     displayName: "Mistral Small 3.1 24B",
+    shortName: "Mistral Small",
     badges: ["Pro"],
     requiresPro: true,
     supportsVision: true,
@@ -60,12 +67,14 @@ export const MODEL_CONFIG: Record<string, ModelCfg> = {
   },
   "qwen2-5-72b": {
     displayName: "Qwen 2.5 72B",
+    shortName: "Qwen 2.5",
     badges: ["Pro"],
     requiresPro: true,
     tokenLimit: 128000
   },
   "qwen3-coder-480b": {
     displayName: "Qwen3 Coder 480B",
+    shortName: "Qwen3 Coder",
     badges: ["Pro", "New"],
     requiresPro: true,
     tokenLimit: 128000
@@ -274,10 +283,12 @@ export function ModelSelector({
     return <span className="flex items-center gap-1">{elements}</span>;
   };
 
-  // Always show the same format, whether dropdown or not
+  // Show short name in the collapsed view (without badges)
   const modelDisplay = (
     <div className="flex items-center gap-1">
-      <div className="text-xs font-medium">{getDisplayName(model)}</div>
+      <div className="text-xs font-medium">
+        {MODEL_CONFIG[model]?.shortName || MODEL_CONFIG[model]?.displayName || model}
+      </div>
     </div>
   );
 
