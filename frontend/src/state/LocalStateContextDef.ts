@@ -41,9 +41,13 @@ export type LocalState = {
   availableModels: OpenSecretModel[];
   setModel: (model: string) => void;
   setAvailableModels: (models: OpenSecretModel[]) => void;
+  /** Whether the whisper transcription model is available */
+  hasWhisperModel: boolean;
+  setHasWhisperModel: (hasWhisper: boolean) => void;
   userPrompt: string;
   systemPrompt: string | null;
   userImages: File[];
+  sentViaVoice: boolean;
   billingStatus: BillingStatus | null;
   /** Current search query for filtering chat history */
   searchQuery: string;
@@ -57,6 +61,7 @@ export type LocalState = {
   setUserPrompt: (prompt: string) => void;
   setSystemPrompt: (prompt: string | null) => void;
   setUserImages: (images: File[]) => void;
+  setSentViaVoice: (sentViaVoice: boolean) => void;
   addChat: (title?: string) => Promise<string>;
   getChatById: (id: string) => Promise<Chat | undefined>;
   persistChat: (chat: Chat) => Promise<void>;
@@ -77,9 +82,12 @@ export const LocalStateContext = createContext<LocalState>({
   availableModels: [],
   setModel: () => void 0,
   setAvailableModels: () => void 0,
+  hasWhisperModel: true,
+  setHasWhisperModel: () => void 0,
   userPrompt: "",
   systemPrompt: null,
   userImages: [],
+  sentViaVoice: false,
   billingStatus: null,
   searchQuery: "",
   setSearchQuery: () => void 0,
@@ -89,6 +97,7 @@ export const LocalStateContext = createContext<LocalState>({
   setUserPrompt: () => void 0,
   setSystemPrompt: () => void 0,
   setUserImages: () => void 0,
+  setSentViaVoice: () => void 0,
   addChat: async () => "",
   getChatById: async () => undefined,
   persistChat: async () => void 0,

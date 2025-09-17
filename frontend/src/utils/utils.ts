@@ -81,9 +81,12 @@ export function useClickOutside(
 export function aliasModelName(modelName: string | undefined): string {
   if (!modelName) return "";
 
-  // Map old complicated model name to new simplified name
-  if (modelName === "ibnzterrell/Meta-Llama-3.3-70B-Instruct-AWQ-INT4") {
-    return "llama3-3-70b";
+  // Map old model names to new simplified name
+  if (
+    modelName === "ibnzterrell/Meta-Llama-3.3-70B-Instruct-AWQ-INT4" ||
+    modelName === "llama3-3-70b"
+  ) {
+    return "llama-3.3-70b";
   }
 
   return modelName;

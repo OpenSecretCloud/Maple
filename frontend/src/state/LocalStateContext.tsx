@@ -12,7 +12,7 @@ export {
   type LocalState
 } from "./LocalStateContextDef";
 
-export const DEFAULT_MODEL_ID = "llama3-3-70b";
+export const DEFAULT_MODEL_ID = "llama-3.3-70b";
 
 export const LocalStateProvider = ({ children }: { children: React.ReactNode }) => {
   /** The model that should be assumed when a chat doesn't yet have one */
@@ -28,6 +28,7 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
     userPrompt: "",
     systemPrompt: null as string | null,
     userImages: [] as File[],
+    sentViaVoice: false,
     model:
       aliasModelName(import.meta.env.VITE_DEV_MODEL_OVERRIDE) ||
       (() => {
@@ -39,6 +40,7 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
         }
       })(),
     availableModels: [llamaModel] as OpenSecretModel[],
+    hasWhisperModel: true, // Default to true to avoid hiding button during loading
     billingStatus: null as BillingStatus | null,
     searchQuery: "",
     isSearchVisible: false,
@@ -104,6 +106,10 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
 
   function setUserImages(images: File[]) {
     setLocalState((prev) => ({ ...prev, userImages: images }));
+  }
+
+  function setSentViaVoice(sentViaVoice: boolean) {
+    setLocalState((prev) => ({ ...prev, sentViaVoice }));
   }
 
   function setBillingStatus(status: BillingStatus) {
@@ -287,6 +293,10 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
     setLocalState((prev) => ({ ...prev, availableModels: models }));
   }
 
+  function setHasWhisperModel(hasWhisper: boolean) {
+    setLocalState((prev) => ({ ...prev, hasWhisperModel: hasWhisper }));
+  }
+
   return (
     <LocalStateContext.Provider
       value={{
@@ -294,9 +304,12 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
         availableModels: localState.availableModels,
         setModel,
         setAvailableModels,
+        hasWhisperModel: localState.hasWhisperModel,
+        setHasWhisperModel,
         userPrompt: localState.userPrompt,
         systemPrompt: localState.systemPrompt,
         userImages: localState.userImages,
+        sentViaVoice: localState.sentViaVoice,
         billingStatus: localState.billingStatus,
         searchQuery: localState.searchQuery,
         setSearchQuery,
@@ -306,6 +319,7 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
         setUserPrompt,
         setSystemPrompt,
         setUserImages,
+        setSentViaVoice,
         addChat,
         getChatById,
         persistChat,

@@ -1,17 +1,65 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { createFileRoute } from "@tanstack/react-router";
-import { AsteriskIcon, Check, Copy, UserIcon, ChevronDown, Bot, SquarePenIcon } from "lucide-react";
+import {
+  AsteriskIcon,
+  Check,
+  Copy,
+  UserIcon,
+  ChevronDown,
+  Bot,
+  SquarePenIcon,
+  Volume2,
+  Square
+} from "lucide-react";
 import ChatBox from "@/components/ChatBox";
 import { useOpenAI } from "@/ai/useOpenAi";
 import { useLocalState } from "@/state/useLocalState";
 import { Markdown, stripThinkingTags } from "@/components/markdown";
 import { ChatMessage, DEFAULT_MODEL_ID } from "@/state/LocalStateContext";
+import { UpgradePromptDialog } from "@/components/UpgradePromptDialog";
+import { useQuery } from "@tanstack/react-query";
+import { getBillingService } from "@/billing/billingService";
+import { cn } from "@/utils/utils";
 import { Sidebar, SidebarToggle } from "@/components/Sidebar";
 import { useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { useNavigate, useLocation } from "@tanstack/react-router";
 import { useIsMobile } from "@/utils/utils";
 import { useChatSession } from "@/hooks/useChatSession";
+
+// Global audio manager to prevent multiple TTS playing simultaneously
+class AudioManager {
+  private static instance: AudioManager;
+  private currentAudio: HTMLAudioElement | null = null;
+  private currentCleanup: (() => void) | null = null;
+
+  static getInstance(): AudioManager {
+    if (!AudioManager.instance) {
+      AudioManager.instance = new AudioManager();
+    }
+    return AudioManager.instance;
+  }
+
+  stopCurrent() {
+    if (this.currentAudio) {
+      this.currentAudio.pause();
+      this.currentAudio.src = "";
+      this.currentAudio = null;
+    }
+    if (this.currentCleanup) {
+      this.currentCleanup();
+      this.currentCleanup = null;
+    }
+  }
+
+  setCurrentAudio(audio: HTMLAudioElement, cleanup: () => void) {
+    this.stopCurrent(); // Stop any existing audio
+    this.currentAudio = audio;
+    this.currentCleanup = cleanup;
+  }
+}
+
+const audioManager = AudioManager.getInstance();
 
 export const Route = createFileRoute("/_auth/chat/$chatId")({
   component: ChatComponent
@@ -63,14 +111,183 @@ function UserMessage({ message, chatId }: { message: ChatMessage; chatId: string
 function SystemMessage({
   text,
   loading,
-  chatId
+  chatId,
+  autoPlay = false
 }: {
   text: string;
   loading?: boolean;
   chatId: string;
+  autoPlay?: boolean;
 }) {
   const textWithoutThinking = stripThinkingTags(text);
   const { isCopied, handleCopy } = useCopyToClipboard(textWithoutThinking);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [upgradeDialogOpen, setUpgradeDialogOpen] = useState(false);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const audioUrlRef = useRef<string | null>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const openai = useOpenAI();
+  const { setBillingStatus } = useLocalState();
+
+  // Fetch billing status to check if user has Pro/Team/Max access
+  const { data: billingStatus } = useQuery({
+    queryKey: ["billingStatus"],
+    queryFn: async () => {
+      const billingService = getBillingService();
+      const status = await billingService.getBillingStatus();
+      setBillingStatus(status);
+      return status;
+    }
+  });
+
+  // Check if user has Pro/Team/Max access for TTS
+  const hasProTeamAccess =
+    billingStatus &&
+    (billingStatus.product_name?.toLowerCase().includes("pro") ||
+      billingStatus.product_name?.toLowerCase().includes("max") ||
+      billingStatus.product_name?.toLowerCase().includes("team"));
+
+  const canUseTTS = hasProTeamAccess;
+
+  const handleTTS = useCallback(async () => {
+    // Check if user has access
+    if (!canUseTTS) {
+      setUpgradeDialogOpen(true);
+      return;
+    }
+
+    if (isPlaying) {
+      // Stop playing and cleanup
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+        abortControllerRef.current = null;
+      }
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current.src = "";
+        audioRef.current = null;
+      }
+      if (audioUrlRef.current) {
+        URL.revokeObjectURL(audioUrlRef.current);
+        audioUrlRef.current = null;
+      }
+      setIsPlaying(false);
+      return;
+    }
+
+    // Guard against empty text
+    if (!textWithoutThinking.trim()) {
+      return;
+    }
+
+    try {
+      setIsPlaying(true);
+
+      // Create abort controller for this request
+      const abortController = new AbortController();
+      abortControllerRef.current = abortController;
+
+      // Generate speech using OpenAI TTS
+      const response = await openai.audio.speech.create(
+        {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          model: "kokoro" as any,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          voice: "af_sky+af_bella" as any,
+          input: textWithoutThinking,
+          response_format: "mp3"
+        },
+        { signal: abortController.signal }
+      );
+
+      // Convert response to blob and create audio URL
+      const blob = new Blob([await response.arrayBuffer()], { type: "audio/mp3" });
+      const audioUrl = URL.createObjectURL(blob);
+      audioUrlRef.current = audioUrl;
+
+      // Create and play audio
+      const audio = new Audio(audioUrl);
+      audioRef.current = audio;
+
+      // Register with audio manager to stop any other playing audio
+      audioManager.setCurrentAudio(audio, () => {
+        setIsPlaying(false);
+        if (audioUrlRef.current) {
+          URL.revokeObjectURL(audioUrlRef.current);
+          audioUrlRef.current = null;
+        }
+        audioRef.current = null;
+        abortControllerRef.current = null;
+      });
+
+      audio.onended = () => {
+        setIsPlaying(false);
+        if (audioUrlRef.current) {
+          URL.revokeObjectURL(audioUrlRef.current);
+          audioUrlRef.current = null;
+        }
+        audioRef.current = null;
+        abortControllerRef.current = null;
+      };
+
+      audio.onerror = () => {
+        console.error("Error playing audio");
+        setIsPlaying(false);
+        if (audioUrlRef.current) {
+          URL.revokeObjectURL(audioUrlRef.current);
+          audioUrlRef.current = null;
+        }
+        audioRef.current = null;
+        abortControllerRef.current = null;
+      };
+
+      await audio.play();
+    } catch (error) {
+      // Ignore intentional aborts
+      if (error instanceof Error && error.name === "AbortError") {
+        return;
+      }
+      console.error("TTS error:", error);
+      setIsPlaying(false);
+      // Cleanup on error
+      if (audioUrlRef.current) {
+        URL.revokeObjectURL(audioUrlRef.current);
+        audioUrlRef.current = null;
+      }
+      audioRef.current = null;
+      abortControllerRef.current = null;
+    }
+  }, [textWithoutThinking, isPlaying, openai, canUseTTS]);
+
+  // Auto-play TTS when message is complete and autoPlay is true
+  useEffect(() => {
+    if (autoPlay && !loading && textWithoutThinking && canUseTTS && !isPlaying) {
+      // Only auto-play once when the message completes
+      handleTTS();
+    }
+  }, [autoPlay, loading, canUseTTS]); // Don't include handleTTS to avoid loops
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      // Abort any in-flight requests
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+        abortControllerRef.current = null;
+      }
+      // Stop and cleanup audio
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current.src = "";
+        audioRef.current = null;
+      }
+      // Revoke object URL to prevent memory leak
+      if (audioUrlRef.current) {
+        URL.revokeObjectURL(audioUrlRef.current);
+        audioUrlRef.current = null;
+      }
+    };
+  }, []);
 
   return (
     <div className="group flex flex-col p-4">
@@ -80,17 +297,34 @@ function SystemMessage({
         </div>
         <div className="flex flex-col gap-2">
           <Markdown content={text} loading={loading} chatId={chatId} />
-          <Button
-            variant="ghost"
-            size="sm"
-            className="self-start -mx-2 -mb-2 group-hover:opacity-100 opacity-0 transition-opacity"
-            onClick={handleCopy}
-            aria-label={isCopied ? "Copied" : "Copy to clipboard"}
-          >
-            {isCopied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
-          </Button>
+          <div className="flex gap-2 items-center">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-8 w-8 p-0"
+              onClick={handleCopy}
+              aria-label={isCopied ? "Copied" : "Copy to clipboard"}
+            >
+              {isCopied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className={cn("h-8 w-8 p-0", !canUseTTS && "opacity-50")}
+              onClick={handleTTS}
+              aria-label={isPlaying ? "Stop audio" : "Play audio"}
+            >
+              {isPlaying ? <Square className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}
+            </Button>
+          </div>
         </div>
       </div>
+
+      <UpgradePromptDialog
+        open={upgradeDialogOpen}
+        onOpenChange={setUpgradeDialogOpen}
+        feature="tts"
+      />
     </div>
   );
 }
@@ -145,7 +379,7 @@ function SystemPromptMessage({ text }: { text: string }) {
           <Button
             variant="ghost"
             size="sm"
-            className="self-start -mx-2 -mb-2 group-hover:opacity-100 opacity-0 transition-opacity"
+            className="h-8 w-8 p-0 self-start"
             onClick={handleCopy}
             aria-label={isCopied ? "Copied" : "Copy to clipboard"}
           >
@@ -170,6 +404,8 @@ function ChatComponent() {
     setSystemPrompt,
     userImages,
     setUserImages,
+    sentViaVoice,
+    setSentViaVoice,
     addChat
   } = useLocalState();
   const openai = useOpenAI();
@@ -181,6 +417,8 @@ function ChatComponent() {
 
   const [isSummarizing, setIsSummarizing] = useState(false);
   const [imageConversionError, setImageConversionError] = useState<string | null>(null);
+  const [shouldAutoPlayTTS, setShouldAutoPlayTTS] = useState(false);
+  const [autoPlayMessageIndex, setAutoPlayMessageIndex] = useState<number | null>(null);
 
   const chatContainerRef = useRef<HTMLDivElement>(null);
 
@@ -227,11 +465,18 @@ function ChatComponent() {
       const prompt = userPrompt;
       const sysPrompt = systemPrompt;
       const images = userImages;
+      const wasVoice = sentViaVoice;
+
+      // If sent via voice, set the flag for auto-play TTS
+      if (wasVoice) {
+        setShouldAutoPlayTTS(true);
+      }
 
       // Clear state immediately
       setUserPrompt("");
       setSystemPrompt(null);
       setUserImages([]);
+      setSentViaVoice(false);
 
       // Send message with system prompt as separate parameter
       appendUserMessage(prompt, images, undefined, undefined, sysPrompt || undefined).catch(
@@ -242,6 +487,7 @@ function ChatComponent() {
             setUserPrompt(prompt);
             setSystemPrompt(sysPrompt);
             setUserImages(images);
+            setSentViaVoice(wasVoice);
             initialPromptProcessedRef.current = false;
           }
         }
@@ -251,12 +497,14 @@ function ChatComponent() {
     userPrompt,
     systemPrompt,
     userImages,
+    sentViaVoice,
     localChat.messages.length,
     phase,
     appendUserMessage,
     setUserPrompt,
     setSystemPrompt,
-    setUserImages
+    setUserImages,
+    setSentViaVoice
   ]);
 
   // Handle mobile new chat (matching sidebar behavior)
@@ -354,11 +602,14 @@ function ChatComponent() {
   }, [localChat.messages]);
 
   // Auto-scroll when assistant starts streaming (currentStreamingMessage appears)
+  // and handle TTS auto-play when streaming completes
   const prevHadStreamingMessage = useRef(false);
+  const prevStreamingMessage = useRef<string>("");
 
   useEffect(() => {
     const hasStreamingMessage = !!currentStreamingMessage;
     const justStartedStreaming = hasStreamingMessage && !prevHadStreamingMessage.current;
+    const justFinishedStreaming = !hasStreamingMessage && prevHadStreamingMessage.current;
 
     if (justStartedStreaming) {
       // Scroll when assistant starts streaming
@@ -374,8 +625,29 @@ function ChatComponent() {
       }
     }
 
+    // When streaming just completed and we should auto-play TTS
+    if (justFinishedStreaming && shouldAutoPlayTTS && prevStreamingMessage.current) {
+      // Find the last assistant message index and trigger TTS for it
+      const lastAssistantMessageIndex = localChat.messages
+        .map((m, i) => (m.role === "assistant" ? i : -1))
+        .filter((i) => i >= 0)
+        .pop();
+
+      if (lastAssistantMessageIndex !== undefined) {
+        // Set the message index to auto-play
+        setAutoPlayMessageIndex(lastAssistantMessageIndex);
+        setShouldAutoPlayTTS(false); // Reset the flag
+
+        // Clear the auto-play index after a short delay to prevent re-playing
+        setTimeout(() => {
+          setAutoPlayMessageIndex(null);
+        }, 1000);
+      }
+    }
+
     prevHadStreamingMessage.current = hasStreamingMessage;
-  }, [currentStreamingMessage]);
+    prevStreamingMessage.current = currentStreamingMessage || "";
+  }, [currentStreamingMessage, shouldAutoPlayTTS, localChat.messages]);
 
   const sendMessage = useCallback(
     async (
@@ -383,10 +655,17 @@ function ChatComponent() {
       systemPrompt?: string,
       images?: File[],
       documentText?: string,
-      documentMetadata?: { filename: string; fullContent: string }
+      documentMetadata?: { filename: string; fullContent: string },
+      sentViaVoice?: boolean
     ) => {
+      // Store the voice flag for later use when response completes
+      if (sentViaVoice) {
+        setShouldAutoPlayTTS(true);
+      }
       // Use the appendUserMessage from the hook with system prompt as separate parameter
-      await appendUserMessage(input, images, documentText, documentMetadata, systemPrompt);
+      // Don't await - let it run in background so the recording overlay can disappear immediately
+      appendUserMessage(input, images, documentText, documentMetadata, systemPrompt);
+      // Return immediately so the overlay disappears right after sending
       // Note: Auto-scrolling is handled by the effect that watches for streaming start
     },
     [appendUserMessage]
@@ -556,6 +835,7 @@ END OF INSTRUCTIONS`;
                         : message.content.find((p) => p.type === "text")?.text || ""
                     }
                     chatId={chatId}
+                    autoPlay={index === autoPlayMessageIndex}
                   />
                 )}
               </div>

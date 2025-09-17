@@ -117,7 +117,8 @@ function Index() {
     systemPrompt?: string,
     images?: File[],
     documentText?: string,
-    documentMetadata?: { filename: string; fullContent: string }
+    documentMetadata?: { filename: string; fullContent: string },
+    sentViaVoice?: boolean
   ) {
     // Allow submission if there's text input, images, or a document
     const hasTextInput = input.trim() !== "";
@@ -143,6 +144,7 @@ function Index() {
     localState.setUserPrompt(finalInput);
     localState.setSystemPrompt(systemPrompt?.trim() || null);
     localState.setUserImages(images || []);
+    localState.setSentViaVoice(sentViaVoice || false);
 
     // Store document metadata if provided (we'll need to add this to LocalState)
     if (documentMetadata) {

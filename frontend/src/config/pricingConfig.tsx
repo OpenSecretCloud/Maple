@@ -44,24 +44,13 @@ export const PRICING_PLANS: PricingPlan[] = [
       { text: "Rename Chats", included: true, icon: <Check className="w-4 h-4 text-green-500" /> },
       { text: "Image Upload", included: false, icon: <X className="w-4 h-4 text-red-500" /> },
       {
-        text: "DeepSeek R1 0528 671B",
+        text: "Voice Recording (Whisper)",
         included: false,
         icon: <X className="w-4 h-4 text-red-500" />
       },
+      { text: "Text-to-Speech", included: false, icon: <X className="w-4 h-4 text-red-500" /> },
       {
-        text: "OpenAI GPT-OSS 120B",
-        included: false,
-        icon: <X className="w-4 h-4 text-red-500" />
-      },
-      { text: "Gemma 3 27B", included: false, icon: <X className="w-4 h-4 text-red-500" /> },
-      {
-        text: "Mistral Small 3.1 24B",
-        included: false,
-        icon: <X className="w-4 h-4 text-red-500" />
-      },
-      { text: "Qwen 2.5 72B", included: false, icon: <X className="w-4 h-4 text-red-500" /> },
-      {
-        text: "Qwen3 Coder 480B",
+        text: "6 Powerful Models (including DeepSeek R1)",
         included: false,
         icon: <X className="w-4 h-4 text-red-500" />
       },
@@ -90,28 +79,17 @@ export const PRICING_PLANS: PricingPlan[] = [
         icon: <Check className="w-4 h-4 text-green-500" />
       },
       { text: "Gemma 3 27B", included: true, icon: <Check className="w-4 h-4 text-green-500" /> },
+      { text: "Image Upload", included: true, icon: <Check className="w-4 h-4 text-green-500" /> },
       {
-        text: "DeepSeek R1 0528 671B",
+        text: "Voice Recording (Whisper)",
         included: false,
         icon: <X className="w-4 h-4 text-red-500" />
       },
       {
-        text: "OpenAI GPT-OSS 120B",
+        text: "5 More Powerful Models",
         included: false,
         icon: <X className="w-4 h-4 text-red-500" />
       },
-      {
-        text: "Mistral Small 3.1 24B",
-        included: false,
-        icon: <X className="w-4 h-4 text-red-500" />
-      },
-      { text: "Qwen 2.5 72B", included: false, icon: <X className="w-4 h-4 text-red-500" /> },
-      {
-        text: "Qwen3 Coder 480B",
-        included: false,
-        icon: <X className="w-4 h-4 text-red-500" />
-      },
-      { text: "Image Upload", included: false, icon: <X className="w-4 h-4 text-red-500" /> },
       { text: "API Access", included: false, icon: <X className="w-4 h-4 text-red-500" /> }
     ],
     ctaText: "Start Chatting"
@@ -133,28 +111,17 @@ export const PRICING_PLANS: PricingPlan[] = [
       },
       { text: "Image Upload", included: true, icon: <Check className="w-4 h-4 text-green-500" /> },
       {
-        text: "DeepSeek R1 0528 671B",
+        text: "Voice Recording (Whisper Large v3)",
         included: true,
         icon: <Check className="w-4 h-4 text-green-500" />
       },
       {
-        text: "OpenAI GPT-OSS 120B",
-        included: true,
-        icon: <Check className="w-4 h-4 text-green-500" />
-      },
-      { text: "Gemma 3 27B", included: true, icon: <Check className="w-4 h-4 text-green-500" /> },
-      {
-        text: "Mistral Small 3.1 24B",
+        text: "Text-to-Speech",
         included: true,
         icon: <Check className="w-4 h-4 text-green-500" />
       },
       {
-        text: "Qwen 2.5 72B",
-        included: true,
-        icon: <Check className="w-4 h-4 text-green-500" />
-      },
-      {
-        text: "Qwen3 Coder 480B",
+        text: "6 Powerful Models (including DeepSeek R1)",
         included: true,
         icon: <Check className="w-4 h-4 text-green-500" />
       },
@@ -194,28 +161,17 @@ export const PRICING_PLANS: PricingPlan[] = [
       },
       { text: "Image Upload", included: true, icon: <Check className="w-4 h-4 text-green-500" /> },
       {
-        text: "DeepSeek R1 0528 671B",
+        text: "Voice Recording (Whisper Large v3)",
         included: true,
         icon: <Check className="w-4 h-4 text-green-500" />
       },
       {
-        text: "OpenAI GPT-OSS 120B",
-        included: true,
-        icon: <Check className="w-4 h-4 text-green-500" />
-      },
-      { text: "Gemma 3 27B", included: true, icon: <Check className="w-4 h-4 text-green-500" /> },
-      {
-        text: "Mistral Small 3.1 24B",
+        text: "Text-to-Speech",
         included: true,
         icon: <Check className="w-4 h-4 text-green-500" />
       },
       {
-        text: "Qwen 2.5 72B",
-        included: true,
-        icon: <Check className="w-4 h-4 text-green-500" />
-      },
-      {
-        text: "Qwen3 Coder 480B",
+        text: "6 Powerful Models (including DeepSeek R1)",
         included: true,
         icon: <Check className="w-4 h-4 text-green-500" />
       },
@@ -264,28 +220,17 @@ export const PRICING_PLANS: PricingPlan[] = [
       },
       { text: "Image Upload", included: true, icon: <Check className="w-4 h-4 text-green-500" /> },
       {
-        text: "DeepSeek R1 0528 671B",
+        text: "Voice Recording (Whisper Large v3)",
         included: true,
         icon: <Check className="w-4 h-4 text-green-500" />
       },
       {
-        text: "OpenAI GPT-OSS 120B",
-        included: true,
-        icon: <Check className="w-4 h-4 text-green-500" />
-      },
-      { text: "Gemma 3 27B", included: true, icon: <Check className="w-4 h-4 text-green-500" /> },
-      {
-        text: "Mistral Small 3.1 24B",
+        text: "Text-to-Speech",
         included: true,
         icon: <Check className="w-4 h-4 text-green-500" />
       },
       {
-        text: "Qwen 2.5 72B",
-        included: true,
-        icon: <Check className="w-4 h-4 text-green-500" />
-      },
-      {
-        text: "Qwen3 Coder 480B",
+        text: "6 Powerful Models (including DeepSeek R1)",
         included: true,
         icon: <Check className="w-4 h-4 text-green-500" />
       },
