@@ -289,7 +289,7 @@ export default function Component({
     if (!e.target.files) return;
 
     const supportedTypes = ["image/jpeg", "image/jpg", "image/png", "image/webp"];
-    const maxSizeInBytes = 5 * 1024 * 1024; // 5MB for images
+    const maxSizeInBytes = 10 * 1024 * 1024; // 10MB for images
     const errors: string[] = [];
 
     const validFiles = Array.from(e.target.files).filter((file) => {
@@ -313,7 +313,7 @@ export default function Component({
       const typeErrors = e.target.files.length - validFiles.length - errors.length;
 
       if (errors.length > 0) {
-        setImageError(`${errors.join(", ")}. Max size is 5MB per image.`);
+        setImageError(`${errors.join(", ")}. Max size is 10MB per image.`);
       } else if (typeErrors > 0) {
         setImageError(
           `${skippedCount} file(s) skipped. Only JPEG, PNG, and WebP images are supported.`
@@ -389,11 +389,11 @@ export default function Component({
 
     const file = e.target.files[0];
 
-    // Check file size (5MB limit = 1024 * 1024 bytes)
-    const maxSizeInBytes = 5 * 1024 * 1024; // 5MB
+    // Check file size (10MB limit for local processing)
+    const maxSizeInBytes = 10 * 1024 * 1024; // 10MB
     if (file.size > maxSizeInBytes) {
       const sizeInMB = (file.size / (1024 * 1024)).toFixed(2);
-      setDocumentError(`File too large (${sizeInMB}MB). Maximum size is 5MB.`);
+      setDocumentError(`File too large (${sizeInMB}MB). Maximum size is 10MB.`);
       e.target.value = ""; // Reset input
       return;
     }
@@ -497,7 +497,7 @@ export default function Component({
       console.error("Document upload failed:", error);
       if (error instanceof Error) {
         if (error.message.includes("exceeds maximum limit")) {
-          setDocumentError("File too large. Maximum size is 5MB.");
+          setDocumentError("File too large. Maximum size is 10MB.");
         } else if (error.message.includes("401")) {
           setDocumentError("Authentication required. Please log in to upload documents.");
         } else if (error.message.includes("403")) {
