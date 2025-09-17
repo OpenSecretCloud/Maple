@@ -516,9 +516,14 @@ export default function Component({
   const handleSubmit = (e?: React.FormEvent) => {
     e?.preventDefault();
 
-    // Allow submission if there's text input, images, or a document
-    const hasContent = inputValue.trim() || images.length > 0 || uploadedDocument;
-    if (!hasContent || isSubmitDisabled) return;
+    // Require text when images are present, allow document-only or text-only submissions
+    const hasText = inputValue.trim();
+    const hasImages = images.length > 0;
+    const hasDocument = uploadedDocument;
+
+    // If images are present, text is required. Otherwise, just need text or document.
+    const hasValidContent = hasImages ? hasText : hasText || hasDocument;
+    if (!hasValidContent || isSubmitDisabled) return;
 
     // Clear the drafts when submitting
     if (chatId) {
@@ -576,14 +581,22 @@ export default function Component({
       if (isMobile || e.shiftKey || isStreaming) {
         // On mobile, when Shift is pressed, or when streaming, allow newline
         return;
-      } else if (isSubmitDisabled || !inputValue.trim()) {
-        // Prevent form submission when disabled or empty input
-        e.preventDefault();
-        return;
       } else {
-        // On desktop without Shift and not streaming, submit the form
-        e.preventDefault();
-        handleSubmit();
+        // Check if submission is valid (same logic as handleSubmit)
+        const hasText = inputValue.trim();
+        const hasImages = images.length > 0;
+        const hasDocument = uploadedDocument;
+        const hasValidContent = hasImages ? hasText : hasText || hasDocument;
+
+        if (isSubmitDisabled || !hasValidContent) {
+          // Prevent form submission when disabled or invalid content
+          e.preventDefault();
+          return;
+        } else {
+          // On desktop without Shift and not streaming, submit the form
+          e.preventDefault();
+          handleSubmit();
+        }
       }
     }
   };
@@ -982,9 +995,14 @@ export default function Component({
             type="submit"
             size="sm"
             className="ml-auto gap-1.5"
-            disabled={
-              (!inputValue.trim() && images.length === 0 && !uploadedDocument) || isSubmitDisabled
-            }
+            disabled={(() => {
+              const hasText = inputValue.trim();
+              const hasImages = images.length > 0;
+              const hasDocument = uploadedDocument;
+              // If images are present, text is required. Otherwise, just need text or document.
+              const hasValidContent = hasImages ? hasText : hasText || hasDocument;
+              return !hasValidContent || isSubmitDisabled;
+            })()}
             aria-label="Send message"
           >
             <CornerRightUp className="size-3.5" />
