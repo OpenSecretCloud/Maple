@@ -37,6 +37,7 @@ export function useChatSession(
   const { data: serverChat, isPending } = useQuery({
     queryKey: ["chat", chatId],
     queryFn: () => getChatById(chatId),
+    enabled: chatId !== "new",
     retry: false
   });
 
@@ -191,6 +192,8 @@ export function useChatSession(
       });
 
       try {
+        // TODO: If we detect legacy KV chats in getChatById, block sends here and show a read-only banner.
+        // For this user there are no legacy chats to test; leaving as a future enhancement.
         // const useResponses = import.meta.env.VITE_USE_RESPONSES === "true";
         const useResponses = true;
 
@@ -207,34 +210,35 @@ export function useChatSession(
 
           let stream: any;
           try {
-            // Use the thread ID if we have it (for follow-up messages in the same session)
-            // or use the chatId if it's a valid UUID (for loading existing threads)
-            const effectiveThreadId = threadIdRef.current || 
+            // Determine or create the conversation ID
+            let conversationId = threadIdRef.current ||
               (chatId !== "new" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(chatId) ? chatId : null);
-            
+
+            if (!conversationId) {
+              // Create a new conversation on first send
+              const conv = await openai.conversations.create({} as any);
+              conversationId = (conv as any).id as string;
+              threadIdRef.current = conversationId;
+              // Do not update URL; requirement is just to get conversation id and send within it.
+            }
+
             const requestParams: any = {
               model,
               input: inputText,
               instructions,
               stream: true,
-              store: true // Ensure messages are persisted
+              store: true,
+              conversation: conversationId
             };
-            
-            // If we have a thread ID, this is a continuation
-            if (effectiveThreadId) {
-              requestParams.previous_response_id = effectiveThreadId;
-              console.log("Continuing thread with previous_response_id:", effectiveThreadId);
-            } else {
-              console.log("Starting new thread (no previous_response_id)");
-            }
-            
-            console.log("Creating response with params:", requestParams);
+
+            console.log("Creating response with params:", { ...requestParams, input: "<omitted>" });
             stream = await openai.responses.create(requestParams);
           } catch (error) {
             console.error("Error creating stream:", error);
             if (error instanceof Error) {
               console.error("Error details:", error.message, error.stack);
             }
+            // TODO: Handle 500/429 errors more gracefully (rate limit backoff, retry-after, etc.)
             setStreamingError("Failed to create response stream");
             setPhase("idle");
             processingRef.current = false;
@@ -249,19 +253,9 @@ export function useChatSession(
               
               // Handle different event types based on OpenAI Responses API spec
               if (event.type === "response.created") {
-                // Capture the response ID
+                // Response/job created (id is response id, not conversation)
                 responseId = event.response?.id;
                 console.log("Response created with ID:", responseId);
-                
-                // For new chats, store the thread ID for follow-up messages
-                if (chatId === "new" && !threadIdRef.current && responseId) {
-                  console.log("New thread created with ID:", responseId);
-                  threadIdRef.current = responseId;
-                  // Call the callback to update the URL via React Router
-                  if (onThreadCreated) {
-                    onThreadCreated(responseId);
-                  }
-                }
               } else if (event.type === "response.output_item.added") {
                 // New output item started
               } else if (event.type === "response.output_text.delta") {
@@ -282,8 +276,8 @@ export function useChatSession(
                 setCurrentStreamingMessage(undefined);
                 setPhase("idle");
                 
-                // Store messages locally for display purposes (Responses API maintains real context)
-                // This is a temporary solution until we have a thread history endpoint
+                // TODO: Remove localStorage mirror once Conversations items are fully used for history
+                // Store messages locally for display only (server maintains real context)
                 if (threadIdRef.current) {
                   try {
                     localStorage.setItem(
