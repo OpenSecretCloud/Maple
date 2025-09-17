@@ -38,7 +38,6 @@ export const MODEL_CONFIG: Record<string, ModelCfg> = {
   "leon-se/gemma-3-27b-it-fp8-dynamic": {
     displayName: "Gemma 3 27B",
     shortName: "Gemma 3",
-    badges: ["Starter"],
     requiresStarter: true,
     supportsVision: true,
     tokenLimit: 20000
@@ -222,6 +221,26 @@ export function ModelSelector({
     return true;
   };
 
+  // Get dynamic badges for a model based on billing status
+  const getModelBadges = (modelId: string): string[] => {
+    const config = MODEL_CONFIG[modelId];
+    const planName = billingStatus?.product_name?.toLowerCase() || "";
+    const isStarter = planName.includes("starter");
+
+    // Gemma: "starter" for starter users, "pro" for others
+    if (modelId === "leon-se/gemma-3-27b-it-fp8-dynamic") {
+      return isStarter ? ["Starter"] : ["Pro"];
+    }
+
+    // Llama models: no badges
+    if (modelId.includes("llama") || modelId.includes("Llama")) {
+      return [];
+    }
+
+    // Other models: use their existing badges or default to ["Pro"]
+    return config?.badges || ["Pro"];
+  };
+
   const getDisplayName = (modelId: string, showLock = false) => {
     const config = MODEL_CONFIG[modelId];
     const elements: React.ReactNode[] = [];
@@ -229,8 +248,9 @@ export function ModelSelector({
     if (config) {
       elements.push(config.displayName);
 
-      if (config.badges && config.badges.length > 0) {
-        config.badges.forEach((badge, index) => {
+      const badges = getModelBadges(modelId);
+      if (badges && badges.length > 0) {
+        badges.forEach((badge, index) => {
           let badgeClass = "text-[10px] px-1.5 py-0.5 rounded-sm font-medium";
 
           if (badge === "Coming Soon") {
