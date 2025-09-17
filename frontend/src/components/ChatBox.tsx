@@ -1229,18 +1229,36 @@ export default function Component({
                 variant="ghost"
                 className="ml-1"
                 onClick={async () => {
-                  // Use Tauri's native file dialog for better file filtering
+                  // Try using Tauri's native file dialog
                   try {
                     const { open } = await import("@tauri-apps/plugin-dialog");
-                    const selected = await open({
-                      multiple: false,
-                      filters: [
-                        {
-                          name: "Documents",
-                          extensions: ["pdf", "txt", "md"]
-                        }
-                      ]
-                    });
+                    const { platform } = await import("@tauri-apps/plugin-os");
+                    const currentPlatform = await platform();
+
+                    let selected;
+                    if (currentPlatform === "ios") {
+                      // iOS requires MIME types for filters to work
+                      selected = await open({
+                        multiple: false,
+                        filters: [
+                          {
+                            name: "Documents",
+                            extensions: ["application/pdf", "text/plain", "text/markdown"]
+                          }
+                        ]
+                      });
+                    } else {
+                      // Desktop platforms use file extensions
+                      selected = await open({
+                        multiple: false,
+                        filters: [
+                          {
+                            name: "Documents",
+                            extensions: ["pdf", "txt", "md"]
+                          }
+                        ]
+                      });
+                    }
 
                     if (selected && typeof selected === "string") {
                       // Read the file and convert to File object for processing

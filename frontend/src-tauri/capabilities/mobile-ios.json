@@ -9,6 +9,7 @@
   "permissions": [
     "core:default",
     "updater:default",
+    "dialog:default",
     {
       "identifier": "opener:allow-open-url",
       "allow": [

@@ -229,9 +229,11 @@ pub fn run() {
                 .level(log::LevelFilter::Info)
                 .build(),
         )
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_os::init());
+        .plugin(tauri_plugin_os::init())
+        .plugin(tauri_plugin_fs::init());
 
     // Only add the Apple Sign In plugin on iOS
     #[cfg(all(not(desktop), target_os = "ios"))]
@@ -241,6 +243,9 @@ pub fn run() {
 
     #[cfg(not(desktop))]
     let app = builder
+        .invoke_handler(tauri::generate_handler![
+            pdf_extractor::extract_document_content,
+        ])
         .setup(|app| {
             // Set up the deep link handler for mobile
             let app_handle = app.handle().clone();
