@@ -18,6 +18,7 @@ import packageJson from "../../package.json";
 
 // File type constants for upload features
 const SUPPORTED_IMAGE_FORMATS = [".jpg", ".png", ".webp"];
+const SUPPORTED_DOCUMENT_FORMATS = [".pdf", ".txt", ".md"];
 
 type PricingSearchParams = {
   selected_plan?: string;
@@ -125,18 +126,31 @@ function PricingFAQ() {
 
         <details className="group">
           <summary className="cursor-pointer text-lg font-medium hover:text-foreground/80">
-            Which file types are supported for image upload?
+            Which file types are supported for document and image upload?
           </summary>
           <div className="mt-4 text-[hsl(var(--marketing-text-muted))] space-y-4">
-            <p>We support the following image formats:</p>
-            <ul className="list-disc list-inside ml-4 mt-2 space-y-1">
-              {SUPPORTED_IMAGE_FORMATS.map((format) => (
-                <li key={format}>
-                  <code className="bg-foreground/10 px-1 py-0.5 rounded text-sm">{format}</code>
-                </li>
-              ))}
-            </ul>
-            <p>There is a 1 file limit per chat prompt with a 5MB file size limit per file.</p>
+            <p>We support a range of file types for both images and documents.</p>
+            <div>
+              <strong>Images:</strong>
+              <ul className="list-disc list-inside ml-4 mt-2 space-y-1">
+                {SUPPORTED_IMAGE_FORMATS.map((format) => (
+                  <li key={format}>
+                    <code className="bg-foreground/10 px-1 py-0.5 rounded text-sm">{format}</code>
+                  </li>
+                ))}
+              </ul>
+            </div>
+            <div>
+              <strong>Documents (Desktop/Mobile apps only):</strong>
+              <ul className="list-disc list-inside ml-4 mt-2 space-y-1">
+                {SUPPORTED_DOCUMENT_FORMATS.map((format) => (
+                  <li key={format}>
+                    <code className="bg-foreground/10 px-1 py-0.5 rounded text-sm">{format}</code>
+                  </li>
+                ))}
+              </ul>
+            </div>
+            <p>There is a 1 file limit per chat prompt with a 10MB file size limit per file.</p>
           </div>
         </details>
 

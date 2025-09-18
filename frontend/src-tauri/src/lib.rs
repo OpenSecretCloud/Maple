@@ -3,6 +3,7 @@ use tauri_plugin_deep_link::DeepLinkExt;
 use tauri_plugin_opener;
 
 mod proxy;
+mod pdf_extractor;
 
 // This handles incoming deep links
 fn handle_deep_link_event(url: &str, app: &tauri::AppHandle) {
@@ -32,6 +33,7 @@ pub fn run() {
             proxy::load_proxy_config,
             proxy::save_proxy_settings,
             proxy::test_proxy_port,
+            pdf_extractor::extract_document_content,
         ])
         .setup(|app| {
             // Initialize proxy auto-start
@@ -227,9 +229,11 @@ pub fn run() {
                 .level(log::LevelFilter::Info)
                 .build(),
         )
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_os::init());
+        .plugin(tauri_plugin_os::init())
+        .plugin(tauri_plugin_fs::init());
 
     // Only add the Apple Sign In plugin on iOS
     #[cfg(all(not(desktop), target_os = "ios"))]
@@ -239,6 +243,9 @@ pub fn run() {
 
     #[cfg(not(desktop))]
     let app = builder
+        .invoke_handler(tauri::generate_handler![
+            pdf_extractor::extract_document_content,
+        ])
         .setup(|app| {
             // Set up the deep link handler for mobile
             let app_handle = app.handle().clone();

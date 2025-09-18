@@ -20,16 +20,18 @@ import { encode } from "gpt-tokenizer";
 interface ParsedDocument {
   document: {
     filename: string;
-    md_content: string | null;
-    json_content: string | null;
-    html_content: string | null;
     text_content: string | null;
-    doctags_content: string | null;
   };
   status: string;
   errors: unknown[];
-  processing_time: number;
-  timings: Record<string, unknown>;
+}
+
+interface RustDocumentResponse {
+  document: {
+    filename: string;
+    text_content: string;
+  };
+  status: string;
 }
 
 // Accurate token counting using gpt-tokenizer
@@ -238,10 +240,11 @@ export default function Component({
   const [isUploadingDocument, setIsUploadingDocument] = useState(false);
   const [documentError, setDocumentError] = useState<string | null>(null);
   const [imageError, setImageError] = useState<string | null>(null);
+  const [isTauriEnv, setIsTauriEnv] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const documentInputRef = useRef<HTMLInputElement>(null);
   const [upgradeDialogOpen, setUpgradeDialogOpen] = useState(false);
-  const [upgradeFeature, setUpgradeFeature] = useState<"image" | "voice">("image");
+  const [upgradeFeature, setUpgradeFeature] = useState<"image" | "voice" | "document">("image");
   const os = useOpenSecret();
 
   // Audio recording state
@@ -286,7 +289,7 @@ export default function Component({
     if (!e.target.files) return;
 
     const supportedTypes = ["image/jpeg", "image/jpg", "image/png", "image/webp"];
-    const maxSizeInBytes = 5 * 1024 * 1024; // 5MB for images
+    const maxSizeInBytes = 10 * 1024 * 1024; // 10MB for images
     const errors: string[] = [];
 
     const validFiles = Array.from(e.target.files).filter((file) => {
@@ -310,7 +313,7 @@ export default function Component({
       const typeErrors = e.target.files.length - validFiles.length - errors.length;
 
       if (errors.length > 0) {
-        setImageError(`${errors.join(", ")}. Max size is 5MB per image.`);
+        setImageError(`${errors.join(", ")}. Max size is 10MB per image.`);
       } else if (typeErrors > 0) {
         setImageError(
           `${skippedCount} file(s) skipped. Only JPEG, PNG, and WebP images are supported.`
@@ -364,16 +367,10 @@ export default function Component({
         const parsedDocument: ParsedDocument = {
           document: {
             filename: file.name,
-            md_content: null,
-            json_content: null,
-            html_content: null,
-            text_content: content,
-            doctags_content: null
+            text_content: content
           },
           status: "completed",
-          errors: [],
-          processing_time: 0,
-          timings: {}
+          errors: []
         };
 
         resolve(parsedDocument);
@@ -392,11 +389,11 @@ export default function Component({
 
     const file = e.target.files[0];
 
-    // Check file size (5MB limit = 1024 * 1024 bytes)
-    const maxSizeInBytes = 5 * 1024 * 1024; // 5MB
+    // Check file size (10MB limit for local processing)
+    const maxSizeInBytes = 10 * 1024 * 1024; // 10MB
     if (file.size > maxSizeInBytes) {
       const sizeInMB = (file.size / (1024 * 1024)).toFixed(2);
-      setDocumentError(`File too large (${sizeInMB}MB). Maximum size is 5MB.`);
+      setDocumentError(`File too large (${sizeInMB}MB). Maximum size is 10MB.`);
       e.target.value = ""; // Reset input
       return;
     }
@@ -408,46 +405,90 @@ export default function Component({
       let parsed: ParsedDocument;
       let result: DocumentResponse | undefined;
 
-      // Check if it's a text file (.txt or .md)
-      if (file.type === "text/plain" || file.name.endsWith(".txt") || file.name.endsWith(".md")) {
-        // Process text files locally
+      // Use the existing isTauriEnv state instead of checking again
+      if (
+        isTauriEnv &&
+        (file.type === "application/pdf" ||
+          file.name.endsWith(".pdf") ||
+          file.type === "text/plain" ||
+          file.name.endsWith(".txt") ||
+          file.name.endsWith(".md"))
+      ) {
+        // Process documents locally using Rust in Tauri
+        const { invoke } = await import("@tauri-apps/api/core");
+
+        // Convert file to base64
+        const reader = new FileReader();
+        const base64Data = await new Promise<string>((resolve, reject) => {
+          reader.onload = () => {
+            const base64 = (reader.result as string).split(",")[1]; // Remove data:type;base64, prefix
+            resolve(base64);
+          };
+          reader.onerror = reject;
+          reader.readAsDataURL(file);
+        });
+
+        // Determine file type
+        let fileType = file.type;
+        if (file.name.endsWith(".pdf")) fileType = "pdf";
+        else if (file.name.endsWith(".txt")) fileType = "txt";
+        else if (file.name.endsWith(".md")) fileType = "md";
+
+        // Call Rust function to extract content
+        const rustResponse = await invoke<RustDocumentResponse>("extract_document_content", {
+          fileBase64: base64Data,
+          filename: file.name,
+          fileType: fileType
+        });
+
+        // Convert Rust response to ParsedDocument format
+        parsed = {
+          document: {
+            filename: rustResponse.document.filename,
+            text_content: rustResponse.document.text_content
+          },
+          status: rustResponse.status,
+          errors: []
+        };
+      } else if (
+        file.type === "text/plain" ||
+        file.name.endsWith(".txt") ||
+        file.name.endsWith(".md")
+      ) {
+        // Process text files locally in browser
         parsed = await processTextFileLocally(file);
       } else {
-        // Upload other document types to the processing endpoint
-        result = await os.uploadDocumentWithPolling(file);
-        // Parse the JSON response
-        parsed = JSON.parse(result.text) as ParsedDocument;
+        // PDF files in browser are not supported without Tauri
+        setDocumentError("PDF files can only be processed in the desktop app");
+        e.target.value = ""; // Reset input
+        return;
+        // REMOVED: Cloud API fallback for document processing
+        // result = await os.uploadDocumentWithPolling(file);
+        // parsed = JSON.parse(result.text) as ParsedDocument;
       }
 
-      // Extract content with fallbacks (currently not used since we pass the full JSON)
-      // const content =
-      //   parsed.document.md_content ||
-      //   parsed.document.json_content ||
-      //   parsed.document.html_content ||
-      //   parsed.document.text_content ||
-      //   parsed.document.doctags_content ||
-      //   "";
+      // Extract content
+      // const content = parsed.document.text_content || "";
 
-      // Create a cleaned version of the parsed document with image tags stripped from md_content
+      // Create a cleaned version of the parsed document
       const cleanedParsed = {
         ...parsed,
         document: {
           ...parsed.document,
-          md_content: parsed.document.md_content
-            ? parsed.document.md_content.replace(/!\[Image\]\([^)]+\)/g, "")
-            : parsed.document.md_content
+          text_content: parsed.document.text_content
+            ? parsed.document.text_content.replace(/!\[Image\]\([^)]+\)/g, "")
+            : parsed.document.text_content
         }
       };
 
-      // For locally processed text files, create a mock original response
-      const originalResponse =
-        file.type === "text/plain" || file.name.endsWith(".txt") || file.name.endsWith(".md")
-          ? ({
-              text: JSON.stringify(parsed),
-              filename: file.name,
-              size: file.size
-            } as DocumentResponse)
-          : result!;
+      // Always provide a valid original-like payload; Tauri-local paths have no server result
+      const originalResponse: DocumentResponse =
+        result ??
+        ({
+          text: JSON.stringify(parsed),
+          filename: file.name,
+          size: file.size
+        } as DocumentResponse);
 
       setUploadedDocument({
         original: originalResponse,
@@ -458,7 +499,7 @@ export default function Component({
       console.error("Document upload failed:", error);
       if (error instanceof Error) {
         if (error.message.includes("exceeds maximum limit")) {
-          setDocumentError("File too large. Maximum size is 5MB.");
+          setDocumentError("File too large. Maximum size is 10MB.");
         } else if (error.message.includes("401")) {
           setDocumentError("Authentication required. Please log in to upload documents.");
         } else if (error.message.includes("403")) {
@@ -603,13 +644,7 @@ export default function Component({
                   uploadedDocument
                     ? {
                         filename: uploadedDocument.parsed.document.filename,
-                        fullContent:
-                          uploadedDocument.parsed.document.md_content ||
-                          uploadedDocument.parsed.document.json_content ||
-                          uploadedDocument.parsed.document.html_content ||
-                          uploadedDocument.parsed.document.text_content ||
-                          uploadedDocument.parsed.document.doctags_content ||
-                          ""
+                        fullContent: uploadedDocument.parsed.document.text_content || ""
                       }
                     : undefined,
                   true // sentViaVoice flag
@@ -700,6 +735,14 @@ export default function Component({
   // Use the centralized hook for mobile detection directly
   const isMobile = useIsMobile();
 
+  // Check if we're in Tauri environment on component mount
+  useEffect(() => {
+    import("@tauri-apps/api/core")
+      .then((m) => m.isTauri())
+      .then(setIsTauriEnv)
+      .catch(() => setIsTauriEnv(false));
+  }, []);
+
   // Check if user can use system prompts (paid users only - exclude free plans)
   const canUseSystemPrompt =
     freshBillingStatus && !freshBillingStatus.product_name?.toLowerCase().includes("free");
@@ -724,6 +767,7 @@ export default function Component({
 
   const canUseImages = hasStarterAccess;
   const canUseVoice = hasProTeamAccess;
+  const canUseDocuments = hasProTeamAccess;
 
   const handleSubmit = (e?: React.FormEvent) => {
     e?.preventDefault();
@@ -750,17 +794,11 @@ export default function Component({
       inputValue.trim(),
       isFirstMessage ? systemPromptValue.trim() || undefined : undefined,
       images,
-      uploadedDocument?.cleanedText, // Now contains the full JSON with cleaned md_content
+      uploadedDocument?.cleanedText, // Now contains the full JSON with cleaned text_content
       uploadedDocument
         ? {
             filename: uploadedDocument.parsed.document.filename,
-            fullContent:
-              uploadedDocument.parsed.document.md_content ||
-              uploadedDocument.parsed.document.json_content ||
-              uploadedDocument.parsed.document.html_content ||
-              uploadedDocument.parsed.document.text_content ||
-              uploadedDocument.parsed.document.doctags_content ||
-              ""
+            fullContent: uploadedDocument.parsed.document.text_content || ""
           }
         : undefined
     );
@@ -1150,7 +1188,7 @@ export default function Component({
             />
             <input
               type="file"
-              accept=".pdf,.doc,.docx,.txt,.rtf,.xlsx,.xls,.pptx,.ppt,.md"
+              accept=".pdf,.txt,.md,application/pdf,text/plain,text/markdown"
               ref={documentInputRef}
               onChange={handleDocumentUpload}
               className="hidden"
@@ -1183,6 +1221,89 @@ export default function Component({
                 data-testid="image-upload-button"
               >
                 <Image className="h-4 w-4" />
+              </Button>
+            )}
+
+            {/* Document upload button - only show in Tauri environments */}
+            {!uploadedDocument && isTauriEnv && (
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                className={cn("ml-1", !canUseDocuments && "opacity-50")}
+                onClick={async () => {
+                  if (!canUseDocuments) {
+                    setUpgradeFeature("document");
+                    setUpgradeDialogOpen(true);
+                    return;
+                  }
+                  // Try using Tauri's native file dialog
+                  try {
+                    const { open } = await import("@tauri-apps/plugin-dialog");
+                    const { platform } = await import("@tauri-apps/plugin-os");
+                    const currentPlatform = await platform();
+
+                    let selected;
+                    if (currentPlatform === "ios") {
+                      // iOS requires MIME types for filters to work
+                      selected = await open({
+                        multiple: false,
+                        filters: [
+                          {
+                            name: "Documents",
+                            extensions: ["application/pdf", "text/plain", "text/markdown"]
+                          }
+                        ]
+                      });
+                    } else {
+                      // Desktop platforms use file extensions
+                      selected = await open({
+                        multiple: false,
+                        filters: [
+                          {
+                            name: "Documents",
+                            extensions: ["pdf", "txt", "md"]
+                          }
+                        ]
+                      });
+                    }
+
+                    if (selected && typeof selected === "string") {
+                      // Read the file and convert to File object for processing
+                      const fs = await import("@tauri-apps/plugin-fs");
+                      const fileContent = await fs.readFile(selected);
+
+                      // Get filename from path
+                      const filename = selected.split(/[/\\]/).pop() || "document";
+
+                      // Create a File object from the binary content
+                      const file = new File([new Blob([fileContent])], filename, {
+                        type: filename.endsWith(".pdf")
+                          ? "application/pdf"
+                          : filename.endsWith(".md")
+                            ? "text/markdown"
+                            : "text/plain"
+                      });
+
+                      // Process the file using our existing handler
+                      const fakeEvent = {
+                        target: { files: [file], value: "" },
+                        preventDefault: () => {}
+                      } as unknown as React.ChangeEvent<HTMLInputElement>;
+
+                      await handleDocumentUpload(fakeEvent);
+                    }
+                  } catch (error) {
+                    console.error("Failed to open file dialog:", error);
+                    // Fallback to HTML input
+                    documentInputRef.current?.click();
+                  }
+                }}
+                disabled={isInputDisabled}
+                aria-label="Upload document"
+                data-testid="document-upload-button"
+              >
+                <FileText className="h-4 w-4" />
               </Button>
             )}
 
