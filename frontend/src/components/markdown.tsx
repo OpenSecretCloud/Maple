@@ -434,7 +434,7 @@ function DocumentPreview({ documentData }: { documentData: DocumentData }) {
             <DialogTitle>{documentData.document.filename}</DialogTitle>
           </DialogHeader>
           <div className="overflow-y-auto flex-1 p-4">
-            <MarkdownContent content={content} />
+            <pre className="whitespace-pre-wrap font-sans text-sm leading-relaxed">{content}</pre>
           </div>
         </DialogContent>
       </Dialog>
