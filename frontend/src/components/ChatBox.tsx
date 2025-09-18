@@ -478,15 +478,14 @@ export default function Component({
         }
       };
 
-      // For locally processed text files, create a mock original response
-      const originalResponse =
-        file.type === "text/plain" || file.name.endsWith(".txt") || file.name.endsWith(".md")
-          ? ({
-              text: JSON.stringify(parsed),
-              filename: file.name,
-              size: file.size
-            } as DocumentResponse)
-          : result!;
+      // Always provide a valid original-like payload; Tauri-local paths have no server result
+      const originalResponse: DocumentResponse =
+        result ??
+        ({
+          text: JSON.stringify(parsed),
+          filename: file.name,
+          size: file.size
+        } as DocumentResponse);
 
       setUploadedDocument({
         original: originalResponse,
