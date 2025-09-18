@@ -44,6 +44,11 @@ export const PRICING_PLANS: PricingPlan[] = [
       { text: "Rename Chats", included: true, icon: <Check className="w-4 h-4 text-green-500" /> },
       { text: "Image Upload", included: false, icon: <X className="w-4 h-4 text-red-500" /> },
       {
+        text: "Document Upload (PDF, TXT, MD)",
+        included: false,
+        icon: <X className="w-4 h-4 text-red-500" />
+      },
+      {
         text: "Voice Recording (Whisper)",
         included: false,
         icon: <X className="w-4 h-4 text-red-500" />
@@ -81,6 +86,11 @@ export const PRICING_PLANS: PricingPlan[] = [
       { text: "Gemma 3 27B", included: true, icon: <Check className="w-4 h-4 text-green-500" /> },
       { text: "Image Upload", included: true, icon: <Check className="w-4 h-4 text-green-500" /> },
       {
+        text: "Document Upload (PDF, TXT, MD)",
+        included: false,
+        icon: <X className="w-4 h-4 text-red-500" />
+      },
+      {
         text: "Voice Recording (Whisper)",
         included: false,
         icon: <X className="w-4 h-4 text-red-500" />
@@ -110,6 +120,11 @@ export const PRICING_PLANS: PricingPlan[] = [
         icon: <Check className="w-4 h-4 text-green-500" />
       },
       { text: "Image Upload", included: true, icon: <Check className="w-4 h-4 text-green-500" /> },
+      {
+        text: "Document Upload (PDF, TXT, MD)",
+        included: true,
+        icon: <Check className="w-4 h-4 text-green-500" />
+      },
       {
         text: "Voice Recording (Whisper Large v3)",
         included: true,
@@ -160,6 +175,11 @@ export const PRICING_PLANS: PricingPlan[] = [
         icon: <Check className="w-4 h-4 text-green-500" />
       },
       { text: "Image Upload", included: true, icon: <Check className="w-4 h-4 text-green-500" /> },
+      {
+        text: "Document Upload (PDF, TXT, MD)",
+        included: true,
+        icon: <Check className="w-4 h-4 text-green-500" />
+      },
       {
         text: "Voice Recording (Whisper Large v3)",
         included: true,
@@ -219,6 +239,11 @@ export const PRICING_PLANS: PricingPlan[] = [
         icon: <Check className="w-4 h-4 text-green-500" />
       },
       { text: "Image Upload", included: true, icon: <Check className="w-4 h-4 text-green-500" /> },
+      {
+        text: "Document Upload (PDF, TXT, MD)",
+        included: true,
+        icon: <Check className="w-4 h-4 text-green-500" />
+      },
       {
         text: "Voice Recording (Whisper Large v3)",
         included: true,
