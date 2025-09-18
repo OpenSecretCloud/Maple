@@ -1,2 +1,8 @@
 [test]
-preload = ["src/lib/test/preload.ts", "src/lib/test/der-loader.ts"]
+# Configure test runner
+root = "./src"
+coverage = false
+timeout = 5000
+
+# Test file patterns
+# Bun will automatically find .test.ts, .test.tsx, .spec.ts, .spec.tsx files

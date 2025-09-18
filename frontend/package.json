@@ -10,7 +10,9 @@
     "preview": "vite preview",
     "add": "bunx shadcn-ui@latest add",
     "format": "prettier --write \"src/**/*.{ts,tsx,js,jsx,json,css,md}\"",
-    "format:check": "prettier --check \"src/**/*.{ts,tsx,js,jsx,json,css,md}\""
+    "format:check": "prettier --check \"src/**/*.{ts,tsx,js,jsx,json,css,md}\"",
+    "test": "bun test",
+    "test:watch": "bun test --watch"
   },
   "resolutions": {
     "mdast-util-gfm-autolink-literal": "2.0.0"

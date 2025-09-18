@@ -36,6 +36,10 @@ jobs:
         working-directory: ./frontend
         run: bun install
 
+      - name: Run frontend tests
+        working-directory: ./frontend
+        run: bun test
+
       - name: Setup Xcode
         uses: maxim-lobanov/setup-xcode@v1
         with:

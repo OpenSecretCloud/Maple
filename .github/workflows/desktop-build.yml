@@ -39,6 +39,10 @@ jobs:
         working-directory: ./frontend
         run: bun install
 
+      - name: Run frontend tests
+        working-directory: ./frontend
+        run: bun test
+
       - name: Import Apple Developer Certificate
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
@@ -124,6 +128,10 @@ jobs:
       - name: Install frontend dependencies
         working-directory: ./frontend
         run: bun install
+
+      - name: Run frontend tests
+        working-directory: ./frontend
+        run: bun test
 
       - name: Install Tauri CLI
         run: cargo install tauri-cli
