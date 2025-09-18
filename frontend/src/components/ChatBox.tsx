@@ -244,7 +244,7 @@ export default function Component({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const documentInputRef = useRef<HTMLInputElement>(null);
   const [upgradeDialogOpen, setUpgradeDialogOpen] = useState(false);
-  const [upgradeFeature, setUpgradeFeature] = useState<"image" | "voice">("image");
+  const [upgradeFeature, setUpgradeFeature] = useState<"image" | "voice" | "document">("image");
   const os = useOpenSecret();
 
   // Audio recording state
@@ -765,6 +765,7 @@ export default function Component({
 
   const canUseImages = hasStarterAccess;
   const canUseVoice = hasProTeamAccess;
+  const canUseDocuments = hasProTeamAccess;
 
   const handleSubmit = (e?: React.FormEvent) => {
     e?.preventDefault();
@@ -1227,8 +1228,13 @@ export default function Component({
                 type="button"
                 size="sm"
                 variant="ghost"
-                className="ml-1"
+                className={cn("ml-1", !canUseDocuments && "opacity-50")}
                 onClick={async () => {
+                  if (!canUseDocuments) {
+                    setUpgradeFeature("document");
+                    setUpgradeDialogOpen(true);
+                    return;
+                  }
                   // Try using Tauri's native file dialog
                   try {
                     const { open } = await import("@tauri-apps/plugin-dialog");

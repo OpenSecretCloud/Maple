@@ -7,13 +7,13 @@ import {
   DialogTitle
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { Image, Mic, Sparkles, Check, Cpu, Volume2 } from "lucide-react";
+import { Image, Mic, Sparkles, Check, Cpu, Volume2, FileText } from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
 
 interface UpgradePromptDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  feature: "image" | "voice" | "model" | "tts";
+  feature: "image" | "voice" | "model" | "tts" | "document";
   modelName?: string;
 }
 
@@ -70,6 +70,20 @@ export function UpgradePromptDialog({
           "Natural-sounding AI voices",
           "Perfect for accessibility or multitasking",
           "Listen to long responses hands-free"
+        ]
+      };
+    } else if (feature === "document") {
+      return {
+        icon: <FileText className="h-8 w-8" />,
+        title: "Document Upload",
+        description: "Process and analyze documents with complete privacy",
+        requiredPlan: "Pro",
+        benefits: [
+          "Documents are processed securely with end-to-end encryption",
+          "Your files are never stored or used for AI training",
+          "Support for PDF, TXT, and Markdown formats",
+          "Extract and analyze text while maintaining complete privacy",
+          "Local processing ensures your sensitive data never leaves your device"
         ]
       };
     } else {
