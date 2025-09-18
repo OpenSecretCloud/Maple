@@ -16,11 +16,12 @@ if (await isMobile()) { /* Both iOS and Android */ }
 
 ---
 
-## 1. BILLING & PAYMENTS (`frontend/src/billing/billingApi.ts`)
+## 1. BILLING & PAYMENTS (`frontend/src/billing/billingApi.ts`) ✅ COMPLETED
 
-### Instance 1: Portal Return URL (Line 102)
+### Instance 1: Portal Return URL (Line 102) ✅
 - **Current iOS Behavior:** Uses `https://trymaple.ai` as return URL instead of `tauri://localhost`
 - **Android Recommendation:** ✅ **Same as iOS** - Use `https://trymaple.ai`
+- **Status:** ✅ **IMPLEMENTED** - Now uses `isMobile()` platform utility
 - **Implementation:**
   ```typescript
   import { isMobile } from '@/utils/platform';
@@ -30,10 +31,11 @@ if (await isMobile()) { /* Both iOS and Android */ }
   }
   ```
 
-### Instance 2: Stripe Checkout Opening (Lines 192-214)
+### Instance 2: Stripe Checkout Opening (Lines 166-186) ✅
 - **Current iOS Behavior:** Forces external Safari browser via `plugin:opener|open_url` with no fallback
 - **Android Recommendation:** ✅ **Same as iOS** - Use external browser for payments
 - **Reasoning:** Google Play Store has similar payment restrictions as Apple App Store
+- **Status:** ✅ **IMPLEMENTED** - Now uses `isMobile()` platform utility
 - **Implementation:**
   ```typescript
   import { isMobile } from '@/utils/platform';
@@ -46,9 +48,10 @@ if (await isMobile()) { /* Both iOS and Android */ }
   }
   ```
 
-### Instance 3: Zaprite Checkout Opening (Lines 274-296)
+### Instance 3: Zaprite Checkout Opening (Lines 228-247) ✅
 - **Current iOS Behavior:** Forces external browser for crypto payments
 - **Android Recommendation:** ✅ **Same as iOS** - Use external browser
+- **Status:** ✅ **IMPLEMENTED** - Now uses `isMobile()` platform utility
 - **Implementation:** Same as Stripe checkout - use `isMobile()` check
 
 ---
@@ -380,6 +383,188 @@ if (await isMobile()) { /* Both iOS and Android */ }
     setupDeepLinks();
   }, []);
   ```
+
+---
+
+## DEEP LINKING CONFIGURATION
+
+### Overview
+Deep linking is critical for handling OAuth callbacks, payment redirects, and team invites. iOS uses Universal Links (HTTPS) and custom URL schemes. Android needs equivalent App Links and custom schemes.
+
+### Current iOS Configuration
+
+#### 1. Universal Links (HTTPS Links)
+**File**: `/frontend/src-tauri/gen/apple/maple_iOS/maple_iOS.entitlements`
+```xml
+<key>com.apple.developer.associated-domains</key>
+<array>
+    <string>applinks:trymaple.ai</string>
+</array>
+```
+
+**Server Requirements**:
+- Host `.well-known/apple-app-site-association` at https://trymaple.ai
+- This file tells iOS which paths should open in the app
+
+#### 2. Custom URL Scheme
+**File**: `/frontend/src-tauri/gen/apple/maple_iOS/Info.plist`
+```xml
+<key>CFBundleURLTypes</key>
+<array>
+    <dict>
+        <key>CFBundleURLName</key>
+        <string>cloud.opensecret.maple</string>
+        <key>CFBundleURLSchemes</key>
+        <array>
+            <string>cloud.opensecret.maple</string>
+        </array>
+    </dict>
+</array>
+```
+
+#### 3. Tauri Configuration
+**File**: `/frontend/src-tauri/tauri.conf.json`
+```json
+"deep-link": {
+  "desktop": {
+    "schemes": ["cloud.opensecret.maple"]
+  },
+  "mobile": [{
+    "host": "trymaple.ai"
+  }]
+}
+```
+
+### Android Requirements (To Be Implemented)
+
+#### 1. App Links (HTTPS Links - Android Equivalent of Universal Links)
+
+**AndroidManifest.xml** additions needed:
+```xml
+<intent-filter android:autoVerify="true">
+    <action android:name="android.intent.action.VIEW" />
+    <category android:name="android.intent.category.DEFAULT" />
+    <category android:name="android.intent.category.BROWSABLE" />
+
+    <!-- Handle https://trymaple.ai/* URLs -->
+    <data android:scheme="https"
+          android:host="trymaple.ai" />
+</intent-filter>
+```
+
+**Server Requirements**:
+- Host `.well-known/assetlinks.json` at https://trymaple.ai
+- Example content:
+```json
+[{
+  "relation": ["delegate_permission/common.handle_all_urls"],
+  "target": {
+    "namespace": "android_app",
+    "package_name": "cloud.opensecret.maple",
+    "sha256_cert_fingerprints": ["YOUR_APP_SIGNING_CERT_SHA256"]
+  }
+}]
+```
+
+#### 2. Custom URL Scheme
+**AndroidManifest.xml** additions:
+```xml
+<intent-filter>
+    <action android:name="android.intent.action.VIEW" />
+    <category android:name="android.intent.category.DEFAULT" />
+    <category android:name="android.intent.category.BROWSABLE" />
+
+    <!-- Handle cloud.opensecret.maple:// URLs -->
+    <data android:scheme="cloud.opensecret.maple" />
+</intent-filter>
+```
+
+### Deep Link Flow in the App
+
+#### Current Implementation (`DeepLinkHandler.tsx`)
+The app listens for deep links and handles:
+1. **Auth callbacks**: `cloud.opensecret.maple://auth?access_token=...&refresh_token=...`
+2. **Payment success**: `https://trymaple.ai/payment-success?source=stripe`
+3. **Payment canceled**: `https://trymaple.ai/payment-canceled?source=stripe`
+
+#### Code Flow:
+```typescript
+// DeepLinkHandler.tsx
+listen<string>("deep-link-received", (event) => {
+  const url = event.payload;
+  // Parse and handle auth tokens, payment callbacks, etc.
+});
+```
+
+### URLs That Need Deep Link Support
+
+| Flow | iOS URL | Android URL (Should Be Same) | Purpose |
+|------|---------|------------------------------|---------|
+| **Stripe Payment Success** | `https://trymaple.ai/payment-success?source=stripe` | Same | Return from Stripe checkout |
+| **Stripe Payment Cancel** | `https://trymaple.ai/payment-canceled?source=stripe` | Same | Canceled Stripe payment |
+| **Zaprite Success** | `https://trymaple.ai/payment-success?source=zaprite` | Same | Bitcoin payment success |
+| **API Credits Success** | `https://trymaple.ai/payment-success-credits?source=stripe` | Same | API credit purchase |
+| **OAuth Callback** | `cloud.opensecret.maple://auth?access_token=...` | Same | OAuth provider returns |
+| **Desktop Auth** | `https://trymaple.ai/desktop-auth?provider=...` | Same | Desktop OAuth flow |
+
+### Current Issues with Android Deep Linking
+
+1. **Problem**: When returning from Stripe, the app goes to `http://tauri.localhost/pricing?canceled=true` instead of the app
+2. **Cause**: The success/cancel URLs are using `window.location.origin` which resolves to `tauri://localhost` on Android
+3. **Solution**: Update `pricing.tsx` to use `isMobile()` instead of just `isTauriIOS` (already documented in Section 4)
+
+### Implementation Steps for Android
+
+#### 1. Configure Android Manifest (Priority: HIGH)
+- [ ] Add App Links intent filter for `https://trymaple.ai`
+- [ ] Add custom scheme intent filter for `cloud.opensecret.maple`
+- [ ] Set `android:launchMode="singleTask"` to prevent multiple instances
+
+#### 2. Server Configuration (Priority: HIGH)
+- [ ] Create `.well-known/assetlinks.json` file
+- [ ] Host it at https://trymaple.ai/.well-known/assetlinks.json
+- [ ] Include app signing certificate SHA256 fingerprint
+- [ ] Test with Android's Statement List Generator and Tester
+
+#### 3. Update Payment/Auth Flows (Priority: HIGH)
+- [ ] Update all instances checking `isTauriIOS` to use `isMobile()`
+- [ ] Ensure all callback URLs use `https://trymaple.ai` for mobile
+- [ ] Test OAuth flows (GitHub, Google, Apple)
+- [ ] Test payment flows (Stripe, Zaprite)
+
+#### 4. Native Android Code (Priority: MEDIUM)
+- [ ] Implement intent handling in MainActivity
+- [ ] Pass deep link URLs to the WebView/Tauri runtime
+- [ ] Ensure "deep-link-received" event is emitted to JavaScript
+
+### Testing Deep Links
+
+#### Android Testing Commands:
+```bash
+# Test custom scheme
+adb shell am start -W -a android.intent.action.VIEW \
+  -d "cloud.opensecret.maple://auth?access_token=test" \
+  cloud.opensecret.maple
+
+# Test App Links (HTTPS)
+adb shell am start -W -a android.intent.action.VIEW \
+  -d "https://trymaple.ai/payment-success?source=stripe" \
+  cloud.opensecret.maple
+```
+
+#### Verification Tools:
+1. Android App Links Assistant (in Android Studio)
+2. Digital Asset Links API Validator
+3. Chrome DevTools for testing web-to-app navigation
+
+### Security Considerations
+
+1. **App Links Verification**: Android automatically verifies App Links ownership via assetlinks.json
+2. **Certificate Pinning**: Consider pinning the SHA256 cert in assetlinks.json
+3. **Token Handling**: Ensure auth tokens in deep links are:
+   - One-time use
+   - Short-lived
+   - Properly validated
 
 ---
 
