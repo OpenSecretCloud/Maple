@@ -458,10 +458,13 @@ export default function Component({
         // Process text files locally in browser
         parsed = await processTextFileLocally(file);
       } else {
-        // Upload other document types to the processing endpoint
-        result = await os.uploadDocumentWithPolling(file);
-        // Parse the JSON response
-        parsed = JSON.parse(result.text) as ParsedDocument;
+        // PDF files in browser are not supported without Tauri
+        setDocumentError("PDF files can only be processed in the desktop app");
+        e.target.value = ""; // Reset input
+        return;
+        // REMOVED: Cloud API fallback for document processing
+        // result = await os.uploadDocumentWithPolling(file);
+        // parsed = JSON.parse(result.text) as ParsedDocument;
       }
 
       // Extract content
