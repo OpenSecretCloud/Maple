@@ -10,7 +10,9 @@ clang: error: version '-sim' in target triple 'arm64-apple-ios13.0-simulator-sim
 
 This happens when the Xcode project file incorrectly lists `arm64-sim` as an architecture, causing a duplicate `-sim` suffix in the target triple.
 
-### Solution
+### Solution (ARM64 Only - Recommended for Apple Silicon Macs)
+
+This solution configures the project to only build for ARM64, which works for real devices and Apple Silicon Mac simulators. This is simpler and avoids x86_64 compatibility issues.
 
 1. **Edit the Xcode project file** (`frontend/src-tauri/gen/apple/maple.xcodeproj/project.pbxproj`):
 
@@ -21,37 +23,44 @@ This happens when the Xcode project file incorrectly lists `arm64-sim` as an arc
        "arm64-sim",
    );
    ```
-   
+
    With:
    ```
-   ARCHS = (
-       arm64,
-       x86_64,
-   );
+   ARCHS = arm64;
    ```
 
 2. **Update VALID_ARCHS**:
-   
+
    Replace:
    ```
    VALID_ARCHS = "arm64  arm64-sim";
    ```
-   
+
    With:
    ```
-   VALID_ARCHS = "arm64 x86_64";
+   VALID_ARCHS = arm64;
    ```
 
 3. **Update EXCLUDED_ARCHS**:
-   
+
    Replace:
    ```
    "EXCLUDED_ARCHS[sdk=iphoneos*]" = "arm64-sim x86_64";
    ```
-   
+
    With:
    ```
    "EXCLUDED_ARCHS[sdk=iphoneos*]" = x86_64;
+   ```
+
+   And replace:
+   ```
+   "EXCLUDED_ARCHS[sdk=iphonesimulator*]" = arm64;
+   ```
+
+   With:
+   ```
+   "EXCLUDED_ARCHS[sdk=iphonesimulator*]" = "";
    ```
 
 ### Important Notes
