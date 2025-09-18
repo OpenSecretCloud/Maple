@@ -102,7 +102,9 @@ function UserMessage({ message, chatId }: { message: ChatMessage; chatId: string
         <div>
           <UserIcon />
         </div>
-        <div className="flex flex-col gap-2">{renderContent(message.content, chatId)}</div>
+        <div className="flex flex-col gap-2 min-w-0 flex-1 overflow-hidden">
+          {renderContent(message.content, chatId)}
+        </div>
       </div>
     </div>
   );
@@ -295,7 +297,7 @@ function SystemMessage({
         <div>
           <AsteriskIcon />
         </div>
-        <div className="flex flex-col gap-2">
+        <div className="flex flex-col gap-2 min-w-0 flex-1 overflow-hidden">
           <Markdown content={text} loading={loading} chatId={chatId} />
           <div className="flex gap-2 items-center">
             <Button
@@ -790,7 +792,7 @@ END OF INSTRUCTIONS`;
         )}
         <div
           ref={chatContainerRef}
-          className="flex-1 min-h-0 overflow-y-auto flex flex-col relative"
+          className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden flex flex-col relative"
         >
           <div className="mt-4 md:mt-8 w-full h-10 flex items-center justify-center relative">
             {/* Mobile new chat button */}
