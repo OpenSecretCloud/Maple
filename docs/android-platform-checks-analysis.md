@@ -655,35 +655,23 @@ listen<string>("deep-link-received", (event) => {
 | **OAuth Callback** | `cloud.opensecret.maple://auth?access_token=...` | Same | OAuth provider returns |
 | **Desktop Auth** | `https://trymaple.ai/desktop-auth?provider=...` | Same | Desktop OAuth flow |
 
-### Current Status of Android Deep Linking (Updated)
+### Current Status of Android Deep Linking ✅ FULLY WORKING
 
-#### ✅ What's Already Working:
+#### ✅ What's Completed:
 1. **HTTPS App Links intent filter** - AndroidManifest has `https://trymaple.ai` configured
-2. **Rust deep link handler** - Set up in `lib.rs` to emit events to frontend
-3. **Frontend listener** - `DeepLinkHandler.tsx` listens for `deep-link-received` events
-4. **Payment/auth URLs** - Already updated to use `isMobile()` for correct URL generation
+2. **Custom URL Scheme** - `cloud.opensecret.maple://` intent filter in AndroidManifest
+3. **Rust deep link handler** - Set up in `lib.rs` to emit events to frontend
+4. **Frontend listener** - `DeepLinkHandler.tsx` listens for `deep-link-received` events
+5. **Payment/auth URLs** - Using `isMobile()` for correct URL generation
+6. **Digital Asset Links** - `assetlinks.json` deployed with upload key SHA256
+7. **App verification** - Android verified ownership of trymaple.ai domain
+8. **Testing** - Both custom scheme and HTTPS deep links tested and working
 
-#### ✅ What Was Just Fixed:
-1. **Custom URL Scheme** - Added `cloud.opensecret.maple://` intent filter to AndroidManifest.xml
-   ```xml
-   <intent-filter>
-       <action android:name="android.intent.action.VIEW" />
-       <category android:name="android.intent.category.DEFAULT" />
-       <category android:name="android.intent.category.BROWSABLE" />
-       <data android:scheme="cloud.opensecret.maple" />
-   </intent-filter>
-   ```
-
-#### ⚠️ What Still Needs to Be Done:
-1. **Digital Asset Links file (`assetlinks.json`)** - Required for HTTPS App Links auto-verification
-   - File needs to be created at: `frontend/public/.well-known/assetlinks.json`
-   - Must include the app's SHA256 certificate fingerprint
-   - **Important:** Even without this file:
-     - ✅ Custom scheme (`cloud.opensecret.maple://`) will work immediately
-     - ⚠️ HTTPS links (`https://trymaple.ai/*`) will show an app chooser dialog
-     - Users can select "Always open with Maple" to bypass the chooser
-   - With the file properly configured:
-     - Android will auto-verify ownership and skip the chooser dialog
+#### ✅ Deep Linking Test Results:
+- **Custom scheme** (`cloud.opensecret.maple://`) - Working perfectly
+- **HTTPS links** (`https://trymaple.ai/*`) - Auto-verified, no chooser dialog
+- **OAuth callbacks** - Ready for GitHub, Google, Apple authentication
+- **Payment redirects** - Stripe/Zaprite success/cancel URLs working
 
 ### Implementation Steps for Android
 
@@ -692,31 +680,11 @@ listen<string>("deep-link-received", (event) => {
 - [x] ✅ Custom scheme intent filter for `cloud.opensecret.maple` (just added)
 - [x] ✅ `android:launchMode="singleTask"` already set
 
-#### 2. Digital Asset Links Configuration (Priority: HIGH) ⚠️ TODO
-- [ ] Create `.well-known/assetlinks.json` file with proper format:
-  ```json
-  [{
-    "relation": ["delegate_permission/common.handle_all_urls"],
-    "target": {
-      "namespace": "android_app",
-      "package_name": "cloud.opensecret.maple",
-      "sha256_cert_fingerprints": ["YOUR_CERT_SHA256_HERE"]
-    }
-  }]
-  ```
-- [ ] Get the SHA256 fingerprint from the app signing certificate:
-  ```bash
-  # For debug builds (using debug keystore):
-  keytool -list -v -keystore ~/.android/debug.keystore -alias androiddebugkey -storepass android -keypass android | grep SHA256
-
-  # For release builds (using your release keystore):
-  keytool -list -v -keystore /path/to/your/release.keystore -alias your-alias-name | grep SHA256
-
-  # If using Google Play App Signing, get it from:
-  # Google Play Console → Setup → App Integrity → App signing
-  ```
-- [ ] Deploy to https://trymaple.ai/.well-known/assetlinks.json
-- [ ] Test with Android's Statement List Generator and Tester
+#### 2. Digital Asset Links Configuration ✅ COMPLETED
+- [x] ✅ Created `.well-known/assetlinks.json` file with upload key SHA256
+- [x] ✅ Deployed to https://trymaple.ai/.well-known/assetlinks.json
+- [x] ✅ Android verified domain ownership automatically
+- [x] ✅ HTTPS deep links tested and working without chooser dialog
 
 #### 3. Update Payment/Auth Flows ✅ COMPLETED
 - [x] ✅ All instances updated to use `isMobile()` platform utilities
@@ -842,17 +810,17 @@ Output locations:
 
 **Status**: ✅ Successfully built signed APK and AAB, installed on physical device
 
-### Step 4: Get SHA256 Fingerprints
+### Step 4: Get SHA256 Fingerprints ✅ COMPLETED
 
 ```bash
 # For your upload keystore (direct APK distribution)
 keytool -list -v \
-  -keystore ~/maple-upload-keystore.jks \
+  -keystore ~/maple-android-upload.jks \
   -alias upload \
   | grep SHA256
 
-# Output example:
-# SHA256: 7A:55:C1:D8:...
+# Output:
+# SHA256: C6:12:09:59:0A:27:73:F9:EA:EC:80:0A:C1:09:07:54:4A:56:6C:62:A5:68:7D:DF:9D:B3:DE:91:19:E4:3B:2A
 
 # For debug builds (testing only)
 keytool -list -v \
@@ -868,9 +836,9 @@ If using Google Play App Signing:
 2. Go to: Setup → App Integrity → App signing
 3. Copy the "SHA-256 certificate fingerprint" shown there
 
-### Step 5: Create assetlinks.json for Deep Linking
+### Step 5: Create assetlinks.json for Deep Linking ✅ COMPLETED
 
-Create `frontend/public/.well-known/assetlinks.json`:
+Created `frontend/public/.well-known/assetlinks.json`:
 
 ```json
 [{
@@ -879,14 +847,31 @@ Create `frontend/public/.well-known/assetlinks.json`:
     "namespace": "android_app",
     "package_name": "cloud.opensecret.maple",
     "sha256_cert_fingerprints": [
-      "7A:55:C1:D8:...",  // Your upload key SHA256 (for direct APKs)
-      "B2:66:D2:E9:..."   // Google Play signing SHA256 (from Play Console)
+      "C6:12:09:59:0A:27:73:F9:EA:EC:80:0A:C1:09:07:54:4A:56:6C:62:A5:68:7D:DF:9D:B3:DE:91:19:E4:3B:2A"
     ]
   }
 }]
 ```
 
-**Note**: You can have multiple fingerprints! This allows both Play Store and direct APK downloads to work.
+**Status**: ✅ Deployed to https://trymaple.ai/.well-known/assetlinks.json
+
+**Current Configuration**:
+- ✅ Contains upload key SHA256 only (for direct APK distribution)
+- ⏳ **TODO: Google Play SHA256** - Needs to be added when Play Store is configured
+
+**Next Steps for Google Play Store**:
+1. Create app in Google Play Console
+2. Upload first AAB: `bun tauri android build -- --aab`
+3. Enable Play App Signing (recommended)
+4. Get Google's SHA256 from Console (Setup → App Integrity → App signing)
+5. Update `assetlinks.json` to include both fingerprints:
+   ```json
+   "sha256_cert_fingerprints": [
+     "C6:12:09:59:0A:27:73:F9:EA:EC:80:0A:C1:09:07:54:4A:56:6C:62:A5:68:7D:DF:9D:B3:DE:91:19:E4:3B:2A",  // Upload key
+     "GOOGLE_PLAY_SHA256_HERE"  // Google's signing key
+   ]
+   ```
+6. Redeploy assetlinks.json to server
 
 ### Step 6: Distribution Strategy
 
@@ -909,20 +894,28 @@ Create `frontend/public/.well-known/assetlinks.json`:
 3. Add BOTH SHA256s to assetlinks.json
 4. Both distribution methods work with deep links!
 
-### Testing Deep Links
+### Testing Deep Links ✅ VERIFIED WORKING
 
-Once the APK is installed:
+Once the APK is installed (for multiple devices, use `-s <device_id>`):
 
 ```bash
 # Test custom scheme (works immediately, no assetlinks needed)
-adb shell am start -W -a android.intent.action.VIEW \
+adb -s <device_id> shell am start -W -a android.intent.action.VIEW \
   -d "cloud.opensecret.maple://auth?access_token=test" \
   cloud.opensecret.maple
 
-# Test HTTPS links (needs assetlinks.json with correct SHA256)
-adb shell am start -W -a android.intent.action.VIEW \
+# Test HTTPS links (verified working with deployed assetlinks.json)
+adb -s <device_id> shell am start -W -a android.intent.action.VIEW \
   -d "https://trymaple.ai/payment-success?source=stripe" \
   cloud.opensecret.maple
+```
+
+**Status**: ✅ Both custom scheme and HTTPS deep links tested and working on physical device
+
+**Note**: Android may cache App Links verification. If updating assetlinks.json, force re-verification:
+```bash
+adb shell pm clear-app-links cloud.opensecret.maple
+adb shell pm verify-app-links --re-verify cloud.opensecret.maple
 ```
 
 ### Common Issues & Solutions
@@ -978,6 +971,45 @@ Override in `tauri.conf.json` if needed:
   }
 }
 ```
+
+---
+
+## Google Play Store Setup ⏳ TODO
+
+### Prerequisites Completed:
+- ✅ Upload keystore created and configured
+- ✅ Signed AAB can be built with `bun tauri android build -- --aab`
+- ✅ Deep linking configured (will need SHA256 update)
+- ✅ App tested on physical device
+
+### Still Required for Play Store:
+1. **Create Google Play Developer Account** ($25 one-time fee)
+2. **Create App in Play Console**
+   - App name, category, description
+   - Screenshots, feature graphic, icon
+   - Content rating questionnaire
+   - Privacy policy URL
+   - Target audience and content settings
+3. **Upload First AAB**
+   - Build: `bun tauri android build -- --aab`
+   - Upload to Production or Internal Testing track
+4. **Configure Play App Signing**
+   - Enable during first AAB upload (recommended)
+   - Google will generate app signing key
+5. **Get Google's SHA256 Certificate**
+   - Navigate to: Setup → App Integrity → App signing
+   - Copy SHA-256 certificate fingerprint
+6. **Update assetlinks.json**
+   - Add Google's SHA256 to the array
+   - Redeploy to server
+7. **Complete Store Listing**
+   - App description (short & full)
+   - Screenshots for different device sizes
+   - Feature graphic (1024x500)
+   - App icon (512x512)
+8. **Review & Publish**
+   - Submit for review
+   - First review may take several days
 
 ---
 
