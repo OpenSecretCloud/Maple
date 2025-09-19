@@ -397,38 +397,56 @@ if (await isMobile()) { /* Both iOS and Android */ }
 
 ---
 
-## 10. PROXY CONFIGURATION (`frontend/src/components/apikeys/ProxyConfigSection.tsx`)
+## 10. PROXY CONFIGURATION (`frontend/src/components/apikeys/ProxyConfigSection.tsx`) ✅ COMPLETED
 
-### Instance 1: Component Visibility (Lines 28-40)
+### Instance 1: Component Visibility (Lines 28-40) ✅
 - **Current Behavior:** Only shows on desktop platforms
 - **Android Recommendation:** ✅ **Same as iOS** - Hide proxy config
 - **Reasoning:** Proxy not needed on mobile
+- **Status:** ✅ **IMPLEMENTED** - Now uses `useIsTauriDesktop()` hook
 - **Implementation:**
   ```typescript
   import { useIsTauriDesktop } from '@/hooks/usePlatform';
 
-  const { isTauriDesktop } = useIsTauriDesktop();
+  export function ProxyConfigSection({ apiKeys, onRequestNewApiKey }: ProxyConfigSectionProps) {
+    const { isTauriDesktop } = useIsTauriDesktop();
 
-  if (!isTauriDesktop) return null;
+    if (!isTauriDesktop) {
+      return null; // Don't show proxy config on non-desktop platforms (includes mobile)
+    }
+  }
   ```
 
 ---
 
-## 11. API KEY DASHBOARD (`frontend/src/components/apikeys/ApiKeyDashboard.tsx`)
+## 11. API KEY DASHBOARD (`frontend/src/components/apikeys/ApiKeyDashboard.tsx`) ✅ COMPLETED
 
-### Instance 1: Proxy Tab Visibility (Lines 215-230)
+### Instance 1: Proxy Tab Visibility (Lines 215-230) ✅
 - **Current Behavior:** Shows proxy tab only on desktop
 - **Android Recommendation:** ✅ **Same as iOS** - Hide proxy tab
+- **Status:** ✅ **IMPLEMENTED** - Now uses `useIsTauriDesktop()` hook
 - **Implementation:**
   ```typescript
   import { useIsTauriDesktop } from '@/hooks/usePlatform';
 
-  const { isTauriDesktop } = useIsTauriDesktop();
+  export function ApiKeyDashboard() {
+    const { isTauriDesktop } = useIsTauriDesktop();
 
-  // Only show proxy tab on desktop
-  const tabs = isTauriDesktop
-    ? ['credits', 'keys', 'proxy']
-    : ['credits', 'keys'];
+    // Only show proxy tab on desktop
+    <TabsList className={`grid w-full ${isTauriDesktop ? "grid-cols-3" : "grid-cols-2"}`}>
+      {/* Credits and API Keys tabs always shown */}
+      {isTauriDesktop && (
+        <TabsTrigger value="local-proxy">Local Proxy</TabsTrigger>
+      )}
+    </TabsList>
+
+    // Conditionally render proxy content
+    {isTauriDesktop && (
+      <TabsContent value="local-proxy">
+        <ProxyConfigSection ... />
+      </TabsContent>
+    )}
+  }
   ```
 
 ---

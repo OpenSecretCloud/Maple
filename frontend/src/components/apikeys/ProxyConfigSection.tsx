@@ -6,6 +6,7 @@ import { Label } from "@/components/ui/label";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Play, Square, Loader2, AlertCircle, CheckCircle, Server, Copy, Check } from "lucide-react";
 import { proxyService, ProxyConfig, ProxyStatus } from "@/services/proxyService";
+import { useIsTauriDesktop } from "@/hooks/usePlatform";
 
 interface ProxyConfigSectionProps {
   apiKeys: Array<{ name: string; created_at: string }>;
@@ -25,19 +26,14 @@ export function ProxyConfigSection({ apiKeys, onRequestNewApiKey }: ProxyConfigS
   const [isLoading, setIsLoading] = useState(false);
   const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
   const [copied, setCopied] = useState(false);
-  const [isDesktop, setIsDesktop] = useState(false);
-
-  // Check if we're in Tauri desktop environment
-  useEffect(() => {
-    proxyService.isTauriDesktop().then(setIsDesktop);
-  }, []);
+  const { isTauriDesktop } = useIsTauriDesktop();
 
   useEffect(() => {
-    if (!isDesktop) return;
+    if (!isTauriDesktop) return;
 
     // Load saved config and status on mount
     loadProxyState();
-  }, [isDesktop]);
+  }, [isTauriDesktop]);
 
   const loadProxyState = async () => {
     try {
@@ -152,8 +148,8 @@ export function ProxyConfigSection({ apiKeys, onRequestNewApiKey }: ProxyConfigS
     setTimeout(() => setCopied(false), 2000);
   };
 
-  if (!isDesktop) {
-    return null; // Don't show proxy config on non-desktop platforms
+  if (!isTauriDesktop) {
+    return null; // Don't show proxy config on non-desktop platforms (includes mobile)
   }
 
   const isRunning = proxyStatus?.running || false;
