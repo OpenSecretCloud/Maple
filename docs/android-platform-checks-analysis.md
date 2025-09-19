@@ -281,18 +281,25 @@ if (await isMobile()) { /* Both iOS and Android */ }
 
 ---
 
-## 6. TEAM INVITES (`frontend/src/components/team/TeamInviteDialog.tsx`)
+## 6. TEAM INVITES (`frontend/src/components/team/TeamInviteDialog.tsx`) ✅ COMPLETED
 
-### Instance 1: Billing Portal (Lines 53-71)
+### Instance 1: Billing Portal (Lines 48-55) ✅
 - **Current iOS Behavior:** Uses `plugin:opener|open_url` for external browser
 - **Android Recommendation:** ✅ **Same as iOS** - Use external browser
+- **Status:** ✅ **IMPLEMENTED** - Now uses `isMobile()` platform utility
 - **Implementation:**
   ```typescript
   import { isMobile } from '@/utils/platform';
+  import { invoke } from '@tauri-apps/api/core';
 
+  // Use external browser for mobile platforms (iOS and Android)
   if (await isMobile()) {
     await invoke("plugin:opener|open_url", { url });
+    return;
   }
+
+  // Web or desktop flow
+  window.open(url, "_blank", "noopener,noreferrer");
   ```
 
 ---

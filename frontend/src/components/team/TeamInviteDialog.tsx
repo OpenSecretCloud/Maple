@@ -15,8 +15,8 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Loader2, AlertCircle, UserPlus, Info, CreditCard } from "lucide-react";
 import { getBillingService } from "@/billing/billingService";
 import { useLocalState } from "@/state/useLocalState";
-import { isTauri } from "@tauri-apps/api/core";
-import { type } from "@tauri-apps/plugin-os";
+import { isMobile } from "@/utils/platform";
+import { invoke } from "@tauri-apps/api/core";
 import type { TeamStatus } from "@/types/team";
 
 interface TeamInviteDialogProps {
@@ -45,20 +45,10 @@ export function TeamInviteDialog({ open, onOpenChange, teamStatus }: TeamInviteD
       const billingService = getBillingService();
       const url = await billingService.getPortalUrl();
 
-      // Check if we're in a Tauri environment on iOS
-      try {
-        const isTauriEnv = await isTauri();
-        if (isTauriEnv) {
-          const platform = await type();
-          if (platform === "ios") {
-            // For iOS, use the opener plugin
-            const { invoke } = await import("@tauri-apps/api/core");
-            await invoke("plugin:opener|open_url", { url });
-            return;
-          }
-        }
-      } catch {
-        // Not in Tauri or error checking, continue with web flow
+      // Use external browser for mobile platforms (iOS and Android)
+      if (await isMobile()) {
+        await invoke("plugin:opener|open_url", { url });
+        return;
       }
 
       // Web or desktop flow
