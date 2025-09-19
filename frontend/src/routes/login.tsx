@@ -9,7 +9,8 @@ import { Loader2, Github, Mail } from "lucide-react";
 import { Google } from "@/components/icons/Google";
 import { Apple } from "@/components/icons/Apple";
 import { AuthMain } from "@/components/AuthMain";
-import { isTauri, invoke } from "@tauri-apps/api/core";
+import { invoke } from "@tauri-apps/api/core";
+import { isTauri } from "@/utils/platform";
 import { v4 as uuidv4 } from "uuid";
 import type { AppleCredential } from "@/types/apple-sign-in";
 import { sha256 } from "@noble/hashes/sha256";
@@ -100,10 +101,10 @@ function LoginPage() {
 
   const handleGitHubLogin = async () => {
     try {
-      const isTauriEnv = await isTauri();
-      console.log("[OAuth] Using", isTauriEnv ? "Tauri" : "web", "flow");
+      const isTauriPlatform = await isTauri();
+      console.log("[OAuth] Using", isTauriPlatform ? "Tauri" : "web", "flow");
 
-      if (isTauriEnv) {
+      if (isTauriPlatform) {
         // For Tauri (desktop or mobile), redirect to the web app's desktop-auth route
         let desktopAuthUrl = "https://trymaple.ai/desktop-auth?provider=github";
 
@@ -135,10 +136,10 @@ function LoginPage() {
 
   const handleGoogleLogin = async () => {
     try {
-      const isTauriEnv = await isTauri();
-      console.log("[OAuth] Using", isTauriEnv ? "Tauri" : "web", "flow");
+      const isTauriPlatform = await isTauri();
+      console.log("[OAuth] Using", isTauriPlatform ? "Tauri" : "web", "flow");
 
-      if (isTauriEnv) {
+      if (isTauriPlatform) {
         // For Tauri (desktop or mobile), redirect to the web app's desktop-auth route
         let desktopAuthUrl = "https://trymaple.ai/desktop-auth?provider=google";
 

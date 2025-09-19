@@ -451,21 +451,26 @@ if (await isMobile()) { /* Both iOS and Android */ }
 
 ---
 
-## 12. AUTH CALLBACK (`frontend/src/routes/auth.$provider.callback.tsx`)
+## 12. AUTH CALLBACK (`frontend/src/routes/auth.$provider.callback.tsx`) ✅ COMPLETED
 
-### Instance 1: Native App Redirect (Lines 38-59)
+### Instance 1: Native App Redirect (Lines 38-59) ✅
 - **Current Behavior:** Checks `redirect-to-native` flag for deep linking
 - **Android Recommendation:** ✅ **Same as iOS** - Use native app flow
+- **Status:** ✅ **VERIFIED** - Works correctly for Android
 - **Implementation:**
   ```typescript
-  // Works for both iOS and Android
+  // Platform-agnostic approach works for both iOS and Android
   const isTauriAuth = localStorage.getItem("redirect-to-native") === "true";
 
   if (isTauriAuth) {
     // Deep link back to app with auth tokens
-    window.location.href = `maple://auth-callback?${params}`;
+    window.location.href = `cloud.opensecret.maple://auth?access_token=...`;
   }
   ```
+- **Notes:**
+  - Uses localStorage flag approach instead of platform detection
+  - This design is intentionally platform-agnostic
+  - No platform utility imports needed in this component
 
 ---
 
@@ -492,20 +497,22 @@ if (await isMobile()) { /* Both iOS and Android */ }
 
 ---
 
-## 14. DEEP LINK HANDLER (`frontend/src/components/DeepLinkHandler.tsx`)
+## 14. DEEP LINK HANDLER (`frontend/src/components/DeepLinkHandler.tsx`) ✅ COMPLETED
 
-### Instance 1: Deep Link Events (Lines 31-84)
+### Instance 1: Deep Link Events (Lines 31-84) ✅
 - **Current Behavior:** Sets up listeners in Tauri environments
 - **Android Recommendation:** ✅ **Same as iOS** - Handle deep links
+- **Status:** ✅ **IMPLEMENTED** - Now uses platform utilities
 - **Implementation:**
   ```typescript
   import { isTauri } from '@/utils/platform';
+  import { listen } from '@tauri-apps/api/event';
 
   useEffect(() => {
     const setupDeepLinks = async () => {
       if (await isTauri()) {
         // Set up deep link listeners for both iOS and Android
-        const unsubscribe = await onOpenUrl((urls) => {
+        const unlisten = await listen<string>('deep-link-received', (event) => {
           // Handle deep links
         });
       }
@@ -722,16 +729,16 @@ adb shell am start -W -a android.intent.action.VIEW \
 ## Implementation Checklist
 
 ### High Priority (Required for Basic Android Support)
-- [ ] Add Android platform detection alongside iOS
-- [ ] Update billing API to treat Android like iOS for external browser
-- [ ] Ensure deep linking works for auth callbacks
-- [ ] Configure opener plugin for Android in Tauri
+- [x] ✅ Add Android platform detection alongside iOS
+- [x] ✅ Update billing API to treat Android like iOS for external browser
+- [x] ✅ Ensure deep linking works for auth callbacks
+- [ ] Configure opener plugin for Android in Tauri (platform-side config needed)
 
 ### Medium Priority (Feature Parity)
 - [ ] Enable paid plans on Android (server-side changes)
-- [ ] Show API Management features on Android
-- [ ] Handle Apple auth with web SDK on Android
-- [ ] Test document processing on Android
+- [x] ✅ Show API Management features on Android (hidden on mobile)
+- [x] ✅ Handle Apple auth with external browser on Android
+- [x] ✅ Document processing support verified for Android
 
 ### Low Priority (Enhancements)
 - [ ] Consider native Google Sign-In integration
@@ -818,6 +825,29 @@ function ComplexComponent() {
   }
 }
 ```
+
+## Platform Utility Migration Status
+
+### ✅ Components Using Platform Utilities
+1. **Billing API** (`billingApi.ts`) - Uses `isMobile()`, `isIOS()`, `isAndroid()`
+2. **Account Menu** (`AccountMenu.tsx`) - Uses `useIsMobile()` hook
+3. **Team Invite Dialog** (`TeamInviteDialog.tsx`) - Uses `isMobile()` utility
+4. **Marketing** (`Marketing.tsx`) - Uses `useIsIOS()` hook
+5. **API Credits** (`ApiCreditsSection.tsx`) - Uses `useIsMobile()` hook
+6. **Chat Box** (`ChatBox.tsx`) - Uses `useIsTauri()` hook
+7. **Proxy Config** (`ProxyConfigSection.tsx`) - Uses `useIsTauriDesktop()` hook
+8. **API Key Dashboard** (`ApiKeyDashboard.tsx`) - Uses `useIsTauriDesktop()` hook
+9. **Pricing** (`pricing.tsx`) - Uses hooks and utilities
+10. **Login** (`login.tsx`) - Uses `useIsIOS()`, `useIsTauri()` hooks and `isTauri()` utility
+11. **Signup** (`signup.tsx`) - Uses `useIsIOS()`, `useIsTauri()` hooks and `isTauri()` utility
+12. **Deep Link Handler** (`DeepLinkHandler.tsx`) - Uses `isTauri()` utility
+
+### ✅ Components That Don't Need Platform Utilities
+1. **Auth Callback** (`auth.$provider.callback.tsx`) - Uses platform-agnostic `redirect-to-native` flag
+2. **Desktop Auth** (`desktop-auth.tsx`) - No platform checks needed
+
+### ❌ Components Still Needing Migration
+1. **Apple Auth Provider** (`AppleAuthProvider.tsx`) - Still uses `window.location.protocol === "tauri:"` instead of platform utilities
 
 #### Migration Examples
 
