@@ -340,33 +340,36 @@ if (await isMobile()) { /* Both iOS and Android */ }
 
 ---
 
-## 8. API CREDITS (`frontend/src/components/apikeys/ApiCreditsSection.tsx`)
+## 8. API CREDITS (`frontend/src/components/apikeys/ApiCreditsSection.tsx`) ✅ COMPLETED
 
-### Instance 1: Payment URLs (Lines 106-130)
+### Instance 1: Payment URLs (Lines 98-112) ✅
 - **Current iOS Behavior:** Uses Universal Links for payment callbacks
 - **Android Recommendation:** ✅ **Same as iOS** - Use deep links
+- **Status:** ✅ **IMPLEMENTED** - Now uses `useIsMobile()` hook
 - **Implementation:**
   ```typescript
-  import { isMobile } from '@/utils/platform';
+  import { useIsMobile } from '@/hooks/usePlatform';
 
-  const successUrl = await isMobile()
-    ? "https://trymaple.ai/payment-success-credits"
-    : `${window.location.origin}/payment-success`;
+  const { isMobile } = useIsMobile();
+
+  // For mobile platforms (iOS and Android), use Universal Links
+  if (isMobile) {
+    successUrl = `https://trymaple.ai/payment-success-credits?source=${method}`;
+    cancelUrl = method === "stripe" ? `https://trymaple.ai/payment-canceled?source=stripe` : undefined;
+  } else {
+    // For web or desktop, use regular URLs with query params
+    const baseUrl = window.location.origin;
+    successUrl = `${baseUrl}/?credits_success=true`;
+    cancelUrl = method === "stripe" ? `${baseUrl}/` : undefined;
+  }
   ```
 
-### Instance 2: Feature Availability
-- **Current iOS Behavior:** Feature disabled (comments indicate)
-- **Android Recommendation:** ❌ **Different from iOS** - Enable feature
-- **Reasoning:** No restrictions on Android
-- **Implementation:**
-  ```typescript
-  import { useIsIOS } from '@/utils/platform';
-
-  const { isIOS } = useIsIOS();
-
-  // Enable for Android, disable only for iOS
-  const isFeatureEnabled = !isIOS;
-  ```
+### Instance 2: Feature Availability ✅
+- **Current iOS Behavior:** Feature hidden on mobile platforms
+- **Android Recommendation:** ✅ **Same as iOS** - Hide feature on mobile
+- **Reasoning:** API credits feature not exposed on mobile platforms
+- **Status:** ✅ **VERIFIED** - Feature not accessible on mobile platforms
+- **Note:** The page/feature is not accessible on mobile, so the component won't be rendered
 
 ---
 
