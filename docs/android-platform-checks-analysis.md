@@ -245,27 +245,29 @@ if (await isMobile()) { /* Both iOS and Android */ }
 
 ---
 
-## 5. ACCOUNT MENU (`frontend/src/components/AccountMenu.tsx`)
+## 5. ACCOUNT MENU (`frontend/src/components/AccountMenu.tsx`) ✅ COMPLETED
 
-### Instance 1: API Management Visibility (Lines 276-281)
+### Instance 1: API Management Visibility (Lines 276-281) ✅
 - **Current iOS Behavior:** Hides API Management menu item
-- **Android Recommendation:** ❌ **Different from iOS** - Show API Management
-- **Reasoning:** No App Store restrictions on Android for API key features
+- **Android Recommendation:** ✅ **Same as iOS** - Hide API Management on mobile
+- **Reasoning:** Mobile platforms don't need API management features
+- **Status:** ✅ **IMPLEMENTED** - Now uses `useIsMobile()` hook
 - **Implementation:**
   ```typescript
-  import { useIsIOS } from '@/utils/platform';
+  import { useIsMobile } from '@/utils/platform';
 
-  const { isIOS } = useIsIOS();
+  const { isMobile } = useIsMobile();
 
-  // Only hide for iOS, show for Android and other platforms
-  {!isIOS && (
+  // Hide for all mobile platforms (iOS and Android)
+  {!isMobile && (
     <MenuItem onClick={handleApiManagement}>API Management</MenuItem>
   )}
   ```
 
-### Instance 2: Manage Subscription (Lines 155-178)
+### Instance 2: Manage Subscription (Lines 155-178) ✅
 - **Current iOS Behavior:** Uses external browser via opener plugin
 - **Android Recommendation:** ✅ **Same as iOS** - Use external browser
+- **Status:** ✅ **IMPLEMENTED** - Now uses `isMobile()` platform utility
 - **Implementation:**
   ```typescript
   import { isMobile } from '@/utils/platform';
@@ -273,7 +275,7 @@ if (await isMobile()) { /* Both iOS and Android */ }
   if (await isMobile()) {
     await invoke("plugin:opener|open_url", { url: portalUrl });
   } else {
-    window.location.href = portalUrl;
+    window.open(url, "_blank");
   }
   ```
 
