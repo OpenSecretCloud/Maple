@@ -474,25 +474,36 @@ if (await isMobile()) { /* Both iOS and Android */ }
 
 ---
 
-## 13. APPLE AUTH PROVIDER (`frontend/src/components/AppleAuthProvider.tsx`)
+## 13. APPLE AUTH PROVIDER (`frontend/src/components/AppleAuthProvider.tsx`) ✅ COMPLETED
 
-### Instance 1: Component Rendering (Lines 392-395)
-- **Current Behavior:** Returns null in Tauri (expects native iOS)
-- **Android Recommendation:** ❌ **Different from iOS** - Show web SDK button
-- **Reasoning:** No native Apple auth on Android
-- **Implementation:**
+### Instance 1: Component Rendering (Lines 95, 393) ✅
+- **Current Behavior:** Returns null for ALL Tauri environments (`window.location.protocol === "tauri:"`)
+- **Android Recommendation:** ✅ **Working correctly** - Component not used by mobile/desktop apps
+- **Status:** ✅ **NO CHANGES NEEDED** - Working as designed
+- **Explanation:**
+  - This component is **ONLY for the Web JS SDK** (Apple's browser-based auth)
+  - It correctly returns `null` for ALL Tauri platforms (iOS, Android, Desktop)
+  - Mobile and desktop apps handle Apple auth differently:
+    - **iOS**: Uses native Apple Sign In plugin directly
+    - **Android/Desktop**: Opens external browser to `/desktop-auth?provider=apple`
+    - The external browser then loads the web page which DOES use this component
+  - The check `window.location.protocol === "tauri:"` is intentionally platform-agnostic
+- **How it works:**
   ```typescript
-  import { useIsIOS, useIsTauri } from '@/hooks/usePlatform';
+  // AppleAuthProvider.tsx - Web SDK component
+  if (window.location.protocol === "tauri:") {
+    return null; // Don't render in ANY Tauri app
+  }
 
-  const { isIOS } = useIsIOS();
-  const { isTauri } = useIsTauri();
-
-  // Only hide for iOS Tauri app (which has native auth)
-  // Show for Android Tauri and web
-  if (isTauri && isIOS) return null;
-
-  // Show Apple web auth button for Android and web
-  return <AppleAuthButton />;
+  // Login/Signup pages handle the platform routing:
+  if (isTauriEnv) {
+    // Show custom button that:
+    // - iOS: calls native plugin
+    // - Android/Desktop: opens external browser
+  } else {
+    // Web only: render AppleAuthProvider component
+    <AppleAuthProvider />
+  }
   ```
 
 ---
@@ -644,35 +655,79 @@ listen<string>("deep-link-received", (event) => {
 | **OAuth Callback** | `cloud.opensecret.maple://auth?access_token=...` | Same | OAuth provider returns |
 | **Desktop Auth** | `https://trymaple.ai/desktop-auth?provider=...` | Same | Desktop OAuth flow |
 
-### Current Issues with Android Deep Linking
+### Current Status of Android Deep Linking (Updated)
 
-1. **Problem**: When returning from Stripe, the app goes to `http://tauri.localhost/pricing?canceled=true` instead of the app
-2. **Cause**: The success/cancel URLs are using `window.location.origin` which resolves to `tauri://localhost` on Android
-3. **Solution**: Update `pricing.tsx` to use `isMobile()` instead of just `isTauriIOS` (already documented in Section 4)
+#### ✅ What's Already Working:
+1. **HTTPS App Links intent filter** - AndroidManifest has `https://trymaple.ai` configured
+2. **Rust deep link handler** - Set up in `lib.rs` to emit events to frontend
+3. **Frontend listener** - `DeepLinkHandler.tsx` listens for `deep-link-received` events
+4. **Payment/auth URLs** - Already updated to use `isMobile()` for correct URL generation
+
+#### ✅ What Was Just Fixed:
+1. **Custom URL Scheme** - Added `cloud.opensecret.maple://` intent filter to AndroidManifest.xml
+   ```xml
+   <intent-filter>
+       <action android:name="android.intent.action.VIEW" />
+       <category android:name="android.intent.category.DEFAULT" />
+       <category android:name="android.intent.category.BROWSABLE" />
+       <data android:scheme="cloud.opensecret.maple" />
+   </intent-filter>
+   ```
+
+#### ⚠️ What Still Needs to Be Done:
+1. **Digital Asset Links file (`assetlinks.json`)** - Required for HTTPS App Links auto-verification
+   - File needs to be created at: `frontend/public/.well-known/assetlinks.json`
+   - Must include the app's SHA256 certificate fingerprint
+   - **Important:** Even without this file:
+     - ✅ Custom scheme (`cloud.opensecret.maple://`) will work immediately
+     - ⚠️ HTTPS links (`https://trymaple.ai/*`) will show an app chooser dialog
+     - Users can select "Always open with Maple" to bypass the chooser
+   - With the file properly configured:
+     - Android will auto-verify ownership and skip the chooser dialog
 
 ### Implementation Steps for Android
 
-#### 1. Configure Android Manifest (Priority: HIGH)
-- [ ] Add App Links intent filter for `https://trymaple.ai`
-- [ ] Add custom scheme intent filter for `cloud.opensecret.maple`
-- [ ] Set `android:launchMode="singleTask"` to prevent multiple instances
+#### 1. Configure Android Manifest ✅ COMPLETED
+- [x] ✅ App Links intent filter for `https://trymaple.ai` (already existed)
+- [x] ✅ Custom scheme intent filter for `cloud.opensecret.maple` (just added)
+- [x] ✅ `android:launchMode="singleTask"` already set
 
-#### 2. Server Configuration (Priority: HIGH)
-- [ ] Create `.well-known/assetlinks.json` file
-- [ ] Host it at https://trymaple.ai/.well-known/assetlinks.json
-- [ ] Include app signing certificate SHA256 fingerprint
+#### 2. Digital Asset Links Configuration (Priority: HIGH) ⚠️ TODO
+- [ ] Create `.well-known/assetlinks.json` file with proper format:
+  ```json
+  [{
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "cloud.opensecret.maple",
+      "sha256_cert_fingerprints": ["YOUR_CERT_SHA256_HERE"]
+    }
+  }]
+  ```
+- [ ] Get the SHA256 fingerprint from the app signing certificate:
+  ```bash
+  # For debug builds (using debug keystore):
+  keytool -list -v -keystore ~/.android/debug.keystore -alias androiddebugkey -storepass android -keypass android | grep SHA256
+
+  # For release builds (using your release keystore):
+  keytool -list -v -keystore /path/to/your/release.keystore -alias your-alias-name | grep SHA256
+
+  # If using Google Play App Signing, get it from:
+  # Google Play Console → Setup → App Integrity → App signing
+  ```
+- [ ] Deploy to https://trymaple.ai/.well-known/assetlinks.json
 - [ ] Test with Android's Statement List Generator and Tester
 
-#### 3. Update Payment/Auth Flows (Priority: HIGH)
-- [ ] Update all instances checking `isTauriIOS` to use `isMobile()`
-- [ ] Ensure all callback URLs use `https://trymaple.ai` for mobile
-- [ ] Test OAuth flows (GitHub, Google, Apple)
-- [ ] Test payment flows (Stripe, Zaprite)
+#### 3. Update Payment/Auth Flows ✅ COMPLETED
+- [x] ✅ All instances updated to use `isMobile()` platform utilities
+- [x] ✅ Callback URLs use `https://trymaple.ai` for mobile platforms
+- [ ] Test OAuth flows (GitHub, Google, Apple) - needs device testing
+- [ ] Test payment flows (Stripe, Zaprite) - needs device testing
 
-#### 4. Native Android Code (Priority: MEDIUM)
-- [ ] Implement intent handling in MainActivity
-- [ ] Pass deep link URLs to the WebView/Tauri runtime
-- [ ] Ensure "deep-link-received" event is emitted to JavaScript
+#### 4. Native Android Code ✅ ALREADY WORKING
+- [x] ✅ Intent handling via Tauri's deep link plugin
+- [x] ✅ Deep links passed to WebView/Tauri runtime
+- [x] ✅ "deep-link-received" event emitted to JavaScript
 
 ### Testing Deep Links
 
@@ -702,6 +757,218 @@ adb shell am start -W -a android.intent.action.VIEW \
    - One-time use
    - Short-lived
    - Properly validated
+
+---
+
+## Android App Signing & Distribution (Tauri v2)
+
+### Overview
+This section covers how to properly sign and distribute your Android app both through Google Play Store and as direct APK downloads, including setting up deep linking to work with both distribution methods.
+
+### Understanding Android Signing Keys
+
+#### What You Need to Know:
+- **Upload Key**: The keystore you create and manage. Signs APKs you upload to Google Play or distribute directly.
+- **App Signing Key**: Google's key (if using Play App Signing). Google re-signs your app with this for Play Store distribution.
+- **SHA256 Fingerprint**: A public identifier derived from a key. Safe to share, goes in `assetlinks.json`.
+
+#### Key Security:
+- 🔒 **KEEP SECRET**: Keystore files (.jks), passwords
+- ✅ **PUBLIC/SAFE**: SHA256 fingerprints, certificates in APKs
+- 📝 **NEVER COMMIT**: keystore.properties, *.jks files
+
+### Step 1: Create Your Upload Keystore
+
+```bash
+# Create a new keystore for your app (run this once)
+keytool -genkey -v \
+  -keystore ~/maple-upload-keystore.jks \
+  -keyalg RSA \
+  -keysize 2048 \
+  -validity 10000 \
+  -alias upload
+
+# You'll be prompted for:
+# - Keystore password (remember this!)
+# - Your name, organization, etc.
+# - Key password (can be same as keystore password)
+```
+
+**Important**:
+- Store this file somewhere safe (NOT in your git repo)
+- Back it up! If you lose it and aren't using Play App Signing, you can't update your app
+- Remember the password and alias (upload)
+
+### Step 2: Configure Tauri for Signing
+
+Create `frontend/src-tauri/gen/android/keystore.properties`:
+```properties
+password=your-keystore-password
+keyAlias=upload
+storeFile=/absolute/path/to/maple-upload-keystore.jks
+```
+
+**Add to `.gitignore`**:
+```gitignore
+# Android signing
+*.jks
+*.keystore
+keystore.properties
+```
+
+### Step 3: Build Signed Apps
+
+```bash
+# For development/testing (uses debug keystore automatically)
+bun tauri android dev
+
+# For release APK (direct distribution)
+bun tauri android build
+
+# For release AAB (Google Play Store)
+bun tauri android build -- --aab
+```
+
+Output locations:
+- **APK**: `frontend/src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk`
+- **AAB**: `frontend/src-tauri/gen/android/app/build/outputs/bundle/universalRelease/app-universal-release.aab`
+
+### Step 4: Get SHA256 Fingerprints
+
+```bash
+# For your upload keystore (direct APK distribution)
+keytool -list -v \
+  -keystore ~/maple-upload-keystore.jks \
+  -alias upload \
+  | grep SHA256
+
+# Output example:
+# SHA256: 7A:55:C1:D8:...
+
+# For debug builds (testing only)
+keytool -list -v \
+  -keystore ~/.android/debug.keystore \
+  -alias androiddebugkey \
+  -storepass android \
+  -keypass android \
+  | grep SHA256
+```
+
+If using Google Play App Signing:
+1. Upload your first AAB to Google Play Console
+2. Go to: Setup → App Integrity → App signing
+3. Copy the "SHA-256 certificate fingerprint" shown there
+
+### Step 5: Create assetlinks.json for Deep Linking
+
+Create `frontend/public/.well-known/assetlinks.json`:
+
+```json
+[{
+  "relation": ["delegate_permission/common.handle_all_urls"],
+  "target": {
+    "namespace": "android_app",
+    "package_name": "cloud.opensecret.maple",
+    "sha256_cert_fingerprints": [
+      "7A:55:C1:D8:...",  // Your upload key SHA256 (for direct APKs)
+      "B2:66:D2:E9:..."   // Google Play signing SHA256 (from Play Console)
+    ]
+  }
+}]
+```
+
+**Note**: You can have multiple fingerprints! This allows both Play Store and direct APK downloads to work.
+
+### Step 6: Distribution Strategy
+
+#### Option A: Google Play Store Only
+1. Build AAB: `bun tauri android build -- --aab`
+2. Upload to Play Console
+3. Enable Play App Signing (recommended)
+4. Get SHA256 from Play Console
+5. Add only Google's SHA256 to assetlinks.json
+
+#### Option B: Direct APK Only
+1. Build APK: `bun tauri android build`
+2. Distribute app-universal-release.apk
+3. Get SHA256 from your keystore
+4. Add only your SHA256 to assetlinks.json
+
+#### Option C: Both (Recommended)
+1. Upload AAB to Play Store with Play App Signing
+2. Also distribute APK directly
+3. Add BOTH SHA256s to assetlinks.json
+4. Both distribution methods work with deep links!
+
+### Testing Deep Links
+
+Once the APK is installed:
+
+```bash
+# Test custom scheme (works immediately, no assetlinks needed)
+adb shell am start -W -a android.intent.action.VIEW \
+  -d "cloud.opensecret.maple://auth?access_token=test" \
+  cloud.opensecret.maple
+
+# Test HTTPS links (needs assetlinks.json with correct SHA256)
+adb shell am start -W -a android.intent.action.VIEW \
+  -d "https://trymaple.ai/payment-success?source=stripe" \
+  cloud.opensecret.maple
+```
+
+### Common Issues & Solutions
+
+#### "App isn't verified" dialog for HTTPS links
+- **Cause**: assetlinks.json missing or wrong SHA256
+- **Fix**: Ensure SHA256 in assetlinks.json matches your signing certificate
+- **Workaround**: Users can tap "Open in app anyway" and select "Always"
+
+#### Can't update app after reinstall
+- **Cause**: Different signing keys (e.g., debug vs release)
+- **Fix**: Uninstall first, then install the new version
+
+#### Lost keystore file
+- **If using Play App Signing**: Contact Google Play support to reset upload key
+- **If NOT using Play App Signing**: You cannot update the app anymore
+- **Prevention**: Always use Play App Signing for Play Store releases
+
+### CI/CD Setup (GitHub Actions Example)
+
+Store in GitHub Secrets:
+- `ANDROID_KEYSTORE_BASE64`: `base64 -i maple-upload-keystore.jks`
+- `ANDROID_KEY_PASSWORD`: Your keystore password
+- `ANDROID_KEY_ALIAS`: `upload`
+
+`.github/workflows/android.yml`:
+```yaml
+- name: Setup Android signing
+  run: |
+    cd frontend/src-tauri/gen/android
+    echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > keystore.jks
+    echo "password=${{ secrets.ANDROID_KEY_PASSWORD }}" > keystore.properties
+    echo "keyAlias=${{ secrets.ANDROID_KEY_ALIAS }}" >> keystore.properties
+    echo "storeFile=$(pwd)/keystore.jks" >> keystore.properties
+
+- name: Build signed APK
+  run: bun tauri android build
+```
+
+### Version Code Management
+
+Tauri automatically generates version codes from `tauri.conf.json`:
+- Formula: `versionCode = major * 1000000 + minor * 1000 + patch`
+- Example: `1.3.2` → `1003002`
+
+Override in `tauri.conf.json` if needed:
+```json
+{
+  "bundle": {
+    "android": {
+      "versionCode": 42
+    }
+  }
+}
+```
 
 ---
 
@@ -845,9 +1112,7 @@ function ComplexComponent() {
 ### ✅ Components That Don't Need Platform Utilities
 1. **Auth Callback** (`auth.$provider.callback.tsx`) - Uses platform-agnostic `redirect-to-native` flag
 2. **Desktop Auth** (`desktop-auth.tsx`) - No platform checks needed
-
-### ❌ Components Still Needing Migration
-1. **Apple Auth Provider** (`AppleAuthProvider.tsx`) - Still uses `window.location.protocol === "tauri:"` instead of platform utilities
+3. **Apple Auth Provider** (`AppleAuthProvider.tsx`) - Intentionally uses `window.location.protocol === "tauri:"` to exclude ALL Tauri platforms (working as designed)
 
 #### Migration Examples
 
