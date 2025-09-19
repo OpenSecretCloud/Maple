@@ -304,20 +304,38 @@ if (await isMobile()) { /* Both iOS and Android */ }
 
 ---
 
-## 7. MARKETING (`frontend/src/components/Marketing.tsx`)
+## 7. MARKETING (`frontend/src/components/Marketing.tsx`) ✅ COMPLETED
 
-### Instance 1: Pricing Tier Buttons (Lines 141-152)
+### Instance 1: Platform Detection ✅
+- **Current iOS Behavior:** Sets `isIOS` state when `platform === "ios"`
+- **Android Recommendation:** ✅ **Uses platform hook** - No Android-specific detection needed
+- **Status:** ✅ **IMPLEMENTED** - Now uses `useIsIOS()` hook from platform utilities
+- **Implementation:**
+  ```typescript
+  import { useIsIOS } from '@/hooks/usePlatform';
+
+  export function Marketing() {
+    // Use the platform detection hook for iOS
+    // Android doesn't have App Store restrictions, so we only need to check for iOS
+    const { isIOS } = useIsIOS();
+    // No manual useEffect or state management needed
+  }
+  ```
+
+### Instance 2: Pricing Tier Buttons (Lines 141-152) ✅
 - **Current iOS Behavior:** Shows "Coming Soon" for paid plans
 - **Android Recommendation:** ❌ **Different from iOS** - Enable paid plans
 - **Reasoning:** Android doesn't have App Store payment restrictions
+- **Status:** ✅ **IMPLEMENTED** - iOS shows "Coming Soon", Android shows normal "Get Started"
 - **Implementation:**
   ```typescript
-  import { useIsIOS } from '@/utils/platform';
-
-  const { isIOS } = useIsIOS();
-
-  // Only show "Coming Soon" for iOS
-  const buttonText = isIOS && !isFreeplan ? "Coming Soon" : "Get Started";
+  // In PricingTier component:
+  // Only iOS shows "Coming Soon" for paid plans
+  {isIOS && !isFreeplan ? (
+    <button disabled={true}>Coming Soon</button>
+  ) : (
+    <button onClick={handlePurchase}>{ctaText}</button>
+  )}
   ```
 
 ---

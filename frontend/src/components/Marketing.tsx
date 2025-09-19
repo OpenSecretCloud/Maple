@@ -4,11 +4,8 @@ import { ArrowRight, Check, Lock, MessageSquareMore, Shield, Sparkles, Laptop } 
 import { Footer } from "./Footer";
 import { useQuery } from "@tanstack/react-query";
 import { getBillingService } from "@/billing/billingService";
-import { useState, useEffect } from "react";
 import { PRICING_PLANS, type PlanFeature } from "@/config/pricingConfig";
-// eslint-disable-next-line
-// @ts-ignore
-import { type } from "@tauri-apps/plugin-os";
+import { useIsIOS } from "@/hooks/usePlatform";
 
 function CTAButton({
   children,
@@ -185,32 +182,9 @@ function PricingTier({
 export { PricingTier };
 
 export function Marketing() {
-  const [isIOS, setIsIOS] = useState(false);
-
-  // Check if the app is running on iOS
-  useEffect(() => {
-    const checkPlatform = async () => {
-      try {
-        // First check if we're in a Tauri environment
-        const isTauriEnv = await import("@tauri-apps/api/core")
-          .then((m) => m.isTauri())
-          .catch(() => false);
-
-        if (isTauriEnv) {
-          // Only check platform type if we're in a Tauri environment
-          const platform = await type();
-          setIsIOS(platform === "ios");
-        } else {
-          setIsIOS(false);
-        }
-      } catch (error) {
-        console.error("Error checking platform:", error);
-        setIsIOS(false);
-      }
-    };
-
-    checkPlatform();
-  }, []);
+  // Use the platform detection hook for iOS
+  // Android doesn't have App Store restrictions, so we only need to check for iOS
+  const { isIOS } = useIsIOS();
 
   // Fetch products to get product IDs for pricing tiers
   const {
