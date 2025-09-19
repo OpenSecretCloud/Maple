@@ -56,46 +56,90 @@ if (await isMobile()) { /* Both iOS and Android */ }
 
 ---
 
-## 2. PROXY SERVICE (`frontend/src/services/proxyService.ts`)
+## 2. PROXY SERVICE (`frontend/src/services/proxyService.ts`) ✅ COMPLETED
 
-### Instance 1: Desktop Platform Check (Lines 99-106)
+### Instance 1: Desktop Platform Check (Lines 99-106) ✅
 - **Current Behavior:** Returns true only for `macos`, `windows`, `linux`
 - **Android Recommendation:** ❌ **Different from iOS** - Keep as desktop-only
 - **Reasoning:** Proxy functionality not needed on mobile platforms
-- **No changes needed** - Current logic correctly excludes mobile platforms
+- **Status:** ✅ **VERIFIED** - Current logic correctly excludes mobile platforms (returns `false` for both `ios` and `android`)
+- **No changes needed** - The `isTauriDesktop()` method properly handles all mobile exclusions
 
 ---
 
-## 3. AUTHENTICATION (`frontend/src/routes/login.tsx` & `signup.tsx`)
+## 3. AUTHENTICATION (`frontend/src/routes/login.tsx` & `signup.tsx`) ✅ COMPLETED
 
-### Instance 1: Platform Detection (Lines 58-59)
+### Instance 1: Platform Detection ✅
 - **Current iOS Behavior:** Sets `isIOS` state when `platform === "ios"`
 - **Android Recommendation:** ➕ **Add Android detection**
-- **Implementation:** Use React hooks instead of manual state management
+- **Status:** ✅ **IMPLEMENTED** - Now uses platform utility hooks
+- **Implementation:**
   ```typescript
   import { useIsIOS, useIsAndroid, useIsTauri } from '@/utils/platform';
 
-  function LoginComponent() {
+  function LoginPage() {
     const { isIOS } = useIsIOS();
     const { isAndroid } = useIsAndroid();
-    const { isTauri } = useIsTauri();
-    // No need for useEffect or manual state management
+    const { isTauri: isTauriEnv } = useIsTauri();
+    // No need for manual useEffect or state management
   }
   ```
 
-### Instance 2: GitHub OAuth (Lines 127-160)
-- **Current Behavior:** External browser for all Tauri platforms
-- **Android Recommendation:** ✅ **Already supports Android** - Comments mention "iOS/Android"
+### Instance 2: Email Authentication ✅
+- **Current Behavior:** Standard email/password flow
+- **Android Recommendation:** ✅ **Same across all platforms**
+- **Status:** ✅ **No changes needed** - Works identically on all platforms
 
-### Instance 3: Google OAuth (Lines 162-195)
+### Instance 3: GitHub OAuth ✅
 - **Current Behavior:** External browser for all Tauri platforms
-- **Android Recommendation:** 🔄 **Consider enhancement** - Could use native Google Sign-In
-- **Future Enhancement:** Android has native Google Play Services integration option
+- **Android Recommendation:** ✅ **Same as iOS** - Use external browser
+- **Status:** ✅ **Already works** - Current `isTauri` check handles Android correctly
+- **Implementation:** Opens `https://trymaple.ai/desktop-auth?provider=github` in external browser
 
-### Instance 4: Apple Sign In (Lines 197-302)
-- **Current iOS Behavior:** Uses native `plugin:sign-in-with-apple|get_apple_id_credential`
-- **Android Recommendation:** ❌ **Different from iOS** - Use external browser
-- **Reasoning:** No native Apple Sign In SDK for Android
+### Instance 4: Google OAuth ✅
+- **Current Behavior:** External browser for all Tauri platforms
+- **Android Recommendation:** ✅ **Same as iOS** - Use external browser (no native Google Sign-In yet)
+- **Status:** ✅ **Already works** - Current `isTauri` check handles Android correctly
+- **Future Enhancement:** Could implement native Google Play Services integration later
+- **Implementation:** Opens `https://trymaple.ai/desktop-auth?provider=google` in external browser
+
+### Instance 5: Apple Sign In ✅
+- **Current Behavior:** Platform-specific implementations
+- **Android Recommendation:** ✅ **Same as Desktop** - Use external browser
+- **Status:** ✅ **IMPLEMENTED** - Android now uses external browser like desktop
+- **Implementation:**
+  ```typescript
+  // login.tsx and signup.tsx
+  if (isTauriEnv && isIOS) {
+    // Native iOS flow using plugin:sign-in-with-apple
+    await invoke("plugin:sign-in-with-apple|get_apple_id_credential");
+  } else if (isTauriEnv) {
+    // Desktop and Android Tauri flow - external browser
+    await invoke("plugin:opener|open_url", {
+      url: "https://trymaple.ai/desktop-auth?provider=apple"
+    });
+  } else {
+    // Web flow only - use AppleAuthProvider component
+    // This renders the Apple JS SDK button
+  }
+
+  // Button rendering logic
+  {isTauriEnv ? (
+    <Button onClick={handleAppleLogin}>Log in with Apple</Button>
+  ) : (
+    <AppleAuthProvider />  // Web SDK for Web only
+  )}
+  ```
+
+### Summary of Auth Behavior
+- **Email**: ✅ Same on all platforms
+- **GitHub**: ✅ External browser on mobile (iOS & Android) and desktop, web flow on web
+- **Google**: ✅ External browser on mobile (iOS & Android) and desktop, web flow on web
+- **Apple**:
+  - iOS: ✅ Native Apple Sign In plugin
+  - Android: ✅ External browser (via `/desktop-auth`)
+  - Desktop: ✅ External browser (via `/desktop-auth`)
+  - Web: ✅ AppleAuthProvider web SDK
 
 ---
 

@@ -10,13 +10,13 @@ import { Google } from "@/components/icons/Google";
 import { Apple } from "@/components/icons/Apple";
 import { AuthMain } from "@/components/AuthMain";
 import { isTauri, invoke } from "@tauri-apps/api/core";
-import { type } from "@tauri-apps/plugin-os";
 import { v4 as uuidv4 } from "uuid";
 import type { AppleCredential } from "@/types/apple-sign-in";
 import { sha256 } from "@noble/hashes/sha256";
 import { bytesToHex } from "@noble/hashes/utils";
 import { AppleAuthProvider } from "@/components/AppleAuthProvider";
 import { getBillingService } from "@/billing/billingService";
+import { useIsIOS, useIsTauri } from "@/hooks/usePlatform";
 
 type LoginSearchParams = {
   next?: string;
@@ -40,36 +40,10 @@ function LoginPage() {
   const [loginMethod, setLoginMethod] = useState<LoginMethod>(null);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
-  const [isIOS, setIsIOS] = useState(false);
-  const [isTauriEnv, setIsTauriEnv] = useState(false);
 
-  // Check if running on iOS and in Tauri environment
-  useEffect(() => {
-    const checkPlatform = async () => {
-      try {
-        // First check if we're in a Tauri environment
-        let tauriEnv = false;
-        tauriEnv = await isTauri();
-
-        setIsTauriEnv(tauriEnv);
-
-        // Only check platform type if we're in a Tauri environment
-        if (tauriEnv) {
-          const platform = await type();
-          setIsIOS(platform === "ios");
-        } else {
-          // Not in Tauri environment, definitely not iOS
-          setIsIOS(false);
-        }
-      } catch (error) {
-        console.error("Error checking platform:", error);
-        setIsIOS(false);
-        setIsTauriEnv(false);
-      }
-    };
-
-    checkPlatform();
-  }, []);
+  // Use platform detection hooks
+  const { isIOS } = useIsIOS();
+  const { isTauri: isTauriEnv } = useIsTauri();
 
   // Redirect if already logged in
   useEffect(() => {
@@ -196,8 +170,6 @@ function LoginPage() {
 
   const handleAppleLogin = async () => {
     try {
-      const isTauriEnv = await isTauri();
-
       if (isTauriEnv && isIOS) {
         // Native iOS implementation using Apple Sign In plugin
         console.log("[OAuth] Initiating native Sign in with Apple for iOS");
@@ -275,7 +247,7 @@ function LoginPage() {
           setError(errorMessage);
         }
       } else if (isTauriEnv) {
-        // For Tauri (desktop), redirect to the web app's desktop-auth route
+        // For Tauri desktop and Android, redirect to the web app's desktop-auth route
         let desktopAuthUrl = "https://trymaple.ai/desktop-auth?provider=apple";
 
         // If there's a selected plan, add it to the URL
@@ -291,8 +263,8 @@ function LoginPage() {
         });
       } else {
         // Web flow - use AppleAuthProvider component which will initiate the flow
-        console.log("[OAuth] Using web flow for Apple Sign In");
-        // The AppleAuthProvider component handles everything
+        console.log("[OAuth] Using web flow for Apple Sign In (Web only)");
+        // The AppleAuthProvider component handles everything for web
         // It will be triggered by the onClick event on the button
       }
     } catch (error) {
