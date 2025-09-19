@@ -777,12 +777,12 @@ This section covers how to properly sign and distribute your Android app both th
 - ✅ **PUBLIC/SAFE**: SHA256 fingerprints, certificates in APKs
 - 📝 **NEVER COMMIT**: keystore.properties, *.jks files
 
-### Step 1: Create Your Upload Keystore
+### Step 1: Create Your Upload Keystore ✅ COMPLETED
 
 ```bash
 # Create a new keystore for your app (run this once)
 keytool -genkey -v \
-  -keystore ~/maple-upload-keystore.jks \
+  -keystore ~/maple-android-upload.jks \
   -keyalg RSA \
   -keysize 2048 \
   -validity 10000 \
@@ -790,7 +790,7 @@ keytool -genkey -v \
 
 # You'll be prompted for:
 # - Keystore password (remember this!)
-# - Your name, organization, etc.
+# - Your name, organization, etc. (can use generic values like "Unknown")
 # - Key password (can be same as keystore password)
 ```
 
@@ -799,13 +799,15 @@ keytool -genkey -v \
 - Back it up! If you lose it and aren't using Play App Signing, you can't update your app
 - Remember the password and alias (upload)
 
-### Step 2: Configure Tauri for Signing
+**Status**: ✅ Created `~/maple-android-upload.jks` and backed up
+
+### Step 2: Configure Tauri for Signing ✅ COMPLETED
 
 Create `frontend/src-tauri/gen/android/keystore.properties`:
 ```properties
 password=your-keystore-password
 keyAlias=upload
-storeFile=/absolute/path/to/maple-upload-keystore.jks
+storeFile=/absolute/path/to/maple-android-upload.jks
 ```
 
 **Add to `.gitignore`**:
@@ -816,7 +818,12 @@ storeFile=/absolute/path/to/maple-upload-keystore.jks
 keystore.properties
 ```
 
-### Step 3: Build Signed Apps
+**Status**:
+- ✅ Created `keystore.properties` with actual password
+- ✅ Updated `.gitignore` to exclude sensitive files
+- ✅ Added signing configuration to `build.gradle.kts`
+
+### Step 3: Build Signed Apps ✅ COMPLETED
 
 ```bash
 # For development/testing (uses debug keystore automatically)
@@ -832,6 +839,8 @@ bun tauri android build -- --aab
 Output locations:
 - **APK**: `frontend/src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk`
 - **AAB**: `frontend/src-tauri/gen/android/app/build/outputs/bundle/universalRelease/app-universal-release.aab`
+
+**Status**: ✅ Successfully built signed APK and AAB, installed on physical device
 
 ### Step 4: Get SHA256 Fingerprints
 
