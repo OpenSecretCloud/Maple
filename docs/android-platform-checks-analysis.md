@@ -143,70 +143,103 @@ if (await isMobile()) { /* Both iOS and Android */ }
 
 ---
 
-## 4. PRICING PAGE (`frontend/src/routes/pricing.tsx`)
+## 4. PRICING PAGE (`frontend/src/routes/pricing.tsx`) ✅ COMPLETED
 
-### Instance 1: Platform Detection (Lines 202-203)
+### Instance 1: Platform Detection ✅
 - **Current iOS Behavior:** Sets `isIOS` state
 - **Android Recommendation:** ➕ **Add Android detection**
+- **Status:** ✅ **IMPLEMENTED** - Now uses platform utility hooks
 - **Implementation:**
   ```typescript
-  import { useIsIOS, useIsAndroid } from '@/utils/platform';
+  import { useIsIOS, useIsAndroid, useIsMobile } from '@/utils/platform';
+  import { isMobile } from '@/utils/platform';
 
   const { isIOS } = useIsIOS();
   const { isAndroid } = useIsAndroid();
+  const { isMobile: isMobilePlatform } = useIsMobile();
   ```
 
-### Instance 2: Bitcoin Toggle Auto-Enable (Line 228)
+### Instance 2: Bitcoin Toggle Auto-Enable ✅
 - **Current iOS Behavior:** Prevents auto-enabling Bitcoin payments
-- **Android Recommendation:** ✅ **Same as iOS** - Prevent auto-enable
+- **Android Recommendation:** ✅ **Same as iOS** - Prevent auto-enable on mobile
+- **Status:** ✅ **IMPLEMENTED** - Now checks for all mobile platforms
 - **Implementation:**
   ```typescript
-  import { useIsMobile } from '@/utils/platform';
-  const { isMobile } = useIsMobile();
-
-  // Disable auto-enable for mobile platforms
-  if (!isMobile && zaprite_enabled) {
-    setBitcoinToggle(true);
-  }
+  // Auto-enable Bitcoin toggle for Zaprite users (except on mobile platforms)
+  useEffect(() => {
+    if (freshBillingStatus?.payment_provider === "zaprite" && !isMobilePlatform) {
+      setUseBitcoin(true);
+    }
+  }, [freshBillingStatus?.payment_provider, isMobilePlatform]);
   ```
 
-### Instance 3: Product Availability (Lines 301-304, 461-463)
+### Instance 3: Product Availability ✅
 - **Current iOS Behavior:** Shows "Not available in app" for paid plans when `is_available === false`
 - **Android Recommendation:** ❌ **Different from iOS** - Android can support paid plans
+- **Status:** ✅ **IMPLEMENTED** - iOS restrictions maintained, Android allows paid plans
 - **Implementation:**
   ```typescript
-  // Server should distinguish between platforms
-  // iOS: product.is_available = false for paid plans
-  // Android: product.is_available = true for paid plans
-  if (isIOS && !isFreeplan && !product.is_available) {
+  // Show "Not available in app" for iOS paid plans if server says not available
+  // Android can support paid plans (no App Store restrictions)
+  if (isIOS && !isFreeplan && product.is_available === false) {
     return "Not available in app";
   }
-  // Android will allow paid plans
+  // Android will allow paid plans when server returns is_available: true
   ```
 
-### Instance 4: Payment Success URLs (Lines 394-409)
+### Instance 4: Payment Success URLs ✅
 - **Current iOS Behavior:** Uses Universal Links `https://trymaple.ai/payment-success`
 - **Android Recommendation:** ✅ **Same as iOS** - Use deep links for callbacks
+- **Status:** ✅ **IMPLEMENTED** - Both mobile platforms use deep links
 - **Implementation:**
   ```typescript
-  import { isMobile } from '@/utils/platform';
+  // For mobile platforms (iOS and Android), use Universal Links / App Links
+  const isMobilePlatform = await isMobile();
 
-  const successUrl = await isMobile()
-    ? "https://trymaple.ai/payment-success"
-    : `${window.location.origin}/payment-success`;
+  if (isMobilePlatform) {
+    // Use trymaple.ai URLs for deep linking back to app
+    successUrl = "https://trymaple.ai/payment-success?source=stripe";
+    cancelUrl = "https://trymaple.ai/payment-canceled?source=stripe";
+  } else {
+    // Use origin URLs for web/desktop
+    successUrl = `${window.location.origin}/pricing?success=true`;
+    cancelUrl = `${window.location.origin}/pricing?canceled=true`;
+  }
   ```
 
-### Instance 5: Portal Opening (Lines 507-525)
+### Instance 5: Portal Opening ✅
 - **Current iOS Behavior:** Uses `plugin:opener|open_url` to launch Safari
 - **Android Recommendation:** ✅ **Same as iOS** - Use external browser
+- **Status:** ✅ **IMPLEMENTED** - Both mobile platforms use external browser
 - **Implementation:**
   ```typescript
-  import { isMobile } from '@/utils/platform';
+  if (portalUrl) {
+    // Open in external browser for mobile platforms (iOS and Android)
+    if (isMobilePlatform) {
+      console.log("[Billing] Mobile platform detected, using opener plugin");
+      await invoke("plugin:opener|open_url", { url: portalUrl });
+    } else {
+      // Desktop and web platforms
+      window.open(portalUrl, "_blank");
+    }
+  }
+  ```
 
-  if (await isMobile()) {
-    await invoke("plugin:opener|open_url", { url: portalUrl });
-  } else {
-    window.open(portalUrl, "_blank");
+### Instance 6: Product Fetching with Version ✅
+- **Current iOS Behavior:** Sends app version to server for iOS builds
+- **Android Recommendation:** ✅ **Same as iOS** - Send version for mobile builds
+- **Status:** ✅ **IMPLEMENTED** - Both mobile platforms send version
+- **Implementation:**
+  ```typescript
+  queryKey: ["products", isIOS, isAndroid],
+  queryFn: async () => {
+    const billingService = getBillingService();
+    // Send version for mobile builds (iOS needs it for App Store restrictions)
+    if (isIOS || isAndroid) {
+      const version = `v${packageJson.version}`;
+      return await billingService.getProducts(version);
+    }
+    return await billingService.getProducts();
   }
   ```
 
