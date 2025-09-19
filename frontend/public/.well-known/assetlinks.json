@@ -1,0 +1,10 @@
+[{
+  "relation": ["delegate_permission/common.handle_all_urls"],
+  "target": {
+    "namespace": "android_app",
+    "package_name": "cloud.opensecret.maple",
+    "sha256_cert_fingerprints": [
+      "C6:12:09:59:0A:27:73:F9:EA:EC:80:0A:C1:09:07:54:4A:56:6C:62:A5:68:7D:DF:9D:B3:DE:91:19:E4:3B:2A"
+    ]
+  }
+}]
