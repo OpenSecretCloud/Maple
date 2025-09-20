@@ -3,6 +3,7 @@ import RecordRTC from "recordrtc";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { UpgradePromptDialog } from "@/components/UpgradePromptDialog";
+import { DocumentPlatformDialog } from "@/components/DocumentPlatformDialog";
 import { RecordingOverlay } from "@/components/RecordingOverlay";
 import { useEffect, useRef, useState, useMemo } from "react";
 import { useLocalState } from "@/state/useLocalState";
@@ -245,6 +246,7 @@ export default function Component({
   const documentInputRef = useRef<HTMLInputElement>(null);
   const [upgradeDialogOpen, setUpgradeDialogOpen] = useState(false);
   const [upgradeFeature, setUpgradeFeature] = useState<"image" | "voice" | "document">("image");
+  const [documentPlatformDialogOpen, setDocumentPlatformDialogOpen] = useState(false);
   const os = useOpenSecret();
 
   // Audio recording state
@@ -1224,14 +1226,20 @@ export default function Component({
               </Button>
             )}
 
-            {/* Document upload button - only show in Tauri environments */}
-            {!uploadedDocument && isTauriEnv && (
+            {/* Document upload button - show on all platforms but handle differently */}
+            {!uploadedDocument && (
               <Button
                 type="button"
                 size="sm"
                 variant="ghost"
-                className={cn("ml-1", !canUseDocuments && "opacity-50")}
+                className={cn("ml-1", (!canUseDocuments || !isTauriEnv) && "opacity-50")}
                 onClick={async () => {
+                  // On web, show platform dialog
+                  if (!isTauriEnv) {
+                    setDocumentPlatformDialogOpen(true);
+                    return;
+                  }
+                  // On desktop/mobile, check if user has access
                   if (!canUseDocuments) {
                     setUpgradeFeature("document");
                     setUpgradeDialogOpen(true);
@@ -1355,6 +1363,13 @@ export default function Component({
           open={upgradeDialogOpen}
           onOpenChange={setUpgradeDialogOpen}
           feature={upgradeFeature}
+        />
+
+        {/* Document platform dialog for web users */}
+        <DocumentPlatformDialog
+          open={documentPlatformDialogOpen}
+          onOpenChange={setDocumentPlatformDialogOpen}
+          hasProAccess={canUseDocuments || false}
         />
       </div>
     </div>
