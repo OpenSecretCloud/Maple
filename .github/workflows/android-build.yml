@@ -131,6 +131,31 @@ jobs:
         run: |
           export ANDROID_HOME=$ANDROID_SDK_ROOT
           export NDK_HOME=${{ steps.setup-ndk.outputs.ndk-path }}
+
+          # Set up Android NDK toolchain paths
+          export PATH=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH
+
+          # Set up cross-compilation environment variables for each target
+          export AR_aarch64_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
+          export CC_aarch64_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang
+          export CXX_aarch64_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang++
+          export RANLIB_aarch64_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib
+
+          export AR_armv7_linux_androideabi=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
+          export CC_armv7_linux_androideabi=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi24-clang
+          export CXX_armv7_linux_androideabi=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi24-clang++
+          export RANLIB_armv7_linux_androideabi=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib
+
+          export AR_x86_64_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
+          export CC_x86_64_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android24-clang
+          export CXX_x86_64_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android24-clang++
+          export RANLIB_x86_64_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib
+
+          # Create symlinks for ranlib that OpenSSL expects
+          sudo ln -sf $NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib /usr/local/bin/aarch64-linux-android-ranlib
+          sudo ln -sf $NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib /usr/local/bin/armv7a-linux-androideabi-ranlib
+          sudo ln -sf $NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib /usr/local/bin/x86_64-linux-android-ranlib
+
           cargo tauri android build --apk
         env:
           VITE_OPEN_SECRET_API_URL: ${{ github.event_name == 'pull_request' && 'https://enclave.secretgpt.ai' || 'https://enclave.trymaple.ai' }}
