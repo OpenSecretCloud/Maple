@@ -974,42 +974,134 @@ Override in `tauri.conf.json` if needed:
 
 ---
 
-## Google Play Store Setup ⏳ TODO
+## Google Play Store Setup ✅ IN PROGRESS
 
 ### Prerequisites Completed:
 - ✅ Upload keystore created and configured
-- ✅ Signed AAB can be built with `bun tauri android build -- --aab`
-- ✅ Deep linking configured (will need SHA256 update)
+- ✅ Signed AAB can be built with `bun tauri android build --aab`
+- ✅ Deep linking configured with both SHA256 fingerprints
 - ✅ App tested on physical device
+- ✅ Google Play Developer Account created
+- ✅ App created in Play Console ("Maple AI")
+- ✅ First AAB uploaded to internal testing
+- ✅ Play App Signing enabled
+- ✅ Google's SHA256 certificate obtained
+- ✅ assetlinks.json updated with both certificates
+- ✅ Privacy policy URL configured (https://opensecret.cloud/privacy)
+- ✅ API level 35 requirement met
 
-### Still Required for Play Store:
-1. **Create Google Play Developer Account** ($25 one-time fee)
-2. **Create App in Play Console**
-   - App name, category, description
-   - Screenshots, feature graphic, icon
-   - Content rating questionnaire
-   - Privacy policy URL
-   - Target audience and content settings
-3. **Upload First AAB**
-   - Build: `bun tauri android build -- --aab`
-   - Upload to Production or Internal Testing track
-4. **Configure Play App Signing**
-   - Enable during first AAB upload (recommended)
-   - Google will generate app signing key
-5. **Get Google's SHA256 Certificate**
-   - Navigate to: Setup → App Integrity → App signing
-   - Copy SHA-256 certificate fingerprint
-6. **Update assetlinks.json**
-   - Add Google's SHA256 to the array
-   - Redeploy to server
-7. **Complete Store Listing**
+### Current Status:
+- **Internal Testing Release**: Version 1.3.2 (Build 1003002002) is live
+- **Package Name**: cloud.opensecret.maple
+- **Google's App Signing SHA256**: `36:B3:1C:A3:CC:DD:CA:9A:DD:47:8A:8F:86:70:DB:11:E3:56:E7:90:09:6E:CC:7D:8C:43:38:F4:55:13:B1:0A`
+- **Upload Key SHA256**: `C6:12:09:59:0A:27:73:F9:EA:EC:80:0A:C1:09:07:54:4A:56:6C:62:A5:68:7D:DF:9D:B3:DE:91:19:E4:3B:2A`
+
+### Version Code Management:
+To avoid conflicts with Tauri's automatic version code generation, we use an extended scheme:
+- Base formula: `major*1000000 + minor*1000 + patch`
+- Extended for builds: Add 3 digits for build number (e.g., 1003002001, 1003002002)
+- Configured in `tauri.conf.json` under `bundle.android.versionCode`
+
+### Still Required for Full Release:
+1. **Add Testers to Internal Testing Track**
+2. **Complete Content Rating Questionnaire**
+3. **Complete Store Listing**
    - App description (short & full)
    - Screenshots for different device sizes
    - Feature graphic (1024x500)
    - App icon (512x512)
-8. **Review & Publish**
+4. **Test Deep Linking and OAuth Flows**
+5. **Promote to Production**
    - Submit for review
    - First review may take several days
+
+---
+
+## Android CI/CD Build Configuration
+
+### Build Warnings and Version Compatibility
+
+#### Current Warnings Observed:
+1. **Gradle Plugin Version**:
+   ```
+   WARNING: We recommend using a newer Android Gradle plugin to use compileSdk = 36
+   This Android Gradle plugin (8.5.1) was tested up to compileSdk = 34.
+   ```
+   - **Impact**: Build succeeds but may have compatibility issues
+   - **TODO**: Wait for Tauri to update their Android template or manually update Gradle plugin
+
+2. **Deprecated targetSdk in library DSL**:
+   ```
+   'targetSdk: Int?' is deprecated. Will be removed from library DSL in v9.0
+   ```
+   - **Location**: tauri-plugin-fs Android build.gradle.kts
+   - **Impact**: Warning only, will need update when Gradle 9.0 releases
+   - **TODO**: Wait for Tauri plugin updates
+
+3. **Unused Rust Functions**:
+   ```
+   warning: function `get_config_path` is never used
+   warning: function `save_proxy_config` is never used
+   ```
+   - **Impact**: No runtime impact, just compilation warnings
+   - **TODO**: Clean up unused proxy functions or add #[cfg] attributes for desktop-only
+
+#### Version Information:
+- **Current Gradle**: 8.9
+- **Android Gradle Plugin**: 8.5.1
+- **compileSdk**: 35 (Updated for Google Play requirements)
+- **targetSdk**: 35 (Required by Google Play as of Aug 2025)
+- **minSdk**: 24 (Android 7.0+, covers 99%+ of devices)
+- **NDK**: r25c
+
+#### Build Performance:
+- **Initial build time**: ~9-10 minutes (includes downloading dependencies)
+- **Cached build time**: ~4-5 minutes
+- **Architectures built**: arm64-v8a, armeabi-v7a, x86_64, x86
+
+### GitHub Actions Workflow Status
+
+#### ✅ Completed:
+1. **Android SDK and Java setup**
+2. **NDK installation and configuration**
+3. **Rust targets for all Android architectures**
+4. **Cross-compilation environment variables**
+5. **Keystore configuration for signing**
+6. **Comprehensive caching**:
+   - Bun/Node dependencies
+   - Gradle cache
+   - Rust compilation cache
+   - Cargo registry and binaries
+   - APT packages
+
+#### 🔧 Known Issues Fixed:
+1. **OpenSSL cross-compilation** - Fixed by setting up proper NDK paths and ranlib symlinks
+2. **Missing i686 target** - Added i686-linux-android to Rust targets
+3. **NDK toolchain not found** - Fixed by adding NDK bin to PATH and setting env vars
+
+#### 📋 TODO for Production:
+1. **Update Gradle Plugin** when Tauri updates templates
+2. **Google Play Store Setup**:
+   - Create developer account
+   - Configure Play App Signing
+   - Add Google's SHA256 to assetlinks.json
+3. **Version Management**:
+   - Implement automatic version bumping
+   - Consider using semantic-release
+4. **Testing**:
+   - Add Android emulator tests
+   - Implement UI testing with Espresso
+5. **Optimization**:
+   - Consider using `--target` flags to build specific architectures only
+   - Implement APK size optimization
+   - Add ProGuard/R8 rules if needed
+
+### Secrets Required for CI/CD
+
+Add these to GitHub repository secrets:
+- `ANDROID_KEYSTORE_BASE64` - Base64 encoded keystore file
+- `ANDROID_KEY_ALIAS` - Key alias (usually "upload")
+- `ANDROID_KEY_PASSWORD` - Keystore password
 
 ---
 
