@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -22,7 +22,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useLocalState } from "@/state/useLocalState";
 import { useNavigate } from "@tanstack/react-router";
-import { proxyService } from "@/services/proxyService";
+import { useIsTauriDesktop } from "@/hooks/usePlatform";
 
 interface ApiKey {
   name: string;
@@ -35,14 +35,10 @@ interface ApiKeyDashboardProps {
 
 export function ApiKeyDashboard({ showCreditSuccessMessage = false }: ApiKeyDashboardProps) {
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
-  const [isDesktop, setIsDesktop] = useState(false);
+  const { isTauriDesktop } = useIsTauriDesktop();
   const { listApiKeys, auth, createApiKey } = useOpenSecret();
   const { billingStatus } = useLocalState();
   const navigate = useNavigate();
-
-  useEffect(() => {
-    proxyService.isTauriDesktop().then(setIsDesktop);
-  }, []);
 
   // Check if user has API access (Pro, Team, or Max plans only - not Starter)
   const isBillingLoading = billingStatus === null;
@@ -213,7 +209,7 @@ export function ApiKeyDashboard({ showCreditSuccessMessage = false }: ApiKeyDash
       </DialogHeader>
 
       <Tabs defaultValue="credits" className="mt-4">
-        <TabsList className={`grid w-full ${isDesktop ? "grid-cols-3" : "grid-cols-2"}`}>
+        <TabsList className={`grid w-full ${isTauriDesktop ? "grid-cols-3" : "grid-cols-2"}`}>
           <TabsTrigger value="credits" className="flex items-center gap-2">
             <CreditCard className="h-4 w-4" />
             Credits
@@ -222,7 +218,7 @@ export function ApiKeyDashboard({ showCreditSuccessMessage = false }: ApiKeyDash
             <Key className="h-4 w-4" />
             API Keys
           </TabsTrigger>
-          {isDesktop && (
+          {isTauriDesktop && (
             <TabsTrigger value="local-proxy" className="flex items-center gap-2">
               <Server className="h-4 w-4" />
               Local Proxy
@@ -264,7 +260,7 @@ export function ApiKeyDashboard({ showCreditSuccessMessage = false }: ApiKeyDash
           </div>
         </TabsContent>
 
-        {isDesktop && (
+        {isTauriDesktop && (
           <TabsContent value="local-proxy" className="mt-4">
             <div className="space-y-4">
               <ProxyConfigSection

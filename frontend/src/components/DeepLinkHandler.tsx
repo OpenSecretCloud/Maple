@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { isTauri } from "@tauri-apps/api/core";
+import { isTauri } from "@/utils/platform";
 import { listen } from "@tauri-apps/api/event";
 
 // For direct deep link handling, we'll listen to our custom event

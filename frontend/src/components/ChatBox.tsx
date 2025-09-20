@@ -16,6 +16,7 @@ import { ModelSelector, MODEL_CONFIG, getModelTokenLimit } from "@/components/Mo
 import { useOpenSecret } from "@opensecret/react";
 import type { DocumentResponse } from "@opensecret/react";
 import { encode } from "gpt-tokenizer";
+import { useIsTauri } from "@/hooks/usePlatform";
 
 interface ParsedDocument {
   document: {
@@ -240,12 +241,12 @@ export default function Component({
   const [isUploadingDocument, setIsUploadingDocument] = useState(false);
   const [documentError, setDocumentError] = useState<string | null>(null);
   const [imageError, setImageError] = useState<string | null>(null);
-  const [isTauriEnv, setIsTauriEnv] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const documentInputRef = useRef<HTMLInputElement>(null);
   const [upgradeDialogOpen, setUpgradeDialogOpen] = useState(false);
   const [upgradeFeature, setUpgradeFeature] = useState<"image" | "voice" | "document">("image");
   const os = useOpenSecret();
+  const { isTauri: isTauriEnv } = useIsTauri();
 
   // Audio recording state
   const [isRecording, setIsRecording] = useState(false);
@@ -736,12 +737,6 @@ export default function Component({
   const isMobile = useIsMobile();
 
   // Check if we're in Tauri environment on component mount
-  useEffect(() => {
-    import("@tauri-apps/api/core")
-      .then((m) => m.isTauri())
-      .then(setIsTauriEnv)
-      .catch(() => setIsTauriEnv(false));
-  }, []);
 
   // Check if user can use system prompts (paid users only - exclude free plans)
   const canUseSystemPrompt =

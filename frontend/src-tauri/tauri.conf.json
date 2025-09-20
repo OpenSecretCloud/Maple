@@ -67,6 +67,9 @@
     "iOS": {
       "developmentTeam": "X773Y823TN"
     },
+    "android": {
+      "versionCode": 1003002002
+    },
     "windows": {
       "certificateThumbprint": null,
       "digestAlgorithm": "sha256",

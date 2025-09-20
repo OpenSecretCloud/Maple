@@ -7,6 +7,7 @@ import { Loader2, CreditCard, Bitcoin, Coins, CheckCircle, Edit } from "lucide-r
 import { useQuery } from "@tanstack/react-query";
 import { getBillingService } from "@/billing/billingService";
 import { useOpenSecret } from "@opensecret/react";
+import { useIsMobile } from "@/hooks/usePlatform";
 import {
   MIN_PURCHASE_CREDITS,
   MIN_PURCHASE_AMOUNT,
@@ -39,6 +40,7 @@ export function ApiCreditsSection({ showSuccessMessage = false }: ApiCreditsSect
   const [customAmount, setCustomAmount] = useState("");
   const [purchaseError, setPurchaseError] = useState<string | null>(null);
   const { auth } = useOpenSecret();
+  const { isMobile } = useIsMobile();
 
   const userEmail = auth.user?.user.email;
 
@@ -97,33 +99,13 @@ export function ApiCreditsSection({ showSuccessMessage = false }: ApiCreditsSect
       let successUrl: string;
       let cancelUrl: string | undefined;
 
-      try {
-        // Check if we're in Tauri environment
-        const isTauri = await import("@tauri-apps/api/core")
-          .then((m) => m.isTauri())
-          .catch(() => false);
-
-        const isTauriIOS =
-          isTauri &&
-          (await import("@tauri-apps/plugin-os")
-            .then((m) => m.type())
-            .then((type) => type === "ios")
-            .catch(() => false));
-
-        // For iOS, use Universal Links that match the AASA configuration
-        if (isTauriIOS) {
-          successUrl = `https://trymaple.ai/payment-success-credits?source=${method}`;
-          cancelUrl =
-            method === "stripe" ? `https://trymaple.ai/payment-canceled?source=stripe` : undefined;
-        } else {
-          // For web or desktop, use regular URLs with query params
-          const baseUrl = window.location.origin;
-          successUrl = `${baseUrl}/?credits_success=true`;
-          cancelUrl = method === "stripe" ? `${baseUrl}/` : undefined;
-        }
-      } catch (error) {
-        console.error("Error determining platform:", error);
-        // Fall back to regular URLs if platform detection fails
+      // For mobile platforms (iOS and Android), use Universal Links that match the AASA/App Links configuration
+      if (isMobile) {
+        successUrl = `https://trymaple.ai/payment-success-credits?source=${method}`;
+        cancelUrl =
+          method === "stripe" ? `https://trymaple.ai/payment-canceled?source=stripe` : undefined;
+      } else {
+        // For web or desktop, use regular URLs with query params
         const baseUrl = window.location.origin;
         successUrl = `${baseUrl}/?credits_success=true`;
         cancelUrl = method === "stripe" ? `${baseUrl}/` : undefined;
@@ -138,8 +120,8 @@ export function ApiCreditsSection({ showSuccessMessage = false }: ApiCreditsSect
         });
 
         // Redirect to Stripe checkout
-        // Note: This feature is only exposed on desktop/web (not iOS), where window.location.href works correctly.
-        // For iOS, we would need special handling with invoke("plugin:opener|open_url"), but that's not needed here.
+        // Note: This feature is only exposed on desktop/web (not mobile), where window.location.href works correctly.
+        // For mobile platforms, we would need special handling with invoke("plugin:opener|open_url"), but that's not needed here.
         window.location.href = response.checkout_url;
       } else {
         // For Zaprite, we need the user's email
@@ -156,8 +138,8 @@ export function ApiCreditsSection({ showSuccessMessage = false }: ApiCreditsSect
         });
 
         // Redirect to Zaprite checkout
-        // Note: This feature is only exposed on desktop/web (not iOS), where window.location.href works correctly.
-        // For iOS, we would need special handling with invoke("plugin:opener|open_url"), but that's not needed here.
+        // Note: This feature is only exposed on desktop/web (not mobile), where window.location.href works correctly.
+        // For mobile platforms, we would need special handling with invoke("plugin:opener|open_url"), but that's not needed here.
         window.location.href = response.checkout_url;
       }
     } catch (error) {

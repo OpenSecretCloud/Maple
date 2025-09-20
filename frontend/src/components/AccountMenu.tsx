@@ -9,6 +9,7 @@ import {
   AlertCircle,
   Key
 } from "lucide-react";
+import { useIsMobile } from "@/hooks/usePlatform";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -42,7 +43,7 @@ import { useLocalState } from "@/state/useLocalState";
 import { useQueryClient, useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { getBillingService } from "@/billing/billingService";
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import type { TeamStatus } from "@/types/team";
 import { TeamManagementDialog } from "@/components/team/TeamManagementDialog";
 import { ApiKeyManagementDialog } from "@/components/apikeys/ApiKeyManagementDialog";
@@ -85,7 +86,7 @@ export function AccountMenu() {
   const [isPortalLoading, setIsPortalLoading] = useState(false);
   const [isTeamDialogOpen, setIsTeamDialogOpen] = useState(false);
   const [isApiKeyDialogOpen, setIsApiKeyDialogOpen] = useState(false);
-  const [isIOS, setIsIOS] = useState(false);
+  const { isMobile } = useIsMobile();
 
   const hasStripeAccount = billingStatus?.stripe_customer_id !== null;
   const productName = billingStatus?.product_name || "";
@@ -95,29 +96,6 @@ export function AccountMenu() {
   const isTeamPlan = productName.toLowerCase().includes("team");
   const showUpgrade = !isMax && !isTeamPlan;
   const showManage = (isPro || isMax || isStarter || isTeamPlan) && hasStripeAccount;
-
-  // Detect iOS platform
-  useEffect(() => {
-    const detectPlatform = async () => {
-      try {
-        const isTauri = await import("@tauri-apps/api/core")
-          .then((m) => m.isTauri())
-          .catch(() => false);
-
-        if (isTauri) {
-          const platform = await import("@tauri-apps/plugin-os")
-            .then((m) => m.type())
-            .catch(() => null);
-
-          setIsIOS(platform === "ios");
-        }
-      } catch (error) {
-        console.error("Error detecting platform:", error);
-      }
-    };
-
-    detectPlatform();
-  }, []);
 
   // Fetch team status if user has team plan
   const { data: teamStatus } = useQuery<TeamStatus>({
@@ -141,40 +119,31 @@ export function AccountMenu() {
       const billingService = getBillingService();
       const url = await billingService.getPortalUrl();
 
-      // Check if we're in a Tauri environment on iOS
-      try {
-        const isTauri = await import("@tauri-apps/api/core")
-          .then((m) => m.isTauri())
-          .catch(() => false);
+      // Check if we're on a mobile platform
+      const { isMobile } = await import("@/utils/platform");
+      if (await isMobile()) {
+        console.log(
+          "[Billing] Mobile platform detected, using opener plugin to launch external browser for portal"
+        );
 
-        if (isTauri) {
-          const { type } = await import("@tauri-apps/plugin-os");
-          const platform = await type();
-          const { invoke } = await import("@tauri-apps/api/core");
+        const { invoke } = await import("@tauri-apps/api/core");
 
-          if (platform === "ios") {
-            console.log("[Billing] iOS detected, using opener plugin to launch Safari for portal");
+        // Use the opener plugin directly - with NO fallback for mobile platforms
+        await invoke("plugin:opener|open_url", { url })
+          .then(() => {
+            console.log("[Billing] Successfully opened portal URL in external browser");
+          })
+          .catch((err: Error) => {
+            console.error("[Billing] Failed to open external browser:", err);
+            alert("Failed to open browser. Please try again.");
+          });
 
-            // Use the opener plugin directly - with NO fallback for iOS
-            await invoke("plugin:opener|open_url", { url })
-              .then(() => {
-                console.log("[Billing] Successfully opened portal URL in external browser");
-              })
-              .catch((err: Error) => {
-                console.error("[Billing] Failed to open external browser:", err);
-                alert("Failed to open browser. Please try again.");
-              });
-
-            // Add a small delay to ensure the browser has time to open
-            await new Promise((resolve) => setTimeout(resolve, 300));
-            return;
-          }
-        }
-      } catch (err) {
-        console.error("[Billing] Error checking platform:", err);
+        // Add a small delay to ensure the browser has time to open
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        return;
       }
 
-      // Default browser opening for non-iOS platforms
+      // Default browser opening for non-mobile platforms
       window.open(url, "_blank");
     } catch (error) {
       console.error("Error fetching portal URL:", error);
@@ -273,7 +242,7 @@ export function AccountMenu() {
                   </div>
                 </DropdownMenuItem>
               )}
-              {!isIOS && (
+              {!isMobile && (
                 <DropdownMenuItem onClick={() => setIsApiKeyDialogOpen(true)}>
                   <Key className="mr-2 h-4 w-4" />
                   <span>API Management</span>

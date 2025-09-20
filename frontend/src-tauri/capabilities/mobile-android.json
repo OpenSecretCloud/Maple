@@ -1,0 +1,77 @@
+{
+  "$schema": "../gen/schemas/mobile-schema.json",
+  "identifier": "mobile-android",
+  "description": "Capabilities for Android",
+  "windows": [
+    "main"
+  ],
+  "platforms": ["android"],
+  "permissions": [
+    "core:default",
+    "dialog:default",
+    "fs:default",
+    {
+      "identifier": "fs:allow-read-file",
+      "allow": [
+        { "path": "$APPDATA/**" },
+        { "path": "$CACHE/**" },
+        { "path": "$DOCUMENT/**" }
+      ]
+    },
+    {
+      "identifier": "fs:allow-write-file",
+      "allow": [
+        { "path": "$APPDATA/**" },
+        { "path": "$CACHE/**" }
+      ]
+    },
+    {
+      "identifier": "fs:allow-create",
+      "allow": [
+        { "path": "$APPDATA/**" },
+        { "path": "$CACHE/**" }
+      ]
+    },
+    {
+      "identifier": "fs:allow-exists",
+      "allow": [
+        { "path": "$APPDATA/**" },
+        { "path": "$CACHE/**" },
+        { "path": "$DOCUMENT/**" }
+      ]
+    },
+    {
+      "identifier": "fs:allow-mkdir",
+      "allow": [
+        { "path": "$APPDATA" },
+        { "path": "$CACHE" }
+      ]
+    },
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [
+        {
+          "url": "http://localhost:5173/*"
+        },
+        {
+          "url": "https://trymaple.ai/*"
+        },
+        {
+          "url": "https://*.stripe.com/*"
+        },
+        {
+          "url": "https://*.stripe.network/*"
+        },
+        {
+          "url": "https://*.zaprite.com/*"
+        },
+        {
+          "url": "https://github.com/*"
+        },
+        {
+          "url": "https://*.google.com/*"
+        }
+      ]
+    }
+  ]
+}
