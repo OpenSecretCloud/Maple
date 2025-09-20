@@ -26,6 +26,16 @@ jobs:
         with:
           bun-version: 1.2.2
 
+      - name: Cache Bun dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.bun/install/cache
+            frontend/node_modules
+          key: ${{ runner.os }}-bun-${{ hashFiles('frontend/bun.lockb') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -38,11 +48,52 @@ jobs:
           ndk-version: r25c
           add-to-path: true
 
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            frontend/src-tauri/gen/android/.gradle
+            frontend/src-tauri/gen/android/build
+            frontend/src-tauri/gen/android/app/build
+          key: ${{ runner.os }}-gradle-${{ hashFiles('frontend/src-tauri/gen/android/**/*.gradle*', 'frontend/src-tauri/gen/android/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: "frontend/src-tauri -> target"
           cache-on-failure: true
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Cache Cargo bin
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/
+          key: ${{ runner.os }}-cargo-bin-tauri-cli
+          restore-keys: |
+            ${{ runner.os }}-cargo-bin-
+
+      - name: Cache APT packages
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/apt/archives
+          key: ${{ runner.os }}-apt-android-${{ hashFiles('.github/workflows/android-build.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-apt-android-
+            ${{ runner.os }}-apt-
 
       - name: Install Linux dependencies
         run: |
@@ -54,7 +105,12 @@ jobs:
         run: bun install
 
       - name: Install Tauri CLI
-        run: cargo install tauri-cli
+        run: |
+          if ! command -v cargo-tauri &> /dev/null; then
+            cargo install tauri-cli
+          else
+            echo "Tauri CLI already installed"
+          fi
         env:
           CARGO_CFG_TARGET_OS: linux
 
