@@ -233,10 +233,27 @@ function DownloadPage() {
               </div>
               <h3 className="text-xl font-medium mb-2">Android</h3>
               <p className="text-[hsl(var(--marketing-text-muted))] mb-6 flex-grow">
-                Android app coming soon.
+                Download our native Android app for phones and tablets.
               </p>
-              <div className="text-center text-[hsl(var(--marketing-text-muted))]">
-                Stay tuned for our Android app.
+              <div className="flex flex-col items-center gap-4">
+                <p className="text-[hsl(var(--marketing-text-muted))] text-sm text-center">
+                  Join our beta program to test the latest features:
+                </p>
+                <a
+                  href="https://play.google.com/apps/testing/cloud.opensecret.maple"
+                  className="py-3 px-6 rounded-lg text-center font-medium transition-all duration-300
+                  dark:bg-white/90 dark:text-black dark:hover:bg-[hsl(var(--purple))]/80 dark:hover:text-[hsl(var(--foreground))] dark:active:bg-white/80
+                  bg-background text-foreground hover:bg-[hsl(var(--purple))] hover:text-[hsl(var(--foreground))] active:bg-background/80
+                  border border-[hsl(var(--purple))]/30 hover:border-[hsl(var(--purple))]
+                  shadow-[0_0_15px_rgba(var(--purple-rgb),0.2)] hover:shadow-[0_0_25px_rgba(var(--purple-rgb),0.3)]"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  Join Google Play Beta
+                </a>
+                <p className="text-[hsl(var(--marketing-text-muted))] text-xs text-center">
+                  Beta version - help us test new features before the official release
+                </p>
               </div>
             </div>
           </div>
