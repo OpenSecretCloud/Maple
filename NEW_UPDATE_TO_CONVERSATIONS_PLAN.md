@@ -145,8 +145,8 @@ References:
 ## Implementation Checklist
 
 API-correctness first
-- [ ] Replace `previous_response_id` with `conversation` param in all sends
-- [ ] Create conversation before first send; update URL via `replaceState`
+- [x] Replace `previous_response_id` with `conversation` param in all sends
+- [x] Create conversation on first send; update URL via `history.replaceState` (no navigation)
 - [ ] Ensure Responses stream consumption handles event types per backend
 
 Conversation list and loading

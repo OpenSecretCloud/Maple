@@ -15,6 +15,7 @@ interface UseChatSessionOptions {
   openai: ReturnType<typeof import("@/ai/useOpenAi").useOpenAI>;
   model: string;
   onThreadCreated?: (threadId: string) => void; // Callback when a new thread is created
+  onThreadFinalized?: (threadId: string) => void; // Callback when stream completes
 }
 
 export function useChatSession(
@@ -23,7 +24,7 @@ export function useChatSession(
     onImageConversionError?: (failedCount: number) => void;
   }
 ) {
-  const { getChatById, persistChat, openai, model, onImageConversionError, onThreadCreated } = options;
+  const { getChatById, persistChat, openai, model, onImageConversionError, onThreadCreated, onThreadFinalized } = options;
   const queryClient = useQueryClient();
   const [phase, setPhase] = useState<ChatPhase>("idle");
   const [optimisticChat, setOptimisticChat] = useState<Chat | null>(null);
@@ -41,29 +42,60 @@ export function useChatSession(
     retry: false
   });
 
-  // Reset optimistic chat when chatId changes
+  // Reset optimistic chat when chatId changes, but do NOT abort if the change
+  // is the initial transition from "new" to the newly created conversation id.
+  const previousChatIdRef = useRef<string>(chatId);
   useEffect(() => {
-    // Abort any ongoing streaming when chatId changes
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-      abortControllerRef.current = null;
+    const prev = previousChatIdRef.current;
+    const isConversationId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(chatId);
+    const initialNewToConversation = prev === "new" && isConversationId && threadIdRef.current === chatId;
+
+    if (!initialNewToConversation) {
+      // Abort any ongoing streaming when truly navigating to a different chat
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+        abortControllerRef.current = null;
+      }
+
+      setOptimisticChat(null);
+      setPhase("idle");
+      setCurrentStreamingMessage(undefined);
+      setStreamingError(null);
+      processingRef.current = false;
     }
 
-    setOptimisticChat(null);
-    setPhase("idle");
-    setCurrentStreamingMessage(undefined);
-    setStreamingError(null);
-    processingRef.current = false;
-    
-    // Reset thread ID when navigating to a different chat
-    // But keep it if we're loading an existing thread
+    // Update thread ref for existing conversations
     if (chatId === "new") {
-      threadIdRef.current = null;
-    } else if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(chatId)) {
-      // This is an existing thread ID
+      if (!initialNewToConversation) threadIdRef.current = null;
+    } else if (isConversationId) {
       threadIdRef.current = chatId;
     }
+
+    previousChatIdRef.current = chatId;
   }, [chatId]);
+
+  // Load just the conversation title for the current conversation id
+  useEffect(() => {
+    const loadTitle = async () => {
+      try {
+        if (!openai) return;
+        const cid = threadIdRef.current || (chatId !== "new" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(chatId) ? chatId : null);
+        if (!cid) return;
+        const conv = await openai.conversations.retrieve(cid);
+        const title = (conv as any)?.metadata?.title;
+        if (title && typeof title === "string") {
+          setOptimisticChat((prev) => {
+            if (prev) {
+              if (prev.title === title) return prev;
+              return { ...prev, title };
+            }
+            return { id: cid, title, messages: [] } as Chat;
+          });
+        }
+      } catch {}
+    };
+    loadTitle();
+  }, [chatId, openai]);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -73,6 +105,18 @@ export function useChatSession(
       }
     };
   }, []);
+
+  // Allow using a search param to pin the conversation id while streaming on /chat/new
+  useEffect(() => {
+    if (chatId !== "new" || threadIdRef.current) return;
+    try {
+      const usp = new URLSearchParams(window.location.search);
+      const cid = usp.get("conversation_id");
+      if (cid && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(cid)) {
+        threadIdRef.current = cid;
+      }
+    } catch {}
+  }, [chatId]);
 
   // Part A: Apply guard when syncing server data to optimistic state
   useEffect(() => {
@@ -85,6 +129,51 @@ export function useChatSession(
       return serverChat;
     });
   }, [serverChat, isPending]);
+
+  // Load conversation items for existing conversations so hard refresh shows history
+  useEffect(() => {
+    const loadConversationItems = async () => {
+      try {
+        if (!openai) return;
+        if (!chatId || chatId === "new") return;
+        if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(chatId)) return;
+
+        // Avoid re-loading if we already have messages
+        const current = optimisticChat || serverChat;
+        if (current && current.messages && current.messages.length > 0) return;
+
+        threadIdRef.current = chatId;
+        const items = await openai.conversations.items.list(chatId, { order: "asc", limit: 100 });
+
+        // Some backends may ignore the 'order' param. Sort explicitly by created_at ascending.
+        const messageItems = (items.data || [])
+          .filter((it: any) => it.type === "message" && (it.role === "user" || it.role === "assistant"))
+          .map((it: any) => {
+            let text = "";
+            if (Array.isArray(it.content)) {
+              for (const part of it.content) {
+                if (part?.type === "text" && typeof part.text === "string") text += part.text;
+              }
+            } else if (typeof it.content === "string") {
+              text = it.content;
+            }
+            return { role: it.role, content: text, created_at: it.created_at ?? 0 } as any;
+          })
+          .sort((a: any, b: any) => (a.created_at || 0) - (b.created_at || 0));
+
+        const messages: ChatMessage[] = messageItems.map(({ role, content }) => ({ role, content }));
+
+        setOptimisticChat({ id: chatId, title: "New Conversation", messages });
+      } catch (err) {
+        console.error("Failed to load conversation items:", err);
+      }
+    };
+
+    // Only load when there is no server chat (KV) and we're on a conversation id
+    if (!serverChat && chatId !== "new") {
+      loadConversationItems();
+    }
+  }, [chatId, openai, optimisticChat, serverChat]);
 
   // Mutation for persisting chat
   const persistMutation = useMutation({
@@ -219,7 +308,13 @@ export function useChatSession(
               const conv = await openai.conversations.create({} as any);
               conversationId = (conv as any).id as string;
               threadIdRef.current = conversationId;
-              // Do not update URL; requirement is just to get conversation id and send within it.
+              // Inform caller so they can update the URL without navigating
+              if (onThreadCreated) {
+                try { onThreadCreated(conversationId); } catch {}
+              } else {
+                // Fallback: update URL directly, no navigation
+                try { window.history.replaceState(null, "", `/chat/${conversationId}`); } catch {}
+              }
             }
 
             const requestParams: any = {

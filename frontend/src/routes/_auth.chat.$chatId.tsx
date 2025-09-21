@@ -203,7 +203,17 @@ function ChatComponent() {
       setTimeout(() => setImageConversionError(null), 5000);
     },
     onThreadCreated: (threadId) => {
-      // Update URL to the thread ID without causing a navigation
+      // Update only the search param during streaming to avoid remounting
+      try {
+        const usp = new URLSearchParams(window.location.search);
+        usp.set("conversation_id", threadId);
+        window.history.replaceState(null, "", `${window.location.pathname}?${usp.toString()}`);
+      } catch (e) {
+        console.warn("Failed to set conversation_id in URL", e);
+      }
+    },
+    onThreadFinalized: (threadId) => {
+      // Promote to canonical path after streaming completes
       navigate(`/chat/${threadId}`, { replace: true });
     }
   });
@@ -591,7 +601,8 @@ END OF INSTRUCTIONS`;
           <ChatBox
             onSubmit={sendMessage}
             messages={localChat.messages}
-            isStreaming={isLoading || isPersisting || isSummarizing || isPending}
+            // Keep input enabled while conversation history/query is loading
+            isStreaming={isLoading || isPersisting || isSummarizing}
             onCompress={compressChat}
             isSummarizing={isSummarizing}
             imageConversionError={imageConversionError}
