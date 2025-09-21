@@ -9,7 +9,7 @@ import {
   AlertCircle,
   Key
 } from "lucide-react";
-import { useIsMobile } from "@/hooks/usePlatform";
+import { isMobile } from "@/utils/platform";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -86,7 +86,6 @@ export function AccountMenu() {
   const [isPortalLoading, setIsPortalLoading] = useState(false);
   const [isTeamDialogOpen, setIsTeamDialogOpen] = useState(false);
   const [isApiKeyDialogOpen, setIsApiKeyDialogOpen] = useState(false);
-  const { isMobile } = useIsMobile();
 
   const hasStripeAccount = billingStatus?.stripe_customer_id !== null;
   const productName = billingStatus?.product_name || "";
@@ -119,8 +118,8 @@ export function AccountMenu() {
       const billingService = getBillingService();
       const url = await billingService.getPortalUrl();
 
-      // Check if we're on a mobile platform using the hook value
-      if (isMobile) {
+      // Check if we're on a mobile platform
+      if (isMobile()) {
         console.log(
           "[Billing] Mobile platform detected, using opener plugin to launch external browser for portal"
         );
@@ -241,7 +240,7 @@ export function AccountMenu() {
                   </div>
                 </DropdownMenuItem>
               )}
-              {!isMobile && (
+              {!isMobile() && (
                 <DropdownMenuItem onClick={() => setIsApiKeyDialogOpen(true)}>
                   <Key className="mr-2 h-4 w-4" />
                   <span>API Management</span>

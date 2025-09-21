@@ -6,7 +6,7 @@ import { UpgradePromptDialog } from "@/components/UpgradePromptDialog";
 import { RecordingOverlay } from "@/components/RecordingOverlay";
 import { useEffect, useRef, useState, useMemo } from "react";
 import { useLocalState } from "@/state/useLocalState";
-import { cn, useIsMobile } from "@/utils/utils";
+import { cn } from "@/utils/utils";
 import { useQuery } from "@tanstack/react-query";
 import { getBillingService } from "@/billing/billingService";
 import { Route as ChatRoute } from "@/routes/_auth.chat.$chatId";
@@ -16,7 +16,7 @@ import { ModelSelector, MODEL_CONFIG, getModelTokenLimit } from "@/components/Mo
 import { useOpenSecret } from "@opensecret/react";
 import type { DocumentResponse } from "@opensecret/react";
 import { encode } from "gpt-tokenizer";
-import { useIsTauri } from "@/hooks/usePlatform";
+import { isTauri, isMobile } from "@/utils/platform";
 
 interface ParsedDocument {
   document: {
@@ -246,7 +246,7 @@ export default function Component({
   const [upgradeDialogOpen, setUpgradeDialogOpen] = useState(false);
   const [upgradeFeature, setUpgradeFeature] = useState<"image" | "voice" | "document">("image");
   const os = useOpenSecret();
-  const { isTauri: isTauriEnv } = useIsTauri();
+  const isTauriEnv = isTauri();
 
   // Audio recording state
   const [isRecording, setIsRecording] = useState(false);
@@ -733,8 +733,8 @@ export default function Component({
     }
   });
 
-  // Use the centralized hook for mobile detection directly
-  const isMobile = useIsMobile();
+  // Use the centralized function for mobile detection directly
+  const isMobilePlatform = isMobile();
 
   // Check if we're in Tauri environment on component mount
 
@@ -809,7 +809,7 @@ export default function Component({
     setImageError(null);
 
     // Re-focus input after submitting (desktop only)
-    if (!isMobile) {
+    if (!isMobilePlatform) {
       setTimeout(() => {
         inputRef.current?.focus();
       }, 0);
@@ -818,7 +818,7 @@ export default function Component({
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter") {
-      if (isMobile || e.shiftKey || isStreaming) {
+      if (isMobilePlatform || e.shiftKey || isStreaming) {
         // On mobile, when Shift is pressed, or when streaming, allow newline
         return;
       } else if (isSubmitDisabled || !inputValue.trim()) {
@@ -926,7 +926,7 @@ export default function Component({
   // Auto-focus effect - runs on mount, when chat ID changes, and after streaming completes
   useEffect(() => {
     // Skip auto-focus on mobile to prevent keyboard popup
-    if (isMobile) {
+    if (isMobilePlatform) {
       return;
     }
 
@@ -944,7 +944,7 @@ export default function Component({
     }, 100);
 
     return () => clearTimeout(timer);
-  }, [chatId, isStreaming, isInputDisabled, isMobile]); // Re-run when chat ID changes, streaming completes, or input state changes
+  }, [chatId, isStreaming, isInputDisabled, isMobilePlatform]); // Re-run when chat ID changes, streaming completes, or input state changes
 
   // Cleanup effect for object URLs
   useEffect(() => {

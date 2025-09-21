@@ -1,10 +1,10 @@
 import { Github, Twitter, Mail } from "lucide-react";
 import { Link } from "@tanstack/react-router";
 import { DiscordIcon } from "./icons/DiscordIcon";
-import { useIsTauri } from "@/hooks/usePlatform";
+import { isTauri } from "@/utils/platform";
 
 export function Footer() {
-  const { isTauri, loading } = useIsTauri();
+  const isTauriPlatform = isTauri();
 
   return (
     <div className="w-full dark:bg-[hsl(var(--background))] bg-[hsl(var(--footer-bg))] py-16 border-t border-[hsl(var(--marketing-card-border))]">
@@ -140,7 +140,7 @@ export function Footer() {
         <div className="mt-12 pt-8 border-t border-[hsl(var(--marketing-card-border))] text-center">
           <div className="flex flex-col items-center gap-4">
             {/* Only show status iframe on web (doesn't work in Tauri builds) */}
-            {!loading && !isTauri && (
+            {!isTauriPlatform && (
               <iframe
                 src="https://status.trymaple.ai/badge?theme=system"
                 width="250"

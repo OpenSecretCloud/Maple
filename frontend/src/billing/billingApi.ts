@@ -91,7 +91,7 @@ export async function fetchPortalUrl(thirdPartyToken: string): Promise<string> {
   let returnUrl = window.location.origin;
 
   // For mobile platforms, use the actual website origin instead of tauri://localhost
-  if (await isMobile()) {
+  if (isMobile()) {
     console.log("[Billing] Mobile platform detected, using trymaple.ai as return URL");
     returnUrl = "https://trymaple.ai";
   }
@@ -163,7 +163,7 @@ export async function createCheckoutSession(
   console.log("Redirecting to checkout:", checkout_url);
 
   // For mobile platforms, force external browser for payment (App Store restrictions)
-  if (await isMobile()) {
+  if (isMobile()) {
     console.log(
       "[Billing] Mobile platform detected, using opener plugin to launch external browser"
     );
@@ -227,7 +227,7 @@ export async function createZapriteCheckoutSession(
   console.log("Redirecting to Zaprite checkout:", checkout_url);
 
   // For mobile platforms, force external browser for crypto payments
-  if (await isMobile()) {
+  if (isMobile()) {
     console.log(
       "[Billing] Mobile platform detected, using opener plugin to launch external browser"
     );

@@ -16,7 +16,7 @@ import { sha256 } from "@noble/hashes/sha256";
 import { bytesToHex } from "@noble/hashes/utils";
 import { AppleAuthProvider } from "@/components/AppleAuthProvider";
 import { getBillingService } from "@/billing/billingService";
-import { useIsIOS, useIsTauri } from "@/hooks/usePlatform";
+import { isIOS, isTauri } from "@/utils/platform";
 
 type SignupSearchParams = {
   next?: string;
@@ -41,9 +41,9 @@ function SignupPage() {
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
 
-  // Use platform detection hooks
-  const { isIOS } = useIsIOS();
-  const { isTauri: isTauriEnv } = useIsTauri();
+  // Use platform detection functions
+  const isIOSPlatform = isIOS();
+  const isTauriEnv = isTauri();
 
   // Redirect if already logged in
   useEffect(() => {
@@ -168,7 +168,7 @@ function SignupPage() {
 
   const handleAppleSignup = async () => {
     try {
-      if (isTauriEnv && isIOS) {
+      if (isTauriEnv && isIOSPlatform) {
         // Native iOS implementation using Apple Sign In plugin
         console.log("[OAuth] Initiating native Sign in with Apple for iOS");
 

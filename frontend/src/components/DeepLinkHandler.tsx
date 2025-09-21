@@ -12,7 +12,7 @@ export function DeepLinkHandler() {
 
     const setupDeepLinkHandling = async () => {
       try {
-        if (await isTauri()) {
+        if (isTauri()) {
           console.log("[Deep Link] Setting up handler for Tauri app");
 
           // Listen for the custom event we emit from Rust

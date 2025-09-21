@@ -13,7 +13,7 @@ import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { PRICING_PLANS } from "@/config/pricingConfig";
 import { VerificationModal } from "@/components/VerificationModal";
-import { useIsIOS, useIsAndroid, useIsMobile } from "@/hooks/usePlatform";
+import { isIOS, isAndroid, isMobile } from "@/utils/platform";
 import packageJson from "../../package.json";
 
 // File type constants for upload features
@@ -187,10 +187,10 @@ function PricingPage() {
   const isLoggedIn = !!os.auth.user;
   const { selected_plan } = Route.useSearch();
 
-  // Use platform detection hooks
-  const { isIOS } = useIsIOS();
-  const { isAndroid } = useIsAndroid();
-  const { isMobile: isMobilePlatform } = useIsMobile();
+  // Use platform detection functions
+  const isIOSPlatform = isIOS();
+  const isAndroidPlatform = isAndroid();
+  const isMobilePlatform = isMobile();
 
   // Fetch billing status if user is logged in
   const { data: freshBillingStatus, isLoading: isBillingStatusLoading } = useQuery({
@@ -232,12 +232,12 @@ function PricingPage() {
     error: productsError,
     isLoading: productsLoading
   } = useQuery({
-    queryKey: ["products", isIOS, isAndroid],
+    queryKey: ["products", isIOSPlatform, isAndroidPlatform],
     queryFn: async () => {
       try {
         const billingService = getBillingService();
         // Send version for mobile builds (iOS needs it for App Store restrictions)
-        if (isIOS || isAndroid) {
+        if (isIOSPlatform || isAndroidPlatform) {
           // Get version from package.json
           const version = `v${packageJson.version}`;
           console.log("[Billing] Fetching products with version:", version);
@@ -279,7 +279,7 @@ function PricingPage() {
 
     // Show "Not available in app" for iOS paid plans if server says not available
     // Android can support paid plans (no App Store restrictions)
-    if (isIOS && !isFreeplan && product.is_available === false) {
+    if (isIOSPlatform && !isFreeplan && product.is_available === false) {
       return "Not available in app";
     }
 
@@ -408,7 +408,7 @@ function PricingPage() {
 
       // Disable clicks for iOS paid plans if server says not available
       // Android can support paid plans
-      if (isIOS && !isFreeplan && product.is_available === false) {
+      if (isIOSPlatform && !isFreeplan && product.is_available === false) {
         return;
       }
 
@@ -488,7 +488,7 @@ function PricingPage() {
       navigate,
       portalUrl,
       newHandleSubscribe,
-      isIOS,
+      isIOSPlatform,
       isMobilePlatform
     ]
   );
@@ -515,7 +515,7 @@ function PricingPage() {
     products,
     loadingProductId,
     handleButtonClick,
-    isIOS
+    isIOSPlatform
   ]);
 
   // Show loading state if we're fetching initial data
@@ -830,7 +830,7 @@ function PricingPage() {
                         disabled={
                           loadingProductId === (product?.id || plan.name.toLowerCase()) ||
                           (useBitcoin && isTeamPlan) ||
-                          (isIOS && !isFreeplan && product?.is_available === false)
+                          (isIOSPlatform && !isFreeplan && product?.is_available === false)
                         }
                         className={`w-full 
                       dark:bg-white/90 dark:text-black dark:hover:bg-[hsl(var(--purple))]/80 dark:hover:text-[hsl(var(--foreground))] dark:active:bg-white/80

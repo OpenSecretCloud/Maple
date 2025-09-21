@@ -1,33 +1,35 @@
 /**
- * Platform detection utilities and hooks
+ * Platform detection utilities
  *
- * This module provides a unified API for platform detection across the application.
+ * This module provides a unified API for reliable, crash-proof platform detection.
+ * Platform must be initialized in main.tsx via waitForPlatform() before rendering.
  *
  * @example
  * ```typescript
- * // Import utilities for async functions
+ * // Import utilities for synchronous platform checks
  * import { isIOS, isAndroid, isMobile, isDesktop } from '@/utils/platform';
  *
- * // Import hooks for React components
- * import { useIsIOS, useIsMobile, usePlatform } from '@/utils/platform';
- *
- * // Use in async functions
- * if (await isMobile()) {
- *   // Mobile-specific logic
- * }
- *
- * // Use in React components
+ * // Use directly in components - always correct, never wrong
  * function MyComponent() {
- *   const { isMobile } = useIsMobile();
- *   return isMobile ? <MobileView /> : <DesktopView />;
+ *   if (isMobile()) {
+ *     return <MobileView />;
+ *   }
+ *
+ *   if (isTauri()) {
+ *     // Safe to use Tauri APIs
+ *     const { invoke } = await import("@tauri-apps/api/core");
+ *     await invoke("some_command");
+ *   }
+ *
+ *   return <DesktopView />;
  * }
  * ```
  */
 
-// Export all utility functions
+// Export all synchronous utility functions
 export {
+  waitForPlatform,
   getPlatformInfo,
-  clearPlatformCache,
   isTauri,
   isIOS,
   isAndroid,
@@ -42,16 +44,3 @@ export {
   type PlatformType,
   type PlatformInfo
 } from "../platform";
-
-// Export all React hooks
-export {
-  usePlatform,
-  useIsIOS,
-  useIsAndroid,
-  useIsMobile,
-  useIsDesktop,
-  useIsTauri,
-  useIsWeb,
-  useIsTauriDesktop,
-  useIsTauriMobile
-} from "@/hooks/usePlatform";

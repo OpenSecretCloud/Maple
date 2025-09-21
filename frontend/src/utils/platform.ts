@@ -1,10 +1,12 @@
 /**
  * Platform detection utilities for Tauri applications
  *
- * This module provides consistent platform detection across the application,
- * handling both Tauri native environments and web browsers.
+ * This module provides crash-proof, reliable platform detection that is
+ * guaranteed to be correct before the app renders. Platform is detected
+ * ONCE at startup and cached for instant, synchronous access thereafter.
  *
- * Uses dynamic imports to safely handle environments where Tauri APIs may not be available.
+ * The platform MUST be initialized via waitForPlatform() in main.tsx
+ * before rendering the React app.
  */
 
 /**
@@ -13,7 +15,7 @@
 export type PlatformType = "ios" | "android" | "macos" | "windows" | "linux" | "web";
 
 /**
- * Platform information object returned by detection functions
+ * Comprehensive platform information
  */
 export interface PlatformInfo {
   /** The specific platform type */
@@ -36,70 +38,60 @@ export interface PlatformInfo {
   isLinux: boolean;
   /** Whether the app is running in a web browser (not Tauri) */
   isWeb: boolean;
+  /** Whether the app is running in Tauri desktop environment */
+  isTauriDesktop: boolean;
+  /** Whether the app is running in Tauri mobile environment */
+  isTauriMobile: boolean;
 }
 
 /**
- * Cache for platform info to avoid repeated async calls
+ * Platform info singleton - ALWAYS set before app renders
+ * Never null after initialization
  */
-let platformInfoCache: PlatformInfo | null = null;
+let platformInfo: PlatformInfo | null = null;
 
 /**
- * Gets comprehensive platform information
- *
- * @returns Promise resolving to platform information object
- *
- * @example
- * ```typescript
- * const platform = await getPlatformInfo();
- * if (platform.isMobile) {
- *   // Mobile-specific logic (iOS or Android)
- * }
- * if (platform.isIOS) {
- *   // iOS-specific logic
- * }
- * ```
+ * Promise that resolves when platform detection is complete
+ * This runs immediately when the module loads
  */
-export async function getPlatformInfo(): Promise<PlatformInfo> {
-  // Return cached value if available
-  if (platformInfoCache) {
-    return platformInfoCache;
-  }
-
+const platformReady = (async () => {
   try {
-    // Safely check if we're in a Tauri environment
+    // Try to detect if we're in a Tauri environment
     const tauriEnv = await import("@tauri-apps/api/core")
       .then((m) => m.isTauri())
       .catch(() => false);
 
     if (tauriEnv) {
+      // We're in Tauri - get the actual platform type
       try {
-        // Safely get the platform type
         const { type } = await import("@tauri-apps/plugin-os");
-        const platformType = await type();
+        const platform = await type();
 
-        const info: PlatformInfo = {
-          platform: platformType as PlatformType,
+        // Set comprehensive platform info for Tauri environment
+        platformInfo = {
+          platform: platform as PlatformType,
           isTauri: true,
-          isIOS: platformType === "ios",
-          isAndroid: platformType === "android",
-          isMobile: platformType === "ios" || platformType === "android",
-          isDesktop:
-            platformType === "macos" || platformType === "windows" || platformType === "linux",
-          isMacOS: platformType === "macos",
-          isWindows: platformType === "windows",
-          isLinux: platformType === "linux",
-          isWeb: false
+          isIOS: platform === "ios",
+          isAndroid: platform === "android",
+          isMobile: platform === "ios" || platform === "android",
+          isDesktop: platform === "macos" || platform === "windows" || platform === "linux",
+          isMacOS: platform === "macos",
+          isWindows: platform === "windows",
+          isLinux: platform === "linux",
+          isWeb: false,
+          isTauriDesktop: platform === "macos" || platform === "windows" || platform === "linux",
+          isTauriMobile: platform === "ios" || platform === "android"
         };
 
-        platformInfoCache = info;
-        return info;
+        console.log("[Platform] Detected Tauri environment:", platform);
       } catch (error) {
-        // If we can't get platform type, but we're in Tauri, assume desktop
-        console.warn("Platform detection: Could not determine platform type", error);
+        // Tauri is available but we couldn't get the platform type
+        // This shouldn't happen in practice, but we handle it gracefully
+        console.error("[Platform] Failed to get Tauri platform type:", error);
 
-        // Default to a generic desktop Tauri environment
-        const info: PlatformInfo = {
-          platform: "linux" as PlatformType, // Safe fallback
+        // Default to desktop Linux as a safe fallback for Tauri environments
+        platformInfo = {
+          platform: "linux",
           isTauri: true,
           isIOS: false,
           isAndroid: false,
@@ -108,228 +100,220 @@ export async function getPlatformInfo(): Promise<PlatformInfo> {
           isMacOS: false,
           isWindows: false,
           isLinux: true,
-          isWeb: false
+          isWeb: false,
+          isTauriDesktop: true,
+          isTauriMobile: false
         };
-
-        platformInfoCache = info;
-        return info;
       }
+    } else {
+      // We're in a web browser
+      platformInfo = {
+        platform: "web",
+        isTauri: false,
+        isIOS: false,
+        isAndroid: false,
+        isMobile: false,
+        isDesktop: false,
+        isMacOS: false,
+        isWindows: false,
+        isLinux: false,
+        isWeb: true,
+        isTauriDesktop: false,
+        isTauriMobile: false
+      };
+
+      console.log("[Platform] Detected web environment");
     }
   } catch (error) {
-    // If Tauri APIs are not available, we're in a web environment
-    console.debug("Platform detection: Not in Tauri environment", error);
+    // Complete failure - default to web as the safest option
+    console.error("[Platform] Critical error during platform detection:", error);
+
+    platformInfo = {
+      platform: "web",
+      isTauri: false,
+      isIOS: false,
+      isAndroid: false,
+      isMobile: false,
+      isDesktop: false,
+      isMacOS: false,
+      isWindows: false,
+      isLinux: false,
+      isWeb: true,
+      isTauriDesktop: false,
+      isTauriMobile: false
+    };
   }
 
-  // Web environment (or complete failure to detect)
-  const info: PlatformInfo = {
-    platform: "web",
-    isTauri: false,
-    isIOS: false,
-    isAndroid: false,
-    isMobile: false,
-    isDesktop: false,
-    isMacOS: false,
-    isWindows: false,
-    isLinux: false,
-    isWeb: true
-  };
-
-  platformInfoCache = info;
-  return info;
-}
+  // Freeze the platform info to prevent accidental modification
+  Object.freeze(platformInfo);
+})();
 
 /**
- * Clears the platform info cache
- * Useful for testing or when platform might have changed
- */
-export function clearPlatformCache(): void {
-  platformInfoCache = null;
-}
-
-/**
- * Checks if the app is running in a Tauri environment
- *
- * @returns Promise resolving to true if in Tauri, false otherwise
+ * Wait for platform detection to complete
+ * MUST be called in main.tsx before rendering the app
  *
  * @example
  * ```typescript
- * if (await isTauri()) {
- *   // Tauri-specific logic
- * }
+ * // In main.tsx
+ * import { waitForPlatform } from '@/utils/platform';
+ *
+ * await waitForPlatform();
+ *
+ * // Now safe to render - platform is guaranteed to be correct
+ * createRoot(document.getElementById("root")!).render(<App />);
  * ```
  */
-export async function isTauri(): Promise<boolean> {
-  const info = await getPlatformInfo();
-  return info.isTauri;
+export async function waitForPlatform(): Promise<void> {
+  await platformReady;
+
+  if (!platformInfo) {
+    throw new Error("[Platform] Fatal: Platform detection failed completely");
+  }
 }
 
 /**
- * Checks if the platform is iOS
+ * Get comprehensive platform information
  *
- * @returns Promise resolving to true if iOS, false otherwise
- *
- * @example
- * ```typescript
- * if (await isIOS()) {
- *   // iOS-specific logic
- * }
- * ```
+ * @returns The platform information object (never null after initialization)
+ * @throws Error if called before platform initialization
  */
-export async function isIOS(): Promise<boolean> {
-  const info = await getPlatformInfo();
-  return info.isIOS;
+export function getPlatformInfo(): PlatformInfo {
+  if (!platformInfo) {
+    throw new Error(
+      "[Platform] Platform not initialized. Ensure waitForPlatform() is called in main.tsx before rendering."
+    );
+  }
+  return platformInfo;
 }
 
 /**
- * Checks if the platform is Android
+ * Check if the app is running in a Tauri environment
  *
- * @returns Promise resolving to true if Android, false otherwise
- *
- * @example
- * ```typescript
- * if (await isAndroid()) {
- *   // Android-specific logic
- * }
- * ```
+ * @returns true if in Tauri, false otherwise
  */
-export async function isAndroid(): Promise<boolean> {
-  const info = await getPlatformInfo();
-  return info.isAndroid;
+export function isTauri(): boolean {
+  if (!platformInfo) {
+    throw new Error("[Platform] Platform not initialized");
+  }
+  return platformInfo.isTauri;
 }
 
 /**
- * Checks if the platform is any mobile platform (iOS or Android)
+ * Check if the platform is iOS
  *
- * @returns Promise resolving to true if mobile, false otherwise
- *
- * @example
- * ```typescript
- * if (await isMobile()) {
- *   // Mobile-specific logic (iOS or Android)
- * }
- * ```
+ * @returns true if iOS, false otherwise
  */
-export async function isMobile(): Promise<boolean> {
-  const info = await getPlatformInfo();
-  return info.isMobile;
+export function isIOS(): boolean {
+  if (!platformInfo) {
+    throw new Error("[Platform] Platform not initialized");
+  }
+  return platformInfo.isIOS;
 }
 
 /**
- * Checks if the platform is any desktop platform (macOS, Windows, Linux)
+ * Check if the platform is Android
  *
- * @returns Promise resolving to true if desktop, false otherwise
- *
- * @example
- * ```typescript
- * if (await isDesktop()) {
- *   // Desktop-specific logic
- * }
- * ```
+ * @returns true if Android, false otherwise
  */
-export async function isDesktop(): Promise<boolean> {
-  const info = await getPlatformInfo();
-  return info.isDesktop;
+export function isAndroid(): boolean {
+  if (!platformInfo) {
+    throw new Error("[Platform] Platform not initialized");
+  }
+  return platformInfo.isAndroid;
 }
 
 /**
- * Checks if the platform is macOS
+ * Check if the platform is any mobile platform (iOS or Android)
  *
- * @returns Promise resolving to true if macOS, false otherwise
- *
- * @example
- * ```typescript
- * if (await isMacOS()) {
- *   // macOS-specific logic
- * }
- * ```
+ * @returns true if mobile, false otherwise
  */
-export async function isMacOS(): Promise<boolean> {
-  const info = await getPlatformInfo();
-  return info.isMacOS;
+export function isMobile(): boolean {
+  if (!platformInfo) {
+    throw new Error("[Platform] Platform not initialized");
+  }
+  return platformInfo.isMobile;
 }
 
 /**
- * Checks if the platform is Windows
+ * Check if the platform is any desktop platform
  *
- * @returns Promise resolving to true if Windows, false otherwise
- *
- * @example
- * ```typescript
- * if (await isWindows()) {
- *   // Windows-specific logic
- * }
- * ```
+ * @returns true if desktop, false otherwise
  */
-export async function isWindows(): Promise<boolean> {
-  const info = await getPlatformInfo();
-  return info.isWindows;
+export function isDesktop(): boolean {
+  if (!platformInfo) {
+    throw new Error("[Platform] Platform not initialized");
+  }
+  return platformInfo.isDesktop;
 }
 
 /**
- * Checks if the platform is Linux
+ * Check if the platform is macOS
  *
- * @returns Promise resolving to true if Linux, false otherwise
- *
- * @example
- * ```typescript
- * if (await isLinux()) {
- *   // Linux-specific logic
- * }
- * ```
+ * @returns true if macOS, false otherwise
  */
-export async function isLinux(): Promise<boolean> {
-  const info = await getPlatformInfo();
-  return info.isLinux;
+export function isMacOS(): boolean {
+  if (!platformInfo) {
+    throw new Error("[Platform] Platform not initialized");
+  }
+  return platformInfo.isMacOS;
 }
 
 /**
- * Checks if the app is running in a web browser (not Tauri)
+ * Check if the platform is Windows
  *
- * @returns Promise resolving to true if web, false otherwise
- *
- * @example
- * ```typescript
- * if (await isWeb()) {
- *   // Web-specific logic
- * }
- * ```
+ * @returns true if Windows, false otherwise
  */
-export async function isWeb(): Promise<boolean> {
-  const info = await getPlatformInfo();
-  return info.isWeb;
+export function isWindows(): boolean {
+  if (!platformInfo) {
+    throw new Error("[Platform] Platform not initialized");
+  }
+  return platformInfo.isWindows;
 }
 
 /**
- * Checks if the platform is a Tauri desktop environment
- * Useful for determining if desktop-specific features like proxy should be enabled
+ * Check if the platform is Linux
  *
- * @returns Promise resolving to true if Tauri desktop, false otherwise
- *
- * @example
- * ```typescript
- * if (await isTauriDesktop()) {
- *   // Enable proxy configuration
- * }
- * ```
+ * @returns true if Linux, false otherwise
  */
-export async function isTauriDesktop(): Promise<boolean> {
-  const info = await getPlatformInfo();
-  return info.isTauri && info.isDesktop;
+export function isLinux(): boolean {
+  if (!platformInfo) {
+    throw new Error("[Platform] Platform not initialized");
+  }
+  return platformInfo.isLinux;
 }
 
 /**
- * Checks if the platform is a Tauri mobile environment
+ * Check if the app is running in a web browser
  *
- * @returns Promise resolving to true if Tauri mobile, false otherwise
- *
- * @example
- * ```typescript
- * if (await isTauriMobile()) {
- *   // Mobile app-specific logic
- * }
- * ```
+ * @returns true if web, false otherwise
  */
-export async function isTauriMobile(): Promise<boolean> {
-  const info = await getPlatformInfo();
-  return info.isTauri && info.isMobile;
+export function isWeb(): boolean {
+  if (!platformInfo) {
+    throw new Error("[Platform] Platform not initialized");
+  }
+  return platformInfo.isWeb;
+}
+
+/**
+ * Check if the app is running in Tauri desktop
+ *
+ * @returns true if Tauri desktop, false otherwise
+ */
+export function isTauriDesktop(): boolean {
+  if (!platformInfo) {
+    throw new Error("[Platform] Platform not initialized");
+  }
+  return platformInfo.isTauriDesktop;
+}
+
+/**
+ * Check if the app is running in Tauri mobile
+ *
+ * @returns true if Tauri mobile, false otherwise
+ */
+export function isTauriMobile(): boolean {
+  if (!platformInfo) {
+    throw new Error("[Platform] Platform not initialized");
+  }
+  return platformInfo.isTauriMobile;
 }

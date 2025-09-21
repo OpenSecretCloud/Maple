@@ -22,7 +22,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useLocalState } from "@/state/useLocalState";
 import { useNavigate } from "@tanstack/react-router";
-import { useIsTauriDesktop } from "@/hooks/usePlatform";
+import { isTauriDesktop } from "@/utils/platform";
 
 interface ApiKey {
   name: string;
@@ -35,7 +35,7 @@ interface ApiKeyDashboardProps {
 
 export function ApiKeyDashboard({ showCreditSuccessMessage = false }: ApiKeyDashboardProps) {
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
-  const { isTauriDesktop } = useIsTauriDesktop();
+  const isTauriDesktopPlatform = isTauriDesktop();
   const { listApiKeys, auth, createApiKey } = useOpenSecret();
   const { billingStatus } = useLocalState();
   const navigate = useNavigate();
@@ -209,7 +209,9 @@ export function ApiKeyDashboard({ showCreditSuccessMessage = false }: ApiKeyDash
       </DialogHeader>
 
       <Tabs defaultValue="credits" className="mt-4">
-        <TabsList className={`grid w-full ${isTauriDesktop ? "grid-cols-3" : "grid-cols-2"}`}>
+        <TabsList
+          className={`grid w-full ${isTauriDesktopPlatform ? "grid-cols-3" : "grid-cols-2"}`}
+        >
           <TabsTrigger value="credits" className="flex items-center gap-2">
             <CreditCard className="h-4 w-4" />
             Credits
@@ -218,7 +220,7 @@ export function ApiKeyDashboard({ showCreditSuccessMessage = false }: ApiKeyDash
             <Key className="h-4 w-4" />
             API Keys
           </TabsTrigger>
-          {isTauriDesktop && (
+          {isTauriDesktopPlatform && (
             <TabsTrigger value="local-proxy" className="flex items-center gap-2">
               <Server className="h-4 w-4" />
               Local Proxy
@@ -260,7 +262,7 @@ export function ApiKeyDashboard({ showCreditSuccessMessage = false }: ApiKeyDash
           </div>
         </TabsContent>
 
-        {isTauriDesktop && (
+        {isTauriDesktopPlatform && (
           <TabsContent value="local-proxy" className="mt-4">
             <div className="space-y-4">
               <ProxyConfigSection

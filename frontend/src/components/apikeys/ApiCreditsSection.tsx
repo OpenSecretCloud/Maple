@@ -7,7 +7,7 @@ import { Loader2, CreditCard, Bitcoin, Coins, CheckCircle, Edit } from "lucide-r
 import { useQuery } from "@tanstack/react-query";
 import { getBillingService } from "@/billing/billingService";
 import { useOpenSecret } from "@opensecret/react";
-import { useIsMobile } from "@/hooks/usePlatform";
+import { isMobile } from "@/utils/platform";
 import {
   MIN_PURCHASE_CREDITS,
   MIN_PURCHASE_AMOUNT,
@@ -40,7 +40,7 @@ export function ApiCreditsSection({ showSuccessMessage = false }: ApiCreditsSect
   const [customAmount, setCustomAmount] = useState("");
   const [purchaseError, setPurchaseError] = useState<string | null>(null);
   const { auth } = useOpenSecret();
-  const { isMobile } = useIsMobile();
+  const isMobilePlatform = isMobile();
 
   const userEmail = auth.user?.user.email;
 
@@ -100,7 +100,7 @@ export function ApiCreditsSection({ showSuccessMessage = false }: ApiCreditsSect
       let cancelUrl: string | undefined;
 
       // For mobile platforms (iOS and Android), use Universal Links that match the AASA/App Links configuration
-      if (isMobile) {
+      if (isMobilePlatform) {
         successUrl = `https://trymaple.ai/payment-success-credits?source=${method}`;
         cancelUrl =
           method === "stripe" ? `https://trymaple.ai/payment-canceled?source=stripe` : undefined;

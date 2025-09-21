@@ -45,7 +45,7 @@ export function TeamInviteDialog({ open, onOpenChange, teamStatus }: TeamInviteD
       const url = await billingService.getPortalUrl();
 
       // Use external browser for mobile platforms (iOS and Android)
-      if (await isMobile()) {
+      if (isMobile()) {
         try {
           // Dynamic import to avoid issues in web environments
           const { invoke } = await import("@tauri-apps/api/core");

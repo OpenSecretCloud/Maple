@@ -1147,84 +1147,190 @@ Add these to GitHub repository secrets:
 
 ---
 
-## Code Patterns to Use
+## Platform Detection - NEW UNIFIED DESIGN
 
-### Platform Detection Utilities Available
-We now have comprehensive platform detection utilities at:
-- `src/utils/platform.ts` - Core async utility functions
-- `src/hooks/usePlatform.ts` - React hooks for components
-- `src/utils/platform/index.ts` - Unified exports
+### CRITICAL ISSUES WITH CURRENT IMPLEMENTATION
+The current platform detection has fundamental flaws that must be fixed:
 
-### Usage Examples
+1. **INCORRECT VALUES DURING LOADING**: Hooks return `false` while detecting platform, causing:
+   - Tauri-only code running on web (CRASHES)
+   - Web-only code running in Tauri (CRASHES)
+   - Wrong UI showing temporarily (flickering)
 
-#### In Async Functions (e.g., billing, auth handlers)
+2. **MULTIPLE CONFLICTING APIS**:
+   - Async functions: `await isIOS()`
+   - React hooks: `useIsIOS()` returning potentially wrong values
+   - Both can be incorrect during initialization
+
+3. **NO SINGLE SOURCE OF TRUTH**: Platform can be detected differently in different parts of the app
+
+### NEW UNIFIED PLATFORM DETECTION DESIGN
+
+Platform detection happens ONCE before the app renders, guaranteeing correctness:
+
+#### Implementation (platform.ts):
 ```typescript
-import { isIOS, isAndroid, isMobile, isDesktop, getPlatformInfo } from '@/utils/platform';
+// Platform info - NOT nullable, ALWAYS set before app renders
+let platformInfo: PlatformInfo;
 
-// Simple checks
-if (await isMobile()) {
-  // Logic for both iOS and Android
-  console.log("Mobile platform detected");
+// Initialize immediately when module loads
+const platformReady = (async () => {
+  try {
+    const tauriEnv = await import("@tauri-apps/api/core")
+      .then(m => m.isTauri())
+      .catch(() => false);
+
+    if (tauriEnv) {
+      const { type } = await import("@tauri-apps/plugin-os");
+      const platform = await type();
+      platformInfo = {
+        platform,
+        isTauri: true,
+        isIOS: platform === "ios",
+        isAndroid: platform === "android",
+        isMobile: platform === "ios" || platform === "android",
+        isDesktop: platform === "macos" || platform === "windows" || platform === "linux",
+        isMacOS: platform === "macos",
+        isWindows: platform === "windows",
+        isLinux: platform === "linux",
+        isWeb: false,
+        isTauriDesktop: true && (platform === "macos" || platform === "windows" || platform === "linux"),
+        isTauriMobile: true && (platform === "ios" || platform === "android")
+      };
+    } else {
+      platformInfo = {
+        platform: "web",
+        isTauri: false,
+        isIOS: false,
+        isAndroid: false,
+        isMobile: false,
+        isDesktop: false,
+        isMacOS: false,
+        isWindows: false,
+        isLinux: false,
+        isWeb: true,
+        isTauriDesktop: false,
+        isTauriMobile: false
+      };
+    }
+  } catch {
+    // Default to web on any error
+    platformInfo = {
+      platform: "web",
+      isTauri: false,
+      isIOS: false,
+      isAndroid: false,
+      isMobile: false,
+      isDesktop: false,
+      isMacOS: false,
+      isWindows: false,
+      isLinux: false,
+      isWeb: true,
+      isTauriDesktop: false,
+      isTauriMobile: false
+    };
+  }
+})();
+
+// Export for main.tsx to await
+export const waitForPlatform = () => platformReady;
+
+// Simple, synchronous, ALWAYS correct
+export function isIOS(): boolean {
+  return platformInfo.isIOS;
 }
 
-if (await isIOS()) {
-  // iOS-specific logic
-  await invoke("plugin:sign-in-with-apple|get_apple_id_credential");
+export function isAndroid(): boolean {
+  return platformInfo.isAndroid;
 }
 
-if (await isAndroid()) {
-  // Android-specific logic
-  // Could implement native Google Sign-In here
+export function isMobile(): boolean {
+  return platformInfo.isMobile;
 }
 
-// Get full platform info
-const platform = await getPlatformInfo();
-if (platform.isTauri && platform.isMobile) {
-  // Mobile app-specific logic
+export function isTauri(): boolean {
+  return platformInfo.isTauri;
+}
+
+export function isDesktop(): boolean {
+  return platformInfo.isDesktop;
+}
+
+export function isWeb(): boolean {
+  return platformInfo.isWeb;
+}
+
+// Get full platform info if needed
+export function getPlatformInfo(): PlatformInfo {
+  return platformInfo;
 }
 ```
 
-#### In React Components
+#### App Initialization (main.tsx):
 ```typescript
-import { useIsIOS, useIsAndroid, useIsMobile, usePlatform } from '@/hooks/usePlatform';
+import { waitForPlatform } from '@/utils/platform';
 
+// Platform MUST be ready before rendering
+await waitForPlatform();
+
+// NOW platform is guaranteed correct - no loading states, no wrong values
+createRoot(document.getElementById("root")!).render(
+  <StrictMode>
+    <App />
+  </StrictMode>
+);
+```
+
+#### Usage in Components - SIMPLE AND ALWAYS CORRECT:
+```typescript
+import { isIOS, isAndroid, isMobile, isTauri } from '@/utils/platform';
+
+// Direct usage - ALWAYS correct, never wrong, no await needed
+function MyComponent() {
+  if (isMobile()) {
+    // This is GUARANTEED correct - no loading states
+    return <MobileView />;
+  }
+
+  if (isTauri()) {
+    // SAFE to use Tauri APIs - will NEVER run on web
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("some_command");
+  }
+
+  return <WebView />;
+}
+
+// No more hooks with loading states!
 function PricingComponent() {
-  const { isIOS } = useIsIOS();
-  const { isAndroid } = useIsAndroid();
-  const { isMobile } = useIsMobile();
-
-  // Simple mobile check
-  if (isMobile) {
-    return <MobileLayout />;
+  // Just use the functions directly - they're always correct
+  if (isIOS()) {
+    return <IOSPricing />;
   }
 
-  // Platform-specific rendering
-  if (isIOS) {
-    return <IOSSpecificView />;
+  if (isAndroid()) {
+    return <AndroidPricing />;
   }
 
-  if (isAndroid) {
-    return <AndroidView />;
-  }
-
-  return <DesktopView />;
-}
-
-// Using full platform info
-function ComplexComponent() {
-  const { platform, loading } = usePlatform();
-
-  if (loading) return <Spinner />;
-
-  if (platform.isTauriDesktop) {
-    // Show desktop-only features like proxy
-  }
-
-  if (platform.isTauriMobile) {
-    // Mobile app features
-  }
+  return <WebPricing />;
 }
 ```
+
+### BENEFITS OF NEW DESIGN:
+1. **SINGLE API**: Just `isIOS()`, `isMobile()`, etc. No hooks, no await, no variants
+2. **ALWAYS CORRECT**: Platform is detected before app exists, can NEVER be wrong
+3. **INSTANT**: All checks are synchronous after initialization
+4. **CRASH-PROOF**: Tauri APIs only called when definitely in Tauri, web APIs only on web
+5. **SIMPLE**: No loading states, no undefined handling, no complexity
+6. **NO FLICKERING**: UI is correct from first render
+
+### MIGRATION PLAN:
+1. Update `platform.ts` with new implementation
+2. Add `await waitForPlatform()` to `main.tsx`
+3. Remove ALL `useIsIOS()`, `useIsMobile()` etc. hooks
+4. Remove ALL `await isIOS()` async calls
+5. Replace with direct `isIOS()`, `isMobile()` function calls
+6. Delete the hooks file entirely - no longer needed
 
 ## Platform Utility Migration Status
 

@@ -5,7 +5,7 @@ import { Footer } from "./Footer";
 import { useQuery } from "@tanstack/react-query";
 import { getBillingService } from "@/billing/billingService";
 import { PRICING_PLANS, type PlanFeature } from "@/config/pricingConfig";
-import { useIsIOS } from "@/hooks/usePlatform";
+import { isIOS } from "@/utils/platform";
 
 function CTAButton({
   children,
@@ -182,9 +182,9 @@ function PricingTier({
 export { PricingTier };
 
 export function Marketing() {
-  // Use the platform detection hook for iOS
+  // Use the platform detection function for iOS
   // Android doesn't have App Store restrictions, so we only need to check for iOS
-  const { isIOS } = useIsIOS();
+  const isIOSPlatform = isIOS();
 
   // Fetch products to get product IDs for pricing tiers
   const {
@@ -627,7 +627,7 @@ export function Marketing() {
                 ctaText={plan.ctaText}
                 popular={plan.popular}
                 productId={getProductId(plan.name)}
-                isIOS={isIOS}
+                isIOS={isIOSPlatform}
               />
             ))}
           </div>

@@ -1,13 +1,13 @@
-import { useIsTauri } from "@/hooks/usePlatform";
+import { isTauri } from "@/utils/platform";
 
 export function SimplifiedFooter() {
-  const { isTauri } = useIsTauri();
+  const isTauriPlatform = isTauri();
 
   return (
     <div className="w-full border-t border-[hsl(var(--marketing-card-border))] py-6 mt-auto">
       <div className="max-w-[45rem] mx-auto px-4 flex flex-col items-center">
         {/* TODO: Fix iframe loading in Tauri release builds */}
-        {!isTauri && (
+        {!isTauriPlatform && (
           <iframe
             src="https://status.trymaple.ai/badge?theme=system"
             width="250"
