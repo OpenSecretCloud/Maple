@@ -14,7 +14,6 @@ import { Switch } from "@/components/ui/switch";
 import { PRICING_PLANS } from "@/config/pricingConfig";
 import { VerificationModal } from "@/components/VerificationModal";
 import { useIsIOS, useIsAndroid, useIsMobile } from "@/hooks/usePlatform";
-import { isMobile } from "@/utils/platform";
 import packageJson from "../../package.json";
 
 // File type constants for upload features
@@ -360,8 +359,6 @@ function PricingPage() {
         }
 
         // For mobile platforms (iOS and Android), use Universal Links / App Links
-        const isMobilePlatform = await isMobile();
-
         if (isMobilePlatform) {
           if (useBitcoin) {
             await billingService.createZapriteCheckoutSession(

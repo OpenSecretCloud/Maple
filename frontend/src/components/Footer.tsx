@@ -4,7 +4,7 @@ import { DiscordIcon } from "./icons/DiscordIcon";
 import { useIsTauri } from "@/hooks/usePlatform";
 
 export function Footer() {
-  const { isTauri } = useIsTauri();
+  const { isTauri, loading } = useIsTauri();
 
   return (
     <div className="w-full dark:bg-[hsl(var(--background))] bg-[hsl(var(--footer-bg))] py-16 border-t border-[hsl(var(--marketing-card-border))]">
@@ -139,8 +139,8 @@ export function Footer() {
 
         <div className="mt-12 pt-8 border-t border-[hsl(var(--marketing-card-border))] text-center">
           <div className="flex flex-col items-center gap-4">
-            {/* TODO: Fix iframe loading in Tauri release builds */}
-            {!isTauri && (
+            {/* Only show status iframe on web (doesn't work in Tauri builds) */}
+            {!loading && !isTauri && (
               <iframe
                 src="https://status.trymaple.ai/badge?theme=system"
                 width="250"

@@ -40,4 +40,4 @@ pdf-extract = "0.7"
 base64 = "0.22"
 
 [target.'cfg(target_os = "android")'.dependencies]
-openssl = { version = "*", features = ["vendored"] }
+openssl = { version = "0.10", default-features = false, features = ["vendored"] }

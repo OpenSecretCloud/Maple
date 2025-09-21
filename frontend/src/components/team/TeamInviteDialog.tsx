@@ -16,7 +16,6 @@ import { Loader2, AlertCircle, UserPlus, Info, CreditCard } from "lucide-react";
 import { getBillingService } from "@/billing/billingService";
 import { useLocalState } from "@/state/useLocalState";
 import { isMobile } from "@/utils/platform";
-import { invoke } from "@tauri-apps/api/core";
 import type { TeamStatus } from "@/types/team";
 
 interface TeamInviteDialogProps {
@@ -47,8 +46,25 @@ export function TeamInviteDialog({ open, onOpenChange, teamStatus }: TeamInviteD
 
       // Use external browser for mobile platforms (iOS and Android)
       if (await isMobile()) {
-        await invoke("plugin:opener|open_url", { url });
-        return;
+        try {
+          // Dynamic import to avoid issues in web environments
+          const { invoke } = await import("@tauri-apps/api/core");
+          await invoke("plugin:opener|open_url", { url })
+            .then(() => {
+              console.log("[TeamInvite] Successfully opened URL in external browser");
+            })
+            .catch((error: Error) => {
+              console.error("[TeamInvite] Failed to open external browser:", error);
+              // Fall back to window.open if opener plugin fails
+              window.open(url, "_blank", "noopener,noreferrer");
+            });
+          return;
+        } catch (importError) {
+          console.error("[TeamInvite] Failed to import Tauri APIs:", importError);
+          // Fall back to web approach if dynamic import fails
+          window.open(url, "_blank", "noopener,noreferrer");
+          return;
+        }
       }
 
       // Web or desktop flow

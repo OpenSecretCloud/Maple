@@ -119,9 +119,8 @@ export function AccountMenu() {
       const billingService = getBillingService();
       const url = await billingService.getPortalUrl();
 
-      // Check if we're on a mobile platform
-      const { isMobile } = await import("@/utils/platform");
-      if (await isMobile()) {
+      // Check if we're on a mobile platform using the hook value
+      if (isMobile) {
         console.log(
           "[Billing] Mobile platform detected, using opener plugin to launch external browser for portal"
         );
