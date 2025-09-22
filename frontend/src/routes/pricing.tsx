@@ -11,9 +11,9 @@ import { Badge } from "@/components/ui/badge";
 import { useLocalState } from "@/state/useLocalState";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
-import { type } from "@tauri-apps/plugin-os";
 import { PRICING_PLANS } from "@/config/pricingConfig";
 import { VerificationModal } from "@/components/VerificationModal";
+import { isIOS, isAndroid, isMobile } from "@/utils/platform";
 import packageJson from "../../package.json";
 
 // File type constants for upload features
@@ -181,37 +181,16 @@ function PricingPage() {
   const [checkoutError, setCheckoutError] = useState<string>("");
   const [loadingProductId, setLoadingProductId] = useState<string | null>(null);
   const [useBitcoin, setUseBitcoin] = useState(false);
-  const [isIOS, setIsIOS] = useState(false);
   const navigate = useNavigate();
   const os = useOpenSecret();
   const { setBillingStatus } = useLocalState();
   const isLoggedIn = !!os.auth.user;
   const { selected_plan } = Route.useSearch();
 
-  // Check if the app is running on iOS
-  useEffect(() => {
-    const checkPlatform = async () => {
-      try {
-        // First check if we're in a Tauri environment
-        const isTauriEnv = await import("@tauri-apps/api/core")
-          .then((m) => m.isTauri())
-          .catch(() => false);
-
-        if (isTauriEnv) {
-          // Only check platform type if we're in a Tauri environment
-          const platform = await type();
-          setIsIOS(platform === "ios");
-        } else {
-          setIsIOS(false);
-        }
-      } catch (error) {
-        console.error("Error checking platform:", error);
-        setIsIOS(false);
-      }
-    };
-
-    checkPlatform();
-  }, []);
+  // Use platform detection functions
+  const isIOSPlatform = isIOS();
+  const isAndroidPlatform = isAndroid();
+  const isMobilePlatform = isMobile();
 
   // Fetch billing status if user is logged in
   const { data: freshBillingStatus, isLoading: isBillingStatusLoading } = useQuery({
@@ -225,12 +204,12 @@ function PricingPage() {
     enabled: isLoggedIn
   });
 
-  // Auto-enable Bitcoin toggle for Zaprite users (except on iOS)
+  // Auto-enable Bitcoin toggle for Zaprite users (except on mobile platforms)
   useEffect(() => {
-    if (freshBillingStatus?.payment_provider === "zaprite" && !isIOS) {
+    if (freshBillingStatus?.payment_provider === "zaprite" && !isMobilePlatform) {
       setUseBitcoin(true);
     }
-  }, [freshBillingStatus?.payment_provider, isIOS]);
+  }, [freshBillingStatus?.payment_provider, isMobilePlatform]);
 
   // Always try to fetch portal URL if logged in
   const { data: portalUrl } = useQuery({
@@ -253,12 +232,12 @@ function PricingPage() {
     error: productsError,
     isLoading: productsLoading
   } = useQuery({
-    queryKey: ["products", isIOS],
+    queryKey: ["products", isIOSPlatform, isAndroidPlatform],
     queryFn: async () => {
       try {
         const billingService = getBillingService();
-        // Only send version for iOS builds
-        if (isIOS) {
+        // Send version for mobile builds (iOS needs it for App Store restrictions)
+        if (isIOSPlatform || isAndroidPlatform) {
           // Get version from package.json
           const version = `v${packageJson.version}`;
           console.log("[Billing] Fetching products with version:", version);
@@ -299,7 +278,8 @@ function PricingPage() {
     const isFreeplan = targetPlanName.includes("free");
 
     // Show "Not available in app" for iOS paid plans if server says not available
-    if (isIOS && !isFreeplan && product.is_available === false) {
+    // Android can support paid plans (no App Store restrictions)
+    if (isIOSPlatform && !isFreeplan && product.is_available === false) {
       return "Not available in app";
     }
 
@@ -378,55 +358,24 @@ function PricingPage() {
           throw new Error("User email not found");
         }
 
-        try {
-          // Check if we're in a Tauri environment
-          const isTauri = await import("@tauri-apps/api/core")
-            .then((m) => m.isTauri())
-            .catch(() => false);
-
-          const isTauriIOS =
-            isTauri &&
-            (await import("@tauri-apps/plugin-os")
-              .then((m) => m.type())
-              .then((type) => type === "ios")
-              .catch(() => false));
-
-          // For iOS, use Universal Links that match the AASA configuration
-          if (isTauriIOS) {
-            if (useBitcoin) {
-              await billingService.createZapriteCheckoutSession(
-                email,
-                productId,
-                `https://trymaple.ai/payment-success?source=zaprite`
-              );
-            } else {
-              await billingService.createCheckoutSession(
-                email,
-                productId,
-                `https://trymaple.ai/payment-success?source=stripe`,
-                `https://trymaple.ai/payment-canceled?source=stripe`
-              );
-            }
+        // For mobile platforms (iOS and Android), use Universal Links / App Links
+        if (isMobilePlatform) {
+          if (useBitcoin) {
+            await billingService.createZapriteCheckoutSession(
+              email,
+              productId,
+              `https://trymaple.ai/payment-success?source=zaprite`
+            );
           } else {
-            // For web or desktop, use regular URLs
-            if (useBitcoin) {
-              await billingService.createZapriteCheckoutSession(
-                email,
-                productId,
-                `${window.location.origin}/pricing?success=true`
-              );
-            } else {
-              await billingService.createCheckoutSession(
-                email,
-                productId,
-                `${window.location.origin}/pricing?success=true`,
-                `${window.location.origin}/pricing?canceled=true`
-              );
-            }
+            await billingService.createCheckoutSession(
+              email,
+              productId,
+              `https://trymaple.ai/payment-success?source=stripe`,
+              `https://trymaple.ai/payment-canceled?source=stripe`
+            );
           }
-        } catch (error) {
-          console.error("Error determining platform:", error);
-          // Fall back to regular URLs if platform detection fails
+        } else {
+          // For web or desktop, use regular URLs
           if (useBitcoin) {
             await billingService.createZapriteCheckoutSession(
               email,
@@ -458,7 +407,8 @@ function PricingPage() {
       const isFreeplan = targetPlanName.includes("free");
 
       // Disable clicks for iOS paid plans if server says not available
-      if (isIOS && !isFreeplan && product.is_available === false) {
+      // Android can support paid plans
+      if (isIOSPlatform && !isFreeplan && product.is_available === false) {
         return;
       }
 
@@ -503,11 +453,13 @@ function PricingPage() {
       // For all other cases (upgrades/downgrades between paid plans, or downgrades to free),
       // use portal URL if it exists
       if (portalUrl) {
-        // We already know if we're on iOS from the isIOS state variable
-        if (isIOS) {
-          console.log("[Billing] iOS detected, using opener plugin to launch Safari for portal");
+        // Open in external browser for mobile platforms (iOS and Android)
+        if (isMobilePlatform) {
+          console.log(
+            "[Billing] Mobile platform detected, using opener plugin to launch external browser for portal"
+          );
 
-          // Use the Tauri opener plugin for iOS
+          // Use the Tauri opener plugin for mobile platforms
           import("@tauri-apps/api/core")
             .then((coreModule) => {
               return coreModule.invoke("plugin:opener|open_url", { url: portalUrl });
@@ -520,7 +472,7 @@ function PricingPage() {
               alert("Failed to open browser. Please try again.");
             });
         } else {
-          // Default browser opening for non-iOS platforms
+          // Default browser opening for desktop and web platforms
           window.open(portalUrl, "_blank");
         }
         return;
@@ -530,7 +482,15 @@ function PricingPage() {
       // create checkout session
       newHandleSubscribe(product.id);
     },
-    [isLoggedIn, freshBillingStatus, navigate, portalUrl, newHandleSubscribe, isIOS]
+    [
+      isLoggedIn,
+      freshBillingStatus,
+      navigate,
+      portalUrl,
+      newHandleSubscribe,
+      isIOSPlatform,
+      isMobilePlatform
+    ]
   );
 
   useEffect(() => {
@@ -555,7 +515,7 @@ function PricingPage() {
     products,
     loadingProductId,
     handleButtonClick,
-    isIOS
+    isIOSPlatform
   ]);
 
   // Show loading state if we're fetching initial data
@@ -870,7 +830,7 @@ function PricingPage() {
                         disabled={
                           loadingProductId === (product?.id || plan.name.toLowerCase()) ||
                           (useBitcoin && isTeamPlan) ||
-                          (isIOS && !isFreeplan && product?.is_available === false)
+                          (isIOSPlatform && !isFreeplan && product?.is_available === false)
                         }
                         className={`w-full 
                       dark:bg-white/90 dark:text-black dark:hover:bg-[hsl(var(--purple))]/80 dark:hover:text-[hsl(var(--foreground))] dark:active:bg-white/80

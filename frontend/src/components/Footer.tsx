@@ -1,8 +1,11 @@
 import { Github, Twitter, Mail } from "lucide-react";
 import { Link } from "@tanstack/react-router";
 import { DiscordIcon } from "./icons/DiscordIcon";
+import { isTauri } from "@/utils/platform";
 
 export function Footer() {
+  const isTauriPlatform = isTauri();
+
   return (
     <div className="w-full dark:bg-[hsl(var(--background))] bg-[hsl(var(--footer-bg))] py-16 border-t border-[hsl(var(--marketing-card-border))]">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
@@ -136,15 +139,18 @@ export function Footer() {
 
         <div className="mt-12 pt-8 border-t border-[hsl(var(--marketing-card-border))] text-center">
           <div className="flex flex-col items-center gap-4">
-            <iframe
-              src="https://status.trymaple.ai/badge?theme=system"
-              width="250"
-              height="30"
-              frameBorder="0"
-              scrolling="no"
-              style={{ colorScheme: "normal", marginLeft: "58px" }}
-              title="BetterStack Status"
-            />
+            {/* Only show status iframe on web (doesn't work in Tauri builds) */}
+            {!isTauriPlatform && (
+              <iframe
+                src="https://status.trymaple.ai/badge?theme=system"
+                width="250"
+                height="30"
+                frameBorder="0"
+                scrolling="no"
+                style={{ colorScheme: "normal", marginLeft: "58px" }}
+                title="BetterStack Status"
+              />
+            )}
             <p className="text-[hsl(var(--marketing-text-muted))]/50 font-light">
               © {new Date().getFullYear()} Maple AI. All rights reserved. Powered by{" "}
               <a

@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { isTauri } from "@tauri-apps/api/core";
+import { isTauri } from "@/utils/platform";
 import { listen } from "@tauri-apps/api/event";
 
 // For direct deep link handling, we'll listen to our custom event
@@ -12,7 +12,7 @@ export function DeepLinkHandler() {
 
     const setupDeepLinkHandling = async () => {
       try {
-        if (await isTauri()) {
+        if (isTauri()) {
           console.log("[Deep Link] Setting up handler for Tauri app");
 
           // Listen for the custom event we emit from Rust
