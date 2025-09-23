@@ -5,6 +5,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { Sidebar, SidebarToggle } from "@/components/Sidebar";
 import { cn } from "@/utils/utils";
 import { useIsMobile } from "@/utils/utils";
+import { useOpenAI } from "@/ai/useOpenAi";
+import { DEFAULT_MODEL_ID } from "@/state/LocalStateContext";
 
 // Types
 interface Message {
@@ -12,21 +14,36 @@ interface Message {
   role: "user" | "assistant";
   content: string;
   timestamp: number;
+  status?: "complete" | "streaming" | "error";
+}
+
+interface Conversation {
+  id: string;
+  object: "conversation";
+  created_at: number;
+  metadata?: {
+    title?: string;
+    [key: string]: any;
+  };
 }
 
 export function UnifiedChat() {
   const isMobile = useIsMobile();
+  const openai = useOpenAI();
 
   // Extract chatId from query params (e.g., ?conversation_id=xxx)
   // We're on the home page "/" so we only use query params for now
   const searchParams = new URLSearchParams(window.location.search);
   const chatId = searchParams.get("conversation_id") || undefined;
 
-  // State - just local for now, will be replaced with OpenAI API
+  // State
+  const [conversation, setConversation] = useState<Conversation | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(!isMobile);
+  const [error, setError] = useState<string | null>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   // Refs
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -49,18 +66,21 @@ export function UnifiedChat() {
   // Listen for new chat event from sidebar
   useEffect(() => {
     const handleNewChat = () => {
+      setConversation(null); // Clear the conversation
       setMessages([]);
       setInput("");
+      setError(null);
     };
 
     window.addEventListener("newchat", handleNewChat);
     return () => window.removeEventListener("newchat", handleNewChat);
   }, []);
 
-  // Clear messages when conversation_id is removed from URL
+  // Clear messages and conversation when conversation_id is removed from URL
   useEffect(() => {
     if (!chatId) {
       // Only clear if we previously had a chatId (going from chat to new)
+      setConversation(null); // Clear the conversation state
       setMessages([]);
     }
   }, [chatId]);
@@ -74,44 +94,112 @@ export function UnifiedChat() {
       e?.preventDefault();
 
       const trimmedInput = input.trim();
-      if (!trimmedInput || isGenerating) return;
+      if (!trimmedInput || isGenerating || !openai) return;
 
-      // If no chat ID, create one and update URL without navigation
-      if (!chatId) {
-        const newChatId = `chat-${Date.now()}`;
-        // First update with query param (doesn't require route to exist)
-        const usp = new URLSearchParams(window.location.search);
-        usp.set("conversation_id", newChatId);
-        window.history.replaceState(null, "", `${window.location.pathname}?${usp.toString()}`);
-      }
+      // Clear any previous error
+      setError(null);
 
-      // Add user message
+      // Add user message immediately
       const userMessage: Message = {
-        id: `msg-${Date.now()}`,
+        id: crypto.randomUUID(),
         role: "user",
         content: trimmedInput,
-        timestamp: Date.now()
+        timestamp: Date.now(),
+        status: "complete"
       };
 
       setMessages((prev) => [...prev, userMessage]);
       setInput("");
       setIsGenerating(true);
 
-      // Mock AI response - will be replaced with OpenAI conversations API
-      setTimeout(() => {
+      try {
+        // Create conversation if we don't have one
+        let conversationId = conversation?.id;
+        if (!conversationId) {
+          const newConv = await openai.conversations.create({
+            metadata: {}
+          });
+          conversationId = newConv.id;
+          setConversation(newConv as any);
+
+          // Update URL with new conversation ID
+          const usp = new URLSearchParams(window.location.search);
+          usp.set("conversation_id", conversationId);
+          window.history.replaceState(null, "", `${window.location.pathname}?${usp.toString()}`);
+        }
+
+        // Create abort controller for this request
+        const abortController = new AbortController();
+        abortControllerRef.current = abortController;
+
+        // Create streaming response
+        const stream = await openai.responses.create(
+          {
+            conversation: conversationId,
+            model: DEFAULT_MODEL_ID, // Use the default model constant
+            input: [{ role: "user", content: trimmedInput }],
+            stream: true,
+            store: true // Store in conversation history
+          },
+          { signal: abortController.signal }
+        );
+
+        // Initialize assistant message
         const assistantMessage: Message = {
-          id: `msg-${Date.now()}-ai`,
+          id: crypto.randomUUID(),
           role: "assistant",
-          content:
-            "Hello world! This is a mocked response. The OpenAI conversations API integration will be added here.",
-          timestamp: Date.now()
+          content: "",
+          timestamp: Date.now(),
+          status: "streaming"
         };
 
         setMessages((prev) => [...prev, assistantMessage]);
+        let accumulatedContent = "";
+
+        // Process streaming events
+        for await (const event of stream) {
+          if (event.type === "response.output_item.added" && event.item?.type === "message") {
+            // Update assistant message ID with server ID if available
+            if (event.item?.id) {
+              assistantMessage.id = event.item.id;
+            }
+          } else if (event.type === "response.output_text.delta" && event.delta) {
+            // Accumulate text chunks
+            accumulatedContent += event.delta;
+            setMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === assistantMessage.id ? { ...msg, content: accumulatedContent } : msg
+              )
+            );
+          } else if (event.type === "response.output_item.done") {
+            // Mark message as complete
+            setMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === assistantMessage.id ? { ...msg, status: "complete" } : msg
+              )
+            );
+          } else if (event.type === "response.failed" || event.type === "error") {
+            // Handle streaming errors
+            console.error("Streaming error:", event);
+            setMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === assistantMessage.id ? { ...msg, status: "error" } : msg
+              )
+            );
+            setError("Failed to generate response. Please try again.");
+          }
+        }
+      } catch (error: any) {
+        console.error("Failed to send message:", error);
+        if (error.name !== "AbortError") {
+          setError(error.message || "Something went wrong. Please try again.");
+        }
+      } finally {
         setIsGenerating(false);
-      }, 1000);
+        abortControllerRef.current = null;
+      }
     },
-    [input, isGenerating, chatId]
+    [input, isGenerating, openai, conversation]
   );
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -154,6 +242,9 @@ export function UnifiedChat() {
         {/* Messages Area */}
         <div className="flex-1 overflow-y-auto">
           <div className="max-w-3xl mx-auto p-6">
+            {/* Error message */}
+            {error && <div className="bg-red-50 text-red-600 p-3 rounded mb-4">{error}</div>}
+
             {/* Welcome message when no messages */}
             {messages.length === 0 && !isGenerating && (
               <div className="text-center py-24 space-y-4">
@@ -211,21 +302,22 @@ export function UnifiedChat() {
                 </div>
               ))}
 
-              {/* Loading indicator */}
-              {isGenerating && (
-                <div className="flex gap-3 justify-start">
-                  <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center flex-shrink-0">
-                    <Bot className="h-4 w-4 text-primary" />
-                  </div>
-                  <div className="bg-muted rounded-2xl px-4 py-3">
-                    <div className="flex items-center gap-1">
-                      <div className="w-2 h-2 bg-foreground/60 rounded-full animate-pulse" />
-                      <div className="w-2 h-2 bg-foreground/60 rounded-full animate-pulse delay-75" />
-                      <div className="w-2 h-2 bg-foreground/60 rounded-full animate-pulse delay-150" />
+              {/* Loading indicator - only show if generating and no streaming message yet */}
+              {isGenerating &&
+                !messages.some((m) => m.role === "assistant" && m.status === "streaming") && (
+                  <div className="flex gap-3 justify-start">
+                    <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center flex-shrink-0">
+                      <Bot className="h-4 w-4 text-primary" />
+                    </div>
+                    <div className="bg-muted rounded-2xl px-4 py-3">
+                      <div className="flex items-center gap-1">
+                        <div className="w-2 h-2 bg-foreground/60 rounded-full animate-pulse" />
+                        <div className="w-2 h-2 bg-foreground/60 rounded-full animate-pulse delay-75" />
+                        <div className="w-2 h-2 bg-foreground/60 rounded-full animate-pulse delay-150" />
+                      </div>
                     </div>
                   </div>
-                </div>
-              )}
+                )}
             </div>
 
             <div ref={messagesEndRef} />

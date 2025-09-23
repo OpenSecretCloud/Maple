@@ -64,25 +64,25 @@ Responses use Server-Sent Events with the following event types:
 
 ## Implementation Plan
 
-### Phase 1: Infrastructure Setup
-1. Update OpenAI package to v5.20.0+
-2. Create OpenAI client with custom fetch
-3. Add types for conversations and responses
+### Phase 1: Infrastructure Setup ✅ COMPLETE
+1. ✅ Update OpenAI package to v5.20.0 (matched with SDK version)
+2. ✅ OpenAI client already configured with custom fetch via context
+3. ✅ Types added for conversations and responses
 
-### Phase 2: Core Functionality
-4. Implement conversation creation
-5. Add message sending with streaming
-6. Handle response streaming and display
+### Phase 2: Core Functionality ✅ COMPLETE
+4. ✅ Implement conversation creation (lazy creation on first message)
+5. ✅ Add message sending with streaming (using responses.create API)
+6. ✅ Handle response streaming and display (all SSE events working)
 
-### Phase 3: State Management
-7. Add polling for conversation updates
-8. Implement conversation loading from URL
-9. Handle conversation switching
+### Phase 3: State Management - IN PROGRESS
+7. ⏳ Add polling for conversation updates
+8. ⏳ Implement conversation loading from URL
+9. ✅ Handle conversation switching (new chat clears conversation state)
 
-### Phase 4: Integration
-10. Update Sidebar to fetch from API
-11. Remove localStorage dependencies
-12. Add error handling and recovery
+### Phase 4: Integration - TODO
+10. ⏳ Update Sidebar to fetch from API
+11. ⏳ Remove localStorage dependencies
+12. ✅ Add error handling and recovery (basic error display implemented)
 
 ## Implementation Details
 
@@ -93,7 +93,7 @@ Update OpenAI SDK to support conversations API:
 ```json
 {
   "dependencies": {
-    "openai": "^5.23.0"  // Updated from 4.56.1 (installed via bun add openai@latest)
+    "openai": "^5.20.0"  // Updated from 4.56.1 to match SDK version exactly
   }
 }
 ```
