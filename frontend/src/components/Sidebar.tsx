@@ -27,11 +27,20 @@ export function Sidebar({
     if (isOpen) {
       onToggle();
     }
-    // If we're already on "/", focus the chat box
-    if (location.pathname === "/") {
+
+    // Clear any conversation_id from URL to start fresh
+    if (location.pathname === "/" && window.location.search.includes("conversation_id")) {
+      // Just clear the query params without navigation
+      window.history.replaceState(null, "", "/");
+      // Clear messages by triggering a re-render
+      window.dispatchEvent(new Event("newchat"));
+      document.getElementById("message")?.focus();
+    } else if (location.pathname === "/") {
+      // Already on home with no conversation_id, just focus
       document.getElementById("message")?.focus();
     } else {
       try {
+        // Navigate to home without any query params
         await router.navigate({ to: `/` });
         // Ensure element is available after navigation
         setTimeout(() => document.getElementById("message")?.focus(), 0);
