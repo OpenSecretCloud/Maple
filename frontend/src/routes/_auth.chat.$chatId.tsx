@@ -719,7 +719,7 @@ END OF INSTRUCTIONS`;
 
       // 2. Stream the summary
       let summary = "";
-      const stream = openai.beta.chat.completions.stream({
+      const stream = openai.chat.completions.stream({
         model: DEFAULT_MODEL_ID, // Use the default model instead of user selected model
         messages: summarizationMessages,
         temperature: 0.3,

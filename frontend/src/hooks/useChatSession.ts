@@ -106,11 +106,9 @@ export function useChatSession(
       abortControllerRef.current = abortController;
 
       try {
-        const stream = openai.beta.chat.completions.stream({
+        const stream = openai.chat.completions.stream({
           model,
-          messages: messages as Parameters<
-            typeof openai.beta.chat.completions.stream
-          >[0]["messages"],
+          messages: messages as Parameters<typeof openai.chat.completions.stream>[0]["messages"],
           stream: true
         });
 
@@ -380,7 +378,7 @@ async function generateTitle(
     const userContent = messageText.slice(0, 500); // Reduced to 500 chars to optimize token usage
 
     // Use the OpenAI API to generate a concise title - use the default model
-    const stream = openai.beta.chat.completions.stream({
+    const stream = openai.chat.completions.stream({
       model: DEFAULT_MODEL_ID, // Use the default model instead of user selected model
       messages: [
         {
