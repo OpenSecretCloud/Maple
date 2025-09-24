@@ -82,16 +82,18 @@ Responses use Server-Sent Events with the following event types:
 11. ✅ LastSeenItemId tracking (React state-based cursor, no localStorage)
 12. ✅ Handle browser navigation (back/forward button support)
 
-### Phase 4: Integration - IN PROGRESS
-13. ⏳ Update Sidebar to fetch from API
-14. ⏳ Remove localStorage dependencies for chat data
+### Phase 4: Integration ✅ COMPLETE
+13. ✅ Update Sidebar to fetch from API (using OpenSecret SDK's listConversations)
+14. ✅ Remove localStorage dependencies for chat data (all chat data now from API)
 15. ✅ Add error handling and recovery (404 handling, network errors, streaming failures)
+16. ✅ Fix redundant API calls (removed immediate polling after load)
+17. ✅ Improve conversation switching reliability (proper state tracking)
 
 ## Completed Implementation Summary
 
-### What Was Built (as of latest commit)
+### What Was Built (Phases 1-4 Complete)
 
-The UnifiedChat component now has full Conversations/Responses API integration with the following features:
+The UnifiedChat component and Sidebar now have full Conversations/Responses API integration with the following features:
 
 #### ✅ Core Conversation Management
 - **Lazy conversation creation** - Conversations only created on first message to avoid clutter

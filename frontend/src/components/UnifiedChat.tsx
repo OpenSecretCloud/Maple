@@ -28,8 +28,6 @@ interface Conversation {
 }
 
 // Will be needed for future features with conversation items
-// @ts-expect-error - interface defined for future use
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
 interface ConversationItem {
   id: string;
   type: "message" | "web_search_call";
@@ -47,10 +45,11 @@ export function UnifiedChat() {
   const isMobile = useIsMobile();
   const openai = useOpenAI();
 
-  // Extract chatId from query params (e.g., ?conversation_id=xxx)
-  // We're on the home page "/" so we only use query params for now
-  const searchParams = new URLSearchParams(window.location.search);
-  const chatId = searchParams.get("conversation_id") || undefined;
+  // Track chatId from URL - use state so we can update it
+  const [chatId, setChatId] = useState<string | undefined>(() => {
+    const params = new URLSearchParams(window.location.search);
+    return params.get("conversation_id") || undefined;
+  });
 
   // State
   const [conversation, setConversation] = useState<Conversation | null>(null);
@@ -80,38 +79,50 @@ export function UnifiedChat() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  // Listen for new chat event from sidebar
+  // Unified event handling for conversation changes
   useEffect(() => {
+    // Handle new chat event
     const handleNewChat = () => {
-      setConversation(null); // Clear the conversation
+      setChatId(undefined);
+      setConversation(null);
       setMessages([]);
       setInput("");
       setError(null);
       setLastSeenItemId(undefined);
     };
 
-    window.addEventListener("newchat", handleNewChat);
-    return () => window.removeEventListener("newchat", handleNewChat);
-  }, []);
-
-  // Listen for conversation selection from sidebar
-  useEffect(() => {
+    // Handle conversation selection from sidebar
     const handleConversationSelected = (event: CustomEvent) => {
       const { conversationId } = event.detail;
-      if (conversationId) {
-        // URL will be updated by sidebar, we'll catch it in the chatId effect
-        // Just ensure we don't have stale state
+      if (conversationId && conversationId !== chatId) {
+        // Update our local chatId state to trigger load
+        setChatId(conversationId);
         setError(null);
       }
     };
 
+    // Handle browser back/forward navigation
+    const handlePopState = () => {
+      const params = new URLSearchParams(window.location.search);
+      const newChatId = params.get("conversation_id") || undefined;
+      if (newChatId !== chatId) {
+        setChatId(newChatId);
+      }
+    };
+
+    window.addEventListener("newchat", handleNewChat);
     window.addEventListener("conversationselected", handleConversationSelected as EventListener);
-    return () =>
+    window.addEventListener("popstate", handlePopState);
+
+    return () => {
+      window.removeEventListener("newchat", handleNewChat);
       window.removeEventListener(
         "conversationselected",
         handleConversationSelected as EventListener
       );
-  }, []);
+      window.removeEventListener("popstate", handlePopState);
+    };
+  }, [chatId]);
 
   // Load conversation from API
   const loadConversation = useCallback(
@@ -149,7 +160,9 @@ export function UnifiedChat() {
                 id: item.id,
                 role: item.role as "user" | "assistant",
                 content: text,
-                timestamp: (item as any).created_at ? (item as any).created_at * 1000 : Date.now(),
+                timestamp:
+                  ((item as ConversationItem & { created_at?: number }).created_at ??
+                    Date.now() / 1000) * 1000,
                 status: "complete"
               });
             }
@@ -164,7 +177,7 @@ export function UnifiedChat() {
           setLastSeenItemId(lastItem.id);
         }
       } catch (error) {
-        const err = error as any;
+        const err = error as { status?: number; message?: string };
         if (err.status === 404) {
           // Conversation doesn't exist - clear and start fresh
           console.log("Conversation not found, starting new");
@@ -215,7 +228,9 @@ export function UnifiedChat() {
                 id: item.id,
                 role: item.role as "user" | "assistant",
                 content: text,
-                timestamp: (item as any).created_at ? (item as any).created_at * 1000 : Date.now(),
+                timestamp:
+                  ((item as ConversationItem & { created_at?: number }).created_at ??
+                    Date.now() / 1000) * 1000,
                 status: "complete"
               });
             }
@@ -297,10 +312,8 @@ export function UnifiedChat() {
   useEffect(() => {
     if (!conversation?.id || !openai) return;
 
-    // Poll immediately on mount/change
-    pollForNewItems();
-
-    // Then set up interval for every 5 seconds
+    // Don't poll immediately - loadConversation already fetched everything
+    // Start polling after 5 seconds to check for updates
     const intervalId = setInterval(pollForNewItems, 5000);
 
     return () => clearInterval(intervalId);
@@ -347,6 +360,12 @@ export function UnifiedChat() {
           const usp = new URLSearchParams(window.location.search);
           usp.set("conversation_id", conversationId);
           window.history.replaceState(null, "", `${window.location.pathname}?${usp.toString()}`);
+
+          // Update local state
+          setChatId(conversationId);
+
+          // Trigger sidebar refresh to show the new conversation
+          window.dispatchEvent(new Event("conversationcreated"));
         }
 
         // Create abort controller for this request
@@ -383,8 +402,8 @@ export function UnifiedChat() {
         for await (const event of stream) {
           if (event.type === "response.output_item.added" && event.item?.type === "message") {
             // Store the server-assigned ID
-            if ((event as any).item_id) {
-              serverItemId = (event as any).item_id;
+            if ((event as { item_id?: string }).item_id) {
+              serverItemId = (event as { item_id?: string }).item_id;
               // Update message with server ID
               setMessages((prev) =>
                 prev.map((msg) =>
