@@ -7,6 +7,8 @@ import { useIsMobile } from "@/utils/utils";
 import { useOpenAI } from "@/ai/useOpenAi";
 import { DEFAULT_MODEL_ID } from "@/state/LocalStateContext";
 import { Markdown } from "@/components/markdown";
+import { ModelSelector } from "@/components/ModelSelector";
+import { useLocalState } from "@/state/useLocalState";
 
 // Types
 interface Message {
@@ -78,6 +80,7 @@ interface ConversationItem {
 export function UnifiedChat() {
   const isMobile = useIsMobile();
   const openai = useOpenAI();
+  const localState = useLocalState();
 
   // Track chatId from URL - use state so we can update it
   const [chatId, setChatId] = useState<string | undefined>(() => {
@@ -93,6 +96,7 @@ export function UnifiedChat() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(!isMobile);
   const [error, setError] = useState<string | null>(null);
   const [lastSeenItemId, setLastSeenItemId] = useState<string | undefined>();
+  const [draftImages, setDraftImages] = useState<File[]>([]);
   const abortControllerRef = useRef<AbortController | null>(null);
 
   // Refs
@@ -123,6 +127,7 @@ export function UnifiedChat() {
       setInput("");
       setError(null);
       setLastSeenItemId(undefined);
+      setDraftImages([]);
     };
 
     // Handle conversation selection from sidebar
@@ -410,7 +415,7 @@ export function UnifiedChat() {
         const stream = await openai.responses.create(
           {
             conversation: conversationId,
-            model: DEFAULT_MODEL_ID, // Use the default model constant
+            model: localState.model || DEFAULT_MODEL_ID, // Use selected model or default
             input: [{ role: "user", content: trimmedInput }],
             stream: true,
             store: true // Store in conversation history
@@ -487,7 +492,7 @@ export function UnifiedChat() {
         abortControllerRef.current = null;
       }
     },
-    [input, isGenerating, openai, conversation]
+    [input, isGenerating, openai, conversation, localState.model]
   );
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -631,30 +636,37 @@ export function UnifiedChat() {
 
                 {/* Input form */}
                 <form onSubmit={handleSendMessage} className="w-full">
-                  <div className="relative">
-                    <Textarea
-                      ref={textareaRef}
-                      value={input}
-                      onChange={(e) => setInput(e.target.value)}
-                      onKeyDown={handleKeyDown}
-                      placeholder="Message Maple..."
-                      disabled={isGenerating}
-                      className="w-full resize-none min-h-[100px] max-h-[200px] pr-14 py-4 px-5 rounded-xl border bg-background focus:outline-none focus:ring-2 focus:ring-ring/20 placeholder:text-muted-foreground/60 text-base"
-                      rows={3}
-                      id="message"
-                    />
-                    <Button
-                      type="submit"
-                      disabled={!input.trim() || isGenerating}
-                      size="icon"
-                      className="absolute bottom-3 right-3 h-9 w-9 rounded-lg"
-                    >
-                      {isGenerating ? (
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                      ) : (
-                        <Send className="h-4 w-4" />
-                      )}
-                    </Button>
+                  <div className="space-y-2">
+                    {/* Model selector */}
+                    <div className="flex items-center gap-2">
+                      <ModelSelector messages={messages} draftImages={draftImages} />
+                    </div>
+
+                    <div className="relative">
+                      <Textarea
+                        ref={textareaRef}
+                        value={input}
+                        onChange={(e) => setInput(e.target.value)}
+                        onKeyDown={handleKeyDown}
+                        placeholder="Message Maple..."
+                        disabled={isGenerating}
+                        className="w-full resize-none min-h-[100px] max-h-[200px] pr-14 py-4 px-5 rounded-xl border bg-background focus:outline-none focus:ring-2 focus:ring-ring/20 placeholder:text-muted-foreground/60 text-base"
+                        rows={3}
+                        id="message"
+                      />
+                      <Button
+                        type="submit"
+                        disabled={!input.trim() || isGenerating}
+                        size="icon"
+                        className="absolute bottom-3 right-3 h-9 w-9 rounded-lg"
+                      >
+                        {isGenerating ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : (
+                          <Send className="h-4 w-4" />
+                        )}
+                      </Button>
+                    </div>
                   </div>
                 </form>
 
@@ -670,30 +682,37 @@ export function UnifiedChat() {
           <div className="bg-background">
             <div className="max-w-4xl mx-auto p-4">
               <form onSubmit={handleSendMessage}>
-                <div className="relative">
-                  <Textarea
-                    ref={textareaRef}
-                    value={input}
-                    onChange={(e) => setInput(e.target.value)}
-                    onKeyDown={handleKeyDown}
-                    placeholder="Message Maple..."
-                    disabled={isGenerating}
-                    className="w-full resize-none min-h-[52px] max-h-[200px] pr-14 py-3 px-4 rounded-xl border bg-background focus:outline-none focus:ring-2 focus:ring-ring/20 placeholder:text-muted-foreground/60"
-                    rows={1}
-                    id="message"
-                  />
-                  <Button
-                    type="submit"
-                    disabled={!input.trim() || isGenerating}
-                    size="icon"
-                    className="absolute bottom-[0.45rem] right-2 h-8 w-8 rounded-lg"
-                  >
-                    {isGenerating ? (
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                    ) : (
-                      <Send className="h-4 w-4" />
-                    )}
-                  </Button>
+                <div className="space-y-2">
+                  {/* Model selector */}
+                  <div className="flex items-center gap-2">
+                    <ModelSelector messages={messages} draftImages={draftImages} />
+                  </div>
+
+                  <div className="relative">
+                    <Textarea
+                      ref={textareaRef}
+                      value={input}
+                      onChange={(e) => setInput(e.target.value)}
+                      onKeyDown={handleKeyDown}
+                      placeholder="Message Maple..."
+                      disabled={isGenerating}
+                      className="w-full resize-none min-h-[52px] max-h-[200px] pr-14 py-3 px-4 rounded-xl border bg-background focus:outline-none focus:ring-2 focus:ring-ring/20 placeholder:text-muted-foreground/60"
+                      rows={1}
+                      id="message"
+                    />
+                    <Button
+                      type="submit"
+                      disabled={!input.trim() || isGenerating}
+                      size="icon"
+                      className="absolute bottom-[0.45rem] right-2 h-8 w-8 rounded-lg"
+                    >
+                      {isGenerating ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Send className="h-4 w-4" />
+                      )}
+                    </Button>
+                  </div>
                 </div>
               </form>
               <p className="text-sm text-center text-muted-foreground/60 mt-2">
