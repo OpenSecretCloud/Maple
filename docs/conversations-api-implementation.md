@@ -1481,8 +1481,13 @@ After analyzing the old codebase (`index.backup.tsx`, `_auth.chat.$chatId.tsx`, 
 
 ### Implementation Priority
 
-**Phase 1 (Core)**: Basic chat with conversations API
+**Phase 1 (Core)**: ✅ Basic chat with conversations API
 **Phase 2 (Essential)**: Model selection, token management, markdown
+- ✅ Model selection with billing integration
+- ✅ Billing status proactive loading
+- ⏳ Token management and warnings
+- ✅ Markdown rendering (already in UnifiedChat)
+
 **Phase 3 (Pro Features)**: Voice input, TTS, file attachments
 **Phase 4 (Business)**: Billing, team management, API keys
 **Phase 5 (Polish)**: Compression, shortcuts, mobile optimization
@@ -1495,12 +1500,38 @@ After analyzing the old codebase (`index.backup.tsx`, `_auth.chat.$chatId.tsx`, 
 4. Maintain backward compatibility for archived chats
 5. Gradually deprecate old routes (`/chat/$chatId`)
 
+## Completed Features (as of Jan 2025)
+
+### Phase 1-4 Core Implementation ✅
+- Full Conversations/Responses API integration
+- Server-side conversation management
+- SSE streaming with real-time text accumulation
+- 5-second polling for cross-device sync
+- URL-based conversation routing
+- Message deduplication
+- Error recovery and 404 handling
+
+### Phase 2 Features Completed
+1. **Model Selection** ✅
+   - ModelSelector component integrated in both input areas
+   - Support for model switching mid-conversation
+   - Auto-switching to vision models when images are added
+   - Billing tier restrictions (Pro/Starter/Team)
+   - Upgrade prompts for restricted models
+
+2. **Billing Integration** ✅
+   - Proactive billing status fetching on app load
+   - Billing status cached in LocalState
+   - ModelSelector respects billing tiers
+   - AccountMenu shows correct plan status
+
 ## Next Steps
 
-After core implementation:
-1. Implement Phase 2 features (model selection, tokens)
-2. Add Phase 3 features (voice, TTS, files)
-3. Integrate Phase 4 business logic
-4. Polish with Phase 5 enhancements
-5. Deprecate old chat routes
-6. Remove legacy code once stable
+1. ⏳ Implement token management and warnings
+2. Add file attachment support
+3. Implement voice input with Whisper
+4. Add text-to-speech for assistant messages
+5. Integrate remaining business logic (team/API dialogs)
+6. Polish with compression and shortcuts
+7. Deprecate old chat routes
+8. Remove legacy code once stable

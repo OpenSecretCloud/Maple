@@ -9,6 +9,7 @@ import { ApiKeyManagementDialog } from "@/components/apikeys/ApiKeyManagementDia
 import { useOpenSecret } from "@opensecret/react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { getBillingService } from "@/billing/billingService";
+import { useLocalState } from "@/state/useLocalState";
 import type { TeamStatus } from "@/types/team";
 
 type IndexSearchOptions = {
@@ -37,6 +38,7 @@ function Index() {
   const navigate = useNavigate();
   const os = useOpenSecret();
   const queryClient = useQueryClient();
+  const { setBillingStatus } = useLocalState();
 
   const { login, next, team_setup, credits_success } = Route.useSearch();
 
@@ -44,6 +46,18 @@ function Index() {
   const [teamDialogOpen, setTeamDialogOpen] = useState(false);
   const [apiKeyDialogOpen, setApiKeyDialogOpen] = useState(false);
   const [showCreditSuccess, setShowCreditSuccess] = useState(false);
+
+  // Proactively fetch billing status for authenticated users
+  useQuery({
+    queryKey: ["billingStatus"],
+    queryFn: async () => {
+      const billingService = getBillingService();
+      const status = await billingService.getBillingStatus();
+      setBillingStatus(status);
+      return status;
+    },
+    enabled: !!os.auth.user
+  });
 
   // Handle login redirect
   useEffect(() => {
