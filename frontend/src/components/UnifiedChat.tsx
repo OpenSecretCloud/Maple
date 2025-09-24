@@ -23,8 +23,24 @@ interface Conversation {
   created_at: number;
   metadata?: {
     title?: string;
-    [key: string]: any;
+    [key: string]: unknown;
   };
+}
+
+// Will be needed for future features with conversation items
+// @ts-expect-error - interface defined for future use
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+interface ConversationItem {
+  id: string;
+  type: "message" | "web_search_call";
+  object?: string;
+  role?: "user" | "assistant" | "system";
+  status?: "completed" | "in_progress";
+  content?: Array<{
+    type: "text" | "input_text";
+    text?: string;
+  }>;
+  created_at?: number;
 }
 
 export function UnifiedChat() {
@@ -43,6 +59,7 @@ export function UnifiedChat() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(!isMobile);
   const [error, setError] = useState<string | null>(null);
+  const [lastSeenItemId, setLastSeenItemId] = useState<string | undefined>();
   const abortControllerRef = useRef<AbortController | null>(null);
 
   // Refs
@@ -70,20 +87,224 @@ export function UnifiedChat() {
       setMessages([]);
       setInput("");
       setError(null);
+      setLastSeenItemId(undefined);
     };
 
     window.addEventListener("newchat", handleNewChat);
     return () => window.removeEventListener("newchat", handleNewChat);
   }, []);
 
-  // Clear messages and conversation when conversation_id is removed from URL
+  // Listen for conversation selection from sidebar
   useEffect(() => {
-    if (!chatId) {
-      // Only clear if we previously had a chatId (going from chat to new)
-      setConversation(null); // Clear the conversation state
-      setMessages([]);
+    const handleConversationSelected = (event: CustomEvent) => {
+      const { conversationId } = event.detail;
+      if (conversationId) {
+        // URL will be updated by sidebar, we'll catch it in the chatId effect
+        // Just ensure we don't have stale state
+        setError(null);
+      }
+    };
+
+    window.addEventListener("conversationselected", handleConversationSelected as EventListener);
+    return () =>
+      window.removeEventListener(
+        "conversationselected",
+        handleConversationSelected as EventListener
+      );
+  }, []);
+
+  // Load conversation from API
+  const loadConversation = useCallback(
+    async (conversationId: string) => {
+      if (!openai) return;
+
+      try {
+        // Fetch conversation metadata
+        const conv = await openai.conversations.retrieve(conversationId);
+        setConversation(conv as Conversation);
+
+        // Fetch all conversation items
+        const itemsResponse = await openai.conversations.items.list(conversationId, {
+          limit: 100 // Get up to 100 most recent items
+        });
+
+        // Convert items to messages
+        const loadedMessages: Message[] = [];
+
+        for (const item of itemsResponse.data) {
+          if (item.type === "message" && item.role && item.content) {
+            let text = "";
+            if (Array.isArray(item.content)) {
+              for (const part of item.content) {
+                if ((part.type === "text" || part.type === "input_text") && part.text) {
+                  text += part.text;
+                }
+              }
+            } else if (typeof item.content === "string") {
+              text = item.content;
+            }
+
+            if (text) {
+              loadedMessages.push({
+                id: item.id,
+                role: item.role as "user" | "assistant",
+                content: text,
+                timestamp: (item as any).created_at ? (item as any).created_at * 1000 : Date.now(),
+                status: "complete"
+              });
+            }
+          }
+        }
+
+        setMessages(loadedMessages);
+
+        // Set last seen ID for polling
+        if (itemsResponse.data.length > 0) {
+          const lastItem = itemsResponse.data[itemsResponse.data.length - 1];
+          setLastSeenItemId(lastItem.id);
+        }
+      } catch (error) {
+        const err = error as any;
+        if (err.status === 404) {
+          // Conversation doesn't exist - clear and start fresh
+          console.log("Conversation not found, starting new");
+          setConversation(null);
+          setMessages([]);
+          setError(null);
+          // Clear the invalid conversation_id from URL
+          const params = new URLSearchParams(window.location.search);
+          params.delete("conversation_id");
+          window.history.replaceState({}, "", params.toString() ? `/?${params}` : "/");
+        } else {
+          console.error("Failed to load conversation:", error);
+          setError(err.message || "Failed to load conversation");
+        }
+      }
+    },
+    [openai]
+  );
+
+  // Polling mechanism for conversation updates
+  const pollForNewItems = useCallback(async () => {
+    if (!conversation?.id || !openai || !lastSeenItemId) return;
+
+    try {
+      // Fetch items after the last seen ID
+      const response = await openai.conversations.items.list(conversation.id, {
+        after: lastSeenItemId,
+        limit: 100
+      });
+
+      if (response.data.length > 0) {
+        // Convert API items to UI messages
+        const newMessages: Message[] = [];
+
+        for (const item of response.data) {
+          if (item.type === "message" && item.role && item.content) {
+            let text = "";
+            if (Array.isArray(item.content)) {
+              for (const part of item.content) {
+                if ((part.type === "text" || part.type === "input_text") && part.text) {
+                  text += part.text;
+                }
+              }
+            }
+
+            if (text) {
+              newMessages.push({
+                id: item.id,
+                role: item.role as "user" | "assistant",
+                content: text,
+                timestamp: (item as any).created_at ? (item as any).created_at * 1000 : Date.now(),
+                status: "complete"
+              });
+            }
+          }
+        }
+
+        if (newMessages.length > 0) {
+          // Merge new messages with deduplication
+          setMessages((prev) => {
+            const existingIds = new Set(prev.map((m) => m.id));
+            const existingSignatures = new Set(
+              prev.map((m) => `${m.role}:${m.content.substring(0, 100)}`)
+            );
+
+            const uniqueNewMessages = newMessages.filter((m) => {
+              // Skip if we already have this ID
+              if (existingIds.has(m.id)) return false;
+
+              // Skip if we have a message with same role and similar content
+              const signature = `${m.role}:${m.content.substring(0, 100)}`;
+              if (existingSignatures.has(signature)) return false;
+
+              return true;
+            });
+
+            if (uniqueNewMessages.length === 0) return prev;
+
+            // Replace local messages with server versions when they match
+            const updatedMessages = prev.map((msg) => {
+              // If this is a local message (UUID format)
+              if (msg.id.includes("-") && msg.id.length === 36) {
+                const serverVersion = uniqueNewMessages.find(
+                  (newMsg) => newMsg.role === msg.role && newMsg.content === msg.content
+                );
+                if (serverVersion) {
+                  // Remove from unique list to avoid duplication
+                  uniqueNewMessages.splice(uniqueNewMessages.indexOf(serverVersion), 1);
+                  return { ...msg, id: serverVersion.id };
+                }
+              }
+              return msg;
+            });
+
+            return [...updatedMessages, ...uniqueNewMessages];
+          });
+
+          // Update last seen item ID
+          const lastItem = response.data[response.data.length - 1];
+          if (lastItem?.id) {
+            setLastSeenItemId(lastItem.id);
+          }
+
+          // Check if we're no longer generating
+          if (isGenerating && newMessages.some((m) => m.role === "assistant")) {
+            setIsGenerating(false);
+          }
+        }
+      }
+    } catch (error) {
+      console.error("Polling error:", error);
+      // Don't throw - polling should fail silently
     }
-  }, [chatId]);
+  }, [conversation?.id, lastSeenItemId, isGenerating, openai]);
+
+  // Load conversation when URL changes or on mount
+  useEffect(() => {
+    if (chatId && openai) {
+      // Load the conversation from URL
+      loadConversation(chatId);
+    } else if (!chatId) {
+      // Clear if no conversation ID
+      setConversation(null);
+      setMessages([]);
+      setLastSeenItemId(undefined);
+    }
+  }, [chatId, openai, loadConversation]);
+
+  // Set up polling interval
+  useEffect(() => {
+    if (!conversation?.id || !openai) return;
+
+    // Poll immediately on mount/change
+    pollForNewItems();
+
+    // Then set up interval for every 5 seconds
+    const intervalId = setInterval(pollForNewItems, 5000);
+
+    return () => clearInterval(intervalId);
+  }, [conversation?.id, openai, pollForNewItems]);
 
   // Toggle sidebar
   const toggleSidebar = useCallback(() => setIsSidebarOpen((prev) => !prev), []);
@@ -120,7 +341,7 @@ export function UnifiedChat() {
             metadata: {}
           });
           conversationId = newConv.id;
-          setConversation(newConv as any);
+          setConversation(newConv as Conversation);
 
           // Update URL with new conversation ID
           const usp = new URLSearchParams(window.location.search);
@@ -144,9 +365,11 @@ export function UnifiedChat() {
           { signal: abortController.signal }
         );
 
-        // Initialize assistant message
+        // Initialize assistant message with local ID
+        const localAssistantId = crypto.randomUUID();
+        let serverItemId: string | undefined;
         const assistantMessage: Message = {
-          id: crypto.randomUUID(),
+          id: localAssistantId,
           role: "assistant",
           content: "",
           timestamp: Date.now(),
@@ -159,40 +382,52 @@ export function UnifiedChat() {
         // Process streaming events
         for await (const event of stream) {
           if (event.type === "response.output_item.added" && event.item?.type === "message") {
-            // Update assistant message ID with server ID if available
-            if (event.item?.id) {
-              assistantMessage.id = event.item.id;
+            // Store the server-assigned ID
+            if ((event as any).item_id) {
+              serverItemId = (event as any).item_id;
+              // Update message with server ID
+              setMessages((prev) =>
+                prev.map((msg) =>
+                  msg.id === localAssistantId ? { ...msg, id: serverItemId || msg.id } : msg
+                )
+              );
             }
           } else if (event.type === "response.output_text.delta" && event.delta) {
             // Accumulate text chunks
             accumulatedContent += event.delta;
             setMessages((prev) =>
               prev.map((msg) =>
-                msg.id === assistantMessage.id ? { ...msg, content: accumulatedContent } : msg
+                msg.id === (serverItemId || localAssistantId)
+                  ? { ...msg, content: accumulatedContent }
+                  : msg
               )
             );
           } else if (event.type === "response.output_item.done") {
-            // Mark message as complete
+            // Mark message as complete and update lastSeenItemId
             setMessages((prev) =>
               prev.map((msg) =>
-                msg.id === assistantMessage.id ? { ...msg, status: "complete" } : msg
+                msg.id === (serverItemId || localAssistantId) ? { ...msg, status: "complete" } : msg
               )
             );
+            if (serverItemId) {
+              setLastSeenItemId(serverItemId);
+            }
           } else if (event.type === "response.failed" || event.type === "error") {
             // Handle streaming errors
             console.error("Streaming error:", event);
             setMessages((prev) =>
               prev.map((msg) =>
-                msg.id === assistantMessage.id ? { ...msg, status: "error" } : msg
+                msg.id === (serverItemId || localAssistantId) ? { ...msg, status: "error" } : msg
               )
             );
             setError("Failed to generate response. Please try again.");
           }
         }
-      } catch (error: any) {
+      } catch (error) {
         console.error("Failed to send message:", error);
-        if (error.name !== "AbortError") {
-          setError(error.message || "Something went wrong. Please try again.");
+        const errorMessage = error instanceof Error ? error.message : "Something went wrong";
+        if (error instanceof Error && error.name !== "AbortError") {
+          setError(errorMessage + ". Please try again.");
         }
       } finally {
         setIsGenerating(false);
