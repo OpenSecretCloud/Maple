@@ -1,12 +1,12 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { Send, Bot, User, Loader2 } from "lucide-react";
+import { Send, Bot, User, Loader2, Copy, Check } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Sidebar, SidebarToggle } from "@/components/Sidebar";
-import { cn } from "@/utils/utils";
 import { useIsMobile } from "@/utils/utils";
 import { useOpenAI } from "@/ai/useOpenAi";
 import { DEFAULT_MODEL_ID } from "@/state/LocalStateContext";
+import { Markdown } from "@/components/markdown";
 
 // Types
 interface Message {
@@ -15,6 +15,40 @@ interface Message {
   content: string;
   timestamp: number;
   status?: "complete" | "streaming" | "error";
+}
+
+// Custom hook for copy to clipboard functionality
+function useCopyToClipboard(text: string) {
+  const [isCopied, setIsCopied] = useState(false);
+
+  const handleCopy = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setIsCopied(true);
+      setTimeout(() => setIsCopied(false), 2000);
+    } catch (error) {
+      console.error("Failed to copy text:", error);
+    }
+  }, [text]);
+
+  return { isCopied, handleCopy };
+}
+
+// Copy button component with cleaner design
+function CopyButton({ text }: { text: string }) {
+  const { isCopied, handleCopy } = useCopyToClipboard(text);
+
+  return (
+    <Button
+      variant="ghost"
+      size="sm"
+      className="h-7 w-7 p-0 text-muted-foreground hover:text-foreground"
+      onClick={handleCopy}
+      aria-label={isCopied ? "Copied" : "Copy to clipboard"}
+    >
+      {isCopied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+    </Button>
+  );
 }
 
 interface Conversation {
@@ -463,21 +497,13 @@ export function UnifiedChat() {
     }
   };
 
-  const formatTime = (timestamp: number) => {
-    return new Date(timestamp).toLocaleTimeString("en-US", {
-      hour: "numeric",
-      minute: "2-digit",
-      hour12: true
-    });
-  };
-
   return (
     <div className="grid h-screen w-full grid-cols-1 md:grid-cols-[280px_1fr]">
       {/* Use the existing Sidebar component */}
       <Sidebar chatId={chatId} isOpen={isSidebarOpen} onToggle={toggleSidebar} />
 
       {/* Main Content */}
-      <div className="flex flex-col flex-1 min-w-0 bg-card/90 backdrop-blur-lg bg-center overflow-hidden">
+      <div className="flex flex-col flex-1 min-w-0 bg-card/90 backdrop-blur-lg bg-center overflow-hidden relative">
         {/* Mobile sidebar toggle */}
         {!isSidebarOpen && (
           <div className="fixed top-4 left-4 z-20 md:hidden">
@@ -485,132 +511,194 @@ export function UnifiedChat() {
           </div>
         )}
 
-        {/* Header */}
-        <div className="h-14 border-b bg-background/95 backdrop-blur flex items-center px-4">
-          <div className="flex-1 flex items-center gap-2 justify-center">
-            <Bot className="h-5 w-5 text-primary" />
-            <h1 className="text-lg font-semibold">{chatId ? "Chat" : "New Chat"}</h1>
+        {/* Only show header when there are messages (conversation exists) */}
+        {messages.length > 0 && (
+          <div className="h-14 border-b bg-background/95 backdrop-blur flex items-center px-4">
+            <div className="flex-1 flex items-center justify-center">
+              <h1 className="text-base font-semibold truncate max-w-[20rem]">
+                {conversation?.metadata?.title || "Chat"}
+              </h1>
+            </div>
           </div>
-        </div>
+        )}
 
         {/* Messages Area */}
-        <div className="flex-1 overflow-y-auto">
-          <div className="max-w-3xl mx-auto p-6">
-            {/* Error message */}
-            {error && <div className="bg-red-50 text-red-600 p-3 rounded mb-4">{error}</div>}
+        <div className="flex-1 overflow-y-auto flex flex-col relative">
+          {/* Error message */}
+          {error && (
+            <div className="max-w-3xl mx-auto w-full p-6">
+              <div className="bg-red-50 text-red-600 p-3 rounded mb-4">{error}</div>
+            </div>
+          )}
 
-            {/* Welcome message when no messages */}
-            {messages.length === 0 && !isGenerating && (
-              <div className="text-center py-24 space-y-4">
-                <div className="mx-auto w-20 h-20 rounded-full bg-primary/10 flex items-center justify-center">
-                  <Bot className="h-10 w-10 text-primary" />
-                </div>
-                <h1 className="text-3xl font-semibold">Welcome to Maple</h1>
-                <p className="text-lg text-muted-foreground">Start a conversation below</p>
-              </div>
-            )}
+          {/* Only show messages when there are messages */}
+          {messages.length > 0 && (
+            <div className="max-w-3xl mx-auto p-6 w-full">
+              {/* Message list with modern ChatGPT/Claude style */}
+              <div className="space-y-6">
+                {messages.map((message) => (
+                  <div key={message.id} className="group">
+                    <div className="flex gap-3 max-w-3xl mx-auto">
+                      {/* Avatar */}
+                      <div className="flex-shrink-0">
+                        {message.role === "user" ? (
+                          <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center">
+                            <User className="h-4 w-4" />
+                          </div>
+                        ) : (
+                          <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center">
+                            <Bot className="h-4 w-4 text-primary" />
+                          </div>
+                        )}
+                      </div>
 
-            {/* Message list */}
-            <div className="space-y-6">
-              {messages.map((message) => (
-                <div
-                  key={message.id}
-                  className={cn(
-                    "flex gap-3",
-                    message.role === "user" ? "justify-end" : "justify-start"
-                  )}
-                >
-                  {/* Assistant avatar */}
-                  {message.role === "assistant" && (
-                    <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center flex-shrink-0">
-                      <Bot className="h-4 w-4 text-primary" />
-                    </div>
-                  )}
+                      {/* Message content */}
+                      <div className="flex-1 space-y-2 overflow-hidden">
+                        <div className="font-semibold text-sm">
+                          {message.role === "user" ? "You" : "Maple"}
+                        </div>
+                        <div className="prose prose-sm dark:prose-invert max-w-none">
+                          <Markdown
+                            content={message.content}
+                            loading={message.status === "streaming"}
+                            chatId={chatId || ""}
+                          />
+                        </div>
 
-                  {/* Message bubble */}
-                  <div
-                    className={cn(
-                      "max-w-[80%] rounded-2xl px-4 py-3",
-                      message.role === "user" ? "bg-primary text-primary-foreground" : "bg-muted"
-                    )}
-                  >
-                    <div className="whitespace-pre-wrap break-words">{message.content}</div>
-                    <div
-                      className={cn(
-                        "text-xs mt-1",
-                        message.role === "user"
-                          ? "text-primary-foreground/70"
-                          : "text-muted-foreground"
-                      )}
-                    >
-                      {formatTime(message.timestamp)}
-                    </div>
-                  </div>
-
-                  {/* User avatar */}
-                  {message.role === "user" && (
-                    <div className="w-8 h-8 rounded-full bg-muted flex items-center justify-center flex-shrink-0">
-                      <User className="h-4 w-4" />
-                    </div>
-                  )}
-                </div>
-              ))}
-
-              {/* Loading indicator - only show if generating and no streaming message yet */}
-              {isGenerating &&
-                !messages.some((m) => m.role === "assistant" && m.status === "streaming") && (
-                  <div className="flex gap-3 justify-start">
-                    <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center flex-shrink-0">
-                      <Bot className="h-4 w-4 text-primary" />
-                    </div>
-                    <div className="bg-muted rounded-2xl px-4 py-3">
-                      <div className="flex items-center gap-1">
-                        <div className="w-2 h-2 bg-foreground/60 rounded-full animate-pulse" />
-                        <div className="w-2 h-2 bg-foreground/60 rounded-full animate-pulse delay-75" />
-                        <div className="w-2 h-2 bg-foreground/60 rounded-full animate-pulse delay-150" />
+                        {/* Actions - only show on hover for assistant messages */}
+                        {message.role === "assistant" && message.content && (
+                          <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                            <CopyButton text={message.content} />
+                          </div>
+                        )}
                       </div>
                     </div>
                   </div>
-                )}
-            </div>
+                ))}
 
-            <div ref={messagesEndRef} />
+                {/* Loading indicator - modern style */}
+                {isGenerating &&
+                  !messages.some((m) => m.role === "assistant" && m.status === "streaming") && (
+                    <div className="group">
+                      <div className="flex gap-3 max-w-3xl mx-auto">
+                        <div className="flex-shrink-0">
+                          <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center">
+                            <Bot className="h-4 w-4 text-primary" />
+                          </div>
+                        </div>
+                        <div className="flex-1 space-y-2">
+                          <div className="font-semibold text-sm">Maple</div>
+                          <div className="flex items-center gap-1">
+                            <div className="w-2 h-2 bg-foreground/60 rounded-full animate-pulse" />
+                            <div className="w-2 h-2 bg-foreground/60 rounded-full animate-pulse delay-75" />
+                            <div className="w-2 h-2 bg-foreground/60 rounded-full animate-pulse delay-150" />
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+              </div>
+
+              <div ref={messagesEndRef} />
+            </div>
+          )}
+        </div>
+
+        {/* Input Area - centered when no messages, fixed at bottom when chatting */}
+        {messages.length === 0 ? (
+          // Centered input for new chat
+          <div className="absolute inset-0 flex flex-col justify-center px-4">
+            <div className="w-full max-w-3xl mx-auto">
+              {/* Logo section - raised higher */}
+              <div className="flex flex-col items-center -mt-20 mb-16">
+                {/* Logo with Maple - using the same images as TopNav */}
+                <div className="flex items-center justify-center gap-2 mb-3">
+                  <img src="/maple-icon-nobg.png" alt="" className="h-10 w-10" />
+                  <img src="/maple-logo.svg" alt="Maple" className="w-32 hidden dark:block" />
+                  <img src="/maple-logo-dark.svg" alt="Maple" className="w-32 block dark:hidden" />
+                </div>
+
+                {/* Subtitle right under the logo */}
+                <p className="text-xl font-light text-muted-foreground">Private AI Chat</p>
+              </div>
+
+              {/* Main prompt section with more emphasis */}
+              <div className="flex flex-col items-center gap-6">
+                <h1 className="text-3xl font-medium text-foreground">How can I help you today?</h1>
+
+                {/* Input form */}
+                <form onSubmit={handleSendMessage} className="w-full">
+                  <div className="relative">
+                    <Textarea
+                      ref={textareaRef}
+                      value={input}
+                      onChange={(e) => setInput(e.target.value)}
+                      onKeyDown={handleKeyDown}
+                      placeholder="Message Maple..."
+                      disabled={isGenerating}
+                      className="w-full resize-none min-h-[100px] max-h-[200px] pr-14 py-4 px-5 rounded-xl border bg-card focus:outline-none focus:ring-2 focus:ring-ring/20 placeholder:text-muted-foreground/60 text-base"
+                      rows={3}
+                      id="message"
+                    />
+                    <Button
+                      type="submit"
+                      disabled={!input.trim() || isGenerating}
+                      size="icon"
+                      className="absolute bottom-3 right-3 h-9 w-9 rounded-lg"
+                    >
+                      {isGenerating ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Send className="h-4 w-4" />
+                      )}
+                    </Button>
+                  </div>
+                </form>
+
+                {/* Footer text */}
+                <p className="text-sm text-center text-muted-foreground/60">
+                  Encrypted at every step
+                </p>
+              </div>
+            </div>
           </div>
-        </div>
-
-        {/* Input Area */}
-        <div className="border-t bg-background/95 backdrop-blur p-4">
-          <form onSubmit={handleSendMessage} className="max-w-3xl mx-auto">
-            <div className="flex gap-2">
-              <Textarea
-                ref={textareaRef}
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={handleKeyDown}
-                placeholder="Type your message..."
-                disabled={isGenerating}
-                className="flex-1 resize-none min-h-[56px] max-h-[200px]"
-                rows={1}
-                id="message"
-              />
-              <Button
-                type="submit"
-                disabled={!input.trim() || isGenerating}
-                size="icon"
-                className="h-[56px] w-[56px]"
-              >
-                {isGenerating ? (
-                  <Loader2 className="h-5 w-5 animate-spin" />
-                ) : (
-                  <Send className="h-5 w-5" />
-                )}
-              </Button>
+        ) : (
+          // Fixed at bottom when there are messages
+          <div className="border-t bg-background">
+            <div className="max-w-3xl mx-auto p-4">
+              <form onSubmit={handleSendMessage}>
+                <div className="relative">
+                  <Textarea
+                    ref={textareaRef}
+                    value={input}
+                    onChange={(e) => setInput(e.target.value)}
+                    onKeyDown={handleKeyDown}
+                    placeholder="Message Maple..."
+                    disabled={isGenerating}
+                    className="w-full resize-none min-h-[52px] max-h-[200px] pr-14 py-3 px-4 rounded-xl border bg-card focus:outline-none focus:ring-2 focus:ring-ring/20 placeholder:text-muted-foreground/60"
+                    rows={1}
+                    id="message"
+                  />
+                  <Button
+                    type="submit"
+                    disabled={!input.trim() || isGenerating}
+                    size="icon"
+                    className="absolute bottom-[0.45rem] right-2 h-8 w-8 rounded-lg"
+                  >
+                    {isGenerating ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Send className="h-4 w-4" />
+                    )}
+                  </Button>
+                </div>
+              </form>
+              <p className="text-sm text-center text-muted-foreground/60 mt-2">
+                AI can make mistakes. Check important info.
+              </p>
             </div>
-            <p className="text-xs text-muted-foreground text-center mt-2">
-              Press Enter to send, Shift+Enter for new line
-            </p>
-          </form>
-        </div>
+          </div>
+        )}
       </div>
     </div>
   );
