@@ -503,7 +503,7 @@ export function UnifiedChat() {
       <Sidebar chatId={chatId} isOpen={isSidebarOpen} onToggle={toggleSidebar} />
 
       {/* Main Content */}
-      <div className="flex flex-col flex-1 min-w-0 bg-card/90 backdrop-blur-lg bg-center overflow-hidden relative">
+      <div className="flex flex-col flex-1 min-w-0 bg-background overflow-hidden relative">
         {/* Mobile sidebar toggle */}
         {!isSidebarOpen && (
           <div className="fixed top-4 left-4 z-20 md:hidden">
@@ -513,9 +513,9 @@ export function UnifiedChat() {
 
         {/* Only show header when there are messages (conversation exists) */}
         {messages.length > 0 && (
-          <div className="h-14 border-b bg-background/95 backdrop-blur flex items-center px-4">
+          <div className="h-14 flex items-center px-4">
             <div className="flex-1 flex items-center justify-center">
-              <h1 className="text-base font-semibold truncate max-w-[20rem]">
+              <h1 className="text-base font-medium truncate max-w-[20rem] text-muted-foreground">
                 {conversation?.metadata?.title || "Chat"}
               </h1>
             </div>
@@ -526,24 +526,27 @@ export function UnifiedChat() {
         <div className="flex-1 overflow-y-auto flex flex-col relative">
           {/* Error message */}
           {error && (
-            <div className="max-w-3xl mx-auto w-full p-6">
+            <div className="max-w-4xl mx-auto w-full p-6">
               <div className="bg-red-50 text-red-600 p-3 rounded mb-4">{error}</div>
             </div>
           )}
 
           {/* Only show messages when there are messages */}
           {messages.length > 0 && (
-            <div className="max-w-3xl mx-auto p-6 w-full">
+            <div className="max-w-4xl mx-auto p-6 w-full">
               {/* Message list with modern ChatGPT/Claude style */}
-              <div className="space-y-6">
+              <div className="space-y-1">
                 {messages.map((message) => (
-                  <div key={message.id} className="group">
-                    <div className="flex gap-3 max-w-3xl mx-auto">
+                  <div
+                    key={message.id}
+                    className={`group py-6 px-4 ${message.role === "user" ? "bg-muted/30" : ""}`}
+                  >
+                    <div className="flex gap-3 max-w-4xl mx-auto">
                       {/* Avatar */}
                       <div className="flex-shrink-0">
                         {message.role === "user" ? (
-                          <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center">
-                            <User className="h-4 w-4" />
+                          <div className="w-8 h-8 rounded-full bg-foreground/10 flex items-center justify-center">
+                            <User className="h-4 w-4 text-foreground" />
                           </div>
                         ) : (
                           <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center">
@@ -579,8 +582,8 @@ export function UnifiedChat() {
                 {/* Loading indicator - modern style */}
                 {isGenerating &&
                   !messages.some((m) => m.role === "assistant" && m.status === "streaming") && (
-                    <div className="group">
-                      <div className="flex gap-3 max-w-3xl mx-auto">
+                    <div className="group py-6 px-4">
+                      <div className="flex gap-3 max-w-4xl mx-auto">
                         <div className="flex-shrink-0">
                           <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center">
                             <Bot className="h-4 w-4 text-primary" />
@@ -605,10 +608,10 @@ export function UnifiedChat() {
         </div>
 
         {/* Input Area - centered when no messages, fixed at bottom when chatting */}
-        {messages.length === 0 ? (
+        {messages.length === 0 && !chatId ? (
           // Centered input for new chat
           <div className="absolute inset-0 flex flex-col justify-center px-4">
-            <div className="w-full max-w-3xl mx-auto">
+            <div className="w-full max-w-4xl mx-auto">
               {/* Logo section - raised higher */}
               <div className="flex flex-col items-center -mt-20 mb-16">
                 {/* Logo with Maple - using the same images as TopNav */}
@@ -636,7 +639,7 @@ export function UnifiedChat() {
                       onKeyDown={handleKeyDown}
                       placeholder="Message Maple..."
                       disabled={isGenerating}
-                      className="w-full resize-none min-h-[100px] max-h-[200px] pr-14 py-4 px-5 rounded-xl border bg-card focus:outline-none focus:ring-2 focus:ring-ring/20 placeholder:text-muted-foreground/60 text-base"
+                      className="w-full resize-none min-h-[100px] max-h-[200px] pr-14 py-4 px-5 rounded-xl border bg-background focus:outline-none focus:ring-2 focus:ring-ring/20 placeholder:text-muted-foreground/60 text-base"
                       rows={3}
                       id="message"
                     />
@@ -664,8 +667,8 @@ export function UnifiedChat() {
           </div>
         ) : (
           // Fixed at bottom when there are messages
-          <div className="border-t bg-background">
-            <div className="max-w-3xl mx-auto p-4">
+          <div className="bg-background">
+            <div className="max-w-4xl mx-auto p-4">
               <form onSubmit={handleSendMessage}>
                 <div className="relative">
                   <Textarea
@@ -675,7 +678,7 @@ export function UnifiedChat() {
                     onKeyDown={handleKeyDown}
                     placeholder="Message Maple..."
                     disabled={isGenerating}
-                    className="w-full resize-none min-h-[52px] max-h-[200px] pr-14 py-3 px-4 rounded-xl border bg-card focus:outline-none focus:ring-2 focus:ring-ring/20 placeholder:text-muted-foreground/60"
+                    className="w-full resize-none min-h-[52px] max-h-[200px] pr-14 py-3 px-4 rounded-xl border bg-background focus:outline-none focus:ring-2 focus:ring-ring/20 placeholder:text-muted-foreground/60"
                     rows={1}
                     id="message"
                   />
