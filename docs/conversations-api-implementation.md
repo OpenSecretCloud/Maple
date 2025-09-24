@@ -74,15 +74,86 @@ Responses use Server-Sent Events with the following event types:
 5. ✅ Add message sending with streaming (using responses.create API)
 6. ✅ Handle response streaming and display (all SSE events working)
 
-### Phase 3: State Management - IN PROGRESS
-7. ⏳ Add polling for conversation updates
-8. ⏳ Implement conversation loading from URL
+### Phase 3: State Management ✅ COMPLETE
+7. ✅ Add polling for conversation updates (5-second interval with cursor-based pagination)
+8. ✅ Implement conversation loading from URL (loads on mount and URL changes)
 9. ✅ Handle conversation switching (new chat clears conversation state)
+10. ✅ Message deduplication (by ID and content signature)
+11. ✅ LastSeenItemId tracking (React state-based cursor, no localStorage)
+12. ✅ Handle browser navigation (back/forward button support)
 
-### Phase 4: Integration - TODO
-10. ⏳ Update Sidebar to fetch from API
-11. ⏳ Remove localStorage dependencies
-12. ✅ Add error handling and recovery (basic error display implemented)
+### Phase 4: Integration - IN PROGRESS
+13. ⏳ Update Sidebar to fetch from API
+14. ⏳ Remove localStorage dependencies for chat data
+15. ✅ Add error handling and recovery (404 handling, network errors, streaming failures)
+
+## Completed Implementation Summary
+
+### What Was Built (as of latest commit)
+
+The UnifiedChat component now has full Conversations/Responses API integration with the following features:
+
+#### ✅ Core Conversation Management
+- **Lazy conversation creation** - Conversations only created on first message to avoid clutter
+- **URL-based routing** - Uses query parameters (`?conversation_id=xxx`) for conversation state
+- **Automatic conversation loading** - Loads existing conversation when URL contains conversation_id
+- **Event-based communication** - Listens for `newchat` and `conversationselected` events from sidebar
+
+#### ✅ Streaming Implementation
+- **Full SSE support** - Handles all streaming events from the responses API
+- **Local to server ID mapping** - Smoothly transitions from local UUIDs to server-assigned IDs
+- **Real-time text accumulation** - Shows text as it streams in
+- **Status tracking** - Messages have `streaming`, `complete`, or `error` states
+- **Abort controller** - Can cancel in-flight requests (foundation for future cancel button)
+
+#### ✅ Polling & Synchronization
+- **5-second polling interval** - Checks for new messages every 5 seconds
+- **Cursor-based pagination** - Uses `after` parameter with `lastSeenItemId` for efficient polling
+- **React state-based cursor** - No localStorage/sessionStorage, pure component state
+- **Message deduplication** - Prevents duplicates using both ID and content signature matching
+- **Cross-device sync** - Enables conversation continuity across devices
+
+#### ✅ Error Handling
+- **404 recovery** - Clears invalid conversation IDs and starts fresh
+- **Network error display** - Shows user-friendly error messages
+- **Silent polling failures** - Polling errors don't interrupt user experience
+- **Streaming error handling** - Gracefully handles streaming failures
+
+#### ✅ State Management
+- **No localStorage for chat data** - All conversation state comes from the API
+- **Proper cleanup** - Clears state when switching conversations or starting new chats
+- **TypeScript compliant** - Fully typed with proper error handling
+
+### What Still Needs Work (Phase 4)
+
+1. **Sidebar Integration** - Currently still uses localStorage, needs to fetch from API
+2. **Legacy Chat Migration** - Strategy for handling old localStorage-based chats
+3. **Advanced Features** - Model selection, token management, file attachments, etc.
+
+### Key Technical Decisions Made
+
+1. **Cursor-based Polling with React State**
+   - The `lastSeenItemId` is stored in component state, not localStorage
+   - Resets on page refresh (loads all messages fresh)
+   - Updates after each poll and after streaming completes
+   - Simple and effective for maintaining position during a session
+
+2. **Message ID Management**
+   - User messages get client-side UUIDs immediately
+   - Assistant messages start with local UUIDs, then swap to server IDs
+   - Deduplication handles the transition gracefully
+   - Prevents flicker and maintains smooth UX
+
+3. **Error Recovery Strategy**
+   - 404s clear the conversation and remove invalid ID from URL
+   - Network errors show user message but don't break the app
+   - Polling failures are silent (logged to console only)
+   - Streaming errors mark the message with error state
+
+4. **Event-Driven Architecture**
+   - Custom events for sidebar communication (`newchat`, `conversationselected`)
+   - Avoids prop drilling and complex state management
+   - Keeps components loosely coupled
 
 ## Implementation Details
 
