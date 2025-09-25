@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback, memo } from "react";
-import { Send, Bot, User, Loader2, Copy, Check, Plus, Image, FileText, X } from "lucide-react";
+import { Send, Bot, User, Loader2, Copy, Check, Plus, Image, FileText, X, Mic } from "lucide-react";
+import RecordRTC from "recordrtc";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Sidebar, SidebarToggle } from "@/components/Sidebar";
@@ -11,6 +12,7 @@ import { ModelSelector, MODEL_CONFIG } from "@/components/ModelSelector";
 import { useLocalState } from "@/state/useLocalState";
 import { useOpenSecret } from "@opensecret/react";
 import { UpgradePromptDialog } from "@/components/UpgradePromptDialog";
+import { RecordingOverlay } from "@/components/RecordingOverlay";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -244,7 +246,15 @@ export function UnifiedChat() {
   const [isProcessingDocument, setIsProcessingDocument] = useState(false);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [upgradeDialogOpen, setUpgradeDialogOpen] = useState(false);
-  const [upgradeFeature, setUpgradeFeature] = useState<"image" | "document">("image");
+  const [upgradeFeature, setUpgradeFeature] = useState<"image" | "document" | "voice">("image");
+
+  // Audio recording states
+  const [isRecording, setIsRecording] = useState(false);
+  const [isTranscribing, setIsTranscribing] = useState(false);
+  const [isProcessingSend, setIsProcessingSend] = useState(false);
+  const [audioError, setAudioError] = useState<string | null>(null);
+  const recorderRef = useRef<RecordRTC | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
 
   const abortControllerRef = useRef<AbortController | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -422,7 +432,7 @@ export function UnifiedChat() {
 
             if (Array.isArray(item.content)) {
               // Check if this is a multimodal message with images
-              const hasImages = item.content.some((part: any) => part.type === "input_image");
+              const hasImages = item.content.some((part) => part.type === "input_image");
 
               if (hasImages) {
                 // Preserve the full multimodal structure
@@ -536,6 +546,7 @@ export function UnifiedChat() {
 
   const canUseImages = hasStarterAccess;
   const canUseDocuments = hasProTeamAccess;
+  const canUseVoice = hasProTeamAccess && localState.hasWhisperModel;
 
   const handleAddImages = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -667,7 +678,7 @@ export function UnifiedChat() {
         e.target.value = "";
       }
     },
-    [isTauriEnv, os]
+    [isTauriEnv]
   );
 
   const removeDocument = useCallback(() => {
@@ -675,13 +686,161 @@ export function UnifiedChat() {
     setDocumentName("");
   }, []);
 
-  // Send message handler
+  // Audio recording functions
+  const startRecording = async () => {
+    // Prevent duplicate starts
+    if (isRecording || isTranscribing) return;
+
+    // Check if user has access
+    if (!canUseVoice) {
+      setUpgradeFeature("voice");
+      setUpgradeDialogOpen(true);
+      return;
+    }
+
+    try {
+      // Check if getUserMedia is available
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        setAudioError(
+          "Microphone access is blocked. Please check your browser permissions or disable Lockdown Mode for this site (Settings > Safari > Advanced > Lockdown Mode)."
+        );
+        setTimeout(() => setAudioError(null), 8000);
+        return;
+      }
+
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: false,
+          noiseSuppression: true,
+          autoGainControl: false,
+          sampleRate: 16000
+        }
+      });
+
+      streamRef.current = stream;
+
+      // Create RecordRTC instance configured for WAV
+      const recorder = new RecordRTC(stream, {
+        type: "audio",
+        mimeType: "audio/wav",
+        recorderType: RecordRTC.StereoAudioRecorder,
+        numberOfAudioChannels: 1,
+        desiredSampRate: 16000
+      });
+
+      recorderRef.current = recorder;
+      recorder.startRecording();
+      setIsRecording(true);
+      setAudioError(null);
+    } catch (error) {
+      console.error("Failed to start recording:", error);
+      const err = error as Error & { name?: string };
+
+      // Handle different error types
+      if (err.name === "NotAllowedError" || err.name === "PermissionDeniedError") {
+        setAudioError(
+          "Microphone access denied. Please enable microphone permissions in Settings > Maple."
+        );
+      } else if (err.name === "NotFoundError" || err.name === "DevicesNotFoundError") {
+        setAudioError("No microphone found. Please check your device.");
+      } else if (err.name === "NotReadableError" || err.name === "TrackStartError") {
+        setAudioError("Microphone is already in use by another app.");
+      } else {
+        setAudioError(
+          `Failed to access microphone: ${err.name || "Unknown error"} - ${err.message || "Please try again"}`
+        );
+      }
+
+      setTimeout(() => setAudioError(null), 5000);
+    }
+  };
+
+  const stopRecording = (shouldSend: boolean = false) => {
+    if (recorderRef.current && isRecording) {
+      // Only hide immediately if canceling, keep visible if sending
+      if (!shouldSend) {
+        setIsRecording(false);
+      } else {
+        setIsProcessingSend(true);
+      }
+
+      recorderRef.current.stopRecording(async () => {
+        const blob = recorderRef.current?.getBlob();
+
+        if (!blob || blob.size === 0) {
+          console.error("No audio recorded or empty recording");
+          if (shouldSend) {
+            setAudioError("No audio was recorded. Please try again.");
+            setTimeout(() => setAudioError(null), 5000);
+          }
+          // Clean up
+          if (streamRef.current) {
+            streamRef.current.getTracks().forEach((track) => track.stop());
+            streamRef.current = null;
+          }
+          recorderRef.current = null;
+          setIsProcessingSend(false);
+          setIsRecording(false);
+          return;
+        }
+
+        // Create a proper WAV file
+        const audioFile = new File([blob], "recording.wav", {
+          type: "audio/wav"
+        });
+
+        if (shouldSend) {
+          setIsTranscribing(true);
+          try {
+            const result = await os.transcribeAudio(audioFile, "whisper-large-v3");
+            const transcribedText = result.text.trim();
+
+            if (transcribedText) {
+              // Combine with existing input if any
+              const newValue = input ? `${input} ${transcribedText}` : transcribedText;
+
+              // Clear states before sending
+              setInput("");
+              clearAllAttachments();
+              setIsRecording(false);
+              setIsTranscribing(false);
+              setIsProcessingSend(false);
+
+              // Send the message directly with the transcribed text
+              await handleSendMessage(undefined, newValue);
+            } else {
+              setAudioError("No speech detected. Please try again.");
+              setTimeout(() => setAudioError(null), 5000);
+            }
+          } catch (error) {
+            console.error("Transcription failed:", error);
+            setAudioError("Failed to transcribe audio. Please try again.");
+            setTimeout(() => setAudioError(null), 5000);
+          } finally {
+            setIsTranscribing(false);
+            setIsProcessingSend(false);
+            setIsRecording(false);
+          }
+        }
+
+        // Clean up resources
+        if (streamRef.current) {
+          streamRef.current.getTracks().forEach((track) => track.stop());
+          streamRef.current = null;
+        }
+        recorderRef.current = null;
+      });
+    }
+  };
+
+  // Send message handler - now accepts optional override text for voice input
   const handleSendMessage = useCallback(
-    async (e?: React.FormEvent) => {
+    async (e?: React.FormEvent, overrideInput?: string) => {
       e?.preventDefault();
 
-      // Allow send if we have text, images, or document
-      const trimmedInput = input.trim();
+      // Use override input (from voice) or regular input
+      const textToSend = overrideInput || input;
+      const trimmedInput = textToSend.trim();
       const hasContent = trimmedInput || draftImages.length > 0 || documentText;
       if (!hasContent || isGenerating || !openai) return;
 
@@ -745,8 +904,11 @@ export function UnifiedChat() {
       };
 
       setMessages((prev) => [...prev, userMessage]);
-      setInput("");
-      clearAllAttachments();
+      // Only clear input if not using override (voice already cleared it)
+      if (!overrideInput) {
+        setInput("");
+        clearAllAttachments();
+      }
       setIsGenerating(true);
 
       try {
@@ -799,8 +961,9 @@ export function UnifiedChat() {
 
           if (event.type === "response.output_item.added" && event.item?.type === "message") {
             // Get the server-assigned ID from item.id
-            if ((event as any).item?.id) {
-              serverAssistantId = (event as any).item.id;
+            const eventWithItem = event as { item?: { id?: string } };
+            if (eventWithItem.item?.id) {
+              serverAssistantId = eventWithItem.item.id;
 
               // Add the assistant message with the correct server ID
               const assistantMessage: Message = {
@@ -948,7 +1111,7 @@ export function UnifiedChat() {
                 <h1 className="text-3xl font-medium text-foreground">How can I help you today?</h1>
 
                 {/* Input form */}
-                <form onSubmit={handleSendMessage} className="w-full">
+                <form onSubmit={handleSendMessage} className="w-full relative">
                   <div className="space-y-2">
                     {/* Model selector and attachment button */}
                     <div className="flex items-center gap-2">
@@ -1055,8 +1218,10 @@ export function UnifiedChat() {
                     )}
 
                     {/* Error display */}
-                    {attachmentError && (
-                      <div className="text-sm text-red-500 px-2">{attachmentError}</div>
+                    {(attachmentError || audioError) && (
+                      <div className="text-sm text-red-500 px-2">
+                        {attachmentError || audioError}
+                      </div>
                     )}
 
                     <div className="relative">
@@ -1066,11 +1231,23 @@ export function UnifiedChat() {
                         onChange={(e) => setInput(e.target.value)}
                         onKeyDown={handleKeyDown}
                         placeholder="Message Maple..."
-                        disabled={isGenerating}
-                        className="w-full resize-none min-h-[100px] max-h-[200px] pr-14 py-4 px-5 rounded-xl border bg-background focus:outline-none focus:ring-2 focus:ring-ring/20 placeholder:text-muted-foreground/60 text-base"
-                        rows={3}
+                        disabled={isGenerating || isRecording}
+                        className="w-full resize-none min-h-[120px] max-h-[200px] pr-24 py-4 px-5 rounded-xl border bg-background focus:outline-none focus:ring-2 focus:ring-ring/20 placeholder:text-muted-foreground/60 text-base"
+                        rows={4}
                         id="message"
                       />
+                      {/* Mic button */}
+                      <Button
+                        type="button"
+                        onClick={startRecording}
+                        disabled={isGenerating || isRecording || !canUseVoice}
+                        size="icon"
+                        variant="ghost"
+                        className="absolute bottom-3 right-14 h-9 w-9 rounded-lg hover:bg-muted"
+                      >
+                        <Mic className="h-4 w-4" />
+                      </Button>
+                      {/* Send button */}
                       <Button
                         type="submit"
                         disabled={
@@ -1103,6 +1280,18 @@ export function UnifiedChat() {
                       onChange={handleDocumentUpload}
                       className="hidden"
                     />
+
+                    {/* Recording overlay for centered input */}
+                    {isRecording && (
+                      <RecordingOverlay
+                        isRecording={isRecording}
+                        isProcessing={isProcessingSend || isTranscribing}
+                        onSend={() => stopRecording(true)}
+                        onCancel={() => stopRecording(false)}
+                        isCompact={false}
+                        className="absolute inset-0 rounded-xl"
+                      />
+                    )}
                   </div>
                 </form>
 
@@ -1117,7 +1306,7 @@ export function UnifiedChat() {
           // Fixed at bottom when there are messages
           <div className="bg-background">
             <div className="max-w-4xl mx-auto p-4">
-              <form onSubmit={handleSendMessage}>
+              <form onSubmit={handleSendMessage} className="relative">
                 <div className="space-y-2">
                   {/* Model selector and attachment button */}
                   <div className="flex items-center gap-2">
@@ -1224,8 +1413,8 @@ export function UnifiedChat() {
                   )}
 
                   {/* Error display */}
-                  {attachmentError && (
-                    <div className="text-xs text-red-500 px-2">{attachmentError}</div>
+                  {(attachmentError || audioError) && (
+                    <div className="text-xs text-red-500 px-2">{attachmentError || audioError}</div>
                   )}
 
                   <div className="relative">
@@ -1235,11 +1424,23 @@ export function UnifiedChat() {
                       onChange={(e) => setInput(e.target.value)}
                       onKeyDown={handleKeyDown}
                       placeholder="Message Maple..."
-                      disabled={isGenerating}
-                      className="w-full resize-none min-h-[52px] max-h-[200px] pr-14 py-3 px-4 rounded-xl border bg-background focus:outline-none focus:ring-2 focus:ring-ring/20 placeholder:text-muted-foreground/60"
+                      disabled={isGenerating || isRecording}
+                      className="w-full resize-none min-h-[52px] max-h-[200px] pr-20 py-3 px-4 rounded-xl border bg-background focus:outline-none focus:ring-2 focus:ring-ring/20 placeholder:text-muted-foreground/60"
                       rows={1}
                       id="message"
                     />
+                    {/* Mic button */}
+                    <Button
+                      type="button"
+                      onClick={startRecording}
+                      disabled={isGenerating || isRecording || !canUseVoice}
+                      size="icon"
+                      variant="ghost"
+                      className="absolute bottom-[0.45rem] right-11 h-8 w-8 rounded-lg hover:bg-muted"
+                    >
+                      <Mic className="h-4 w-4" />
+                    </Button>
+                    {/* Send button */}
                     <Button
                       type="submit"
                       disabled={
@@ -1255,6 +1456,18 @@ export function UnifiedChat() {
                       )}
                     </Button>
                   </div>
+
+                  {/* Recording overlay for bottom input */}
+                  {isRecording && (
+                    <RecordingOverlay
+                      isRecording={isRecording}
+                      isProcessing={isProcessingSend || isTranscribing}
+                      onSend={() => stopRecording(true)}
+                      onCancel={() => stopRecording(false)}
+                      isCompact={true}
+                      className="absolute inset-0 rounded-xl"
+                    />
+                  )}
                 </div>
               </form>
               <p className="text-sm text-center text-muted-foreground/60 mt-2">
@@ -1268,7 +1481,13 @@ export function UnifiedChat() {
         <UpgradePromptDialog
           open={upgradeDialogOpen}
           onOpenChange={setUpgradeDialogOpen}
-          feature={upgradeFeature === "document" ? "document" : "image"}
+          feature={
+            upgradeFeature === "document"
+              ? "document"
+              : upgradeFeature === "voice"
+                ? "voice"
+                : "image"
+          }
         />
       </div>
     </div>
