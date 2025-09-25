@@ -7,7 +7,6 @@ import { aliasModelName } from "@/utils/utils";
 export {
   LocalStateContext,
   type Chat,
-  type ChatMessage,
   type HistoryItem,
   type LocalState
 } from "./LocalStateContextDef";

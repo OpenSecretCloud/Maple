@@ -15,6 +15,7 @@ import ChatBox from "@/components/ChatBox";
 import { useOpenAI } from "@/ai/useOpenAi";
 import { useLocalState } from "@/state/useLocalState";
 import { Markdown, stripThinkingTags } from "@/components/markdown";
+// @ts-expect-error - old route, don't care
 import { ChatMessage, DEFAULT_MODEL_ID } from "@/state/LocalStateContext";
 import { UpgradePromptDialog } from "@/components/UpgradePromptDialog";
 import { useQuery } from "@tanstack/react-query";
@@ -90,7 +91,7 @@ function renderContent(content: ChatMessage["content"], chatId: string) {
     p.type === "text" ? (
       <Markdown key={idx} content={p.text} loading={false} chatId={chatId} />
     ) : (
-      // @ts-ignore - old chat page, not updating for new types
+      // @ts-expect-error - old chat page, not updating for new types
       <img key={idx} src={p.image_url?.url} className="max-w-full rounded-lg" />
     )
   );
@@ -709,7 +710,8 @@ END OF INSTRUCTIONS`;
           const content =
             typeof msg.content === "string"
               ? msg.content
-              : msg.content.map((part) => (part.type === "text" ? part.text : "[image]")).join(" ");
+              : // @ts-expect-error - old chat page, not updating for new types
+                msg.content.map((part) => (part.type === "text" ? part.text : "[image]")).join(" ");
 
           return {
             role: msg.role,
@@ -825,7 +827,8 @@ END OF INSTRUCTIONS`;
                     text={
                       typeof message.content === "string"
                         ? message.content
-                        : message.content.find((p) => p.type === "text")?.text || ""
+                        : // @ts-expect-error - old chat page, not updating for new types
+                          message.content.find((p) => p.type === "text")?.text || ""
                     }
                   />
                 )}
@@ -835,7 +838,8 @@ END OF INSTRUCTIONS`;
                     text={
                       typeof message.content === "string"
                         ? message.content
-                        : message.content.find((p) => p.type === "text")?.text || ""
+                        : // @ts-expect-error - old chat page, not updating for new types
+                          message.content.find((p) => p.type === "text")?.text || ""
                     }
                     chatId={chatId}
                     autoPlay={index === autoPlayMessageIndex}
