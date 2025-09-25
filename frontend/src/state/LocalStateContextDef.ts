@@ -9,7 +9,10 @@ export interface OpenSecretModel extends Model {
 
 export type ChatContentPart =
   | { type: "text"; text: string }
-  | { type: "image_url"; image_url: { url: string } };
+  | { type: "input_text"; text: string }
+  | { type: "output_text"; text: string }
+  | { type: "image_url"; image_url: { url: string } }
+  | { type: "input_image"; image_url: string; detail?: "high" | "low" | "auto" };
 
 export type ChatMessage = {
   role: "user" | "assistant" | "system";

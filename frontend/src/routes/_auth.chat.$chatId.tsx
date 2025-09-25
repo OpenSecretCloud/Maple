@@ -90,7 +90,8 @@ function renderContent(content: ChatMessage["content"], chatId: string) {
     p.type === "text" ? (
       <Markdown key={idx} content={p.text} loading={false} chatId={chatId} />
     ) : (
-      <img key={idx} src={p.image_url.url} className="max-w-full rounded-lg" />
+      // @ts-ignore - old chat page, not updating for new types
+      <img key={idx} src={p.image_url?.url} className="max-w-full rounded-lg" />
     )
   );
 }
