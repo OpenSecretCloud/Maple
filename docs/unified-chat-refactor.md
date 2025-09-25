@@ -200,6 +200,8 @@ The UnifiedChat component now includes these fully working features:
 - **Responsive sidebar** - Mobile-friendly with toggle button
 - **Centered input for new chats** - Beautiful welcome screen with logo and prompt
 - **Fixed input for active chats** - Standard chat interface when conversation is active
+- **Mobile new chat button** - Quick access button in mobile header when in a conversation
+- **Consistent mobile UI** - Aligned headers and consistent button styling across sidebar and main chat
 
 #### Multimodal Support
 - **Image attachments** - Support for JPEG, PNG, WebP up to 10MB
@@ -250,7 +252,6 @@ These features exist in the old components but haven't been implemented in Unifi
 - **Scroll-to-bottom button** - Floating button when scrolled up in conversation
 - **System prompt display** - Collapsible system message with "see more/less"
 - **System prompt input** - Optional field for first message
-- **Mobile new chat button** - Quick access button in mobile header
 - **Message streaming indicator** - Three animated dots during generation
 - **Draft message persistence** - localStorage backup of unsent messages
 
