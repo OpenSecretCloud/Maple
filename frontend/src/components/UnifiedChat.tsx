@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { Send, Bot, User, Loader2, Copy, Check } from "lucide-react";
+import { Send, Bot, User, Loader2, Copy, Check, Plus, Image, FileText, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Sidebar, SidebarToggle } from "@/components/Sidebar";
@@ -7,14 +7,24 @@ import { useIsMobile } from "@/utils/utils";
 import { useOpenAI } from "@/ai/useOpenAi";
 import { DEFAULT_MODEL_ID } from "@/state/LocalStateContext";
 import { Markdown } from "@/components/markdown";
-import { ModelSelector } from "@/components/ModelSelector";
+import { ModelSelector, MODEL_CONFIG } from "@/components/ModelSelector";
 import { useLocalState } from "@/state/useLocalState";
+import { useOpenSecret } from "@opensecret/react";
+import { UpgradePromptDialog } from "@/components/UpgradePromptDialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger
+} from "@/components/ui/dropdown-menu";
+import { isTauri } from "@/utils/platform";
+import type { ChatContentPart } from "@/state/LocalStateContextDef";
 
 // Types
 interface Message {
   id: string;
   role: "user" | "assistant";
-  content: string;
+  content: string | ChatContentPart[];
   timestamp: number;
   status?: "complete" | "streaming" | "error";
 }
@@ -71,8 +81,10 @@ interface ConversationItem {
   role?: "user" | "assistant" | "system";
   status?: "completed" | "in_progress";
   content?: Array<{
-    type: "text" | "input_text";
+    type: "input_text" | "input_image" | "output_text";
     text?: string;
+    image_url?: string;
+    detail?: "high" | "low" | "auto";
   }>;
   created_at?: number;
 }
@@ -81,6 +93,8 @@ export function UnifiedChat() {
   const isMobile = useIsMobile();
   const openai = useOpenAI();
   const localState = useLocalState();
+  const os = useOpenSecret();
+  const isTauriEnv = isTauri();
 
   // Track chatId from URL - use state so we can update it
   const [chatId, setChatId] = useState<string | undefined>(() => {
@@ -96,12 +110,35 @@ export function UnifiedChat() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(!isMobile);
   const [error, setError] = useState<string | null>(null);
   const [lastSeenItemId, setLastSeenItemId] = useState<string | undefined>();
+
+  // Attachment states
   const [draftImages, setDraftImages] = useState<File[]>([]);
+  const [imageUrls, setImageUrls] = useState<Map<File, string>>(new Map());
+  const [documentText, setDocumentText] = useState<string>("");
+  const [documentName, setDocumentName] = useState<string>("");
+  const [isProcessingDocument, setIsProcessingDocument] = useState(false);
+  const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  const [upgradeDialogOpen, setUpgradeDialogOpen] = useState(false);
+  const [upgradeFeature, setUpgradeFeature] = useState<"image" | "document">("image");
+
   const abortControllerRef = useRef<AbortController | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const documentInputRef = useRef<HTMLInputElement>(null);
 
   // Refs
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // Attachment cleanup function - defined early to avoid reference errors
+  const clearAllAttachments = useCallback(() => {
+    // Clean up image URLs
+    imageUrls.forEach((url) => URL.revokeObjectURL(url));
+    setImageUrls(new Map());
+    setDraftImages([]);
+    setDocumentText("");
+    setDocumentName("");
+    setAttachmentError(null);
+  }, [imageUrls]);
 
   // Auto-resize textarea
   useEffect(() => {
@@ -127,7 +164,8 @@ export function UnifiedChat() {
       setInput("");
       setError(null);
       setLastSeenItemId(undefined);
-      setDraftImages([]);
+      // Clear attachments
+      clearAllAttachments();
     };
 
     // Handle conversation selection from sidebar
@@ -161,7 +199,7 @@ export function UnifiedChat() {
       );
       window.removeEventListener("popstate", handlePopState);
     };
-  }, [chatId]);
+  }, [chatId, clearAllAttachments]);
 
   // Load conversation from API
   const loadConversation = useCallback(
@@ -186,7 +224,8 @@ export function UnifiedChat() {
             let text = "";
             if (Array.isArray(item.content)) {
               for (const part of item.content) {
-                if ((part.type === "text" || part.type === "input_text") && part.text) {
+                // Handle both input_text (user) and output_text (assistant)
+                if ((part.type === "input_text" || part.type === "output_text") && part.text) {
                   text += part.text;
                 }
               }
@@ -246,6 +285,8 @@ export function UnifiedChat() {
         after: lastSeenItemId,
         limit: 100
       });
+      console.log("RAW API RESPONSE from conversations.items.list:", response);
+      console.log("response.data:", JSON.stringify(response.data, null, 2));
 
       if (response.data.length > 0) {
         // Convert API items to UI messages
@@ -253,20 +294,46 @@ export function UnifiedChat() {
 
         for (const item of response.data) {
           if (item.type === "message" && item.role && item.content) {
-            let text = "";
+            // Preserve the content structure - could be string or array
+            let messageContent: any = "";
+
             if (Array.isArray(item.content)) {
-              for (const part of item.content) {
-                if ((part.type === "text" || part.type === "input_text") && part.text) {
-                  text += part.text;
+              // Check if this is a multimodal message with images
+              const hasImages = item.content.some((part: any) => part.type === "input_image");
+
+              if (hasImages) {
+                // Preserve the full multimodal structure
+                messageContent = item.content;
+              } else {
+                // Extract text for text-only messages
+                let text = "";
+                for (const part of item.content) {
+                  // Handle both input_text (user) and output_text (assistant)
+                  if ((part.type === "input_text" || part.type === "output_text") && part.text) {
+                    text += part.text;
+                  }
                 }
+                messageContent = text;
               }
+            } else if (typeof item.content === "string") {
+              messageContent = item.content;
             }
 
-            if (text) {
+            if (
+              messageContent &&
+              (typeof messageContent === "string" ? messageContent.length > 0 : true)
+            ) {
+              console.log("Polled message from server:");
+              console.log("  - Role:", item.role);
+              console.log("  - Original content:", item.content);
+              console.log("  - Processed content:", messageContent);
+              console.log("  - Content type:", typeof messageContent);
+              console.log("  - Is array?", Array.isArray(messageContent));
+
               newMessages.push({
                 id: item.id,
                 role: item.role as "user" | "assistant",
-                content: text,
+                content: messageContent,
                 timestamp:
                   ((item as ConversationItem & { created_at?: number }).created_at ??
                     Date.now() / 1000) * 1000,
@@ -280,8 +347,24 @@ export function UnifiedChat() {
           // Merge new messages with deduplication
           setMessages((prev) => {
             const existingIds = new Set(prev.map((m) => m.id));
+
+            // Create signatures that work for both string and array content
+            const getContentSignature = (content: any) => {
+              if (typeof content === "string") {
+                return content.substring(0, 100);
+              } else if (Array.isArray(content)) {
+                // For arrays, create a signature from text parts
+                const textParts = content
+                  .filter((p: any) => p.type === "text")
+                  .map((p: any) => p.text || "")
+                  .join("");
+                return textParts.substring(0, 100);
+              }
+              return "";
+            };
+
             const existingSignatures = new Set(
-              prev.map((m) => `${m.role}:${m.content.substring(0, 100)}`)
+              prev.map((m) => `${m.role}:${getContentSignature(m.content)}`)
             );
 
             const uniqueNewMessages = newMessages.filter((m) => {
@@ -289,7 +372,7 @@ export function UnifiedChat() {
               if (existingIds.has(m.id)) return false;
 
               // Skip if we have a message with same role and similar content
-              const signature = `${m.role}:${m.content.substring(0, 100)}`;
+              const signature = `${m.role}:${getContentSignature(m.content)}`;
               if (existingSignatures.has(signature)) return false;
 
               return true;
@@ -301,9 +384,14 @@ export function UnifiedChat() {
             const updatedMessages = prev.map((msg) => {
               // If this is a local message (UUID format)
               if (msg.id.includes("-") && msg.id.length === 36) {
-                const serverVersion = uniqueNewMessages.find(
-                  (newMsg) => newMsg.role === msg.role && newMsg.content === msg.content
-                );
+                const serverVersion = uniqueNewMessages.find((newMsg) => {
+                  if (newMsg.role !== msg.role) return false;
+
+                  // Compare content - handle both string and array
+                  const localSig = getContentSignature(msg.content);
+                  const serverSig = getContentSignature(newMsg.content);
+                  return localSig === serverSig;
+                });
                 if (serverVersion) {
                   // Remove from unique list to avoid duplication
                   uniqueNewMessages.splice(uniqueNewMessages.indexOf(serverVersion), 1);
@@ -361,28 +449,237 @@ export function UnifiedChat() {
   // Toggle sidebar
   const toggleSidebar = useCallback(() => setIsSidebarOpen((prev) => !prev), []);
 
+  // Check user's billing access
+  const billingStatus = localState.billingStatus;
+  const hasStarterAccess =
+    billingStatus &&
+    (billingStatus.product_name?.toLowerCase().includes("starter") ||
+      billingStatus.product_name?.toLowerCase().includes("pro") ||
+      billingStatus.product_name?.toLowerCase().includes("max") ||
+      billingStatus.product_name?.toLowerCase().includes("team"));
+
+  const hasProTeamAccess =
+    billingStatus &&
+    (billingStatus.product_name?.toLowerCase().includes("pro") ||
+      billingStatus.product_name?.toLowerCase().includes("max") ||
+      billingStatus.product_name?.toLowerCase().includes("team"));
+
+  const canUseImages = hasStarterAccess;
+  const canUseDocuments = hasProTeamAccess;
+
+  const handleAddImages = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      if (!e.target.files) return;
+
+      const supportedTypes = ["image/jpeg", "image/jpg", "image/png", "image/webp"];
+      const maxSizeInBytes = 10 * 1024 * 1024; // 10MB
+
+      const validFiles = Array.from(e.target.files).filter((file) => {
+        if (!supportedTypes.includes(file.type.toLowerCase())) {
+          setAttachmentError("Only JPEG, PNG, and WebP images are supported");
+          setTimeout(() => setAttachmentError(null), 5000);
+          return false;
+        }
+        if (file.size > maxSizeInBytes) {
+          setAttachmentError(`Image too large (max 10MB)`);
+          setTimeout(() => setAttachmentError(null), 5000);
+          return false;
+        }
+        return true;
+      });
+
+      // Create object URLs for previews
+      const newUrlMap = new Map(imageUrls);
+      validFiles.forEach((file) => {
+        if (!newUrlMap.has(file)) {
+          newUrlMap.set(file, URL.createObjectURL(file));
+        }
+      });
+      setImageUrls(newUrlMap);
+      setDraftImages((prev) => [...prev, ...validFiles]);
+
+      // Auto-switch to vision model if needed
+      const supportsVision = MODEL_CONFIG[localState.model]?.supportsVision;
+      if (!supportsVision && validFiles.length > 0) {
+        // Find first vision-capable model user has access to
+        const visionModels = localState.availableModels.filter(
+          (m) => MODEL_CONFIG[m.id]?.supportsVision
+        );
+        if (visionModels.length > 0) {
+          localState.setModel(visionModels[0].id);
+        }
+      }
+
+      // Clear input to allow re-uploading same file
+      e.target.value = "";
+    },
+    [imageUrls, localState]
+  );
+
+  const removeImage = useCallback(
+    (idx: number) => {
+      setDraftImages((prev) => {
+        const fileToRemove = prev[idx];
+        const url = imageUrls.get(fileToRemove);
+        if (url) {
+          URL.revokeObjectURL(url);
+          setImageUrls((prevUrls) => {
+            const newUrls = new Map(prevUrls);
+            newUrls.delete(fileToRemove);
+            return newUrls;
+          });
+        }
+        return prev.filter((_, i) => i !== idx);
+      });
+    },
+    [imageUrls]
+  );
+
+  const handleDocumentUpload = useCallback(
+    async (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+
+      const maxSizeInBytes = 10 * 1024 * 1024; // 10MB
+      if (file.size > maxSizeInBytes) {
+        setAttachmentError("Document too large (max 10MB)");
+        setTimeout(() => setAttachmentError(null), 5000);
+        e.target.value = "";
+        return;
+      }
+
+      setIsProcessingDocument(true);
+      setAttachmentError(null);
+
+      try {
+        // For text files, read directly
+        if (file.name.endsWith(".txt") || file.name.endsWith(".md")) {
+          const text = await file.text();
+          setDocumentText(text);
+          setDocumentName(file.name);
+        } else if (file.name.endsWith(".pdf") && isTauriEnv) {
+          // For PDFs in Tauri, use the parseDocument API
+          const reader = new FileReader();
+          const base64Data = await new Promise<string>((resolve, reject) => {
+            reader.onload = () => {
+              const base64 = (reader.result as string).split(",")[1];
+              resolve(base64);
+            };
+            reader.onerror = reject;
+            reader.readAsDataURL(file);
+          });
+
+          // Use the Tauri API directly for parsing PDFs
+          const { invoke } = await import("@tauri-apps/api/core");
+          const result = await invoke<{ text: string }>("parse_document", {
+            filename: file.name,
+            contentBase64: base64Data,
+            fileType: "pdf"
+          });
+
+          const parsed = JSON.parse(result.text);
+          if (parsed.document?.text_content) {
+            // Clean up image references from parsed text
+            const cleanedText = parsed.document.text_content.replace(/!\[Image\]\([^)]+\)/g, "");
+            setDocumentText(cleanedText);
+            setDocumentName(file.name);
+          }
+        } else if (file.name.endsWith(".pdf")) {
+          setAttachmentError("PDF files can only be processed in the desktop app");
+          setTimeout(() => setAttachmentError(null), 5000);
+        }
+      } catch (error) {
+        console.error("Document processing error:", error);
+        setAttachmentError("Failed to process document");
+        setTimeout(() => setAttachmentError(null), 5000);
+      } finally {
+        setIsProcessingDocument(false);
+        e.target.value = "";
+      }
+    },
+    [isTauriEnv, os]
+  );
+
+  const removeDocument = useCallback(() => {
+    setDocumentText("");
+    setDocumentName("");
+  }, []);
+
   // Send message handler
   const handleSendMessage = useCallback(
     async (e?: React.FormEvent) => {
       e?.preventDefault();
 
+      // Allow send if we have text, images, or document
       const trimmedInput = input.trim();
-      if (!trimmedInput || isGenerating || !openai) return;
+      const hasContent = trimmedInput || draftImages.length > 0 || documentText;
+      if (!hasContent || isGenerating || !openai) return;
 
       // Clear any previous error
       setError(null);
+
+      // Helper function to convert File to data URL
+      const fileToDataURL = (file: File): Promise<string> => {
+        return new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result as string);
+          reader.onerror = reject;
+          reader.readAsDataURL(file);
+        });
+      };
+
+      // Build the message content with proper typing
+      let messageContent: any = ""; // Use any for now, will be properly typed when sent to API
+
+      // Combine document text with input if both exist
+      let finalText = trimmedInput;
+      if (documentText) {
+        finalText = documentText + (trimmedInput ? `\n\n${trimmedInput}` : "");
+      }
+
+      // If we have images, create multimodal content
+      if (draftImages.length > 0) {
+        const parts: ChatContentPart[] = [];
+
+        // Add text part if exists
+        if (finalText) {
+          parts.push({ type: "input_text", text: finalText });
+        }
+
+        // Add image parts with proper OpenAI format
+        for (const file of draftImages) {
+          try {
+            const dataUrl = await fileToDataURL(file);
+            parts.push({
+              type: "input_image",
+              image_url: dataUrl
+            } as ChatContentPart);
+          } catch (error) {
+            console.error("Failed to convert image:", error);
+          }
+        }
+
+        messageContent = parts;
+      } else {
+        messageContent = finalText;
+      }
 
       // Add user message immediately
       const userMessage: Message = {
         id: crypto.randomUUID(),
         role: "user",
-        content: trimmedInput,
+        content: messageContent, // Store the actual content structure
         timestamp: Date.now(),
         status: "complete"
       };
 
+      console.log("Creating user message with content:", messageContent);
+      console.log("Content type:", typeof messageContent);
+      console.log("Is array?", Array.isArray(messageContent));
+
       setMessages((prev) => [...prev, userMessage]);
       setInput("");
+      clearAllAttachments();
       setIsGenerating(true);
 
       try {
@@ -411,12 +708,18 @@ export function UnifiedChat() {
         const abortController = new AbortController();
         abortControllerRef.current = abortController;
 
-        // Create streaming response
+        // Create streaming response - the API expects the content directly as we built it
+        console.log("Sending to API:", {
+          conversation: conversationId,
+          model: localState.model || DEFAULT_MODEL_ID,
+          input: [{ role: "user", content: messageContent }]
+        });
+
         const stream = await openai.responses.create(
           {
             conversation: conversationId,
             model: localState.model || DEFAULT_MODEL_ID, // Use selected model or default
-            input: [{ role: "user", content: trimmedInput }],
+            input: [{ role: "user", content: messageContent }],
             stream: true,
             store: true // Store in conversation history
           },
@@ -492,7 +795,16 @@ export function UnifiedChat() {
         abortControllerRef.current = null;
       }
     },
-    [input, isGenerating, openai, conversation, localState.model]
+    [
+      input,
+      isGenerating,
+      openai,
+      conversation,
+      localState.model,
+      draftImages,
+      documentText,
+      clearAllAttachments
+    ]
   );
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -566,19 +878,66 @@ export function UnifiedChat() {
                           {message.role === "user" ? "You" : "Maple"}
                         </div>
                         <div className="prose prose-sm dark:prose-invert max-w-none">
-                          <Markdown
-                            content={message.content}
-                            loading={message.status === "streaming"}
-                            chatId={chatId || ""}
-                          />
+                          {/* Render based on content type */}
+                          {(() => {
+                            console.log("Rendering message:", {
+                              role: message.role,
+                              content: message.content,
+                              contentType: typeof message.content,
+                              isArray: Array.isArray(message.content)
+                            });
+
+                            if (typeof message.content === "string") {
+                              return (
+                                <Markdown
+                                  content={message.content}
+                                  loading={message.status === "streaming"}
+                                  chatId={chatId || ""}
+                                />
+                              );
+                            } else if (Array.isArray(message.content)) {
+                              return (
+                                // Render multimodal content (images + text)
+                                <div className="space-y-3">
+                                  {message.content.map((part: any, partIdx: number) => (
+                                    <div key={partIdx}>
+                                      {part.type === "input_text" || part.type === "output_text" ? (
+                                        <Markdown
+                                          content={part.text || ""}
+                                          loading={false}
+                                          chatId={chatId || ""}
+                                        />
+                                      ) : part.type === "input_image" ? (
+                                        <img
+                                          src={part.image_url || ""}
+                                          alt={`Image ${partIdx + 1}`}
+                                          className="max-w-full rounded-lg"
+                                          style={{ maxHeight: "400px", objectFit: "contain" }}
+                                        />
+                                      ) : null}
+                                    </div>
+                                  ))}
+                                </div>
+                              );
+                            } else {
+                              // Fallback for unexpected content type
+                              return (
+                                <div className="text-muted-foreground">
+                                  [Unable to display message content]
+                                </div>
+                              );
+                            }
+                          })()}
                         </div>
 
                         {/* Actions - only show on hover for assistant messages */}
-                        {message.role === "assistant" && message.content && (
-                          <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                            <CopyButton text={message.content} />
-                          </div>
-                        )}
+                        {message.role === "assistant" &&
+                          message.content &&
+                          typeof message.content === "string" && (
+                            <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                              <CopyButton text={message.content} />
+                            </div>
+                          )}
                       </div>
                     </div>
                   </div>
@@ -637,10 +996,114 @@ export function UnifiedChat() {
                 {/* Input form */}
                 <form onSubmit={handleSendMessage} className="w-full">
                   <div className="space-y-2">
-                    {/* Model selector */}
+                    {/* Model selector and attachment button */}
                     <div className="flex items-center gap-2">
-                      <ModelSelector messages={messages} draftImages={draftImages} />
+                      <ModelSelector
+                        messages={messages.map((m) => ({
+                          role: m.role as "user" | "assistant" | "system",
+                          content: m.content
+                        }))}
+                        draftImages={draftImages}
+                      />
+
+                      {/* Attachment dropdown */}
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            className="h-8 w-8 p-0"
+                            disabled={isProcessingDocument}
+                          >
+                            <Plus className="h-4 w-4" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="start">
+                          <DropdownMenuItem
+                            onClick={() => {
+                              if (!canUseImages) {
+                                setUpgradeFeature("image");
+                                setUpgradeDialogOpen(true);
+                              } else {
+                                fileInputRef.current?.click();
+                              }
+                            }}
+                          >
+                            <Image className="mr-2 h-4 w-4" />
+                            <span>Add Images</span>
+                            {!canUseImages && (
+                              <span className="ml-auto text-xs text-muted-foreground">Pro</span>
+                            )}
+                          </DropdownMenuItem>
+                          {isTauriEnv && (
+                            <DropdownMenuItem
+                              onClick={() => {
+                                if (!canUseDocuments) {
+                                  setUpgradeFeature("document");
+                                  setUpgradeDialogOpen(true);
+                                } else {
+                                  documentInputRef.current?.click();
+                                }
+                              }}
+                            >
+                              <FileText className="mr-2 h-4 w-4" />
+                              <span>Add Document</span>
+                              {!canUseDocuments && (
+                                <span className="ml-auto text-xs text-muted-foreground">Pro</span>
+                              )}
+                            </DropdownMenuItem>
+                          )}
+                        </DropdownMenuContent>
+                      </DropdownMenu>
                     </div>
+
+                    {/* Attachment previews */}
+                    {(draftImages.length > 0 || documentName) && (
+                      <div className="space-y-2">
+                        {/* Image previews */}
+                        {draftImages.length > 0 && (
+                          <div className="flex gap-2 flex-wrap">
+                            {draftImages.map((file, i) => (
+                              <div key={i} className="relative group">
+                                <img
+                                  src={imageUrls.get(file) || ""}
+                                  alt={`Attachment ${i + 1}`}
+                                  className="w-16 h-16 object-cover rounded-md border"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => removeImage(i)}
+                                  className="absolute -top-1 -right-1 bg-background border rounded-full p-0.5 opacity-0 group-hover:opacity-100 transition-opacity"
+                                >
+                                  <X className="h-3 w-3" />
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
+                        {/* Document preview */}
+                        {documentName && (
+                          <div className="flex items-center gap-2 p-2 bg-muted/50 rounded-md">
+                            <FileText className="h-4 w-4 text-muted-foreground" />
+                            <span className="text-sm truncate flex-1">{documentName}</span>
+                            <button
+                              type="button"
+                              onClick={removeDocument}
+                              className="text-muted-foreground hover:text-foreground"
+                            >
+                              <X className="h-3 w-3" />
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Error display */}
+                    {attachmentError && (
+                      <div className="text-sm text-red-500 px-2">{attachmentError}</div>
+                    )}
 
                     <div className="relative">
                       <Textarea
@@ -656,7 +1119,9 @@ export function UnifiedChat() {
                       />
                       <Button
                         type="submit"
-                        disabled={!input.trim() || isGenerating}
+                        disabled={
+                          (!input.trim() && !draftImages.length && !documentText) || isGenerating
+                        }
                         size="icon"
                         className="absolute bottom-3 right-3 h-9 w-9 rounded-lg"
                       >
@@ -667,6 +1132,23 @@ export function UnifiedChat() {
                         )}
                       </Button>
                     </div>
+
+                    {/* Hidden file inputs */}
+                    <input
+                      type="file"
+                      ref={fileInputRef}
+                      accept="image/jpeg,image/jpg,image/png,image/webp"
+                      multiple
+                      onChange={handleAddImages}
+                      className="hidden"
+                    />
+                    <input
+                      type="file"
+                      ref={documentInputRef}
+                      accept=".pdf,.txt,.md"
+                      onChange={handleDocumentUpload}
+                      className="hidden"
+                    />
                   </div>
                 </form>
 
@@ -683,10 +1165,114 @@ export function UnifiedChat() {
             <div className="max-w-4xl mx-auto p-4">
               <form onSubmit={handleSendMessage}>
                 <div className="space-y-2">
-                  {/* Model selector */}
+                  {/* Model selector and attachment button */}
                   <div className="flex items-center gap-2">
-                    <ModelSelector messages={messages} draftImages={draftImages} />
+                    <ModelSelector
+                      messages={messages.map((m) => ({
+                        role: m.role as "user" | "assistant" | "system",
+                        content: m.content
+                      }))}
+                      draftImages={draftImages}
+                    />
+
+                    {/* Attachment dropdown */}
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="h-8 w-8 p-0"
+                          disabled={isProcessingDocument}
+                        >
+                          <Plus className="h-4 w-4" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="start">
+                        <DropdownMenuItem
+                          onClick={() => {
+                            if (!canUseImages) {
+                              setUpgradeFeature("image");
+                              setUpgradeDialogOpen(true);
+                            } else {
+                              fileInputRef.current?.click();
+                            }
+                          }}
+                        >
+                          <Image className="mr-2 h-4 w-4" />
+                          <span>Add Images</span>
+                          {!canUseImages && (
+                            <span className="ml-auto text-xs text-muted-foreground">Starter</span>
+                          )}
+                        </DropdownMenuItem>
+                        {isTauriEnv && (
+                          <DropdownMenuItem
+                            onClick={() => {
+                              if (!canUseDocuments) {
+                                setUpgradeFeature("document");
+                                setUpgradeDialogOpen(true);
+                              } else {
+                                documentInputRef.current?.click();
+                              }
+                            }}
+                          >
+                            <FileText className="mr-2 h-4 w-4" />
+                            <span>Add Document</span>
+                            {!canUseDocuments && (
+                              <span className="ml-auto text-xs text-muted-foreground">Pro</span>
+                            )}
+                          </DropdownMenuItem>
+                        )}
+                      </DropdownMenuContent>
+                    </DropdownMenu>
                   </div>
+
+                  {/* Attachment previews */}
+                  {(draftImages.length > 0 || documentName) && (
+                    <div className="space-y-2">
+                      {/* Image previews */}
+                      {draftImages.length > 0 && (
+                        <div className="flex gap-2 flex-wrap">
+                          {draftImages.map((file, i) => (
+                            <div key={i} className="relative group">
+                              <img
+                                src={imageUrls.get(file) || ""}
+                                alt={`Attachment ${i + 1}`}
+                                className="w-12 h-12 object-cover rounded-md border"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => removeImage(i)}
+                                className="absolute -top-1 -right-1 bg-background border rounded-full p-0.5 opacity-0 group-hover:opacity-100 transition-opacity"
+                              >
+                                <X className="h-2.5 w-2.5" />
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* Document preview */}
+                      {documentName && (
+                        <div className="flex items-center gap-2 p-1.5 bg-muted/50 rounded-md text-xs">
+                          <FileText className="h-3 w-3 text-muted-foreground" />
+                          <span className="truncate flex-1">{documentName}</span>
+                          <button
+                            type="button"
+                            onClick={removeDocument}
+                            className="text-muted-foreground hover:text-foreground"
+                          >
+                            <X className="h-2.5 w-2.5" />
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Error display */}
+                  {attachmentError && (
+                    <div className="text-xs text-red-500 px-2">{attachmentError}</div>
+                  )}
 
                   <div className="relative">
                     <Textarea
@@ -702,7 +1288,9 @@ export function UnifiedChat() {
                     />
                     <Button
                       type="submit"
-                      disabled={!input.trim() || isGenerating}
+                      disabled={
+                        (!input.trim() && !draftImages.length && !documentText) || isGenerating
+                      }
                       size="icon"
                       className="absolute bottom-[0.45rem] right-2 h-8 w-8 rounded-lg"
                     >
@@ -721,6 +1309,13 @@ export function UnifiedChat() {
             </div>
           </div>
         )}
+
+        {/* Upgrade dialog for attachments */}
+        <UpgradePromptDialog
+          open={upgradeDialogOpen}
+          onOpenChange={setUpgradeDialogOpen}
+          feature={upgradeFeature === "document" ? "document" : "image"}
+        />
       </div>
     </div>
   );
