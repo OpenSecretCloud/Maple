@@ -643,9 +643,6 @@ export function Markdown(
       dir="auto"
     >
       <MarkdownWithThinking content={props.content} loading={props.loading} chatId={props.chatId} />
-      {props.loading && !props.content.trim() && (
-        <div className="italic text-muted-foreground animate-pulse">Thinking and encrypting...</div>
-      )}
     </div>
   );
 }
