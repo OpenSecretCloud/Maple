@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, memo } from "react";
 import { Send, Bot, User, Loader2, Copy, Check, Plus, Image, FileText, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -88,6 +88,131 @@ interface ConversationItem {
   }>;
   created_at?: number;
 }
+
+// Memoized message list component to prevent re-renders on input changes
+const MessageList = memo(
+  ({
+    messages,
+    isGenerating,
+    chatId
+  }: {
+    messages: Message[];
+    isGenerating: boolean;
+    chatId?: string;
+  }) => {
+    return (
+      <>
+        {messages.map((message) => (
+          <div
+            key={message.id}
+            className={`group py-6 px-4 ${
+              message.role === "user" ? "bg-muted/30" : ""
+            } hover:bg-muted/20 transition-colors`}
+          >
+            <div className="flex gap-3 max-w-4xl mx-auto">
+              <div className="flex-shrink-0">
+                {message.role === "user" ? (
+                  <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center">
+                    <User className="h-4 w-4 text-primary" />
+                  </div>
+                ) : (
+                  <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center">
+                    <Bot className="h-4 w-4 text-primary" />
+                  </div>
+                )}
+              </div>
+              <div className="flex-1 overflow-hidden">
+                <div className="space-y-2">
+                  <div className="font-semibold text-sm">
+                    {message.role === "user" ? "You" : "Maple"}
+                  </div>
+                  <div className="prose prose-sm dark:prose-invert max-w-none">
+                    {/* Render based on content type */}
+                    {(() => {
+                      if (typeof message.content === "string") {
+                        return (
+                          <Markdown
+                            content={message.content}
+                            loading={message.status === "streaming"}
+                            chatId={chatId || ""}
+                          />
+                        );
+                      } else if (Array.isArray(message.content)) {
+                        return (
+                          // Render multimodal content (images + text)
+                          <div className="space-y-3">
+                            {message.content.map((part: any, partIdx: number) => (
+                              <div key={partIdx}>
+                                {part.type === "input_text" || part.type === "output_text" ? (
+                                  <Markdown
+                                    content={part.text || ""}
+                                    loading={false}
+                                    chatId={chatId || ""}
+                                  />
+                                ) : part.type === "input_image" ? (
+                                  <img
+                                    src={part.image_url || ""}
+                                    alt={`Image ${partIdx + 1}`}
+                                    className="max-w-full rounded-lg"
+                                    style={{ maxHeight: "400px", objectFit: "contain" }}
+                                  />
+                                ) : null}
+                              </div>
+                            ))}
+                          </div>
+                        );
+                      } else {
+                        // Fallback for unexpected content type
+                        return (
+                          <div className="text-muted-foreground">
+                            [Unable to display message content]
+                          </div>
+                        );
+                      }
+                    })()}
+                  </div>
+
+                  {/* Actions - only show on hover for assistant messages */}
+                  {message.role === "assistant" &&
+                    message.content &&
+                    typeof message.content === "string" && (
+                      <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <CopyButton text={message.content} />
+                      </div>
+                    )}
+                </div>
+              </div>
+            </div>
+          </div>
+        ))}
+
+        {/* Loading indicator - modern style */}
+        {isGenerating &&
+          !messages.some((m) => m.role === "assistant" && m.status === "streaming") && (
+            <div className="group py-6 px-4">
+              <div className="flex gap-3 max-w-4xl mx-auto">
+                <div className="flex-shrink-0">
+                  <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center">
+                    <Bot className="h-4 w-4 text-primary" />
+                  </div>
+                </div>
+                <div className="flex-1 space-y-2">
+                  <div className="font-semibold text-sm">Maple</div>
+                  <div className="flex items-center gap-1">
+                    <div className="w-2 h-2 bg-foreground/60 rounded-full animate-pulse" />
+                    <div className="w-2 h-2 bg-foreground/60 rounded-full animate-pulse delay-75" />
+                    <div className="w-2 h-2 bg-foreground/60 rounded-full animate-pulse delay-150" />
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+      </>
+    );
+  }
+);
+
+MessageList.displayName = "MessageList";
 
 export function UnifiedChat() {
   const isMobile = useIsMobile();
@@ -258,7 +383,7 @@ export function UnifiedChat() {
         const err = error as { status?: number; message?: string };
         if (err.status === 404) {
           // Conversation doesn't exist - clear and start fresh
-          console.log("Conversation not found, starting new");
+          // Conversation not found, starting new
           setConversation(null);
           setMessages([]);
           setError(null);
@@ -285,8 +410,6 @@ export function UnifiedChat() {
         after: lastSeenItemId,
         limit: 100
       });
-      console.log("RAW API RESPONSE from conversations.items.list:", response);
-      console.log("response.data:", JSON.stringify(response.data, null, 2));
 
       if (response.data.length > 0) {
         // Convert API items to UI messages
@@ -323,19 +446,7 @@ export function UnifiedChat() {
               messageContent &&
               (typeof messageContent === "string" ? messageContent.length > 0 : true)
             ) {
-              console.log("Polled message from server:");
-              console.log("  - Role:", item.role);
-              console.log("  - Original content:", JSON.stringify(item.content, null, 2));
-              console.log("  - Processed content:", JSON.stringify(messageContent, null, 2));
-              console.log("  - Content type:", typeof messageContent);
-              console.log("  - Is array?", Array.isArray(messageContent));
-
               // The backend will use our internal_message_id as the actual ID
-              console.log("Processing polled message:", {
-                id: item.id,
-                role: item.role,
-                contentType: typeof messageContent
-              });
 
               newMessages.push({
                 id: item.id, // Backend returns our UUID for user messages
@@ -633,9 +744,6 @@ export function UnifiedChat() {
         status: "complete"
       };
 
-      console.log("Creating user message with local ID:", localMessageId);
-      console.log("Message content:", JSON.stringify(messageContent, null, 2));
-
       setMessages((prev) => [...prev, userMessage]);
       setInput("");
       clearAllAttachments();
@@ -668,13 +776,6 @@ export function UnifiedChat() {
         abortControllerRef.current = abortController;
 
         // Create streaming response - the API expects the content directly as we built it
-        console.log("Sending to API with metadata:", {
-          conversation: conversationId,
-          model: localState.model || DEFAULT_MODEL_ID,
-          input: [{ role: "user", content: messageContent }],
-          metadata: { internal_message_id: localMessageId }
-        });
-
         const stream = await openai.responses.create(
           {
             conversation: conversationId,
@@ -695,19 +796,11 @@ export function UnifiedChat() {
         // Process streaming events
         for await (const event of stream) {
           // Log EVERY SSE event we receive
-          console.log("SSE Event received:", {
-            type: event.type,
-            item_id: (event as any).item_id,
-            item: (event as any).item,
-            delta: (event as any).delta,
-            full_event: JSON.stringify(event)
-          });
 
           if (event.type === "response.output_item.added" && event.item?.type === "message") {
             // Get the server-assigned ID from item.id
             if ((event as any).item?.id) {
               serverAssistantId = (event as any).item.id;
-              console.log("Got server assistant ID:", serverAssistantId);
 
               // Add the assistant message with the correct server ID
               const assistantMessage: Message = {
@@ -824,117 +917,7 @@ export function UnifiedChat() {
             <div className="max-w-4xl mx-auto p-6 w-full">
               {/* Message list with modern ChatGPT/Claude style */}
               <div className="space-y-1">
-                {messages.map((message) => (
-                  <div
-                    key={message.id}
-                    className={`group py-6 px-4 ${message.role === "user" ? "bg-muted/30" : ""}`}
-                  >
-                    <div className="flex gap-3 max-w-4xl mx-auto">
-                      {/* Avatar */}
-                      <div className="flex-shrink-0">
-                        {message.role === "user" ? (
-                          <div className="w-8 h-8 rounded-full bg-foreground/10 flex items-center justify-center">
-                            <User className="h-4 w-4 text-foreground" />
-                          </div>
-                        ) : (
-                          <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center">
-                            <Bot className="h-4 w-4 text-primary" />
-                          </div>
-                        )}
-                      </div>
-
-                      {/* Message content */}
-                      <div className="flex-1 space-y-2 overflow-hidden">
-                        <div className="font-semibold text-sm">
-                          {message.role === "user" ? "You" : "Maple"}
-                        </div>
-                        <div className="prose prose-sm dark:prose-invert max-w-none">
-                          {/* Render based on content type */}
-                          {(() => {
-                            console.log("Rendering message:", {
-                              role: message.role,
-                              content: message.content,
-                              contentType: typeof message.content,
-                              isArray: Array.isArray(message.content)
-                            });
-
-                            if (typeof message.content === "string") {
-                              return (
-                                <Markdown
-                                  content={message.content}
-                                  loading={message.status === "streaming"}
-                                  chatId={chatId || ""}
-                                />
-                              );
-                            } else if (Array.isArray(message.content)) {
-                              return (
-                                // Render multimodal content (images + text)
-                                <div className="space-y-3">
-                                  {message.content.map((part: any, partIdx: number) => (
-                                    <div key={partIdx}>
-                                      {part.type === "input_text" || part.type === "output_text" ? (
-                                        <Markdown
-                                          content={part.text || ""}
-                                          loading={false}
-                                          chatId={chatId || ""}
-                                        />
-                                      ) : part.type === "input_image" ? (
-                                        <img
-                                          src={part.image_url || ""}
-                                          alt={`Image ${partIdx + 1}`}
-                                          className="max-w-full rounded-lg"
-                                          style={{ maxHeight: "400px", objectFit: "contain" }}
-                                        />
-                                      ) : null}
-                                    </div>
-                                  ))}
-                                </div>
-                              );
-                            } else {
-                              // Fallback for unexpected content type
-                              return (
-                                <div className="text-muted-foreground">
-                                  [Unable to display message content]
-                                </div>
-                              );
-                            }
-                          })()}
-                        </div>
-
-                        {/* Actions - only show on hover for assistant messages */}
-                        {message.role === "assistant" &&
-                          message.content &&
-                          typeof message.content === "string" && (
-                            <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                              <CopyButton text={message.content} />
-                            </div>
-                          )}
-                      </div>
-                    </div>
-                  </div>
-                ))}
-
-                {/* Loading indicator - modern style */}
-                {isGenerating &&
-                  !messages.some((m) => m.role === "assistant" && m.status === "streaming") && (
-                    <div className="group py-6 px-4">
-                      <div className="flex gap-3 max-w-4xl mx-auto">
-                        <div className="flex-shrink-0">
-                          <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center">
-                            <Bot className="h-4 w-4 text-primary" />
-                          </div>
-                        </div>
-                        <div className="flex-1 space-y-2">
-                          <div className="font-semibold text-sm">Maple</div>
-                          <div className="flex items-center gap-1">
-                            <div className="w-2 h-2 bg-foreground/60 rounded-full animate-pulse" />
-                            <div className="w-2 h-2 bg-foreground/60 rounded-full animate-pulse delay-75" />
-                            <div className="w-2 h-2 bg-foreground/60 rounded-full animate-pulse delay-150" />
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  )}
+                <MessageList messages={messages} isGenerating={isGenerating} chatId={chatId} />
               </div>
 
               <div ref={messagesEndRef} />
