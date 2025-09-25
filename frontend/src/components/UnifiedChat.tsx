@@ -1,5 +1,18 @@
 import { useState, useRef, useEffect, useCallback, memo } from "react";
-import { Send, Bot, User, Loader2, Copy, Check, Plus, Image, FileText, X, Mic } from "lucide-react";
+import {
+  Send,
+  Bot,
+  User,
+  Loader2,
+  Copy,
+  Check,
+  Plus,
+  Image,
+  FileText,
+  X,
+  Mic,
+  SquarePen
+} from "lucide-react";
 import RecordRTC from "recordrtc";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -143,7 +156,7 @@ const MessageList = memo(
                         return (
                           // Render multimodal content (images + text)
                           <div className="space-y-3">
-                            {message.content.map((part: any, partIdx: number) => (
+                            {message.content.map((part, partIdx: number) => (
                               <div key={partIdx}>
                                 {part.type === "input_text" || part.type === "output_text" ? (
                                   <Markdown
@@ -428,7 +441,7 @@ export function UnifiedChat() {
         for (const item of response.data) {
           if (item.type === "message" && item.role && item.content) {
             // Preserve the content structure - could be string or array
-            let messageContent: any = "";
+            let messageContent: string | ChatContentPart[] = "";
 
             if (Array.isArray(item.content)) {
               // Check if this is a multimodal message with images
@@ -858,7 +871,7 @@ export function UnifiedChat() {
       };
 
       // Build the message content with proper typing
-      let messageContent: any = ""; // Use any for now, will be properly typed when sent to API
+      let messageContent: string | ChatContentPart[] = "";
 
       // Combine document text with input if both exist
       let finalText = trimmedInput;
@@ -1050,7 +1063,7 @@ export function UnifiedChat() {
       <div className="flex flex-col flex-1 min-w-0 bg-background overflow-hidden relative">
         {/* Mobile sidebar toggle */}
         {!isSidebarOpen && (
-          <div className="fixed top-4 left-4 z-20 md:hidden">
+          <div className="fixed top-[9.5px] left-4 z-20 md:hidden">
             <SidebarToggle onToggle={toggleSidebar} />
           </div>
         )}
@@ -1058,10 +1071,37 @@ export function UnifiedChat() {
         {/* Only show header when there are messages (conversation exists) */}
         {messages.length > 0 && (
           <div className="h-14 flex items-center px-4">
-            <div className="flex-1 flex items-center justify-center">
+            <div className="flex-1 flex items-center justify-center relative">
               <h1 className="text-base font-medium truncate max-w-[20rem] text-muted-foreground">
                 {conversation?.metadata?.title || "Chat"}
               </h1>
+              {/* Mobile new chat button - positioned on the right */}
+              <Button
+                variant="outline"
+                size="icon"
+                className="md:hidden absolute right-0 h-9 w-9"
+                onClick={() => {
+                  // Clear conversation and start new chat
+                  const usp = new URLSearchParams(window.location.search);
+                  usp.delete("conversation_id");
+                  const newUrl = usp.toString()
+                    ? `${window.location.pathname}?${usp.toString()}`
+                    : window.location.pathname;
+                  window.history.replaceState(null, "", newUrl);
+                  window.dispatchEvent(new Event("newchat"));
+                  setChatId(undefined);
+                  setConversation(null);
+                  setMessages([]);
+                  setLastSeenItemId(undefined);
+                  // Close sidebar if open
+                  if (isSidebarOpen) {
+                    toggleSidebar();
+                  }
+                }}
+                aria-label="New chat"
+              >
+                <SquarePen className="h-4 w-4" />
+              </Button>
             </div>
           </div>
         )}
