@@ -1,3 +1,25 @@
+/**
+ * UnifiedChat Component
+ *
+ * This is the main chat interface that replaced the old ChatBox component.
+ * It uses the OpenAI Conversations/Responses API instead of localStorage.
+ *
+ * Recent changes (2025-01-25):
+ * - Simplified type system to use OpenAI's native types directly
+ * - Content is always an array of proper OpenAI content types (no more string | array)
+ * - Uses ConversationContent union for all message content
+ * - ModelSelector refactored to just take hasImages boolean instead of full messages
+ *
+ * Old files to handle:
+ * - DELETE: frontend/src/components/ChatBox.tsx (replaced by this component)
+ * - DELETE: frontend/src/hooks/useChatSession.ts (old localStorage chat management)
+ * - DELETE: frontend/src/routes/index.backup.tsx (just a backup)
+ * - SIMPLIFY: frontend/src/routes/_auth.chat.$chatId.tsx
+ *   - Make read-only for viewing old localStorage chats
+ *   - Remove all interaction code
+ *   - Add "archived chat" banner
+ *   - Keep for backwards compatibility with chat history
+ */
 import { useState, useRef, useEffect, useCallback, memo } from "react";
 import {
   Send,
@@ -33,13 +55,32 @@ import {
   DropdownMenuTrigger
 } from "@/components/ui/dropdown-menu";
 import { isTauri } from "@/utils/platform";
-import type { ChatContentPart } from "@/state/LocalStateContextDef";
+import type {
+  InputTextContent,
+  OutputTextContent,
+  TextContent,
+  SummaryTextContent,
+  RefusalContent,
+  InputImageContent,
+  ComputerScreenshotContent,
+  InputFileContent
+} from "openai/resources/conversations/conversations.js";
+
+type ConversationContent =
+  | InputTextContent
+  | OutputTextContent
+  | TextContent
+  | SummaryTextContent
+  | RefusalContent
+  | InputImageContent
+  | ComputerScreenshotContent
+  | InputFileContent;
 
 // Types
 interface Message {
   id: string;
   role: "user" | "assistant";
-  content: string | ChatContentPart[];
+  content: ConversationContent[];
   timestamp: number;
   status?: "complete" | "streaming" | "error";
 }
@@ -142,57 +183,43 @@ const MessageList = memo(
                     {message.role === "user" ? "You" : "Maple"}
                   </div>
                   <div className="prose prose-sm dark:prose-invert max-w-none">
-                    {/* Render based on content type */}
-                    {(() => {
-                      if (typeof message.content === "string") {
-                        return (
-                          <Markdown
-                            content={message.content}
-                            loading={message.status === "streaming"}
-                            chatId={chatId || ""}
-                          />
-                        );
-                      } else if (Array.isArray(message.content)) {
-                        return (
-                          // Render multimodal content (images + text)
-                          <div className="space-y-3">
-                            {message.content.map((part, partIdx: number) => (
-                              <div key={partIdx}>
-                                {part.type === "input_text" || part.type === "output_text" ? (
-                                  <Markdown
-                                    content={part.text || ""}
-                                    loading={false}
-                                    chatId={chatId || ""}
-                                  />
-                                ) : part.type === "input_image" ? (
-                                  <img
-                                    src={part.image_url || ""}
-                                    alt={`Image ${partIdx + 1}`}
-                                    className="max-w-full rounded-lg"
-                                    style={{ maxHeight: "400px", objectFit: "contain" }}
-                                  />
-                                ) : null}
-                              </div>
-                            ))}
-                          </div>
-                        );
-                      } else {
-                        // Fallback for unexpected content type
-                        return (
-                          <div className="text-muted-foreground">
-                            [Unable to display message content]
-                          </div>
-                        );
-                      }
-                    })()}
+                    {/* Render content array */}
+                    <div className="space-y-3">
+                      {message.content.map((part: any, partIdx: number) => (
+                        <div key={partIdx}>
+                          {(part.type === "input_text" ||
+                            part.type === "output_text" ||
+                            part.type === "text") &&
+                          part.text ? (
+                            <Markdown
+                              content={part.text}
+                              loading={message.status === "streaming"}
+                              chatId={chatId || ""}
+                            />
+                          ) : part.type === "input_image" && part.image_url ? (
+                            <img
+                              src={part.image_url}
+                              alt={`Image ${partIdx + 1}`}
+                              className="max-w-full rounded-lg"
+                              style={{ maxHeight: "400px", objectFit: "contain" }}
+                            />
+                          ) : null}
+                        </div>
+                      ))}
+                    </div>
                   </div>
 
                   {/* Actions - only show on hover for assistant messages */}
                   {message.role === "assistant" &&
                     message.content &&
-                    typeof message.content === "string" && (
+                    message.content.length > 0 && (
                       <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                        <CopyButton text={message.content} />
+                        <CopyButton
+                          text={message.content
+                            .filter((p: any) => p.text)
+                            .map((p: any) => p.text)
+                            .join("")}
+                        />
                       </div>
                     )}
                 </div>
@@ -369,29 +396,15 @@ export function UnifiedChat() {
 
         for (const item of itemsResponse.data) {
           if (item.type === "message" && item.role && item.content) {
-            let text = "";
-            if (Array.isArray(item.content)) {
-              for (const part of item.content) {
-                // Handle both input_text (user) and output_text (assistant)
-                if ((part.type === "input_text" || part.type === "output_text") && part.text) {
-                  text += part.text;
-                }
-              }
-            } else if (typeof item.content === "string") {
-              text = item.content;
-            }
-
-            if (text) {
-              loadedMessages.push({
-                id: item.id,
-                role: item.role as "user" | "assistant",
-                content: text,
-                timestamp:
-                  ((item as ConversationItem & { created_at?: number }).created_at ??
-                    Date.now() / 1000) * 1000,
-                status: "complete"
-              });
-            }
+            loadedMessages.push({
+              id: item.id,
+              role: item.role as "user" | "assistant",
+              content: item.content,
+              timestamp:
+                ((item as ConversationItem & { created_at?: number }).created_at ??
+                  Date.now() / 1000) * 1000,
+              status: "complete"
+            });
           }
         }
 
@@ -440,41 +453,19 @@ export function UnifiedChat() {
 
         for (const item of response.data) {
           if (item.type === "message" && item.role && item.content) {
-            // Preserve the content structure - could be string or array
-            let messageContent: string | ChatContentPart[] = "";
+            // Convert content to array if it's a string
+            const messageContent =
+              typeof item.content === "string"
+                ? [{ type: "text", text: item.content }]
+                : Array.isArray(item.content)
+                  ? item.content
+                  : [];
 
-            if (Array.isArray(item.content)) {
-              // Check if this is a multimodal message with images
-              const hasImages = item.content.some((part) => part.type === "input_image");
-
-              if (hasImages) {
-                // Preserve the full multimodal structure
-                messageContent = item.content;
-              } else {
-                // Extract text for text-only messages
-                let text = "";
-                for (const part of item.content) {
-                  // Handle both input_text (user) and output_text (assistant)
-                  if ((part.type === "input_text" || part.type === "output_text") && part.text) {
-                    text += part.text;
-                  }
-                }
-                messageContent = text;
-              }
-            } else if (typeof item.content === "string") {
-              messageContent = item.content;
-            }
-
-            if (
-              messageContent &&
-              (typeof messageContent === "string" ? messageContent.length > 0 : true)
-            ) {
-              // The backend will use our internal_message_id as the actual ID
-
+            if (messageContent.length > 0) {
               newMessages.push({
-                id: item.id, // Backend returns our UUID for user messages
+                id: item.id,
                 role: item.role as "user" | "assistant",
-                content: messageContent,
+                content: messageContent as ConversationContent[],
                 timestamp:
                   ((item as ConversationItem & { created_at?: number }).created_at ??
                     Date.now() / 1000) * 1000,
@@ -870,8 +861,9 @@ export function UnifiedChat() {
         });
       };
 
-      // Build the message content with proper typing
-      let messageContent: string | ChatContentPart[] = "";
+      // Build the message content - always as an array
+      // Using the input types since we're building user input
+      const messageContent: (InputTextContent | InputImageContent)[] = [];
 
       // Combine document text with input if both exist
       let finalText = trimmedInput;
@@ -879,31 +871,29 @@ export function UnifiedChat() {
         finalText = documentText + (trimmedInput ? `\n\n${trimmedInput}` : "");
       }
 
-      // If we have images, create multimodal content
-      if (draftImages.length > 0) {
-        const parts: ChatContentPart[] = [];
+      // Add text part if exists
+      if (finalText) {
+        const textContent: InputTextContent = {
+          type: "input_text",
+          text: finalText
+        };
+        messageContent.push(textContent);
+      }
 
-        // Add text part if exists
-        if (finalText) {
-          parts.push({ type: "input_text", text: finalText });
+      // Add image parts if we have images
+      for (const file of draftImages) {
+        try {
+          const dataUrl = await fileToDataURL(file);
+          const imageContent: InputImageContent = {
+            type: "input_image",
+            image_url: dataUrl,
+            detail: "auto",
+            file_id: null
+          };
+          messageContent.push(imageContent);
+        } catch (error) {
+          console.error("Failed to convert image:", error);
         }
-
-        // Add image parts with proper OpenAI format
-        for (const file of draftImages) {
-          try {
-            const dataUrl = await fileToDataURL(file);
-            parts.push({
-              type: "input_image",
-              image_url: dataUrl
-            } as ChatContentPart);
-          } catch (error) {
-            console.error("Failed to convert image:", error);
-          }
-        }
-
-        messageContent = parts;
-      } else {
-        messageContent = finalText;
       }
 
       // Add user message immediately with a local UUID
@@ -982,7 +972,7 @@ export function UnifiedChat() {
               const assistantMessage: Message = {
                 id: serverAssistantId!,
                 role: "assistant",
-                content: "",
+                content: [],
                 timestamp: Date.now(),
                 status: "streaming"
               };
@@ -995,9 +985,19 @@ export function UnifiedChat() {
 
             // Only update if we have the message added
             if (serverAssistantId && assistantMessageAdded) {
+              const outputContent: OutputTextContent = {
+                type: "output_text",
+                text: accumulatedContent,
+                annotations: []
+              };
               setMessages((prev) =>
                 prev.map((msg) =>
-                  msg.id === serverAssistantId ? { ...msg, content: accumulatedContent } : msg
+                  msg.id === serverAssistantId
+                    ? {
+                        ...msg,
+                        content: [outputContent]
+                      }
+                    : msg
                 )
               );
             }
@@ -1156,11 +1156,12 @@ export function UnifiedChat() {
                     {/* Model selector and attachment button */}
                     <div className="flex items-center gap-2">
                       <ModelSelector
-                        messages={messages.map((m) => ({
-                          role: m.role as "user" | "assistant" | "system",
-                          content: m.content
-                        }))}
-                        draftImages={draftImages}
+                        hasImages={
+                          draftImages.length > 0 ||
+                          messages.some((msg) =>
+                            msg.content.some((part: any) => part.type === "input_image")
+                          )
+                        }
                       />
 
                       {/* Attachment dropdown */}
@@ -1351,11 +1352,12 @@ export function UnifiedChat() {
                   {/* Model selector and attachment button */}
                   <div className="flex items-center gap-2">
                     <ModelSelector
-                      messages={messages.map((m) => ({
-                        role: m.role as "user" | "assistant" | "system",
-                        content: m.content
-                      }))}
-                      draftImages={draftImages}
+                      hasImages={
+                        draftImages.length > 0 ||
+                        messages.some((msg) =>
+                          msg.content.some((part: any) => part.type === "input_image")
+                        )
+                      }
                     />
 
                     {/* Attachment dropdown */}

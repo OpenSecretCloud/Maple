@@ -88,15 +88,7 @@ export function getModelTokenLimit(modelId: string): number {
   return MODEL_CONFIG[modelId]?.tokenLimit || DEFAULT_TOKEN_LIMIT;
 }
 
-import { ChatMessage } from "@/state/LocalStateContextDef";
-
-export function ModelSelector({
-  messages = [],
-  draftImages = []
-}: {
-  messages?: ChatMessage[];
-  draftImages?: File[];
-}) {
+export function ModelSelector({ hasImages = false }: { hasImages?: boolean }) {
   const {
     model,
     setModel,
@@ -112,13 +104,8 @@ export function ModelSelector({
   const [upgradeDialogOpen, setUpgradeDialogOpen] = useState(false);
   const [selectedModelName, setSelectedModelName] = useState<string>("");
 
-  // Check if chat contains any images or if there are draft images
-  const chatHasImages =
-    draftImages.length > 0 ||
-    messages.some(
-      (msg) =>
-        typeof msg.content !== "string" && msg.content.some((part) => part.type === "image_url")
-    );
+  // Use the passed hasImages prop directly
+  const chatHasImages = hasImages;
 
   // Keep ref updated
   useEffect(() => {
