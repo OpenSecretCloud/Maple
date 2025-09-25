@@ -325,13 +325,20 @@ export function UnifiedChat() {
             ) {
               console.log("Polled message from server:");
               console.log("  - Role:", item.role);
-              console.log("  - Original content:", item.content);
-              console.log("  - Processed content:", messageContent);
+              console.log("  - Original content:", JSON.stringify(item.content, null, 2));
+              console.log("  - Processed content:", JSON.stringify(messageContent, null, 2));
               console.log("  - Content type:", typeof messageContent);
               console.log("  - Is array?", Array.isArray(messageContent));
 
-              newMessages.push({
+              // The backend will use our internal_message_id as the actual ID
+              console.log("Processing polled message:", {
                 id: item.id,
+                role: item.role,
+                contentType: typeof messageContent
+              });
+
+              newMessages.push({
+                id: item.id, // Backend returns our UUID for user messages
                 role: item.role as "user" | "assistant",
                 content: messageContent,
                 timestamp:
@@ -347,61 +354,13 @@ export function UnifiedChat() {
           // Merge new messages with deduplication
           setMessages((prev) => {
             const existingIds = new Set(prev.map((m) => m.id));
-
-            // Create signatures that work for both string and array content
-            const getContentSignature = (content: any) => {
-              if (typeof content === "string") {
-                return content.substring(0, 100);
-              } else if (Array.isArray(content)) {
-                // For arrays, create a signature from text parts
-                const textParts = content
-                  .filter((p: any) => p.type === "text")
-                  .map((p: any) => p.text || "")
-                  .join("");
-                return textParts.substring(0, 100);
-              }
-              return "";
-            };
-
-            const existingSignatures = new Set(
-              prev.map((m) => `${m.role}:${getContentSignature(m.content)}`)
-            );
-
-            const uniqueNewMessages = newMessages.filter((m) => {
-              // Skip if we already have this ID
-              if (existingIds.has(m.id)) return false;
-
-              // Skip if we have a message with same role and similar content
-              const signature = `${m.role}:${getContentSignature(m.content)}`;
-              if (existingSignatures.has(signature)) return false;
-
-              return true;
-            });
+            const uniqueNewMessages = newMessages.filter((m) => !existingIds.has(m.id));
 
             if (uniqueNewMessages.length === 0) return prev;
 
-            // Replace local messages with server versions when they match
-            const updatedMessages = prev.map((msg) => {
-              // If this is a local message (UUID format)
-              if (msg.id.includes("-") && msg.id.length === 36) {
-                const serverVersion = uniqueNewMessages.find((newMsg) => {
-                  if (newMsg.role !== msg.role) return false;
-
-                  // Compare content - handle both string and array
-                  const localSig = getContentSignature(msg.content);
-                  const serverSig = getContentSignature(newMsg.content);
-                  return localSig === serverSig;
-                });
-                if (serverVersion) {
-                  // Remove from unique list to avoid duplication
-                  uniqueNewMessages.splice(uniqueNewMessages.indexOf(serverVersion), 1);
-                  return { ...msg, id: serverVersion.id };
-                }
-              }
-              return msg;
-            });
-
-            return [...updatedMessages, ...uniqueNewMessages];
+            // Simple approach: just add new messages that we don't have
+            // The backend should handle the internal_message_id mapping
+            return [...prev, ...uniqueNewMessages];
           });
 
           // Update last seen item ID
@@ -664,18 +623,18 @@ export function UnifiedChat() {
         messageContent = finalText;
       }
 
-      // Add user message immediately
+      // Add user message immediately with a local UUID
+      const localMessageId = crypto.randomUUID();
       const userMessage: Message = {
-        id: crypto.randomUUID(),
+        id: localMessageId,
         role: "user",
         content: messageContent, // Store the actual content structure
         timestamp: Date.now(),
         status: "complete"
       };
 
-      console.log("Creating user message with content:", messageContent);
-      console.log("Content type:", typeof messageContent);
-      console.log("Is array?", Array.isArray(messageContent));
+      console.log("Creating user message with local ID:", localMessageId);
+      console.log("Message content:", JSON.stringify(messageContent, null, 2));
 
       setMessages((prev) => [...prev, userMessage]);
       setInput("");
@@ -709,10 +668,11 @@ export function UnifiedChat() {
         abortControllerRef.current = abortController;
 
         // Create streaming response - the API expects the content directly as we built it
-        console.log("Sending to API:", {
+        console.log("Sending to API with metadata:", {
           conversation: conversationId,
           model: localState.model || DEFAULT_MODEL_ID,
-          input: [{ role: "user", content: messageContent }]
+          input: [{ role: "user", content: messageContent }],
+          metadata: { internal_message_id: localMessageId }
         });
 
         const stream = await openai.responses.create(
@@ -720,67 +680,78 @@ export function UnifiedChat() {
             conversation: conversationId,
             model: localState.model || DEFAULT_MODEL_ID, // Use selected model or default
             input: [{ role: "user", content: messageContent }],
+            metadata: { internal_message_id: localMessageId }, // Pass our local ID
             stream: true,
             store: true // Store in conversation history
           },
           { signal: abortController.signal }
         );
 
-        // Initialize assistant message with local ID
-        const localAssistantId = crypto.randomUUID();
-        let serverItemId: string | undefined;
-        const assistantMessage: Message = {
-          id: localAssistantId,
-          role: "assistant",
-          content: "",
-          timestamp: Date.now(),
-          status: "streaming"
-        };
-
-        setMessages((prev) => [...prev, assistantMessage]);
+        // Track server-assigned IDs and accumulated content
+        let serverAssistantId: string | undefined;
+        let assistantMessageAdded = false;
         let accumulatedContent = "";
 
         // Process streaming events
         for await (const event of stream) {
+          // Log EVERY SSE event we receive
+          console.log("SSE Event received:", {
+            type: event.type,
+            item_id: (event as any).item_id,
+            item: (event as any).item,
+            delta: (event as any).delta,
+            full_event: JSON.stringify(event)
+          });
+
           if (event.type === "response.output_item.added" && event.item?.type === "message") {
-            // Store the server-assigned ID
-            if ((event as { item_id?: string }).item_id) {
-              serverItemId = (event as { item_id?: string }).item_id;
-              // Update message with server ID
-              setMessages((prev) =>
-                prev.map((msg) =>
-                  msg.id === localAssistantId ? { ...msg, id: serverItemId || msg.id } : msg
-                )
-              );
+            // Get the server-assigned ID from item.id
+            if ((event as any).item?.id) {
+              serverAssistantId = (event as any).item.id;
+              console.log("Got server assistant ID:", serverAssistantId);
+
+              // Add the assistant message with the correct server ID
+              const assistantMessage: Message = {
+                id: serverAssistantId!,
+                role: "assistant",
+                content: "",
+                timestamp: Date.now(),
+                status: "streaming"
+              };
+              setMessages((prev) => [...prev, assistantMessage]);
+              assistantMessageAdded = true;
             }
           } else if (event.type === "response.output_text.delta" && event.delta) {
             // Accumulate text chunks
             accumulatedContent += event.delta;
-            setMessages((prev) =>
-              prev.map((msg) =>
-                msg.id === (serverItemId || localAssistantId)
-                  ? { ...msg, content: accumulatedContent }
-                  : msg
-              )
-            );
+
+            // Only update if we have the message added
+            if (serverAssistantId && assistantMessageAdded) {
+              setMessages((prev) =>
+                prev.map((msg) =>
+                  msg.id === serverAssistantId ? { ...msg, content: accumulatedContent } : msg
+                )
+              );
+            }
           } else if (event.type === "response.output_item.done") {
             // Mark message as complete and update lastSeenItemId
-            setMessages((prev) =>
-              prev.map((msg) =>
-                msg.id === (serverItemId || localAssistantId) ? { ...msg, status: "complete" } : msg
-              )
-            );
-            if (serverItemId) {
-              setLastSeenItemId(serverItemId);
+            if (serverAssistantId) {
+              setMessages((prev) =>
+                prev.map((msg) =>
+                  msg.id === serverAssistantId ? { ...msg, status: "complete" } : msg
+                )
+              );
+              setLastSeenItemId(serverAssistantId);
             }
           } else if (event.type === "response.failed" || event.type === "error") {
             // Handle streaming errors
             console.error("Streaming error:", event);
-            setMessages((prev) =>
-              prev.map((msg) =>
-                msg.id === (serverItemId || localAssistantId) ? { ...msg, status: "error" } : msg
-              )
-            );
+            if (serverAssistantId) {
+              setMessages((prev) =>
+                prev.map((msg) =>
+                  msg.id === serverAssistantId ? { ...msg, status: "error" } : msg
+                )
+              );
+            }
             setError("Failed to generate response. Please try again.");
           }
         }
