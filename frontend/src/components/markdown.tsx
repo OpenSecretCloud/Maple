@@ -376,8 +376,6 @@ interface DocumentData {
     filename: string;
     text_content: string | null;
   };
-  status: string;
-  errors: unknown[];
 }
 
 // Type guard to validate DocumentData structure
@@ -387,7 +385,7 @@ function isDocumentData(obj: unknown): obj is DocumentData {
   const data = obj as Record<string, unknown>;
 
   // Check top-level properties
-  if (!("document" in data) || !("status" in data) || !("errors" in data)) {
+  if (!("document" in data)) {
     return false;
   }
 
@@ -402,10 +400,6 @@ function isDocumentData(obj: unknown): obj is DocumentData {
 
   // Require text_content (must be string)
   if (!("text_content" in docObj) || typeof docObj.text_content !== "string") return false;
-
-  // Basic type checks for other fields
-  if (typeof data.status !== "string") return false;
-  if (!Array.isArray(data.errors)) return false;
 
   return true;
 }

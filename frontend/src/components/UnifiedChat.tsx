@@ -185,7 +185,7 @@ const MessageList = memo(
                   <div className="prose prose-sm dark:prose-invert max-w-none">
                     {/* Render content array */}
                     <div className="space-y-3">
-                      {message.content.map((part: any, partIdx: number) => (
+                      {message.content.map((part: ConversationContent, partIdx: number) => (
                         <div key={partIdx}>
                           {(part.type === "input_text" ||
                             part.type === "output_text" ||
@@ -216,8 +216,8 @@ const MessageList = memo(
                       <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                         <CopyButton
                           text={message.content
-                            .filter((p: any) => p.text)
-                            .map((p: any) => p.text)
+                            .filter((p: ConversationContent) => "text" in p && p.text)
+                            .map((p: ConversationContent) => ("text" in p ? p.text : ""))
                             .join("")}
                         />
                       </div>
@@ -640,7 +640,14 @@ export function UnifiedChat() {
         // For text files, read directly
         if (file.name.endsWith(".txt") || file.name.endsWith(".md")) {
           const text = await file.text();
-          setDocumentText(text);
+          // Format as JSON for consistency with PDF handling
+          const documentData = {
+            document: {
+              filename: file.name,
+              text_content: text
+            }
+          };
+          setDocumentText(JSON.stringify(documentData));
           setDocumentName(file.name);
         } else if (file.name.endsWith(".pdf") && isTauriEnv) {
           // For PDFs in Tauri, use the parseDocument API
@@ -656,17 +663,33 @@ export function UnifiedChat() {
 
           // Use the Tauri API directly for parsing PDFs
           const { invoke } = await import("@tauri-apps/api/core");
-          const result = await invoke<{ text: string }>("parse_document", {
+
+          // Define the response type to match Rust
+          interface RustDocumentResponse {
+            document: {
+              filename: string;
+              text_content: string;
+            };
+            status: string;
+          }
+
+          const result = await invoke<RustDocumentResponse>("extract_document_content", {
+            fileBase64: base64Data,
             filename: file.name,
-            contentBase64: base64Data,
             fileType: "pdf"
           });
 
-          const parsed = JSON.parse(result.text);
-          if (parsed.document?.text_content) {
-            // Clean up image references from parsed text
-            const cleanedText = parsed.document.text_content.replace(/!\[Image\]\([^)]+\)/g, "");
-            setDocumentText(cleanedText);
+          if (result.document?.text_content) {
+            // Create a cleaned version with image references removed
+            const cleanedParsed = {
+              document: {
+                filename: result.document.filename,
+                text_content: result.document.text_content.replace(/!\[Image\]\([^)]+\)/g, "")
+              }
+            };
+
+            // Store as JSON string for markdown.tsx to parse and display properly
+            setDocumentText(JSON.stringify(cleanedParsed));
             setDocumentName(file.name);
           }
         } else if (file.name.endsWith(".pdf")) {
@@ -1159,7 +1182,9 @@ export function UnifiedChat() {
                         hasImages={
                           draftImages.length > 0 ||
                           messages.some((msg) =>
-                            msg.content.some((part: any) => part.type === "input_image")
+                            msg.content.some(
+                              (part: ConversationContent) => part.type === "input_image"
+                            )
                           )
                         }
                       />
@@ -1355,7 +1380,9 @@ export function UnifiedChat() {
                       hasImages={
                         draftImages.length > 0 ||
                         messages.some((msg) =>
-                          msg.content.some((part: any) => part.type === "input_image")
+                          msg.content.some(
+                            (part: ConversationContent) => part.type === "input_image"
+                          )
                         )
                       }
                     />
