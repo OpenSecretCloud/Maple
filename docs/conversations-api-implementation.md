@@ -1361,144 +1361,98 @@ From the SDK and backend documentation:
 
 ## Features to Migrate from Old Implementation
 
-After analyzing the old codebase (`index.backup.tsx`, `_auth.chat.$chatId.tsx`, `ChatBox.tsx`), here are all the features that need to be reimplemented in the new system:
+After analyzing the old codebase (`index.backup.tsx`, `_auth.chat.$chatId.tsx`, `ChatBox.tsx`), here are the feature statuses:
 
-### Critical Features (Must Have)
+### ✅ Completed Features
 
-1. **Model Selection**
-   - ModelSelector component with multiple models
-   - Token limit awareness per model
-   - Model switching mid-conversation
-   - Location: `ChatBox.tsx:15`, `ModelSelector` component
+1. **Model Selection** ✅
+   - ModelSelector component integrated
+   - Billing tier restrictions working
+   - Model switching mid-conversation supported
 
-2. **Token Management**
-   - Real-time token counting using gpt-tokenizer
-   - Token warning at 50%, 95%, 99% thresholds
-   - Compress chat functionality
-   - Token usage display
-   - Location: `ChatBox.tsx:39-149`
+2. **Token Management** ✅
+   - HANDLED BY BACKEND - Intelligent compression on server-side
+   - No frontend token counting needed
+   - Backend automatically manages context limits
 
-3. **Voice Input**
+3. **Voice Input** ✅
    - Audio recording with RecordRTC
-   - Whisper transcription
-   - Recording overlay UI
-   - Location: `ChatBox.tsx:1-2`, RecordingOverlay component
+   - Whisper transcription working
+   - Recording overlay UI implemented
 
-4. **Text-to-Speech (TTS)**
-   - Play button on assistant messages
-   - AudioManager for playback control
-   - Pro/Team/Max tier requirement
-   - Location: `_auth.chat.$chatId.tsx:31-63`
-
-5. **File Attachments**
-   - Document upload (.pdf, .txt, .docx, etc.)
+4. **File Attachments** ✅
+   - Document upload (.pdf, .txt, .md)
    - Image attachments for multimodal
-   - File parsing service integration
-   - Location: `ChatBox.tsx:21-37`
+   - Tauri integration for PDF parsing
 
-6. **Markdown Rendering**
+5. **Markdown Rendering** ✅
    - Code syntax highlighting
    - LaTeX math rendering
    - Copy code blocks
    - Thinking tags stripping
-   - Location: `_auth.chat.$chatId.tsx:87`, Markdown component
 
-### UI/UX Features
+6. **Streaming Indicators** ✅
+   - Visual feedback during generation
+   - Different implementation but working well
 
-7. **Message Actions**
-   - Copy message button
-   - Edit message (if implemented)
-   - Delete message
-   - Location: `_auth.chat.$chatId.tsx:69-83`
+### ❌ Features Still Needed
 
-8. **Keyboard Shortcuts**
-   - Ctrl/Cmd+Enter to send
-   - Shift+Enter for newline
-   - Escape to cancel
-   - Location: `ChatBox.tsx` (implicit)
+1. **Text-to-Speech (TTS)** - POSTPONED
+   - API currently broken, will implement when fixed
+   - Play button on assistant messages
+   - AudioManager for playback control
+   - Pro/Team/Max tier requirement
 
-9. **Auto-resize Textarea**
-   - Dynamic height adjustment
-   - Max height constraint
-   - Location: Already in UnifiedChat
+2. **Scroll Improvements**
+   - Scroll-to-bottom button when scrolled up
+   - Better auto-scroll logic matching old behavior:
+     - Auto-scroll on user message send
+     - Auto-scroll when streaming starts
+     - Maintain position when not at bottom
+   - Location: `_auth.chat.$chatId.tsx:530-607`
 
-10. **Mobile Optimizations**
-    - Touch-friendly buttons
-    - Responsive layout
-    - Mobile-specific recording UI
-    - Location: Throughout components
+3. **System Prompts**
+   - Coming via new API
+   - Will need collapsible UI when implemented
 
-### Business Logic Features
+### ✅ UI/UX Features Already Implemented
 
-11. **Billing Integration**
-    - Credits display
-    - Upgrade prompts
-    - Pro/Team tier features
-    - Usage tracking
-    - Location: `index.backup.tsx:83-87`, BillingStatus component
+- **Message Actions** ✅ - Copy button on messages
+- **Keyboard Shortcuts** ✅ - Enter to send, Shift+Enter for newline
+- **Auto-resize Textarea** ✅ - Dynamic height adjustment
+- **Mobile Optimizations** ✅ - Responsive layout with new chat button
 
-12. **Team Management**
-    - Team setup dialog
-    - Team member management
-    - Team billing
-    - Location: `index.backup.tsx:76`, TeamManagementDialog
+### ✅ Business Logic Features (Already Working)
 
-13. **API Key Management**
-    - API key creation/deletion
-    - Usage display
-    - Credits success callback
-    - Location: `index.backup.tsx:76`, ApiKeyManagementDialog
+- **Billing Integration** ✅ - Proactive status loading, upgrade prompts
+- **Team Management** ✅ - Dialog available in main app
+- **API Key Management** ✅ - Dialog available in main app
+- **Query Parameter Handling** ✅ - Working in main index.tsx
+- **Chat Compression** ✅ - Handled by backend automatically
+- **Multimodal Support** ✅ - Images and documents working
+- **Verification Modal** ✅ - Working in main app
+- **Chat Session Management** ✅ - Via Conversations API
 
-14. **Query Parameter Handling**
-    - `?team_setup=true` - Opens team dialog
-    - `?credits_success=true` - Shows credit purchase success
-    - `?login=true` - Redirects to login
-    - Location: `index.backup.tsx:41-48`
+### Implementation Summary
 
-### Advanced Features
+**✅ COMPLETED:**
+- Conversations/Responses API integration
+- Model selection with billing
+- Voice input and transcription
+- File attachments (images & documents)
+- Markdown rendering
+- Streaming indicators
+- Mobile optimizations
+- Token management (backend-handled)
+- All business logic features
 
-15. **Chat Compression**
-    - Compress long conversations
-    - Preserve context intelligently
-    - Token optimization
-    - Location: `ChatBox.tsx` (onCompress callback)
+**❌ REMAINING:**
+1. **Scroll improvements** - Better auto-scroll and scroll-to-bottom button
+2. **TTS** - Postponed until API is fixed
+3. **System prompts** - Coming via new API
+4. **Draft persistence** - Nice-to-have for preventing data loss
 
-16. **Multimodal Support**
-    - Image + text messages
-    - Mixed content rendering
-    - Token counting for images
-    - Location: `ChatBox.tsx:44-65`
-
-17. **Verification Modal**
-    - Email verification prompt
-    - Account verification flow
-    - Location: `index.backup.tsx:12`
-
-18. **Chat Session Hook**
-    - Session management
-    - Message persistence
-    - Location: `_auth.chat.$chatId.tsx:28`
-
-### Implementation Priority
-
-**Phase 1 (Core)**: ✅ Basic chat with conversations API
-**Phase 2 (Essential)**: Model selection, token management, markdown
-- ✅ Model selection with billing integration
-- ✅ Billing status proactive loading
-- ⏳ Token management and warnings
-- ✅ Markdown rendering (already in UnifiedChat)
-
-**Phase 3 (Pro Features)**: Voice input, TTS, file attachments
-**Phase 4 (Business)**: Billing, team management, API keys
-**Phase 5 (Polish)**: Compression, shortcuts, mobile optimization
-
-### Migration Strategy
-
-1. Start with UnifiedChat as the base
-2. Add features incrementally in phases
-3. Test each feature thoroughly before moving to next
-4. Maintain backward compatibility for archived chats
-5. Gradually deprecate old routes (`/chat/$chatId`)
+The refactor is essentially feature-complete except for scroll UX improvements!
 
 ## Completed Features (as of Jan 2025)
 
@@ -1527,11 +1481,9 @@ After analyzing the old codebase (`index.backup.tsx`, `_auth.chat.$chatId.tsx`, 
 
 ## Next Steps
 
-1. ⏳ Implement token management and warnings
-2. Add file attachment support
-3. Implement voice input with Whisper
-4. Add text-to-speech for assistant messages
-5. Integrate remaining business logic (team/API dialogs)
-6. Polish with compression and shortcuts
-7. Deprecate old chat routes
-8. Remove legacy code once stable
+1. **Implement scroll improvements** - Add scroll-to-bottom button and better auto-scroll behavior
+2. **System prompts via API** - Implement when backend API is ready
+3. **TTS integration** - Add when Kokoro API is fixed
+4. **Draft persistence** - Optional localStorage backup for unsent messages
+5. **Clean up old code** - Remove ChatBox.tsx, useChatSession.ts, index.backup.tsx
+6. **Deprecate old chat routes** - Make _auth.chat.$chatId.tsx read-only for archived chats

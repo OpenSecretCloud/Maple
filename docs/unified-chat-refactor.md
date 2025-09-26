@@ -245,18 +245,19 @@ These features exist in the old components but haven't been implemented in Unifi
 - **Auto-play TTS** - Automatic playback for voice-initiated messages
 - **Audio manager** - Prevents multiple TTS playing simultaneously
 
-#### Token Management
-- **Token counting** - Accurate counting using gpt-tokenizer library
-- **Token warnings** - Progressive warnings at 50%, 95%, 99% capacity
-- **Token limit enforcement** - Model-specific limits
-- **Chat compression** - Summarization to continue long conversations
-- **Compress button** - Manual trigger for chat summarization
+#### Scroll Behavior Improvements Needed
+- **Scroll-to-bottom button** - Floating button when scrolled up in conversation
+- **Better auto-scroll logic** - Need to match old behavior:
+  - Auto-scroll when user sends a message
+  - Auto-scroll when assistant starts streaming
+  - Maintain scroll position when not at bottom
+  - Smooth scrolling animations
+
+#### System Prompt (Coming Soon via API)
+- **System prompt support** - Will be handled via new API, not frontend input
+- **Collapsible display** - Will need UI for showing system prompts when implemented
 
 #### UI/UX Features
-- **Scroll-to-bottom button** - Floating button when scrolled up in conversation
-- **System prompt display** - Collapsible system message with "see more/less"
-- **System prompt input** - Optional field for first message
-- **Message streaming indicator** - Three animated dots during generation
 - **Draft message persistence** - localStorage backup of unsent messages
 
 #### Advanced Features
@@ -270,20 +271,19 @@ Based on user value and implementation complexity:
 
 #### High Priority (Essential)
 1. ✅ **Voice Input** - COMPLETED! Recording and transcription working
-2. **Token Management** - Prevents context overflow, essential for long conversations
-3. **Chat Compression** - Allows conversations to continue beyond model limits
-4. **Scroll-to-bottom button** - Simple but important UX improvement
+2. ✅ **Token Management** - HANDLED BY BACKEND! Intelligent compression on server-side
+3. ✅ **Streaming indicators** - COMPLETED! Different implementation but working well
+4. **Scroll-to-bottom button** - Simple but important UX improvement (needs implementation)
 5. **TTS** - Postponed until API is fixed
 
 #### Medium Priority (Nice to Have)
-6. **System prompt support** - Useful for power users
-7. **Streaming indicators** - Visual feedback during generation
-8. **Draft persistence** - Prevents data loss on refresh
+6. **System prompt support** - Coming via new API
+7. **Draft persistence** - Prevents data loss on refresh
 
-#### Low Priority (Consider Dropping)
-9. **Mobile new chat button** - Sidebar is accessible enough
-10. **Token warning at 50%** - Early warnings might be annoying
-11. **Message-specific TTS controls** - Could simplify to global control
+#### Low Priority (Already Done or Not Needed)
+9. ✅ **Mobile new chat button** - Already implemented
+10. ✅ **Token warnings** - Not needed, backend handles compression automatically
+11. **Message-specific TTS controls** - Will implement when TTS API is fixed
 
 ### 🏗️ Architecture Improvements Achieved
 
