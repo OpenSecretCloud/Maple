@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "build:fast": "vite build",
     "lint": "eslint './src/**/*.{ts,tsx}'",
     "preview": "vite preview",
     "add": "bunx shadcn-ui@latest add",

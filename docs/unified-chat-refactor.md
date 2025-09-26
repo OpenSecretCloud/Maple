@@ -206,6 +206,10 @@ The UnifiedChat component now includes these fully working features:
 #### Multimodal Support
 - **Image attachments** - Support for JPEG, PNG, WebP up to 10MB
 - **Document parsing** - PDF, TXT, MD support (PDF requires Tauri)
+  - Fixed Tauri command: Uses `extract_document_content` instead of `parse_document`
+  - Simplified JSON format: Documents stored as `{ document: { filename, text_content } }`
+  - Removed unnecessary `status` and `errors` fields from document structure
+  - Proper markdown rendering with document preview button
 - **Attachment preview** - Visual previews with remove capability
 - **Auto model switching** - Automatically selects vision-capable models when images added
 - **Plus button dropdown** - Clean attachment interface
