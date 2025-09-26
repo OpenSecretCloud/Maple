@@ -14,7 +14,7 @@ import {
 import ChatBox from "@/components/ChatBox";
 import { useOpenAI } from "@/ai/useOpenAi";
 import { useLocalState } from "@/state/useLocalState";
-import { Markdown, stripThinkingTags } from "@/components/markdown";
+import { Markdown, stripThinkingTags, stripMarkdownForTTS } from "@/components/markdown";
 import { ChatMessage, DEFAULT_MODEL_ID } from "@/state/LocalStateContext";
 import { UpgradePromptDialog } from "@/components/UpgradePromptDialog";
 import { useQuery } from "@tanstack/react-query";
@@ -122,6 +122,7 @@ function SystemMessage({
   autoPlay?: boolean;
 }) {
   const textWithoutThinking = stripThinkingTags(text);
+  const textForTTS = stripMarkdownForTTS(text);
   const { isCopied, handleCopy } = useCopyToClipboard(textWithoutThinking);
   const [isPlaying, setIsPlaying] = useState(false);
   const [upgradeDialogOpen, setUpgradeDialogOpen] = useState(false);
@@ -178,7 +179,7 @@ function SystemMessage({
     }
 
     // Guard against empty text
-    if (!textWithoutThinking.trim()) {
+    if (!textForTTS.trim()) {
       return;
     }
 
@@ -196,7 +197,7 @@ function SystemMessage({
           model: "kokoro" as any,
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           voice: "af_sky+af_bella" as any,
-          input: textWithoutThinking,
+          input: textForTTS,
           response_format: "mp3"
         },
         { signal: abortController.signal }
@@ -259,11 +260,11 @@ function SystemMessage({
       audioRef.current = null;
       abortControllerRef.current = null;
     }
-  }, [textWithoutThinking, isPlaying, openai, canUseTTS]);
+  }, [textForTTS, isPlaying, openai, canUseTTS]);
 
   // Auto-play TTS when message is complete and autoPlay is true
   useEffect(() => {
-    if (autoPlay && !loading && textWithoutThinking && canUseTTS && !isPlaying) {
+    if (autoPlay && !loading && textForTTS && canUseTTS && !isPlaying) {
       // Only auto-play once when the message completes
       handleTTS();
     }
