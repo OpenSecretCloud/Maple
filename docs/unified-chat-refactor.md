@@ -245,13 +245,16 @@ These features exist in the old components but haven't been implemented in Unifi
 - **Auto-play TTS** - Automatic playback for voice-initiated messages
 - **Audio manager** - Prevents multiple TTS playing simultaneously
 
-#### Scroll Behavior Improvements Needed
-- **Scroll-to-bottom button** - Floating button when scrolled up in conversation
-- **Better auto-scroll logic** - Need to match old behavior:
+#### ✅ Scroll Behavior (Completed December 2024)
+- **Smart auto-scroll logic** - Improved scrolling that matches old behavior:
+  - Instant scroll to bottom on initial chat load
   - Auto-scroll when user sends a message
-  - Auto-scroll when assistant starts streaming
-  - Maintain scroll position when not at bottom
-  - Smooth scrolling animations
+  - Auto-scroll slightly (100px) when assistant starts streaming
+  - No auto-scroll while streaming (lets user read at their pace)
+  - Auto-scroll when new messages arrive from polling (e.g., after refresh)
+  - Maintains scroll position when user has scrolled up
+- **User scroll detection** - Tracks if user is within 100px of bottom
+- **Scroll-to-bottom button** - Could be added but not currently implemented
 
 #### System Prompt (Coming Soon via API)
 - **System prompt support** - Will be handled via new API, not frontend input
@@ -273,7 +276,7 @@ Based on user value and implementation complexity:
 1. ✅ **Voice Input** - COMPLETED! Recording and transcription working
 2. ✅ **Token Management** - HANDLED BY BACKEND! Intelligent compression on server-side
 3. ✅ **Streaming indicators** - COMPLETED! Different implementation but working well
-4. **Scroll-to-bottom button** - Simple but important UX improvement (needs implementation)
+4. ✅ **Scroll behavior** - COMPLETED! Smart auto-scrolling with user detection
 5. **TTS** - Postponed until API is fixed
 
 #### Medium Priority (Nice to Have)
