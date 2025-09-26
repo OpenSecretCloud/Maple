@@ -277,6 +277,7 @@ export function UnifiedChat() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(!isMobile);
   const [error, setError] = useState<string | null>(null);
   const [lastSeenItemId, setLastSeenItemId] = useState<string | undefined>();
+  const [isNewConversationJustCreated, setIsNewConversationJustCreated] = useState(false);
 
   // Attachment states
   const [draftImages, setDraftImages] = useState<File[]>([]);
@@ -544,12 +545,12 @@ export function UnifiedChat() {
 
   // Polling mechanism for conversation updates
   const pollForNewItems = useCallback(async () => {
-    if (!conversation?.id || !openai || !lastSeenItemId) return;
+    if (!conversation?.id || !openai) return;
 
     try {
-      // Fetch items after the last seen ID
+      // Fetch items after the last seen ID (or all items if no lastSeenItemId)
       const response = await openai.conversations.items.list(conversation.id, {
-        after: lastSeenItemId,
+        ...(lastSeenItemId ? { after: lastSeenItemId } : {}),
         limit: 100
       });
 
@@ -619,6 +620,13 @@ export function UnifiedChat() {
 
   // Load conversation when URL changes or on mount
   useEffect(() => {
+    // Skip if we just created a new conversation
+    if (isNewConversationJustCreated) {
+      // Reset the flag for next time
+      setIsNewConversationJustCreated(false);
+      return;
+    }
+
     if (chatId && openai) {
       // Load the conversation from URL
       loadConversation(chatId);
@@ -1043,6 +1051,9 @@ export function UnifiedChat() {
       };
 
       setMessages((prev) => [...prev, userMessage]);
+      // Set lastSeenItemId to our local message ID
+      // The backend should map this via internal_message_id
+      setLastSeenItemId(localMessageId);
       // Only clear input if not using override (voice already cleared it)
       if (!overrideInput) {
         setInput("");
@@ -1065,7 +1076,8 @@ export function UnifiedChat() {
           usp.set("conversation_id", conversationId);
           window.history.replaceState(null, "", `${window.location.pathname}?${usp.toString()}`);
 
-          // Update local state
+          // Update local state but flag that we just created it
+          setIsNewConversationJustCreated(true);
           setChatId(conversationId);
 
           // Trigger sidebar refresh to show the new conversation
