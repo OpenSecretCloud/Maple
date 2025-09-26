@@ -640,15 +640,38 @@ export function UnifiedChat() {
     }
   }, [chatId, openai, loadConversation]);
 
-  // Set up polling interval
+  // Set up progressive polling interval
   useEffect(() => {
     if (!conversation?.id || !openai) return;
 
-    // Don't poll immediately - loadConversation already fetched everything
-    // Start polling after 5 seconds to check for updates
-    const intervalId = setInterval(pollForNewItems, 5000);
+    // Progressive intervals: 2s, 5s, 10s, 15s, 20s, 30s, 60s (then 60s forever)
+    const intervals = [2000, 5000, 10000, 15000, 20000, 30000, 60000];
+    let currentIntervalIndex = 0;
+    let timeoutId: ReturnType<typeof setTimeout>;
 
-    return () => clearInterval(intervalId);
+    const scheduleNextPoll = () => {
+      // Get current interval (use last interval if we've reached the end)
+      const currentInterval = intervals[Math.min(currentIntervalIndex, intervals.length - 1)];
+
+      timeoutId = setTimeout(() => {
+        pollForNewItems();
+
+        // Move to next interval if not at the end
+        if (currentIntervalIndex < intervals.length - 1) {
+          currentIntervalIndex++;
+        }
+
+        // Schedule the next poll
+        scheduleNextPoll();
+      }, currentInterval);
+    };
+
+    // Start the progressive polling (first poll after 2s)
+    scheduleNextPoll();
+
+    return () => {
+      if (timeoutId) clearTimeout(timeoutId);
+    };
   }, [conversation?.id, openai, pollForNewItems]);
 
   // Toggle sidebar
