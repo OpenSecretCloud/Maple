@@ -293,6 +293,12 @@ export function UnifiedChat() {
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [isProcessingSend, setIsProcessingSend] = useState(false);
   const [audioError, setAudioError] = useState<string | null>(null);
+
+  // Scroll state
+  const [isUserScrolling, setIsUserScrolling] = useState(false);
+  const prevMessageCountRef = useRef(0);
+  const prevStreamingRef = useRef(false);
+  const [hasNewPolledMessages, setHasNewPolledMessages] = useState(false);
   const recorderRef = useRef<RecordRTC | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
 
@@ -303,6 +309,7 @@ export function UnifiedChat() {
   // Refs
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const chatContainerRef = useRef<HTMLDivElement>(null);
 
   // Attachment cleanup function - defined early to avoid reference errors
   const clearAllAttachments = useCallback(() => {
@@ -324,10 +331,100 @@ export function UnifiedChat() {
     }
   }, [input]);
 
-  // Scroll to bottom when messages change
+  // Improved scroll detection - track if user is near bottom
+  const handleScroll = useCallback(() => {
+    const container = chatContainerRef.current;
+    if (!container) return;
+
+    const { scrollTop, scrollHeight, clientHeight } = container;
+    const isNearBottom = scrollHeight - scrollTop - clientHeight < 100;
+    setIsUserScrolling(!isNearBottom);
+  }, []);
+
+  // Scroll to bottom helper
+  const scrollToBottom = useCallback((behavior: ScrollBehavior = "smooth") => {
+    if (chatContainerRef.current) {
+      chatContainerRef.current.scrollTo({
+        top: chatContainerRef.current.scrollHeight,
+        behavior
+      });
+    }
+  }, []);
+
+  // Attach scroll listener
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+    const container = chatContainerRef.current;
+    if (!container) return;
+
+    container.addEventListener("scroll", handleScroll);
+    // Initial check
+    handleScroll();
+
+    return () => container.removeEventListener("scroll", handleScroll);
+  }, [handleScroll]);
+
+  // Initial load - scroll to bottom instantly
+  useEffect(() => {
+    if (messages.length > 0 && prevMessageCountRef.current === 0) {
+      // First load of messages - scroll instantly to bottom
+      setTimeout(() => {
+        scrollToBottom("instant");
+      }, 0);
+    }
+    prevMessageCountRef.current = messages.length;
+  }, [messages.length, scrollToBottom]);
+
+  // Auto-scroll when user sends a message
+  const userMessageCount = messages.filter((m) => m.role === "user").length;
+  const prevUserMessageCount = useRef(userMessageCount);
+
+  useEffect(() => {
+    if (userMessageCount > prevUserMessageCount.current) {
+      // User just sent a message - scroll to bottom
+      setTimeout(() => {
+        scrollToBottom("smooth");
+      }, 50);
+    }
+    prevUserMessageCount.current = userMessageCount;
+  }, [userMessageCount, scrollToBottom]);
+
+  // Auto-scroll when assistant starts streaming (but not while streaming)
+  useEffect(() => {
+    const hasStreamingMessage = messages.some((m) => m.status === "streaming");
+
+    if (hasStreamingMessage && !prevStreamingRef.current && !isUserScrolling) {
+      // Just started streaming - scroll slightly to show the loading indicator
+      setTimeout(() => {
+        const container = chatContainerRef.current;
+        if (container) {
+          // Scroll just enough to show the streaming message started
+          const currentScroll = container.scrollTop;
+          const maxScroll = container.scrollHeight - container.clientHeight;
+          // Scroll down 100px or to bottom, whichever is less
+          const targetScroll = Math.min(currentScroll + 100, maxScroll);
+          container.scrollTo({
+            top: targetScroll,
+            behavior: "smooth"
+          });
+        }
+      }, 100);
+    }
+
+    prevStreamingRef.current = hasStreamingMessage;
+  }, [messages, isUserScrolling]);
+
+  // Auto-scroll when new messages arrive from polling
+  useEffect(() => {
+    if (hasNewPolledMessages) {
+      // New messages arrived from polling - scroll to bottom to show them
+      setTimeout(() => {
+        scrollToBottom("smooth");
+      }, 100);
+
+      // Reset the flag
+      setHasNewPolledMessages(false);
+    }
+  }, [hasNewPolledMessages, scrollToBottom]);
 
   // Unified event handling for conversation changes
   useEffect(() => {
@@ -341,12 +438,16 @@ export function UnifiedChat() {
       setLastSeenItemId(undefined);
       // Clear attachments
       clearAllAttachments();
+      // Reset scroll tracking
+      prevMessageCountRef.current = 0;
     };
 
     // Handle conversation selection from sidebar
     const handleConversationSelected = (event: CustomEvent) => {
       const { conversationId } = event.detail;
       if (conversationId && conversationId !== chatId) {
+        // Reset scroll tracking for new conversation
+        prevMessageCountRef.current = 0;
         // Update our local chatId state to trigger load
         setChatId(conversationId);
         setError(null);
@@ -358,6 +459,8 @@ export function UnifiedChat() {
       const params = new URLSearchParams(window.location.search);
       const newChatId = params.get("conversation_id") || undefined;
       if (newChatId !== chatId) {
+        // Reset scroll tracking for navigation
+        prevMessageCountRef.current = 0;
         setChatId(newChatId);
       }
     };
@@ -380,6 +483,9 @@ export function UnifiedChat() {
   const loadConversation = useCallback(
     async (conversationId: string) => {
       if (!openai) return;
+
+      // Reset message count before loading new conversation
+      prevMessageCountRef.current = 0;
 
       try {
         // Fetch conversation metadata
@@ -483,6 +589,11 @@ export function UnifiedChat() {
 
             if (uniqueNewMessages.length === 0) return prev;
 
+            // Mark that we have new polled messages for scrolling
+            if (uniqueNewMessages.length > 0) {
+              setHasNewPolledMessages(true);
+            }
+
             // Simple approach: just add new messages that we don't have
             // The backend should handle the internal_message_id mapping
             return [...prev, ...uniqueNewMessages];
@@ -516,6 +627,8 @@ export function UnifiedChat() {
       setConversation(null);
       setMessages([]);
       setLastSeenItemId(undefined);
+      // Reset scroll tracking
+      prevMessageCountRef.current = 0;
     }
   }, [chatId, openai, loadConversation]);
 
@@ -1130,7 +1243,7 @@ export function UnifiedChat() {
         )}
 
         {/* Messages Area */}
-        <div className="flex-1 overflow-y-auto flex flex-col relative">
+        <div ref={chatContainerRef} className="flex-1 overflow-y-auto flex flex-col relative">
           {/* Error message */}
           {error && (
             <div className="max-w-4xl mx-auto w-full p-6">
