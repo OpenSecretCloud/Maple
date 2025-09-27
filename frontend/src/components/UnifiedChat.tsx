@@ -82,8 +82,19 @@ interface Message {
   role: "user" | "assistant";
   content: ConversationContent[];
   timestamp: number;
-  status?: "complete" | "streaming" | "error";
+  status?: "completed" | "streaming" | "error" | "in_progress" | "incomplete";
 }
+
+// Helper function to find last completed (non-in_progress) item ID
+const findLastCompletedItemId = (items: any[]): string | undefined => {
+  for (let i = items.length - 1; i >= 0; i--) {
+    const item = items[i] as ConversationItem;
+    if (item.status !== "in_progress") {
+      return item.id;
+    }
+  }
+  return undefined;
+};
 
 // Custom hook for copy to clipboard functionality
 function useCopyToClipboard(text: string) {
@@ -135,7 +146,7 @@ interface ConversationItem {
   type: "message" | "web_search_call";
   object?: string;
   role?: "user" | "assistant" | "system";
-  status?: "completed" | "in_progress";
+  status?: "completed" | "in_progress" | "incomplete";
   content?: Array<{
     type: "input_text" | "input_image" | "output_text";
     text?: string;
@@ -209,6 +220,20 @@ const MessageList = memo(
                     </div>
                   </div>
 
+                  {/* Status indicators */}
+                  {message.role === "assistant" && message.status === "in_progress" && (
+                    <div className="flex items-center gap-1 text-muted-foreground">
+                      <div className="w-2 h-2 bg-foreground/60 rounded-full animate-pulse" />
+                      <div className="w-2 h-2 bg-foreground/60 rounded-full animate-pulse delay-75" />
+                      <div className="w-2 h-2 bg-foreground/60 rounded-full animate-pulse delay-150" />
+                    </div>
+                  )}
+                  {message.role === "assistant" && message.status === "incomplete" && (
+                    <div className="text-sm text-yellow-600 dark:text-yellow-500 mt-2">
+                      Response incomplete (hit limit or error)
+                    </div>
+                  )}
+
                   {/* Actions - only show on hover for assistant messages */}
                   {message.role === "assistant" &&
                     message.content &&
@@ -230,7 +255,10 @@ const MessageList = memo(
 
         {/* Loading indicator - modern style */}
         {isGenerating &&
-          !messages.some((m) => m.role === "assistant" && m.status === "streaming") && (
+          !messages.some(
+            (m) =>
+              m.role === "assistant" && (m.status === "streaming" || m.status === "in_progress")
+          ) && (
             <div className="group py-6 px-4">
               <div className="flex gap-3 max-w-4xl mx-auto">
                 <div className="flex-shrink-0">
@@ -503,6 +531,7 @@ export function UnifiedChat() {
 
         for (const item of itemsResponse.data) {
           if (item.type === "message" && item.role && item.content) {
+            const convItem = item as ConversationItem;
             loadedMessages.push({
               id: item.id,
               role: item.role as "user" | "assistant",
@@ -510,17 +539,17 @@ export function UnifiedChat() {
               timestamp:
                 ((item as ConversationItem & { created_at?: number }).created_at ??
                   Date.now() / 1000) * 1000,
-              status: "complete"
+              status: convItem.status || "completed"
             });
           }
         }
 
         setMessages(loadedMessages);
 
-        // Set last seen ID for polling
-        if (itemsResponse.data.length > 0) {
-          const lastItem = itemsResponse.data[itemsResponse.data.length - 1];
-          setLastSeenItemId(lastItem.id);
+        // Set last seen ID for polling - skip in_progress messages
+        const lastCompletedId = findLastCompletedItemId(itemsResponse.data);
+        if (lastCompletedId) {
+          setLastSeenItemId(lastCompletedId);
         }
       } catch (error) {
         const err = error as { status?: number; message?: string };
@@ -559,7 +588,8 @@ export function UnifiedChat() {
         const newMessages: Message[] = [];
 
         for (const item of response.data) {
-          if (item.type === "message" && item.role && item.content) {
+          if (item.type === "message" && item.role) {
+            const convItem = item as ConversationItem;
             // Convert content to array if it's a string
             const messageContent =
               typeof item.content === "string"
@@ -568,46 +598,72 @@ export function UnifiedChat() {
                   ? item.content
                   : [];
 
-            if (messageContent.length > 0) {
-              newMessages.push({
-                id: item.id,
-                role: item.role as "user" | "assistant",
-                content: messageContent as ConversationContent[],
-                timestamp:
-                  ((item as ConversationItem & { created_at?: number }).created_at ??
-                    Date.now() / 1000) * 1000,
-                status: "complete"
-              });
-            }
+            newMessages.push({
+              id: item.id,
+              role: item.role as "user" | "assistant",
+              content: messageContent as ConversationContent[],
+              timestamp:
+                ((item as ConversationItem & { created_at?: number }).created_at ??
+                  Date.now() / 1000) * 1000,
+              status: convItem.status || "completed"
+            });
           }
         }
 
         if (newMessages.length > 0) {
-          // Merge new messages with deduplication
+          // Merge new messages with deduplication and status updates
           setMessages((prev) => {
-            const existingIds = new Set(prev.map((m) => m.id));
-            const uniqueNewMessages = newMessages.filter((m) => !existingIds.has(m.id));
+            const newMessagesMap = new Map(newMessages.map((m) => [m.id, m]));
+            let hasChanges = false;
 
-            if (uniqueNewMessages.length === 0) return prev;
+            // First, update existing messages if their status/content changed
+            const updatedMessages = prev.map((existingMsg) => {
+              const newVersion = newMessagesMap.get(existingMsg.id);
+              if (newVersion) {
+                // Remove from map so we don't add it again
+                newMessagesMap.delete(existingMsg.id);
+                // Check if anything changed
+                if (
+                  existingMsg.status !== newVersion.status ||
+                  existingMsg.content.length !== newVersion.content.length
+                ) {
+                  hasChanges = true;
+                  return newVersion;
+                }
+              }
+              return existingMsg;
+            });
+
+            // Add any remaining new messages (ones we haven't seen before)
+            const trulyNewMessages = Array.from(newMessagesMap.values());
+
+            if (!hasChanges && trulyNewMessages.length === 0) {
+              return prev;
+            }
 
             // Mark that we have new polled messages for scrolling
-            if (uniqueNewMessages.length > 0) {
+            if (trulyNewMessages.length > 0) {
               setHasNewPolledMessages(true);
             }
 
-            // Simple approach: just add new messages that we don't have
-            // The backend should handle the internal_message_id mapping
-            return [...prev, ...uniqueNewMessages];
+            return [...updatedMessages, ...trulyNewMessages];
           });
 
-          // Update last seen item ID
-          const lastItem = response.data[response.data.length - 1];
-          if (lastItem?.id) {
-            setLastSeenItemId(lastItem.id);
+          // Update last seen item ID - skip in_progress messages
+          const lastCompletedId = findLastCompletedItemId(response.data);
+          if (lastCompletedId) {
+            setLastSeenItemId(lastCompletedId);
           }
 
           // Check if we're no longer generating
-          if (isGenerating && newMessages.some((m) => m.role === "assistant")) {
+          // Only stop if assistant message is completed or incomplete, not if still in_progress
+          if (
+            isGenerating &&
+            newMessages.some(
+              (m) =>
+                m.role === "assistant" && (m.status === "completed" || m.status === "incomplete")
+            )
+          ) {
             setIsGenerating(false);
           }
         }
@@ -1070,7 +1126,7 @@ export function UnifiedChat() {
         role: "user",
         content: messageContent, // Store the actual content structure
         timestamp: Date.now(),
-        status: "complete"
+        status: "completed"
       };
 
       setMessages((prev) => [...prev, userMessage]);
@@ -1173,11 +1229,11 @@ export function UnifiedChat() {
               );
             }
           } else if (event.type === "response.output_item.done") {
-            // Mark message as complete and update lastSeenItemId
+            // Mark message as completed and update lastSeenItemId
             if (serverAssistantId) {
               setMessages((prev) =>
                 prev.map((msg) =>
-                  msg.id === serverAssistantId ? { ...msg, status: "complete" } : msg
+                  msg.id === serverAssistantId ? { ...msg, status: "completed" } : msg
                 )
               );
               setLastSeenItemId(serverAssistantId);
