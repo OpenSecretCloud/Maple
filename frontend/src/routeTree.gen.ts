@@ -26,7 +26,6 @@ import { Route as AuthImport } from './routes/_auth'
 import { Route as IndexImport } from './routes/index'
 import { Route as VerifyCodeImport } from './routes/verify.$code'
 import { Route as PasswordResetConfirmImport } from './routes/password-reset.confirm'
-import { Route as IndexBackupImport } from './routes/index.backup'
 import { Route as TeamInviteInviteIdImport } from './routes/team.invite.$inviteId'
 import { Route as AuthProviderCallbackImport } from './routes/auth.$provider.callback'
 import { Route as AuthChatChatIdImport } from './routes/_auth.chat.$chatId'
@@ -120,12 +119,6 @@ const PasswordResetConfirmRoute = PasswordResetConfirmImport.update({
   id: '/confirm',
   path: '/confirm',
   getParentRoute: () => PasswordResetRoute,
-} as any)
-
-const IndexBackupRoute = IndexBackupImport.update({
-  id: '/index/backup',
-  path: '/index/backup',
-  getParentRoute: () => rootRoute,
 } as any)
 
 const TeamInviteInviteIdRoute = TeamInviteInviteIdImport.update({
@@ -241,13 +234,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof TeamsImport
       parentRoute: typeof rootRoute
     }
-    '/index/backup': {
-      id: '/index/backup'
-      path: '/index/backup'
-      fullPath: '/index/backup'
-      preLoaderRoute: typeof IndexBackupImport
-      parentRoute: typeof rootRoute
-    }
     '/password-reset/confirm': {
       id: '/password-reset/confirm'
       path: '/confirm'
@@ -324,7 +310,6 @@ export interface FileRoutesByFullPath {
   '/proof': typeof ProofRoute
   '/signup': typeof SignupRoute
   '/teams': typeof TeamsRoute
-  '/index/backup': typeof IndexBackupRoute
   '/password-reset/confirm': typeof PasswordResetConfirmRoute
   '/verify/$code': typeof VerifyCodeRoute
   '/chat/$chatId': typeof AuthChatChatIdRoute
@@ -346,7 +331,6 @@ export interface FileRoutesByTo {
   '/proof': typeof ProofRoute
   '/signup': typeof SignupRoute
   '/teams': typeof TeamsRoute
-  '/index/backup': typeof IndexBackupRoute
   '/password-reset/confirm': typeof PasswordResetConfirmRoute
   '/verify/$code': typeof VerifyCodeRoute
   '/chat/$chatId': typeof AuthChatChatIdRoute
@@ -369,7 +353,6 @@ export interface FileRoutesById {
   '/proof': typeof ProofRoute
   '/signup': typeof SignupRoute
   '/teams': typeof TeamsRoute
-  '/index/backup': typeof IndexBackupRoute
   '/password-reset/confirm': typeof PasswordResetConfirmRoute
   '/verify/$code': typeof VerifyCodeRoute
   '/_auth/chat/$chatId': typeof AuthChatChatIdRoute
@@ -393,7 +376,6 @@ export interface FileRouteTypes {
     | '/proof'
     | '/signup'
     | '/teams'
-    | '/index/backup'
     | '/password-reset/confirm'
     | '/verify/$code'
     | '/chat/$chatId'
@@ -414,7 +396,6 @@ export interface FileRouteTypes {
     | '/proof'
     | '/signup'
     | '/teams'
-    | '/index/backup'
     | '/password-reset/confirm'
     | '/verify/$code'
     | '/chat/$chatId'
@@ -435,7 +416,6 @@ export interface FileRouteTypes {
     | '/proof'
     | '/signup'
     | '/teams'
-    | '/index/backup'
     | '/password-reset/confirm'
     | '/verify/$code'
     | '/_auth/chat/$chatId'
@@ -458,7 +438,6 @@ export interface RootRouteChildren {
   ProofRoute: typeof ProofRoute
   SignupRoute: typeof SignupRoute
   TeamsRoute: typeof TeamsRoute
-  IndexBackupRoute: typeof IndexBackupRoute
   VerifyCodeRoute: typeof VerifyCodeRoute
   AuthProviderCallbackRoute: typeof AuthProviderCallbackRoute
   TeamInviteInviteIdRoute: typeof TeamInviteInviteIdRoute
@@ -478,7 +457,6 @@ const rootRouteChildren: RootRouteChildren = {
   ProofRoute: ProofRoute,
   SignupRoute: SignupRoute,
   TeamsRoute: TeamsRoute,
-  IndexBackupRoute: IndexBackupRoute,
   VerifyCodeRoute: VerifyCodeRoute,
   AuthProviderCallbackRoute: AuthProviderCallbackRoute,
   TeamInviteInviteIdRoute: TeamInviteInviteIdRoute,
@@ -507,7 +485,6 @@ export const routeTree = rootRoute
         "/proof",
         "/signup",
         "/teams",
-        "/index/backup",
         "/verify/$code",
         "/auth/$provider/callback",
         "/team/invite/$inviteId"
@@ -557,9 +534,6 @@ export const routeTree = rootRoute
     },
     "/teams": {
       "filePath": "teams.tsx"
-    },
-    "/index/backup": {
-      "filePath": "index.backup.tsx"
     },
     "/password-reset/confirm": {
       "filePath": "password-reset.confirm.tsx",
