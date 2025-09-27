@@ -1,12 +1,22 @@
-import { Search, SquarePenIcon, PanelRightClose, PanelRightOpen, XCircle } from "lucide-react";
+import {
+  Search,
+  SquarePenIcon,
+  PanelRightClose,
+  PanelRightOpen,
+  XCircle,
+  ChevronDown,
+  ChevronRight,
+  Archive
+} from "lucide-react";
 import { Button } from "./ui/button";
 import { useLocation, useRouter } from "@tanstack/react-router";
 import { ChatHistoryList } from "./ChatHistoryList";
 import { AccountMenu } from "./AccountMenu";
-import { useRef, useEffect, KeyboardEvent, useCallback, useLayoutEffect } from "react";
+import { useRef, useEffect, KeyboardEvent, useCallback, useLayoutEffect, useState } from "react";
 import { cn, useClickOutside, useIsMobile } from "@/utils/utils";
 import { Input } from "./ui/input";
 import { useLocalState } from "@/state/useLocalState";
+import { useQuery } from "@tanstack/react-query";
 
 export function Sidebar({
   chatId,
@@ -21,6 +31,24 @@ export function Sidebar({
   const location = useLocation();
   const { searchQuery, setSearchQuery, isSearchVisible, setIsSearchVisible } = useLocalState();
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const [isArchivedExpanded, setIsArchivedExpanded] = useState(false);
+
+  // Fetch archived chats from KV store (localStorage) - simple direct read
+  const { data: archivedChats } = useQuery({
+    queryKey: ["archivedChats"],
+    queryFn: async () => {
+      try {
+        const chatsStr = localStorage.getItem("maple_chats");
+        if (!chatsStr) return [];
+        const chats = JSON.parse(chatsStr);
+        return Array.isArray(chats) ? chats : [];
+      } catch (error) {
+        console.error("Error loading archived chats:", error);
+        return [];
+      }
+    },
+    retry: false
+  });
 
   async function addChat() {
     // If sidebar is open, close it
@@ -193,6 +221,47 @@ export function Sidebar({
         )}
         <nav className="flex flex-col gap-2 flex-1 overflow-y-auto px-4">
           <ChatHistoryList currentChatId={chatId} searchQuery={searchQuery} />
+
+          {/* Archived Chats Section - only show if there are archived chats */}
+          {archivedChats && archivedChats.length > 0 && (
+            <div className="mt-4 border-t border-border pt-4">
+              <button
+                onClick={() => setIsArchivedExpanded(!isArchivedExpanded)}
+                className="flex items-center gap-2 w-full text-sm text-muted-foreground hover:text-foreground transition-colors mb-2"
+              >
+                {isArchivedExpanded ? (
+                  <ChevronDown className="h-4 w-4" />
+                ) : (
+                  <ChevronRight className="h-4 w-4" />
+                )}
+                <Archive className="h-4 w-4" />
+                <span>Archived Chats ({archivedChats.length})</span>
+              </button>
+
+              {isArchivedExpanded && (
+                <div className="flex flex-col gap-2">
+                  {archivedChats.map((chat: { id: string; title?: string }) => {
+                    const isActive = chat.id === chatId;
+                    return (
+                      <div
+                        key={chat.id}
+                        onClick={() => {
+                          router.navigate({ to: "/chat/$chatId", params: { chatId: chat.id } });
+                        }}
+                        className={`rounded-lg py-2 transition-all hover:text-primary cursor-pointer ${
+                          isActive ? "text-primary" : "text-muted-foreground"
+                        }`}
+                      >
+                        <div className="overflow-hidden whitespace-nowrap hover:underline text-sm">
+                          {chat.title || "Untitled Chat"}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
         </nav>
         <div className="px-4 pb-4">
           <AccountMenu />
