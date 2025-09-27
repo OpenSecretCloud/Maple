@@ -1,6 +1,6 @@
 import { useState, useMemo, useCallback, useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { MoreHorizontal, Trash, Pencil } from "lucide-react";
+import { MoreHorizontal, Trash, Pencil, ChevronDown, ChevronRight } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -10,6 +10,7 @@ import {
 import { RenameChatDialog } from "@/components/RenameChatDialog";
 import { useOpenAI } from "@/ai/useOpenAi";
 import { useOpenSecret } from "@opensecret/react";
+import { useRouter } from "@tanstack/react-router";
 
 interface ChatHistoryListProps {
   currentChatId?: string;
@@ -26,12 +27,21 @@ interface Conversation {
   };
 }
 
+interface ArchivedChat {
+  id: string;
+  title: string;
+  updated_at: number;
+  created_at: number;
+}
+
 export function ChatHistoryList({ currentChatId, searchQuery = "" }: ChatHistoryListProps) {
   const queryClient = useQueryClient();
   const openai = useOpenAI();
   const opensecret = useOpenSecret();
+  const router = useRouter();
   const [isRenameDialogOpen, setIsRenameDialogOpen] = useState(false);
   const [selectedChat, setSelectedChat] = useState<{ id: string; title: string } | null>(null);
+  const [isArchivedExpanded, setIsArchivedExpanded] = useState(false);
 
   // Fetch conversations from API using the OpenSecret SDK
   const {
@@ -61,6 +71,30 @@ export function ChatHistoryList({ currentChatId, searchQuery = "" }: ChatHistory
     refetchInterval: 30000 // Refresh every 30 seconds
   });
 
+  // Fetch archived chats from KV store
+  const { data: archivedChats } = useQuery({
+    queryKey: ["archivedChats"],
+    queryFn: async () => {
+      if (!opensecret?.get) return [];
+
+      try {
+        const historyListStr = await opensecret.get("history_list");
+        if (!historyListStr) return [];
+
+        const historyList = JSON.parse(historyListStr) as ArchivedChat[];
+        if (!Array.isArray(historyList)) return [];
+
+        // Sort by updated_at descending (most recent first)
+        return historyList.sort((a, b) => (b.updated_at || 0) - (a.updated_at || 0));
+      } catch (error) {
+        console.error("Error loading archived chats:", error);
+        return [];
+      }
+    },
+    enabled: !!opensecret?.get,
+    retry: false
+  });
+
   // Filter conversations based on search query
   const filteredConversations = useMemo(() => {
     if (!conversations) return [];
@@ -72,6 +106,15 @@ export function ChatHistoryList({ currentChatId, searchQuery = "" }: ChatHistory
       return title.toLowerCase().includes(normalizedQuery);
     });
   }, [conversations, searchQuery]);
+
+  // Filter archived chats based on search query
+  const filteredArchivedChats = useMemo(() => {
+    if (!archivedChats) return [];
+    if (!searchQuery.trim()) return archivedChats;
+
+    const normalizedQuery = searchQuery.trim().toLowerCase();
+    return archivedChats.filter((chat) => chat.title.toLowerCase().includes(normalizedQuery));
+  }, [archivedChats, searchQuery]);
 
   // Handle conversation deletion via API
   const handleDeleteConversation = useCallback(
@@ -224,6 +267,51 @@ export function ChatHistoryList({ currentChatId, searchQuery = "" }: ChatHistory
           </div>
         );
       })}
+
+      {/* Archived Chats Section - only show if there are archived chats */}
+      {filteredArchivedChats && filteredArchivedChats.length > 0 && (
+        <div className="mt-4">
+          <button
+            onClick={() => setIsArchivedExpanded(!isArchivedExpanded)}
+            className="flex items-center gap-2 w-full text-sm text-muted-foreground hover:text-foreground transition-colors mb-2"
+          >
+            {isArchivedExpanded ? (
+              <ChevronDown className="h-4 w-4" />
+            ) : (
+              <ChevronRight className="h-4 w-4" />
+            )}
+            <span>Archived ({filteredArchivedChats.length})</span>
+          </button>
+
+          {isArchivedExpanded && (
+            <div className="flex flex-col gap-2">
+              {filteredArchivedChats.map((chat) => {
+                const isActive = chat.id === currentChatId;
+                return (
+                  <div key={chat.id} className="relative">
+                    <div
+                      onClick={() => {
+                        router.navigate({ to: "/chat/$chatId", params: { chatId: chat.id } });
+                      }}
+                      className={`rounded-lg py-2 transition-all hover:text-primary cursor-pointer ${
+                        isActive ? "text-primary" : "text-muted-foreground"
+                      }`}
+                    >
+                      <div className="overflow-hidden whitespace-nowrap hover:underline pr-8">
+                        {chat.title}
+                      </div>
+                      <div className="text-xs opacity-70 mt-1">
+                        {new Date(chat.updated_at || chat.created_at).toLocaleDateString()}
+                      </div>
+                    </div>
+                    <div className="absolute inset-y-0 right-0 w-[3rem] bg-gradient-to-l from-background to-transparent pointer-events-none"></div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
 
       {selectedChat && (
         <RenameChatDialog
