@@ -25,7 +25,6 @@ import {
   Send,
   Bot,
   User,
-  Loader2,
   Copy,
   Check,
   Plus,
@@ -230,8 +229,9 @@ const MessageList = memo(
                     </div>
                   )}
                   {message.role === "assistant" && message.status === "incomplete" && (
-                    <div className="text-sm text-yellow-600 dark:text-yellow-500 mt-2">
-                      Response incomplete (hit limit or error)
+                    <div className="inline-flex items-center gap-2 text-sm text-muted-foreground bg-muted/50 px-3 py-1.5 rounded-md mt-2">
+                      <div className="w-1.5 h-1.5 rounded-full bg-yellow-500" />
+                      <span>Chat Canceled</span>
                     </div>
                   )}
 
@@ -307,6 +307,7 @@ export function UnifiedChat() {
   const [error, setError] = useState<string | null>(null);
   const [lastSeenItemId, setLastSeenItemId] = useState<string | undefined>();
   const [isNewConversationJustCreated, setIsNewConversationJustCreated] = useState(false);
+  const [currentResponseId, setCurrentResponseId] = useState<string | undefined>();
 
   // Attachment states
   const [draftImages, setDraftImages] = useState<File[]>([]);
@@ -509,6 +510,24 @@ export function UnifiedChat() {
       window.removeEventListener("popstate", handlePopState);
     };
   }, [chatId, clearAllAttachments]);
+
+  // Cancel the current response
+  const handleCancelResponse = useCallback(async () => {
+    if (!currentResponseId || !openai) return;
+
+    try {
+      await (openai.responses as { cancel: (id: string) => Promise<unknown> }).cancel(
+        currentResponseId
+      );
+      setIsGenerating(false);
+      setCurrentResponseId(undefined);
+      abortControllerRef.current?.abort();
+      abortControllerRef.current = null;
+    } catch (error) {
+      console.error("Failed to cancel response:", error);
+      setError("Failed to cancel response. Please try again.");
+    }
+  }, [currentResponseId, openai]);
 
   // Load conversation from API
   const loadConversation = useCallback(
@@ -1191,7 +1210,15 @@ export function UnifiedChat() {
         for await (const event of stream) {
           // Log EVERY SSE event we receive
 
-          if (event.type === "response.output_item.added" && event.item?.type === "message") {
+          if (event.type === "response.created") {
+            const eventWithResponse = event as { response?: { id?: string } };
+            if (eventWithResponse.response?.id) {
+              setCurrentResponseId(eventWithResponse.response.id);
+            }
+          } else if (
+            event.type === "response.output_item.added" &&
+            event.item?.type === "message"
+          ) {
             // Get the server-assigned ID from item.id
             const eventWithItem = event as { item?: { id?: string } };
             if (eventWithItem.item?.id) {
@@ -1251,8 +1278,19 @@ export function UnifiedChat() {
               );
             }
             setError("Failed to generate response. Please try again.");
+          } else if ((event as { type: string }).type === "response.cancelled") {
+            // Handle response cancellation
+            if (serverAssistantId) {
+              setMessages((prev) =>
+                prev.map((msg) =>
+                  msg.id === serverAssistantId ? { ...msg, status: "incomplete" } : msg
+                )
+              );
+            }
+            break;
           }
         }
+        setCurrentResponseId(undefined);
       } catch (error) {
         console.error("Failed to send message:", error);
         const errorMessage = error instanceof Error ? error.message : "Something went wrong";
@@ -1261,6 +1299,7 @@ export function UnifiedChat() {
         }
       } finally {
         setIsGenerating(false);
+        setCurrentResponseId(undefined);
         abortControllerRef.current = null;
       }
     },
@@ -1516,21 +1555,27 @@ export function UnifiedChat() {
                       >
                         <Mic className="h-4 w-4" />
                       </Button>
-                      {/* Send button */}
-                      <Button
-                        type="submit"
-                        disabled={
-                          (!input.trim() && !draftImages.length && !documentText) || isGenerating
-                        }
-                        size="icon"
-                        className="absolute bottom-3 right-3 h-9 w-9 rounded-lg"
-                      >
-                        {isGenerating ? (
-                          <Loader2 className="h-4 w-4 animate-spin" />
-                        ) : (
+                      {/* Send/Stop button */}
+                      {isGenerating ? (
+                        <Button
+                          type="button"
+                          onClick={handleCancelResponse}
+                          size="icon"
+                          variant="destructive"
+                          className="absolute bottom-3 right-3 h-9 w-9 rounded-lg"
+                        >
+                          <div className="h-3 w-3 bg-current rounded-sm" />
+                        </Button>
+                      ) : (
+                        <Button
+                          type="submit"
+                          disabled={!input.trim() && !draftImages.length && !documentText}
+                          size="icon"
+                          className="absolute bottom-3 right-3 h-9 w-9 rounded-lg"
+                        >
                           <Send className="h-4 w-4" />
-                        )}
-                      </Button>
+                        </Button>
+                      )}
                     </div>
 
                     {/* Hidden file inputs */}
@@ -1709,21 +1754,27 @@ export function UnifiedChat() {
                     >
                       <Mic className="h-4 w-4" />
                     </Button>
-                    {/* Send button */}
-                    <Button
-                      type="submit"
-                      disabled={
-                        (!input.trim() && !draftImages.length && !documentText) || isGenerating
-                      }
-                      size="icon"
-                      className="absolute bottom-[0.45rem] right-2 h-8 w-8 rounded-lg"
-                    >
-                      {isGenerating ? (
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                      ) : (
+                    {/* Send/Stop button */}
+                    {isGenerating ? (
+                      <Button
+                        type="button"
+                        onClick={handleCancelResponse}
+                        size="icon"
+                        variant="destructive"
+                        className="absolute bottom-[0.45rem] right-2 h-8 w-8 rounded-lg"
+                      >
+                        <div className="h-3 w-3 bg-current rounded-sm" />
+                      </Button>
+                    ) : (
+                      <Button
+                        type="submit"
+                        disabled={!input.trim() && !draftImages.length && !documentText}
+                        size="icon"
+                        className="absolute bottom-[0.45rem] right-2 h-8 w-8 rounded-lg"
+                      >
                         <Send className="h-4 w-4" />
-                      )}
-                    </Button>
+                      </Button>
+                    )}
                   </div>
 
                   {/* Recording overlay for bottom input */}
