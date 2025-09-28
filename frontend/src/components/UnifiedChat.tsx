@@ -47,6 +47,7 @@ import { ModelSelector, MODEL_CONFIG } from "@/components/ModelSelector";
 import { useLocalState } from "@/state/useLocalState";
 import { useOpenSecret } from "@opensecret/react";
 import { UpgradePromptDialog } from "@/components/UpgradePromptDialog";
+import { DocumentPlatformDialog } from "@/components/DocumentPlatformDialog";
 import { RecordingOverlay } from "@/components/RecordingOverlay";
 import {
   DropdownMenu,
@@ -86,7 +87,7 @@ interface Message {
 }
 
 // Helper function to find last completed (non-in_progress) item ID
-const findLastCompletedItemId = (items: any[]): string | undefined => {
+const findLastCompletedItemId = (items: unknown[]): string | undefined => {
   for (let i = items.length - 1; i >= 0; i--) {
     const item = items[i] as ConversationItem;
     if (item.status !== "in_progress") {
@@ -316,6 +317,7 @@ export function UnifiedChat() {
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [upgradeDialogOpen, setUpgradeDialogOpen] = useState(false);
   const [upgradeFeature, setUpgradeFeature] = useState<"image" | "document" | "voice">("image");
+  const [documentPlatformDialogOpen, setDocumentPlatformDialogOpen] = useState(false);
 
   // Audio recording states
   const [isRecording, setIsRecording] = useState(false);
@@ -1423,24 +1425,21 @@ export function UnifiedChat() {
                               <span className="ml-auto text-xs text-muted-foreground">Pro</span>
                             )}
                           </DropdownMenuItem>
-                          {isTauriEnv && (
-                            <DropdownMenuItem
-                              onClick={() => {
-                                if (!canUseDocuments) {
-                                  setUpgradeFeature("document");
-                                  setUpgradeDialogOpen(true);
-                                } else {
-                                  documentInputRef.current?.click();
-                                }
-                              }}
-                            >
-                              <FileText className="mr-2 h-4 w-4" />
-                              <span>Add Document</span>
-                              {!canUseDocuments && (
-                                <span className="ml-auto text-xs text-muted-foreground">Pro</span>
-                              )}
-                            </DropdownMenuItem>
-                          )}
+                          <DropdownMenuItem
+                            onClick={() => {
+                              if (!isTauriEnv) {
+                                setDocumentPlatformDialogOpen(true);
+                              } else if (!canUseDocuments) {
+                                setUpgradeFeature("document");
+                                setUpgradeDialogOpen(true);
+                              } else {
+                                documentInputRef.current?.click();
+                              }
+                            }}
+                          >
+                            <FileText className="mr-2 h-4 w-4" />
+                            <span>Add Document</span>
+                          </DropdownMenuItem>
                         </DropdownMenuContent>
                       </DropdownMenu>
                     </div>
@@ -1621,24 +1620,21 @@ export function UnifiedChat() {
                             <span className="ml-auto text-xs text-muted-foreground">Starter</span>
                           )}
                         </DropdownMenuItem>
-                        {isTauriEnv && (
-                          <DropdownMenuItem
-                            onClick={() => {
-                              if (!canUseDocuments) {
-                                setUpgradeFeature("document");
-                                setUpgradeDialogOpen(true);
-                              } else {
-                                documentInputRef.current?.click();
-                              }
-                            }}
-                          >
-                            <FileText className="mr-2 h-4 w-4" />
-                            <span>Add Document</span>
-                            {!canUseDocuments && (
-                              <span className="ml-auto text-xs text-muted-foreground">Pro</span>
-                            )}
-                          </DropdownMenuItem>
-                        )}
+                        <DropdownMenuItem
+                          onClick={() => {
+                            if (!isTauriEnv) {
+                              setDocumentPlatformDialogOpen(true);
+                            } else if (!canUseDocuments) {
+                              setUpgradeFeature("document");
+                              setUpgradeDialogOpen(true);
+                            } else {
+                              documentInputRef.current?.click();
+                            }
+                          }}
+                        >
+                          <FileText className="mr-2 h-4 w-4" />
+                          <span>Add Document</span>
+                        </DropdownMenuItem>
                       </DropdownMenuContent>
                     </DropdownMenu>
                   </div>
@@ -1761,6 +1757,13 @@ export function UnifiedChat() {
                 ? "voice"
                 : "image"
           }
+        />
+
+        {/* Document platform dialog for web users */}
+        <DocumentPlatformDialog
+          open={documentPlatformDialogOpen}
+          onOpenChange={setDocumentPlatformDialogOpen}
+          hasProAccess={canUseDocuments || false}
         />
       </div>
     </div>
