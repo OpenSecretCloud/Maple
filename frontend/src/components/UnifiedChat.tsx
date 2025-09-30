@@ -48,6 +48,8 @@ import { useOpenSecret } from "@opensecret/react";
 import { UpgradePromptDialog } from "@/components/UpgradePromptDialog";
 import { DocumentPlatformDialog } from "@/components/DocumentPlatformDialog";
 import { RecordingOverlay } from "@/components/RecordingOverlay";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { AlertCircle } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -1303,7 +1305,7 @@ export function UnifiedChat() {
         let errorMessage = error instanceof Error ? error.message : "Something went wrong";
 
         // Also check the cause property if it exists
-        const causeMessage = (error as any)?.cause?.message;
+        const causeMessage = (error as Error & { cause?: { message?: string } })?.cause?.message;
         if (causeMessage && causeMessage.includes("Request failed with status 403:")) {
           errorMessage = causeMessage;
         }
@@ -1454,7 +1456,10 @@ export function UnifiedChat() {
           {/* Error message */}
           {error && (
             <div className="max-w-4xl mx-auto w-full p-6">
-              <div className="bg-red-50 text-red-600 p-3 rounded mb-4">{error}</div>
+              <Alert variant="destructive" className="mb-4">
+                <AlertCircle className="h-4 w-4" />
+                <AlertDescription>{error}</AlertDescription>
+              </Alert>
             </div>
           )}
 
