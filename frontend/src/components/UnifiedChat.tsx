@@ -317,7 +317,9 @@ export function UnifiedChat() {
   const [isProcessingDocument, setIsProcessingDocument] = useState(false);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [upgradeDialogOpen, setUpgradeDialogOpen] = useState(false);
-  const [upgradeFeature, setUpgradeFeature] = useState<"image" | "document" | "voice">("image");
+  const [upgradeFeature, setUpgradeFeature] = useState<
+    "image" | "document" | "voice" | "usage" | "tokens"
+  >("image");
   const [documentPlatformDialogOpen, setDocumentPlatformDialogOpen] = useState(false);
 
   // Audio recording states
@@ -756,22 +758,15 @@ export function UnifiedChat() {
 
   // Check user's billing access
   const billingStatus = localState.billingStatus;
-  const hasStarterAccess =
-    billingStatus &&
-    (billingStatus.product_name?.toLowerCase().includes("starter") ||
-      billingStatus.product_name?.toLowerCase().includes("pro") ||
-      billingStatus.product_name?.toLowerCase().includes("max") ||
-      billingStatus.product_name?.toLowerCase().includes("team"));
-
-  const hasProTeamAccess =
+  const hasProAccess =
     billingStatus &&
     (billingStatus.product_name?.toLowerCase().includes("pro") ||
       billingStatus.product_name?.toLowerCase().includes("max") ||
       billingStatus.product_name?.toLowerCase().includes("team"));
 
-  const canUseImages = hasStarterAccess;
-  const canUseDocuments = hasProTeamAccess;
-  const canUseVoice = hasProTeamAccess && localState.hasWhisperModel;
+  const canUseImages = hasProAccess;
+  const canUseDocuments = hasProAccess;
+  const canUseVoice = hasProAccess && localState.hasWhisperModel;
 
   const handleAddImages = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1154,6 +1149,14 @@ export function UnifiedChat() {
       // Set lastSeenItemId to our local message ID
       // The backend should map this via internal_message_id
       setLastSeenItemId(localMessageId);
+
+      // Store the original input and attachments in case we need to restore them
+      const originalInput = trimmedInput;
+      const originalImages = [...draftImages];
+      const originalImageUrls = new Map(imageUrls);
+      const originalDocumentText = documentText;
+      const originalDocumentName = documentName;
+
       // Only clear input if not using override (voice already cleared it)
       if (!overrideInput) {
         setInput("");
@@ -1293,8 +1296,80 @@ export function UnifiedChat() {
         setCurrentResponseId(undefined);
       } catch (error) {
         console.error("Failed to send message:", error);
-        const errorMessage = error instanceof Error ? error.message : "Something went wrong";
-        if (error instanceof Error && error.name !== "AbortError") {
+
+        // Handle usage limit errors with upsell dialogs
+        // The SDK throws errors with the message "Request failed with status 403: {json}"
+        // We need to parse this to extract the actual error details
+        let errorMessage = error instanceof Error ? error.message : "Something went wrong";
+
+        // Also check the cause property if it exists
+        const causeMessage = (error as any)?.cause?.message;
+        if (causeMessage && causeMessage.includes("Request failed with status 403:")) {
+          errorMessage = causeMessage;
+        }
+
+        let status403Error: { status: number; message: string } | null = null;
+
+        // Check if this is a 403 error from the SDK
+        if (errorMessage.includes("Request failed with status 403:")) {
+          try {
+            // Extract the JSON part from the error message
+            const jsonMatch = errorMessage.match(/Request failed with status 403:\s*({.*})/);
+            if (jsonMatch && jsonMatch[1]) {
+              status403Error = JSON.parse(jsonMatch[1]);
+            }
+          } catch (parseError) {
+            console.error("Failed to parse 403 error:", parseError);
+          }
+        }
+
+        if (status403Error) {
+          // Remove the user message from history and restore input
+          setMessages((prev) => prev.filter((msg) => msg.id !== localMessageId));
+
+          // Restore the original input and attachments
+          if (!overrideInput) {
+            setInput(originalInput);
+            setDraftImages(originalImages);
+            setImageUrls(originalImageUrls);
+            setDocumentText(originalDocumentText);
+            setDocumentName(originalDocumentName);
+          }
+
+          if (status403Error.message === "Free tier token limit exceeded") {
+            // Token limit exceeded - conversation too long for free tier
+            setUpgradeFeature("tokens");
+            setUpgradeDialogOpen(true);
+            setError(
+              "This conversation is too long for the free tier. Upgrade to Pro for longer conversations."
+            );
+          } else if (status403Error.message === "Usage limit reached") {
+            // Usage limit reached - could be daily (free) or monthly (paid)
+            const isFreeTier =
+              !billingStatus?.product_name || billingStatus.product_name.toLowerCase() === "free";
+
+            if (isFreeTier) {
+              // Free tier hit daily limits
+              setUpgradeFeature("usage");
+              setUpgradeDialogOpen(true);
+              setError("You've reached your daily usage limit. Upgrade to Pro for more chats.");
+            } else {
+              // Paid tier hit monthly limits - upsell to next tier
+              setUpgradeFeature("usage");
+              setUpgradeDialogOpen(true);
+              const isPro =
+                billingStatus.product_name?.toLowerCase().includes("pro") &&
+                !billingStatus.product_name?.toLowerCase().includes("max");
+              setError(
+                isPro
+                  ? "You've reached your monthly Pro limit. Upgrade to Max for 10x more usage."
+                  : "You've reached your monthly usage limit. Please wait for the next billing cycle."
+              );
+            }
+          } else {
+            setError(status403Error.message || "Access denied. Please check your subscription.");
+          }
+        } else if (error instanceof Error && error.name !== "AbortError") {
           setError(errorMessage + ". Please try again.");
         }
       } finally {
@@ -1662,7 +1737,7 @@ export function UnifiedChat() {
                           <Image className="mr-2 h-4 w-4" />
                           <span>Add Images</span>
                           {!canUseImages && (
-                            <span className="ml-auto text-xs text-muted-foreground">Starter</span>
+                            <span className="ml-auto text-xs text-muted-foreground">Pro</span>
                           )}
                         </DropdownMenuItem>
                         <DropdownMenuItem
@@ -1797,7 +1872,7 @@ export function UnifiedChat() {
           </div>
         )}
 
-        {/* Upgrade dialog for attachments */}
+        {/* Upgrade dialog for attachments and usage limits */}
         <UpgradePromptDialog
           open={upgradeDialogOpen}
           onOpenChange={setUpgradeDialogOpen}
@@ -1806,7 +1881,11 @@ export function UnifiedChat() {
               ? "document"
               : upgradeFeature === "voice"
                 ? "voice"
-                : "image"
+                : upgradeFeature === "usage"
+                  ? "usage"
+                  : upgradeFeature === "tokens"
+                    ? "tokens"
+                    : "image"
           }
         />
 
