@@ -156,10 +156,47 @@
   }
 }
 
+@layer utilities {
+  /* Title animation for conversation title updates */
+  @keyframes title-flash {
+    0% {
+      background-color: hsl(var(--primary) / 0.15);
+      transform: scale(1);
+    }
+    50% {
+      background-color: hsl(var(--primary) / 0.08);
+      transform: scale(1.005);
+    }
+    100% {
+      background-color: transparent;
+      transform: scale(1);
+    }
+  }
+
+  @keyframes title-blur-in {
+    0% {
+      opacity: 0;
+      filter: blur(8px);
+    }
+    100% {
+      opacity: 1;
+      filter: blur(0);
+    }
+  }
+
+  .title-update-animation {
+    animation:
+      title-flash 0.8s ease-out,
+      title-blur-in 0.5s ease-out;
+    padding: 0.25rem 0.75rem;
+    border-radius: 0.375rem;
+  }
+}
+
 @layer components {
   /* Marketing UI specific components */
   .marketing-card {
-    @apply bg-[hsl(var(--background))]/80 border border-[hsl(var(--foreground))]/10 dark:bg-[hsl(var(--background))]/80 dark:border-[hsl(var(--foreground))]/10 
+    @apply bg-[hsl(var(--background))]/80 border border-[hsl(var(--foreground))]/10 dark:bg-[hsl(var(--background))]/80 dark:border-[hsl(var(--foreground))]/10
            bg-[hsl(var(--marketing-card))] border-[hsl(var(--marketing-card-border))] rounded-xl p-6;
   }
 

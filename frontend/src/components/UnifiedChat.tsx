@@ -35,6 +35,7 @@ import {
   SquarePen
 } from "lucide-react";
 import RecordRTC from "recordrtc";
+import { useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Sidebar, SidebarToggle } from "@/components/Sidebar";
@@ -298,6 +299,7 @@ export function UnifiedChat() {
   const localState = useLocalState();
   const os = useOpenSecret();
   const isTauriEnv = isTauri();
+  const queryClient = useQueryClient();
 
   // Track chatId from URL - use state so we can update it
   const [chatId, setChatId] = useState<string | undefined>(() => {
@@ -315,6 +317,7 @@ export function UnifiedChat() {
   const [lastSeenItemId, setLastSeenItemId] = useState<string | undefined>();
   const [isNewConversationJustCreated, setIsNewConversationJustCreated] = useState(false);
   const [currentResponseId, setCurrentResponseId] = useState<string | undefined>();
+  const [titleJustUpdated, setTitleJustUpdated] = useState(false);
 
   // Pagination states
   const [oldestItemId, setOldestItemId] = useState<string | undefined>();
@@ -869,6 +872,57 @@ export function UnifiedChat() {
       if (timeoutId) clearTimeout(timeoutId);
     };
   }, [conversation?.id, openai, pollForNewItems]);
+
+  // Poll for title updates when it's "New Conversation" with exponential backoff
+  useEffect(() => {
+    const currentTitle = conversation?.metadata?.title;
+
+    // Only poll if we have a conversation and the title is "New Conversation"
+    if (!conversation?.id || !openai || currentTitle !== "New Conversation") {
+      return;
+    }
+
+    // Exponential backoff: 0.5s, 1s, 2s, 4s, 8s, 10s (max)
+    let currentDelay = 500; // Start at 0.5s
+    const maxDelay = 10000; // Cap at 10s
+    let timeoutId: ReturnType<typeof setTimeout>;
+
+    const checkTitle = async () => {
+      try {
+        // Fetch updated conversation metadata
+        const updatedConv = await openai.conversations.retrieve(conversation.id);
+        const newTitle = (updatedConv as Conversation).metadata?.title;
+
+        // If title changed from "New Conversation", update local state and sidebar
+        if (newTitle && newTitle !== "New Conversation") {
+          setConversation(updatedConv as Conversation);
+          // Trigger title animation
+          setTitleJustUpdated(true);
+          // Remove animation class after animation completes (800ms for flash animation)
+          setTimeout(() => setTitleJustUpdated(false), 850);
+          // Refresh the sidebar conversation list
+          queryClient.invalidateQueries({ queryKey: ["conversations"] });
+          return; // Stop polling once title is updated
+        }
+
+        // Schedule next check with exponential backoff
+        currentDelay = Math.min(currentDelay * 2, maxDelay);
+        timeoutId = setTimeout(checkTitle, currentDelay);
+      } catch (error) {
+        console.error("Failed to check title update:", error);
+        // Continue polling even on error
+        currentDelay = Math.min(currentDelay * 2, maxDelay);
+        timeoutId = setTimeout(checkTitle, currentDelay);
+      }
+    };
+
+    // Start the first check after 0.5s
+    timeoutId = setTimeout(checkTitle, currentDelay);
+
+    return () => {
+      if (timeoutId) clearTimeout(timeoutId);
+    };
+  }, [conversation?.id, conversation?.metadata?.title, openai, queryClient]);
 
   // Set up IntersectionObserver for loading older messages
   useEffect(() => {
@@ -1557,7 +1611,11 @@ export function UnifiedChat() {
         {messages.length > 0 && (
           <div className="h-14 flex items-center px-4">
             <div className="flex-1 flex items-center justify-center relative">
-              <h1 className="text-base font-medium truncate max-w-[20rem] text-muted-foreground">
+              <h1
+                className={`text-base font-medium truncate max-w-[20rem] text-foreground transition-colors duration-300 ${
+                  titleJustUpdated ? "title-update-animation" : ""
+                }`}
+              >
                 {conversation?.metadata?.title || "Chat"}
               </h1>
               {/* Mobile new chat button - positioned on the right */}
