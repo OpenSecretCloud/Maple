@@ -87,17 +87,6 @@ interface Message {
   status?: "completed" | "streaming" | "error" | "in_progress" | "incomplete";
 }
 
-// Helper function to find last completed (non-in_progress) item ID
-const findLastCompletedItemId = (items: unknown[]): string | undefined => {
-  for (let i = items.length - 1; i >= 0; i--) {
-    const item = items[i] as ConversationItem;
-    if (item.status !== "in_progress") {
-      return item.id;
-    }
-  }
-  return undefined;
-};
-
 // Custom hook for copy to clipboard functionality
 function useCopyToClipboard(text: string) {
   const [isCopied, setIsCopied] = useState(false);
@@ -163,17 +152,33 @@ const MessageList = memo(
   ({
     messages,
     isGenerating,
-    chatId
+    chatId,
+    firstMessageRef,
+    isLoadingOlderMessages
   }: {
     messages: Message[];
     isGenerating: boolean;
     chatId?: string;
+    firstMessageRef?: React.RefObject<HTMLDivElement>;
+    isLoadingOlderMessages?: boolean;
   }) => {
     return (
       <>
-        {messages.map((message) => (
+        {/* Loading indicator for older messages */}
+        {isLoadingOlderMessages && (
+          <div className="flex items-center justify-center py-4">
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <div className="w-2 h-2 bg-foreground/60 rounded-full animate-pulse" />
+              <div className="w-2 h-2 bg-foreground/60 rounded-full animate-pulse delay-75" />
+              <div className="w-2 h-2 bg-foreground/60 rounded-full animate-pulse delay-150" />
+            </div>
+          </div>
+        )}
+
+        {messages.map((message, index) => (
           <div
             key={message.id}
+            ref={index === 0 ? firstMessageRef : undefined}
             className={`group py-6 px-4 ${
               message.role === "user" ? "bg-muted/30" : ""
             } hover:bg-muted/20 transition-colors`}
@@ -311,6 +316,11 @@ export function UnifiedChat() {
   const [isNewConversationJustCreated, setIsNewConversationJustCreated] = useState(false);
   const [currentResponseId, setCurrentResponseId] = useState<string | undefined>();
 
+  // Pagination states
+  const [oldestItemId, setOldestItemId] = useState<string | undefined>();
+  const [isLoadingOlderMessages, setIsLoadingOlderMessages] = useState(false);
+  const [hasMoreOlderMessages, setHasMoreOlderMessages] = useState(false);
+
   // Attachment states
   const [draftImages, setDraftImages] = useState<File[]>([]);
   const [imageUrls, setImageUrls] = useState<Map<File, string>>(new Map());
@@ -346,6 +356,7 @@ export function UnifiedChat() {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const chatContainerRef = useRef<HTMLDivElement>(null);
+  const firstMessageRef = useRef<HTMLDivElement>(null);
 
   // Attachment cleanup function - defined early to avoid reference errors
   const clearAllAttachments = useCallback(() => {
@@ -401,28 +412,38 @@ export function UnifiedChat() {
 
   // Initial load - scroll to bottom instantly
   useEffect(() => {
-    if (messages.length > 0 && prevMessageCountRef.current === 0) {
+    if (messages.length > 0 && prevMessageCountRef.current === 0 && !isLoadingOlderMessages) {
       // First load of messages - scroll instantly to bottom
       setTimeout(() => {
         scrollToBottom("instant");
       }, 0);
     }
-    prevMessageCountRef.current = messages.length;
-  }, [messages.length, scrollToBottom]);
+    // Don't update count when loading older messages, to avoid triggering scroll
+    if (!isLoadingOlderMessages) {
+      prevMessageCountRef.current = messages.length;
+    }
+  }, [messages.length, scrollToBottom, isLoadingOlderMessages]);
 
   // Auto-scroll when user sends a message
-  const userMessageCount = messages.filter((m) => m.role === "user").length;
-  const prevUserMessageCount = useRef(userMessageCount);
+  // Track the LAST message ID (at the end of the array), not the count
+  const lastMessageId = messages.length > 0 ? messages[messages.length - 1].id : null;
+  const prevLastMessageId = useRef(lastMessageId);
 
   useEffect(() => {
-    if (userMessageCount > prevUserMessageCount.current) {
+    // Only scroll if the LAST message changed AND it's a user message
+    // This means a message was added to the END (not prepended)
+    if (
+      lastMessageId !== prevLastMessageId.current &&
+      messages.length > 0 &&
+      messages[messages.length - 1].role === "user"
+    ) {
       // User just sent a message - scroll to bottom
       setTimeout(() => {
         scrollToBottom("smooth");
       }, 50);
     }
-    prevUserMessageCount.current = userMessageCount;
-  }, [userMessageCount, scrollToBottom]);
+    prevLastMessageId.current = lastMessageId;
+  }, [lastMessageId, messages, scrollToBottom]);
 
   // Auto-scroll when assistant starts streaming (but not while streaming)
   useEffect(() => {
@@ -472,6 +493,10 @@ export function UnifiedChat() {
       setInput("");
       setError(null);
       setLastSeenItemId(undefined);
+      // Clear pagination state
+      setOldestItemId(undefined);
+      setHasMoreOlderMessages(false);
+      setIsLoadingOlderMessages(false);
       // Clear attachments
       clearAllAttachments();
       // Reset scroll tracking
@@ -546,9 +571,10 @@ export function UnifiedChat() {
         const conv = await openai.conversations.retrieve(conversationId);
         setConversation(conv as Conversation);
 
-        // Fetch all conversation items
+        // Fetch initial 10 most recent items in descending order (newest first)
         const itemsResponse = await openai.conversations.items.list(conversationId, {
-          limit: 100 // Get up to 100 most recent items
+          limit: 10,
+          order: "desc"
         });
 
         // Convert items to messages
@@ -569,12 +595,33 @@ export function UnifiedChat() {
           }
         }
 
-        setMessages(loadedMessages);
+        // Reverse the array for display (we want oldest first/at top, newest last/at bottom)
+        // API returns desc (newest first), but chat UI needs chronological order
+        const messagesInChronologicalOrder = loadedMessages.reverse();
+        setMessages(messagesInChronologicalOrder);
 
-        // Set last seen ID for polling - skip in_progress messages
-        const lastCompletedId = findLastCompletedItemId(itemsResponse.data);
-        if (lastCompletedId) {
-          setLastSeenItemId(lastCompletedId);
+        // Set pagination state
+        // Before reversal, last item was the oldest. After reversal, it's now first item.
+        // But for the API "after" parameter, we still need the chronologically oldest ID
+        if (loadedMessages.length > 0) {
+          // After reversal, the FIRST message is the oldest (chronologically earliest)
+          const oldestId = messagesInChronologicalOrder[0].id;
+          setOldestItemId(oldestId);
+          // If we got a full page, there might be more
+          const hasMore = loadedMessages.length === 10;
+          setHasMoreOlderMessages(hasMore);
+        } else {
+          setOldestItemId(undefined);
+          setHasMoreOlderMessages(false);
+        }
+
+        // Set last seen ID for polling - use the NEWEST message (first in desc response)
+        // Skip in_progress messages by finding the first completed one
+        const newestCompletedItem = itemsResponse.data.find(
+          (item) => (item as ConversationItem).status !== "in_progress"
+        );
+        if (newestCompletedItem) {
+          setLastSeenItemId(newestCompletedItem.id);
         }
       } catch (error) {
         const err = error as { status?: number; message?: string };
@@ -584,6 +631,8 @@ export function UnifiedChat() {
           setConversation(null);
           setMessages([]);
           setError(null);
+          setOldestItemId(undefined);
+          setHasMoreOlderMessages(false);
           // Clear the invalid conversation_id from URL
           const params = new URLSearchParams(window.location.search);
           params.delete("conversation_id");
@@ -597,15 +646,73 @@ export function UnifiedChat() {
     [openai]
   );
 
+  // Load older messages for pagination
+  const loadOlderMessages = useCallback(async () => {
+    if (!conversation?.id || !openai || !oldestItemId || isLoadingOlderMessages) return;
+
+    setIsLoadingOlderMessages(true);
+
+    try {
+      // Fetch next 10 older items using the oldest item ID we have
+      const itemsResponse = await openai.conversations.items.list(conversation.id, {
+        limit: 10,
+        order: "desc",
+        after: oldestItemId
+      });
+
+      // Convert items to messages
+      const olderMessages: Message[] = [];
+
+      for (const item of itemsResponse.data) {
+        if (item.type === "message" && item.role && item.content) {
+          const convItem = item as ConversationItem;
+          olderMessages.push({
+            id: item.id,
+            role: item.role as "user" | "assistant",
+            content: item.content,
+            timestamp:
+              ((item as ConversationItem & { created_at?: number }).created_at ??
+                Date.now() / 1000) * 1000,
+            status: convItem.status || "completed"
+          });
+        }
+      }
+
+      if (olderMessages.length > 0) {
+        // Reverse for chronological order (API returns desc, we need asc for display)
+        const olderMessagesInChronologicalOrder = olderMessages.reverse();
+
+        // Prepend older messages to the existing messages
+        // Since we display oldest-first, older messages go at the BEGINNING of the array
+        setMessages((prev) => [...olderMessagesInChronologicalOrder, ...prev]);
+
+        // Update pagination state
+        // After reversal, the FIRST message is the chronologically oldest
+        const newOldestId = olderMessagesInChronologicalOrder[0].id;
+        const hasMore = olderMessages.length === 10;
+        setOldestItemId(newOldestId);
+        setHasMoreOlderMessages(hasMore);
+      } else {
+        // No more messages to load
+        setHasMoreOlderMessages(false);
+      }
+    } catch (error) {
+      console.error("Failed to load older messages:", error);
+    } finally {
+      setIsLoadingOlderMessages(false);
+    }
+  }, [conversation?.id, openai, oldestItemId, isLoadingOlderMessages]);
+
   // Polling mechanism for conversation updates
   const pollForNewItems = useCallback(async () => {
     if (!conversation?.id || !openai) return;
 
     try {
-      // Fetch items after the last seen ID (or all items if no lastSeenItemId)
+      // Fetch NEW items that came after the last seen ID
+      // Use order=asc to get items chronologically after the lastSeenItemId
       const response = await openai.conversations.items.list(conversation.id, {
-        ...(lastSeenItemId ? { after: lastSeenItemId } : {}),
-        limit: 100
+        ...(lastSeenItemId ? { after: lastSeenItemId, order: "asc" } : {}),
+        limit: 20 // Smaller limit since we only expect a few new messages
       });
 
       if (response.data.length > 0) {
@@ -674,10 +781,14 @@ export function UnifiedChat() {
             return [...updatedMessages, ...trulyNewMessages];
           });
 
-          // Update last seen item ID - skip in_progress messages
-          const lastCompletedId = findLastCompletedItemId(response.data);
-          if (lastCompletedId) {
-            setLastSeenItemId(lastCompletedId);
+          // Update last seen item ID for next poll
+          // Since we're using order=asc, the LAST item is the newest
+          // Skip in_progress messages by finding the last completed one
+          const newestCompletedItem = [...response.data]
+            .reverse()
+            .find((item) => (item as ConversationItem).status !== "in_progress");
+          if (newestCompletedItem) {
+            setLastSeenItemId(newestCompletedItem.id);
           }
 
           // Check if we're no longer generating
@@ -716,6 +827,10 @@ export function UnifiedChat() {
       setConversation(null);
       setMessages([]);
       setLastSeenItemId(undefined);
+      // Clear pagination state
+      setOldestItemId(undefined);
+      setHasMoreOlderMessages(false);
+      setIsLoadingOlderMessages(false);
       // Reset scroll tracking
       prevMessageCountRef.current = 0;
     }
@@ -754,6 +869,31 @@ export function UnifiedChat() {
       if (timeoutId) clearTimeout(timeoutId);
     };
   }, [conversation?.id, openai, pollForNewItems]);
+
+  // Set up IntersectionObserver for loading older messages
+  useEffect(() => {
+    if (!firstMessageRef.current || !hasMoreOlderMessages) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        // When the first message comes into view, load older messages
+        if (entries[0].isIntersecting && hasMoreOlderMessages && !isLoadingOlderMessages) {
+          loadOlderMessages();
+        }
+      },
+      {
+        root: chatContainerRef.current,
+        rootMargin: "100px", // Start loading a bit before the message is visible
+        threshold: 0.1
+      }
+    );
+
+    observer.observe(firstMessageRef.current);
+
+    return () => {
+      observer.disconnect();
+    };
+  }, [hasMoreOlderMessages, isLoadingOlderMessages, loadOlderMessages]);
 
   // Toggle sidebar
   const toggleSidebar = useCallback(() => setIsSidebarOpen((prev) => !prev), []);
@@ -1438,6 +1578,10 @@ export function UnifiedChat() {
                   setConversation(null);
                   setMessages([]);
                   setLastSeenItemId(undefined);
+                  // Clear pagination state
+                  setOldestItemId(undefined);
+                  setHasMoreOlderMessages(false);
+                  setIsLoadingOlderMessages(false);
                   // Close sidebar if open
                   if (isSidebarOpen) {
                     toggleSidebar();
@@ -1468,7 +1612,13 @@ export function UnifiedChat() {
             <div className="max-w-4xl mx-auto p-6 w-full">
               {/* Message list with modern ChatGPT/Claude style */}
               <div className="space-y-1">
-                <MessageList messages={messages} isGenerating={isGenerating} chatId={chatId} />
+                <MessageList
+                  messages={messages}
+                  isGenerating={isGenerating}
+                  chatId={chatId}
+                  firstMessageRef={firstMessageRef}
+                  isLoadingOlderMessages={isLoadingOlderMessages}
+                />
               </div>
 
               <div ref={messagesEndRef} />
