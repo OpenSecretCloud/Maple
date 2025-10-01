@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback, useEffect } from "react";
+import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { MoreHorizontal, Trash, Pencil, ChevronDown, ChevronRight } from "lucide-react";
 import {
@@ -43,25 +43,43 @@ export function ChatHistoryList({ currentChatId, searchQuery = "" }: ChatHistory
   const [selectedChat, setSelectedChat] = useState<{ id: string; title: string } | null>(null);
   const [isArchivedExpanded, setIsArchivedExpanded] = useState(false);
 
-  // Fetch conversations from API using the OpenSecret SDK
-  const {
-    isPending,
-    error,
-    data: conversations
-  } = useQuery({
+  // Pagination states
+  const [oldestConversationId, setOldestConversationId] = useState<string | undefined>();
+  const [hasMoreConversations, setHasMoreConversations] = useState(false);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const lastConversationRef = useRef<HTMLDivElement>(null);
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+
+  // Fetch initial conversations from API using the OpenSecret SDK
+  const { isPending, error } = useQuery({
     queryKey: ["conversations"],
     queryFn: async () => {
       if (!opensecret) return [];
 
       try {
-        // Use the OpenSecret SDK's listConversations function
-        // This handles the x-session-id header and encryption properly
-        const response = await opensecret.listConversations({ limit: 50 });
+        // Load initial 10 conversations (newest first by default)
+        const response = await opensecret.listConversations({
+          limit: 10
+        });
 
-        // Sort by created_at descending (newest first)
-        return (response.data || []).sort(
-          (a: Conversation, b: Conversation) => b.created_at - a.created_at
-        );
+        const loadedConversations = response.data || [];
+
+        // Already in desc order (newest first), which is what we want for display
+        setConversations(loadedConversations);
+
+        // Set pagination state
+        if (loadedConversations.length > 0) {
+          // Last conversation in the array is the oldest (chronologically)
+          const oldestId = loadedConversations[loadedConversations.length - 1].id;
+          setOldestConversationId(oldestId);
+          // If we got a full page, there might be more
+          setHasMoreConversations(loadedConversations.length === 10);
+        } else {
+          setOldestConversationId(undefined);
+          setHasMoreConversations(false);
+        }
+
+        return loadedConversations;
       } catch (error) {
         console.error("Failed to load conversations:", error);
         return [];
@@ -70,6 +88,64 @@ export function ChatHistoryList({ currentChatId, searchQuery = "" }: ChatHistory
     enabled: !!opensecret,
     refetchInterval: 30000 // Refresh every 30 seconds
   });
+
+  // Load more older conversations for pagination
+  const loadMoreConversations = useCallback(async () => {
+    if (!opensecret || !oldestConversationId || isLoadingMore) return;
+
+    setIsLoadingMore(true);
+
+    try {
+      // Fetch next 10 older conversations using the oldest conversation ID we have
+      const response = await opensecret.listConversations({
+        limit: 10,
+        after: oldestConversationId
+      });
+
+      const olderConversations = response.data || [];
+
+      if (olderConversations.length > 0) {
+        // Append older conversations to the end of existing conversations
+        setConversations((prev) => [...prev, ...olderConversations]);
+
+        // Update pagination state
+        const newOldestId = olderConversations[olderConversations.length - 1].id;
+        setOldestConversationId(newOldestId);
+        setHasMoreConversations(olderConversations.length === 10);
+      } else {
+        // No more conversations to load
+        setHasMoreConversations(false);
+      }
+    } catch (error) {
+      console.error("Failed to load more conversations:", error);
+    } finally {
+      setIsLoadingMore(false);
+    }
+  }, [opensecret, oldestConversationId, isLoadingMore]);
+
+  // Set up IntersectionObserver for loading more conversations
+  useEffect(() => {
+    if (!lastConversationRef.current || !hasMoreConversations) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        // When the last conversation comes into view, load more
+        if (entries[0].isIntersecting && hasMoreConversations && !isLoadingMore) {
+          loadMoreConversations();
+        }
+      },
+      {
+        rootMargin: "100px", // Start loading a bit before reaching the bottom
+        threshold: 0.1
+      }
+    );
+
+    observer.observe(lastConversationRef.current);
+
+    return () => {
+      observer.disconnect();
+    };
+  }, [hasMoreConversations, isLoadingMore, loadMoreConversations]);
 
   // Fetch archived chats from KV store
   const { data: archivedChats } = useQuery({
@@ -221,12 +297,19 @@ export function ChatHistoryList({ currentChatId, searchQuery = "" }: ChatHistory
 
   return (
     <>
-      {filteredConversations.map((conv: Conversation) => {
+      {filteredConversations.map((conv: Conversation, index: number) => {
         const title = conv.metadata?.title || "Untitled Chat";
         const isActive = conv.id === currentChatId;
+        const isLastConversation = index === filteredConversations.length - 1;
+        // Only attach ref when not searching and it's the last item
+        const shouldAttachRef = isLastConversation && !searchQuery.trim();
 
         return (
-          <div key={conv.id} className="relative">
+          <div
+            key={conv.id}
+            className="relative"
+            ref={shouldAttachRef ? lastConversationRef : undefined}
+          >
             <div
               onClick={() => handleSelectConversation(conv.id)}
               className={`rounded-lg py-2 transition-all hover:text-primary cursor-pointer ${
@@ -267,6 +350,17 @@ export function ChatHistoryList({ currentChatId, searchQuery = "" }: ChatHistory
           </div>
         );
       })}
+
+      {/* Loading indicator for pagination */}
+      {isLoadingMore && (
+        <div className="flex items-center justify-center py-4">
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <div className="w-2 h-2 bg-foreground/60 rounded-full animate-pulse" />
+            <div className="w-2 h-2 bg-foreground/60 rounded-full animate-pulse delay-75" />
+            <div className="w-2 h-2 bg-foreground/60 rounded-full animate-pulse delay-150" />
+          </div>
+        </div>
+      )}
 
       {/* Archived Chats Section - only show if there are archived chats */}
       {filteredArchivedChats && filteredArchivedChats.length > 0 && (
