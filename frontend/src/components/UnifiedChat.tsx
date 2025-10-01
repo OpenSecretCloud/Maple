@@ -350,6 +350,7 @@ export function UnifiedChat() {
   const [hasNewPolledMessages, setHasNewPolledMessages] = useState(false);
   const recorderRef = useRef<RecordRTC | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const assistantStreamingRef = useRef(false);
 
   const abortControllerRef = useRef<AbortController | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -555,6 +556,7 @@ export function UnifiedChat() {
       setCurrentResponseId(undefined);
       abortControllerRef.current?.abort();
       abortControllerRef.current = null;
+      assistantStreamingRef.current = false;
     } catch (error) {
       console.error("Failed to cancel response:", error);
       setError("Failed to cancel response. Please try again.");
@@ -709,6 +711,7 @@ export function UnifiedChat() {
   // Polling mechanism for conversation updates
   const pollForNewItems = useCallback(async () => {
     if (!conversation?.id || !openai) return;
+    if (assistantStreamingRef.current) return;
 
     try {
       // Fetch NEW items that came after the last seen ID
@@ -1433,6 +1436,7 @@ export function UnifiedChat() {
               };
               setMessages((prev) => [...prev, assistantMessage]);
               assistantMessageAdded = true;
+              assistantStreamingRef.current = true;
             }
           } else if (event.type === "response.output_text.delta" && event.delta) {
             // Accumulate text chunks
@@ -1465,6 +1469,7 @@ export function UnifiedChat() {
                 )
               );
               setLastSeenItemId(serverAssistantId);
+              assistantStreamingRef.current = false;
             }
           } else if (event.type === "response.failed" || event.type === "error") {
             // Handle streaming errors
@@ -1477,6 +1482,7 @@ export function UnifiedChat() {
               );
             }
             setError("Failed to generate response. Please try again.");
+            assistantStreamingRef.current = false;
           } else if ((event as { type: string }).type === "response.cancelled") {
             // Handle response cancellation
             if (serverAssistantId) {
@@ -1486,6 +1492,7 @@ export function UnifiedChat() {
                 )
               );
             }
+            assistantStreamingRef.current = false;
             break;
           }
         }
@@ -1572,6 +1579,7 @@ export function UnifiedChat() {
         setIsGenerating(false);
         setCurrentResponseId(undefined);
         abortControllerRef.current = null;
+        assistantStreamingRef.current = false;
       }
     },
     [
