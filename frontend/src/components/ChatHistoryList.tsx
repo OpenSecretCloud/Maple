@@ -1,5 +1,5 @@
 import { useState, useMemo, useCallback, useEffect, useRef } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { MoreHorizontal, Trash, Pencil, ChevronDown, ChevronRight } from "lucide-react";
 import {
   DropdownMenu,
@@ -35,7 +35,6 @@ interface ArchivedChat {
 }
 
 export function ChatHistoryList({ currentChatId, searchQuery = "" }: ChatHistoryListProps) {
-  const queryClient = useQueryClient();
   const openai = useOpenAI();
   const opensecret = useOpenSecret();
   const router = useRouter();
@@ -49,6 +48,7 @@ export function ChatHistoryList({ currentChatId, searchQuery = "" }: ChatHistory
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const lastConversationRef = useRef<HTMLDivElement>(null);
   const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [newestConversationId, setNewestConversationId] = useState<string | undefined>();
 
   // Fetch initial conversations from API using the OpenSecret SDK
   const { isPending, error } = useQuery({
@@ -64,17 +64,22 @@ export function ChatHistoryList({ currentChatId, searchQuery = "" }: ChatHistory
 
         const loadedConversations = response.data || [];
 
-        // Already in desc order (newest first), which is what we want for display
+        // Set initial state only on first load
         setConversations(loadedConversations);
 
         // Set pagination state
         if (loadedConversations.length > 0) {
-          // Last conversation in the array is the oldest (chronologically)
+          // First conversation is the newest (for polling)
+          const newestId = loadedConversations[0].id;
+          setNewestConversationId(newestId);
+
+          // Last conversation in the array is the oldest (for pagination)
           const oldestId = loadedConversations[loadedConversations.length - 1].id;
           setOldestConversationId(oldestId);
           // If we got a full page, there might be more
           setHasMoreConversations(loadedConversations.length === 10);
         } else {
+          setNewestConversationId(undefined);
           setOldestConversationId(undefined);
           setHasMoreConversations(false);
         }
@@ -85,9 +90,83 @@ export function ChatHistoryList({ currentChatId, searchQuery = "" }: ChatHistory
         return [];
       }
     },
-    enabled: !!opensecret,
-    refetchInterval: 30000 // Refresh every 30 seconds
+    enabled: !!opensecret
+    // No refetchInterval - we'll use manual polling instead
   });
+
+  // Smart polling function - only fetches NEW conversations using the same pattern as UnifiedChat
+  const pollForUpdates = useCallback(async () => {
+    if (!opensecret) return;
+
+    try {
+      // Fetch NEW conversations that came after the newest one we've seen
+      // Use order=asc to get conversations chronologically after the newestConversationId
+      const response = await opensecret.listConversations({
+        ...(newestConversationId ? { after: newestConversationId, order: "asc" } : {}),
+        limit: 20 // Smaller limit since we only expect a few new conversations
+      });
+
+      const newConversations = response.data || [];
+
+      if (newConversations.length > 0) {
+        // Merge new conversations with deduplication and metadata updates
+        setConversations((prev) => {
+          const newConversationsMap = new Map(newConversations.map((c) => [c.id, c]));
+          let hasChanges = false;
+
+          // First, update existing conversations if their metadata changed (e.g., title)
+          const updatedConversations = prev.map((existingConv) => {
+            const newVersion = newConversationsMap.get(existingConv.id);
+            if (newVersion) {
+              // Remove from map so we don't add it again
+              newConversationsMap.delete(existingConv.id);
+              // Check if title or other metadata changed
+              if (existingConv.metadata?.title !== newVersion.metadata?.title) {
+                hasChanges = true;
+                return newVersion;
+              }
+            }
+            return existingConv;
+          });
+
+          // Add any remaining new conversations (ones we haven't seen before)
+          const trulyNewConversations = Array.from(newConversationsMap.values());
+
+          if (!hasChanges && trulyNewConversations.length === 0) {
+            return prev;
+          }
+
+          // Since conversations come in asc order (oldest to newest in the new batch),
+          // we need to reverse them to maintain desc order (newest first)
+          const reversedNewConversations = [...trulyNewConversations].reverse();
+
+          // Prepend new conversations to the beginning (newest first in our list)
+          return [...reversedNewConversations, ...updatedConversations];
+        });
+
+        // Update newest conversation ID for next poll
+        // Since we're using order=asc, the LAST conversation is the newest
+        const newestId = newConversations[newConversations.length - 1].id;
+        setNewestConversationId(newestId);
+      }
+    } catch (error) {
+      console.error("Polling error:", error);
+      // Fail silently - don't disrupt the UI
+    }
+  }, [opensecret, newestConversationId]);
+
+  // Set up polling every 60 seconds
+  useEffect(() => {
+    if (!opensecret || conversations.length === 0) return;
+
+    const intervalId = setInterval(() => {
+      pollForUpdates();
+    }, 60000); // Poll every 60 seconds
+
+    return () => {
+      clearInterval(intervalId);
+    };
+  }, [opensecret, pollForUpdates, conversations.length]);
 
   // Load more older conversations for pagination
   const loadMoreConversations = useCallback(async () => {
@@ -200,8 +279,8 @@ export function ChatHistoryList({ currentChatId, searchQuery = "" }: ChatHistory
       try {
         await openai.conversations.delete(conversationId);
 
-        // Invalidate the conversations list to refresh
-        queryClient.invalidateQueries({ queryKey: ["conversations"] });
+        // Remove from local state immediately
+        setConversations((prev) => prev.filter((conv) => conv.id !== conversationId));
 
         // If deleting the current conversation, navigate to home
         if (conversationId === currentChatId) {
@@ -217,7 +296,7 @@ export function ChatHistoryList({ currentChatId, searchQuery = "" }: ChatHistory
         console.error("Error deleting conversation:", error);
       }
     },
-    [openai, queryClient, currentChatId]
+    [openai, currentChatId]
   );
 
   const handleOpenRenameDialog = useCallback((conv: Conversation) => {
@@ -237,14 +316,20 @@ export function ChatHistoryList({ currentChatId, searchQuery = "" }: ChatHistory
           metadata: { title: newTitle }
         });
 
-        // Invalidate the conversations list to refresh
-        queryClient.invalidateQueries({ queryKey: ["conversations"] });
+        // Update local state immediately
+        setConversations((prev) =>
+          prev.map((conv) =>
+            conv.id === conversationId
+              ? { ...conv, metadata: { ...conv.metadata, title: newTitle } }
+              : conv
+          )
+        );
       } catch (error) {
         console.error("Error renaming conversation:", error);
         throw error;
       }
     },
-    [openai, queryClient]
+    [openai]
   );
 
   // Handle conversation selection
@@ -269,12 +354,13 @@ export function ChatHistoryList({ currentChatId, searchQuery = "" }: ChatHistory
   // Listen for conversation created event to refresh the list
   useEffect(() => {
     const handleConversationCreated = () => {
-      queryClient.invalidateQueries({ queryKey: ["conversations"] });
+      // Trigger immediate poll to get the new conversation
+      pollForUpdates();
     };
 
     window.addEventListener("conversationcreated", handleConversationCreated);
     return () => window.removeEventListener("conversationcreated", handleConversationCreated);
-  }, [queryClient]);
+  }, [pollForUpdates]);
 
   if (error) {
     return <div>{error.message}</div>;
