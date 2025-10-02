@@ -57,9 +57,9 @@ export function ChatHistoryList({ currentChatId, searchQuery = "" }: ChatHistory
       if (!opensecret) return [];
 
       try {
-        // Load initial 10 conversations (newest first by default)
+        // Load initial 20 conversations (newest first by default)
         const response = await opensecret.listConversations({
-          limit: 10
+          limit: 20
         });
 
         const loadedConversations = response.data || [];
@@ -77,7 +77,7 @@ export function ChatHistoryList({ currentChatId, searchQuery = "" }: ChatHistory
           const oldestId = loadedConversations[loadedConversations.length - 1].id;
           setOldestConversationId(oldestId);
           // If we got a full page, there might be more
-          setHasMoreConversations(loadedConversations.length === 10);
+          setHasMoreConversations(loadedConversations.length === 20);
         } else {
           setNewestConversationId(undefined);
           setOldestConversationId(undefined);
