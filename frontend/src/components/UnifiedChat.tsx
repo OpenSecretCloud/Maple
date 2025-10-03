@@ -952,6 +952,17 @@ export function UnifiedChat() {
     };
   }, [hasMoreOlderMessages, isLoadingOlderMessages, loadOlderMessages]);
 
+  // Auto-clear error after 3 seconds
+  useEffect(() => {
+    if (error) {
+      const timeoutId = setTimeout(() => {
+        setError(null);
+      }, 3000);
+
+      return () => clearTimeout(timeoutId);
+    }
+  }, [error]);
+
   // Toggle sidebar
   const toggleSidebar = useCallback(() => setIsSidebarOpen((prev) => !prev), []);
 
@@ -1275,6 +1286,97 @@ export function UnifiedChat() {
     }
   };
 
+  // Helper function to process streaming response - used by both initial request and retry
+  const processStreamingResponse = useCallback(async (stream: AsyncIterable<unknown>) => {
+    let serverAssistantId: string | undefined;
+    let assistantMessageAdded = false;
+    let accumulatedContent = "";
+
+    for await (const event of stream) {
+      if ((event as { type: string }).type === "response.created") {
+        const eventWithResponse = event as { response?: { id?: string } };
+        if (eventWithResponse.response?.id) {
+          setCurrentResponseId(eventWithResponse.response.id);
+        }
+      } else if (
+        (event as { type: string }).type === "response.output_item.added" &&
+        (event as { item?: { type?: string } }).item?.type === "message"
+      ) {
+        const eventWithItem = event as { item?: { id?: string } };
+        if (eventWithItem.item?.id) {
+          serverAssistantId = eventWithItem.item.id;
+
+          const assistantMessage: Message = {
+            id: serverAssistantId!,
+            role: "assistant",
+            content: [],
+            timestamp: Date.now(),
+            status: "streaming"
+          };
+          setMessages((prev) => [...prev, assistantMessage]);
+          assistantMessageAdded = true;
+          assistantStreamingRef.current = true;
+        }
+      } else if (
+        (event as { type: string }).type === "response.output_text.delta" &&
+        (event as { delta?: string }).delta
+      ) {
+        const delta = (event as { delta: string }).delta;
+        accumulatedContent += delta;
+
+        if (serverAssistantId && assistantMessageAdded) {
+          const outputContent: OutputTextContent = {
+            type: "output_text",
+            text: accumulatedContent,
+            annotations: []
+          };
+          setMessages((prev) =>
+            prev.map((msg) =>
+              msg.id === serverAssistantId
+                ? {
+                    ...msg,
+                    content: [outputContent]
+                  }
+                : msg
+            )
+          );
+        }
+      } else if ((event as { type: string }).type === "response.output_item.done") {
+        if (serverAssistantId) {
+          setMessages((prev) =>
+            prev.map((msg) =>
+              msg.id === serverAssistantId ? { ...msg, status: "completed" } : msg
+            )
+          );
+          setLastSeenItemId(serverAssistantId);
+          assistantStreamingRef.current = false;
+        }
+      } else if (
+        (event as { type: string }).type === "response.failed" ||
+        (event as { type: string }).type === "error"
+      ) {
+        console.error("Streaming error:", event);
+        if (serverAssistantId) {
+          setMessages((prev) =>
+            prev.map((msg) => (msg.id === serverAssistantId ? { ...msg, status: "error" } : msg))
+          );
+        }
+        setError("Failed to generate response. Please try again.");
+        assistantStreamingRef.current = false;
+      } else if ((event as { type: string }).type === "response.cancelled") {
+        if (serverAssistantId) {
+          setMessages((prev) =>
+            prev.map((msg) =>
+              msg.id === serverAssistantId ? { ...msg, status: "incomplete" } : msg
+            )
+          );
+        }
+        assistantStreamingRef.current = false;
+        break;
+      }
+    }
+  }, []);
+
   // Send message handler - now accepts optional override text for voice input
   const handleSendMessage = useCallback(
     async (e?: React.FormEvent, overrideInput?: string) => {
@@ -1403,99 +1505,8 @@ export function UnifiedChat() {
           { signal: abortController.signal }
         );
 
-        // Track server-assigned IDs and accumulated content
-        let serverAssistantId: string | undefined;
-        let assistantMessageAdded = false;
-        let accumulatedContent = "";
-
-        // Process streaming events
-        for await (const event of stream) {
-          // Log EVERY SSE event we receive
-
-          if (event.type === "response.created") {
-            const eventWithResponse = event as { response?: { id?: string } };
-            if (eventWithResponse.response?.id) {
-              setCurrentResponseId(eventWithResponse.response.id);
-            }
-          } else if (
-            event.type === "response.output_item.added" &&
-            event.item?.type === "message"
-          ) {
-            // Get the server-assigned ID from item.id
-            const eventWithItem = event as { item?: { id?: string } };
-            if (eventWithItem.item?.id) {
-              serverAssistantId = eventWithItem.item.id;
-
-              // Add the assistant message with the correct server ID
-              const assistantMessage: Message = {
-                id: serverAssistantId!,
-                role: "assistant",
-                content: [],
-                timestamp: Date.now(),
-                status: "streaming"
-              };
-              setMessages((prev) => [...prev, assistantMessage]);
-              assistantMessageAdded = true;
-              assistantStreamingRef.current = true;
-            }
-          } else if (event.type === "response.output_text.delta" && event.delta) {
-            // Accumulate text chunks
-            accumulatedContent += event.delta;
-
-            // Only update if we have the message added
-            if (serverAssistantId && assistantMessageAdded) {
-              const outputContent: OutputTextContent = {
-                type: "output_text",
-                text: accumulatedContent,
-                annotations: []
-              };
-              setMessages((prev) =>
-                prev.map((msg) =>
-                  msg.id === serverAssistantId
-                    ? {
-                        ...msg,
-                        content: [outputContent]
-                      }
-                    : msg
-                )
-              );
-            }
-          } else if (event.type === "response.output_item.done") {
-            // Mark message as completed and update lastSeenItemId
-            if (serverAssistantId) {
-              setMessages((prev) =>
-                prev.map((msg) =>
-                  msg.id === serverAssistantId ? { ...msg, status: "completed" } : msg
-                )
-              );
-              setLastSeenItemId(serverAssistantId);
-              assistantStreamingRef.current = false;
-            }
-          } else if (event.type === "response.failed" || event.type === "error") {
-            // Handle streaming errors
-            console.error("Streaming error:", event);
-            if (serverAssistantId) {
-              setMessages((prev) =>
-                prev.map((msg) =>
-                  msg.id === serverAssistantId ? { ...msg, status: "error" } : msg
-                )
-              );
-            }
-            setError("Failed to generate response. Please try again.");
-            assistantStreamingRef.current = false;
-          } else if ((event as { type: string }).type === "response.cancelled") {
-            // Handle response cancellation
-            if (serverAssistantId) {
-              setMessages((prev) =>
-                prev.map((msg) =>
-                  msg.id === serverAssistantId ? { ...msg, status: "incomplete" } : msg
-                )
-              );
-            }
-            assistantStreamingRef.current = false;
-            break;
-          }
-        }
+        // Process the streaming response
+        await processStreamingResponse(stream);
         setCurrentResponseId(undefined);
       } catch (error) {
         console.error("Failed to send message:", error);
@@ -1573,7 +1584,99 @@ export function UnifiedChat() {
             setError(status403Error.message || "Access denied. Please check your subscription.");
           }
         } else if (error instanceof Error && error.name !== "AbortError") {
-          setError(errorMessage + ". Please try again.");
+          // Retry logic for non-rate-limit errors on follow-up conversations
+          // Only retry if this is a follow-up (conversation already existed before this request)
+          const isFollowUpConversation = conversation?.id && messages.length > 1;
+
+          if (isFollowUpConversation && conversation?.id) {
+            try {
+              // Wait 1 second before retrying
+              console.log("Waiting 1s before retry...");
+              await new Promise((resolve) => setTimeout(resolve, 1000));
+
+              console.log("Retrying request once...");
+              // TODO: Consider calling os.getAttestation() here if needed for attestation refresh
+
+              // Create new abort controller for retry
+              const retryAbortController = new AbortController();
+              abortControllerRef.current = retryAbortController;
+
+              const retryStream = await openai.responses.create(
+                {
+                  conversation: conversation.id,
+                  model: localState.model || DEFAULT_MODEL_ID,
+                  input: [{ role: "user", content: messageContent }],
+                  metadata: { internal_message_id: localMessageId }, // Server prevents duplicate IDs
+                  stream: true,
+                  store: true
+                },
+                { signal: retryAbortController.signal }
+              );
+
+              // Process the retry stream using the same helper function
+              await processStreamingResponse(retryStream);
+              console.log("Retry completed successfully");
+              return;
+            } catch (retryError) {
+              // Retry failed - check one last time if message actually went through
+              console.error("Retry failed:", retryError);
+
+              try {
+                // Check the last 5 items to see if our message is there
+                const finalCheckResponse = await openai.conversations.items.list(conversation.id, {
+                  limit: 5,
+                  order: "desc"
+                });
+
+                // Look for our message by ID - server uses our internal_message_id as the item's ID
+                const foundMessage = finalCheckResponse.data.find(
+                  (item) => item.id === localMessageId
+                );
+
+                if (!foundMessage) {
+                  // Message definitely didn't go through - restore input and remove from UI
+                  console.log("Message not found after retry - restoring input");
+
+                  // Remove the user message from the messages list
+                  setMessages((prev) => prev.filter((msg) => msg.id !== localMessageId));
+
+                  // Restore the original input and attachments
+                  if (!overrideInput) {
+                    setInput(originalInput);
+                    setDraftImages(originalImages);
+                    setImageUrls(originalImageUrls);
+                    setDocumentText(originalDocumentText);
+                    setDocumentName(originalDocumentName);
+                  }
+
+                  setError("Failed to send message. Please try again.");
+                } else {
+                  // Message actually went through! Just log it
+                  console.log("Message found after retry failure - it actually went through");
+                }
+              } catch (finalCheckError) {
+                // If we can't even check, assume message failed and restore input
+                console.error("Final check failed:", finalCheckError);
+
+                // Remove the user message from the messages list
+                setMessages((prev) => prev.filter((msg) => msg.id !== localMessageId));
+
+                // Restore the original input and attachments
+                if (!overrideInput) {
+                  setInput(originalInput);
+                  setDraftImages(originalImages);
+                  setImageUrls(originalImageUrls);
+                  setDocumentText(originalDocumentText);
+                  setDocumentName(originalDocumentName);
+                }
+
+                setError("Failed to send message. Please try again.");
+              }
+            }
+          } else {
+            // Not a follow-up conversation or other non-retryable error
+            setError(errorMessage + ". Please try again.");
+          }
         }
       } finally {
         setIsGenerating(false);
@@ -1590,7 +1693,8 @@ export function UnifiedChat() {
       localState.model,
       draftImages,
       documentText,
-      clearAllAttachments
+      clearAllAttachments,
+      processStreamingResponse
     ]
   );
 
@@ -1608,6 +1712,16 @@ export function UnifiedChat() {
 
       {/* Main Content */}
       <div className="flex flex-col flex-1 min-w-0 bg-background overflow-hidden relative">
+        {/* Error message - fixed at top below header, always visible */}
+        {error && (
+          <div className="fixed top-16 left-1/2 -translate-x-1/2 z-50 w-full max-w-2xl px-4 md:left-[calc(50%+140px)]">
+            <Alert variant="destructive" className="bg-background">
+              <AlertCircle className="h-4 w-4" />
+              <AlertDescription>{error}</AlertDescription>
+            </Alert>
+          </div>
+        )}
+
         {/* Mobile sidebar toggle */}
         {!isSidebarOpen && (
           <div className="fixed top-[9.5px] left-4 z-20 md:hidden">
@@ -1663,16 +1777,6 @@ export function UnifiedChat() {
 
         {/* Messages Area */}
         <div ref={chatContainerRef} className="flex-1 overflow-y-auto flex flex-col relative">
-          {/* Error message */}
-          {error && (
-            <div className="max-w-4xl mx-auto w-full p-6">
-              <Alert variant="destructive" className="mb-4">
-                <AlertCircle className="h-4 w-4" />
-                <AlertDescription>{error}</AlertDescription>
-              </Alert>
-            </div>
-          )}
-
           {/* Only show messages when there are messages */}
           {messages.length > 0 && (
             <div className="max-w-4xl mx-auto p-6 w-full">
