@@ -24,7 +24,8 @@ export const OpenAIProvider = ({ children }: { children: React.ReactNode }) => {
     defaultHeaders: {
       "Accept-Encoding": "identity"
     },
-    fetch: aiCustomFetch
+    fetch: aiCustomFetch,
+    maxRetries: 0 // Disable automatic retries
   });
 
   return <OpenAIContext.Provider value={openai}>{children}</OpenAIContext.Provider>;

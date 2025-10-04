@@ -1,31 +1,18 @@
 import { createContext } from "react";
 import { BillingStatus } from "@/billing/billingApi";
 import type { Model } from "openai/resources/models.js";
+import type { Responses } from "openai/resources/responses.js";
+type ResponseItem = Responses.ResponseItem;
 
 // Extended Model type for OpenSecret API which includes additional properties
 export interface OpenSecretModel extends Model {
   tasks?: string[];
 }
 
-export type ChatContentPart =
-  | { type: "text"; text: string }
-  | { type: "image_url"; image_url: { url: string } };
-
-export type ChatMessage = {
-  role: "user" | "assistant" | "system";
-  /** plain text for normal models, or multimodal array for multimodal models */
-  content: string | ChatContentPart[];
-  /** Optional document attachment for user messages */
-  document?: {
-    filename: string;
-    fullContent: string;
-  };
-};
-
 export type Chat = {
   id: string;
   title: string;
-  messages: ChatMessage[];
+  messages: ResponseItem[];
   model?: string;
 };
 

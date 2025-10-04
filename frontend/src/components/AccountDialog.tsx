@@ -24,11 +24,13 @@ import { CheckCircle, XCircle, Trash } from "lucide-react";
 import { ChangePasswordDialog } from "./ChangePasswordDialog";
 import { useLocalState } from "@/state/useLocalState";
 import { DeleteAccountDialog } from "./DeleteAccountDialog";
+import { PreferencesDialog } from "./PreferencesDialog";
 
 export function AccountDialog() {
   const os = useOpenSecret();
   const [isChangePasswordOpen, setIsChangePasswordOpen] = useState(false);
   const [isDeleteAccountOpen, setIsDeleteAccountOpen] = useState(false);
+  const [isPreferencesOpen, setIsPreferencesOpen] = useState(false);
   const [verificationStatus, setVerificationStatus] = useState<"unverified" | "pending">(
     "unverified"
   );
@@ -108,6 +110,16 @@ export function AccountDialog() {
             </Select>
           </div>
           <div className="flex flex-col space-y-2">
+            <Button
+              variant="outline"
+              onClick={(e) => {
+                e.preventDefault();
+                setIsPreferencesOpen(true);
+              }}
+              type="button"
+            >
+              User Preferences
+            </Button>
             {isEmailUser && (
               <DialogTrigger asChild>
                 <Button
@@ -145,6 +157,7 @@ export function AccountDialog() {
         <ChangePasswordDialog open={isChangePasswordOpen} onOpenChange={setIsChangePasswordOpen} />
       )}
       <DeleteAccountDialog open={isDeleteAccountOpen} onOpenChange={setIsDeleteAccountOpen} />
+      <PreferencesDialog open={isPreferencesOpen} onOpenChange={setIsPreferencesOpen} />
     </>
   );
 }
