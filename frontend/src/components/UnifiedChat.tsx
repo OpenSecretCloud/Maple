@@ -88,6 +88,21 @@ interface Message {
   status?: "completed" | "streaming" | "error" | "in_progress" | "incomplete";
 }
 
+// Helper function to merge messages while ensuring uniqueness by ID
+// This prevents duplicate key warnings in React by deduplicating messages
+function mergeMessagesById(existingMessages: Message[], newMessages: Message[]): Message[] {
+  const messagesMap = new Map<string, Message>();
+
+  // First, add all existing messages
+  existingMessages.forEach((msg) => messagesMap.set(msg.id, msg));
+
+  // Then, add/update with new messages (overwrites if ID already exists)
+  newMessages.forEach((msg) => messagesMap.set(msg.id, msg));
+
+  // Return as array, maintaining insertion order (Map preserves insertion order)
+  return Array.from(messagesMap.values());
+}
+
 // Custom hook for copy to clipboard functionality
 function useCopyToClipboard(text: string) {
   const [isCopied, setIsCopied] = useState(false);
@@ -687,9 +702,9 @@ export function UnifiedChat() {
         // Reverse for chronological order (API returns desc, we need asc for display)
         const olderMessagesInChronologicalOrder = olderMessages.reverse();
 
-        // Prepend older messages to the existing messages
-        // Since we display oldest-first, older messages go at the BEGINNING of the array
-        setMessages((prev) => [...olderMessagesInChronologicalOrder, ...prev]);
+        // Prepend older messages to the existing messages using merge helper
+        // This ensures no duplicates if a message was already loaded
+        setMessages((prev) => mergeMessagesById(olderMessagesInChronologicalOrder, prev));
 
         // Update pagination state
         // After reversal, the FIRST message is the chronologically oldest
@@ -749,42 +764,19 @@ export function UnifiedChat() {
         }
 
         if (newMessages.length > 0) {
-          // Merge new messages with deduplication and status updates
+          // Merge new messages with deduplication using helper
           setMessages((prev) => {
-            const newMessagesMap = new Map(newMessages.map((m) => [m.id, m]));
-            let hasChanges = false;
-
-            // First, update existing messages if their status/content changed
-            const updatedMessages = prev.map((existingMsg) => {
-              const newVersion = newMessagesMap.get(existingMsg.id);
-              if (newVersion) {
-                // Remove from map so we don't add it again
-                newMessagesMap.delete(existingMsg.id);
-                // Check if anything changed
-                if (
-                  existingMsg.status !== newVersion.status ||
-                  existingMsg.content.length !== newVersion.content.length
-                ) {
-                  hasChanges = true;
-                  return newVersion;
-                }
-              }
-              return existingMsg;
-            });
-
-            // Add any remaining new messages (ones we haven't seen before)
-            const trulyNewMessages = Array.from(newMessagesMap.values());
-
-            if (!hasChanges && trulyNewMessages.length === 0) {
-              return prev;
-            }
+            // Check if there are truly new messages (not already in prev)
+            const prevIds = new Set(prev.map((m) => m.id));
+            const trulyNewMessages = newMessages.filter((m) => !prevIds.has(m.id));
 
             // Mark that we have new polled messages for scrolling
             if (trulyNewMessages.length > 0) {
               setHasNewPolledMessages(true);
             }
 
-            return [...updatedMessages, ...trulyNewMessages];
+            // Use merge helper to combine, which will deduplicate and update existing messages
+            return mergeMessagesById(prev, newMessages);
           });
 
           // Update last seen item ID for next poll
@@ -1313,7 +1305,8 @@ export function UnifiedChat() {
             timestamp: Date.now(),
             status: "streaming"
           };
-          setMessages((prev) => [...prev, assistantMessage]);
+          // Use merge helper to prevent duplicates if this message already exists
+          setMessages((prev) => mergeMessagesById(prev, [assistantMessage]));
           assistantMessageAdded = true;
           assistantStreamingRef.current = true;
         }
@@ -1330,24 +1323,26 @@ export function UnifiedChat() {
             text: accumulatedContent,
             annotations: []
           };
-          setMessages((prev) =>
-            prev.map((msg) =>
-              msg.id === serverAssistantId
-                ? {
-                    ...msg,
-                    content: [outputContent]
-                  }
-                : msg
-            )
-          );
+          // Update the message content using merge helper for consistency
+          const updatedMessage: Message = {
+            id: serverAssistantId,
+            role: "assistant",
+            content: [outputContent],
+            timestamp: Date.now(),
+            status: "streaming"
+          };
+          setMessages((prev) => mergeMessagesById(prev, [updatedMessage]));
         }
       } else if ((event as { type: string }).type === "response.output_item.done") {
         if (serverAssistantId) {
-          setMessages((prev) =>
-            prev.map((msg) =>
-              msg.id === serverAssistantId ? { ...msg, status: "completed" } : msg
-            )
-          );
+          // Update status to completed using merge helper
+          setMessages((prev) => {
+            const msgToUpdate = prev.find((m) => m.id === serverAssistantId);
+            if (msgToUpdate) {
+              return mergeMessagesById(prev, [{ ...msgToUpdate, status: "completed" }]);
+            }
+            return prev;
+          });
           setLastSeenItemId(serverAssistantId);
           assistantStreamingRef.current = false;
         }
@@ -1357,19 +1352,27 @@ export function UnifiedChat() {
       ) {
         console.error("Streaming error:", event);
         if (serverAssistantId) {
-          setMessages((prev) =>
-            prev.map((msg) => (msg.id === serverAssistantId ? { ...msg, status: "error" } : msg))
-          );
+          // Update status to error using merge helper
+          setMessages((prev) => {
+            const msgToUpdate = prev.find((m) => m.id === serverAssistantId);
+            if (msgToUpdate) {
+              return mergeMessagesById(prev, [{ ...msgToUpdate, status: "error" }]);
+            }
+            return prev;
+          });
         }
         setError("Failed to generate response. Please try again.");
         assistantStreamingRef.current = false;
       } else if ((event as { type: string }).type === "response.cancelled") {
         if (serverAssistantId) {
-          setMessages((prev) =>
-            prev.map((msg) =>
-              msg.id === serverAssistantId ? { ...msg, status: "incomplete" } : msg
-            )
-          );
+          // Update status to incomplete using merge helper
+          setMessages((prev) => {
+            const msgToUpdate = prev.find((m) => m.id === serverAssistantId);
+            if (msgToUpdate) {
+              return mergeMessagesById(prev, [{ ...msgToUpdate, status: "incomplete" }]);
+            }
+            return prev;
+          });
         }
         assistantStreamingRef.current = false;
         break;
@@ -1446,7 +1449,8 @@ export function UnifiedChat() {
         status: "completed"
       };
 
-      setMessages((prev) => [...prev, userMessage]);
+      // Use merge helper to add user message (prevents duplicates)
+      setMessages((prev) => mergeMessagesById(prev, [userMessage]));
       // Set lastSeenItemId to our local message ID
       // The backend should map this via internal_message_id
       setLastSeenItemId(localMessageId);
