@@ -1975,23 +1975,6 @@ export function UnifiedChat() {
                       )}
                     </div>
 
-                    {/* Hidden file inputs */}
-                    <input
-                      type="file"
-                      ref={fileInputRef}
-                      accept="image/jpeg,image/jpg,image/png,image/webp"
-                      multiple
-                      onChange={handleAddImages}
-                      className="hidden"
-                    />
-                    <input
-                      type="file"
-                      ref={documentInputRef}
-                      accept=".pdf,.txt,.md"
-                      onChange={handleDocumentUpload}
-                      className="hidden"
-                    />
-
                     {/* Recording overlay for centered input */}
                     {isRecording && (
                       <RecordingOverlay
@@ -2213,6 +2196,23 @@ export function UnifiedChat() {
           open={documentPlatformDialogOpen}
           onOpenChange={setDocumentPlatformDialogOpen}
           hasProAccess={canUseDocuments || false}
+        />
+
+        {/* Hidden file inputs - must be outside conditional rendering to work in both views */}
+        <input
+          type="file"
+          ref={fileInputRef}
+          accept="image/jpeg,image/jpg,image/png,image/webp"
+          multiple
+          onChange={handleAddImages}
+          className="hidden"
+        />
+        <input
+          type="file"
+          ref={documentInputRef}
+          accept=".pdf,.txt,.md"
+          onChange={handleDocumentUpload}
+          className="hidden"
         />
       </div>
     </div>
