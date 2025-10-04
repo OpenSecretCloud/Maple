@@ -99,11 +99,11 @@ export function ChatHistoryList({ currentChatId, searchQuery = "" }: ChatHistory
     if (!opensecret) return;
 
     try {
-      // Fetch NEW conversations that came after the newest one we've seen
-      // Use order=asc to get conversations chronologically after the newestConversationId
+      // Fetch NEW conversations that came before the newest one we've seen
+      // Use before + desc order to get newer conversations (those created after newestConversationId)
+      // Default order is desc (newest first), so omit before parameter to get all newer ones
       const response = await opensecret.listConversations({
-        ...(newestConversationId ? { after: newestConversationId, order: "asc" } : {}),
-        limit: 20 // Smaller limit since we only expect a few new conversations
+        limit: 20 // Fetch up to 20 to catch any new conversations
       });
 
       const newConversations = response.data || [];
@@ -136,17 +136,14 @@ export function ChatHistoryList({ currentChatId, searchQuery = "" }: ChatHistory
             return prev;
           }
 
-          // Since conversations come in asc order (oldest to newest in the new batch),
-          // we need to reverse them to maintain desc order (newest first)
-          const reversedNewConversations = [...trulyNewConversations].reverse();
-
+          // Conversations come in desc order (newest first), so no need to reverse
           // Prepend new conversations to the beginning (newest first in our list)
-          return [...reversedNewConversations, ...updatedConversations];
+          return [...trulyNewConversations, ...updatedConversations];
         });
 
         // Update newest conversation ID for next poll
-        // Since we're using order=asc, the LAST conversation is the newest
-        const newestId = newConversations[newConversations.length - 1].id;
+        // Since we're using default desc order, the FIRST conversation is the newest
+        const newestId = newConversations[0].id;
         setNewestConversationId(newestId);
       }
     } catch (error) {
