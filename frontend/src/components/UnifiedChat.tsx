@@ -1860,9 +1860,6 @@ export function UnifiedChat() {
                           >
                             <Image className="mr-2 h-4 w-4" />
                             <span>Add Images</span>
-                            {!canUseImages && (
-                              <span className="ml-auto text-xs text-muted-foreground">Pro</span>
-                            )}
                           </DropdownMenuItem>
                           <DropdownMenuItem
                             onClick={() => {
@@ -2061,9 +2058,6 @@ export function UnifiedChat() {
                         >
                           <Image className="mr-2 h-4 w-4" />
                           <span>Add Images</span>
-                          {!canUseImages && (
-                            <span className="ml-auto text-xs text-muted-foreground">Pro</span>
-                          )}
                         </DropdownMenuItem>
                         <DropdownMenuItem
                           onClick={() => {
