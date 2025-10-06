@@ -197,7 +197,7 @@ const MessageList = memo(
             ref={index === 0 ? firstMessageRef : undefined}
             className={`group py-6 px-4 ${message.role === "user" ? "bg-muted/30" : ""}`}
           >
-            <div className="flex gap-3 max-w-4xl mx-auto">
+            <div className="flex flex-col md:flex-row gap-3 max-w-4xl mx-auto">
               <div className="flex-shrink-0">
                 {message.role === "user" ? (
                   <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center">
@@ -209,7 +209,7 @@ const MessageList = memo(
                   </div>
                 )}
               </div>
-              <div className="flex-1 overflow-hidden">
+              <div className="flex-1 overflow-hidden w-full md:w-auto">
                 <div className="space-y-2">
                   <div className="font-semibold text-sm">
                     {message.role === "user" ? "You" : "Maple"}
