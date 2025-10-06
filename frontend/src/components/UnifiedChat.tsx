@@ -1825,65 +1825,6 @@ export function UnifiedChat() {
                 {/* Input form */}
                 <form onSubmit={handleSendMessage} className="w-full relative">
                   <div className="space-y-2">
-                    {/* Model selector and attachment button */}
-                    <div className="flex items-center gap-2">
-                      <ModelSelector
-                        hasImages={
-                          draftImages.length > 0 ||
-                          messages.some((msg) =>
-                            msg.content.some(
-                              (part: ConversationContent) => part.type === "input_image"
-                            )
-                          )
-                        }
-                      />
-
-                      {/* Attachment dropdown */}
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="sm"
-                            className="h-8 w-8 p-0"
-                            disabled={isProcessingDocument}
-                          >
-                            <Plus className="h-4 w-4" />
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="start">
-                          <DropdownMenuItem
-                            onClick={() => {
-                              if (!canUseImages) {
-                                setUpgradeFeature("image");
-                                setUpgradeDialogOpen(true);
-                              } else {
-                                fileInputRef.current?.click();
-                              }
-                            }}
-                          >
-                            <Image className="mr-2 h-4 w-4" />
-                            <span>Add Images</span>
-                          </DropdownMenuItem>
-                          <DropdownMenuItem
-                            onClick={() => {
-                              if (!isTauriEnv) {
-                                setDocumentPlatformDialogOpen(true);
-                              } else if (!canUseDocuments) {
-                                setUpgradeFeature("document");
-                                setUpgradeDialogOpen(true);
-                              } else {
-                                documentInputRef.current?.click();
-                              }
-                            }}
-                          >
-                            <FileText className="mr-2 h-4 w-4" />
-                            <span>Add Document</span>
-                          </DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
-                    </div>
-
                     {/* Attachment previews */}
                     {(draftImages.length > 0 || documentName) && (
                       <div className="space-y-2">
@@ -1933,7 +1874,8 @@ export function UnifiedChat() {
                       </div>
                     )}
 
-                    <div className="relative">
+                    {/* Main input container with purple focus border */}
+                    <div className="relative rounded-xl border-2 border-border focus-within:border-purple-500 transition-colors bg-background overflow-hidden">
                       <Textarea
                         ref={textareaRef}
                         value={input}
@@ -1941,55 +1883,119 @@ export function UnifiedChat() {
                         onKeyDown={handleKeyDown}
                         placeholder="Message Maple..."
                         disabled={isGenerating || isRecording}
-                        className="w-full resize-none min-h-[120px] max-h-[200px] pr-24 py-4 px-5 rounded-xl border bg-background focus:outline-none focus:ring-2 focus:ring-ring/20 placeholder:text-muted-foreground/60 text-base"
+                        className="w-full resize-none min-h-[120px] max-h-[200px] px-5 pt-4 pb-2 border-0 bg-transparent focus-visible:ring-0 focus-visible:ring-offset-0 placeholder:text-muted-foreground/60 text-base"
                         rows={4}
                         id="message"
                       />
-                      {/* Mic button */}
-                      <Button
-                        type="button"
-                        onClick={startRecording}
-                        disabled={isGenerating || isRecording || !canUseVoice}
-                        size="icon"
-                        variant="ghost"
-                        className="absolute bottom-3 right-14 h-9 w-9 rounded-lg hover:bg-muted"
-                      >
-                        <Mic className="h-4 w-4" />
-                      </Button>
-                      {/* Send/Stop button */}
-                      {isGenerating ? (
-                        <Button
-                          type="button"
-                          onClick={handleCancelResponse}
-                          size="icon"
-                          variant="destructive"
-                          className="absolute bottom-3 right-3 h-9 w-9 rounded-lg"
-                        >
-                          <div className="h-3 w-3 bg-current rounded-sm" />
-                        </Button>
-                      ) : (
-                        <Button
-                          type="submit"
-                          disabled={!input.trim() && !draftImages.length && !documentText}
-                          size="icon"
-                          className="absolute bottom-3 right-3 h-9 w-9 rounded-lg"
-                        >
-                          <Send className="h-4 w-4" />
-                        </Button>
+
+                      {/* Bottom toolbar */}
+                      <div className="flex items-center justify-between px-3 pb-2 pt-1 border-t border-border/50">
+                        <div className="flex items-center gap-2">
+                          <ModelSelector
+                            hasImages={
+                              draftImages.length > 0 ||
+                              messages.some((msg) =>
+                                msg.content.some(
+                                  (part: ConversationContent) => part.type === "input_image"
+                                )
+                              )
+                            }
+                          />
+
+                          {/* Attachment dropdown */}
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                className="h-8 w-8 p-0"
+                                disabled={isProcessingDocument}
+                              >
+                                <Plus className="h-4 w-4" />
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="start">
+                              <DropdownMenuItem
+                                onClick={() => {
+                                  if (!canUseImages) {
+                                    setUpgradeFeature("image");
+                                    setUpgradeDialogOpen(true);
+                                  } else {
+                                    fileInputRef.current?.click();
+                                  }
+                                }}
+                              >
+                                <Image className="mr-2 h-4 w-4" />
+                                <span>Add Images</span>
+                              </DropdownMenuItem>
+                              <DropdownMenuItem
+                                onClick={() => {
+                                  if (!isTauriEnv) {
+                                    setDocumentPlatformDialogOpen(true);
+                                  } else if (!canUseDocuments) {
+                                    setUpgradeFeature("document");
+                                    setUpgradeDialogOpen(true);
+                                  } else {
+                                    documentInputRef.current?.click();
+                                  }
+                                }}
+                              >
+                                <FileText className="mr-2 h-4 w-4" />
+                                <span>Add Document</span>
+                              </DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                          {/* Mic button */}
+                          <Button
+                            type="button"
+                            onClick={startRecording}
+                            disabled={isGenerating || isRecording || !canUseVoice}
+                            size="icon"
+                            variant="ghost"
+                            className="h-9 w-9 rounded-lg hover:bg-muted"
+                          >
+                            <Mic className="h-4 w-4" />
+                          </Button>
+                          {/* Send/Stop button */}
+                          {isGenerating ? (
+                            <Button
+                              type="button"
+                              onClick={handleCancelResponse}
+                              size="icon"
+                              variant="destructive"
+                              className="h-9 w-9 rounded-lg"
+                            >
+                              <div className="h-3 w-3 bg-current rounded-sm" />
+                            </Button>
+                          ) : (
+                            <Button
+                              type="submit"
+                              disabled={!input.trim() && !draftImages.length && !documentText}
+                              size="icon"
+                              className="h-9 w-9 rounded-lg"
+                            >
+                              <Send className="h-4 w-4" />
+                            </Button>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Recording overlay for centered input */}
+                      {isRecording && (
+                        <RecordingOverlay
+                          isRecording={isRecording}
+                          isProcessing={isProcessingSend || isTranscribing}
+                          onSend={() => stopRecording(true)}
+                          onCancel={() => stopRecording(false)}
+                          isCompact={false}
+                          className="absolute inset-0 rounded-xl"
+                        />
                       )}
                     </div>
-
-                    {/* Recording overlay for centered input */}
-                    {isRecording && (
-                      <RecordingOverlay
-                        isRecording={isRecording}
-                        isProcessing={isProcessingSend || isTranscribing}
-                        onSend={() => stopRecording(true)}
-                        onCancel={() => stopRecording(false)}
-                        isCompact={false}
-                        className="absolute inset-0 rounded-xl"
-                      />
-                    )}
                   </div>
                 </form>
 
@@ -2003,68 +2009,9 @@ export function UnifiedChat() {
         ) : (
           // Fixed at bottom when there are messages
           <div className="bg-background">
-            <div className="max-w-4xl mx-auto p-4">
+            <div className="max-w-4xl mx-auto px-4 pb-4">
               <form onSubmit={handleSendMessage} className="relative">
                 <div className="space-y-2">
-                  {/* Model selector and attachment button */}
-                  <div className="flex items-center gap-2">
-                    <ModelSelector
-                      hasImages={
-                        draftImages.length > 0 ||
-                        messages.some((msg) =>
-                          msg.content.some(
-                            (part: ConversationContent) => part.type === "input_image"
-                          )
-                        )
-                      }
-                    />
-
-                    {/* Attachment dropdown */}
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          className="h-8 w-8 p-0"
-                          disabled={isProcessingDocument}
-                        >
-                          <Plus className="h-4 w-4" />
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="start">
-                        <DropdownMenuItem
-                          onClick={() => {
-                            if (!canUseImages) {
-                              setUpgradeFeature("image");
-                              setUpgradeDialogOpen(true);
-                            } else {
-                              fileInputRef.current?.click();
-                            }
-                          }}
-                        >
-                          <Image className="mr-2 h-4 w-4" />
-                          <span>Add Images</span>
-                        </DropdownMenuItem>
-                        <DropdownMenuItem
-                          onClick={() => {
-                            if (!isTauriEnv) {
-                              setDocumentPlatformDialogOpen(true);
-                            } else if (!canUseDocuments) {
-                              setUpgradeFeature("document");
-                              setUpgradeDialogOpen(true);
-                            } else {
-                              documentInputRef.current?.click();
-                            }
-                          }}
-                        >
-                          <FileText className="mr-2 h-4 w-4" />
-                          <span>Add Document</span>
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  </div>
-
                   {/* Attachment previews */}
                   {(draftImages.length > 0 || documentName) && (
                     <div className="space-y-2">
@@ -2112,7 +2059,8 @@ export function UnifiedChat() {
                     <div className="text-xs text-red-500 px-2">{attachmentError || audioError}</div>
                   )}
 
-                  <div className="relative">
+                  {/* Main input container with purple focus border */}
+                  <div className="relative rounded-xl border-2 border-border focus-within:border-purple-500 transition-colors bg-background overflow-hidden">
                     <Textarea
                       ref={textareaRef}
                       value={input}
@@ -2120,55 +2068,119 @@ export function UnifiedChat() {
                       onKeyDown={handleKeyDown}
                       placeholder="Message Maple..."
                       disabled={isGenerating || isRecording}
-                      className="w-full resize-none min-h-[52px] max-h-[200px] pr-20 py-3 px-4 rounded-xl border bg-background focus:outline-none focus:ring-2 focus:ring-ring/20 placeholder:text-muted-foreground/60"
+                      className="w-full resize-none min-h-[52px] max-h-[200px] px-4 pt-3 pb-2 border-0 bg-transparent focus-visible:ring-0 focus-visible:ring-offset-0 placeholder:text-muted-foreground/60"
                       rows={1}
                       id="message"
                     />
-                    {/* Mic button */}
-                    <Button
-                      type="button"
-                      onClick={startRecording}
-                      disabled={isGenerating || isRecording || !canUseVoice}
-                      size="icon"
-                      variant="ghost"
-                      className="absolute bottom-[0.45rem] right-11 h-8 w-8 rounded-lg hover:bg-muted"
-                    >
-                      <Mic className="h-4 w-4" />
-                    </Button>
-                    {/* Send/Stop button */}
-                    {isGenerating ? (
-                      <Button
-                        type="button"
-                        onClick={handleCancelResponse}
-                        size="icon"
-                        variant="destructive"
-                        className="absolute bottom-[0.45rem] right-2 h-8 w-8 rounded-lg"
-                      >
-                        <div className="h-3 w-3 bg-current rounded-sm" />
-                      </Button>
-                    ) : (
-                      <Button
-                        type="submit"
-                        disabled={!input.trim() && !draftImages.length && !documentText}
-                        size="icon"
-                        className="absolute bottom-[0.45rem] right-2 h-8 w-8 rounded-lg"
-                      >
-                        <Send className="h-4 w-4" />
-                      </Button>
+
+                    {/* Bottom toolbar */}
+                    <div className="flex items-center justify-between px-3 pb-2 pt-1 border-t border-border/50">
+                      <div className="flex items-center gap-2">
+                        <ModelSelector
+                          hasImages={
+                            draftImages.length > 0 ||
+                            messages.some((msg) =>
+                              msg.content.some(
+                                (part: ConversationContent) => part.type === "input_image"
+                              )
+                            )
+                          }
+                        />
+
+                        {/* Attachment dropdown */}
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              className="h-8 w-8 p-0"
+                              disabled={isProcessingDocument}
+                            >
+                              <Plus className="h-4 w-4" />
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="start">
+                            <DropdownMenuItem
+                              onClick={() => {
+                                if (!canUseImages) {
+                                  setUpgradeFeature("image");
+                                  setUpgradeDialogOpen(true);
+                                } else {
+                                  fileInputRef.current?.click();
+                                }
+                              }}
+                            >
+                              <Image className="mr-2 h-4 w-4" />
+                              <span>Add Images</span>
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
+                              onClick={() => {
+                                if (!isTauriEnv) {
+                                  setDocumentPlatformDialogOpen(true);
+                                } else if (!canUseDocuments) {
+                                  setUpgradeFeature("document");
+                                  setUpgradeDialogOpen(true);
+                                } else {
+                                  documentInputRef.current?.click();
+                                }
+                              }}
+                            >
+                              <FileText className="mr-2 h-4 w-4" />
+                              <span>Add Document</span>
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        {/* Mic button */}
+                        <Button
+                          type="button"
+                          onClick={startRecording}
+                          disabled={isGenerating || isRecording || !canUseVoice}
+                          size="icon"
+                          variant="ghost"
+                          className="h-8 w-8 rounded-lg hover:bg-muted"
+                        >
+                          <Mic className="h-4 w-4" />
+                        </Button>
+                        {/* Send/Stop button */}
+                        {isGenerating ? (
+                          <Button
+                            type="button"
+                            onClick={handleCancelResponse}
+                            size="icon"
+                            variant="destructive"
+                            className="h-8 w-8 rounded-lg"
+                          >
+                            <div className="h-3 w-3 bg-current rounded-sm" />
+                          </Button>
+                        ) : (
+                          <Button
+                            type="submit"
+                            disabled={!input.trim() && !draftImages.length && !documentText}
+                            size="icon"
+                            className="h-8 w-8 rounded-lg"
+                          >
+                            <Send className="h-4 w-4" />
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Recording overlay for bottom input */}
+                    {isRecording && (
+                      <RecordingOverlay
+                        isRecording={isRecording}
+                        isProcessing={isProcessingSend || isTranscribing}
+                        onSend={() => stopRecording(true)}
+                        onCancel={() => stopRecording(false)}
+                        isCompact={true}
+                        className="absolute inset-0 rounded-xl"
+                      />
                     )}
                   </div>
-
-                  {/* Recording overlay for bottom input */}
-                  {isRecording && (
-                    <RecordingOverlay
-                      isRecording={isRecording}
-                      isProcessing={isProcessingSend || isTranscribing}
-                      onSend={() => stopRecording(true)}
-                      onCancel={() => stopRecording(false)}
-                      isCompact={true}
-                      className="absolute inset-0 rounded-xl"
-                    />
-                  )}
                 </div>
               </form>
               <p className="text-sm text-center text-muted-foreground/60 mt-2">
