@@ -195,9 +195,7 @@ const MessageList = memo(
           <div
             key={message.id}
             ref={index === 0 ? firstMessageRef : undefined}
-            className={`group py-6 px-4 ${
-              message.role === "user" ? "bg-muted/30" : ""
-            } hover:bg-muted/20 transition-colors`}
+            className={`group py-6 px-4 ${message.role === "user" ? "bg-muted/30" : ""}`}
           >
             <div className="flex gap-3 max-w-4xl mx-auto">
               <div className="flex-shrink-0">
@@ -258,11 +256,11 @@ const MessageList = memo(
                     </div>
                   )}
 
-                  {/* Actions - only show on hover for assistant messages */}
+                  {/* Actions - always visible on mobile, show on hover for desktop */}
                   {message.role === "assistant" &&
                     message.content &&
                     message.content.length > 0 && (
-                      <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <div className="flex gap-1 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
                         <CopyButton
                           text={message.content
                             .filter((p: ConversationContent) => "text" in p && p.text)
