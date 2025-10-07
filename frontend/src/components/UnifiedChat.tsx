@@ -1797,11 +1797,18 @@ export function UnifiedChat() {
             <div className="w-full max-w-4xl mx-auto">
               {/* Logo section - raised higher */}
               <div className="flex flex-col items-center -mt-20 mb-16">
-                {/* Logo with Maple - using the same images as TopNav */}
-                <div className="flex items-center justify-center gap-2 mb-3">
-                  <img src="/maple-icon-nobg.png" alt="" className="h-10 w-10" />
-                  <img src="/maple-logo.svg" alt="Maple" className="w-32 hidden dark:block" />
-                  <img src="/maple-logo-dark.svg" alt="Maple" className="w-32 block dark:hidden" />
+                {/* Logo with Maple text - combined image */}
+                <div className="flex items-center justify-center mb-3">
+                  <img
+                    src="/maple-logo-text-white.png"
+                    alt="Maple"
+                    className="h-12 hidden dark:block"
+                  />
+                  <img
+                    src="/maple-logo-text-black.png"
+                    alt="Maple"
+                    className="h-12 block dark:hidden"
+                  />
                 </div>
 
                 {/* Subtitle right under the logo */}
