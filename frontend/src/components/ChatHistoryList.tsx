@@ -48,7 +48,6 @@ export function ChatHistoryList({ currentChatId, searchQuery = "" }: ChatHistory
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const lastConversationRef = useRef<HTMLDivElement>(null);
   const [conversations, setConversations] = useState<Conversation[]>([]);
-  const [newestConversationId, setNewestConversationId] = useState<string | undefined>();
 
   // Fetch initial conversations from API using the OpenSecret SDK
   const { isPending, error } = useQuery({
@@ -69,17 +68,12 @@ export function ChatHistoryList({ currentChatId, searchQuery = "" }: ChatHistory
 
         // Set pagination state
         if (loadedConversations.length > 0) {
-          // First conversation is the newest (for polling)
-          const newestId = loadedConversations[0].id;
-          setNewestConversationId(newestId);
-
           // Last conversation in the array is the oldest (for pagination)
           const oldestId = loadedConversations[loadedConversations.length - 1].id;
           setOldestConversationId(oldestId);
           // If we got a full page, there might be more
           setHasMoreConversations(loadedConversations.length === 20);
         } else {
-          setNewestConversationId(undefined);
           setOldestConversationId(undefined);
           setHasMoreConversations(false);
         }
@@ -99,9 +93,8 @@ export function ChatHistoryList({ currentChatId, searchQuery = "" }: ChatHistory
     if (!opensecret) return;
 
     try {
-      // Fetch NEW conversations that came before the newest one we've seen
-      // Use before + desc order to get newer conversations (those created after newestConversationId)
-      // Default order is desc (newest first), so omit before parameter to get all newer ones
+      // Fetch latest conversations to detect new ones or metadata changes
+      // Default order is desc (newest first), fetches up to 20 conversations
       const response = await opensecret.listConversations({
         limit: 20 // Fetch up to 20 to catch any new conversations
       });
@@ -140,17 +133,12 @@ export function ChatHistoryList({ currentChatId, searchQuery = "" }: ChatHistory
           // Prepend new conversations to the beginning (newest first in our list)
           return [...trulyNewConversations, ...updatedConversations];
         });
-
-        // Update newest conversation ID for next poll
-        // Since we're using default desc order, the FIRST conversation is the newest
-        const newestId = newConversations[0].id;
-        setNewestConversationId(newestId);
       }
     } catch (error) {
       console.error("Polling error:", error);
       // Fail silently - don't disrupt the UI
     }
-  }, [opensecret, newestConversationId]);
+  }, [opensecret]);
 
   // Set up polling every 60 seconds
   useEffect(() => {
