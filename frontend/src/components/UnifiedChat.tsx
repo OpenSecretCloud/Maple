@@ -41,6 +41,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Sidebar, SidebarToggle } from "@/components/Sidebar";
 import { useIsMobile } from "@/utils/utils";
+import { fileToDataURL } from "@/utils/file";
 import { useOpenAI } from "@/ai/useOpenAi";
 import { DEFAULT_MODEL_ID } from "@/state/LocalStateContext";
 import { Markdown } from "@/components/markdown";
@@ -1392,16 +1393,6 @@ export function UnifiedChat() {
 
       // Clear any previous error
       setError(null);
-
-      // Helper function to convert File to data URL
-      const fileToDataURL = (file: File): Promise<string> => {
-        return new Promise((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = () => resolve(reader.result as string);
-          reader.onerror = reject;
-          reader.readAsDataURL(file);
-        });
-      };
 
       // Build the message content - always as an array
       // Using the input types since we're building user input
