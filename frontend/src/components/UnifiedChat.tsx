@@ -36,6 +36,7 @@ import {
 } from "lucide-react";
 import RecordRTC from "recordrtc";
 import { useQueryClient } from "@tanstack/react-query";
+import { v4 as uuidv4 } from "uuid";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Sidebar, SidebarToggle } from "@/components/Sidebar";
@@ -1438,7 +1439,7 @@ export function UnifiedChat() {
       }
 
       // Add user message immediately with a local UUID
-      const localMessageId = crypto.randomUUID();
+      const localMessageId = uuidv4();
       const userMessage: Message = {
         id: localMessageId,
         role: "user",
