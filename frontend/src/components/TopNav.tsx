@@ -4,12 +4,16 @@ import { Button } from "./ui/button";
 import { useOpenSecret } from "@opensecret/react";
 import { Menu, X } from "lucide-react";
 import { useState } from "react";
+import { isAndroid } from "@/utils/platform";
 
 export function TopNav() {
   const os = useOpenSecret();
   const navigate = useNavigate();
   const matchRoute = useMatchRoute();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+
+  // Check if we're on Android to add safe area padding
+  const isAndroidPlatform = isAndroid();
 
   const NavLink = ({
     to,
@@ -36,7 +40,12 @@ export function TopNav() {
   };
 
   return (
-    <div className="fixed top-0 left-0 right-0 z-50 px-4 sm:px-6 lg:px-8">
+    <div
+      className="fixed left-0 right-0 z-50 px-4 sm:px-6 lg:px-8"
+      style={{
+        top: isAndroidPlatform ? "var(--safe-area-inset-top)" : "0"
+      }}
+    >
       <nav className="w-full max-w-7xl mx-auto my-4">
         <div className="flex h-16 items-center px-6 relative overflow-visible rounded-xl border border-[#E2E2E2]/10 bg-[#111111]/80 backdrop-blur-md">
           <div className="relative z-10 flex w-full items-center justify-between">
