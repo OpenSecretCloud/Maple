@@ -1697,7 +1697,9 @@ export function UnifiedChat() {
   );
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Enter" && !e.shiftKey) {
+    // On desktop: Enter submits, Shift+Enter for new line
+    // On mobile: Enter for new line, no keyboard shortcut to submit (use button)
+    if (e.key === "Enter" && !e.shiftKey && !isMobile) {
       e.preventDefault();
       handleSendMessage();
     }
@@ -1807,12 +1809,12 @@ export function UnifiedChat() {
                 {/* Logo with Maple text - combined image */}
                 <div className="flex items-center justify-center mb-3">
                   <img
-                    src="/maple-logo-text-white.png"
+                    src="/maple-leaf-and-maple-white.png"
                     alt="Maple"
                     className="h-12 hidden dark:block"
                   />
                   <img
-                    src="/maple-logo-text-black.png"
+                    src="/maple-leaf-and-maple-black.png"
                     alt="Maple"
                     className="h-12 block dark:hidden"
                   />
