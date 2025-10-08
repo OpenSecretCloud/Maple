@@ -2030,7 +2030,7 @@ export function UnifiedChat() {
         ) : (
           // Fixed at bottom when there are messages
           <div className="bg-background pb-[env(safe-area-inset-bottom)]">
-            <div className="max-w-4xl mx-auto px-4 pb-4">
+            <div className="max-w-4xl mx-auto px-4">
               <form onSubmit={handleSendMessage} className="relative">
                 <div className="space-y-2">
                   {/* Attachment previews */}
