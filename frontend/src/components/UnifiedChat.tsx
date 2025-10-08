@@ -587,15 +587,15 @@ export function UnifiedChat() {
       prevMessageCountRef.current = 0;
 
       try {
-        // Fetch conversation metadata
-        const conv = await openai.conversations.retrieve(conversationId);
-        setConversation(conv as Conversation);
-
-        // Fetch initial 10 most recent items in descending order (newest first)
-        const itemsResponse = await openai.conversations.items.list(conversationId, {
+        // Start both fetches immediately in parallel
+        const convPromise = openai.conversations.retrieve(conversationId);
+        const itemsPromise = openai.conversations.items.list(conversationId, {
           limit: 10,
           order: "desc"
         });
+
+        // Process items as soon as they're ready (don't wait for metadata)
+        const itemsResponse = await itemsPromise;
 
         // Convert items to messages
         const loadedMessages: Message[] = [];
@@ -643,6 +643,10 @@ export function UnifiedChat() {
         if (newestCompletedItem) {
           setLastSeenItemId(newestCompletedItem.id);
         }
+
+        // Then handle conversation metadata when it arrives
+        const conv = await convPromise;
+        setConversation(conv as Conversation);
       } catch (error) {
         const err = error as { status?: number; message?: string };
         if (err.status === 404) {
