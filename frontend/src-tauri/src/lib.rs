@@ -21,6 +21,9 @@ pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_log::Builder::default().level(log::LevelFilter::Info).build())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
+            log::info!("Single instance detected: {}, {argv:?}, {cwd}", app.package_info().name);
+        }))
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_os::init())
