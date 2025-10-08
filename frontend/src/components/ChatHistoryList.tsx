@@ -256,6 +256,13 @@ export function ChatHistoryList({ currentChatId, searchQuery = "" }: ChatHistory
     return archivedChats.filter((chat) => chat.title.toLowerCase().includes(normalizedQuery));
   }, [archivedChats, searchQuery]);
 
+  // Auto-expand archived section when searching with results
+  useEffect(() => {
+    if (searchQuery.trim() && filteredArchivedChats.length > 0) {
+      setIsArchivedExpanded(true);
+    }
+  }, [searchQuery, filteredArchivedChats.length]);
+
   // Handle conversation deletion via API
   const handleDeleteConversation = useCallback(
     async (conversationId: string) => {
@@ -355,9 +362,9 @@ export function ChatHistoryList({ currentChatId, searchQuery = "" }: ChatHistory
     return <div>Loading chat history...</div>;
   }
 
-  // Only show no results message if we have a trimmed search query
+  // Only show no results message if we have a trimmed search query and no results anywhere
   const trimmedQuery = searchQuery.trim();
-  if (trimmedQuery && filteredConversations.length === 0) {
+  if (trimmedQuery && filteredConversations.length === 0 && filteredArchivedChats.length === 0) {
     return (
       <div className="text-muted-foreground text-center py-4">
         <p>No chats found matching "{trimmedQuery}"</p>
