@@ -192,7 +192,7 @@ export function Sidebar({
           </div>
         )}
         <nav className="flex flex-col gap-2 flex-1 overflow-y-auto px-4">
-          <ChatHistoryList currentChatId={chatId} searchQuery={searchQuery} />
+          <ChatHistoryList currentChatId={chatId} searchQuery={searchQuery} isMobile={isMobile} />
         </nav>
         <div className="px-4 pb-4">
           <AccountMenu />
