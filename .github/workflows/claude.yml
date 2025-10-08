@@ -136,5 +136,5 @@ jobs:
           claude_args: |
             --allowedTools "Bash,Edit,Replace,NotebookEditCell,MultiEdit,Write,Read,Grep,Glob,LS,WebSearch,WebFetch,Task,TodoWrite,BashOutput,KillBash"
             --max-turns 100
-            --model claude-sonnet-4-20250514
+            --model claude-sonnet-4-5-20250929
 
