@@ -7,7 +7,11 @@ import {
   Mail,
   Users,
   AlertCircle,
-  Key
+  Key,
+  Info,
+  Shield,
+  FileText,
+  ChevronLeft
 } from "lucide-react";
 import { isMobile } from "@/utils/platform";
 
@@ -86,6 +90,7 @@ export function AccountMenu() {
   const [isPortalLoading, setIsPortalLoading] = useState(false);
   const [isTeamDialogOpen, setIsTeamDialogOpen] = useState(false);
   const [isApiKeyDialogOpen, setIsApiKeyDialogOpen] = useState(false);
+  const [showAboutMenu, setShowAboutMenu] = useState(false);
 
   const hasStripeAccount = billingStatus?.stripe_customer_id !== null;
   const productName = billingStatus?.product_name || "";
@@ -150,6 +155,30 @@ export function AccountMenu() {
     }
   };
 
+  const handleOpenExternalUrl = async (url: string) => {
+    try {
+      // Check if we're on a mobile platform
+      if (isMobile()) {
+        const { invoke } = await import("@tauri-apps/api/core");
+        await invoke("plugin:opener|open_url", { url })
+          .then(() => {
+            console.log("[External Link] Successfully opened URL in external browser");
+          })
+          .catch((err: Error) => {
+            console.error("[External Link] Failed to open external browser:", err);
+            alert("Failed to open browser. Please try again.");
+          });
+      } else {
+        // Default browser opening for non-mobile platforms
+        window.open(url, "_blank", "noopener,noreferrer");
+      }
+    } catch (error) {
+      console.error("Error opening external URL:", error);
+      // Fallback to window.open
+      window.open(url, "_blank", "noopener,noreferrer");
+    }
+  };
+
   async function signOut() {
     try {
       // Try to clear billing token first
@@ -177,7 +206,7 @@ export function AccountMenu() {
   return (
     <AlertDialog>
       <Dialog>
-        <DropdownMenu>
+        <DropdownMenu onOpenChange={(open) => !open && setShowAboutMenu(false)}>
           <div className="flex flex-col gap-2">
             <Link to="/pricing" className="self-end">
               <Badge
@@ -198,72 +227,150 @@ export function AccountMenu() {
               </Button>
             </DropdownMenuTrigger>
           </div>
-          <DropdownMenuContent className="w-[calc(280px-2rem)]">
-            <DropdownMenuLabel>{teamStatus?.team_name || "Maple AI"}</DropdownMenuLabel>
-            <DropdownMenuSeparator />
-            <DropdownMenuGroup>
-              <DialogTrigger asChild>
-                <DropdownMenuItem>
-                  <User className="mr-2 h-4 w-4" />
-                  <span>Profile</span>
+          <DropdownMenuContent className="w-[calc(280px-2rem)] overflow-hidden">
+            <div className="relative">
+              <div
+                className={`transition-transform duration-300 ease-in-out ${
+                  showAboutMenu ? "-translate-x-full" : "translate-x-0"
+                }`}
+              >
+                <DropdownMenuLabel>{teamStatus?.team_name || "Maple AI"}</DropdownMenuLabel>
+                <DropdownMenuSeparator />
+                <DropdownMenuGroup>
+                  <DialogTrigger asChild>
+                    <DropdownMenuItem>
+                      <User className="mr-2 h-4 w-4" />
+                      <span>Profile</span>
+                    </DropdownMenuItem>
+                  </DialogTrigger>
+                  {showUpgrade && (
+                    <DropdownMenuItem asChild>
+                      <Link to="/pricing">
+                        <ArrowUpCircle className="mr-2 h-4 w-4" />
+                        <span>Upgrade your plan</span>
+                      </Link>
+                    </DropdownMenuItem>
+                  )}
+                  {showManage && (
+                    <DropdownMenuItem onClick={handleManageSubscription} disabled={isPortalLoading}>
+                      <CreditCard className="mr-2 h-4 w-4" />
+                      <span>{isPortalLoading ? "Loading..." : "Manage Subscription"}</span>
+                    </DropdownMenuItem>
+                  )}
+                  {isTeamPlan && (
+                    <DropdownMenuItem onClick={() => setIsTeamDialogOpen(true)}>
+                      <div className="flex items-center justify-between w-full">
+                        <div className="flex items-center">
+                          <Users className="mr-2 h-4 w-4" />
+                          <span>Manage Team</span>
+                        </div>
+                        {showTeamSetupAlert && (
+                          <Badge
+                            variant="secondary"
+                            className="py-0 px-1.5 text-xs bg-amber-500 text-white"
+                          >
+                            Setup Required
+                          </Badge>
+                        )}
+                      </div>
+                    </DropdownMenuItem>
+                  )}
+                  {!isMobile() && (
+                    <DropdownMenuItem onClick={() => setIsApiKeyDialogOpen(true)}>
+                      <Key className="mr-2 h-4 w-4" />
+                      <span>API Management</span>
+                    </DropdownMenuItem>
+                  )}
+                  <AlertDialogTrigger asChild>
+                    <DropdownMenuItem>
+                      <Trash className="mr-2 h-4 w-4" />
+                      <span>Delete History</span>
+                    </DropdownMenuItem>
+                  </AlertDialogTrigger>
+                </DropdownMenuGroup>
+                <DropdownMenuSeparator />
+                <DropdownMenuGroup>
+                  <DropdownMenuItem
+                    onClick={(e) => {
+                      e.preventDefault();
+                      setShowAboutMenu(true);
+                    }}
+                    onSelect={(e) => {
+                      e.preventDefault();
+                    }}
+                  >
+                    <Info className="mr-2 h-4 w-4" />
+                    <span>About Us</span>
+                  </DropdownMenuItem>
+                </DropdownMenuGroup>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onClick={signOut}>
+                  <LogOut className="mr-2 h-4 w-4" />
+                  <span>Log out</span>
                 </DropdownMenuItem>
-              </DialogTrigger>
-              {showUpgrade && (
-                <DropdownMenuItem asChild>
-                  <Link to="/pricing">
-                    <ArrowUpCircle className="mr-2 h-4 w-4" />
-                    <span>Upgrade your plan</span>
-                  </Link>
-                </DropdownMenuItem>
-              )}
-              {showManage && (
-                <DropdownMenuItem onClick={handleManageSubscription} disabled={isPortalLoading}>
-                  <CreditCard className="mr-2 h-4 w-4" />
-                  <span>{isPortalLoading ? "Loading..." : "Manage Subscription"}</span>
-                </DropdownMenuItem>
-              )}
-              {isTeamPlan && (
-                <DropdownMenuItem onClick={() => setIsTeamDialogOpen(true)}>
-                  <div className="flex items-center justify-between w-full">
-                    <div className="flex items-center">
-                      <Users className="mr-2 h-4 w-4" />
-                      <span>Manage Team</span>
-                    </div>
-                    {showTeamSetupAlert && (
-                      <Badge
-                        variant="secondary"
-                        className="py-0 px-1.5 text-xs bg-amber-500 text-white"
-                      >
-                        Setup Required
-                      </Badge>
-                    )}
-                  </div>
-                </DropdownMenuItem>
-              )}
-              {!isMobile() && (
-                <DropdownMenuItem onClick={() => setIsApiKeyDialogOpen(true)}>
-                  <Key className="mr-2 h-4 w-4" />
-                  <span>API Management</span>
-                </DropdownMenuItem>
-              )}
-              <DropdownMenuItem asChild>
-                <a href="mailto:support@opensecret.cloud">
-                  <Mail className="mr-2 h-4 w-4" />
-                  <span>Contact Us</span>
-                </a>
-              </DropdownMenuItem>
-              <AlertDialogTrigger asChild>
-                <DropdownMenuItem>
-                  <Trash className="mr-2 h-4 w-4" />
-                  <span>Delete History</span>
-                </DropdownMenuItem>
-              </AlertDialogTrigger>
-            </DropdownMenuGroup>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={signOut}>
-              <LogOut className="mr-2 h-4 w-4" />
-              <span>Log out</span>
-            </DropdownMenuItem>
+              </div>
+
+              {/* About Us Submenu */}
+              <div
+                className={`absolute top-0 left-0 w-full transition-transform duration-300 ease-in-out ${
+                  showAboutMenu ? "translate-x-0" : "translate-x-full"
+                }`}
+              >
+                <DropdownMenuGroup>
+                  <DropdownMenuItem
+                    onClick={(e) => {
+                      e.preventDefault();
+                      setShowAboutMenu(false);
+                    }}
+                    onSelect={(e) => {
+                      e.preventDefault();
+                    }}
+                  >
+                    <ChevronLeft className="mr-2 h-4 w-4" />
+                    <span>Back</span>
+                  </DropdownMenuItem>
+                </DropdownMenuGroup>
+                <DropdownMenuSeparator />
+                <DropdownMenuGroup>
+                  <DropdownMenuItem asChild>
+                    <Link to="/about">
+                      <Info className="mr-2 h-4 w-4" />
+                      <span>About Maple</span>
+                    </Link>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onClick={(e) => {
+                      e.preventDefault();
+                      handleOpenExternalUrl("https://opensecret.cloud/privacy");
+                    }}
+                    onSelect={(e) => {
+                      e.preventDefault();
+                    }}
+                  >
+                    <Shield className="mr-2 h-4 w-4" />
+                    <span>Privacy Policy</span>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onClick={(e) => {
+                      e.preventDefault();
+                      handleOpenExternalUrl("https://opensecret.cloud/terms");
+                    }}
+                    onSelect={(e) => {
+                      e.preventDefault();
+                    }}
+                  >
+                    <FileText className="mr-2 h-4 w-4" />
+                    <span>Terms of Service</span>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem asChild>
+                    <a href="mailto:support@opensecret.cloud">
+                      <Mail className="mr-2 h-4 w-4" />
+                      <span>Contact Us</span>
+                    </a>
+                  </DropdownMenuItem>
+                </DropdownMenuGroup>
+              </div>
+            </div>
           </DropdownMenuContent>
           <AccountDialog />
           <ConfirmDeleteDialog />
