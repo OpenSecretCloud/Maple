@@ -1704,12 +1704,12 @@ export function UnifiedChat() {
   };
 
   return (
-    <div className="grid h-screen w-full grid-cols-1 md:grid-cols-[280px_1fr]">
+    <div className="grid h-dvh min-h-0 w-full grid-cols-1 md:grid-cols-[280px_1fr] overflow-hidden">
       {/* Use the existing Sidebar component */}
       <Sidebar chatId={chatId} isOpen={isSidebarOpen} onToggle={toggleSidebar} />
 
       {/* Main Content */}
-      <div className="flex flex-col flex-1 min-w-0 bg-background overflow-hidden relative">
+      <div className="flex flex-col flex-1 min-w-0 min-h-0 bg-background overflow-hidden relative">
         {/* Error message - fixed at top below header, always visible */}
         {error && (
           <div className="fixed top-16 left-1/2 -translate-x-1/2 z-50 w-full max-w-2xl px-4 md:left-[calc(50%+140px)]">
@@ -1774,7 +1774,10 @@ export function UnifiedChat() {
         )}
 
         {/* Messages Area */}
-        <div ref={chatContainerRef} className="flex-1 overflow-y-auto flex flex-col relative">
+        <div
+          ref={chatContainerRef}
+          className="flex-1 min-h-0 overflow-y-auto overscroll-y-contain flex flex-col relative"
+        >
           {/* Only show messages when there are messages */}
           {messages.length > 0 && (
             <div className="max-w-4xl mx-auto p-6 w-full">
@@ -2009,7 +2012,7 @@ export function UnifiedChat() {
           </div>
         ) : (
           // Fixed at bottom when there are messages
-          <div className="bg-background">
+          <div className="bg-background pb-[env(safe-area-inset-bottom)]">
             <div className="max-w-4xl mx-auto px-4 pb-4">
               <form onSubmit={handleSendMessage} className="relative">
                 <div className="space-y-2">
