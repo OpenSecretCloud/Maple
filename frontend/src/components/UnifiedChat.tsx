@@ -397,6 +397,21 @@ export function UnifiedChat() {
     }
   }, [input]);
 
+  // Auto-focus textbox on desktop (not mobile to avoid keyboard popup interrupting reading)
+  // Focus when: app launches, new chat, conversation loads, or assistant finishes streaming
+  useEffect(() => {
+    // Skip on mobile to avoid keyboard popup
+    if (isMobile) return;
+
+    // Focus when not generating and textbox is not disabled
+    if (!isGenerating && textareaRef.current && !textareaRef.current.disabled) {
+      // Small delay to ensure DOM is ready
+      setTimeout(() => {
+        textareaRef.current?.focus();
+      }, 100);
+    }
+  }, [isMobile, isGenerating, messages.length, chatId]);
+
   // Improved scroll detection - track if user is near bottom
   const handleScroll = useCallback(() => {
     const container = chatContainerRef.current;
