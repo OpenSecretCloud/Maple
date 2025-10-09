@@ -32,7 +32,9 @@ import {
   FileText,
   X,
   Mic,
-  SquarePen
+  SquarePen,
+  Search,
+  Loader2
 } from "lucide-react";
 import RecordRTC from "recordrtc";
 import { useQueryClient } from "@tanstack/react-query";
@@ -71,6 +73,11 @@ import type {
   ComputerScreenshotContent,
   InputFileContent
 } from "openai/resources/conversations/conversations.js";
+import type {
+  ResponseFunctionWebSearch,
+  ResponseFunctionToolCall,
+  ResponseFunctionToolCallOutputItem
+} from "openai/resources/responses/responses.js";
 
 type ConversationContent =
   | InputTextContent
@@ -80,7 +87,10 @@ type ConversationContent =
   | RefusalContent
   | InputImageContent
   | ComputerScreenshotContent
-  | InputFileContent;
+  | InputFileContent
+  | ResponseFunctionWebSearch
+  | ResponseFunctionToolCall
+  | ResponseFunctionToolCallOutputItem;
 
 // Types
 interface Message {
@@ -104,6 +114,133 @@ function mergeMessagesById(existingMessages: Message[], newMessages: Message[]):
 
   // Return as array, maintaining insertion order (Map preserves insertion order)
   return Array.from(messagesMap.values());
+}
+
+// Helper function to convert conversation items to messages, grouping tool calls
+function convertItemsToMessages(
+  items: Array<{
+    id: string;
+    type: string;
+    role?: string;
+    content?: unknown;
+    name?: string;
+    arguments?: string;
+    call_id?: string;
+    output?: string;
+    status?: string;
+    created_at?: number;
+  }>
+): Message[] {
+  const messages: Message[] = [];
+  let currentAssistantMessage: Message | null = null;
+  // Buffer for orphaned tool calls that appear before their assistant message
+  const orphanedToolCalls: Array<ConversationContent> = [];
+
+  for (const item of items) {
+    if (item.type === "message" && item.role && item.content) {
+      // Regular message - create a new message
+      const messageContent = Array.isArray(item.content)
+        ? (item.content as ConversationContent[])
+        : typeof item.content === "string"
+          ? ([{ type: "text", text: item.content }] as ConversationContent[])
+          : ([] as ConversationContent[]);
+
+      const message: Message = {
+        id: item.id,
+        role: item.role as "user" | "assistant",
+        content: messageContent,
+        timestamp: (item.created_at ?? Date.now() / 1000) * 1000,
+        status: (item.status as Message["status"]) || "completed"
+      };
+
+      messages.push(message);
+
+      // Track current assistant message for tool call attachment
+      if (item.role === "assistant") {
+        currentAssistantMessage = message;
+        // Attach any orphaned tool calls that came before this assistant message
+        if (orphanedToolCalls.length > 0) {
+          currentAssistantMessage.content.unshift(...orphanedToolCalls);
+          orphanedToolCalls.length = 0; // Clear buffer
+        }
+      } else {
+        currentAssistantMessage = null;
+      }
+    } else if (item.type === "function_call") {
+      if (currentAssistantMessage) {
+        // Tool call - attach to current assistant message
+        const toolCall: ResponseFunctionToolCall = {
+          type: "function_call",
+          id: item.id,
+          call_id: item.call_id || item.id,
+          name: item.name || "unknown",
+          arguments: item.arguments || "{}",
+          status: (item.status as "in_progress" | "completed" | "incomplete") || "completed"
+        };
+        currentAssistantMessage.content.push(toolCall);
+      } else {
+        // No assistant message yet - buffer this tool call
+        const toolCall: ResponseFunctionToolCall = {
+          type: "function_call",
+          id: item.id,
+          call_id: item.call_id || item.id,
+          name: item.name || "unknown",
+          arguments: item.arguments || "{}",
+          status: (item.status as "in_progress" | "completed" | "incomplete") || "completed"
+        };
+        orphanedToolCalls.push(toolCall);
+      }
+    } else if (item.type === "function_call_output") {
+      if (currentAssistantMessage) {
+        // Tool output - attach to current assistant message
+        const toolOutput: ResponseFunctionToolCallOutputItem = {
+          type: "function_call_output",
+          id: item.id,
+          call_id: item.call_id || item.id,
+          output: item.output || "",
+          status: (item.status as "in_progress" | "completed" | "incomplete") || "completed"
+        };
+        currentAssistantMessage.content.push(toolOutput);
+      } else {
+        // No assistant message yet - buffer this tool output
+        const toolOutput: ResponseFunctionToolCallOutputItem = {
+          type: "function_call_output",
+          id: item.id,
+          call_id: item.call_id || item.id,
+          output: item.output || "",
+          status: (item.status as "in_progress" | "completed" | "incomplete") || "completed"
+        };
+        orphanedToolCalls.push(toolOutput);
+      }
+    } else if (item.type === "web_search_call") {
+      if (currentAssistantMessage) {
+        // Web search - attach to current assistant message
+        const webSearch: ResponseFunctionWebSearch = {
+          type: "web_search_call",
+          id: item.id,
+          status:
+            (item.status as "in_progress" | "searching" | "completed" | "failed") || "completed"
+        };
+        currentAssistantMessage.content.push(webSearch);
+      } else {
+        // No assistant message yet - buffer this web search
+        const webSearch: ResponseFunctionWebSearch = {
+          type: "web_search_call",
+          id: item.id,
+          status:
+            (item.status as "in_progress" | "searching" | "completed" | "failed") || "completed"
+        };
+        orphanedToolCalls.push(webSearch);
+      }
+    } else if (item.type !== "message") {
+      console.warn("⚠️ [convertItemsToMessages] Unhandled item type", {
+        type: item.type,
+        id: item.id
+      });
+    }
+  }
+
+  return messages;
 }
 
 // Custom hook for copy to clipboard functionality
@@ -166,6 +303,190 @@ interface ConversationItem {
   created_at?: number;
 }
 
+// Component to render tool calls
+function ToolCallRenderer({
+  tool,
+  toolOutput
+}: {
+  tool: ConversationContent;
+  toolOutput?: ResponseFunctionToolCallOutputItem;
+}) {
+  const [isExpanded, setIsExpanded] = useState(false);
+
+  if (tool.type === "web_search_call") {
+    const webSearch = tool as ResponseFunctionWebSearch;
+    const statusText =
+      webSearch.status === "in_progress"
+        ? "Searching the web..."
+        : webSearch.status === "searching"
+          ? "Searching..."
+          : webSearch.status === "completed"
+            ? "Searched the web"
+            : "Search failed";
+
+    const isActive = webSearch.status === "in_progress" || webSearch.status === "searching";
+
+    return (
+      <div className="flex items-center gap-2 text-sm text-muted-foreground bg-muted/30 px-3 py-2 rounded-md mb-2">
+        {isActive ? (
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+        ) : (
+          <Search className="h-3.5 w-3.5" />
+        )}
+        <span>{statusText}</span>
+      </div>
+    );
+  }
+
+  if (tool.type === "function_call") {
+    const functionCall = tool as ResponseFunctionToolCall;
+
+    // Try to parse arguments to get query
+    let query = "";
+    try {
+      const args = JSON.parse(functionCall.arguments);
+      query = args.query || "";
+    } catch {
+      // Ignore parse errors
+    }
+
+    const statusText =
+      functionCall.status === "in_progress"
+        ? query
+          ? `Searching for "${query}"...`
+          : "Running tool..."
+        : query
+          ? `Searched for "${query}"`
+          : "Tool completed";
+
+    const isActive = functionCall.status === "in_progress";
+
+    // If we have a toolOutput, render them grouped together
+    if (toolOutput) {
+      const output = toolOutput.output || "";
+      const preview = output.length > 150 ? output.substring(0, 150) + "..." : output;
+      const hasMore = output.length > 150;
+      const isWebSearch = functionCall.name === "web_search";
+
+      // Web search specific rendering
+      if (isWebSearch) {
+        return (
+          <div className="text-sm bg-muted/20 border border-muted/40 rounded-lg px-4 py-3 mb-2">
+            {/* Web search header with icon and query */}
+            <div className="flex items-center gap-2 mb-2">
+              <Search className="h-4 w-4 text-primary flex-shrink-0" />
+              <span className="font-medium text-foreground">
+                {query ? `Searched: "${query}"` : "Web Search"}
+              </span>
+            </div>
+            {/* Search result - indented to align with text */}
+            <div className="pl-6 text-foreground/80 whitespace-pre-wrap break-words">
+              {isExpanded ? output : preview}
+              {hasMore && (
+                <button
+                  onClick={() => setIsExpanded(!isExpanded)}
+                  className="ml-2 text-xs text-primary hover:text-primary/80 font-medium"
+                >
+                  {isExpanded ? "Show less" : "Show more"}
+                </button>
+              )}
+            </div>
+          </div>
+        );
+      }
+
+      // Generic tool call rendering
+      return (
+        <div className="text-sm bg-muted/20 border border-muted/40 rounded-lg px-4 py-3 mb-2">
+          {/* Tool call header */}
+          <div className="flex items-center gap-2 mb-2">
+            <Check className="h-4 w-4 text-green-600 dark:text-green-400 flex-shrink-0" />
+            <span className="font-medium text-foreground">{statusText}</span>
+          </div>
+          {/* Tool output - indented */}
+          <div className="pl-6 text-foreground/80 whitespace-pre-wrap break-words">
+            {isExpanded ? output : preview}
+            {hasMore && (
+              <button
+                onClick={() => setIsExpanded(!isExpanded)}
+                className="ml-2 text-xs text-primary hover:text-primary/80 font-medium"
+              >
+                {isExpanded ? "Show less" : "Show more"}
+              </button>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    // No output yet, just render the call
+    const isWebSearch = functionCall.name === "web_search";
+
+    if (isWebSearch) {
+      return (
+        <div className="flex items-center gap-2 text-sm bg-muted/30 px-3 py-2 rounded-md mb-2">
+          {isActive ? (
+            <Loader2 className="h-4 w-4 text-primary animate-spin flex-shrink-0" />
+          ) : (
+            <Search className="h-4 w-4 text-primary flex-shrink-0" />
+          )}
+          <span className="text-foreground">
+            {isActive
+              ? query
+                ? `Searching for "${query}"...`
+                : "Searching the web..."
+              : query
+                ? `Searched: "${query}"`
+                : "Web Search"}
+          </span>
+        </div>
+      );
+    }
+
+    return (
+      <div className="flex items-center gap-2 text-sm text-muted-foreground bg-muted/30 px-3 py-2 rounded-md mb-2">
+        {isActive ? (
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+        ) : (
+          <Check className="h-3.5 w-3.5" />
+        )}
+        <span>{statusText}</span>
+      </div>
+    );
+  }
+
+  if (tool.type === "function_call_output") {
+    const toolOutput = tool as ResponseFunctionToolCallOutputItem;
+    const output = toolOutput.output || "";
+
+    // Show preview (first 150 chars to match grouped rendering)
+    const preview = output.length > 150 ? output.substring(0, 150) + "..." : output;
+    const hasMore = output.length > 150;
+
+    return (
+      <div className="text-sm bg-muted/20 border border-muted/40 rounded-lg px-4 py-3 mb-2">
+        <div className="flex items-center gap-2 mb-2">
+          <Check className="h-4 w-4 text-green-600 dark:text-green-400 flex-shrink-0" />
+          <span className="font-medium text-foreground">Tool Result</span>
+        </div>
+        <div className="pl-6 text-foreground/80 whitespace-pre-wrap break-words">
+          {isExpanded ? output : preview}
+          {hasMore && (
+            <button
+              onClick={() => setIsExpanded(!isExpanded)}
+              className="ml-2 text-xs text-primary hover:text-primary/80 font-medium"
+            >
+              {isExpanded ? "Show less" : "Show more"}
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  return null;
+}
+
 // Memoized message list component to prevent re-renders on input changes
 const MessageList = memo(
   ({
@@ -220,27 +541,115 @@ const MessageList = memo(
                   <div className="prose prose-sm dark:prose-invert max-w-none">
                     {/* Render content array */}
                     <div className="space-y-3">
-                      {message.content.map((part: ConversationContent, partIdx: number) => (
-                        <div key={partIdx}>
-                          {(part.type === "input_text" ||
-                            part.type === "output_text" ||
-                            part.type === "text") &&
-                          part.text ? (
-                            <Markdown
-                              content={part.text}
-                              loading={message.status === "streaming"}
-                              chatId={chatId || ""}
-                            />
-                          ) : part.type === "input_image" && part.image_url ? (
-                            <img
-                              src={part.image_url}
-                              alt={`Image ${partIdx + 1}`}
-                              className="max-w-full rounded-lg"
-                              style={{ maxHeight: "400px", objectFit: "contain" }}
-                            />
-                          ) : null}
-                        </div>
-                      ))}
+                      {(() => {
+                        // Group tool calls with their outputs
+                        const renderedIndices = new Set<number>();
+                        const elements: React.ReactNode[] = [];
+
+                        message.content.forEach((part: ConversationContent, partIdx: number) => {
+                          if (renderedIndices.has(partIdx)) return;
+
+                          // Text content
+                          if (
+                            (part.type === "input_text" ||
+                              part.type === "output_text" ||
+                              part.type === "text") &&
+                            part.text
+                          ) {
+                            elements.push(
+                              <div key={partIdx}>
+                                <Markdown
+                                  content={part.text}
+                                  loading={message.status === "streaming"}
+                                  chatId={chatId || ""}
+                                />
+                              </div>
+                            );
+                          }
+                          // Image content
+                          else if (part.type === "input_image" && part.image_url) {
+                            elements.push(
+                              <div key={partIdx}>
+                                <img
+                                  src={part.image_url}
+                                  alt={`Image ${partIdx + 1}`}
+                                  className="max-w-full rounded-lg"
+                                  style={{ maxHeight: "400px", objectFit: "contain" }}
+                                />
+                              </div>
+                            );
+                          }
+                          // Tool calls - check if there's a matching output (search in BOTH directions)
+                          else if (part.type === "function_call") {
+                            const toolCall = part as ResponseFunctionToolCall;
+                            // Find matching output anywhere in the content array
+                            const outputIdx = message.content.findIndex(
+                              (p, idx) =>
+                                idx !== partIdx &&
+                                p.type === "function_call_output" &&
+                                (p as ResponseFunctionToolCallOutputItem).call_id ===
+                                  toolCall.call_id
+                            );
+
+                            if (outputIdx !== -1) {
+                              const output = message.content[
+                                outputIdx
+                              ] as ResponseFunctionToolCallOutputItem;
+                              elements.push(
+                                <div key={partIdx}>
+                                  <ToolCallRenderer tool={part} toolOutput={output} />
+                                </div>
+                              );
+                              renderedIndices.add(outputIdx); // Skip output when we encounter it
+                            } else {
+                              // No output yet, render just the call
+                              elements.push(
+                                <div key={partIdx}>
+                                  <ToolCallRenderer tool={part} />
+                                </div>
+                              );
+                            }
+                          }
+                          // Tool output - check if there's a matching call
+                          else if (part.type === "function_call_output") {
+                            const output = part as ResponseFunctionToolCallOutputItem;
+                            // Find matching call anywhere in the content array
+                            const callIdx = message.content.findIndex(
+                              (p, idx) =>
+                                idx !== partIdx &&
+                                p.type === "function_call" &&
+                                (p as ResponseFunctionToolCall).call_id === output.call_id
+                            );
+
+                            if (callIdx !== -1) {
+                              const toolCall = message.content[callIdx] as ResponseFunctionToolCall;
+                              elements.push(
+                                <div key={partIdx}>
+                                  <ToolCallRenderer tool={toolCall} toolOutput={output} />
+                                </div>
+                              );
+                              renderedIndices.add(callIdx); // Skip call when we encounter it
+                            } else {
+                              // No matching call, render just the output
+                              elements.push(
+                                <div key={partIdx}>
+                                  <ToolCallRenderer tool={part} />
+                                </div>
+                              );
+                            }
+                          }
+                          // Web search
+                          else if (part.type === "web_search_call") {
+                            elements.push(
+                              <div key={partIdx}>
+                                <ToolCallRenderer tool={part} />
+                              </div>
+                            );
+                          }
+                        });
+
+                        return elements;
+                      })()}
                     </div>
                   </div>
 
@@ -614,23 +1023,21 @@ export function UnifiedChat() {
         // Process items as soon as they're ready (don't wait for metadata)
         const itemsResponse = await itemsPromise;
 
-        // Convert items to messages
-        const loadedMessages: Message[] = [];
-
-        for (const item of itemsResponse.data) {
-          if (item.type === "message" && item.role && item.content) {
-            const convItem = item as ConversationItem;
-            loadedMessages.push({
-              id: item.id,
-              role: item.role as "user" | "assistant",
-              content: item.content,
-              timestamp:
-                ((item as ConversationItem & { created_at?: number }).created_at ??
-                  Date.now() / 1000) * 1000,
-              status: convItem.status || "completed"
-            });
-          }
-        }
+        // Convert items to messages, grouping tool calls with their messages
+        const loadedMessages = convertItemsToMessages(
+          itemsResponse.data as Array<{
+            id: string;
+            type: string;
+            role?: string;
+            content?: unknown;
+            name?: string;
+            arguments?: string;
+            call_id?: string;
+            output?: string;
+            status?: string;
+            created_at?: number;
+          }>
+        );
 
         // Reverse the array for display (we want oldest first/at top, newest last/at bottom)
         // API returns desc (newest first), but chat UI needs chronological order
@@ -701,23 +1108,21 @@ export function UnifiedChat() {
         after: oldestItemId
       });
 
-      // Convert items to messages
-      const olderMessages: Message[] = [];
-
-      for (const item of itemsResponse.data) {
-        if (item.type === "message" && item.role && item.content) {
-          const convItem = item as ConversationItem;
-          olderMessages.push({
-            id: item.id,
-            role: item.role as "user" | "assistant",
-            content: item.content,
-            timestamp:
-              ((item as ConversationItem & { created_at?: number }).created_at ??
-                Date.now() / 1000) * 1000,
-            status: convItem.status || "completed"
-          });
-        }
-      }
+      // Convert items to messages, grouping tool calls with their messages
+      const olderMessages = convertItemsToMessages(
+        itemsResponse.data as Array<{
+          id: string;
+          type: string;
+          role?: string;
+          content?: unknown;
+          name?: string;
+          arguments?: string;
+          call_id?: string;
+          output?: string;
+          status?: string;
+          created_at?: number;
+        }>
+      );
 
       if (olderMessages.length > 0) {
         // Reverse for chronological order (API returns desc, we need asc for display)
@@ -758,31 +1163,21 @@ export function UnifiedChat() {
       });
 
       if (response.data.length > 0) {
-        // Convert API items to UI messages
-        const newMessages: Message[] = [];
-
-        for (const item of response.data) {
-          if (item.type === "message" && item.role) {
-            const convItem = item as ConversationItem;
-            // Convert content to array if it's a string
-            const messageContent =
-              typeof item.content === "string"
-                ? [{ type: "text", text: item.content }]
-                : Array.isArray(item.content)
-                  ? item.content
-                  : [];
-
-            newMessages.push({
-              id: item.id,
-              role: item.role as "user" | "assistant",
-              content: messageContent as ConversationContent[],
-              timestamp:
-                ((item as ConversationItem & { created_at?: number }).created_at ??
-                  Date.now() / 1000) * 1000,
-              status: convItem.status || "completed"
-            });
-          }
-        }
+        // Convert API items to UI messages, grouping tool calls with their messages
+        const newMessages = convertItemsToMessages(
+          response.data as Array<{
+            id: string;
+            type: string;
+            role?: string;
+            content?: unknown;
+            name?: string;
+            arguments?: string;
+            call_id?: string;
+            output?: string;
+            status?: string;
+            created_at?: number;
+          }>
+        );
 
         if (newMessages.length > 0) {
           // Merge new messages with deduplication using helper
@@ -1304,15 +1699,21 @@ export function UnifiedChat() {
     let serverAssistantId: string | undefined;
     let assistantMessageAdded = false;
     let accumulatedContent = "";
+    const toolCalls = new Map<
+      string,
+      ResponseFunctionWebSearch | ResponseFunctionToolCall | ResponseFunctionToolCallOutputItem
+    >();
 
     for await (const event of stream) {
-      if ((event as { type: string }).type === "response.created") {
+      const eventType = (event as { type: string }).type;
+
+      if (eventType === "response.created") {
         const eventWithResponse = event as { response?: { id?: string } };
         if (eventWithResponse.response?.id) {
           setCurrentResponseId(eventWithResponse.response.id);
         }
       } else if (
-        (event as { type: string }).type === "response.output_item.added" &&
+        eventType === "response.output_item.added" &&
         (event as { item?: { type?: string } }).item?.type === "message"
       ) {
         const eventWithItem = event as { item?: { id?: string } };
@@ -1332,7 +1733,86 @@ export function UnifiedChat() {
           assistantStreamingRef.current = true;
         }
       } else if (
-        (event as { type: string }).type === "response.output_text.delta" &&
+        eventType === "response.output_item.added" &&
+        (event as { item?: { type?: string } }).item?.type === "web_search_call"
+      ) {
+        // Handle web search tool call creation
+        const eventWithItem = event as { item?: { id?: string; type: string } };
+        if (eventWithItem.item?.id) {
+          const toolCall: ResponseFunctionWebSearch = {
+            id: eventWithItem.item.id,
+            type: "web_search_call",
+            status: "in_progress"
+          };
+          toolCalls.set(eventWithItem.item.id, toolCall);
+        }
+      } else if (eventType === "response.web_search_call.in_progress") {
+        const webSearchEvent = event as { item_id?: string };
+        if (webSearchEvent.item_id && toolCalls.has(webSearchEvent.item_id)) {
+          const toolCall = toolCalls.get(webSearchEvent.item_id) as ResponseFunctionWebSearch;
+          toolCall.status = "in_progress";
+          toolCalls.set(webSearchEvent.item_id, toolCall);
+        }
+      } else if (eventType === "response.web_search_call.searching") {
+        const webSearchEvent = event as { item_id?: string };
+        if (webSearchEvent.item_id && toolCalls.has(webSearchEvent.item_id)) {
+          const toolCall = toolCalls.get(webSearchEvent.item_id) as ResponseFunctionWebSearch;
+          toolCall.status = "searching";
+          toolCalls.set(webSearchEvent.item_id, toolCall);
+        }
+      } else if (eventType === "response.web_search_call.completed") {
+        const webSearchEvent = event as { item_id?: string };
+        if (webSearchEvent.item_id && toolCalls.has(webSearchEvent.item_id)) {
+          const toolCall = toolCalls.get(webSearchEvent.item_id) as ResponseFunctionWebSearch;
+          toolCall.status = "completed";
+          toolCalls.set(webSearchEvent.item_id, toolCall);
+        }
+      } else if (eventType === "tool_call.created") {
+        // Handle new tool call format
+        const toolCallEvent = event as {
+          tool_call_id?: string;
+          name?: string;
+          arguments?: { query?: string };
+        };
+        if (toolCallEvent.tool_call_id) {
+          const toolCall: ResponseFunctionToolCall = {
+            id: toolCallEvent.tool_call_id,
+            call_id: toolCallEvent.tool_call_id,
+            type: "function_call",
+            name: toolCallEvent.name || "function",
+            arguments: JSON.stringify(toolCallEvent.arguments || {}),
+            status: "in_progress"
+          };
+          toolCalls.set(toolCallEvent.tool_call_id, toolCall);
+        }
+      } else if (eventType === "tool_output.created") {
+        // Handle tool output
+        const toolOutputEvent = event as {
+          tool_output_id?: string;
+          tool_call_id?: string;
+          output?: string;
+        };
+        if (toolOutputEvent.tool_output_id && toolOutputEvent.tool_call_id) {
+          const toolOutput: ResponseFunctionToolCallOutputItem = {
+            id: toolOutputEvent.tool_output_id,
+            call_id: toolOutputEvent.tool_call_id,
+            type: "function_call_output",
+            output: toolOutputEvent.output || "",
+            status: "completed"
+          };
+          toolCalls.set(toolOutputEvent.tool_output_id, toolOutput);
+
+          // Also update the corresponding tool call status to completed
+          if (toolCalls.has(toolOutputEvent.tool_call_id)) {
+            const toolCall = toolCalls.get(
+              toolOutputEvent.tool_call_id
+            ) as ResponseFunctionToolCall;
+            toolCall.status = "completed";
+            toolCalls.set(toolOutputEvent.tool_call_id, toolCall);
+          }
+        }
+      } else if (
+        eventType === "response.output_text.delta" &&
         (event as { delta?: string }).delta
       ) {
         const delta = (event as { delta: string }).delta;
@@ -1344,17 +1824,19 @@ export function UnifiedChat() {
             text: accumulatedContent,
             annotations: []
           };
+          // Combine text with tool calls
+          const content: ConversationContent[] = [...Array.from(toolCalls.values()), outputContent];
           // Update the message content using merge helper for consistency
           const updatedMessage: Message = {
             id: serverAssistantId,
             role: "assistant",
-            content: [outputContent],
+            content,
             timestamp: Date.now(),
             status: "streaming"
           };
           setMessages((prev) => mergeMessagesById(prev, [updatedMessage]));
         }
-      } else if ((event as { type: string }).type === "response.output_item.done") {
+      } else if (eventType === "response.output_item.done") {
         if (serverAssistantId) {
           // Update status to completed using merge helper
           setMessages((prev) => {
@@ -1367,10 +1849,7 @@ export function UnifiedChat() {
           setLastSeenItemId(serverAssistantId);
           assistantStreamingRef.current = false;
         }
-      } else if (
-        (event as { type: string }).type === "response.failed" ||
-        (event as { type: string }).type === "error"
-      ) {
+      } else if (eventType === "response.failed" || eventType === "error") {
         console.error("Streaming error:", event);
         if (serverAssistantId) {
           // Update status to error using merge helper
@@ -1384,7 +1863,7 @@ export function UnifiedChat() {
         }
         setError("Failed to generate response. Please try again.");
         assistantStreamingRef.current = false;
-      } else if ((event as { type: string }).type === "response.cancelled") {
+      } else if (eventType === "response.cancelled") {
         if (serverAssistantId) {
           // Update status to incomplete using merge helper
           setMessages((prev) => {
