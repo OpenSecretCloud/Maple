@@ -9,7 +9,7 @@ export function Footer() {
   return (
     <div className="w-full dark:bg-[hsl(var(--background))] bg-[hsl(var(--footer-bg))] py-16 border-t border-[hsl(var(--marketing-card-border))]">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-8">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
           <div className="flex flex-col gap-4">
             <img src="/maple-logo-dark.svg" alt="Maple" className="w-32 block dark:hidden" />
             <img src="/maple-logo.svg" alt="Maple" className="w-32 hidden dark:block" />
@@ -114,26 +114,6 @@ export function Footer() {
             >
               About
             </Link>
-          </div>
-
-          <div className="flex flex-col gap-4">
-            <h3 className="text-foreground text-lg font-medium">Legal</h3>
-            <a
-              href="https://opensecret.cloud/terms"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-[hsl(var(--marketing-text-muted))] hover:text-foreground transition-colors"
-            >
-              Terms of Service
-            </a>
-            <a
-              href="https://opensecret.cloud/privacy"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-[hsl(var(--marketing-text-muted))] hover:text-foreground transition-colors"
-            >
-              Privacy Policy
-            </a>
           </div>
         </div>
 

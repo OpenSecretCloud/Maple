@@ -7,13 +7,24 @@ import {
   DialogTitle
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { Image, Mic, Sparkles, Check, Cpu, Volume2, FileText } from "lucide-react";
+import {
+  Image,
+  Mic,
+  Sparkles,
+  Check,
+  Cpu,
+  Volume2,
+  FileText,
+  Gauge,
+  MessageCircle
+} from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
+import { useLocalState } from "@/state/useLocalState";
 
 interface UpgradePromptDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  feature: "image" | "voice" | "model" | "tts" | "document";
+  feature: "image" | "voice" | "model" | "tts" | "document" | "usage" | "tokens";
   modelName?: string;
 }
 
@@ -24,10 +35,33 @@ export function UpgradePromptDialog({
   modelName
 }: UpgradePromptDialogProps) {
   const navigate = useNavigate();
+  const localState = useLocalState();
 
   const handleUpgrade = () => {
     onOpenChange(false);
     navigate({ to: "/pricing" });
+  };
+
+  const handleNewChat = () => {
+    onOpenChange(false);
+    // Trigger new chat event
+    window.dispatchEvent(new Event("newchat"));
+    // Clear the URL
+    const params = new URLSearchParams(window.location.search);
+    params.delete("conversation_id");
+    window.history.replaceState({}, "", params.toString() ? `/?${params}` : "/");
+  };
+
+  // Determine user's current plan and next upgrade tier
+  const currentPlan = localState.billingStatus?.product_name?.toLowerCase() || "free";
+  const isFreeTier = !localState.billingStatus?.product_name || currentPlan === "free";
+  const isPro = currentPlan.includes("pro") && !currentPlan.includes("max");
+  const isMax = currentPlan.includes("max");
+
+  const getNextPlan = () => {
+    if (isFreeTier) return "Pro";
+    if (isPro) return "Max";
+    return "Max"; // Already on Max or Team
   };
 
   const getFeatureInfo = () => {
@@ -86,6 +120,54 @@ export function UpgradePromptDialog({
           "Local processing ensures your sensitive data never leaves your device"
         ]
       };
+    } else if (feature === "usage") {
+      const nextPlan = getNextPlan();
+      return {
+        icon: <Gauge className="h-8 w-8" />,
+        title: isFreeTier ? "Daily Usage Limit Reached" : "Monthly Usage Limit Reached",
+        description: isFreeTier
+          ? "You've reached your daily free tier limit. Upgrade to Pro for unlimited daily usage."
+          : isPro
+            ? "You've reached your Pro plan's monthly limit. Upgrade to Max for 10x more usage."
+            : "You've reached your monthly usage limit. Please wait for the next billing cycle.",
+        requiredPlan: nextPlan,
+        benefits: isFreeTier
+          ? [
+              "No daily limits with Pro plan",
+              "Access to advanced AI models",
+              "Priority access during peak times",
+              "Higher monthly rate limits for continuous usage",
+              "Process images and documents",
+              "API access for developers"
+            ]
+          : isPro
+            ? [
+                "10x more monthly messages with Max plan",
+                "Access to all premium models including DeepSeek R1",
+                "Highest priority during peak times",
+                "Maximum rate limits for power users"
+              ]
+            : [
+                "You're already on our highest individual plan",
+                "Consider Team plans for shared usage",
+                "Monthly usage automatically refreshes",
+                "Contact support for custom enterprise plans"
+              ]
+      };
+    } else if (feature === "tokens") {
+      return {
+        icon: <MessageCircle className="h-8 w-8" />,
+        title: "Conversation Limit",
+        description:
+          "This conversation is too long for the free tier. Upgrade to Pro to continue this chat, or start a new conversation.",
+        requiredPlan: "Pro",
+        benefits: [
+          "No conversation limits",
+          "Continue conversations without interruption",
+          "Process longer documents and code files",
+          "Auto-compaction keeps conversations flowing"
+        ]
+      };
     } else {
       return {
         icon: <Cpu className="h-8 w-8" />,
@@ -119,7 +201,9 @@ export function UpgradePromptDialog({
         <div className="space-y-4 py-4">
           <div className="space-y-2">
             <p className="text-sm font-medium text-muted-foreground">
-              Available with Pro plan and above
+              {info.requiredPlan === "Max" && isMax
+                ? "You're on the Max plan"
+                : `Available with ${info.requiredPlan} plan${info.requiredPlan !== "Max" ? " and above" : ""}`}
             </p>
             <ul className="space-y-2">
               {info.benefits.map((benefit, i) => (
@@ -131,21 +215,36 @@ export function UpgradePromptDialog({
             </ul>
           </div>
 
-          <div className="pt-2 border-t">
-            <p className="text-sm text-muted-foreground">
-              Plus access to 6 powerful models (including DeepSeek R1), API access, and more usage
-            </p>
-          </div>
+          {info.requiredPlan !== "Max" || !isMax ? (
+            <div className="pt-2 border-t">
+              <p className="text-sm text-muted-foreground">
+                {isFreeTier
+                  ? "Plus access to 6 powerful models, image & document processing, and more"
+                  : isPro
+                    ? "Plus access to DeepSeek R1, 10x more usage, API access, and priority support"
+                    : "Explore our pricing options for the best plan for your needs"}
+              </p>
+            </div>
+          ) : null}
         </div>
 
         <DialogFooter className="gap-2 sm:gap-0">
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
-            Maybe Later
-          </Button>
-          <Button onClick={handleUpgrade} className="gap-2">
-            <Sparkles className="h-4 w-4" />
-            View Plans
-          </Button>
+          {/* Show "Start New Chat" for free tier conversation limit, "Maybe Later" for others */}
+          {feature === "tokens" && isFreeTier ? (
+            <Button variant="outline" onClick={handleNewChat}>
+              Start New Chat
+            </Button>
+          ) : (
+            <Button variant="outline" onClick={() => onOpenChange(false)}>
+              Maybe Later
+            </Button>
+          )}
+          {(info.requiredPlan !== "Max" || !isMax) && (
+            <Button onClick={handleUpgrade} className="gap-2">
+              <Sparkles className="h-4 w-4" />
+              {isFreeTier ? "Upgrade to Pro" : isPro ? "Upgrade to Max" : "View Plans"}
+            </Button>
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>

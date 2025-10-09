@@ -1,65 +1,19 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { createFileRoute } from "@tanstack/react-router";
-import {
-  AsteriskIcon,
-  Check,
-  Copy,
-  UserIcon,
-  ChevronDown,
-  Bot,
-  SquarePenIcon,
-  Volume2,
-  Square
-} from "lucide-react";
-import ChatBox from "@/components/ChatBox";
-import { useOpenAI } from "@/ai/useOpenAi";
+import { Check, Copy, UserIcon, ChevronDown, Bot, SquarePenIcon, Archive } from "lucide-react";
 import { useLocalState } from "@/state/useLocalState";
-import { Markdown, stripThinkingTags } from "@/components/markdown";
-import { ChatMessage, DEFAULT_MODEL_ID } from "@/state/LocalStateContext";
-import { UpgradePromptDialog } from "@/components/UpgradePromptDialog";
-import { useQuery } from "@tanstack/react-query";
-import { getBillingService } from "@/billing/billingService";
-import { cn } from "@/utils/utils";
+import { Markdown } from "@/components/markdown";
 import { Sidebar, SidebarToggle } from "@/components/Sidebar";
-import { useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
-import { useNavigate, useLocation } from "@tanstack/react-router";
+import { useNavigate } from "@tanstack/react-router";
 import { useIsMobile } from "@/utils/utils";
-import { useChatSession } from "@/hooks/useChatSession";
+import { useQuery } from "@tanstack/react-query";
 
-// Global audio manager to prevent multiple TTS playing simultaneously
-class AudioManager {
-  private static instance: AudioManager;
-  private currentAudio: HTMLAudioElement | null = null;
-  private currentCleanup: (() => void) | null = null;
-
-  static getInstance(): AudioManager {
-    if (!AudioManager.instance) {
-      AudioManager.instance = new AudioManager();
-    }
-    return AudioManager.instance;
-  }
-
-  stopCurrent() {
-    if (this.currentAudio) {
-      this.currentAudio.pause();
-      this.currentAudio.src = "";
-      this.currentAudio = null;
-    }
-    if (this.currentCleanup) {
-      this.currentCleanup();
-      this.currentCleanup = null;
-    }
-  }
-
-  setCurrentAudio(audio: HTMLAudioElement, cleanup: () => void) {
-    this.stopCurrent(); // Stop any existing audio
-    this.currentAudio = audio;
-    this.currentCleanup = cleanup;
-  }
+// Simple message type for archived chats
+interface ArchivedMessage {
+  role: "user" | "assistant" | "system";
+  content: string | { type: string; text?: string; image_url?: { url: string } }[];
 }
-
-const audioManager = AudioManager.getInstance();
 
 export const Route = createFileRoute("/_auth/chat/$chatId")({
   component: ChatComponent
@@ -82,20 +36,20 @@ function useCopyToClipboard(text: string) {
   return { isCopied, handleCopy };
 }
 
-function renderContent(content: ChatMessage["content"], chatId: string) {
+function renderContent(content: ArchivedMessage["content"], chatId: string) {
   if (typeof content === "string") {
     return <Markdown content={content} loading={false} chatId={chatId} />;
   }
   return content.map((p, idx) =>
     p.type === "text" ? (
-      <Markdown key={idx} content={p.text} loading={false} chatId={chatId} />
+      <Markdown key={idx} content={p.text || ""} loading={false} chatId={chatId} />
     ) : (
-      <img key={idx} src={p.image_url.url} className="max-w-full rounded-lg" />
+      <img key={idx} src={p.image_url?.url} className="max-w-full rounded-lg" alt="" />
     )
   );
 }
 
-function UserMessage({ message, chatId }: { message: ChatMessage; chatId: string }) {
+function UserMessage({ message, chatId }: { message: ArchivedMessage; chatId: string }) {
   return (
     <div className="flex flex-col p-4 rounded-lg bg-muted">
       <div className="rounded-lg flex flex-col md:flex-row gap-4">
@@ -110,195 +64,17 @@ function UserMessage({ message, chatId }: { message: ChatMessage; chatId: string
   );
 }
 
-function SystemMessage({
-  text,
-  loading,
-  chatId,
-  autoPlay = false
-}: {
-  text: string;
-  loading?: boolean;
-  chatId: string;
-  autoPlay?: boolean;
-}) {
-  const textWithoutThinking = stripThinkingTags(text);
-  const { isCopied, handleCopy } = useCopyToClipboard(textWithoutThinking);
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [upgradeDialogOpen, setUpgradeDialogOpen] = useState(false);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
-  const audioUrlRef = useRef<string | null>(null);
-  const abortControllerRef = useRef<AbortController | null>(null);
-  const openai = useOpenAI();
-  const { setBillingStatus } = useLocalState();
-
-  // Fetch billing status to check if user has Pro/Team/Max access
-  const { data: billingStatus } = useQuery({
-    queryKey: ["billingStatus"],
-    queryFn: async () => {
-      const billingService = getBillingService();
-      const status = await billingService.getBillingStatus();
-      setBillingStatus(status);
-      return status;
-    }
-  });
-
-  // Check if user has Pro/Team/Max access for TTS
-  const hasProTeamAccess =
-    billingStatus &&
-    (billingStatus.product_name?.toLowerCase().includes("pro") ||
-      billingStatus.product_name?.toLowerCase().includes("max") ||
-      billingStatus.product_name?.toLowerCase().includes("team"));
-
-  const canUseTTS = hasProTeamAccess;
-
-  const handleTTS = useCallback(async () => {
-    // Check if user has access
-    if (!canUseTTS) {
-      setUpgradeDialogOpen(true);
-      return;
-    }
-
-    if (isPlaying) {
-      // Stop playing and cleanup
-      if (abortControllerRef.current) {
-        abortControllerRef.current.abort();
-        abortControllerRef.current = null;
-      }
-      if (audioRef.current) {
-        audioRef.current.pause();
-        audioRef.current.src = "";
-        audioRef.current = null;
-      }
-      if (audioUrlRef.current) {
-        URL.revokeObjectURL(audioUrlRef.current);
-        audioUrlRef.current = null;
-      }
-      setIsPlaying(false);
-      return;
-    }
-
-    // Guard against empty text
-    if (!textWithoutThinking.trim()) {
-      return;
-    }
-
-    try {
-      setIsPlaying(true);
-
-      // Create abort controller for this request
-      const abortController = new AbortController();
-      abortControllerRef.current = abortController;
-
-      // Generate speech using OpenAI TTS
-      const response = await openai.audio.speech.create(
-        {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          model: "kokoro" as any,
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          voice: "af_sky+af_bella" as any,
-          input: textWithoutThinking,
-          response_format: "mp3"
-        },
-        { signal: abortController.signal }
-      );
-
-      // Convert response to blob and create audio URL
-      const blob = new Blob([await response.arrayBuffer()], { type: "audio/mp3" });
-      const audioUrl = URL.createObjectURL(blob);
-      audioUrlRef.current = audioUrl;
-
-      // Create and play audio
-      const audio = new Audio(audioUrl);
-      audioRef.current = audio;
-
-      // Register with audio manager to stop any other playing audio
-      audioManager.setCurrentAudio(audio, () => {
-        setIsPlaying(false);
-        if (audioUrlRef.current) {
-          URL.revokeObjectURL(audioUrlRef.current);
-          audioUrlRef.current = null;
-        }
-        audioRef.current = null;
-        abortControllerRef.current = null;
-      });
-
-      audio.onended = () => {
-        setIsPlaying(false);
-        if (audioUrlRef.current) {
-          URL.revokeObjectURL(audioUrlRef.current);
-          audioUrlRef.current = null;
-        }
-        audioRef.current = null;
-        abortControllerRef.current = null;
-      };
-
-      audio.onerror = () => {
-        console.error("Error playing audio");
-        setIsPlaying(false);
-        if (audioUrlRef.current) {
-          URL.revokeObjectURL(audioUrlRef.current);
-          audioUrlRef.current = null;
-        }
-        audioRef.current = null;
-        abortControllerRef.current = null;
-      };
-
-      await audio.play();
-    } catch (error) {
-      // Ignore intentional aborts
-      if (error instanceof Error && error.name === "AbortError") {
-        return;
-      }
-      console.error("TTS error:", error);
-      setIsPlaying(false);
-      // Cleanup on error
-      if (audioUrlRef.current) {
-        URL.revokeObjectURL(audioUrlRef.current);
-        audioUrlRef.current = null;
-      }
-      audioRef.current = null;
-      abortControllerRef.current = null;
-    }
-  }, [textWithoutThinking, isPlaying, openai, canUseTTS]);
-
-  // Auto-play TTS when message is complete and autoPlay is true
-  useEffect(() => {
-    if (autoPlay && !loading && textWithoutThinking && canUseTTS && !isPlaying) {
-      // Only auto-play once when the message completes
-      handleTTS();
-    }
-  }, [autoPlay, loading, canUseTTS]); // Don't include handleTTS to avoid loops
-
-  // Cleanup on unmount
-  useEffect(() => {
-    return () => {
-      // Abort any in-flight requests
-      if (abortControllerRef.current) {
-        abortControllerRef.current.abort();
-        abortControllerRef.current = null;
-      }
-      // Stop and cleanup audio
-      if (audioRef.current) {
-        audioRef.current.pause();
-        audioRef.current.src = "";
-        audioRef.current = null;
-      }
-      // Revoke object URL to prevent memory leak
-      if (audioUrlRef.current) {
-        URL.revokeObjectURL(audioUrlRef.current);
-        audioUrlRef.current = null;
-      }
-    };
-  }, []);
+function AssistantMessage({ text, chatId }: { text: string; chatId: string }) {
+  const { isCopied, handleCopy } = useCopyToClipboard(text);
 
   return (
     <div className="group flex flex-col p-4">
       <div className="rounded-lg flex flex-col md:flex-row gap-4">
         <div>
-          <AsteriskIcon />
+          <Bot />
         </div>
         <div className="flex flex-col gap-2 min-w-0 flex-1 overflow-hidden">
-          <Markdown content={text} loading={loading} chatId={chatId} />
+          <Markdown content={text} loading={false} chatId={chatId} />
           <div className="flex gap-2 items-center">
             <Button
               variant="ghost"
@@ -309,24 +85,9 @@ function SystemMessage({
             >
               {isCopied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
             </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              className={cn("h-8 w-8 p-0", !canUseTTS && "opacity-50")}
-              onClick={handleTTS}
-              aria-label={isPlaying ? "Stop audio" : "Play audio"}
-            >
-              {isPlaying ? <Square className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}
-            </Button>
           </div>
         </div>
       </div>
-
-      <UpgradePromptDialog
-        open={upgradeDialogOpen}
-        onOpenChange={setUpgradeDialogOpen}
-        feature="tts"
-      />
     </div>
   );
 }
@@ -395,137 +156,33 @@ function SystemPromptMessage({ text }: { text: string }) {
 
 function ChatComponent() {
   const { chatId } = Route.useParams();
-  const {
-    model,
-    setModel,
-    persistChat,
-    getChatById,
-    userPrompt,
-    setUserPrompt,
-    systemPrompt,
-    setSystemPrompt,
-    userImages,
-    setUserImages,
-    sentViaVoice,
-    setSentViaVoice,
-    addChat
-  } = useLocalState();
-  const openai = useOpenAI();
-  const queryClient = useQueryClient();
-  const [showScrollButton, setShowScrollButton] = useState(false);
+  const { getChatById } = useLocalState();
   const navigate = useNavigate();
-  const location = useLocation();
   const isMobile = useIsMobile();
-
-  const [isSummarizing, setIsSummarizing] = useState(false);
-  const [imageConversionError, setImageConversionError] = useState<string | null>(null);
-  const [shouldAutoPlayTTS, setShouldAutoPlayTTS] = useState(false);
-  const [autoPlayMessageIndex, setAutoPlayMessageIndex] = useState<number | null>(null);
-
+  const [showScrollButton, setShowScrollButton] = useState(false);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const chatContainerRef = useRef<HTMLDivElement>(null);
 
-  // Use the chat session hook
-  const {
-    chat: localChat,
-    phase,
-    currentStreamingMessage,
-    appendUserMessage,
-    streamingError,
-    isPending
-  } = useChatSession(chatId, {
-    getChatById,
-    persistChat,
-    openai,
-    model,
-    onImageConversionError: (failedCount) => {
-      setImageConversionError(`${failedCount} image(s) failed to process. Please try again.`);
-      // Clear error after 5 seconds
-      setTimeout(() => setImageConversionError(null), 5000);
-    }
+  // Fetch chat from KV store
+  const { data: chat, isPending } = useQuery({
+    queryKey: ["archivedChat", chatId],
+    queryFn: () => getChatById(chatId),
+    retry: false
   });
 
-  // Handle initial user prompt - using a ref to prevent double execution
-  const initialPromptProcessedRef = useRef(false);
+  const toggleSidebar = useCallback(() => setIsSidebarOpen((prev) => !prev), []);
 
-  // Reset the ref when chatId changes
-  useEffect(() => {
-    initialPromptProcessedRef.current = false;
-  }, [chatId]);
-
-  useEffect(() => {
-    // Check if we have a prompt to process and haven't processed it yet
-    if (
-      userPrompt &&
-      localChat.messages.length === 0 &&
-      phase === "idle" &&
-      !initialPromptProcessedRef.current
-    ) {
-      // Mark as processed immediately
-      initialPromptProcessedRef.current = true;
-
-      // Capture values before clearing
-      const prompt = userPrompt;
-      const sysPrompt = systemPrompt;
-      const images = userImages;
-      const wasVoice = sentViaVoice;
-
-      // If sent via voice, set the flag for auto-play TTS
-      if (wasVoice) {
-        setShouldAutoPlayTTS(true);
-      }
-
-      // Clear state immediately
-      setUserPrompt("");
-      setSystemPrompt(null);
-      setUserImages([]);
-      setSentViaVoice(false);
-
-      // Send message with system prompt as separate parameter
-      appendUserMessage(prompt, images, undefined, undefined, sysPrompt || undefined).catch(
-        (error) => {
-          // Only reset if it wasn't an abort
-          if (!(error instanceof Error) || error.message !== "Stream aborted") {
-            console.error("[ChatComponent] Failed to append message:", error);
-            setUserPrompt(prompt);
-            setSystemPrompt(sysPrompt);
-            setUserImages(images);
-            setSentViaVoice(wasVoice);
-            initialPromptProcessedRef.current = false;
-          }
-        }
-      );
-    }
-  }, [
-    userPrompt,
-    systemPrompt,
-    userImages,
-    sentViaVoice,
-    localChat.messages.length,
-    phase,
-    appendUserMessage,
-    setUserPrompt,
-    setSystemPrompt,
-    setUserImages,
-    setSentViaVoice
-  ]);
-
-  // Handle mobile new chat (matching sidebar behavior)
+  // Handle mobile new chat
   const handleMobileNewChat = useCallback(async () => {
-    // If we're already on "/", focus the chat box
-    if (location.pathname === "/") {
-      document.getElementById("message")?.focus();
-    } else {
-      try {
-        await navigate({ to: "/" });
-        // Ensure element is available after navigation
-        setTimeout(() => document.getElementById("message")?.focus(), 0);
-      } catch (error) {
-        console.error("Navigation failed:", error);
-      }
+    try {
+      await navigate({ to: "/" });
+      setTimeout(() => document.getElementById("message")?.focus(), 0);
+    } catch (error) {
+      console.error("Navigation failed:", error);
     }
-  }, [navigate, location.pathname]);
+  }, [navigate]);
 
-  // Memoize the scroll handler
+  // Scroll detection
   const handleScroll = useCallback(() => {
     const container = chatContainerRef.current;
     if (!container) return;
@@ -534,13 +191,10 @@ function ChatComponent() {
     setShowScrollButton(!isNearBottom);
   }, []);
 
-  // Add scroll detection
   useEffect(() => {
     const container = chatContainerRef.current;
     if (!container) return;
-
     container.addEventListener("scroll", handleScroll);
-    // Initial check
     handleScroll();
     return () => container.removeEventListener("scroll", handleScroll);
   }, [handleScroll]);
@@ -554,232 +208,34 @@ function ChatComponent() {
     }
   }, []);
 
-  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  if (isPending) {
+    return (
+      <div className="grid h-dvh w-full grid-cols-1 md:grid-cols-[280px_1fr]">
+        <Sidebar chatId={chatId} isOpen={isSidebarOpen} onToggle={toggleSidebar} />
+        <main className="flex h-dvh flex-col items-center justify-center">
+          <p className="text-muted-foreground">Loading archived chat...</p>
+        </main>
+      </div>
+    );
+  }
 
-  const toggleSidebar = useCallback(() => setIsSidebarOpen((prev) => !prev), []);
+  if (!chat) {
+    return (
+      <div className="grid h-dvh w-full grid-cols-1 md:grid-cols-[280px_1fr]">
+        <Sidebar chatId={chatId} isOpen={isSidebarOpen} onToggle={toggleSidebar} />
+        <main className="flex h-dvh flex-col items-center justify-center">
+          <p className="text-muted-foreground">Archived chat not found</p>
+        </main>
+      </div>
+    );
+  }
 
-  // Set model when chat first loads
-  const hasSetModelRef = useRef(false);
-  useEffect(() => {
-    if (localChat.model && !hasSetModelRef.current) {
-      setModel(localChat.model);
-      hasSetModelRef.current = true;
-    }
-  }, [localChat.model, setModel]);
-
-  // Reset the ref when chatId changes
-  useEffect(() => {
-    hasSetModelRef.current = false;
-  }, [chatId]);
-
-  // Removed auto-persist on model change to prevent unwanted saves
-  // The model will be saved with the chat when messages are sent
-
-  const isLoading = phase === "streaming";
-  const isPersisting = phase === "persisting";
-
-  // Auto-scroll when user sends message (new user message appears)
-  const prevUserMessageCountRef = useRef(
-    localChat.messages.filter((m) => m.role === "user").length
-  );
-
-  useEffect(() => {
-    const userMessageCount = localChat.messages.filter((m) => m.role === "user").length;
-    const hasNewUserMessage = userMessageCount > prevUserMessageCountRef.current;
-
-    if (hasNewUserMessage) {
-      // Scroll when user sends a message
-      const container = chatContainerRef.current;
-      if (container) {
-        requestAnimationFrame(() => {
-          container.scrollTo({
-            top: container.scrollHeight,
-            behavior: "smooth"
-          });
-        });
-      }
-    }
-
-    prevUserMessageCountRef.current = userMessageCount;
-  }, [localChat.messages]);
-
-  // Auto-scroll when assistant starts streaming (currentStreamingMessage appears)
-  // and handle TTS auto-play when streaming completes
-  const prevHadStreamingMessage = useRef(false);
-  const prevStreamingMessage = useRef<string>("");
-
-  useEffect(() => {
-    const hasStreamingMessage = !!currentStreamingMessage;
-    const justStartedStreaming = hasStreamingMessage && !prevHadStreamingMessage.current;
-    const justFinishedStreaming = !hasStreamingMessage && prevHadStreamingMessage.current;
-
-    if (justStartedStreaming) {
-      // Scroll when assistant starts streaming
-      const container = chatContainerRef.current;
-      if (container) {
-        // Small delay to ensure the streaming message box is rendered
-        setTimeout(() => {
-          container.scrollTo({
-            top: container.scrollHeight,
-            behavior: "smooth"
-          });
-        }, 100);
-      }
-    }
-
-    // When streaming just completed and we should auto-play TTS
-    if (justFinishedStreaming && shouldAutoPlayTTS && prevStreamingMessage.current) {
-      // Find the last assistant message index and trigger TTS for it
-      const lastAssistantMessageIndex = localChat.messages
-        .map((m, i) => (m.role === "assistant" ? i : -1))
-        .filter((i) => i >= 0)
-        .pop();
-
-      if (lastAssistantMessageIndex !== undefined) {
-        // Set the message index to auto-play
-        setAutoPlayMessageIndex(lastAssistantMessageIndex);
-        setShouldAutoPlayTTS(false); // Reset the flag
-
-        // Clear the auto-play index after a short delay to prevent re-playing
-        setTimeout(() => {
-          setAutoPlayMessageIndex(null);
-        }, 1000);
-      }
-    }
-
-    prevHadStreamingMessage.current = hasStreamingMessage;
-    prevStreamingMessage.current = currentStreamingMessage || "";
-  }, [currentStreamingMessage, shouldAutoPlayTTS, localChat.messages]);
-
-  const sendMessage = useCallback(
-    async (
-      input: string,
-      systemPrompt?: string,
-      images?: File[],
-      documentText?: string,
-      documentMetadata?: { filename: string; fullContent: string },
-      sentViaVoice?: boolean
-    ) => {
-      // Store the voice flag for later use when response completes
-      if (sentViaVoice) {
-        setShouldAutoPlayTTS(true);
-      }
-      // Use the appendUserMessage from the hook with system prompt as separate parameter
-      // Don't await - let it run in background so the recording overlay can disappear immediately
-      appendUserMessage(input, images, documentText, documentMetadata, systemPrompt);
-      // Return immediately so the overlay disappears right after sending
-      // Note: Auto-scrolling is handled by the effect that watches for streaming start
-    },
-    [appendUserMessage]
-  );
-
-  // Chat compression function
-  const compressChat = useCallback(async () => {
-    try {
-      setIsSummarizing(true);
-
-      // 1. Build summarization prompt with detailed instructions
-      const summarizerSystem = `You are "Summarizer-v1", an expert summarization assistant.
-
-TASK
-• First, write a concise paragraph (3–5 sentences) summarizing the overall conversation.
-• Then, produce 10–20 markdown bullet points, each ≤ 30 words.
-• Break complex ideas into multiple bullets for clarity.
-
-CONTENT TO CAPTURE
-1. **Key Information** – essential facts, data points, and statements.
-2. **Decisions and Conclusions** – final choices or outcomes.
-3. **Open Questions and Action Items** – unresolved issues or tasks to be completed.
-4. **User Preferences and Priorities** – expressed likes, dislikes, or priorities.
-
-STYLE & RULES
-• Do **not** mention the assistant, the user, message counts, or dates.
-• Do **not** quote anyone verbatim; paraphrase.
-• Avoid passive voice; start each bullet with a strong noun or verb.
-• Use present tense where possible ("Decide to migrate…", "User prefers…").
-• No headings or extra text—*just* the paragraph summary followed by the bullet list.
-
-END OF INSTRUCTIONS`;
-
-      const summarizationMessages = [
-        { role: "system" as const, content: summarizerSystem },
-        ...localChat.messages.map((msg) => {
-          // Convert content to string for summarization
-          const content =
-            typeof msg.content === "string"
-              ? msg.content
-              : msg.content.map((part) => (part.type === "text" ? part.text : "[image]")).join(" ");
-
-          return {
-            role: msg.role,
-            content: content
-          };
-        })
-      ];
-
-      // 2. Stream the summary
-      let summary = "";
-      const stream = openai.beta.chat.completions.stream({
-        model: DEFAULT_MODEL_ID, // Use the default model instead of user selected model
-        messages: summarizationMessages,
-        temperature: 0.3,
-        max_tokens: 600,
-        stream: true
-      });
-
-      for await (const chunk of stream) {
-        summary += chunk.choices[0]?.delta?.content ?? "";
-      }
-      await stream.finalChatCompletion();
-
-      // 3. Build initial message for the new chat
-      const initialMsg =
-        `Below is the summary of our previous chats:\n\n${summary}\n\n` +
-        `I will follow up with additional conversations based on our previous chat summary`;
-
-      // Try a completely different approach - work directly with storage
-
-      // 1. First create a new chat with the title directly inherited from the original chat
-      console.log("Creating new chat with summary from original chat");
-      const inheritedTitle = localChat.title; // Use the exact same title as the original chat
-      const id = await addChat(inheritedTitle);
-
-      // 2. Completely reset user prompt
-      setUserPrompt("");
-
-      // 3. Take the direct storage approach instead of relying on React state/effects
-      // Create a fake user message directly in storage that the next page will read
-      const initialChatData = {
-        id: id,
-        title: inheritedTitle,
-        messages: [{ role: "user" as const, content: initialMsg }]
-      };
-
-      // Explicitly persist this chat with the initial message directly
-      await persistChat(initialChatData);
-
-      // 4. Force refetch of both chat data and history list when navigating
-      queryClient.invalidateQueries({
-        queryKey: ["chat", id],
-        refetchType: "all"
-      });
-
-      // Make sure history list is also invalidated to show the new chat
-      queryClient.invalidateQueries({
-        queryKey: ["chatHistory"],
-        refetchType: "all"
-      });
-
-      // 5. Navigate to the new chat which should now have the initial message
-      console.log("Navigating to new chat with pre-persisted message:", id);
-      navigate({ to: "/chat/$chatId", params: { chatId: id } });
-    } catch (e) {
-      console.error("compressChat failed:", e);
-      // Note: We don't have a setError function anymore since errors are handled by the hook
-    } finally {
-      setIsSummarizing(false);
-    }
-  }, [localChat, openai, addChat, navigate, setUserPrompt, persistChat, queryClient]);
+  // Convert Chat messages to ArchivedMessage format - safely handle the types
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const archivedMessages: ArchivedMessage[] = (chat.messages || []).map((msg: any) => ({
+    role: (msg.role || "user") as "user" | "assistant" | "system",
+    content: msg.content || ""
+  }));
 
   return (
     <div className="grid h-dvh w-full grid-cols-1 md:grid-cols-[280px_1fr]">
@@ -795,7 +251,6 @@ END OF INSTRUCTIONS`;
           className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden flex flex-col relative"
         >
           <div className="mt-4 md:mt-8 w-full h-10 flex items-center justify-center relative">
-            {/* Mobile new chat button */}
             {isMobile && (
               <Button
                 variant="outline"
@@ -808,12 +263,11 @@ END OF INSTRUCTIONS`;
               </Button>
             )}
             <h2 className="text-base font-semibold self-center truncate max-w-[20rem] mx-[6rem] py-2">
-              {localChat.title}
+              {chat.title}
             </h2>
           </div>
           <div className="flex flex-col w-full max-w-[45rem] mx-auto gap-4 px-2 pt-4">
-            {/* Show all messages including system messages */}
-            {localChat.messages?.map((message, index) => (
+            {archivedMessages.map((message, index) => (
               <div
                 key={index}
                 id={`message-${message.role}-${index}`}
@@ -830,23 +284,17 @@ END OF INSTRUCTIONS`;
                 )}
                 {message.role === "user" && <UserMessage message={message} chatId={chatId} />}
                 {message.role === "assistant" && (
-                  <SystemMessage
+                  <AssistantMessage
                     text={
                       typeof message.content === "string"
                         ? message.content
                         : message.content.find((p) => p.type === "text")?.text || ""
                     }
                     chatId={chatId}
-                    autoPlay={index === autoPlayMessageIndex}
                   />
                 )}
               </div>
             ))}
-            {currentStreamingMessage && (
-              <div className="flex flex-col gap-2">
-                <SystemMessage text={currentStreamingMessage} loading={isLoading} chatId={chatId} />
-              </div>
-            )}
           </div>
           {showScrollButton && (
             <button
@@ -859,22 +307,21 @@ END OF INSTRUCTIONS`;
           )}
         </div>
 
-        {/* Place the chat box inline (below messages) in normal flow */}
-        <div className="w-full max-w-[45rem] mx-auto flex flex-col px-2 pb-2">
-          {/* Display streaming error if present */}
-          {streamingError && (
-            <div className="mb-2 p-3 bg-destructive/10 text-destructive rounded-md text-sm">
-              {streamingError}
+        {/* Archived Chat Banner - replacing ChatBox */}
+        <div className="w-full max-w-[45rem] mx-auto flex flex-col px-2 pb-4">
+          <div className="bg-muted/50 border border-border rounded-lg p-4 flex items-center gap-3">
+            <Archive className="h-5 w-5 text-muted-foreground flex-shrink-0" />
+            <div className="flex-1">
+              <p className="text-sm font-medium">Archived Chat</p>
+              <p className="text-xs text-muted-foreground">
+                This is a read-only chat from your history. Start a new chat to continue the
+                conversation.
+              </p>
             </div>
-          )}
-          <ChatBox
-            onSubmit={sendMessage}
-            messages={localChat.messages}
-            isStreaming={isLoading || isPersisting || isSummarizing || isPending}
-            onCompress={compressChat}
-            isSummarizing={isSummarizing}
-            imageConversionError={imageConversionError}
-          />
+            <Button onClick={handleMobileNewChat} size="sm">
+              New Chat
+            </Button>
+          </div>
         </div>
       </main>
     </div>

@@ -27,11 +27,20 @@ export function Sidebar({
     if (isOpen) {
       onToggle();
     }
-    // If we're already on "/", focus the chat box
-    if (location.pathname === "/") {
+
+    // Clear any conversation_id from URL to start fresh
+    if (location.pathname === "/" && window.location.search.includes("conversation_id")) {
+      // Just clear the query params without navigation
+      window.history.replaceState(null, "", "/");
+      // Clear messages by triggering a re-render
+      window.dispatchEvent(new Event("newchat"));
+      document.getElementById("message")?.focus();
+    } else if (location.pathname === "/") {
+      // Already on home with no conversation_id, just focus
       document.getElementById("message")?.focus();
     } else {
       try {
+        // Navigate to home without any query params
         await router.navigate({ to: `/` });
         // Ensure element is available after navigation
         setTimeout(() => document.getElementById("message")?.focus(), 0);
@@ -129,22 +138,30 @@ export function Sidebar({
         isOpen ? "block w-[280px]" : "hidden md:block md:w-[280px]"
       ])}
     >
-      <div className="h-full border-r border-input dark:bg-background bg-[hsl(var(--footer-bg))] backdrop-blur-lg flex flex-col gap-4 px-4 py-4 md:py-8 items-stretch w-[280px]">
-        <div className="flex justify-between items-center">
-          <Button variant="outline" size="icon" className="md:w-full gap-2" onClick={addChat}>
-            <SquarePenIcon className="w-4 h-4" />
-            <span className="hidden md:block">New Chat</span>
-          </Button>
-          <Button variant="outline" size="icon" className="md:hidden" onClick={onToggle}>
-            <PanelRightOpen className="h-4 w-4" />
-          </Button>
+      <div className="h-full border-r border-input dark:bg-background bg-[hsl(var(--footer-bg))] backdrop-blur-lg flex flex-col items-stretch w-[280px]">
+        {/* Header section matching UnifiedChat's h-14 */}
+        <div className="h-14 flex items-center px-4 md:py-2">
+          <div className="flex justify-between items-center gap-2 w-full">
+            <Button variant="outline" size="icon" className="md:hidden h-9 w-9" onClick={onToggle}>
+              <PanelRightOpen className="h-4 w-4" />
+            </Button>
+            <Button
+              variant="outline"
+              size="icon"
+              className="md:w-full gap-2 h-9 md:h-10"
+              onClick={addChat}
+            >
+              <SquarePenIcon className="h-4 w-4" />
+              <span className="hidden md:block">New Chat</span>
+            </Button>
+          </div>
         </div>
-        <div className="flex justify-between items-center">
+        <div className="flex justify-between items-center px-4">
           <h2 className="font-semibold">History</h2>
           <Button
-            variant="ghost"
+            variant="outline"
             size="icon"
-            className="h-8 w-8"
+            className="h-9 w-9"
             onClick={toggleSearch}
             aria-label={isSearchVisible ? "Hide search" : "Search chat history"}
           >
@@ -152,7 +169,7 @@ export function Sidebar({
           </Button>
         </div>
         {isSearchVisible && (
-          <div className="relative transition-all duration-200 ease-in-out">
+          <div className="relative transition-all duration-200 ease-in-out px-4">
             <Input
               ref={searchInputRef}
               type="text"
@@ -166,7 +183,7 @@ export function Sidebar({
             {searchQuery && (
               <button
                 onClick={clearSearch}
-                className="absolute right-2.5 top-2.5 text-muted-foreground hover:text-foreground"
+                className="absolute right-6 top-2.5 text-muted-foreground hover:text-foreground"
                 aria-label="Clear search"
               >
                 <XCircle className="h-4 w-4" />
@@ -174,10 +191,12 @@ export function Sidebar({
             )}
           </div>
         )}
-        <nav className="flex flex-col gap-2 px-4 -mx-4 h-full overflow-y-auto">
-          <ChatHistoryList currentChatId={chatId} searchQuery={searchQuery} />
+        <nav className="flex flex-col gap-2 flex-1 overflow-y-auto px-4">
+          <ChatHistoryList currentChatId={chatId} searchQuery={searchQuery} isMobile={isMobile} />
         </nav>
-        <AccountMenu />
+        <div className="px-4 pb-4">
+          <AccountMenu />
+        </div>
       </div>
     </div>
   );
@@ -185,7 +204,7 @@ export function Sidebar({
 
 export function SidebarToggle({ onToggle }: { onToggle: () => void }) {
   return (
-    <Button variant="outline" size="icon" className="md:hidden" onClick={onToggle}>
+    <Button variant="outline" size="icon" className="md:hidden h-9 w-9" onClick={onToggle}>
       <PanelRightClose className="h-4 w-4" />
     </Button>
   );
