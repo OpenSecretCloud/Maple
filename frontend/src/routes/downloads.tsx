@@ -251,6 +251,22 @@ function DownloadPage() {
                 >
                   Join Google Play Beta
                 </a>
+                <div className="w-full border-t border-[hsl(var(--marketing-card-border))] pt-4">
+                  <p className="text-[hsl(var(--marketing-text-muted))] text-sm mb-3 text-center">
+                    Or download the APK directly:
+                  </p>
+                  <a
+                    href="https://github.com/OpenSecretCloud/Maple/releases/download/v1.99.0-android-beta1/app-universal-release.apk"
+                    className="py-2 px-4 rounded-lg text-center font-medium transition-all duration-300 block
+                    dark:bg-white/90 dark:text-black dark:hover:bg-[hsl(var(--purple))]/80 dark:hover:text-[hsl(var(--foreground))] dark:active:bg-white/80
+                    bg-background text-foreground hover:bg-[hsl(var(--purple))] hover:text-[hsl(var(--foreground))] active:bg-background/80
+                    border border-[hsl(var(--purple))]/30 hover:border-[hsl(var(--purple))]"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    Download APK (Beta)
+                  </a>
+                </div>
                 <p className="text-[hsl(var(--marketing-text-muted))] text-xs text-center">
                   Beta version - help us test new features before the official release
                 </p>
