@@ -772,6 +772,11 @@ export function UnifiedChat() {
 
   // Web search toggle state
   const [isWebSearchEnabled, setIsWebSearchEnabled] = useState(false);
+  const [isWebSearchUnlocked, setIsWebSearchUnlocked] = useState(() => {
+    return localStorage.getItem("webSearchUnlocked") === "true";
+  });
+  const [logoTapCount, setLogoTapCount] = useState(0);
+  const tapTimeoutRef = useRef<number | null>(null);
 
   // Scroll state
   const [isUserScrolling, setIsUserScrolling] = useState(false);
@@ -1377,6 +1382,32 @@ export function UnifiedChat() {
 
   // Toggle sidebar
   const toggleSidebar = useCallback(() => setIsSidebarOpen((prev) => !prev), []);
+
+  // Handle logo tap for easter egg unlock
+  const handleLogoTap = useCallback(() => {
+    const newCount = logoTapCount + 1;
+    setLogoTapCount(newCount);
+
+    // Clear any existing timeout
+    if (tapTimeoutRef.current !== null) {
+      window.clearTimeout(tapTimeoutRef.current);
+    }
+
+    // Reset tap count after 2 seconds of inactivity
+    tapTimeoutRef.current = window.setTimeout(() => {
+      setLogoTapCount(0);
+    }, 2000);
+
+    // Unlock web search after 7 taps
+    if (newCount >= 7) {
+      localStorage.setItem("webSearchUnlocked", "true");
+      setIsWebSearchUnlocked(true);
+      setLogoTapCount(0);
+      if (tapTimeoutRef.current !== null) {
+        window.clearTimeout(tapTimeoutRef.current);
+      }
+    }
+  }, [logoTapCount]);
 
   // Check user's billing access
   const billingStatus = localState.billingStatus;
@@ -2361,7 +2392,11 @@ export function UnifiedChat() {
               {/* Logo section - raised higher */}
               <div className="flex flex-col items-center -mt-20 mb-16">
                 {/* Logo with Maple text - combined image */}
-                <div className="flex items-center justify-center mb-3">
+                <div
+                  className="flex items-center justify-center mb-3"
+                  onClick={handleLogoTap}
+                  style={{ cursor: "default" }}
+                >
                   <img
                     src="/maple-leaf-and-maple-white.png"
                     alt="Maple"
@@ -2507,23 +2542,25 @@ export function UnifiedChat() {
                             </DropdownMenuContent>
                           </DropdownMenu>
 
-                          {/* Web search toggle button */}
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="sm"
-                            className="h-8 w-8 p-0"
-                            onClick={() => setIsWebSearchEnabled(!isWebSearchEnabled)}
-                            aria-label={
-                              isWebSearchEnabled ? "Disable web search" : "Enable web search"
-                            }
-                          >
-                            <Globe
-                              className={`h-4 w-4 ${
-                                isWebSearchEnabled ? "text-blue-500" : "text-muted-foreground"
-                              }`}
-                            />
-                          </Button>
+                          {/* Web search toggle button - hidden until unlocked */}
+                          {isWebSearchUnlocked && (
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              className="h-8 w-8 p-0"
+                              onClick={() => setIsWebSearchEnabled(!isWebSearchEnabled)}
+                              aria-label={
+                                isWebSearchEnabled ? "Disable web search" : "Enable web search"
+                              }
+                            >
+                              <Globe
+                                className={`h-4 w-4 ${
+                                  isWebSearchEnabled ? "text-blue-500" : "text-muted-foreground"
+                                }`}
+                              />
+                            </Button>
+                          )}
                         </div>
 
                         <div className="flex items-center gap-2">
@@ -2710,23 +2747,25 @@ export function UnifiedChat() {
                           </DropdownMenuContent>
                         </DropdownMenu>
 
-                        {/* Web search toggle button */}
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          className="h-8 w-8 p-0"
-                          onClick={() => setIsWebSearchEnabled(!isWebSearchEnabled)}
-                          aria-label={
-                            isWebSearchEnabled ? "Disable web search" : "Enable web search"
-                          }
-                        >
-                          <Globe
-                            className={`h-4 w-4 ${
-                              isWebSearchEnabled ? "text-blue-500" : "text-muted-foreground"
-                            }`}
-                          />
-                        </Button>
+                        {/* Web search toggle button - hidden until unlocked */}
+                        {isWebSearchUnlocked && (
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            className="h-8 w-8 p-0"
+                            onClick={() => setIsWebSearchEnabled(!isWebSearchEnabled)}
+                            aria-label={
+                              isWebSearchEnabled ? "Disable web search" : "Enable web search"
+                            }
+                          >
+                            <Globe
+                              className={`h-4 w-4 ${
+                                isWebSearchEnabled ? "text-blue-500" : "text-muted-foreground"
+                              }`}
+                            />
+                          </Button>
+                        )}
                       </div>
 
                       <div className="flex items-center gap-2">
