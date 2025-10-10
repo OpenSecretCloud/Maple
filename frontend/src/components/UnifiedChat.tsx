@@ -34,7 +34,8 @@ import {
   Mic,
   SquarePen,
   Search,
-  Loader2
+  Loader2,
+  Globe
 } from "lucide-react";
 import RecordRTC from "recordrtc";
 import { useQueryClient } from "@tanstack/react-query";
@@ -768,6 +769,9 @@ export function UnifiedChat() {
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [isProcessingSend, setIsProcessingSend] = useState(false);
   const [audioError, setAudioError] = useState<string | null>(null);
+
+  // Web search toggle state
+  const [isWebSearchEnabled, setIsWebSearchEnabled] = useState(false);
 
   // Scroll state
   const [isUserScrolling, setIsUserScrolling] = useState(false);
@@ -1993,7 +1997,8 @@ export function UnifiedChat() {
             input: [{ role: "user", content: messageContent }],
             metadata: { internal_message_id: localMessageId }, // Pass our local ID
             stream: true,
-            store: true // Store in conversation history
+            store: true, // Store in conversation history
+            ...(isWebSearchEnabled && { tools: [{ type: "web_search" }] })
           },
           { signal: abortController.signal }
         );
@@ -2144,7 +2149,8 @@ export function UnifiedChat() {
                   input: [{ role: "user", content: messageContent }],
                   metadata: { internal_message_id: localMessageId }, // Server prevents duplicate IDs
                   stream: true,
-                  store: true
+                  store: true,
+                  ...(isWebSearchEnabled && { tools: [{ type: "web_search" }] })
                 },
                 { signal: retryAbortController.signal }
               );
@@ -2500,6 +2506,24 @@ export function UnifiedChat() {
                               </DropdownMenuItem>
                             </DropdownMenuContent>
                           </DropdownMenu>
+
+                          {/* Web search toggle button */}
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            className="h-8 w-8 p-0"
+                            onClick={() => setIsWebSearchEnabled(!isWebSearchEnabled)}
+                            aria-label={
+                              isWebSearchEnabled ? "Disable web search" : "Enable web search"
+                            }
+                          >
+                            <Globe
+                              className={`h-4 w-4 ${
+                                isWebSearchEnabled ? "text-blue-500" : "text-muted-foreground"
+                              }`}
+                            />
+                          </Button>
                         </div>
 
                         <div className="flex items-center gap-2">
@@ -2685,6 +2709,24 @@ export function UnifiedChat() {
                             </DropdownMenuItem>
                           </DropdownMenuContent>
                         </DropdownMenu>
+
+                        {/* Web search toggle button */}
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="h-8 w-8 p-0"
+                          onClick={() => setIsWebSearchEnabled(!isWebSearchEnabled)}
+                          aria-label={
+                            isWebSearchEnabled ? "Disable web search" : "Enable web search"
+                          }
+                        >
+                          <Globe
+                            className={`h-4 w-4 ${
+                              isWebSearchEnabled ? "text-blue-500" : "text-muted-foreground"
+                            }`}
+                          />
+                        </Button>
                       </div>
 
                       <div className="flex items-center gap-2">
