@@ -202,6 +202,107 @@ export function stripThinkingTags(content: string): string {
   );
 }
 
+export function stripMarkdownForTTS(content: string): string {
+  // First strip thinking tags
+  let text = stripThinkingTags(content);
+
+  // Split into lines for processing
+  const lines = text.split("\n");
+  const processedLines: string[] = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    let line = lines[i];
+
+    // Check if line is part of a code block
+    if (line.includes("```")) {
+      // Skip until we find the closing ```
+      const foundEnd = line.includes("```") && line.lastIndexOf("```") !== line.indexOf("```");
+      if (!foundEnd) {
+        i++;
+        while (i < lines.length) {
+          if (lines[i].includes("```")) {
+            break;
+          }
+          i++;
+        }
+      }
+      // Replace with "code omitted" for TTS
+      processedLines.push("code omitted");
+      continue;
+    }
+
+    // Check for horizontal rules FIRST (before table separators)
+    if (line.match(/^\s*[-*_]{3,}\s*$/) && !line.includes("|") && !line.includes(":")) {
+      // Add an extra empty line to ensure double newline in output
+      if (processedLines.length > 0 && processedLines[processedLines.length - 1] !== "") {
+        processedLines.push("");
+      }
+      processedLines.push("");
+      continue;
+    }
+
+    // Skip table lines
+    if (line.match(/^\s*\|.*\|.*$/)) {
+      // Check if next line is also a table line, if not add "table omitted"
+      if (i === lines.length - 1 || !lines[i + 1].match(/^\s*\|.*\|.*$|^\s*[-:|]+\s*$/)) {
+        processedLines.push("table omitted");
+      }
+      continue;
+    }
+
+    // Skip table separator lines (with pipes or colons)
+    if (line.match(/^\s*[-:|]+\s*$/) && (line.includes("|") || line.includes(":"))) {
+      continue;
+    }
+
+    // Process the line to remove markdown syntax
+    // Remove blockquotes
+    line = line.replace(/^>\s*/g, "");
+
+    // Remove heading markers
+    line = line.replace(/^#{1,6}\s+/g, "");
+
+    // Remove list markers (unordered and ordered)
+    line = line.replace(/^\s*[-*+]\s+/g, "");
+    line = line.replace(/^\s*\d+\.\s+/g, "");
+
+    // Remove inline code (keep it simple)
+    line = line.replace(/`[^`\n]+`/g, "");
+
+    // Replace image markdown with "image omitted"
+    line = line.replace(/!\[[^\]]*\]\([^)]+\)/g, "image omitted");
+
+    // Remove link markdown but keep the text
+    line = line.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1");
+
+    // Remove emphasis markers but keep the text
+    line = line.replace(/\*\*\*(.+?)\*\*\*/g, "$1"); // Bold italic
+    line = line.replace(/\*\*(.+?)\*\*/g, "$1"); // Bold
+    line = line.replace(/\*(.+?)\*/g, "$1"); // Italic
+    line = line.replace(/___(.+?)___/g, "$1"); // Bold italic (underscore)
+    line = line.replace(/__(.+?)__/g, "$1"); // Bold (underscore)
+    line = line.replace(/_(.+?)_/g, "$1"); // Italic (underscore)
+    line = line.replace(/~~(.+?)~~/g, "$1"); // Strikethrough
+
+    // Remove HTML tags if any
+    line = line.replace(/<[^>]+>/g, "");
+
+    // Trim whitespace from the line
+    line = line.trim();
+
+    processedLines.push(line);
+  }
+
+  // Join lines back together
+  text = processedLines.join("\n");
+
+  // Clean up excessive whitespace
+  text = text.replace(/\n{3,}/g, "\n\n"); // Collapse multiple newlines to double
+  text = text.trim();
+
+  return text;
+}
+
 export function PreCode(props: JSX.IntrinsicElements["pre"]) {
   const ref = useRef<HTMLPreElement>(null);
 
