@@ -63,7 +63,7 @@ const comparisonData: ComparisonData[] = [
     duckAI: "?",
     chatGPT: "$",
     claude: "$",
-    grok: "No"
+    grok: "$"
   },
   {
     feature: "Mobile apps",
@@ -99,7 +99,7 @@ const comparisonData: ComparisonData[] = [
     duckAI: "No",
     chatGPT: "Yes",
     claude: "Yes",
-    grok: "No"
+    grok: "Yes"
   },
   {
     feature: "Teams Plans",
@@ -108,7 +108,7 @@ const comparisonData: ComparisonData[] = [
     duckAI: "No",
     chatGPT: "Yes",
     claude: "Yes",
-    grok: "No"
+    grok: "Yes"
   },
   {
     feature: "Developer API",
@@ -117,7 +117,7 @@ const comparisonData: ComparisonData[] = [
     duckAI: "No",
     chatGPT: "Yes",
     claude: "Yes",
-    grok: "No"
+    grok: "Yes"
   },
   {
     feature: "Sends your data to non-private AI providers",
@@ -205,7 +205,9 @@ export function ComparisonChart() {
               {/* Header Row */}
               <div
                 className="grid border-b border-[hsl(var(--marketing-card-border))]"
-                style={{ gridTemplateColumns: "2fr repeat(6, 1fr)" }}
+                style={{ 
+                  gridTemplateColumns: "minmax(200px, 1.5fr) repeat(6, minmax(80px, 1fr))"
+                }}
               >
                 <div className="p-3 font-medium text-foreground bg-[hsl(var(--marketing-card-highlight))]/30 text-sm">
                   Feature
@@ -231,7 +233,9 @@ export function ComparisonChart() {
                   className={`grid border-b border-[hsl(var(--marketing-card-border))] ${
                     index % 2 === 0 ? "bg-[hsl(var(--marketing-card-highlight))]/20" : ""
                   }`}
-                  style={{ gridTemplateColumns: "2fr repeat(6, 1fr)" }}
+                  style={{ 
+                    gridTemplateColumns: "minmax(200px, 1.5fr) repeat(6, minmax(80px, 1fr))"
+                  }}
                 >
                   <div className="p-3 font-medium text-foreground bg-[hsl(var(--marketing-card-highlight))]/30">
                     <span className="text-sm">{row.feature}</span>
@@ -268,11 +272,11 @@ export function ComparisonChart() {
           </div>
           <div className="flex items-center gap-2">
             <ValueIcon value="?" />
-            <span>Unknown/Unclear</span>
+            <span>Claim Unverifiable</span>
           </div>
           <div className="flex items-center gap-2">
             <ValueIcon value="$" />
-            <span>Paid Feature</span>
+            <span>Expensive Paid Feature</span>
           </div>
           <div className="flex items-center gap-2">
             <ValueIcon value="Partial" />
