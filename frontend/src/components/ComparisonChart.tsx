@@ -244,16 +244,16 @@ export function ComparisonChart() {
             <span>Not Available</span>
           </div>
           <div className="flex items-center gap-2">
+            <ValueIcon value="Partial" />
+            <span>Partially Available</span>
+          </div>
+          <div className="flex items-center gap-2">
             <ValueIcon value="?" />
             <span>Claim Unverifiable</span>
           </div>
           <div className="flex items-center gap-2">
             <ValueIcon value="$" />
             <span>Expensive Paid Feature</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <ValueIcon value="Partial" />
-            <span>Partially Available</span>
           </div>
         </div>
       </div>
