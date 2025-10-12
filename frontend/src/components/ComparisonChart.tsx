@@ -241,8 +241,8 @@ export function ComparisonChart() {
                       key={product.key}
                       className={`p-3 text-center font-medium ${
                         product.highlight
-                          ? "bg-[hsl(var(--purple))]/5 border-l-2 border-r-2 border-[hsl(var(--purple))]/30"
-                          : "bg-[hsl(var(--marketing-card-highlight))]/30"
+                          ? "bg-[hsl(var(--purple))]/5 text-[hsl(var(--purple))] border-l-2 border-r-2 border-[hsl(var(--purple))]/30"
+                          : "text-foreground bg-[hsl(var(--marketing-card-highlight))]/30"
                       }`}
                     >
                       <div className="flex justify-center">
