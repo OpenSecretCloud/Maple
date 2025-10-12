@@ -61,8 +61,8 @@ const comparisonData: ComparisonData[] = [
     maple: "Yes",
     lumo: "?",
     duckAI: "?",
-    chatGPT: "?",
-    claude: "?",
+    chatGPT: "$",
+    claude: "$",
     grok: "No"
   },
   {
@@ -122,7 +122,7 @@ const comparisonData: ComparisonData[] = [
   {
     feature: "Sends your data to non-private AI providers",
     maple: "No",
-    lumo: "Yes",
+    lumo: "No",
     duckAI: "Yes",
     chatGPT: "Yes",
     claude: "Yes",
@@ -194,10 +194,8 @@ export function ComparisonChart() {
           <div className="inline-block min-w-full">
             <div className="bg-[hsl(var(--marketing-card))]/80 backdrop-blur-sm border border-[hsl(var(--marketing-card-border))] rounded-xl overflow-hidden">
               {/* Header Row */}
-              <div className="grid grid-cols-1 sm:grid-cols-7 border-b border-[hsl(var(--marketing-card-border))]">
-                <div className="p-3 font-medium text-foreground bg-[hsl(var(--marketing-card-highlight))]/50 text-sm">
-                  Feature
-                </div>
+              <div className="grid grid-cols-7 border-b border-[hsl(var(--marketing-card-border))]">
+                <div className="p-3 font-medium text-foreground bg-[hsl(var(--marketing-card-highlight))]/50 text-sm"></div>
                 {products.map((product) => (
                   <div
                     key={product.key}
@@ -207,12 +205,7 @@ export function ComparisonChart() {
                         : "text-foreground"
                     }`}
                   >
-                    <div className="flex flex-col items-center gap-1">
-                      <div className="w-10 h-6 bg-[hsl(var(--marketing-card-highlight))] rounded border border-[hsl(var(--marketing-card-border))] flex items-center justify-center text-xs text-[hsl(var(--marketing-text-muted))]">
-                        Logo
-                      </div>
-                      <span className="text-sm">{product.name}</span>
-                    </div>
+                    <span className="text-sm">{product.name}</span>
                   </div>
                 ))}
               </div>
@@ -221,12 +214,12 @@ export function ComparisonChart() {
               {comparisonData.map((row, index) => (
                 <div
                   key={index}
-                  className={`grid grid-cols-1 sm:grid-cols-7 border-b border-[hsl(var(--marketing-card-border))] ${
+                  className={`grid grid-cols-7 border-b border-[hsl(var(--marketing-card-border))] ${
                     index % 2 === 0 ? "bg-[hsl(var(--marketing-card-highlight))]/20" : ""
                   }`}
                 >
                   <div className="p-3 font-medium text-foreground bg-[hsl(var(--marketing-card-highlight))]/30">
-                    <span className="text-xs">{row.feature}</span>
+                    <span className="text-sm">{row.feature}</span>
                   </div>
                   {products.map((product) => (
                     <div
