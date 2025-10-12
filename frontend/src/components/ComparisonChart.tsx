@@ -183,7 +183,7 @@ export function ComparisonChart() {
                 }}
               >
                 <div className="p-3 font-medium text-foreground bg-[hsl(var(--marketing-card-highlight))]/30 text-sm">
-                  Feature
+                  
                 </div>
                 {products.map((product) => (
                   <div
