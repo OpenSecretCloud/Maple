@@ -122,7 +122,7 @@ const comparisonData: ComparisonData[] = [
   {
     feature: "Sends your data to non-private AI providers",
     maple: "No",
-    lumo: "No",
+    lumo: "Yes",
     duckAI: "Yes",
     chatGPT: "Yes",
     claude: "Yes",
@@ -135,31 +135,40 @@ const ValueIcon = ({ value }: { value: string }) => {
     case "Yes":
       return (
         <div className="flex items-center justify-center w-6 h-6 bg-green-100 dark:bg-green-900/30 rounded-full">
-          <Check className="w-4 h-4 text-green-600 dark:text-green-400" />
+          <Check className="w-4 h-4 text-green-600 dark:text-green-400" aria-label="Available" />
         </div>
       );
     case "No":
       return (
         <div className="flex items-center justify-center w-6 h-6 bg-red-100 dark:bg-red-900/30 rounded-full">
-          <X className="w-4 h-4 text-red-600 dark:text-red-400" />
+          <X className="w-4 h-4 text-red-600 dark:text-red-400" aria-label="Not Available" />
         </div>
       );
     case "?":
       return (
         <div className="flex items-center justify-center w-6 h-6 bg-yellow-100 dark:bg-yellow-900/30 rounded-full">
-          <HelpCircle className="w-4 h-4 text-yellow-600 dark:text-yellow-400" />
+          <HelpCircle
+            className="w-4 h-4 text-yellow-600 dark:text-yellow-400"
+            aria-label="Unknown or Unclear"
+          />
         </div>
       );
     case "$":
       return (
         <div className="flex items-center justify-center w-6 h-6 bg-blue-100 dark:bg-blue-900/30 rounded-full">
-          <DollarSign className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+          <DollarSign
+            className="w-4 h-4 text-blue-600 dark:text-blue-400"
+            aria-label="Paid Feature"
+          />
         </div>
       );
     case "Partial":
       return (
         <div className="flex items-center justify-center w-6 h-6 bg-orange-100 dark:bg-orange-900/30 rounded-full">
-          <MinusCircle className="w-4 h-4 text-orange-600 dark:text-orange-400" />
+          <MinusCircle
+            className="w-4 h-4 text-orange-600 dark:text-orange-400"
+            aria-label="Partially Available"
+          />
         </div>
       );
     default:
@@ -198,7 +207,9 @@ export function ComparisonChart() {
                 className="grid border-b border-[hsl(var(--marketing-card-border))]"
                 style={{ gridTemplateColumns: "2fr repeat(6, 1fr)" }}
               >
-                <div className="p-3 font-medium text-foreground bg-[hsl(var(--marketing-card-highlight))]/30 text-sm"></div>
+                <div className="p-3 font-medium text-foreground bg-[hsl(var(--marketing-card-highlight))]/30 text-sm">
+                  Feature
+                </div>
                 {products.map((product) => (
                   <div
                     key={product.key}
