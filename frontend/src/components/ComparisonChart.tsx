@@ -213,10 +213,10 @@ export function ComparisonChart() {
                 {products.map((product) => (
                   <div
                     key={product.key}
-                    className={`p-3 text-center font-medium relative ${
+                    className={`p-3 text-center font-medium ${
                       product.highlight
                         ? "bg-[hsl(var(--purple))]/5 text-[hsl(var(--purple))] border-l-2 border-r-2 border-[hsl(var(--purple))]/30"
-                        : "text-foreground"
+                        : "text-foreground bg-[hsl(var(--marketing-card-highlight))]/30"
                     }`}
                   >
                     <span className="text-sm">{product.name}</span>
@@ -239,10 +239,10 @@ export function ComparisonChart() {
                   {products.map((product) => (
                     <div
                       key={product.key}
-                      className={`p-3 text-center ${
+                      className={`p-3 text-center font-medium ${
                         product.highlight
                           ? "bg-[hsl(var(--purple))]/5 border-l-2 border-r-2 border-[hsl(var(--purple))]/30"
-                          : ""
+                          : "bg-[hsl(var(--marketing-card-highlight))]/30"
                       }`}
                     >
                       <div className="flex justify-center">
