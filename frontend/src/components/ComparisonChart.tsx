@@ -194,7 +194,10 @@ export function ComparisonChart() {
           <div className="inline-block min-w-full">
             <div className="bg-[hsl(var(--marketing-card))]/80 backdrop-blur-sm border border-[hsl(var(--marketing-card-border))] rounded-xl overflow-hidden">
               {/* Header Row */}
-              <div className="grid grid-cols-7 border-b border-[hsl(var(--marketing-card-border))]">
+              <div
+                className="grid border-b border-[hsl(var(--marketing-card-border))]"
+                style={{ gridTemplateColumns: "2fr repeat(6, 1fr)" }}
+              >
                 <div className="p-3 font-medium text-foreground bg-[hsl(var(--marketing-card-highlight))]/50 text-sm"></div>
                 {products.map((product) => (
                   <div
@@ -214,9 +217,10 @@ export function ComparisonChart() {
               {comparisonData.map((row, index) => (
                 <div
                   key={index}
-                  className={`grid grid-cols-7 border-b border-[hsl(var(--marketing-card-border))] ${
+                  className={`grid border-b border-[hsl(var(--marketing-card-border))] ${
                     index % 2 === 0 ? "bg-[hsl(var(--marketing-card-highlight))]/20" : ""
                   }`}
+                  style={{ gridTemplateColumns: "2fr repeat(6, 1fr)" }}
                 >
                   <div className="p-3 font-medium text-foreground bg-[hsl(var(--marketing-card-highlight))]/30">
                     <span className="text-sm">{row.feature}</span>
