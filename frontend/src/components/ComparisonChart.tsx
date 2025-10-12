@@ -12,25 +12,34 @@ interface ComparisonData {
 
 const comparisonData: ComparisonData[] = [
   {
+    feature: "Public Proof of Encryption (TEE)",
+    maple: "Yes",
+    lumo: "No",
+    duckAI: "No",
+    chatGPT: "No",
+    claude: "No",
+    grok: "No"
+  },
+  {
     feature: "Open-Source Code Full Stack",
     maple: "Yes",
-    lumo: "No",
+    lumo: "Partial",
     duckAI: "No",
     chatGPT: "No",
     claude: "No",
     grok: "No"
   },
   {
-    feature: "Mathematic Proof That Cloud Code matches Source",
+    feature: "Open Models",
     maple: "Yes",
-    lumo: "No",
-    duckAI: "No",
+    lumo: "Yes",
+    duckAI: "Partial",
     chatGPT: "No",
     claude: "No",
     grok: "No"
   },
   {
-    feature: "Can't use your data to train AI",
+    feature: "Never uses your data to train AI",
     maple: "Yes",
     lumo: "?",
     duckAI: "?",
@@ -48,15 +57,6 @@ const comparisonData: ComparisonData[] = [
     grok: "No"
   },
   {
-    feature: "Can't share your data",
-    maple: "Yes",
-    lumo: "?",
-    duckAI: "?",
-    chatGPT: "No",
-    claude: "No",
-    grok: "No"
-  },
-  {
     feature: "Zero Data Retention",
     maple: "Yes",
     lumo: "?",
@@ -64,33 +64,6 @@ const comparisonData: ComparisonData[] = [
     chatGPT: "$",
     claude: "$",
     grok: "$"
-  },
-  {
-    feature: "Mobile apps",
-    maple: "Yes",
-    lumo: "Yes",
-    duckAI: "No",
-    chatGPT: "Yes",
-    claude: "Yes",
-    grok: "Yes"
-  },
-  {
-    feature: "Open Models",
-    maple: "Yes",
-    lumo: "Yes",
-    duckAI: "Partial",
-    chatGPT: "No",
-    claude: "No",
-    grok: "No"
-  },
-  {
-    feature: "Coding Models",
-    maple: "Yes",
-    lumo: "No",
-    duckAI: "Yes",
-    chatGPT: "Yes",
-    claude: "Yes",
-    grok: "Yes"
   },
   {
     feature: "Integration With Coding IDE",
