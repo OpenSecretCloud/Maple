@@ -102,7 +102,7 @@ const comparisonData: ComparisonData[] = [
     grok: "Yes"
   },
   {
-    feature: "Teams Plans",
+    feature: "Teams Plan",
     maple: "Yes",
     lumo: "No",
     duckAI: "No",
@@ -122,7 +122,7 @@ const comparisonData: ComparisonData[] = [
   {
     feature: "Sends your data to non-private AI providers",
     maple: "No",
-    lumo: "Yes",
+    lumo: "No",
     duckAI: "Yes",
     chatGPT: "Yes",
     claude: "Yes",
