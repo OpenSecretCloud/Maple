@@ -198,13 +198,13 @@ export function ComparisonChart() {
                 className="grid border-b border-[hsl(var(--marketing-card-border))]"
                 style={{ gridTemplateColumns: "2fr repeat(6, 1fr)" }}
               >
-                <div className="p-3 font-medium text-foreground bg-[hsl(var(--marketing-card-highlight))]/50 text-sm"></div>
+                <div className="p-3 font-medium text-foreground bg-[hsl(var(--marketing-card-highlight))]/30 text-sm"></div>
                 {products.map((product) => (
                   <div
                     key={product.key}
                     className={`p-3 text-center font-medium relative ${
                       product.highlight
-                        ? "bg-[hsl(var(--purple))]/10 text-[hsl(var(--purple))] border-l-2 border-r-2 border-[hsl(var(--purple))]/30"
+                        ? "bg-[hsl(var(--purple))]/5 text-[hsl(var(--purple))] border-l-2 border-r-2 border-[hsl(var(--purple))]/30"
                         : "text-foreground"
                     }`}
                   >
