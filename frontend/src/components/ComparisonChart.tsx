@@ -21,7 +21,7 @@ const comparisonData: ComparisonData[] = [
     grok: "No"
   },
   {
-    feature: "Open-Source Code Full Stack",
+    feature: "Open-Source Code",
     maple: "Yes",
     lumo: "Partial",
     duckAI: "No",
