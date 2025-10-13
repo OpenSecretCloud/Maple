@@ -6,6 +6,7 @@ import { useQuery } from "@tanstack/react-query";
 import { getBillingService } from "@/billing/billingService";
 import { PRICING_PLANS, type PlanFeature } from "@/config/pricingConfig";
 import { isIOS } from "@/utils/platform";
+import { ComparisonChart } from "./ComparisonChart";
 
 function CTAButton({
   children,
@@ -559,6 +560,9 @@ export function Marketing() {
           </div>
         </div>
       </section>
+
+      {/* Comparison Chart */}
+      <ComparisonChart />
 
       {/* Testimonials */}
       <section
