@@ -91,15 +91,6 @@ const comparisonData: ComparisonData[] = [
     chatGPT: "Yes",
     claude: "Yes",
     grok: "Yes"
-  },
-  {
-    feature: "Sends your data to non-private AI providers",
-    maple: "No",
-    lumo: "No",
-    duckAI: "Yes",
-    chatGPT: "Yes",
-    claude: "Yes",
-    grok: "Yes"
   }
 ];
 
