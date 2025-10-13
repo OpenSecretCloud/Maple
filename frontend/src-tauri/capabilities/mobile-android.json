@@ -66,6 +66,9 @@
           "url": "https://*.zaprite.com/*"
         },
         {
+          "url": "https://opensecret.cloud/*"
+        },
+        {
           "url": "https://github.com/*"
         },
         {

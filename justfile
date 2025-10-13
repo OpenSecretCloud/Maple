@@ -27,11 +27,22 @@ update-version version:
     
     echo "Updating version to {{version}}..."
     
+    # Parse version into components
+    IFS='.' read -r major minor patch <<< "{{version}}"
+    
+    # Calculate Android versionCode: 1 + MMM (minor) + PPP (patch) + 000 (counter reset)
+    # Format: 1MMMPPPCCC (10 digits total)
+    android_version_code=$(printf "1%03d%03d000" "$minor" "$patch")
+    echo "Calculated Android versionCode: $android_version_code"
+    
     # Update package.json
     sed -i 's/"version": "[^"]*"/"version": "{{version}}"/' frontend/package.json
     
-    # Update tauri.conf.json
+    # Update tauri.conf.json version
     sed -i 's/"version": "[^"]*"/"version": "{{version}}"/' frontend/src-tauri/tauri.conf.json
+    
+    # Update tauri.conf.json Android versionCode
+    sed -i "s/\"versionCode\": [0-9]*/\"versionCode\": $android_version_code/" frontend/src-tauri/tauri.conf.json
     
     # Update Cargo.toml
     sed -i 's/^version = "[^"]*"/version = "{{version}}"/' frontend/src-tauri/Cargo.toml
@@ -48,7 +59,7 @@ update-version version:
     echo "Running cargo check to update Cargo.lock..."
     cd frontend/src-tauri && cargo check
     
-    echo "Version updated to {{version}} in all files!"
+    echo "Version updated to {{version}} with Android versionCode $android_version_code in all files!"
 
 # Get current version from package.json
 get-version:
@@ -86,6 +97,37 @@ bump-major:
     new_version="$((major + 1)).0.0"
     
     just update-version "$new_version"
+
+# Increment Android versionCode counter (last 3 digits) for Play Store updates
+update-android-counter:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    
+    # Get current versionCode from tauri.conf.json
+    current_code=$(jq -r '.bundle.android.versionCode' frontend/src-tauri/tauri.conf.json)
+    
+    # Extract base (first 7 digits) and counter (last 3 digits)
+    base=$((current_code / 1000))
+    counter=$((current_code % 1000))
+    
+    # Increment counter
+    new_counter=$((counter + 1))
+    
+    # Ensure counter doesn't exceed 999
+    if [ $new_counter -gt 999 ]; then
+        echo "Error: Counter exceeds maximum (999). Consider bumping the version instead."
+        exit 1
+    fi
+    
+    # Calculate new versionCode
+    new_code=$((base * 1000 + new_counter))
+    
+    echo "Updating Android versionCode: $current_code → $new_code"
+    
+    # Update tauri.conf.json Android versionCode
+    sed -i "s/\"versionCode\": $current_code/\"versionCode\": $new_code/" frontend/src-tauri/tauri.conf.json
+    
+    echo "Android versionCode updated to $new_code"
 
 # Create a new release (updates version and creates git tag)
 release version:
