@@ -169,13 +169,11 @@ export function ComparisonChart() {
               {/* Header Row */}
               <div
                 className="grid border-b border-[hsl(var(--marketing-card-border))]"
-                style={{ 
+                style={{
                   gridTemplateColumns: "minmax(200px, 1.5fr) repeat(6, minmax(80px, 1fr))"
                 }}
               >
-                <div className="p-3 font-medium text-foreground bg-[hsl(var(--marketing-card-highlight))]/30 text-sm">
-                  
-                </div>
+                <div className="p-3 font-medium text-foreground bg-[hsl(var(--marketing-card-highlight))]/30 text-sm"></div>
                 {products.map((product) => (
                   <div
                     key={product.key}
@@ -197,7 +195,7 @@ export function ComparisonChart() {
                   className={`grid border-b border-[hsl(var(--marketing-card-border))] ${
                     index % 2 === 0 ? "bg-[hsl(var(--marketing-card-highlight))]/20" : ""
                   }`}
-                  style={{ 
+                  style={{
                     gridTemplateColumns: "minmax(200px, 1.5fr) repeat(6, minmax(80px, 1fr))"
                   }}
                 >
