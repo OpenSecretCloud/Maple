@@ -49,6 +49,13 @@ export const MODEL_CONFIG: Record<string, ModelCfg> = {
     requiresPro: true,
     tokenLimit: 130000
   },
+  "deepseek-v31-terminus": {
+    displayName: "DeepSeek V3.1 Terminus",
+    shortName: "DeepSeek V3.1",
+    badges: ["Pro", "New"],
+    requiresPro: true,
+    tokenLimit: 130000
+  },
   "gpt-oss-120b": {
     displayName: "OpenAI GPT-OSS 120B",
     shortName: "GPT-OSS",
