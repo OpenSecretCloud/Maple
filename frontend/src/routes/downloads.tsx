@@ -14,6 +14,7 @@ interface DownloadUrls {
   linuxAppImage: string;
   linuxDeb: string;
   linuxRpm: string;
+  androidApk: string;
 }
 
 // Fallback to package.json version if GitHub API fails
@@ -24,7 +25,8 @@ const FALLBACK_URLS: DownloadUrls = {
   macOS: `${FALLBACK_BASE_URL}/Maple_${FALLBACK_VERSION}_universal.dmg`,
   linuxAppImage: `${FALLBACK_BASE_URL}/Maple_${FALLBACK_VERSION}_amd64.AppImage`,
   linuxDeb: `${FALLBACK_BASE_URL}/Maple_${FALLBACK_VERSION}_amd64.deb`,
-  linuxRpm: `${FALLBACK_BASE_URL}/Maple-${FALLBACK_VERSION}-1.x86_64.rpm`
+  linuxRpm: `${FALLBACK_BASE_URL}/Maple-${FALLBACK_VERSION}-1.x86_64.rpm`,
+  androidApk: `${FALLBACK_BASE_URL}/app-universal-release.apk`
 };
 
 function DownloadPage() {
@@ -256,7 +258,7 @@ function DownloadPage() {
                     Or download the APK directly:
                   </p>
                   <a
-                    href="https://github.com/OpenSecretCloud/Maple/releases/download/v1.99.0-android-beta1/app-universal-release.apk"
+                    href={downloadUrls.androidApk}
                     className="py-2 px-4 rounded-lg text-center font-medium transition-all duration-300 block
                     dark:bg-white/90 dark:text-black dark:hover:bg-[hsl(var(--purple))]/80 dark:hover:text-[hsl(var(--foreground))] dark:active:bg-white/80
                     bg-background text-foreground hover:bg-[hsl(var(--purple))] hover:text-[hsl(var(--foreground))] active:bg-background/80
