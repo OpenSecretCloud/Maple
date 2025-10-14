@@ -13,6 +13,7 @@ import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { PRICING_PLANS } from "@/config/pricingConfig";
 import { VerificationModal } from "@/components/VerificationModal";
+import { TeamSeatDialog } from "@/components/TeamSeatDialog";
 import { isIOS, isAndroid, isMobile } from "@/utils/platform";
 import packageJson from "../../package.json";
 
@@ -181,6 +182,8 @@ function PricingPage() {
   const [checkoutError, setCheckoutError] = useState<string>("");
   const [loadingProductId, setLoadingProductId] = useState<string | null>(null);
   const [useBitcoin, setUseBitcoin] = useState(false);
+  const [showTeamSeatDialog, setShowTeamSeatDialog] = useState(false);
+  const [pendingTeamProductId, setPendingTeamProductId] = useState<string | null>(null);
   const navigate = useNavigate();
   const os = useOpenSecret();
   const { setBillingStatus } = useLocalState();
@@ -338,7 +341,7 @@ function PricingPage() {
   };
 
   const newHandleSubscribe = useCallback(
-    async (productId: string) => {
+    async (productId: string, quantity?: number) => {
       if (!isLoggedIn) {
         navigate({ to: "/signup" });
         return;
@@ -364,14 +367,16 @@ function PricingPage() {
             await billingService.createZapriteCheckoutSession(
               email,
               productId,
-              `https://trymaple.ai/payment-success?source=zaprite`
+              `https://trymaple.ai/payment-success?source=zaprite`,
+              quantity
             );
           } else {
             await billingService.createCheckoutSession(
               email,
               productId,
               `https://trymaple.ai/payment-success?source=stripe`,
-              `https://trymaple.ai/payment-canceled?source=stripe`
+              `https://trymaple.ai/payment-canceled?source=stripe`,
+              quantity
             );
           }
         } else {
@@ -380,14 +385,16 @@ function PricingPage() {
             await billingService.createZapriteCheckoutSession(
               email,
               productId,
-              `${window.location.origin}/pricing?success=true`
+              `${window.location.origin}/pricing?success=true`,
+              quantity
             );
           } else {
             await billingService.createCheckoutSession(
               email,
               productId,
               `${window.location.origin}/pricing?success=true`,
-              `${window.location.origin}/pricing?canceled=true`
+              `${window.location.origin}/pricing?canceled=true`,
+              quantity
             );
           }
         }
@@ -398,13 +405,21 @@ function PricingPage() {
         setLoadingProductId(null);
       }
     },
-    [isLoggedIn, navigate, os.auth.user?.user.email, os.auth.user?.user.email_verified, useBitcoin]
+    [
+      isLoggedIn,
+      navigate,
+      os.auth.user?.user.email,
+      os.auth.user?.user.email_verified,
+      useBitcoin,
+      isMobilePlatform
+    ]
   );
 
   const handleButtonClick = useCallback(
     (product: Product) => {
       const targetPlanName = product.name.toLowerCase();
       const isFreeplan = targetPlanName.includes("free");
+      const isTeamPlan = targetPlanName.includes("team");
 
       // Disable clicks for iOS paid plans if server says not available
       // Android can support paid plans
@@ -446,6 +461,12 @@ function PricingPage() {
 
       // If user is on free plan and clicking a paid plan, use checkout URL
       if (isCurrentlyOnFreePlan && !isTargetFreePlan) {
+        // For team plans, show seat selection dialog first
+        if (isTeamPlan) {
+          setPendingTeamProductId(product.id);
+          setShowTeamSeatDialog(true);
+          return;
+        }
         newHandleSubscribe(product.id);
         return;
       }
@@ -480,6 +501,12 @@ function PricingPage() {
 
       // If no portal URL exists and it's not a free plan user upgrading,
       // create checkout session
+      // For team plans, show seat selection dialog first
+      if (isTeamPlan) {
+        setPendingTeamProductId(product.id);
+        setShowTeamSeatDialog(true);
+        return;
+      }
       newHandleSubscribe(product.id);
     },
     [
@@ -491,6 +518,16 @@ function PricingPage() {
       isIOSPlatform,
       isMobilePlatform
     ]
+  );
+
+  const handleTeamSeatConfirm = useCallback(
+    (seats: number) => {
+      if (pendingTeamProductId) {
+        newHandleSubscribe(pendingTeamProductId, seats);
+        setPendingTeamProductId(null);
+      }
+    },
+    [pendingTeamProductId, newHandleSubscribe]
   );
 
   useEffect(() => {
@@ -872,6 +909,11 @@ function PricingPage() {
 
         <PricingFAQ />
       </FullPageMain>
+      <TeamSeatDialog
+        open={showTeamSeatDialog}
+        onOpenChange={setShowTeamSeatDialog}
+        onConfirm={handleTeamSeatConfirm}
+      />
       <VerificationModal />
     </>
   );
