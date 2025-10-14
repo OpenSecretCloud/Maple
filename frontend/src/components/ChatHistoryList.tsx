@@ -8,6 +8,7 @@ import {
   DropdownMenuTrigger
 } from "@/components/ui/dropdown-menu";
 import { RenameChatDialog } from "@/components/RenameChatDialog";
+import { DeleteChatDialog } from "@/components/DeleteChatDialog";
 import { useOpenAI } from "@/ai/useOpenAi";
 import { useOpenSecret } from "@opensecret/react";
 import { useRouter } from "@tanstack/react-router";
@@ -47,6 +48,7 @@ export function ChatHistoryList({
   const queryClient = useQueryClient();
   const localState = useContext(LocalStateContext);
   const [isRenameDialogOpen, setIsRenameDialogOpen] = useState(false);
+  const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
   const [selectedChat, setSelectedChat] = useState<{ id: string; title: string } | null>(null);
   const [isArchivedExpanded, setIsArchivedExpanded] = useState(false);
 
@@ -330,6 +332,17 @@ export function ChatHistoryList({
     setIsRenameDialogOpen(true);
   }, []);
 
+  const handleOpenDeleteDialog = useCallback((conv: Conversation) => {
+    const title = conv.metadata?.title || "Untitled Chat";
+    setSelectedChat({ id: conv.id, title });
+    setIsDeleteDialogOpen(true);
+  }, []);
+
+  const handleOpenDeleteDialogArchived = useCallback((chat: ArchivedChat) => {
+    setSelectedChat({ id: chat.id, title: chat.title });
+    setIsDeleteDialogOpen(true);
+  }, []);
+
   // Handle conversation renaming via API
   const handleRenameConversation = useCallback(
     async (conversationId: string, newTitle: string) => {
@@ -467,7 +480,7 @@ export function ChatHistoryList({
                   <Pencil className="mr-2 h-4 w-4" />
                   <span>Rename Chat</span>
                 </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => handleDeleteConversation(conv.id)}>
+                <DropdownMenuItem onClick={() => handleOpenDeleteDialog(conv)}>
                   <Trash className="mr-2 h-4 w-4" />
                   <span>Delete Chat</span>
                 </DropdownMenuItem>
@@ -544,7 +557,7 @@ export function ChatHistoryList({
                           <Pencil className="mr-2 h-4 w-4" />
                           <span>Rename Chat</span>
                         </DropdownMenuItem>
-                        <DropdownMenuItem onClick={() => handleDeleteConversation(chat.id)}>
+                        <DropdownMenuItem onClick={() => handleOpenDeleteDialogArchived(chat)}>
                           <Trash className="mr-2 h-4 w-4" />
                           <span>Delete Chat</span>
                         </DropdownMenuItem>
@@ -560,13 +573,21 @@ export function ChatHistoryList({
       )}
 
       {selectedChat && (
-        <RenameChatDialog
-          open={isRenameDialogOpen}
-          onOpenChange={setIsRenameDialogOpen}
-          chatId={selectedChat.id}
-          currentTitle={selectedChat.title}
-          onRename={handleRenameConversation}
-        />
+        <>
+          <RenameChatDialog
+            open={isRenameDialogOpen}
+            onOpenChange={setIsRenameDialogOpen}
+            chatId={selectedChat.id}
+            currentTitle={selectedChat.title}
+            onRename={handleRenameConversation}
+          />
+          <DeleteChatDialog
+            open={isDeleteDialogOpen}
+            onOpenChange={setIsDeleteDialogOpen}
+            chatTitle={selectedChat.title}
+            onConfirm={() => handleDeleteConversation(selectedChat.id)}
+          />
+        </>
       )}
     </>
   );
