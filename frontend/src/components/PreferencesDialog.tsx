@@ -67,18 +67,27 @@ export function PreferencesDialog({ open, onOpenChange }: PreferencesDialogProps
     setIsSaving(true);
     try {
       if (instructionId) {
-        // Update existing instruction
-        await os.updateInstruction(instructionId, {
-          prompt: prompt
-        });
+        // If prompt is empty, delete the instruction
+        if (prompt.trim() === "") {
+          await os.deleteInstruction(instructionId);
+          setInstructionId(null);
+          setPrompt("");
+        } else {
+          // Update existing instruction
+          await os.updateInstruction(instructionId, {
+            prompt: prompt
+          });
+        }
       } else {
-        // Create new instruction
-        const newInstruction = await os.createInstruction({
-          name: "User Preferences",
-          prompt: prompt,
-          is_default: true
-        });
-        setInstructionId(newInstruction.id);
+        // Only create new instruction if prompt is not empty
+        if (prompt.trim() !== "") {
+          const newInstruction = await os.createInstruction({
+            name: "User Preferences",
+            prompt: prompt,
+            is_default: true
+          });
+          setInstructionId(newInstruction.id);
+        }
       }
       setSuccess(true);
     } catch (error) {
