@@ -50,6 +50,7 @@ import { useLocalState } from "@/state/useLocalState";
 import { useOpenSecret } from "@opensecret/react";
 import { UpgradePromptDialog } from "@/components/UpgradePromptDialog";
 import { DocumentPlatformDialog } from "@/components/DocumentPlatformDialog";
+import { ContextLimitDialog } from "@/components/ContextLimitDialog";
 import { RecordingOverlay } from "@/components/RecordingOverlay";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { AlertCircle } from "lucide-react";
@@ -351,6 +352,7 @@ export function UnifiedChat() {
     "image" | "document" | "voice" | "usage" | "tokens"
   >("image");
   const [documentPlatformDialogOpen, setDocumentPlatformDialogOpen] = useState(false);
+  const [contextLimitDialogOpen, setContextLimitDialogOpen] = useState(false);
 
   // Audio recording states
   const [isRecording, setIsRecording] = useState(false);
@@ -1467,7 +1469,6 @@ export function UnifiedChat() {
       // Store the original input and attachments in case we need to restore them
       const originalInput = trimmedInput;
       const originalImages = [...draftImages];
-      const originalImageUrls = new Map(imageUrls);
       const originalDocumentText = documentText;
       const originalDocumentName = documentName;
 
@@ -1525,14 +1526,52 @@ export function UnifiedChat() {
         console.error("Failed to send message:", error);
 
         // Handle usage limit errors with upsell dialogs
-        // The SDK throws errors with the message "Request failed with status 403: {json}"
+        // The SDK throws errors with the message "Request failed with status 403: {json}" or "Request failed with status 413: {json}"
         // We need to parse this to extract the actual error details
         let errorMessage = error instanceof Error ? error.message : "Something went wrong";
 
         // Also check the cause property if it exists
         const causeMessage = (error as Error & { cause?: { message?: string } })?.cause?.message;
-        if (causeMessage && causeMessage.includes("Request failed with status 403:")) {
+        if (causeMessage && causeMessage.includes("Request failed with status")) {
           errorMessage = causeMessage;
+        }
+
+        // Check for 413 error (Message exceeds context limit)
+        let status413Error: { status: number; message: string } | null = null;
+        if (errorMessage.includes("Request failed with status 413:")) {
+          try {
+            // Extract the JSON part from the error message
+            const jsonMatch = errorMessage.match(/Request failed with status 413:\s*({.*})/);
+            if (jsonMatch && jsonMatch[1]) {
+              status413Error = JSON.parse(jsonMatch[1]);
+            }
+          } catch (parseError) {
+            console.error("Failed to parse 413 error:", parseError);
+          }
+        }
+
+        if (status413Error && status413Error.message === "Message exceeds context limit") {
+          // Remove the user message from history and restore input
+          setMessages((prev) => prev.filter((msg) => msg.id !== localMessageId));
+
+          // Restore the original input and attachments
+          if (!overrideInput) {
+            setInput(originalInput);
+            setDraftImages(originalImages);
+            // Re-create object URLs since originals were revoked by clearAllAttachments()
+            const restoredUrlMap = new Map<File, string>();
+            for (const file of originalImages) {
+              restoredUrlMap.set(file, URL.createObjectURL(file));
+            }
+            setImageUrls(restoredUrlMap);
+            setDocumentText(originalDocumentText);
+            setDocumentName(originalDocumentName);
+          }
+
+          // Show the context limit dialog
+          setContextLimitDialogOpen(true);
+          setError("Your message exceeds the context limit for this model.");
+          return; // Exit early, don't continue to other error handling
         }
 
         let status403Error: { status: number; message: string } | null = null;
@@ -1558,7 +1597,12 @@ export function UnifiedChat() {
           if (!overrideInput) {
             setInput(originalInput);
             setDraftImages(originalImages);
-            setImageUrls(originalImageUrls);
+            // Re-create object URLs since originals were revoked by clearAllAttachments()
+            const restoredUrlMap = new Map<File, string>();
+            for (const file of originalImages) {
+              restoredUrlMap.set(file, URL.createObjectURL(file));
+            }
+            setImageUrls(restoredUrlMap);
             setDocumentText(originalDocumentText);
             setDocumentName(originalDocumentName);
           }
@@ -1657,7 +1701,12 @@ export function UnifiedChat() {
                   if (!overrideInput) {
                     setInput(originalInput);
                     setDraftImages(originalImages);
-                    setImageUrls(originalImageUrls);
+                    // Re-create object URLs since originals were revoked by clearAllAttachments()
+                    const restoredUrlMap = new Map<File, string>();
+                    for (const file of originalImages) {
+                      restoredUrlMap.set(file, URL.createObjectURL(file));
+                    }
+                    setImageUrls(restoredUrlMap);
                     setDocumentText(originalDocumentText);
                     setDocumentName(originalDocumentName);
                   }
@@ -1678,7 +1727,12 @@ export function UnifiedChat() {
                 if (!overrideInput) {
                   setInput(originalInput);
                   setDraftImages(originalImages);
-                  setImageUrls(originalImageUrls);
+                  // Re-create object URLs since originals were revoked by clearAllAttachments()
+                  const restoredUrlMap = new Map<File, string>();
+                  for (const file of originalImages) {
+                    restoredUrlMap.set(file, URL.createObjectURL(file));
+                  }
+                  setImageUrls(restoredUrlMap);
                   setDocumentText(originalDocumentText);
                   setDocumentName(originalDocumentName);
                 }
@@ -2233,6 +2287,14 @@ export function UnifiedChat() {
           open={documentPlatformDialogOpen}
           onOpenChange={setDocumentPlatformDialogOpen}
           hasProAccess={canUseDocuments || false}
+        />
+
+        {/* Context limit dialog for 413 errors */}
+        <ContextLimitDialog
+          open={contextLimitDialogOpen}
+          onOpenChange={setContextLimitDialogOpen}
+          currentModel={localState.model}
+          hasDocument={!!documentName}
         />
 
         {/* Hidden file inputs - must be outside conditional rendering to work in both views */}
