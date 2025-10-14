@@ -123,7 +123,11 @@ export function PreferencesDialog({ open, onOpenChange }: PreferencesDialogProps
             <Textarea
               id="prompt"
               value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
+              onChange={(e) => {
+                setPrompt(e.target.value);
+                setSuccess(false);
+                setError(null);
+              }}
               placeholder="Enter your custom system prompt here..."
               className="min-h-[200px] resize-y"
               disabled={isLoading}
