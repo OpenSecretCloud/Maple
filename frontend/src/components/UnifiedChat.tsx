@@ -1469,7 +1469,6 @@ export function UnifiedChat() {
       // Store the original input and attachments in case we need to restore them
       const originalInput = trimmedInput;
       const originalImages = [...draftImages];
-      const originalImageUrls = new Map(imageUrls);
       const originalDocumentText = documentText;
       const originalDocumentName = documentName;
 
@@ -1559,7 +1558,12 @@ export function UnifiedChat() {
           if (!overrideInput) {
             setInput(originalInput);
             setDraftImages(originalImages);
-            setImageUrls(originalImageUrls);
+            // Re-create object URLs since originals were revoked by clearAllAttachments()
+            const restoredUrlMap = new Map<File, string>();
+            for (const file of originalImages) {
+              restoredUrlMap.set(file, URL.createObjectURL(file));
+            }
+            setImageUrls(restoredUrlMap);
             setDocumentText(originalDocumentText);
             setDocumentName(originalDocumentName);
           }
@@ -1593,7 +1597,12 @@ export function UnifiedChat() {
           if (!overrideInput) {
             setInput(originalInput);
             setDraftImages(originalImages);
-            setImageUrls(originalImageUrls);
+            // Re-create object URLs since originals were revoked by clearAllAttachments()
+            const restoredUrlMap = new Map<File, string>();
+            for (const file of originalImages) {
+              restoredUrlMap.set(file, URL.createObjectURL(file));
+            }
+            setImageUrls(restoredUrlMap);
             setDocumentText(originalDocumentText);
             setDocumentName(originalDocumentName);
           }
@@ -1692,7 +1701,12 @@ export function UnifiedChat() {
                   if (!overrideInput) {
                     setInput(originalInput);
                     setDraftImages(originalImages);
-                    setImageUrls(originalImageUrls);
+                    // Re-create object URLs since originals were revoked by clearAllAttachments()
+                    const restoredUrlMap = new Map<File, string>();
+                    for (const file of originalImages) {
+                      restoredUrlMap.set(file, URL.createObjectURL(file));
+                    }
+                    setImageUrls(restoredUrlMap);
                     setDocumentText(originalDocumentText);
                     setDocumentName(originalDocumentName);
                   }
@@ -1713,7 +1727,12 @@ export function UnifiedChat() {
                 if (!overrideInput) {
                   setInput(originalInput);
                   setDraftImages(originalImages);
-                  setImageUrls(originalImageUrls);
+                  // Re-create object URLs since originals were revoked by clearAllAttachments()
+                  const restoredUrlMap = new Map<File, string>();
+                  for (const file of originalImages) {
+                    restoredUrlMap.set(file, URL.createObjectURL(file));
+                  }
+                  setImageUrls(restoredUrlMap);
                   setDocumentText(originalDocumentText);
                   setDocumentName(originalDocumentName);
                 }
