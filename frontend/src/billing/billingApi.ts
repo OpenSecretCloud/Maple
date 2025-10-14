@@ -130,13 +130,15 @@ export async function createCheckoutSession(
   email: string,
   productId: string,
   successUrl: string,
-  cancelUrl: string
+  cancelUrl: string,
+  quantity?: number
 ): Promise<void> {
   const requestBody = {
     email,
     product_id: productId,
     success_url: successUrl,
-    cancel_url: cancelUrl
+    cancel_url: cancelUrl,
+    ...(quantity !== undefined && { quantity })
   };
   const response = await fetch(
     `${import.meta.env.VITE_MAPLE_BILLING_API_URL}/v1/maple/subscription/checkout`,
@@ -195,12 +197,14 @@ export async function createZapriteCheckoutSession(
   thirdPartyToken: string,
   email: string,
   productId: string,
-  successUrl: string
+  successUrl: string,
+  quantity?: number
 ): Promise<void> {
   const requestBody = {
     email,
     product_id: productId,
-    success_url: successUrl
+    success_url: successUrl,
+    ...(quantity !== undefined && { quantity })
   };
   const response = await fetch(
     `${import.meta.env.VITE_MAPLE_BILLING_API_URL}/v1/maple/subscription/zaprite`,

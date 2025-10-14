@@ -106,20 +106,22 @@ class BillingService {
     email: string,
     productId: string,
     successUrl: string,
-    cancelUrl: string
+    cancelUrl: string,
+    quantity?: number
   ): Promise<void> {
     return this.executeWithToken((token) =>
-      createCheckoutSession(token, email, productId, successUrl, cancelUrl)
+      createCheckoutSession(token, email, productId, successUrl, cancelUrl, quantity)
     );
   }
 
   async createZapriteCheckoutSession(
     email: string,
     productId: string,
-    successUrl: string
+    successUrl: string,
+    quantity?: number
   ): Promise<void> {
     return this.executeWithToken((token) =>
-      createZapriteCheckoutSession(token, email, productId, successUrl)
+      createZapriteCheckoutSession(token, email, productId, successUrl, quantity)
     );
   }
 
