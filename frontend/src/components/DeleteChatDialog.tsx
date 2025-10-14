@@ -22,7 +22,8 @@ export function DeleteChatDialog({
   onConfirm,
   chatTitle
 }: DeleteChatDialogProps) {
-  const handleConfirm = () => {
+  const handleConfirm = (e: React.MouseEvent) => {
+    e.preventDefault();
     onConfirm();
     onOpenChange(false);
   };
