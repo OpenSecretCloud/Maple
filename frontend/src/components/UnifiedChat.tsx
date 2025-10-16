@@ -457,8 +457,12 @@ const MessageList = memo(
           // Regular message - render with role and content
           if (itemType === "message") {
             const message = item as unknown as ExtendedMessage;
-            // Skip if no content
-            if (!message.content || message.content.length === 0) return null;
+            // Skip if no content, UNLESS it's an assistant message with in_progress status
+            // (we want to show the three-dot loading indicator for those)
+            const isAssistantLoading =
+              message.role === "assistant" && message.status === "in_progress";
+            if ((!message.content || message.content.length === 0) && !isAssistantLoading)
+              return null;
 
             return (
               <div
