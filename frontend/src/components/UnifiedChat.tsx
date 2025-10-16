@@ -255,7 +255,11 @@ function ToolCallRenderer({
       }
 
       // Generic tool call rendering - we have output, so show completed state
-      const statusText = query ? `Searched for "${query}"` : "Tool completed";
+      const statusText = isWebSearch
+        ? query
+          ? `Searched for "${query}"`
+          : "Web search completed"
+        : `Tool "${functionCall.name}" completed`;
 
       return (
         <div className="text-sm bg-muted/20 border border-muted/40 rounded-lg px-4 py-3 mb-2">
@@ -1264,6 +1268,16 @@ export function UnifiedChat() {
     }
   }, [error]);
 
+  // Cleanup tap timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (tapTimeoutRef.current !== null) {
+        window.clearTimeout(tapTimeoutRef.current);
+        tapTimeoutRef.current = null;
+      }
+    };
+  }, []);
+
   // Toggle sidebar
   const toggleSidebar = useCallback(() => setIsSidebarOpen((prev) => !prev), []);
 
@@ -1746,11 +1760,13 @@ export function UnifiedChat() {
             status: "completed"
           } as unknown as Message;
 
-          setMessages((prev) => mergeMessagesById(prev, [toolOutputItem]));
-
-          // Also update the corresponding tool call status to completed
+          // Add tool output and update corresponding tool call status in one setState
           setMessages((prev) => {
-            const toolCallToUpdate = prev.find(
+            // First add the tool output item
+            const withOutput = mergeMessagesById(prev, [toolOutputItem]);
+
+            // Then update the corresponding tool call status to completed
+            const toolCallToUpdate = withOutput.find(
               (m) =>
                 m.type === "function_call" &&
                 (m as unknown as ResponseFunctionToolCall).call_id === toolOutputEvent.tool_call_id
@@ -1760,9 +1776,9 @@ export function UnifiedChat() {
                 ...toolCallToUpdate,
                 status: "completed"
               } as unknown as Message;
-              return mergeMessagesById(prev, [updated]);
+              return mergeMessagesById(withOutput, [updated]);
             }
-            return prev;
+            return withOutput;
           });
         }
       } else if (
@@ -2224,7 +2240,8 @@ export function UnifiedChat() {
       draftImages,
       documentText,
       clearAllAttachments,
-      processStreamingResponse
+      processStreamingResponse,
+      isWebSearchEnabled
     ]
   );
 
