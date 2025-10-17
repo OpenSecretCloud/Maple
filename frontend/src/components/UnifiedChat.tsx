@@ -20,7 +20,7 @@
  *   - Add "archived chat" banner
  *   - Keep for backwards compatibility with chat history
  */
-import { useState, useRef, useEffect, useCallback, memo } from "react";
+import { useState, useRef, useEffect, useCallback, memo, useMemo } from "react";
 import {
   Send,
   Bot,
@@ -361,6 +361,23 @@ const MessageList = memo(
     firstMessageRef?: React.RefObject<HTMLDivElement>;
     isLoadingOlderMessages?: boolean;
   }) => {
+    // Build Maps for O(1) lookup of tool calls and outputs by call_id
+    // This handles out-of-order tool calls/outputs (e.g., parallel tool execution)
+    const { callMap, outputMap } = useMemo(() => {
+      const calls = new Map<string, Message>();
+      const outputs = new Map<string, Message>();
+
+      messages.forEach((msg) => {
+        if (msg.type === "function_call") {
+          calls.set((msg as unknown as ResponseFunctionToolCall).call_id, msg);
+        } else if (msg.type === "function_call_output") {
+          outputs.set((msg as unknown as ResponseFunctionToolCallOutputItem).call_id, msg);
+        }
+      });
+
+      return { callMap: calls, outputMap: outputs };
+    }, [messages]);
+
     return (
       <>
         {/* Loading indicator for older messages */}
@@ -381,57 +398,34 @@ const MessageList = memo(
           // Tool calls and outputs - render as standalone items with pairing
           if (itemType === "function_call") {
             const toolCall = item as unknown as ResponseFunctionToolCall;
-            // Look for matching output in the NEXT item
-            const nextItem = index < messages.length - 1 ? messages[index + 1] : null;
-            const hasMatchingOutput =
-              nextItem &&
-              nextItem.type === "function_call_output" &&
-              (nextItem as unknown as ResponseFunctionToolCallOutputItem).call_id ===
-                toolCall.call_id;
+            // Look up matching output by call_id (handles out-of-order arrival)
+            const output = outputMap.get(toolCall.call_id) as
+              | ResponseFunctionToolCallOutputItem
+              | undefined;
 
-            if (hasMatchingOutput) {
-              const output = nextItem as unknown as ResponseFunctionToolCallOutputItem;
-              return (
-                <div
-                  key={item.id}
-                  ref={index === 0 ? firstMessageRef : undefined}
-                  className="py-2 px-4"
-                >
-                  <div className="max-w-4xl mx-auto">
-                    <ToolCallRenderer tool={toolCall} toolOutput={output} />
-                  </div>
+            return (
+              <div
+                key={item.id}
+                ref={index === 0 ? firstMessageRef : undefined}
+                className="py-2 px-4"
+              >
+                <div className="max-w-4xl mx-auto">
+                  <ToolCallRenderer tool={toolCall} toolOutput={output} />
                 </div>
-              );
-            } else {
-              // No output yet, render just the call
-              return (
-                <div
-                  key={item.id}
-                  ref={index === 0 ? firstMessageRef : undefined}
-                  className="py-2 px-4"
-                >
-                  <div className="max-w-4xl mx-auto">
-                    <ToolCallRenderer tool={toolCall} />
-                  </div>
-                </div>
-              );
-            }
+              </div>
+            );
           }
 
           if (itemType === "function_call_output") {
             const output = item as unknown as ResponseFunctionToolCallOutputItem;
-            // Check if previous item was the matching call
-            const prevItem = index > 0 ? messages[index - 1] : null;
-            const hasPreviousCall =
-              prevItem &&
-              prevItem.type === "function_call" &&
-              (prevItem as unknown as ResponseFunctionToolCall).call_id === output.call_id;
+            // Check if matching call exists (handles out-of-order arrival)
+            const matchingCall = callMap.get(output.call_id);
 
-            if (hasPreviousCall) {
+            if (matchingCall) {
               // Already rendered with the call, skip
               return null;
             } else {
-              // Orphan output, render standalone
+              // Orphan output (call hasn't arrived yet), render standalone
               return (
                 <div
                   key={item.id}
