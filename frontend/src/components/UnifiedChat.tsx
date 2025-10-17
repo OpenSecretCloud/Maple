@@ -125,8 +125,15 @@ function mergeMessagesById(existingMessages: Message[], newMessages: Message[]):
 // Helper function to convert conversation items - just returns them as-is (flat, no grouping)
 // The API already returns items in the correct format (ConversationItem union)
 function convertItemsToMessages(items: Array<unknown>): Message[] {
-  // Items from API are already ConversationItems, just cast them
-  return items as Message[];
+  return items.filter((item): item is Message => {
+    const isValid = item != null && typeof item === "object" && "id" in item && "type" in item;
+
+    if (!isValid && item != null) {
+      console.warn("Invalid conversation item filtered from API response:", item);
+    }
+
+    return isValid;
+  });
 }
 
 // Custom hook for copy to clipboard functionality
