@@ -20,7 +20,7 @@
  *   - Add "archived chat" banner
  *   - Keep for backwards compatibility with chat history
  */
-import { useState, useRef, useEffect, useCallback, memo } from "react";
+import { useState, useRef, useEffect, useCallback, memo, useMemo } from "react";
 import {
   Send,
   Bot,
@@ -32,7 +32,10 @@ import {
   FileText,
   X,
   Mic,
-  SquarePen
+  SquarePen,
+  Search,
+  Loader2,
+  Globe
 } from "lucide-react";
 import RecordRTC from "recordrtc";
 import { useQueryClient } from "@tanstack/react-query";
@@ -71,6 +74,12 @@ import type {
   ComputerScreenshotContent,
   InputFileContent
 } from "openai/resources/conversations/conversations.js";
+import type {
+  ResponseFunctionWebSearch,
+  ResponseFunctionToolCall,
+  ResponseFunctionToolCallOutputItem
+} from "openai/resources/responses/responses.js";
+import type { Message as OpenAIMessage } from "openai/resources/conversations/conversations.js";
 
 type ConversationContent =
   | InputTextContent
@@ -80,16 +89,23 @@ type ConversationContent =
   | RefusalContent
   | InputImageContent
   | ComputerScreenshotContent
-  | InputFileContent;
+  | InputFileContent
+  | ResponseFunctionWebSearch
+  | ResponseFunctionToolCall
+  | ResponseFunctionToolCallOutputItem;
 
-// Types
-interface Message {
-  id: string;
-  role: "user" | "assistant";
-  content: ConversationContent[];
-  timestamp: number;
-  status?: "completed" | "streaming" | "error" | "in_progress" | "incomplete";
-}
+// Extended message type with streaming status support
+type ExtendedMessage = OpenAIMessage & {
+  status?: "completed" | "in_progress" | "incomplete" | "streaming" | "error";
+};
+
+// Union type for all possible conversation items (messages, tool calls, tool outputs, web search)
+// This combines OpenAI's native types with response streaming types
+type Message =
+  | ExtendedMessage
+  | (ResponseFunctionWebSearch & { id: string })
+  | (ResponseFunctionToolCall & { id: string })
+  | (ResponseFunctionToolCallOutputItem & { id: string });
 
 // Helper function to merge messages while ensuring uniqueness by ID
 // This prevents duplicate key warnings in React by deduplicating messages
@@ -104,6 +120,20 @@ function mergeMessagesById(existingMessages: Message[], newMessages: Message[]):
 
   // Return as array, maintaining insertion order (Map preserves insertion order)
   return Array.from(messagesMap.values());
+}
+
+// Helper function to convert conversation items - just returns them as-is (flat, no grouping)
+// The API already returns items in the correct format (ConversationItem union)
+function convertItemsToMessages(items: Array<unknown>): Message[] {
+  return items.filter((item): item is Message => {
+    const isValid = item != null && typeof item === "object" && "id" in item && "type" in item;
+
+    if (!isValid && item != null) {
+      console.warn("Invalid conversation item filtered from API response:", item);
+    }
+
+    return isValid;
+  });
 }
 
 // Custom hook for copy to clipboard functionality
@@ -150,20 +180,170 @@ interface Conversation {
   };
 }
 
-// Will be needed for future features with conversation items
-interface ConversationItem {
-  id: string;
-  type: "message" | "web_search_call";
-  object?: string;
-  role?: "user" | "assistant" | "system";
-  status?: "completed" | "in_progress" | "incomplete";
-  content?: Array<{
-    type: "input_text" | "input_image" | "output_text";
-    text?: string;
-    image_url?: string;
-    detail?: "high" | "low" | "auto";
-  }>;
-  created_at?: number;
+// Component to render tool calls
+function ToolCallRenderer({
+  tool,
+  toolOutput
+}: {
+  tool: ConversationContent;
+  toolOutput?: ResponseFunctionToolCallOutputItem;
+}) {
+  const [isExpanded, setIsExpanded] = useState(false);
+
+  if (tool.type === "web_search_call") {
+    const webSearch = tool as ResponseFunctionWebSearch;
+    const statusText =
+      webSearch.status === "in_progress"
+        ? "Searching the web..."
+        : webSearch.status === "searching"
+          ? "Searching..."
+          : webSearch.status === "completed"
+            ? "Searched the web"
+            : "Search failed";
+
+    const isActive = webSearch.status === "in_progress" || webSearch.status === "searching";
+
+    return (
+      <div className="flex items-center gap-2 text-sm text-muted-foreground bg-muted/30 px-3 py-2 rounded-md mb-2">
+        {isActive ? (
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+        ) : (
+          <Search className="h-3.5 w-3.5" />
+        )}
+        <span>{statusText}</span>
+      </div>
+    );
+  }
+
+  if (tool.type === "function_call") {
+    const functionCall = tool as ResponseFunctionToolCall;
+
+    // Try to parse arguments to get query
+    let query = "";
+    try {
+      const args = JSON.parse(functionCall.arguments);
+      query = args.query || "";
+    } catch {
+      // Ignore parse errors
+    }
+
+    // If we have a toolOutput, render them grouped together
+    if (toolOutput) {
+      const output = toolOutput.output || "";
+      const preview = output.length > 150 ? output.substring(0, 150) + "..." : output;
+      const hasMore = output.length > 150;
+      const isWebSearch = functionCall.name === "web_search";
+
+      // Web search specific rendering
+      if (isWebSearch) {
+        return (
+          <div className="text-sm bg-muted/20 border border-muted/40 rounded-lg px-4 py-3 mb-2">
+            {/* Web search header with icon and query */}
+            <div className="flex items-center gap-2 mb-2">
+              <Search className="h-4 w-4 text-primary flex-shrink-0" />
+              <span className="font-medium text-foreground">
+                {query ? `Searched: "${query}"` : "Web Search"}
+              </span>
+            </div>
+            {/* Search result - indented to align with text */}
+            <div className="pl-6 text-foreground/80 whitespace-pre-wrap break-words">
+              {isExpanded ? output : preview}
+              {hasMore && (
+                <button
+                  onClick={() => setIsExpanded(!isExpanded)}
+                  className="ml-2 text-xs text-primary hover:text-primary/80 font-medium"
+                >
+                  {isExpanded ? "Show less" : "Show more"}
+                </button>
+              )}
+            </div>
+          </div>
+        );
+      }
+
+      // Generic tool call rendering - we have output, so show completed state
+      const statusText = isWebSearch
+        ? query
+          ? `Searched for "${query}"`
+          : "Web search completed"
+        : `Tool "${functionCall.name}" completed`;
+
+      return (
+        <div className="text-sm bg-muted/20 border border-muted/40 rounded-lg px-4 py-3 mb-2">
+          {/* Tool call header */}
+          <div className="flex items-center gap-2 mb-2">
+            <Check className="h-4 w-4 text-green-600 dark:text-green-400 flex-shrink-0" />
+            <span className="font-medium text-foreground">{statusText}</span>
+          </div>
+          {/* Tool output - indented */}
+          <div className="pl-6 text-foreground/80 whitespace-pre-wrap break-words">
+            {isExpanded ? output : preview}
+            {hasMore && (
+              <button
+                onClick={() => setIsExpanded(!isExpanded)}
+                className="ml-2 text-xs text-primary hover:text-primary/80 font-medium"
+              >
+                {isExpanded ? "Show less" : "Show more"}
+              </button>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    // No output yet - always show as "searching" since we don't have results
+    const isWebSearch = functionCall.name === "web_search";
+
+    if (isWebSearch) {
+      return (
+        <div className="flex items-center gap-2 text-sm bg-muted/30 px-3 py-2 rounded-md mb-2">
+          <Loader2 className="h-4 w-4 text-primary animate-spin flex-shrink-0" />
+          <span className="text-foreground">
+            {query ? `Searching for "${query}"...` : "Searching the web..."}
+          </span>
+        </div>
+      );
+    }
+
+    // Generic tool call without output - show as in progress
+    return (
+      <div className="flex items-center gap-2 text-sm text-muted-foreground bg-muted/30 px-3 py-2 rounded-md mb-2">
+        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+        <span>{query ? `Searching for "${query}"...` : "Running tool..."}</span>
+      </div>
+    );
+  }
+
+  if (tool.type === "function_call_output") {
+    const toolOutput = tool as ResponseFunctionToolCallOutputItem;
+    const output = toolOutput.output || "";
+
+    // Show preview (first 150 chars to match grouped rendering)
+    const preview = output.length > 150 ? output.substring(0, 150) + "..." : output;
+    const hasMore = output.length > 150;
+
+    return (
+      <div className="text-sm bg-muted/20 border border-muted/40 rounded-lg px-4 py-3 mb-2">
+        <div className="flex items-center gap-2 mb-2">
+          <Check className="h-4 w-4 text-green-600 dark:text-green-400 flex-shrink-0" />
+          <span className="font-medium text-foreground">Tool Result</span>
+        </div>
+        <div className="pl-6 text-foreground/80 whitespace-pre-wrap break-words">
+          {isExpanded ? output : preview}
+          {hasMore && (
+            <button
+              onClick={() => setIsExpanded(!isExpanded)}
+              className="ml-2 text-xs text-primary hover:text-primary/80 font-medium"
+            >
+              {isExpanded ? "Show less" : "Show more"}
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  return null;
 }
 
 // Memoized message list component to prevent re-renders on input changes
@@ -181,6 +361,23 @@ const MessageList = memo(
     firstMessageRef?: React.RefObject<HTMLDivElement>;
     isLoadingOlderMessages?: boolean;
   }) => {
+    // Build Maps for O(1) lookup of tool calls and outputs by call_id
+    // This handles out-of-order tool calls/outputs (e.g., parallel tool execution)
+    const { callMap, outputMap } = useMemo(() => {
+      const calls = new Map<string, Message>();
+      const outputs = new Map<string, Message>();
+
+      messages.forEach((msg) => {
+        if (msg.type === "function_call") {
+          calls.set((msg as unknown as ResponseFunctionToolCall).call_id, msg);
+        } else if (msg.type === "function_call_output") {
+          outputs.set((msg as unknown as ResponseFunctionToolCallOutputItem).call_id, msg);
+        }
+      });
+
+      return { callMap: calls, outputMap: outputs };
+    }, [messages]);
+
     return (
       <>
         {/* Loading indicator for older messages */}
@@ -194,95 +391,195 @@ const MessageList = memo(
           </div>
         )}
 
-        {messages.map((message, index) => (
-          <div
-            key={message.id}
-            ref={index === 0 ? firstMessageRef : undefined}
-            className={`group py-6 px-4 ${message.role === "user" ? "bg-muted/30" : ""}`}
-          >
-            <div className="flex flex-col md:flex-row gap-3 max-w-4xl mx-auto">
-              <div className="flex-shrink-0">
-                {message.role === "user" ? (
-                  <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center">
-                    <User className="h-4 w-4 text-primary" />
-                  </div>
-                ) : (
-                  <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center">
-                    <Bot className="h-4 w-4 text-primary" />
-                  </div>
-                )}
-              </div>
-              <div className="flex-1 overflow-hidden w-full md:w-auto">
-                <div className="space-y-2">
-                  <div className="font-semibold text-sm">
-                    {message.role === "user" ? "You" : "Maple"}
-                  </div>
-                  <div className="prose prose-sm dark:prose-invert max-w-none">
-                    {/* Render content array */}
-                    <div className="space-y-3">
-                      {message.content.map((part: ConversationContent, partIdx: number) => (
-                        <div key={partIdx}>
-                          {(part.type === "input_text" ||
-                            part.type === "output_text" ||
-                            part.type === "text") &&
-                          part.text ? (
-                            <Markdown
-                              content={part.text}
-                              loading={message.status === "streaming"}
-                              chatId={chatId || ""}
-                            />
-                          ) : part.type === "input_image" && part.image_url ? (
-                            <img
-                              src={part.image_url}
-                              alt={`Image ${partIdx + 1}`}
-                              className="max-w-full rounded-lg"
-                              style={{ maxHeight: "400px", objectFit: "contain" }}
-                            />
-                          ) : null}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
+        {messages.map((item, index) => {
+          // Handle different item types - messages, tool calls, tool outputs
+          const itemType = item.type;
 
-                  {/* Status indicators */}
-                  {message.role === "assistant" && message.status === "in_progress" && (
-                    <div className="flex items-center gap-1 text-muted-foreground">
-                      <div className="w-2 h-2 bg-foreground/60 rounded-full animate-pulse" />
-                      <div className="w-2 h-2 bg-foreground/60 rounded-full animate-pulse delay-75" />
-                      <div className="w-2 h-2 bg-foreground/60 rounded-full animate-pulse delay-150" />
-                    </div>
-                  )}
-                  {message.role === "assistant" && message.status === "incomplete" && (
-                    <div className="inline-flex items-center gap-2 text-sm text-muted-foreground bg-muted/50 px-3 py-1.5 rounded-md mt-2">
-                      <div className="w-1.5 h-1.5 rounded-full bg-yellow-500" />
-                      <span>Chat Canceled</span>
-                    </div>
-                  )}
+          // Tool calls and outputs - render as standalone items with pairing
+          if (itemType === "function_call") {
+            const toolCall = item as unknown as ResponseFunctionToolCall;
+            // Look up matching output by call_id (handles out-of-order arrival)
+            const output = outputMap.get(toolCall.call_id) as
+              | ResponseFunctionToolCallOutputItem
+              | undefined;
 
-                  {/* Actions - always visible on mobile, show on hover for desktop */}
-                  {message.role === "assistant" &&
-                    message.content &&
-                    message.content.length > 0 && (
-                      <div className="flex gap-1 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
-                        <CopyButton
-                          text={message.content
-                            .filter((p: ConversationContent) => "text" in p && p.text)
-                            .map((p: ConversationContent) => ("text" in p ? p.text : ""))
-                            .join("")}
-                        />
-                      </div>
-                    )}
+            return (
+              <div
+                key={item.id}
+                ref={index === 0 ? firstMessageRef : undefined}
+                className="py-2 px-4"
+              >
+                <div className="max-w-4xl mx-auto">
+                  <ToolCallRenderer tool={toolCall} toolOutput={output} />
                 </div>
               </div>
-            </div>
-          </div>
-        ))}
+            );
+          }
+
+          if (itemType === "function_call_output") {
+            const output = item as unknown as ResponseFunctionToolCallOutputItem;
+            // Check if matching call exists (handles out-of-order arrival)
+            const matchingCall = callMap.get(output.call_id);
+
+            if (matchingCall) {
+              // Already rendered with the call, skip
+              return null;
+            } else {
+              // Orphan output (call hasn't arrived yet), render standalone
+              return (
+                <div
+                  key={item.id}
+                  ref={index === 0 ? firstMessageRef : undefined}
+                  className="py-2 px-4"
+                >
+                  <div className="max-w-4xl mx-auto">
+                    <ToolCallRenderer tool={output} />
+                  </div>
+                </div>
+              );
+            }
+          }
+
+          if (itemType === "web_search_call") {
+            const webSearch = item as unknown as ResponseFunctionWebSearch;
+            return (
+              <div
+                key={item.id}
+                ref={index === 0 ? firstMessageRef : undefined}
+                className="py-2 px-4"
+              >
+                <div className="max-w-4xl mx-auto">
+                  <ToolCallRenderer tool={webSearch} />
+                </div>
+              </div>
+            );
+          }
+
+          // Regular message - render with role and content
+          if (itemType === "message") {
+            const message = item as unknown as ExtendedMessage;
+            // Skip if no content, UNLESS it's an assistant message with in_progress status
+            // (we want to show the three-dot loading indicator for those)
+            const isAssistantLoading =
+              message.role === "assistant" && message.status === "in_progress";
+            if ((!message.content || message.content.length === 0) && !isAssistantLoading)
+              return null;
+
+            return (
+              <div
+                key={message.id}
+                ref={index === 0 ? firstMessageRef : undefined}
+                className={`group py-6 px-4 ${message.role === "user" ? "bg-muted/30" : ""}`}
+              >
+                <div className="flex flex-col md:flex-row gap-3 max-w-4xl mx-auto">
+                  <div className="flex-shrink-0">
+                    {message.role === "user" ? (
+                      <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center">
+                        <User className="h-4 w-4 text-primary" />
+                      </div>
+                    ) : (
+                      <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center">
+                        <Bot className="h-4 w-4 text-primary" />
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex-1 overflow-hidden w-full md:w-auto">
+                    <div className="space-y-2">
+                      <div className="font-semibold text-sm">
+                        {message.role === "user" ? "You" : "Maple"}
+                      </div>
+                      <div className="prose prose-sm dark:prose-invert max-w-none">
+                        <div className="space-y-3">
+                          {message.content.map((part, partIdx) => {
+                            // Text content
+                            if (
+                              (part.type === "input_text" ||
+                                part.type === "output_text" ||
+                                part.type === "text") &&
+                              "text" in part &&
+                              part.text
+                            ) {
+                              return (
+                                <div key={partIdx}>
+                                  <Markdown
+                                    content={part.text}
+                                    loading={
+                                      (message as { status?: string }).status === "streaming"
+                                    }
+                                    chatId={chatId || ""}
+                                  />
+                                </div>
+                              );
+                            }
+                            // Image content
+                            else if (
+                              part.type === "input_image" &&
+                              "image_url" in part &&
+                              part.image_url
+                            ) {
+                              return (
+                                <div key={partIdx}>
+                                  <img
+                                    src={part.image_url}
+                                    alt={`Image ${partIdx + 1}`}
+                                    className="max-w-full rounded-lg"
+                                    style={{ maxHeight: "400px", objectFit: "contain" }}
+                                  />
+                                </div>
+                              );
+                            }
+                            return null;
+                          })}
+                        </div>
+                      </div>
+
+                      {/* Status indicators */}
+                      {message.role === "assistant" && message.status === "in_progress" && (
+                        <div className="flex items-center gap-1 text-muted-foreground">
+                          <div className="w-2 h-2 bg-foreground/60 rounded-full animate-pulse" />
+                          <div className="w-2 h-2 bg-foreground/60 rounded-full animate-pulse delay-75" />
+                          <div className="w-2 h-2 bg-foreground/60 rounded-full animate-pulse delay-150" />
+                        </div>
+                      )}
+                      {message.role === "assistant" && message.status === "incomplete" && (
+                        <div className="inline-flex items-center gap-2 text-sm text-muted-foreground bg-muted/50 px-3 py-1.5 rounded-md mt-2">
+                          <div className="w-1.5 h-1.5 rounded-full bg-yellow-500" />
+                          <span>Chat Canceled</span>
+                        </div>
+                      )}
+
+                      {/* Actions - always visible on mobile, show on hover for desktop */}
+                      {message.role === "assistant" &&
+                        message.content &&
+                        message.content.length > 0 && (
+                          <div className="flex gap-1 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
+                            <CopyButton
+                              text={message.content
+                                .filter((p) => "text" in p && p.text)
+                                .map((p) => ("text" in p ? p.text : ""))
+                                .join("")}
+                            />
+                          </div>
+                        )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            );
+          }
+
+          // Unknown item type
+          return null;
+        })}
 
         {/* Loading indicator - modern style */}
         {isGenerating &&
           !messages.some(
-            (m) =>
-              m.role === "assistant" && (m.status === "streaming" || m.status === "in_progress")
+            (item) =>
+              item.type === "message" &&
+              (item as unknown as ExtendedMessage).role === "assistant" &&
+              ((item as { status?: string }).status === "streaming" ||
+                (item as { status?: string }).status === "in_progress")
           ) && (
             <div className="group py-6 px-4">
               <div className="flex gap-3 max-w-4xl mx-auto">
@@ -359,6 +656,14 @@ export function UnifiedChat() {
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [isProcessingSend, setIsProcessingSend] = useState(false);
   const [audioError, setAudioError] = useState<string | null>(null);
+
+  // Web search toggle state
+  const [isWebSearchEnabled, setIsWebSearchEnabled] = useState(false);
+  const [isWebSearchUnlocked, setIsWebSearchUnlocked] = useState(() => {
+    return localStorage.getItem("webSearchUnlocked") === "true";
+  });
+  const [logoTapCount, setLogoTapCount] = useState(0);
+  const tapTimeoutRef = useRef<number | null>(null);
 
   // Scroll state
   const [isUserScrolling, setIsUserScrolling] = useState(false);
@@ -471,7 +776,8 @@ export function UnifiedChat() {
     if (
       lastMessageId !== prevLastMessageId.current &&
       messages.length > 0 &&
-      messages[messages.length - 1].role === "user"
+      messages[messages.length - 1].type === "message" &&
+      (messages[messages.length - 1] as ExtendedMessage).role === "user"
     ) {
       // User just sent a message - scroll to bottom
       setTimeout(() => {
@@ -483,7 +789,9 @@ export function UnifiedChat() {
 
   // Auto-scroll when assistant starts streaming (but not while streaming)
   useEffect(() => {
-    const hasStreamingMessage = messages.some((m) => m.status === "streaming");
+    const hasStreamingMessage = messages.some(
+      (m) => m.type === "message" && (m as { status?: string }).status === "streaming"
+    );
 
     if (hasStreamingMessage && !prevStreamingRef.current && !isUserScrolling) {
       // Just started streaming - scroll slightly to show the loading indicator
@@ -614,23 +922,21 @@ export function UnifiedChat() {
         // Process items as soon as they're ready (don't wait for metadata)
         const itemsResponse = await itemsPromise;
 
-        // Convert items to messages
-        const loadedMessages: Message[] = [];
-
-        for (const item of itemsResponse.data) {
-          if (item.type === "message" && item.role && item.content) {
-            const convItem = item as ConversationItem;
-            loadedMessages.push({
-              id: item.id,
-              role: item.role as "user" | "assistant",
-              content: item.content,
-              timestamp:
-                ((item as ConversationItem & { created_at?: number }).created_at ??
-                  Date.now() / 1000) * 1000,
-              status: convItem.status || "completed"
-            });
-          }
-        }
+        // Convert items to messages, grouping tool calls with their messages
+        const loadedMessages = convertItemsToMessages(
+          itemsResponse.data as Array<{
+            id: string;
+            type: string;
+            role?: string;
+            content?: unknown;
+            name?: string;
+            arguments?: string;
+            call_id?: string;
+            output?: string;
+            status?: string;
+            created_at?: number;
+          }>
+        );
 
         // Reverse the array for display (we want oldest first/at top, newest last/at bottom)
         // API returns desc (newest first), but chat UI needs chronological order
@@ -655,7 +961,7 @@ export function UnifiedChat() {
         // Set last seen ID for polling - use the NEWEST message (first in desc response)
         // Skip in_progress messages by finding the first completed one
         const newestCompletedItem = itemsResponse.data.find(
-          (item) => (item as ConversationItem).status !== "in_progress"
+          (item) => (item as Message).status !== "in_progress"
         );
         if (newestCompletedItem) {
           setLastSeenItemId(newestCompletedItem.id);
@@ -701,23 +1007,21 @@ export function UnifiedChat() {
         after: oldestItemId
       });
 
-      // Convert items to messages
-      const olderMessages: Message[] = [];
-
-      for (const item of itemsResponse.data) {
-        if (item.type === "message" && item.role && item.content) {
-          const convItem = item as ConversationItem;
-          olderMessages.push({
-            id: item.id,
-            role: item.role as "user" | "assistant",
-            content: item.content,
-            timestamp:
-              ((item as ConversationItem & { created_at?: number }).created_at ??
-                Date.now() / 1000) * 1000,
-            status: convItem.status || "completed"
-          });
-        }
-      }
+      // Convert items to messages, grouping tool calls with their messages
+      const olderMessages = convertItemsToMessages(
+        itemsResponse.data as Array<{
+          id: string;
+          type: string;
+          role?: string;
+          content?: unknown;
+          name?: string;
+          arguments?: string;
+          call_id?: string;
+          output?: string;
+          status?: string;
+          created_at?: number;
+        }>
+      );
 
       if (olderMessages.length > 0) {
         // Reverse for chronological order (API returns desc, we need asc for display)
@@ -758,31 +1062,21 @@ export function UnifiedChat() {
       });
 
       if (response.data.length > 0) {
-        // Convert API items to UI messages
-        const newMessages: Message[] = [];
-
-        for (const item of response.data) {
-          if (item.type === "message" && item.role) {
-            const convItem = item as ConversationItem;
-            // Convert content to array if it's a string
-            const messageContent =
-              typeof item.content === "string"
-                ? [{ type: "text", text: item.content }]
-                : Array.isArray(item.content)
-                  ? item.content
-                  : [];
-
-            newMessages.push({
-              id: item.id,
-              role: item.role as "user" | "assistant",
-              content: messageContent as ConversationContent[],
-              timestamp:
-                ((item as ConversationItem & { created_at?: number }).created_at ??
-                  Date.now() / 1000) * 1000,
-              status: convItem.status || "completed"
-            });
-          }
-        }
+        // Convert API items to UI messages, grouping tool calls with their messages
+        const newMessages = convertItemsToMessages(
+          response.data as Array<{
+            id: string;
+            type: string;
+            role?: string;
+            content?: unknown;
+            name?: string;
+            arguments?: string;
+            call_id?: string;
+            output?: string;
+            status?: string;
+            created_at?: number;
+          }>
+        );
 
         if (newMessages.length > 0) {
           // Merge new messages with deduplication using helper
@@ -805,7 +1099,7 @@ export function UnifiedChat() {
           // Skip in_progress messages by finding the last completed one
           const newestCompletedItem = [...response.data]
             .reverse()
-            .find((item) => (item as ConversationItem).status !== "in_progress");
+            .find((item) => (item as Message).status !== "in_progress");
           if (newestCompletedItem) {
             setLastSeenItemId(newestCompletedItem.id);
           }
@@ -816,7 +1110,10 @@ export function UnifiedChat() {
             isGenerating &&
             newMessages.some(
               (m) =>
-                m.role === "assistant" && (m.status === "completed" || m.status === "incomplete")
+                m.type === "message" &&
+                (m as ExtendedMessage).role === "assistant" &&
+                ((m as ExtendedMessage).status === "completed" ||
+                  (m as ExtendedMessage).status === "incomplete")
             )
           ) {
             setIsGenerating(false);
@@ -976,8 +1273,44 @@ export function UnifiedChat() {
     }
   }, [error]);
 
+  // Cleanup tap timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (tapTimeoutRef.current !== null) {
+        window.clearTimeout(tapTimeoutRef.current);
+        tapTimeoutRef.current = null;
+      }
+    };
+  }, []);
+
   // Toggle sidebar
   const toggleSidebar = useCallback(() => setIsSidebarOpen((prev) => !prev), []);
+
+  // Handle logo tap for easter egg unlock
+  const handleLogoTap = useCallback(() => {
+    const newCount = logoTapCount + 1;
+    setLogoTapCount(newCount);
+
+    // Clear any existing timeout
+    if (tapTimeoutRef.current !== null) {
+      window.clearTimeout(tapTimeoutRef.current);
+    }
+
+    // Reset tap count after 2 seconds of inactivity
+    tapTimeoutRef.current = window.setTimeout(() => {
+      setLogoTapCount(0);
+    }, 2000);
+
+    // Unlock web search after 7 taps
+    if (newCount >= 7) {
+      localStorage.setItem("webSearchUnlocked", "true");
+      setIsWebSearchUnlocked(true);
+      setLogoTapCount(0);
+      if (tapTimeoutRef.current !== null) {
+        window.clearTimeout(tapTimeoutRef.current);
+      }
+    }
+  }, [logoTapCount]);
 
   // Check user's billing access
   const billingStatus = localState.billingStatus;
@@ -1302,100 +1635,233 @@ export function UnifiedChat() {
   // Helper function to process streaming response - used by both initial request and retry
   const processStreamingResponse = useCallback(async (stream: AsyncIterable<unknown>) => {
     let serverAssistantId: string | undefined;
-    let assistantMessageAdded = false;
     let accumulatedContent = "";
 
     for await (const event of stream) {
-      if ((event as { type: string }).type === "response.created") {
+      const eventType = (event as { type: string }).type;
+
+      // Log all SSE events for debugging
+      console.log("🔵 SSE Event:", eventType, event);
+
+      if (eventType === "response.created") {
         const eventWithResponse = event as { response?: { id?: string } };
         if (eventWithResponse.response?.id) {
           setCurrentResponseId(eventWithResponse.response.id);
         }
       } else if (
-        (event as { type: string }).type === "response.output_item.added" &&
+        eventType === "response.output_item.added" &&
         (event as { item?: { type?: string } }).item?.type === "message"
       ) {
+        // Assistant message created - add immediately as a flat item
         const eventWithItem = event as { item?: { id?: string } };
         if (eventWithItem.item?.id) {
           serverAssistantId = eventWithItem.item.id;
 
-          const assistantMessage: Message = {
-            id: serverAssistantId!,
+          const assistantMessage = {
+            id: serverAssistantId,
+            type: "message",
             role: "assistant",
             content: [],
-            timestamp: Date.now(),
-            status: "streaming"
-          };
-          // Use merge helper to prevent duplicates if this message already exists
+            status: "in_progress"
+          } as unknown as Message;
+
           setMessages((prev) => mergeMessagesById(prev, [assistantMessage]));
-          assistantMessageAdded = true;
-          assistantStreamingRef.current = true;
         }
       } else if (
-        (event as { type: string }).type === "response.output_text.delta" &&
+        eventType === "response.output_item.added" &&
+        (event as { item?: { type?: string } }).item?.type === "web_search_call"
+      ) {
+        // Web search call created - add immediately as a flat item
+        const eventWithItem = event as { item?: { id?: string } };
+        if (eventWithItem.item?.id) {
+          const webSearchItem = {
+            id: eventWithItem.item.id,
+            type: "web_search_call",
+            status: "in_progress"
+          } as unknown as Message;
+
+          setMessages((prev) => mergeMessagesById(prev, [webSearchItem]));
+        }
+      } else if (eventType === "response.web_search_call.in_progress") {
+        // Update web search status
+        const webSearchEvent = event as { item_id?: string };
+        if (webSearchEvent.item_id) {
+          setMessages((prev) => {
+            const itemToUpdate = prev.find((m) => m.id === webSearchEvent.item_id);
+            if (itemToUpdate && itemToUpdate.type === "web_search_call") {
+              const updated = {
+                ...itemToUpdate,
+                status: "in_progress"
+              } as unknown as Message;
+              return mergeMessagesById(prev, [updated]);
+            }
+            return prev;
+          });
+        }
+      } else if (eventType === "response.web_search_call.searching") {
+        // Update web search status
+        const webSearchEvent = event as { item_id?: string };
+        if (webSearchEvent.item_id) {
+          setMessages((prev) => {
+            const itemToUpdate = prev.find((m) => m.id === webSearchEvent.item_id);
+            if (itemToUpdate && itemToUpdate.type === "web_search_call") {
+              const updated = {
+                ...itemToUpdate,
+                status: "searching"
+              } as unknown as Message;
+              return mergeMessagesById(prev, [updated]);
+            }
+            return prev;
+          });
+        }
+      } else if (eventType === "response.web_search_call.completed") {
+        // Update web search status
+        const webSearchEvent = event as { item_id?: string };
+        if (webSearchEvent.item_id) {
+          setMessages((prev) => {
+            const itemToUpdate = prev.find((m) => m.id === webSearchEvent.item_id);
+            if (itemToUpdate && itemToUpdate.type === "web_search_call") {
+              const updated = {
+                ...itemToUpdate,
+                status: "completed"
+              } as unknown as Message;
+              return mergeMessagesById(prev, [updated]);
+            }
+            return prev;
+          });
+        }
+      } else if (eventType === "tool_call.created") {
+        // Tool call created - add immediately as a flat item
+        const toolCallEvent = event as {
+          tool_call_id?: string;
+          name?: string;
+          arguments?: { query?: string };
+        };
+        if (toolCallEvent.tool_call_id) {
+          const toolCallItem = {
+            id: toolCallEvent.tool_call_id,
+            call_id: toolCallEvent.tool_call_id,
+            type: "function_call",
+            name: toolCallEvent.name || "function",
+            arguments: JSON.stringify(toolCallEvent.arguments || {}),
+            status: "in_progress"
+          } as unknown as Message;
+
+          setMessages((prev) => mergeMessagesById(prev, [toolCallItem]));
+        }
+      } else if (eventType === "tool_output.created") {
+        // Tool output created - add immediately as a flat item
+        const toolOutputEvent = event as {
+          tool_output_id?: string;
+          tool_call_id?: string;
+          output?: string;
+        };
+        if (toolOutputEvent.tool_output_id && toolOutputEvent.tool_call_id) {
+          const toolOutputItem = {
+            id: toolOutputEvent.tool_output_id,
+            call_id: toolOutputEvent.tool_call_id,
+            type: "function_call_output",
+            output: toolOutputEvent.output || "",
+            status: "completed"
+          } as unknown as Message;
+
+          // Add tool output and update corresponding tool call status in one setState
+          setMessages((prev) => {
+            // First add the tool output item
+            const withOutput = mergeMessagesById(prev, [toolOutputItem]);
+
+            // Then update the corresponding tool call status to completed
+            const toolCallToUpdate = withOutput.find(
+              (m) =>
+                m.type === "function_call" &&
+                (m as unknown as ResponseFunctionToolCall).call_id === toolOutputEvent.tool_call_id
+            );
+            if (toolCallToUpdate) {
+              const updated = {
+                ...toolCallToUpdate,
+                status: "completed"
+              } as unknown as Message;
+              return mergeMessagesById(withOutput, [updated]);
+            }
+            return withOutput;
+          });
+        }
+      } else if (
+        eventType === "response.output_text.delta" &&
         (event as { delta?: string }).delta
       ) {
+        // Text delta - update the assistant message
         const delta = (event as { delta: string }).delta;
         accumulatedContent += delta;
 
-        if (serverAssistantId && assistantMessageAdded) {
-          const outputContent: OutputTextContent = {
-            type: "output_text",
-            text: accumulatedContent,
-            annotations: []
-          };
-          // Update the message content using merge helper for consistency
-          const updatedMessage: Message = {
-            id: serverAssistantId,
-            role: "assistant",
-            content: [outputContent],
-            timestamp: Date.now(),
-            status: "streaming"
-          };
-          setMessages((prev) => mergeMessagesById(prev, [updatedMessage]));
-        }
-      } else if ((event as { type: string }).type === "response.output_item.done") {
         if (serverAssistantId) {
-          // Update status to completed using merge helper
+          setMessages((prev) => {
+            const msgToUpdate = prev.find((m) => m.id === serverAssistantId);
+            if (msgToUpdate && msgToUpdate.type === "message") {
+              const message = msgToUpdate as unknown as ExtendedMessage;
+              const outputContent: OutputTextContent = {
+                type: "output_text",
+                text: accumulatedContent,
+                annotations: []
+              };
+              const updated = {
+                ...message,
+                content: [outputContent],
+                status: "streaming" as const
+              } as unknown as Message;
+              return mergeMessagesById(prev, [updated]);
+            }
+            return prev;
+          });
+        }
+      } else if (eventType === "response.output_item.done") {
+        if (serverAssistantId) {
+          // Update status to completed
           setMessages((prev) => {
             const msgToUpdate = prev.find((m) => m.id === serverAssistantId);
             if (msgToUpdate) {
-              return mergeMessagesById(prev, [{ ...msgToUpdate, status: "completed" }]);
+              const updated = {
+                ...msgToUpdate,
+                status: "completed"
+              } as unknown as Message;
+              return mergeMessagesById(prev, [updated]);
             }
             return prev;
           });
           setLastSeenItemId(serverAssistantId);
-          assistantStreamingRef.current = false;
         }
-      } else if (
-        (event as { type: string }).type === "response.failed" ||
-        (event as { type: string }).type === "error"
-      ) {
+      } else if (eventType === "response.failed" || eventType === "error") {
         console.error("Streaming error:", event);
         if (serverAssistantId) {
-          // Update status to error using merge helper
+          // Update status to error
           setMessages((prev) => {
             const msgToUpdate = prev.find((m) => m.id === serverAssistantId);
             if (msgToUpdate) {
-              return mergeMessagesById(prev, [{ ...msgToUpdate, status: "error" }]);
+              const updated = {
+                ...msgToUpdate,
+                status: "error"
+              } as unknown as Message;
+              return mergeMessagesById(prev, [updated]);
             }
             return prev;
           });
         }
         setError("Failed to generate response. Please try again.");
-        assistantStreamingRef.current = false;
-      } else if ((event as { type: string }).type === "response.cancelled") {
+      } else if (eventType === "response.cancelled") {
         if (serverAssistantId) {
-          // Update status to incomplete using merge helper
+          // Update status to incomplete
           setMessages((prev) => {
             const msgToUpdate = prev.find((m) => m.id === serverAssistantId);
             if (msgToUpdate) {
-              return mergeMessagesById(prev, [{ ...msgToUpdate, status: "incomplete" }]);
+              const updated = {
+                ...msgToUpdate,
+                status: "incomplete"
+              } as unknown as Message;
+              return mergeMessagesById(prev, [updated]);
             }
             return prev;
           });
         }
-        assistantStreamingRef.current = false;
         break;
       }
     }
@@ -1452,13 +1918,13 @@ export function UnifiedChat() {
 
       // Add user message immediately with a local UUID
       const localMessageId = uuidv4();
-      const userMessage: Message = {
+      const userMessage = {
         id: localMessageId,
+        type: "message",
         role: "user",
-        content: messageContent, // Store the actual content structure
-        timestamp: Date.now(),
+        content: messageContent,
         status: "completed"
-      };
+      } as unknown as Message;
 
       // Use merge helper to add user message (prevents duplicates)
       setMessages((prev) => mergeMessagesById(prev, [userMessage]));
@@ -1514,14 +1980,23 @@ export function UnifiedChat() {
             input: [{ role: "user", content: messageContent }],
             metadata: { internal_message_id: localMessageId }, // Pass our local ID
             stream: true,
-            store: true // Store in conversation history
+            store: true, // Store in conversation history
+            ...(isWebSearchEnabled && { tools: [{ type: "web_search" }] })
           },
           { signal: abortController.signal }
         );
 
-        // Process the streaming response
-        await processStreamingResponse(stream);
-        setCurrentResponseId(undefined);
+        // Disable polling while streaming is active
+        assistantStreamingRef.current = true;
+
+        try {
+          // Process the streaming response
+          await processStreamingResponse(stream);
+        } finally {
+          // Re-enable polling after streaming completes
+          assistantStreamingRef.current = false;
+          setCurrentResponseId(undefined);
+        }
       } catch (error) {
         console.error("Failed to send message:", error);
 
@@ -1665,14 +2140,23 @@ export function UnifiedChat() {
                   input: [{ role: "user", content: messageContent }],
                   metadata: { internal_message_id: localMessageId }, // Server prevents duplicate IDs
                   stream: true,
-                  store: true
+                  store: true,
+                  ...(isWebSearchEnabled && { tools: [{ type: "web_search" }] })
                 },
                 { signal: retryAbortController.signal }
               );
 
-              // Process the retry stream using the same helper function
-              await processStreamingResponse(retryStream);
-              console.log("Retry completed successfully");
+              // Disable polling while streaming is active
+              assistantStreamingRef.current = true;
+
+              try {
+                // Process the retry stream using the same helper function
+                await processStreamingResponse(retryStream);
+                console.log("Retry completed successfully");
+              } finally {
+                // Re-enable polling after streaming completes
+                assistantStreamingRef.current = false;
+              }
               return;
             } catch (retryError) {
               // Retry failed - check one last time if message actually went through
@@ -1761,7 +2245,8 @@ export function UnifiedChat() {
       draftImages,
       documentText,
       clearAllAttachments,
-      processStreamingResponse
+      processStreamingResponse,
+      isWebSearchEnabled
     ]
   );
 
@@ -1876,7 +2361,11 @@ export function UnifiedChat() {
               {/* Logo section - raised higher */}
               <div className="flex flex-col items-center -mt-20 mb-16">
                 {/* Logo with Maple text - combined image */}
-                <div className="flex items-center justify-center mb-3">
+                <div
+                  className="flex items-center justify-center mb-3"
+                  onClick={handleLogoTap}
+                  style={{ cursor: "default" }}
+                >
                   <img
                     src="/maple-leaf-and-maple-white.png"
                     alt="Maple"
@@ -1969,10 +2458,12 @@ export function UnifiedChat() {
                           <ModelSelector
                             hasImages={
                               draftImages.length > 0 ||
-                              messages.some((msg) =>
-                                msg.content.some(
-                                  (part: ConversationContent) => part.type === "input_image"
-                                )
+                              messages.some(
+                                (msg) =>
+                                  msg.type === "message" &&
+                                  (msg as ExtendedMessage).content?.some(
+                                    (part: ConversationContent) => part.type === "input_image"
+                                  )
                               )
                             }
                           />
@@ -2021,6 +2512,26 @@ export function UnifiedChat() {
                               </DropdownMenuItem>
                             </DropdownMenuContent>
                           </DropdownMenu>
+
+                          {/* Web search toggle button - hidden until unlocked */}
+                          {isWebSearchUnlocked && (
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              className="h-8 w-8 p-0"
+                              onClick={() => setIsWebSearchEnabled(!isWebSearchEnabled)}
+                              aria-label={
+                                isWebSearchEnabled ? "Disable web search" : "Enable web search"
+                              }
+                            >
+                              <Globe
+                                className={`h-4 w-4 ${
+                                  isWebSearchEnabled ? "text-blue-500" : "text-muted-foreground"
+                                }`}
+                              />
+                            </Button>
+                          )}
                         </div>
 
                         <div className="flex items-center gap-2">
@@ -2154,10 +2665,12 @@ export function UnifiedChat() {
                         <ModelSelector
                           hasImages={
                             draftImages.length > 0 ||
-                            messages.some((msg) =>
-                              msg.content.some(
-                                (part: ConversationContent) => part.type === "input_image"
-                              )
+                            messages.some(
+                              (msg) =>
+                                msg.type === "message" &&
+                                (msg as ExtendedMessage).content?.some(
+                                  (part: ConversationContent) => part.type === "input_image"
+                                )
                             )
                           }
                         />
@@ -2206,6 +2719,26 @@ export function UnifiedChat() {
                             </DropdownMenuItem>
                           </DropdownMenuContent>
                         </DropdownMenu>
+
+                        {/* Web search toggle button - hidden until unlocked */}
+                        {isWebSearchUnlocked && (
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            className="h-8 w-8 p-0"
+                            onClick={() => setIsWebSearchEnabled(!isWebSearchEnabled)}
+                            aria-label={
+                              isWebSearchEnabled ? "Disable web search" : "Enable web search"
+                            }
+                          >
+                            <Globe
+                              className={`h-4 w-4 ${
+                                isWebSearchEnabled ? "text-blue-500" : "text-muted-foreground"
+                              }`}
+                            />
+                          </Button>
+                        )}
                       </div>
 
                       <div className="flex items-center gap-2">
