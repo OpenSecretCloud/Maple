@@ -43,9 +43,9 @@ export const MODEL_CONFIG: Record<string, ModelCfg> = {
     tokenLimit: 20000
   },
   "deepseek-r1-0528": {
-    displayName: "DeepSeek R1 0528 671B",
+    displayName: "DeepSeek R1 671B",
     shortName: "DeepSeek R1",
-    badges: ["Pro", "New"],
+    badges: ["Pro", "Reasoning"],
     requiresPro: true,
     tokenLimit: 130000
   },
@@ -59,7 +59,7 @@ export const MODEL_CONFIG: Record<string, ModelCfg> = {
   "gpt-oss-120b": {
     displayName: "OpenAI GPT-OSS 120B",
     shortName: "GPT-OSS",
-    badges: ["Pro", "New"],
+    badges: ["Pro"],
     requiresPro: true,
     tokenLimit: 128000
   },
@@ -81,7 +81,7 @@ export const MODEL_CONFIG: Record<string, ModelCfg> = {
   "qwen3-coder-480b": {
     displayName: "Qwen3 Coder 480B",
     shortName: "Qwen3 Coder",
-    badges: ["Pro", "New"],
+    badges: ["Pro"],
     requiresPro: true,
     tokenLimit: 128000
   }
@@ -255,6 +255,8 @@ export function ModelSelector({ hasImages = false }: { hasImages?: boolean }) {
             badgeClass += " bg-gradient-to-r from-green-500/10 to-emerald-500/10 text-green-600";
           } else if (badge === "New") {
             badgeClass += " bg-gradient-to-r from-blue-500/10 to-cyan-500/10 text-blue-600";
+          } else if (badge === "Reasoning") {
+            badgeClass += " bg-gradient-to-r from-orange-500/10 to-red-500/10 text-orange-600";
           } else if (badge === "Beta") {
             badgeClass += " bg-gradient-to-r from-yellow-500/10 to-orange-500/10 text-yellow-600";
           } else {
