@@ -107,7 +107,7 @@ jobs:
       - name: Install Tauri CLI
         run: |
           if ! command -v cargo-tauri &> /dev/null; then
-            cargo install tauri-cli
+            cargo install tauri-cli --version "2.8.0" --locked
           else
             echo "Tauri CLI already installed"
           fi

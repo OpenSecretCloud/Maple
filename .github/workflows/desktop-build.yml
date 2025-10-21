@@ -126,7 +126,7 @@ jobs:
         run: bun install
 
       - name: Install Tauri CLI
-        run: cargo install tauri-cli
+        run: cargo install tauri-cli --version "2.8.0" --locked
         env:
           CARGO_CFG_TARGET_OS: linux
 
