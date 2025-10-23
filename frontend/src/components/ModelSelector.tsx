@@ -1,10 +1,22 @@
-import { ChevronDown, Check, Lock, Camera } from "lucide-react";
+import {
+  ChevronDown,
+  Check,
+  Lock,
+  Camera,
+  ChevronLeft,
+  Sparkles,
+  Zap,
+  Brain,
+  Code
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuTrigger
+  DropdownMenuTrigger,
+  DropdownMenuSeparator,
+  DropdownMenuLabel
 } from "@/components/ui/dropdown-menu";
 import { useLocalState } from "@/state/useLocalState";
 import { useOpenSecret } from "@opensecret/react";
@@ -95,6 +107,40 @@ export function getModelTokenLimit(modelId: string): number {
   return MODEL_CONFIG[modelId]?.tokenLimit || DEFAULT_TOKEN_LIMIT;
 }
 
+// Model categories for simplified UI
+type ModelCategory = "free" | "quick" | "reasoning" | "math" | "advanced";
+
+const CATEGORY_MODELS = {
+  free: "llama-3.3-70b",
+  quick: "gpt-oss-120b",
+  reasoning_on: "deepseek-r1-0528", // R1 with thinking
+  reasoning_off: "deepseek-v31-terminus", // V3.1 without thinking
+  math: "qwen3-coder-480b"
+};
+
+const CATEGORY_CONFIG = {
+  free: {
+    label: "Free",
+    icon: Sparkles,
+    description: "Fast and capable"
+  },
+  quick: {
+    label: "Quick",
+    icon: Zap,
+    description: "Balanced performance"
+  },
+  reasoning: {
+    label: "Reasoning",
+    icon: Brain,
+    description: "Deep analysis"
+  },
+  math: {
+    label: "Math/Coding",
+    icon: Code,
+    description: "Technical tasks"
+  }
+};
+
 export function ModelSelector({ hasImages = false }: { hasImages?: boolean }) {
   const {
     model,
@@ -102,7 +148,9 @@ export function ModelSelector({ hasImages = false }: { hasImages?: boolean }) {
     availableModels,
     setAvailableModels,
     billingStatus,
-    setHasWhisperModel
+    setHasWhisperModel,
+    thinkingEnabled,
+    setThinkingEnabled
   } = useLocalState();
   const os = useOpenSecret();
   const isFetching = useRef(false);
@@ -110,6 +158,7 @@ export function ModelSelector({ hasImages = false }: { hasImages?: boolean }) {
   const availableModelsRef = useRef(availableModels);
   const [upgradeDialogOpen, setUpgradeDialogOpen] = useState(false);
   const [selectedModelName, setSelectedModelName] = useState<string>("");
+  const [showAdvanced, setShowAdvanced] = useState(false);
 
   // Use the passed hasImages prop directly
   const chatHasImages = hasImages;
@@ -188,6 +237,29 @@ export function ModelSelector({ hasImages = false }: { hasImages?: boolean }) {
     }
   }, [os, setAvailableModels, setHasWhisperModel]);
 
+  // Sync thinking toggle when model changes externally
+  useEffect(() => {
+    if (model === CATEGORY_MODELS.reasoning_on) {
+      setThinkingEnabled(true);
+    } else if (model === CATEGORY_MODELS.reasoning_off) {
+      setThinkingEnabled(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [model]);
+
+  // Get current category based on selected model
+  const getCurrentCategory = (): string => {
+    if (model === CATEGORY_MODELS.free) return "Free";
+    if (model === CATEGORY_MODELS.quick) return "Quick";
+    if (model === CATEGORY_MODELS.reasoning_on || model === CATEGORY_MODELS.reasoning_off) {
+      return "Reasoning";
+    }
+    if (model === CATEGORY_MODELS.math) return "Math/Coding";
+    // If in advanced mode, show model name
+    const config = MODEL_CONFIG[model];
+    return config?.displayName || model;
+  };
+
   // Check if user has access to a model based on their plan
   const hasAccessToModel = (modelId: string) => {
     const config = MODEL_CONFIG[modelId];
@@ -213,6 +285,44 @@ export function ModelSelector({ hasImages = false }: { hasImages?: boolean }) {
     }
 
     return true;
+  };
+
+  // Handle category selection
+  const handleCategorySelect = (category: ModelCategory) => {
+    if (category === "advanced") {
+      setShowAdvanced(true);
+      return;
+    }
+
+    let targetModel: string;
+    switch (category) {
+      case "free":
+        targetModel = CATEGORY_MODELS.free;
+        break;
+      case "quick":
+        targetModel = CATEGORY_MODELS.quick;
+        break;
+      case "reasoning":
+        targetModel = thinkingEnabled
+          ? CATEGORY_MODELS.reasoning_on
+          : CATEGORY_MODELS.reasoning_off;
+        break;
+      case "math":
+        targetModel = CATEGORY_MODELS.math;
+        break;
+      default:
+        return;
+    }
+
+    // Check access
+    if (!hasAccessToModel(targetModel)) {
+      const modelConfig = MODEL_CONFIG[targetModel];
+      setSelectedModelName(modelConfig?.displayName || targetModel);
+      setUpgradeDialogOpen(true);
+      return;
+    }
+
+    setModel(targetModel);
   };
 
   // Get dynamic badges for a model based on billing status
@@ -299,107 +409,263 @@ export function ModelSelector({ hasImages = false }: { hasImages?: boolean }) {
     return <span className="flex items-center gap-1">{elements}</span>;
   };
 
-  // Show short name in the collapsed view (without badges)
-  const modelDisplay = (
-    <div className="flex items-center gap-1">
-      <div className="text-xs font-medium">
-        {MODEL_CONFIG[model]?.shortName || MODEL_CONFIG[model]?.displayName || model}
-      </div>
-    </div>
-  );
-
-  // Always show dropdown even with single model (it may be loading more)
-
   return (
     <>
-      <DropdownMenu>
+      <DropdownMenu onOpenChange={(open) => !open && setShowAdvanced(false)}>
         <DropdownMenuTrigger asChild>
           <Button
             variant="ghost"
             size="sm"
-            className="h-8 gap-1 px-2"
+            className="h-8 gap-1.5 px-2"
             data-testid="model-selector-button"
-            aria-label={`Current model: ${MODEL_CONFIG[model]?.displayName || model}. Click to change model.`}
+            aria-label={`Current model: ${getCurrentCategory()}. Click to change model.`}
           >
-            {modelDisplay}
+            <div className="text-xs font-medium">{getCurrentCategory()}</div>
             <ChevronDown className="h-3 w-3 opacity-50" />
           </Button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="start" className="w-72">
-          {availableModels &&
-            Array.isArray(availableModels) &&
-            // Filter out unknown models (not in MODEL_CONFIG), then sort: vision-capable first (if images present), then available, then restricted, then disabled
-            [...availableModels]
-              .filter((m) => MODEL_CONFIG[m.id] !== undefined)
-              .sort((a, b) => {
-                const aConfig = MODEL_CONFIG[a.id];
-                const bConfig = MODEL_CONFIG[b.id];
+        <DropdownMenuContent align="start" className="w-72 overflow-hidden">
+          <div className="relative">
+            {/* Main Category Menu */}
+            <div
+              className={`transition-transform duration-300 ease-in-out ${
+                showAdvanced ? "-translate-x-full" : "translate-x-0"
+              }`}
+            >
+              <DropdownMenuLabel>Select Model</DropdownMenuLabel>
+              <DropdownMenuSeparator />
 
-                // If chat has images, prioritize vision models
-                if (chatHasImages) {
-                  const aHasVision = aConfig?.supportsVision || false;
-                  const bHasVision = bConfig?.supportsVision || false;
-                  if (aHasVision && !bHasVision) return -1;
-                  if (!aHasVision && bHasVision) return 1;
-                }
-
-                const aDisabled = aConfig?.disabled || false;
-                const bDisabled = bConfig?.disabled || false;
-                const aRestricted =
-                  (aConfig?.requiresPro || aConfig?.requiresStarter || false) &&
-                  !hasAccessToModel(a.id);
-                const bRestricted =
-                  (bConfig?.requiresPro || bConfig?.requiresStarter || false) &&
-                  !hasAccessToModel(b.id);
-
-                // Disabled models go last
-                if (aDisabled && !bDisabled) return 1;
-                if (!aDisabled && bDisabled) return -1;
-
-                // Restricted models go after available but before disabled
-                if (aRestricted && !bRestricted) return 1;
-                if (!aRestricted && bRestricted) return -1;
-
-                return 0;
-              })
-              .map((availableModel) => {
-                const config = MODEL_CONFIG[availableModel.id];
-                const isDisabled = config?.disabled || false;
-                const requiresPro = config?.requiresPro || false;
-                const requiresStarter = config?.requiresStarter || false;
-                const hasAccess = hasAccessToModel(availableModel.id);
-                const isRestricted = (requiresPro || requiresStarter) && !hasAccess;
-
-                // Disable non-vision models if chat has images
-                const isDisabledDueToImages = chatHasImages && !config?.supportsVision;
-                const effectivelyDisabled = isDisabled || isDisabledDueToImages;
-
-                return (
-                  <DropdownMenuItem
-                    key={availableModel.id}
-                    onClick={() => {
-                      if (effectivelyDisabled) return;
-                      if (isRestricted) {
-                        // Show upgrade dialog for restricted model
-                        const modelConfig = MODEL_CONFIG[availableModel.id];
-                        setSelectedModelName(modelConfig?.displayName || availableModel.id);
-                        setUpgradeDialogOpen(true);
-                      } else {
-                        setModel(availableModel.id);
-                      }
-                    }}
-                    className={`flex items-center justify-between group ${
-                      effectivelyDisabled ? "opacity-50 cursor-not-allowed" : ""
-                    } ${isRestricted ? "hover:bg-purple-50 dark:hover:bg-purple-950/20" : ""}`}
-                    disabled={effectivelyDisabled}
-                  >
-                    <div className="flex items-center gap-2 flex-1">
-                      <div className="text-sm">{getDisplayName(availableModel.id, true)}</div>
+              {/* Free Category */}
+              <DropdownMenuItem key="category-free" onClick={() => handleCategorySelect("free")}>
+                <div className="flex items-center justify-between w-full">
+                  <div className="flex items-center gap-3">
+                    <Sparkles className="h-4 w-4 text-primary" />
+                    <div className="flex flex-col">
+                      <span className="font-medium">{CATEGORY_CONFIG.free.label}</span>
+                      <span className="text-xs text-muted-foreground">
+                        {CATEGORY_CONFIG.free.description}
+                      </span>
                     </div>
-                    {model === availableModel.id && <Check className="h-4 w-4" />}
-                  </DropdownMenuItem>
-                );
-              })}
+                  </div>
+                  {model === CATEGORY_MODELS.free && <Check className="h-4 w-4 text-primary" />}
+                </div>
+              </DropdownMenuItem>
+
+              {/* Quick Category */}
+              <DropdownMenuItem
+                key="category-quick"
+                onClick={() => handleCategorySelect("quick")}
+                className={
+                  !hasAccessToModel(CATEGORY_MODELS.quick)
+                    ? "hover:bg-purple-50 dark:hover:bg-purple-950/20"
+                    : ""
+                }
+              >
+                <div className="flex items-center justify-between w-full">
+                  <div className="flex items-center gap-3">
+                    <Zap className="h-4 w-4 text-primary" />
+                    <div className="flex flex-col">
+                      <div className="flex items-center gap-2">
+                        <span className="font-medium">{CATEGORY_CONFIG.quick.label}</span>
+                        {!hasAccessToModel(CATEGORY_MODELS.quick) && (
+                          <Lock className="h-3 w-3 opacity-50" />
+                        )}
+                      </div>
+                      <span className="text-xs text-muted-foreground">
+                        {CATEGORY_CONFIG.quick.description}
+                      </span>
+                    </div>
+                  </div>
+                  {model === CATEGORY_MODELS.quick && <Check className="h-4 w-4 text-primary" />}
+                </div>
+              </DropdownMenuItem>
+
+              {/* Reasoning Category */}
+              <DropdownMenuItem
+                key="category-reasoning"
+                onClick={() => handleCategorySelect("reasoning")}
+                className={
+                  !hasAccessToModel(
+                    thinkingEnabled ? CATEGORY_MODELS.reasoning_on : CATEGORY_MODELS.reasoning_off
+                  )
+                    ? "hover:bg-purple-50 dark:hover:bg-purple-950/20"
+                    : ""
+                }
+              >
+                <div className="flex items-center justify-between w-full">
+                  <div className="flex items-center gap-3">
+                    <Brain className="h-4 w-4 text-primary" />
+                    <div className="flex flex-col">
+                      <div className="flex items-center gap-2">
+                        <span className="font-medium">{CATEGORY_CONFIG.reasoning.label}</span>
+                        {!hasAccessToModel(
+                          thinkingEnabled
+                            ? CATEGORY_MODELS.reasoning_on
+                            : CATEGORY_MODELS.reasoning_off
+                        ) && <Lock className="h-3 w-3 opacity-50" />}
+                      </div>
+                      <span className="text-xs text-muted-foreground">
+                        {CATEGORY_CONFIG.reasoning.description}
+                      </span>
+                    </div>
+                  </div>
+                  {(model === CATEGORY_MODELS.reasoning_on ||
+                    model === CATEGORY_MODELS.reasoning_off) && (
+                    <Check className="h-4 w-4 text-primary" />
+                  )}
+                </div>
+              </DropdownMenuItem>
+
+              {/* Math/Coding Category */}
+              <DropdownMenuItem
+                key="category-math"
+                onClick={() => handleCategorySelect("math")}
+                className={
+                  !hasAccessToModel(CATEGORY_MODELS.math)
+                    ? "hover:bg-purple-50 dark:hover:bg-purple-950/20"
+                    : ""
+                }
+              >
+                <div className="flex items-center justify-between w-full">
+                  <div className="flex items-center gap-3">
+                    <Code className="h-4 w-4 text-primary" />
+                    <div className="flex flex-col">
+                      <div className="flex items-center gap-2">
+                        <span className="font-medium">{CATEGORY_CONFIG.math.label}</span>
+                        {!hasAccessToModel(CATEGORY_MODELS.math) && (
+                          <Lock className="h-3 w-3 opacity-50" />
+                        )}
+                      </div>
+                      <span className="text-xs text-muted-foreground">
+                        {CATEGORY_CONFIG.math.description}
+                      </span>
+                    </div>
+                  </div>
+                  {model === CATEGORY_MODELS.math && <Check className="h-4 w-4 text-primary" />}
+                </div>
+              </DropdownMenuItem>
+
+              <DropdownMenuSeparator />
+
+              {/* Advanced Option */}
+              <DropdownMenuItem
+                key="category-advanced"
+                onClick={() => handleCategorySelect("advanced")}
+                onSelect={(e) => {
+                  e.preventDefault();
+                }}
+              >
+                <div className="flex items-center gap-3">
+                  <ChevronLeft className="h-4 w-4 rotate-180" />
+                  <span className="font-medium">Advanced</span>
+                </div>
+              </DropdownMenuItem>
+            </div>
+
+            {/* Advanced Submenu */}
+            <div
+              className={`absolute top-0 left-0 w-full max-h-[400px] flex flex-col transition-transform duration-300 ease-in-out ${
+                showAdvanced ? "translate-x-0" : "translate-x-full"
+              }`}
+            >
+              <DropdownMenuItem
+                key="advanced-back"
+                onClick={(e) => {
+                  e.preventDefault();
+                  setShowAdvanced(false);
+                }}
+                onSelect={(e) => {
+                  e.preventDefault();
+                }}
+              >
+                <ChevronLeft className="mr-2 h-4 w-4" />
+                <span>Back</span>
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuLabel>All Models</DropdownMenuLabel>
+
+              {/* Scrollable container for models */}
+              <div className="overflow-y-auto max-h-[300px]">
+                {availableModels &&
+                  Array.isArray(availableModels) &&
+                  [...availableModels]
+                    .filter(
+                      (m, index, self) =>
+                        MODEL_CONFIG[m.id] !== undefined &&
+                        self.findIndex((model) => model.id === m.id) === index
+                    )
+                    .sort((a, b) => {
+                      const aConfig = MODEL_CONFIG[a.id];
+                      const bConfig = MODEL_CONFIG[b.id];
+
+                      // If chat has images, prioritize vision models
+                      if (chatHasImages) {
+                        const aHasVision = aConfig?.supportsVision || false;
+                        const bHasVision = bConfig?.supportsVision || false;
+                        if (aHasVision && !bHasVision) return -1;
+                        if (!aHasVision && bHasVision) return 1;
+                      }
+
+                      const aDisabled = aConfig?.disabled || false;
+                      const bDisabled = bConfig?.disabled || false;
+                      const aRestricted =
+                        (aConfig?.requiresPro || aConfig?.requiresStarter || false) &&
+                        !hasAccessToModel(a.id);
+                      const bRestricted =
+                        (bConfig?.requiresPro || bConfig?.requiresStarter || false) &&
+                        !hasAccessToModel(b.id);
+
+                      // Disabled models go last
+                      if (aDisabled && !bDisabled) return 1;
+                      if (!aDisabled && bDisabled) return -1;
+
+                      // Restricted models go after available but before disabled
+                      if (aRestricted && !bRestricted) return 1;
+                      if (!aRestricted && bRestricted) return -1;
+
+                      return 0;
+                    })
+                    .map((availableModel) => {
+                      const config = MODEL_CONFIG[availableModel.id];
+                      const isDisabled = config?.disabled || false;
+                      const requiresPro = config?.requiresPro || false;
+                      const requiresStarter = config?.requiresStarter || false;
+                      const hasAccess = hasAccessToModel(availableModel.id);
+                      const isRestricted = (requiresPro || requiresStarter) && !hasAccess;
+
+                      // Disable non-vision models if chat has images
+                      const isDisabledDueToImages = chatHasImages && !config?.supportsVision;
+                      const effectivelyDisabled = isDisabled || isDisabledDueToImages;
+
+                      return (
+                        <DropdownMenuItem
+                          key={`advanced-${availableModel.id}`}
+                          onClick={() => {
+                            if (effectivelyDisabled) return;
+                            if (isRestricted) {
+                              const modelConfig = MODEL_CONFIG[availableModel.id];
+                              setSelectedModelName(modelConfig?.displayName || availableModel.id);
+                              setUpgradeDialogOpen(true);
+                            } else {
+                              setModel(availableModel.id);
+                              setShowAdvanced(false);
+                            }
+                          }}
+                          className={`flex items-center justify-between group ${
+                            effectivelyDisabled ? "opacity-50 cursor-not-allowed" : ""
+                          } ${isRestricted ? "hover:bg-purple-50 dark:hover:bg-purple-950/20" : ""}`}
+                          disabled={effectivelyDisabled}
+                        >
+                          <div className="flex items-center gap-2 flex-1">
+                            <div className="text-sm">{getDisplayName(availableModel.id, true)}</div>
+                          </div>
+                          {model === availableModel.id && <Check className="h-4 w-4" />}
+                        </DropdownMenuItem>
+                      );
+                    })}
+              </div>
+            </div>
+          </div>
         </DropdownMenuContent>
       </DropdownMenu>
 
