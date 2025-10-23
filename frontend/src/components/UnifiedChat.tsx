@@ -35,7 +35,8 @@ import {
   SquarePen,
   Search,
   Loader2,
-  Globe
+  Globe,
+  Brain
 } from "lucide-react";
 import RecordRTC from "recordrtc";
 import { useQueryClient } from "@tanstack/react-query";
@@ -2532,6 +2533,38 @@ export function UnifiedChat() {
                               />
                             </Button>
                           )}
+
+                          {/* Thinking toggle button - only visible when reasoning model is selected */}
+                          {(localState.model === "deepseek-r1-0528" ||
+                            localState.model === "deepseek-v31-terminus") && (
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              className="h-8 w-8 p-0"
+                              onClick={() => {
+                                const newThinkingState = !localState.thinkingEnabled;
+                                localState.setThinkingEnabled(newThinkingState);
+                                // Switch between R1 (thinking) and V3.1 (no thinking)
+                                localState.setModel(
+                                  newThinkingState ? "deepseek-r1-0528" : "deepseek-v31-terminus"
+                                );
+                              }}
+                              aria-label={
+                                localState.thinkingEnabled
+                                  ? "Disable thinking mode"
+                                  : "Enable thinking mode"
+                              }
+                            >
+                              <Brain
+                                className={`h-4 w-4 ${
+                                  localState.thinkingEnabled
+                                    ? "text-purple-500"
+                                    : "text-muted-foreground"
+                                }`}
+                              />
+                            </Button>
+                          )}
                         </div>
 
                         <div className="flex items-center gap-2">
@@ -2735,6 +2768,38 @@ export function UnifiedChat() {
                             <Globe
                               className={`h-4 w-4 ${
                                 isWebSearchEnabled ? "text-blue-500" : "text-muted-foreground"
+                              }`}
+                            />
+                          </Button>
+                        )}
+
+                        {/* Thinking toggle button - only visible when reasoning model is selected */}
+                        {(localState.model === "deepseek-r1-0528" ||
+                          localState.model === "deepseek-v31-terminus") && (
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            className="h-8 w-8 p-0"
+                            onClick={() => {
+                              const newThinkingState = !localState.thinkingEnabled;
+                              localState.setThinkingEnabled(newThinkingState);
+                              // Switch between R1 (thinking) and V3.1 (no thinking)
+                              localState.setModel(
+                                newThinkingState ? "deepseek-r1-0528" : "deepseek-v31-terminus"
+                              );
+                            }}
+                            aria-label={
+                              localState.thinkingEnabled
+                                ? "Disable thinking mode"
+                                : "Enable thinking mode"
+                            }
+                          >
+                            <Brain
+                              className={`h-4 w-4 ${
+                                localState.thinkingEnabled
+                                  ? "text-purple-500"
+                                  : "text-muted-foreground"
                               }`}
                             />
                           </Button>
