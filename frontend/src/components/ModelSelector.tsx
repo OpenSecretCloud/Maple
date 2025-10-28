@@ -328,8 +328,9 @@ export function ModelSelector({ hasImages = false }: { hasImages?: boolean }) {
         <DropdownMenuContent align="start" className="w-72">
           {availableModels &&
             Array.isArray(availableModels) &&
-            // Sort models: vision-capable first (if images present), then available, then restricted, then disabled
+            // Filter out unknown models (not in MODEL_CONFIG), then sort: vision-capable first (if images present), then available, then restricted, then disabled
             [...availableModels]
+              .filter((m) => MODEL_CONFIG[m.id] !== undefined)
               .sort((a, b) => {
                 const aConfig = MODEL_CONFIG[a.id];
                 const bConfig = MODEL_CONFIG[b.id];
@@ -342,9 +343,8 @@ export function ModelSelector({ hasImages = false }: { hasImages?: boolean }) {
                   if (!aHasVision && bHasVision) return 1;
                 }
 
-                // Unknown models are treated as disabled
-                const aDisabled = aConfig?.disabled || !aConfig;
-                const bDisabled = bConfig?.disabled || !bConfig;
+                const aDisabled = aConfig?.disabled || false;
+                const bDisabled = bConfig?.disabled || false;
                 const aRestricted =
                   (aConfig?.requiresPro || aConfig?.requiresStarter || false) &&
                   !hasAccessToModel(a.id);
@@ -364,8 +364,7 @@ export function ModelSelector({ hasImages = false }: { hasImages?: boolean }) {
               })
               .map((availableModel) => {
                 const config = MODEL_CONFIG[availableModel.id];
-                // Unknown models are treated as disabled
-                const isDisabled = config?.disabled || !config;
+                const isDisabled = config?.disabled || false;
                 const requiresPro = config?.requiresPro || false;
                 const requiresStarter = config?.requiresStarter || false;
                 const hasAccess = hasAccessToModel(availableModel.id);
