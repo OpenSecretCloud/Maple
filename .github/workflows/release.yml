@@ -317,11 +317,11 @@ jobs:
             "platforms": {
               "darwin-x86_64": {
                 "signature": "${MACOS_SIG}",
-                "url": "https://github.com/OpenSecretCloud/Maple/releases/download/${VERSION}/Maple_universal.app.tar.gz"
+                "url": "https://github.com/OpenSecretCloud/Maple/releases/download/${VERSION}/Maple_${VERSION#v}_universal.app.tar.gz"
               },
               "darwin-aarch64": {
                 "signature": "${MACOS_SIG}",
-                "url": "https://github.com/OpenSecretCloud/Maple/releases/download/${VERSION}/Maple_universal.app.tar.gz"
+                "url": "https://github.com/OpenSecretCloud/Maple/releases/download/${VERSION}/Maple_${VERSION#v}_universal.app.tar.gz"
               },
               "linux-x86_64": {
                 "signature": "${LINUX_X64_SIG}",
