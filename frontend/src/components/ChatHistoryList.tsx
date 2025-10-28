@@ -464,7 +464,7 @@ export function ChatHistoryList({
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <button
-                  className={`z-50 bg-background/80 absolute right-2 top-1/2 transform -translate-y-1/2 text-primary transition-opacity ${
+                  className={`z-50 bg-background/80 absolute right-2 top-1/2 transform -translate-y-1/2 text-primary transition-opacity p-2 ${
                     isMobile ? "opacity-100" : "opacity-0 group-hover:opacity-100"
                   }`}
                   onClick={(e) => {
@@ -541,7 +541,7 @@ export function ChatHistoryList({
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
                         <button
-                          className={`z-50 bg-background/80 absolute right-2 top-1/2 transform -translate-y-1/2 text-primary transition-opacity ${
+                          className={`z-50 bg-background/80 absolute right-2 top-1/2 transform -translate-y-1/2 text-primary transition-opacity p-2 ${
                             isMobile ? "opacity-100" : "opacity-0 group-hover:opacity-100"
                           }`}
                           onClick={(e) => {
