@@ -100,6 +100,7 @@ jobs:
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
+          assetNamePattern: '[name]_[version]_[arch].[ext]'
 
   build-android:
     needs: create-release
@@ -324,7 +325,7 @@ jobs:
               },
               "linux-x86_64": {
                 "signature": "${LINUX_X64_SIG}",
-                "url": "https://github.com/OpenSecretCloud/Maple/releases/download/${VERSION}/Maple_0.1.0_amd64.AppImage"
+                "url": "https://github.com/OpenSecretCloud/Maple/releases/download/${VERSION}/Maple_${VERSION#v}_amd64.AppImage"
               }
             }
           }
