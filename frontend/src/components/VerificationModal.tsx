@@ -17,8 +17,9 @@ export function VerificationModal() {
   const os = useOpenSecret();
   const [isOpen, setIsOpen] = useState(() => {
     if (!os.auth.user) return false;
-    // Skip email verification in local development
-    return !import.meta.env.DEV && !os.auth.user.user.email_verified;
+    // Skip email verification for guest users and in local development
+    const isGuestUser = os.auth.user.user.login_method?.toLowerCase() === "guest";
+    return !import.meta.env.DEV && !isGuestUser && !os.auth.user.user.email_verified;
   });
   const [isResending, setIsResending] = useState(false);
   const [justResent, setJustResent] = useState(false);
@@ -35,15 +36,18 @@ export function VerificationModal() {
       setError(null);
       setJustResent(false);
     } else {
-      // Skip email verification in local development
-      const shouldRequireVerification = !import.meta.env.DEV && !os.auth.user.user.email_verified;
+      // Skip email verification for guest users and in local development
+      const isGuestUser = os.auth.user.user.login_method?.toLowerCase() === "guest";
+      const shouldRequireVerification =
+        !import.meta.env.DEV && !isGuestUser && !os.auth.user.user.email_verified;
       setIsOpen(shouldRequireVerification);
     }
   }, [os.auth.user]);
 
   const handleOpenChange = (open: boolean) => {
-    // Allow closing if the email is verified or in local development
-    if (!open && (os.auth.user?.user.email_verified || import.meta.env.DEV)) {
+    // Allow closing if the email is verified, in local development, or guest user
+    const isGuestUser = os.auth.user?.user.login_method?.toLowerCase() === "guest";
+    if (!open && (os.auth.user?.user.email_verified || import.meta.env.DEV || isGuestUser)) {
       setIsOpen(false);
       // Reset form state when modal closes
       setVerificationCode("");
