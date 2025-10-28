@@ -43,6 +43,7 @@ export function ApiCreditsSection({ showSuccessMessage = false }: ApiCreditsSect
   const isMobilePlatform = isMobile();
 
   const userEmail = auth.user?.user.email;
+  const isGuestUser = auth.user?.user.login_method?.toLowerCase() === "guest";
 
   useEffect(() => {
     if (showSuccessMessage) {
@@ -124,16 +125,10 @@ export function ApiCreditsSection({ showSuccessMessage = false }: ApiCreditsSect
         // For mobile platforms, we would need special handling with invoke("plugin:opener|open_url"), but that's not needed here.
         window.location.href = response.checkout_url;
       } else {
-        // For Zaprite, we need the user's email
-        if (!userEmail) {
-          setPurchaseError("Email is required for Bitcoin payments");
-          setIsPurchasing(false);
-          setPaymentMethod(null);
-          return;
-        }
+        // For Zaprite, guest users pass empty string (backend infers from JWT)
         const response = await billingService.purchaseApiCreditsZaprite({
           credits: finalPackage.credits,
-          email: userEmail,
+          email: userEmail || "",
           success_url: successUrl
         });
 
@@ -294,11 +289,13 @@ export function ApiCreditsSection({ showSuccessMessage = false }: ApiCreditsSect
             onClick={() => handlePurchase("stripe")}
             disabled={
               isPurchasing ||
+              isGuestUser ||
               (showCustomAmount &&
                 (!customAmount || parseInt(customAmount) < 10 || parseInt(customAmount) > 1000))
             }
             className="flex-1 w-full sm:w-auto"
             size="default"
+            title={isGuestUser ? "Anonymous accounts must use Bitcoin" : undefined}
           >
             {isPurchasing && paymentMethod === "stripe" ? (
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -312,14 +309,12 @@ export function ApiCreditsSection({ showSuccessMessage = false }: ApiCreditsSect
             onClick={() => handlePurchase("zaprite")}
             disabled={
               isPurchasing ||
-              !userEmail ||
               (showCustomAmount &&
                 (!customAmount || parseInt(customAmount) < 10 || parseInt(customAmount) > 1000))
             }
             variant="outline"
             className="flex-1 w-full sm:w-auto"
             size="default"
-            title={!userEmail ? "Email required for Bitcoin payments" : undefined}
           >
             {isPurchasing && paymentMethod === "zaprite" ? (
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />

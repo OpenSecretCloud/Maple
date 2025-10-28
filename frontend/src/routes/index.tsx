@@ -4,6 +4,7 @@ import { UnifiedChat } from "@/components/UnifiedChat";
 import { Marketing } from "@/components/Marketing";
 import { TopNav } from "@/components/TopNav";
 import { VerificationModal } from "@/components/VerificationModal";
+import { GuestPaymentWarningDialog } from "@/components/GuestPaymentWarningDialog";
 import { TeamManagementDialog } from "@/components/team/TeamManagementDialog";
 import { ApiKeyManagementDialog } from "@/components/apikeys/ApiKeyManagementDialog";
 import { useOpenSecret } from "@opensecret/react";
@@ -38,7 +39,7 @@ function Index() {
   const navigate = useNavigate();
   const os = useOpenSecret();
   const queryClient = useQueryClient();
-  const { setBillingStatus } = useLocalState();
+  const { setBillingStatus, billingStatus } = useLocalState();
 
   const { login, next, team_setup, credits_success } = Route.useSearch();
 
@@ -46,6 +47,7 @@ function Index() {
   const [teamDialogOpen, setTeamDialogOpen] = useState(false);
   const [apiKeyDialogOpen, setApiKeyDialogOpen] = useState(false);
   const [showCreditSuccess, setShowCreditSuccess] = useState(false);
+  const [showGuestPaymentWarning, setShowGuestPaymentWarning] = useState(false);
 
   // Proactively fetch billing status for authenticated users
   useQuery({
@@ -103,6 +105,21 @@ function Index() {
     }
   }, [credits_success, os.auth.user, navigate, queryClient]);
 
+  // Check if guest user needs to pay
+  const isGuestUser = os.auth.user?.user.login_method?.toLowerCase() === "guest";
+  const isOnFreePlan = billingStatus?.product_name?.toLowerCase().includes("free") ?? false;
+  const shouldShowGuestPaymentWarning = isGuestUser && isOnFreePlan && billingStatus !== null;
+
+  // Show guest payment warning if needed (but not on pricing page)
+  useEffect(() => {
+    const currentPath = window.location.pathname;
+    if (shouldShowGuestPaymentWarning && currentPath !== "/pricing") {
+      setShowGuestPaymentWarning(true);
+    } else {
+      setShowGuestPaymentWarning(false);
+    }
+  }, [shouldShowGuestPaymentWarning]);
+
   // Show marketing page for non-authenticated users
   if (!os.auth.user) {
     return (
@@ -121,6 +138,10 @@ function Index() {
 
       {/* Modals */}
       <VerificationModal />
+      <GuestPaymentWarningDialog
+        open={showGuestPaymentWarning}
+        onOpenChange={setShowGuestPaymentWarning}
+      />
 
       {/* Team Management Dialog */}
       <TeamManagementDialog

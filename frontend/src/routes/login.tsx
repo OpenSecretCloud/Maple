@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { AlertDestructive } from "@/components/AlertDestructive";
-import { Loader2, Github, Mail } from "lucide-react";
+import { Loader2, Github, Mail, UserCircle } from "lucide-react";
 import { Google } from "@/components/icons/Google";
 import { Apple } from "@/components/icons/Apple";
 import { AuthMain } from "@/components/AuthMain";
@@ -31,7 +31,7 @@ export const Route = createFileRoute("/login")({
   })
 });
 
-type LoginMethod = "email" | "github" | "google" | "apple" | null;
+type LoginMethod = "email" | "github" | "google" | "apple" | "guest" | null;
 
 function LoginPage() {
   const navigate = useNavigate();
@@ -163,6 +163,45 @@ function LoginPage() {
     } catch (error) {
       console.error("Failed to initiate Google login:", error);
       setError("Failed to initiate Google login. Please try again.");
+    }
+  };
+
+  const handleGuestSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    setIsLoading(true);
+    setError(null);
+    const formData = new FormData(e.currentTarget);
+    const uuid = formData.get("uuid") as string;
+    const password = formData.get("password") as string;
+
+    try {
+      await os.signInGuest(uuid, password);
+      // Clear any existing billing token to prevent session mixing
+      try {
+        getBillingService().clearToken();
+      } catch (billingError) {
+        console.warn("Failed to clear billing token:", billingError);
+      }
+      setTimeout(() => {
+        if (selected_plan) {
+          navigate({
+            to: "/pricing",
+            search: { selected_plan }
+          });
+        } else {
+          navigate({ to: next || "/" });
+        }
+        window.scrollTo(0, 0);
+      }, 100);
+    } catch (error) {
+      console.error(error);
+      if (error instanceof Error) {
+        setError(`${error.message}`);
+      } else {
+        setError("Something went wrong. Please try again.");
+      }
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -306,6 +345,10 @@ function LoginPage() {
             inviteCode=""
           />
         )}
+        <Button onClick={() => setLoginMethod("guest")} className="w-full">
+          <UserCircle className="mr-2 h-4 w-4" />
+          Log in as Anonymous
+        </Button>
         <div className="text-center text-sm">
           Need an account?{" "}
           <Link to="/signup" search={next ? { next } : undefined} className="underline">
@@ -313,6 +356,62 @@ function LoginPage() {
           </Link>
         </div>
       </AuthMain>
+    );
+  }
+
+  if (loginMethod === "guest") {
+    return (
+      <form onSubmit={handleGuestSubmit}>
+        <AuthMain title="Log In as Anonymous" description="Enter your Account ID and password.">
+          {error && <AlertDestructive title="Error" description={error} />}
+          <div className="grid gap-2">
+            <Label htmlFor="uuid">Account ID</Label>
+            <Input
+              id="uuid"
+              name="uuid"
+              type="text"
+              placeholder="Your Account ID"
+              required
+              autoComplete="username"
+              className="font-mono"
+            />
+          </div>
+          <div className="grid gap-2">
+            <Label htmlFor="password">Password</Label>
+            <Input
+              id="password"
+              name="password"
+              type="password"
+              required
+              autoComplete="current-password"
+            />
+          </div>
+          <Button type="submit" className="w-full" disabled={isLoading}>
+            {isLoading ? (
+              <>
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                Please wait
+              </>
+            ) : (
+              "Log In"
+            )}
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => setLoginMethod(null)}
+            className="w-full"
+          >
+            Back
+          </Button>
+          <div className="text-center text-sm">
+            Need an account?{" "}
+            <Link to="/signup" search={next ? { next } : undefined} className="underline">
+              Sign up
+            </Link>
+          </div>
+        </AuthMain>
+      </form>
     );
   }
 

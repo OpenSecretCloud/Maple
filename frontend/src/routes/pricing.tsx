@@ -188,6 +188,7 @@ function PricingPage() {
   const os = useOpenSecret();
   const { setBillingStatus } = useLocalState();
   const isLoggedIn = !!os.auth.user;
+  const isGuestUser = os.auth.user?.user.login_method?.toLowerCase() === "guest";
   const { selected_plan } = Route.useSearch();
 
   // Use platform detection functions
@@ -207,12 +208,12 @@ function PricingPage() {
     enabled: isLoggedIn
   });
 
-  // Auto-enable Bitcoin toggle for Zaprite users (except on mobile platforms)
+  // Auto-enable Bitcoin toggle for Zaprite users (except on mobile platforms) and guest users
   useEffect(() => {
-    if (freshBillingStatus?.payment_provider === "zaprite" && !isMobilePlatform) {
+    if ((freshBillingStatus?.payment_provider === "zaprite" && !isMobilePlatform) || isGuestUser) {
       setUseBitcoin(true);
     }
-  }, [freshBillingStatus?.payment_provider, isMobilePlatform]);
+  }, [freshBillingStatus?.payment_provider, isMobilePlatform, isGuestUser]);
 
   // Always try to fetch portal URL if logged in
   const { data: portalUrl } = useQuery({
@@ -347,8 +348,8 @@ function PricingPage() {
         return;
       }
 
-      // Check if email is verified before proceeding to checkout (skip in dev mode)
-      if (!import.meta.env.DEV && !os.auth.user?.user.email_verified) {
+      // Check if email is verified before proceeding (skip for guests and in dev mode)
+      if (!import.meta.env.DEV && !isGuestUser && !os.auth.user?.user.email_verified) {
         console.log("Email verification required before checkout");
         return;
       }
@@ -356,8 +357,11 @@ function PricingPage() {
       setLoadingProductId(productId);
       try {
         const billingService = getBillingService();
-        const email = os.auth.user?.user.email;
-        if (!email) {
+
+        // For guest users, pass empty string (backend infers user from JWT token)
+        const email = isGuestUser ? "" : os.auth.user?.user.email || "";
+
+        if (!email && !isGuestUser) {
           throw new Error("User email not found");
         }
 
@@ -410,6 +414,7 @@ function PricingPage() {
       navigate,
       os.auth.user?.user.email,
       os.auth.user?.user.email_verified,
+      isGuestUser,
       useBitcoin,
       isMobilePlatform
     ]
@@ -892,7 +897,7 @@ function PricingPage() {
           );
         })()}
 
-        <div className="w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex justify-center mt-8">
+        <div className="w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col items-center gap-3 mt-8">
           <div className="inline-flex items-center gap-4 px-6 py-2.5 rounded-full bg-[hsl(var(--marketing-card))]/50 backdrop-blur-sm border border-[hsl(var(--marketing-card-border))]">
             <div className="flex items-center gap-2 text-[hsl(var(--bitcoin))] text-base font-light">
               <Bitcoin className="w-4.5 h-4.5" />
@@ -902,9 +907,15 @@ function PricingPage() {
               id="bitcoin-toggle"
               checked={useBitcoin}
               onCheckedChange={setUseBitcoin}
+              disabled={isGuestUser}
               className="data-[state=checked]:bg-[hsl(var(--bitcoin))] data-[state=unchecked]:border-foreground/30 scale-100"
             />
           </div>
+          {isGuestUser && (
+            <div className="text-sm text-amber-600 dark:text-amber-500 font-medium">
+              Anonymous accounts must pay with Bitcoin (yearly only)
+            </div>
+          )}
         </div>
 
         <PricingFAQ />
