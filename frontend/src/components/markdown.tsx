@@ -6,7 +6,7 @@ import RemarkBreaks from "remark-breaks";
 import RehypeKatex from "rehype-katex";
 import RemarkGfm from "remark-gfm";
 import RehypeHighlight from "rehype-highlight";
-import RehypeSanitize from "rehype-sanitize";
+import RehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import { useRef, useState, RefObject, useEffect, useMemo } from "react";
 import React from "react";
 import { Button } from "./ui/button";
@@ -341,8 +341,22 @@ function MarkDownContentToMemo(props: { content: string }) {
     <ReactMarkdown
       remarkPlugins={[RemarkMath, RemarkGfm, RemarkBreaks]}
       rehypePlugins={[
+        [
+          RehypeSanitize,
+          {
+            ...defaultSchema,
+            attributes: {
+              ...defaultSchema.attributes,
+              code: [
+                ...(defaultSchema.attributes?.code || []),
+                ["className", /^language-./, "math-inline", "math-display"]
+              ],
+              span: [...(defaultSchema.attributes?.span || []), ["className", /^katex/]],
+              div: [...(defaultSchema.attributes?.div || []), ["className", "katex-display"]]
+            }
+          }
+        ],
         RehypeKatex,
-        RehypeSanitize,
         [
           RehypeHighlight,
           {
