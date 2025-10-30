@@ -42,6 +42,13 @@ export const MODEL_CONFIG: Record<string, ModelCfg> = {
     supportsVision: true,
     tokenLimit: 20000
   },
+  "gemma-3-27b": {
+    displayName: "Gemma 3 27B",
+    shortName: "Gemma 3",
+    requiresStarter: true,
+    supportsVision: true,
+    tokenLimit: 20000
+  },
   "deepseek-r1-0528": {
     displayName: "DeepSeek R1 671B",
     shortName: "DeepSeek R1",
@@ -222,7 +229,7 @@ export function ModelSelector({ hasImages = false }: { hasImages?: boolean }) {
     const isStarter = planName.includes("starter");
 
     // Gemma: "starter" for starter users, "pro" for others
-    if (modelId === "leon-se/gemma-3-27b-it-fp8-dynamic") {
+    if (modelId === "gemma-3-27b" || modelId === "leon-se/gemma-3-27b-it-fp8-dynamic") {
       return isStarter ? ["Starter"] : ["Pro"];
     }
 
@@ -331,6 +338,18 @@ export function ModelSelector({ hasImages = false }: { hasImages?: boolean }) {
             // Filter out unknown models (not in MODEL_CONFIG), then sort: vision-capable first (if images present), then available, then restricted, then disabled
             [...availableModels]
               .filter((m) => MODEL_CONFIG[m.id] !== undefined)
+              // Deduplicate: prefer short names over long names for backward compatibility
+              .filter((m) => {
+                // If this is the long gemma name, only include it if the short name isn't present
+                if (m.id === "leon-se/gemma-3-27b-it-fp8-dynamic") {
+                  return !availableModels.some((model) => model.id === "gemma-3-27b");
+                }
+                // If this is the long llama name, only include it if the short name isn't present
+                if (m.id === "ibnzterrell/Meta-Llama-3.3-70B-Instruct-AWQ-INT4") {
+                  return !availableModels.some((model) => model.id === "llama-3.3-70b");
+                }
+                return true;
+              })
               .sort((a, b) => {
                 const aConfig = MODEL_CONFIG[a.id];
                 const bConfig = MODEL_CONFIG[b.id];
