@@ -55,7 +55,7 @@ function TeamInviteAcceptance() {
 
   const handleAcceptInvite = async () => {
     if (!userEmail) {
-      setError("Unable to determine your email address");
+      setError("Unable to determine your email address. Please refresh the page and try again.");
       return;
     }
 
@@ -63,8 +63,11 @@ function TeamInviteAcceptance() {
     setError(null);
 
     try {
+      console.log("[TeamInvite] Attempting to accept invite:", inviteId);
       const billingService = getBillingService();
       await billingService.acceptTeamInvite(inviteId, { email: userEmail });
+
+      console.log("[TeamInvite] Successfully accepted invite");
 
       // Invalidate relevant queries
       await queryClient.invalidateQueries({ queryKey: ["teamStatus"] });
@@ -77,8 +80,29 @@ function TeamInviteAcceptance() {
         navigate({ to: "/" });
       }, 2000);
     } catch (err) {
-      console.error("Failed to accept invite:", err);
-      setError(err instanceof Error ? err.message : "Failed to accept invitation");
+      console.error("[TeamInvite] Failed to accept invite:", err);
+
+      // Provide user-friendly error messages
+      let errorMessage = "Failed to accept invitation. Please try again.";
+
+      if (err instanceof Error) {
+        const message = err.message.toLowerCase();
+
+        if (message.includes("unauthorized") || message.includes("401")) {
+          errorMessage = "Your session has expired. Please refresh the page and try again.";
+        } else if (message.includes("already a member")) {
+          errorMessage = "You are already a member of this team.";
+        } else if (message.includes("invalid") || message.includes("expired")) {
+          errorMessage = "This invitation link is no longer valid.";
+        } else if (message.includes("network") || message.includes("fetch")) {
+          errorMessage = "Network error. Please check your connection and try again.";
+        } else if (err.message) {
+          // Use the actual error message if it's specific enough
+          errorMessage = err.message;
+        }
+      }
+
+      setError(errorMessage);
     } finally {
       setIsProcessing(false);
     }
@@ -203,7 +227,15 @@ function TeamInviteAcceptance() {
               {error && (
                 <Alert variant="destructive">
                   <AlertCircle className="h-4 w-4" />
-                  <AlertDescription>{error}</AlertDescription>
+                  <AlertDescription>
+                    <div className="space-y-2">
+                      <p>{error}</p>
+                      {!error.includes("already a member") &&
+                        !error.includes("no longer valid") && (
+                          <p className="text-xs">Click "Accept Invitation" to try again.</p>
+                        )}
+                    </div>
+                  </AlertDescription>
                 </Alert>
               )}
 
