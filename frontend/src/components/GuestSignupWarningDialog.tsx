@@ -59,7 +59,9 @@ export function GuestSignupWarningDialog({
               <Checkbox
                 id="bitcoin-payment"
                 checked={bitcoinPaymentAgreed}
-                onCheckedChange={(checked) => setBitcoinPaymentAgreed(checked === true)}
+                onCheckedChange={(checked: boolean | "indeterminate") =>
+                  setBitcoinPaymentAgreed(checked === true)
+                }
               />
               <div className="grid gap-1.5 leading-none">
                 <Label
@@ -78,7 +80,9 @@ export function GuestSignupWarningDialog({
               <Checkbox
                 id="no-support"
                 checked={noSupportAgreed}
-                onCheckedChange={(checked) => setNoSupportAgreed(checked === true)}
+                onCheckedChange={(checked: boolean | "indeterminate") =>
+                  setNoSupportAgreed(checked === true)
+                }
               />
               <div className="grid gap-1.5 leading-none">
                 <Label
@@ -96,7 +100,9 @@ export function GuestSignupWarningDialog({
               <Checkbox
                 id="backup-credentials"
                 checked={backupCredentialsAgreed}
-                onCheckedChange={(checked) => setBackupCredentialsAgreed(checked === true)}
+                onCheckedChange={(checked: boolean | "indeterminate") =>
+                  setBackupCredentialsAgreed(checked === true)
+                }
               />
               <div className="grid gap-1.5 leading-none">
                 <Label

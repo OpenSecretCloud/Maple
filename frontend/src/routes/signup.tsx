@@ -390,7 +390,8 @@ function SignupPage() {
                 placeholder="Create a strong password"
               />
               <p className="text-xs text-muted-foreground">
-                You'll need this password along with your Account ID to sign in.
+                You'll need this password along with your Account ID to sign in. Your Account ID
+                will be shown in the next step.
               </p>
             </div>
             <Button type="submit" className="w-full" disabled={isLoading}>
