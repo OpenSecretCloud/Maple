@@ -47,7 +47,7 @@ export function GuestPaymentWarningDialog({ open, onOpenChange }: GuestPaymentWa
         <div className="space-y-4 py-4">
           <div className="rounded-lg border border-amber-500/50 bg-amber-500/10 p-4 space-y-3">
             <p className="text-sm font-medium">
-              Your anonymous account is currently on the Free plan and cannot use the chat feature.
+              Your anonymous account is not activated yet and cannot use the chat feature.
             </p>
             <p className="text-sm text-muted-foreground">
               To start chatting with Maple AI, you need to subscribe to a paid plan. Anonymous
