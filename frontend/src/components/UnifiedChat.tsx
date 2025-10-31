@@ -245,9 +245,9 @@ function ToolCallRenderer({
                 {query ? `Searched: "${query}"` : "Web Search"}
               </span>
             </div>
-            {/* Search result - indented to align with text */}
-            <div className="pl-6 text-foreground/80 whitespace-pre-wrap break-words">
-              {isExpanded ? output : preview}
+            {/* Search result - indented to align with text, render as markdown for links */}
+            <div className="pl-6 text-foreground/80">
+              <Markdown content={isExpanded ? output : preview} fontSize={14} />
               {hasMore && (
                 <button
                   onClick={() => setIsExpanded(!isExpanded)}
@@ -275,9 +275,9 @@ function ToolCallRenderer({
             <Check className="h-4 w-4 text-green-600 dark:text-green-400 flex-shrink-0" />
             <span className="font-medium text-foreground">{statusText}</span>
           </div>
-          {/* Tool output - indented */}
-          <div className="pl-6 text-foreground/80 whitespace-pre-wrap break-words">
-            {isExpanded ? output : preview}
+          {/* Tool output - indented, render as markdown for links */}
+          <div className="pl-6 text-foreground/80">
+            <Markdown content={isExpanded ? output : preview} fontSize={14} />
             {hasMore && (
               <button
                 onClick={() => setIsExpanded(!isExpanded)}
@@ -328,8 +328,8 @@ function ToolCallRenderer({
           <Check className="h-4 w-4 text-green-600 dark:text-green-400 flex-shrink-0" />
           <span className="font-medium text-foreground">Tool Result</span>
         </div>
-        <div className="pl-6 text-foreground/80 whitespace-pre-wrap break-words">
-          {isExpanded ? output : preview}
+        <div className="pl-6 text-foreground/80">
+          <Markdown content={isExpanded ? output : preview} fontSize={14} />
           {hasMore && (
             <button
               onClick={() => setIsExpanded(!isExpanded)}
