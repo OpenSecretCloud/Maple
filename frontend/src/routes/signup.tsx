@@ -1,5 +1,5 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { useOpenSecret } from "@opensecret/react";
+import { useOpenSecret, type LoginResponse } from "@opensecret/react";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -17,6 +17,9 @@ import { bytesToHex } from "@noble/hashes/utils";
 import { AppleAuthProvider } from "@/components/AppleAuthProvider";
 import { getBillingService } from "@/billing/billingService";
 import { isIOS, isTauri } from "@/utils/platform";
+import { GuestSignupWarningDialog } from "@/components/GuestSignupWarningDialog";
+import { GuestCredentialsDialog } from "@/components/GuestCredentialsDialog";
+import { UserCircle } from "lucide-react";
 
 type SignupSearchParams = {
   next?: string;
@@ -31,7 +34,7 @@ export const Route = createFileRoute("/signup")({
   })
 });
 
-type SignUpMethod = "email" | "github" | "google" | "apple" | null;
+type SignUpMethod = "email" | "github" | "google" | "apple" | "guest" | null;
 
 function SignupPage() {
   const navigate = useNavigate();
@@ -40,14 +43,17 @@ function SignupPage() {
   const [signUpMethod, setSignUpMethod] = useState<SignUpMethod>(null);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [showGuestWarning, setShowGuestWarning] = useState(false);
+  const [showGuestCredentials, setShowGuestCredentials] = useState(false);
+  const [guestUuid, setGuestUuid] = useState<string | null>(null);
 
   // Use platform detection functions
   const isIOSPlatform = isIOS();
   const isTauriEnv = isTauri();
 
-  // Redirect if already logged in
+  // Redirect if already logged in (but not if we're showing guest credentials)
   useEffect(() => {
-    if (os.auth.user) {
+    if (os.auth.user && !showGuestCredentials) {
       if (selected_plan) {
         navigate({
           to: "/pricing",
@@ -57,7 +63,7 @@ function SignupPage() {
         navigate({ to: next || "/" });
       }
     }
-  }, [os.auth.user, navigate, next, selected_plan]);
+  }, [os.auth.user, navigate, next, selected_plan, showGuestCredentials]);
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -164,6 +170,47 @@ function SignupPage() {
       console.error("Failed to initiate Google signup:", error);
       setError("Failed to initiate Google signup. Please try again.");
     }
+  };
+
+  const handleGuestWarningAccept = () => {
+    setShowGuestWarning(false);
+    setSignUpMethod("guest");
+  };
+
+  const handleGuestSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    setIsLoading(true);
+    setError(null);
+    const formData = new FormData(e.currentTarget);
+    const password = formData.get("password") as string;
+
+    try {
+      const response: LoginResponse = await os.signUpGuest(password, "");
+      setGuestUuid(response.id);
+      // Clear any existing billing token to prevent session mixing
+      try {
+        getBillingService().clearToken();
+      } catch (billingError) {
+        console.warn("Failed to clear billing token:", billingError);
+      }
+      // Show credentials dialog
+      setShowGuestCredentials(true);
+    } catch (error) {
+      console.error(error);
+      if (error instanceof Error) {
+        setError(`${error.message}`);
+      } else {
+        setError("Something went wrong. Please try again.");
+      }
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleGuestCredentialsContinue = () => {
+    setShowGuestCredentials(false);
+    // Navigate to pricing page (guests need to pay immediately)
+    navigate({ to: "/pricing" });
   };
 
   const handleAppleSignup = async () => {
@@ -306,13 +353,76 @@ function SignupPage() {
             inviteCode=""
           />
         )}
+        <Button onClick={() => setShowGuestWarning(true)} className="w-full">
+          <UserCircle className="mr-2 h-4 w-4" />
+          Sign up as Anonymous
+        </Button>
         <div className="text-center text-sm">
           Already have an account?{" "}
           <Link to="/login" search={next ? { next } : undefined} className="underline">
             Log In
           </Link>
         </div>
+        <GuestSignupWarningDialog
+          open={showGuestWarning}
+          onOpenChange={setShowGuestWarning}
+          onAccept={handleGuestWarningAccept}
+        />
       </AuthMain>
+    );
+  }
+
+  if (signUpMethod === "guest") {
+    return (
+      <>
+        <form onSubmit={handleGuestSubmit}>
+          <AuthMain title="Sign Up as Anonymous">
+            {error && <AlertDestructive title="Error" description={error} />}
+            <div className="grid gap-2">
+              <Label htmlFor="password">Create Password</Label>
+              <Input
+                id="password"
+                name="password"
+                type="password"
+                required
+                minLength={8}
+                autoComplete="new-password"
+                placeholder="Create a strong password"
+              />
+              <p className="text-xs text-muted-foreground">
+                You'll need this password along with your Account ID to sign in. Your Account ID
+                will be shown in the next step.
+              </p>
+            </div>
+            <Button type="submit" className="w-full" disabled={isLoading}>
+              {isLoading ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Creating Account...
+                </>
+              ) : (
+                "Create Anonymous Account"
+              )}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setSignUpMethod(null)}
+              className="w-full"
+            >
+              Back
+            </Button>
+          </AuthMain>
+        </form>
+        {guestUuid && (
+          <GuestCredentialsDialog
+            open={showGuestCredentials}
+            onOpenChange={setShowGuestCredentials}
+            uuid={guestUuid}
+            onContinue={handleGuestCredentialsContinue}
+          />
+        )}
+      </>
     );
   }
 

@@ -36,8 +36,9 @@ export function AccountDialog() {
   );
   const { billingStatus } = useLocalState();
 
-  // Check if user is an email user
+  // Check user login method
   const isEmailUser = os.auth.user?.user.login_method === "email";
+  const isGuestUser = os.auth.user?.user.login_method?.toLowerCase() === "guest";
 
   const handleResendVerification = async () => {
     try {
@@ -56,41 +57,43 @@ export function AccountDialog() {
           <DialogDescription>Change your email or upgrade your plan.</DialogDescription>
         </DialogHeader>
         <form className="grid gap-4 py-4">
-          <div className="grid gap-2">
-            <Label htmlFor="email">Email</Label>
-            <div className="flex items-center gap-2">
-              <Input
-                id="email"
-                name="email"
-                type="email"
-                value={os.auth.user?.user.email}
-                disabled
-              />
-              {os.auth.user?.user.email_verified ? (
-                <CheckCircle className="dark:text-green-500 text-green-700" />
-              ) : (
-                <XCircle className="dark:text-red-500 text-red-700" />
-              )}
-            </div>
-            {!os.auth.user?.user.email_verified && (
-              <div className="text-sm text-muted-foreground">
-                {verificationStatus === "unverified" ? (
-                  <>
-                    Unverified -{" "}
-                    <button
-                      type="button"
-                      onClick={handleResendVerification}
-                      className="text-primary hover:underline focus:outline-none"
-                    >
-                      Resend verification email
-                    </button>
-                  </>
+          {!isGuestUser && (
+            <div className="grid gap-2">
+              <Label htmlFor="email">Email</Label>
+              <div className="flex items-center gap-2">
+                <Input
+                  id="email"
+                  name="email"
+                  type="email"
+                  value={os.auth.user?.user.email}
+                  disabled
+                />
+                {os.auth.user?.user.email_verified ? (
+                  <CheckCircle className="dark:text-green-500 text-green-700" />
                 ) : (
-                  "Pending - Check your email for verification link"
+                  <XCircle className="dark:text-red-500 text-red-700" />
                 )}
               </div>
-            )}
-          </div>
+              {!os.auth.user?.user.email_verified && (
+                <div className="text-sm text-muted-foreground">
+                  {verificationStatus === "unverified" ? (
+                    <>
+                      Unverified -{" "}
+                      <button
+                        type="button"
+                        onClick={handleResendVerification}
+                        className="text-primary hover:underline focus:outline-none"
+                      >
+                        Resend verification email
+                      </button>
+                    </>
+                  ) : (
+                    "Pending - Check your email for verification link"
+                  )}
+                </div>
+              )}
+            </div>
+          )}
           <div className="grid gap-2">
             <Label htmlFor="plan">Plan</Label>
             <Select disabled>
@@ -120,7 +123,7 @@ export function AccountDialog() {
             >
               User Preferences
             </Button>
-            {isEmailUser && (
+            {(isEmailUser || isGuestUser) && (
               <DialogTrigger asChild>
                 <Button
                   onClick={(e) => {
@@ -153,7 +156,7 @@ export function AccountDialog() {
           </Button>
         </DialogFooter>
       </DialogContent>
-      {isEmailUser && (
+      {(isEmailUser || isGuestUser) && (
         <ChangePasswordDialog open={isChangePasswordOpen} onOpenChange={setIsChangePasswordOpen} />
       )}
       <DeleteAccountDialog open={isDeleteAccountOpen} onOpenChange={setIsDeleteAccountOpen} />
