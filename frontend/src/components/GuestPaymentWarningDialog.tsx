@@ -30,7 +30,7 @@ export function GuestPaymentWarningDialog({ open, onOpenChange }: GuestPaymentWa
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        className="sm:max-w-[425px] [&>button]:hidden"
+        className="max-w-[calc(100vw-2rem)] sm:max-w-[425px] [&>button]:hidden"
         onInteractOutside={(e) => e.preventDefault()}
         onEscapeKeyDown={(e) => e.preventDefault()}
       >

@@ -50,7 +50,7 @@ export function GuestCredentialsDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        className="sm:max-w-[500px] [&>button]:hidden"
+        className="max-w-[calc(100vw-2rem)] sm:max-w-[500px] max-h-[calc(100vh-2rem)] overflow-y-auto [&>button]:hidden"
         onInteractOutside={(e) => e.preventDefault()}
         onEscapeKeyDown={(e) => e.preventDefault()}
       >
@@ -88,7 +88,7 @@ export function GuestCredentialsDialog({
               Your Account ID
             </Label>
             <div className="flex gap-2">
-              <Input id="uuid" value={uuid} readOnly className="font-mono text-sm" />
+              <Input id="uuid" value={uuid} readOnly className="font-mono text-xs sm:text-sm" />
               <Button
                 type="button"
                 variant="outline"
@@ -128,7 +128,7 @@ export function GuestCredentialsDialog({
             />
             <Label
               htmlFor="backed-up"
-              className="text-sm font-medium leading-relaxed cursor-pointer"
+              className="text-sm font-medium leading-relaxed cursor-pointer break-words"
             >
               I have securely saved my Account ID and understand I cannot recover my account without
               it
