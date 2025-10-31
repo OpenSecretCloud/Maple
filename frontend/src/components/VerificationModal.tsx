@@ -98,7 +98,7 @@ export function VerificationModal() {
 
   return (
     <Dialog open={isOpen} onOpenChange={handleOpenChange}>
-      <DialogContent className="sm:max-w-[425px] [&>button]:hidden">
+      <DialogContent className="max-w-[calc(100vw-2rem)] sm:max-w-[425px] [&>button]:hidden">
         <DialogHeader>
           <DialogTitle>Verify Your Email</DialogTitle>
           <DialogDescription>
