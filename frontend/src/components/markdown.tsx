@@ -12,7 +12,7 @@ import React from "react";
 import { Button } from "./ui/button";
 import { Check, Copy, ChevronDown, ChevronRight, Brain, FileText } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "./ui/dialog";
-import { openExternalUrl } from "@/utils/openUrl";
+import { openExternalUrlWithConfirmation } from "@/utils/openUrl";
 
 async function copyToClipboard(text: string) {
   try {
@@ -376,7 +376,7 @@ function MarkDownContentToMemo(props: { content: string }) {
           const isInternal = /^\/#/i.test(href);
           const target = isInternal ? "_self" : (aProps.target ?? "_blank");
 
-          // For external links, use our openExternalUrl utility to handle Tauri vs web
+          // For external links, show confirmation before opening
           if (!isInternal && href) {
             return (
               <a
@@ -384,7 +384,7 @@ function MarkDownContentToMemo(props: { content: string }) {
                 target={target}
                 onClick={(e) => {
                   e.preventDefault();
-                  openExternalUrl(href);
+                  openExternalUrlWithConfirmation(href);
                 }}
                 style={{ cursor: "pointer" }}
               />
