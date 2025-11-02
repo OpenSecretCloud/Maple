@@ -32,6 +32,9 @@
         },
         {
           "url": "https://opensecret.cloud/*"
+        },
+        {
+          "url": "https://*"
         }
       ]
     },
