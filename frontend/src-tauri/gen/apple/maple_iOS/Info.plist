@@ -43,12 +43,12 @@
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
-			<key>CFBundleURLName</key>
-			<string>cloud.opensecret.maple</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
 				<string>cloud.opensecret.maple</string>
 			</array>
+			<key>CFBundleURLName</key>
+			<string>cloud.opensecret.maple</string>
 		</dict>
 	</array>
 	<key>LSApplicationQueriesSchemes</key>

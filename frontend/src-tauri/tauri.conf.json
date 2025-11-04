@@ -24,6 +24,10 @@
       },
       "mobile": [
         {
+          "scheme": ["cloud.opensecret.maple"],
+          "appLink": false
+        },
+        {
           "host": "trymaple.ai"
         }
       ]

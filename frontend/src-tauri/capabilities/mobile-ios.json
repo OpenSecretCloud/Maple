@@ -8,8 +8,10 @@
   "platforms": ["iOS"],
   "permissions": [
     "core:default",
+    "core:event:default",
     "updater:default",
     "dialog:default",
+    "deep-link:default",
     {
       "identifier": "opener:allow-open-url",
       "allow": [

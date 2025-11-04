@@ -8,7 +8,9 @@
   "platforms": ["android"],
   "permissions": [
     "core:default",
+    "core:event:default",
     "dialog:default",
+    "deep-link:default",
     "fs:default",
     {
       "identifier": "fs:allow-read-file",
