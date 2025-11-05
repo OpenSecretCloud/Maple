@@ -49,7 +49,7 @@ import { fileToDataURL } from "@/utils/file";
 import { useOpenAI } from "@/ai/useOpenAi";
 import { DEFAULT_MODEL_ID } from "@/state/LocalStateContext";
 import { Markdown } from "@/components/markdown";
-import { ModelSelector, MODEL_CONFIG, CATEGORY_MODELS } from "@/components/ModelSelector";
+import { ModelSelector, CATEGORY_MODELS } from "@/components/ModelSelector";
 import { useLocalState } from "@/state/useLocalState";
 import { useOpenSecret } from "@opensecret/react";
 import { UpgradePromptDialog } from "@/components/UpgradePromptDialog";
@@ -1355,18 +1355,6 @@ export function UnifiedChat() {
       });
       setImageUrls(newUrlMap);
       setDraftImages((prev) => [...prev, ...validFiles]);
-
-      // Auto-switch to vision model if needed
-      const supportsVision = MODEL_CONFIG[localState.model]?.supportsVision;
-      if (!supportsVision && validFiles.length > 0) {
-        // Find first vision-capable model user has access to
-        const visionModels = localState.availableModels.filter(
-          (m) => MODEL_CONFIG[m.id]?.supportsVision
-        );
-        if (visionModels.length > 0) {
-          localState.setModel(visionModels[0].id);
-        }
-      }
 
       // Clear input to allow re-uploading same file
       e.target.value = "";
