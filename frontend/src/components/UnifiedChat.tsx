@@ -49,7 +49,7 @@ import { fileToDataURL } from "@/utils/file";
 import { useOpenAI } from "@/ai/useOpenAi";
 import { DEFAULT_MODEL_ID } from "@/state/LocalStateContext";
 import { Markdown } from "@/components/markdown";
-import { ModelSelector, MODEL_CONFIG } from "@/components/ModelSelector";
+import { ModelSelector, MODEL_CONFIG, CATEGORY_MODELS } from "@/components/ModelSelector";
 import { useLocalState } from "@/state/useLocalState";
 import { useOpenSecret } from "@opensecret/react";
 import { UpgradePromptDialog } from "@/components/UpgradePromptDialog";
@@ -2470,8 +2470,8 @@ export function UnifiedChat() {
                           />
 
                           {/* Thinking toggle button - only visible when reasoning model is selected */}
-                          {(localState.model === "deepseek-r1-0528" ||
-                            localState.model === "deepseek-v31-terminus") && (
+                          {(localState.model === CATEGORY_MODELS.reasoning_on ||
+                            localState.model === CATEGORY_MODELS.reasoning_off) && (
                             <Button
                               type="button"
                               variant="ghost"
@@ -2482,7 +2482,9 @@ export function UnifiedChat() {
                                 localState.setThinkingEnabled(newThinkingEnabled);
                                 // Switch between R1 (with thinking) and V3.1 (without)
                                 localState.setModel(
-                                  newThinkingEnabled ? "deepseek-r1-0528" : "deepseek-v31-terminus"
+                                  newThinkingEnabled
+                                    ? CATEGORY_MODELS.reasoning_on
+                                    : CATEGORY_MODELS.reasoning_off
                                 );
                               }}
                               aria-label={
@@ -2709,8 +2711,8 @@ export function UnifiedChat() {
                         />
 
                         {/* Thinking toggle button - only visible when reasoning model is selected */}
-                        {(localState.model === "deepseek-r1-0528" ||
-                          localState.model === "deepseek-v31-terminus") && (
+                        {(localState.model === CATEGORY_MODELS.reasoning_on ||
+                          localState.model === CATEGORY_MODELS.reasoning_off) && (
                           <Button
                             type="button"
                             variant="ghost"
@@ -2721,7 +2723,9 @@ export function UnifiedChat() {
                               localState.setThinkingEnabled(newThinkingEnabled);
                               // Switch between R1 (with thinking) and V3.1 (without)
                               localState.setModel(
-                                newThinkingEnabled ? "deepseek-r1-0528" : "deepseek-v31-terminus"
+                                newThinkingEnabled
+                                  ? CATEGORY_MODELS.reasoning_on
+                                  : CATEGORY_MODELS.reasoning_off
                               );
                             }}
                             aria-label={

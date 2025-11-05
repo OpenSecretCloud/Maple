@@ -117,7 +117,7 @@ export function getModelTokenLimit(modelId: string): number {
 // Model categories for simplified UI
 type ModelCategory = "free" | "quick" | "reasoning" | "math" | "image" | "advanced";
 
-const CATEGORY_MODELS = {
+export const CATEGORY_MODELS = {
   free: "llama-3.3-70b",
   quick: "gpt-oss-120b",
   reasoning_on: "deepseek-r1-0528", // R1 with thinking
