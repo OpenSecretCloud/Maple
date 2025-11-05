@@ -455,204 +455,188 @@ export function ModelSelector({ hasImages = false }: { hasImages?: boolean }) {
             <ChevronDown className="h-3 w-3 opacity-50" />
           </Button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="start" className="w-72 overflow-hidden p-0">
-          <div className="relative">
-            {/* Main Category Menu */}
-            <div
-              className={`transition-transform duration-300 ease-in-out ${
-                showAdvanced ? "-translate-x-full" : "translate-x-0"
-              }`}
-            >
-              <div className="p-1">
-                {/* Category options */}
-                {(["free", "quick", "reasoning", "math", "image"] as const).map((category) => {
-                  const info = CATEGORY_INFO[category];
-                  const Icon = info.icon;
-                  const isActive =
-                    (category === "free" && model === CATEGORY_MODELS.free) ||
-                    (category === "quick" && model === CATEGORY_MODELS.quick) ||
-                    (category === "reasoning" &&
-                      (model === CATEGORY_MODELS.reasoning_on ||
-                        model === CATEGORY_MODELS.reasoning_off)) ||
-                    (category === "math" && model === CATEGORY_MODELS.math) ||
-                    (category === "image" && model === CATEGORY_MODELS.image);
+        <DropdownMenuContent align="start" className="w-72 p-0">
+          {!showAdvanced ? (
+            <div className="p-1 h-[300px] flex flex-col">
+              {/* Category options */}
+              {(["free", "quick", "reasoning", "math", "image"] as const).map((category) => {
+                const info = CATEGORY_INFO[category];
+                const Icon = info.icon;
+                const isActive =
+                  (category === "free" && model === CATEGORY_MODELS.free) ||
+                  (category === "quick" && model === CATEGORY_MODELS.quick) ||
+                  (category === "reasoning" &&
+                    (model === CATEGORY_MODELS.reasoning_on ||
+                      model === CATEGORY_MODELS.reasoning_off)) ||
+                  (category === "math" && model === CATEGORY_MODELS.math) ||
+                  (category === "image" && model === CATEGORY_MODELS.image);
 
-                  // Check if user has access to this category's model
-                  const targetModel =
-                    category === "reasoning"
-                      ? thinkingEnabled
-                        ? CATEGORY_MODELS.reasoning_on
-                        : CATEGORY_MODELS.reasoning_off
-                      : CATEGORY_MODELS[category];
-                  const hasAccess = hasAccessToModel(targetModel);
-                  const targetModelConfig = MODEL_CONFIG[targetModel];
-                  const requiresUpgrade = !hasAccess;
+                // Check if user has access to this category's model
+                const targetModel =
+                  category === "reasoning"
+                    ? thinkingEnabled
+                      ? CATEGORY_MODELS.reasoning_on
+                      : CATEGORY_MODELS.reasoning_off
+                    : CATEGORY_MODELS[category];
+                const hasAccess = hasAccessToModel(targetModel);
+                const targetModelConfig = MODEL_CONFIG[targetModel];
+                const requiresUpgrade = !hasAccess;
 
-                  // Disable non-vision categories if chat has images
-                  const isDisabledDueToImages = chatHasImages && !targetModelConfig?.supportsVision;
-                  const isDisabled = isDisabledDueToImages || targetModelConfig?.disabled;
+                // Disable non-vision categories if chat has images
+                const isDisabledDueToImages = chatHasImages && !targetModelConfig?.supportsVision;
+                const isDisabled = isDisabledDueToImages || targetModelConfig?.disabled;
 
-                  return (
-                    <DropdownMenuItem
-                      key={category}
-                      onClick={() => handleCategorySelect(category)}
-                      className={`flex items-center gap-2 px-3 py-1.5 cursor-pointer ${
-                        isDisabled ? "opacity-50 cursor-not-allowed" : ""
-                      } ${requiresUpgrade ? "hover:bg-purple-50 dark:hover:bg-purple-950/20" : ""}`}
-                      disabled={isDisabled}
-                    >
-                      <Icon className="h-4 w-4 opacity-70" />
-                      <div className="flex-1">
-                        <div className="flex items-center gap-1.5">
-                          <span className="text-sm font-medium">{info.label}</span>
-                          {requiresUpgrade && <Lock className="h-3 w-3 opacity-50" />}
-                        </div>
-                        <div className="text-xs text-muted-foreground">{info.description}</div>
+                return (
+                  <DropdownMenuItem
+                    key={category}
+                    onClick={() => handleCategorySelect(category)}
+                    className={`flex items-center gap-2 px-3 py-1.5 cursor-pointer ${
+                      isDisabled ? "opacity-50 cursor-not-allowed" : ""
+                    } ${requiresUpgrade ? "hover:bg-purple-50 dark:hover:bg-purple-950/20" : ""}`}
+                    disabled={isDisabled}
+                  >
+                    <Icon className="h-4 w-4 opacity-70" />
+                    <div className="flex-1">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-sm font-medium">{info.label}</span>
+                        {requiresUpgrade && <Lock className="h-3 w-3 opacity-50" />}
                       </div>
-                      {isActive && <Check className="h-4 w-4" />}
-                    </DropdownMenuItem>
-                  );
-                })}
+                      <div className="text-xs text-muted-foreground">{info.description}</div>
+                    </div>
+                    {isActive && <Check className="h-4 w-4" />}
+                  </DropdownMenuItem>
+                );
+              })}
 
-                <DropdownMenuSeparator />
+              <DropdownMenuSeparator />
 
-                {/* Advanced option */}
-                <DropdownMenuItem
-                  onSelect={(e) => {
-                    e.preventDefault();
-                    setShowAdvanced(true);
-                  }}
-                  className="flex items-center gap-2 px-3 py-1.5 cursor-pointer"
-                >
-                  <ChevronLeft className="h-4 w-4 opacity-70 rotate-180" />
-                  <div className="flex-1">
-                    <span className="text-sm font-medium">Advanced</span>
-                    <div className="text-xs text-muted-foreground">All models</div>
-                  </div>
-                </DropdownMenuItem>
-              </div>
-            </div>
-
-            {/* Advanced Models Panel */}
-            <div
-              className={`absolute top-0 left-0 w-full transition-transform duration-300 ease-in-out ${
-                showAdvanced ? "translate-x-0" : "translate-x-full"
-              }`}
-            >
-              <div className="p-1">
-                {/* Back button */}
-                <DropdownMenuItem
-                  onSelect={(e) => {
-                    e.preventDefault();
-                    setShowAdvanced(false);
-                  }}
-                  className="flex items-center gap-2 px-3 py-1.5 cursor-pointer mb-1"
-                >
-                  <ChevronLeft className="h-4 w-4" />
-                  <span className="text-sm font-medium">Back</span>
-                </DropdownMenuItem>
-
-                <DropdownMenuSeparator />
-
-                {/* Scrollable model list */}
-                <div className="max-h-[400px] overflow-y-auto">
-                  {availableModels &&
-                    Array.isArray(availableModels) &&
-                    [...availableModels]
-                      .filter((m) => MODEL_CONFIG[m.id] !== undefined)
-                      // Deduplicate: prefer short names over long names
-                      .filter((m) => {
-                        if (m.id === "leon-se/gemma-3-27b-it-fp8-dynamic") {
-                          return !availableModels.some((model) => model.id === "gemma-3-27b");
-                        }
-                        if (m.id === "ibnzterrell/Meta-Llama-3.3-70B-Instruct-AWQ-INT4") {
-                          return !availableModels.some((model) => model.id === "llama-3.3-70b");
-                        }
-                        return true;
-                      })
-                      // Remove duplicates by id
-                      .filter(
-                        (m, index, self) =>
-                          MODEL_CONFIG[m.id] !== undefined &&
-                          self.findIndex((model) => model.id === m.id) === index
-                      )
-                      .sort((a, b) => {
-                        const aConfig = MODEL_CONFIG[a.id];
-                        const bConfig = MODEL_CONFIG[b.id];
-
-                        // If chat has images, prioritize vision models
-                        if (chatHasImages) {
-                          const aHasVision = aConfig?.supportsVision || false;
-                          const bHasVision = bConfig?.supportsVision || false;
-                          if (aHasVision && !bHasVision) return -1;
-                          if (!aHasVision && bHasVision) return 1;
-                        }
-
-                        const aDisabled = aConfig?.disabled || false;
-                        const bDisabled = bConfig?.disabled || false;
-                        const aRestricted =
-                          (aConfig?.requiresPro || aConfig?.requiresStarter || false) &&
-                          !hasAccessToModel(a.id);
-                        const bRestricted =
-                          (bConfig?.requiresPro || bConfig?.requiresStarter || false) &&
-                          !hasAccessToModel(b.id);
-
-                        // Disabled models go last
-                        if (aDisabled && !bDisabled) return 1;
-                        if (!aDisabled && bDisabled) return -1;
-
-                        // Restricted models go after available but before disabled
-                        if (aRestricted && !bRestricted) return 1;
-                        if (!aRestricted && bRestricted) return -1;
-
-                        return 0;
-                      })
-                      .map((availableModel) => {
-                        const config = MODEL_CONFIG[availableModel.id];
-                        const isDisabled = config?.disabled || false;
-                        const requiresPro = config?.requiresPro || false;
-                        const requiresStarter = config?.requiresStarter || false;
-                        const hasAccess = hasAccessToModel(availableModel.id);
-                        const isRestricted = (requiresPro || requiresStarter) && !hasAccess;
-
-                        // Disable non-vision models if chat has images
-                        const isDisabledDueToImages = chatHasImages && !config?.supportsVision;
-                        const effectivelyDisabled = isDisabled || isDisabledDueToImages;
-
-                        return (
-                          <DropdownMenuItem
-                            key={`advanced-${availableModel.id}`}
-                            onClick={() => {
-                              if (effectivelyDisabled) return;
-                              if (isRestricted) {
-                                const modelConfig = MODEL_CONFIG[availableModel.id];
-                                setSelectedModelName(modelConfig?.displayName || availableModel.id);
-                                setUpgradeDialogOpen(true);
-                              } else {
-                                setModel(availableModel.id);
-                                setShowAdvanced(false);
-                              }
-                            }}
-                            className={`flex items-center justify-between group ${
-                              effectivelyDisabled ? "opacity-50 cursor-not-allowed" : ""
-                            } ${
-                              isRestricted ? "hover:bg-purple-50 dark:hover:bg-purple-950/20" : ""
-                            }`}
-                            disabled={effectivelyDisabled}
-                          >
-                            <div className="flex items-center gap-2 flex-1">
-                              <div className="text-sm">
-                                {getDisplayName(availableModel.id, true)}
-                              </div>
-                            </div>
-                            {model === availableModel.id && <Check className="h-4 w-4" />}
-                          </DropdownMenuItem>
-                        );
-                      })}
+              {/* Advanced option */}
+              <DropdownMenuItem
+                onSelect={(e) => {
+                  e.preventDefault();
+                  setShowAdvanced(true);
+                }}
+                className="flex items-center gap-2 px-3 py-1.5 cursor-pointer"
+              >
+                <ChevronLeft className="h-4 w-4 opacity-70 rotate-180" />
+                <div className="flex-1">
+                  <span className="text-sm font-medium">Advanced</span>
+                  <div className="text-xs text-muted-foreground">All models</div>
                 </div>
+              </DropdownMenuItem>
+            </div>
+          ) : (
+            <div className="p-1 h-[300px] flex flex-col">
+              {/* Back button */}
+              <DropdownMenuItem
+                onSelect={(e) => {
+                  e.preventDefault();
+                  setShowAdvanced(false);
+                }}
+                className="flex items-center gap-2 px-3 py-1.5 cursor-pointer mb-1"
+              >
+                <ChevronLeft className="h-4 w-4" />
+                <span className="text-sm font-medium">Back</span>
+              </DropdownMenuItem>
+
+              <DropdownMenuSeparator />
+
+              {/* Scrollable model list */}
+              <div className="overflow-y-auto flex-1">
+                {availableModels &&
+                  Array.isArray(availableModels) &&
+                  [...availableModels]
+                    .filter((m) => MODEL_CONFIG[m.id] !== undefined)
+                    // Deduplicate: prefer short names over long names
+                    .filter((m) => {
+                      if (m.id === "leon-se/gemma-3-27b-it-fp8-dynamic") {
+                        return !availableModels.some((model) => model.id === "gemma-3-27b");
+                      }
+                      if (m.id === "ibnzterrell/Meta-Llama-3.3-70B-Instruct-AWQ-INT4") {
+                        return !availableModels.some((model) => model.id === "llama-3.3-70b");
+                      }
+                      return true;
+                    })
+                    // Remove duplicates by id
+                    .filter(
+                      (m, index, self) =>
+                        MODEL_CONFIG[m.id] !== undefined &&
+                        self.findIndex((model) => model.id === m.id) === index
+                    )
+                    .sort((a, b) => {
+                      const aConfig = MODEL_CONFIG[a.id];
+                      const bConfig = MODEL_CONFIG[b.id];
+
+                      // If chat has images, prioritize vision models
+                      if (chatHasImages) {
+                        const aHasVision = aConfig?.supportsVision || false;
+                        const bHasVision = bConfig?.supportsVision || false;
+                        if (aHasVision && !bHasVision) return -1;
+                        if (!aHasVision && bHasVision) return 1;
+                      }
+
+                      const aDisabled = aConfig?.disabled || false;
+                      const bDisabled = bConfig?.disabled || false;
+                      const aRestricted =
+                        (aConfig?.requiresPro || aConfig?.requiresStarter || false) &&
+                        !hasAccessToModel(a.id);
+                      const bRestricted =
+                        (bConfig?.requiresPro || bConfig?.requiresStarter || false) &&
+                        !hasAccessToModel(b.id);
+
+                      // Disabled models go last
+                      if (aDisabled && !bDisabled) return 1;
+                      if (!aDisabled && bDisabled) return -1;
+
+                      // Restricted models go after available but before disabled
+                      if (aRestricted && !bRestricted) return 1;
+                      if (!aRestricted && bRestricted) return -1;
+
+                      return 0;
+                    })
+                    .map((availableModel) => {
+                      const config = MODEL_CONFIG[availableModel.id];
+                      const isDisabled = config?.disabled || false;
+                      const requiresPro = config?.requiresPro || false;
+                      const requiresStarter = config?.requiresStarter || false;
+                      const hasAccess = hasAccessToModel(availableModel.id);
+                      const isRestricted = (requiresPro || requiresStarter) && !hasAccess;
+
+                      // Disable non-vision models if chat has images
+                      const isDisabledDueToImages = chatHasImages && !config?.supportsVision;
+                      const effectivelyDisabled = isDisabled || isDisabledDueToImages;
+
+                      return (
+                        <DropdownMenuItem
+                          key={`advanced-${availableModel.id}`}
+                          onClick={() => {
+                            if (effectivelyDisabled) return;
+                            if (isRestricted) {
+                              const modelConfig = MODEL_CONFIG[availableModel.id];
+                              setSelectedModelName(modelConfig?.displayName || availableModel.id);
+                              setUpgradeDialogOpen(true);
+                            } else {
+                              setModel(availableModel.id);
+                              setShowAdvanced(false);
+                            }
+                          }}
+                          className={`flex items-center justify-between group ${
+                            effectivelyDisabled ? "opacity-50 cursor-not-allowed" : ""
+                          } ${
+                            isRestricted ? "hover:bg-purple-50 dark:hover:bg-purple-950/20" : ""
+                          }`}
+                          disabled={effectivelyDisabled}
+                        >
+                          <div className="flex items-center gap-2 flex-1">
+                            <div className="text-sm">{getDisplayName(availableModel.id, true)}</div>
+                          </div>
+                          {model === availableModel.id && <Check className="h-4 w-4" />}
+                        </DropdownMenuItem>
+                      );
+                    })}
               </div>
             </div>
-          </div>
+          )}
         </DropdownMenuContent>
       </DropdownMenu>
 
