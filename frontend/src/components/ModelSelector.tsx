@@ -350,21 +350,10 @@ export function ModelSelector({ hasImages = false }: { hasImages?: boolean }) {
   // Get dynamic badges for a model based on billing status
   const getModelBadges = (modelId: string): string[] => {
     const config = MODEL_CONFIG[modelId];
-    const planName = billingStatus?.product_name?.toLowerCase() || "";
-    const isStarter = planName.includes("starter");
 
-    // Gemma: "starter" for starter users, "pro" for others
-    if (modelId === "gemma-3-27b" || modelId === "leon-se/gemma-3-27b-it-fp8-dynamic") {
-      return isStarter ? ["Starter"] : ["Pro"];
-    }
-
-    // Llama models: no badges
-    if (modelId.includes("llama") || modelId.includes("Llama")) {
-      return [];
-    }
-
-    // Other models: use their existing badges or default to ["Pro"]
-    return config?.badges || ["Pro"];
+    // Filter out Pro and Starter badges
+    const badges = config?.badges || [];
+    return badges.filter((badge) => badge !== "Pro" && badge !== "Starter");
   };
 
   const getDisplayName = (modelId: string, showLock = false) => {
@@ -455,7 +444,7 @@ export function ModelSelector({ hasImages = false }: { hasImages?: boolean }) {
             <ChevronDown className="h-3 w-3 opacity-50" />
           </Button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="start" className="w-72 p-0">
+        <DropdownMenuContent align="start" className="w-64 p-0">
           {!showAdvanced ? (
             <div className="p-1 h-[300px] flex flex-col">
               {/* Category options */}
