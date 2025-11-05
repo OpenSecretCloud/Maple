@@ -496,15 +496,15 @@ export function ModelSelector({ hasImages = false }: { hasImages?: boolean }) {
                     <DropdownMenuItem
                       key={category}
                       onClick={() => handleCategorySelect(category)}
-                      className={`flex items-center gap-3 px-3 py-2.5 cursor-pointer ${
+                      className={`flex items-center gap-2 px-3 py-1.5 cursor-pointer ${
                         isDisabled ? "opacity-50 cursor-not-allowed" : ""
                       } ${requiresUpgrade ? "hover:bg-purple-50 dark:hover:bg-purple-950/20" : ""}`}
                       disabled={isDisabled}
                     >
-                      <Icon className="h-5 w-5 opacity-70" />
+                      <Icon className="h-4 w-4 opacity-70" />
                       <div className="flex-1">
-                        <div className="flex items-center gap-2">
-                          <span className="font-medium">{info.label}</span>
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-sm font-medium">{info.label}</span>
                           {requiresUpgrade && <Lock className="h-3 w-3 opacity-50" />}
                         </div>
                         <div className="text-xs text-muted-foreground">{info.description}</div>
@@ -522,11 +522,11 @@ export function ModelSelector({ hasImages = false }: { hasImages?: boolean }) {
                     e.preventDefault();
                     setShowAdvanced(true);
                   }}
-                  className="flex items-center gap-3 px-3 py-2.5 cursor-pointer"
+                  className="flex items-center gap-2 px-3 py-1.5 cursor-pointer"
                 >
-                  <ChevronLeft className="h-5 w-5 opacity-70 rotate-180" />
+                  <ChevronLeft className="h-4 w-4 opacity-70 rotate-180" />
                   <div className="flex-1">
-                    <span className="font-medium">Advanced</span>
+                    <span className="text-sm font-medium">Advanced</span>
                     <div className="text-xs text-muted-foreground">All models</div>
                   </div>
                 </DropdownMenuItem>
@@ -546,10 +546,10 @@ export function ModelSelector({ hasImages = false }: { hasImages?: boolean }) {
                     e.preventDefault();
                     setShowAdvanced(false);
                   }}
-                  className="flex items-center gap-2 px-3 py-2 cursor-pointer mb-1"
+                  className="flex items-center gap-2 px-3 py-1.5 cursor-pointer mb-1"
                 >
                   <ChevronLeft className="h-4 w-4" />
-                  <span className="font-medium">Back</span>
+                  <span className="text-sm font-medium">Back</span>
                 </DropdownMenuItem>
 
                 <DropdownMenuSeparator />
