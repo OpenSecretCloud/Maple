@@ -130,7 +130,7 @@ const CATEGORY_INFO = {
   free: {
     label: "Free",
     icon: Sparkles,
-    description: "Fast & capable"
+    description: "Balanced & capable"
   },
   quick: {
     label: "Quick",
