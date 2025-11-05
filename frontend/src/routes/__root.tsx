@@ -1,6 +1,7 @@
 import { useOpenSecret } from "@opensecret/react";
 import { OpenSecretContextType } from "@opensecret/react";
 import { createRootRouteWithContext, Outlet } from "@tanstack/react-router";
+import { ExternalUrlConfirmHandler } from "@/components/ExternalUrlConfirmHandler";
 
 interface RootRouterContext {
   os: OpenSecretContextType;
@@ -35,5 +36,10 @@ function Root() {
     return <></>;
   }
 
-  return <Outlet />;
+  return (
+    <>
+      <Outlet />
+      <ExternalUrlConfirmHandler />
+    </>
+  );
 }
