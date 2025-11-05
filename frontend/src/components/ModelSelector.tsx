@@ -330,6 +330,12 @@ export function ModelSelector({ hasImages = false }: { hasImages?: boolean }) {
       targetModel = CATEGORY_MODELS[category as keyof typeof CATEGORY_MODELS];
     }
 
+    // Prevent switching to non-vision models if chat has images
+    const targetModelConfig = MODEL_CONFIG[targetModel];
+    if (chatHasImages && !targetModelConfig?.supportsVision) {
+      return;
+    }
+
     // Check access
     if (!hasAccessToModel(targetModel)) {
       const modelConfig = MODEL_CONFIG[targetModel];
@@ -479,15 +485,21 @@ export function ModelSelector({ hasImages = false }: { hasImages?: boolean }) {
                         : CATEGORY_MODELS.reasoning_off
                       : CATEGORY_MODELS[category];
                   const hasAccess = hasAccessToModel(targetModel);
+                  const targetModelConfig = MODEL_CONFIG[targetModel];
                   const requiresUpgrade = !hasAccess;
+
+                  // Disable non-vision categories if chat has images
+                  const isDisabledDueToImages = chatHasImages && !targetModelConfig?.supportsVision;
+                  const isDisabled = isDisabledDueToImages || targetModelConfig?.disabled;
 
                   return (
                     <DropdownMenuItem
                       key={category}
                       onClick={() => handleCategorySelect(category)}
                       className={`flex items-center gap-3 px-3 py-2.5 cursor-pointer ${
-                        requiresUpgrade ? "hover:bg-purple-50 dark:hover:bg-purple-950/20" : ""
-                      }`}
+                        isDisabled ? "opacity-50 cursor-not-allowed" : ""
+                      } ${requiresUpgrade ? "hover:bg-purple-50 dark:hover:bg-purple-950/20" : ""}`}
+                      disabled={isDisabled}
                     >
                       <Icon className="h-5 w-5 opacity-70" />
                       <div className="flex-1">
