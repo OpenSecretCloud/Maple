@@ -56,6 +56,7 @@ import { UpgradePromptDialog } from "@/components/UpgradePromptDialog";
 import { DocumentPlatformDialog } from "@/components/DocumentPlatformDialog";
 import { ContextLimitDialog } from "@/components/ContextLimitDialog";
 import { RecordingOverlay } from "@/components/RecordingOverlay";
+import { WebSearchInfoDialog } from "@/components/WebSearchInfoDialog";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { AlertCircle } from "lucide-react";
 import {
@@ -651,6 +652,7 @@ export function UnifiedChat() {
   >("image");
   const [documentPlatformDialogOpen, setDocumentPlatformDialogOpen] = useState(false);
   const [contextLimitDialogOpen, setContextLimitDialogOpen] = useState(false);
+  const [webSearchInfoDialogOpen, setWebSearchInfoDialogOpen] = useState(false);
 
   // Audio recording states
   const [isRecording, setIsRecording] = useState(false);
@@ -2498,12 +2500,23 @@ export function UnifiedChat() {
                             size="sm"
                             className="h-8 w-8 p-0"
                             onClick={() => {
+                              // Step 1: Check if user has access (free/starter users see upsell)
                               if (!canUseWebSearch) {
                                 setUpgradeFeature("websearch");
                                 setUpgradeDialogOpen(true);
-                              } else {
-                                setIsWebSearchEnabled(!isWebSearchEnabled);
+                                return;
                               }
+
+                              // Step 2: Check if this is their first time (show info dialog)
+                              const hasSeenWebSearchInfo =
+                                localStorage.getItem("hasSeenWebSearchInfo") === "true";
+                              if (!hasSeenWebSearchInfo) {
+                                setWebSearchInfoDialogOpen(true);
+                                return;
+                              }
+
+                              // Step 3: Toggle web search directly
+                              setIsWebSearchEnabled(!isWebSearchEnabled);
                             }}
                             aria-label={
                               isWebSearchEnabled ? "Disable web search" : "Enable web search"
@@ -2744,12 +2757,23 @@ export function UnifiedChat() {
                           size="sm"
                           className="h-8 w-8 p-0"
                           onClick={() => {
+                            // Step 1: Check if user has access (free/starter users see upsell)
                             if (!canUseWebSearch) {
                               setUpgradeFeature("websearch");
                               setUpgradeDialogOpen(true);
-                            } else {
-                              setIsWebSearchEnabled(!isWebSearchEnabled);
+                              return;
                             }
+
+                            // Step 2: Check if this is their first time (show info dialog)
+                            const hasSeenWebSearchInfo =
+                              localStorage.getItem("hasSeenWebSearchInfo") === "true";
+                            if (!hasSeenWebSearchInfo) {
+                              setWebSearchInfoDialogOpen(true);
+                              return;
+                            }
+
+                            // Step 3: Toggle web search directly
+                            setIsWebSearchEnabled(!isWebSearchEnabled);
                           }}
                           aria-label={
                             isWebSearchEnabled ? "Disable web search" : "Enable web search"
@@ -2897,6 +2921,23 @@ export function UnifiedChat() {
           onOpenChange={setContextLimitDialogOpen}
           currentModel={localState.model}
           hasDocument={!!documentName}
+        />
+
+        {/* Web search info dialog for first-time paid users */}
+        <WebSearchInfoDialog
+          open={webSearchInfoDialogOpen}
+          onOpenChange={(open) => {
+            // When dialog is closed (any way), mark as seen and enable web search
+            if (!open) {
+              localStorage.setItem("hasSeenWebSearchInfo", "true");
+              setIsWebSearchEnabled(true);
+            }
+            setWebSearchInfoDialogOpen(open);
+          }}
+          onConfirm={() => {
+            // Just close the dialog (onOpenChange handles the rest)
+            setWebSearchInfoDialogOpen(false);
+          }}
         />
 
         {/* Hidden file inputs - must be outside conditional rendering to work in both views */}
