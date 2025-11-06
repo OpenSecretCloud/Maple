@@ -16,7 +16,8 @@ import {
   Volume2,
   FileText,
   Gauge,
-  MessageCircle
+  MessageCircle,
+  Globe
 } from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
 import { useLocalState } from "@/state/useLocalState";
@@ -24,7 +25,7 @@ import { useLocalState } from "@/state/useLocalState";
 interface UpgradePromptDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  feature: "image" | "voice" | "model" | "tts" | "document" | "usage" | "tokens";
+  feature: "image" | "voice" | "model" | "tts" | "document" | "usage" | "tokens" | "websearch";
   modelName?: string;
 }
 
@@ -65,7 +66,22 @@ export function UpgradePromptDialog({
   };
 
   const getFeatureInfo = () => {
-    if (feature === "image") {
+    if (feature === "websearch") {
+      return {
+        icon: <Globe className="h-8 w-8" />,
+        title: "Live Web Search",
+        description: "Search the web in real-time with AI-powered results",
+        requiredPlan: "Pro",
+        benefits: [
+          "Live web search powered by Brave",
+          "Get up-to-date information from the internet",
+          "Search queries are sent to Brave but not linked to your identity",
+          "Results are processed privately and securely",
+          "Perfect for current events, research, and fact-checking",
+          "Seamlessly integrated into your chat experience"
+        ]
+      };
+    } else if (feature === "image") {
       return {
         icon: <Image className="h-8 w-8" />,
         title: "Image Upload",

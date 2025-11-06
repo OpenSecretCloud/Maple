@@ -647,7 +647,7 @@ export function UnifiedChat() {
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [upgradeDialogOpen, setUpgradeDialogOpen] = useState(false);
   const [upgradeFeature, setUpgradeFeature] = useState<
-    "image" | "document" | "voice" | "usage" | "tokens"
+    "image" | "document" | "voice" | "usage" | "tokens" | "websearch"
   >("image");
   const [documentPlatformDialogOpen, setDocumentPlatformDialogOpen] = useState(false);
   const [contextLimitDialogOpen, setContextLimitDialogOpen] = useState(false);
@@ -660,9 +660,8 @@ export function UnifiedChat() {
 
   // Web search toggle state
   const [isWebSearchEnabled, setIsWebSearchEnabled] = useState(false);
-  const [isWebSearchUnlocked, setIsWebSearchUnlocked] = useState(() => {
-    return localStorage.getItem("webSearchUnlocked") === "true";
-  });
+
+  // Easter egg state (for future features)
   const [logoTapCount, setLogoTapCount] = useState(0);
   const tapTimeoutRef = useRef<number | null>(null);
 
@@ -1287,7 +1286,7 @@ export function UnifiedChat() {
   // Toggle sidebar
   const toggleSidebar = useCallback(() => setIsSidebarOpen((prev) => !prev), []);
 
-  // Handle logo tap for easter egg unlock
+  // Handle logo tap for easter egg (reserved for future features)
   const handleLogoTap = useCallback(() => {
     const newCount = logoTapCount + 1;
     setLogoTapCount(newCount);
@@ -1302,14 +1301,14 @@ export function UnifiedChat() {
       setLogoTapCount(0);
     }, 2000);
 
-    // Unlock web search after 7 taps
+    // Easter egg trigger at 7 taps (currently unused, reserved for future features)
     if (newCount >= 7) {
-      localStorage.setItem("webSearchUnlocked", "true");
-      setIsWebSearchUnlocked(true);
+      console.log("Easter egg activated! 🥚");
       setLogoTapCount(0);
       if (tapTimeoutRef.current !== null) {
         window.clearTimeout(tapTimeoutRef.current);
       }
+      // TODO: Add easter egg feature here
     }
   }, [logoTapCount]);
 
@@ -1324,6 +1323,7 @@ export function UnifiedChat() {
   const canUseImages = hasProAccess;
   const canUseDocuments = hasProAccess;
   const canUseVoice = hasProAccess && localState.hasWhisperModel;
+  const canUseWebSearch = hasProAccess;
 
   const handleAddImages = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -2491,6 +2491,31 @@ export function UnifiedChat() {
                             </Button>
                           )}
 
+                          {/* Web search toggle button - always visible */}
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            className="h-8 w-8 p-0"
+                            onClick={() => {
+                              if (!canUseWebSearch) {
+                                setUpgradeFeature("websearch");
+                                setUpgradeDialogOpen(true);
+                              } else {
+                                setIsWebSearchEnabled(!isWebSearchEnabled);
+                              }
+                            }}
+                            aria-label={
+                              isWebSearchEnabled ? "Disable web search" : "Enable web search"
+                            }
+                          >
+                            <Globe
+                              className={`h-4 w-4 ${
+                                isWebSearchEnabled ? "text-blue-500" : "text-muted-foreground"
+                              }`}
+                            />
+                          </Button>
+
                           {/* Attachment dropdown */}
                           <DropdownMenu>
                             <DropdownMenuTrigger asChild>
@@ -2535,26 +2560,6 @@ export function UnifiedChat() {
                               </DropdownMenuItem>
                             </DropdownMenuContent>
                           </DropdownMenu>
-
-                          {/* Web search toggle button - hidden until unlocked */}
-                          {isWebSearchUnlocked && (
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="sm"
-                              className="h-8 w-8 p-0"
-                              onClick={() => setIsWebSearchEnabled(!isWebSearchEnabled)}
-                              aria-label={
-                                isWebSearchEnabled ? "Disable web search" : "Enable web search"
-                              }
-                            >
-                              <Globe
-                                className={`h-4 w-4 ${
-                                  isWebSearchEnabled ? "text-blue-500" : "text-muted-foreground"
-                                }`}
-                              />
-                            </Button>
-                          )}
                         </div>
 
                         <div className="flex items-center gap-2">
@@ -2732,6 +2737,31 @@ export function UnifiedChat() {
                           </Button>
                         )}
 
+                        {/* Web search toggle button - always visible */}
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="h-8 w-8 p-0"
+                          onClick={() => {
+                            if (!canUseWebSearch) {
+                              setUpgradeFeature("websearch");
+                              setUpgradeDialogOpen(true);
+                            } else {
+                              setIsWebSearchEnabled(!isWebSearchEnabled);
+                            }
+                          }}
+                          aria-label={
+                            isWebSearchEnabled ? "Disable web search" : "Enable web search"
+                          }
+                        >
+                          <Globe
+                            className={`h-4 w-4 ${
+                              isWebSearchEnabled ? "text-blue-500" : "text-muted-foreground"
+                            }`}
+                          />
+                        </Button>
+
                         {/* Attachment dropdown */}
                         <DropdownMenu>
                           <DropdownMenuTrigger asChild>
@@ -2776,26 +2806,6 @@ export function UnifiedChat() {
                             </DropdownMenuItem>
                           </DropdownMenuContent>
                         </DropdownMenu>
-
-                        {/* Web search toggle button - hidden until unlocked */}
-                        {isWebSearchUnlocked && (
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="sm"
-                            className="h-8 w-8 p-0"
-                            onClick={() => setIsWebSearchEnabled(!isWebSearchEnabled)}
-                            aria-label={
-                              isWebSearchEnabled ? "Disable web search" : "Enable web search"
-                            }
-                          >
-                            <Globe
-                              className={`h-4 w-4 ${
-                                isWebSearchEnabled ? "text-blue-500" : "text-muted-foreground"
-                              }`}
-                            />
-                          </Button>
-                        )}
                       </div>
 
                       <div className="flex items-center gap-2">
@@ -2868,7 +2878,9 @@ export function UnifiedChat() {
                   ? "usage"
                   : upgradeFeature === "tokens"
                     ? "tokens"
-                    : "image"
+                    : upgradeFeature === "websearch"
+                      ? "websearch"
+                      : "image"
           }
         />
 
