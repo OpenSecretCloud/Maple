@@ -12,6 +12,40 @@ export {
 } from "./LocalStateContextDef";
 
 export const DEFAULT_MODEL_ID = "llama-3.3-70b";
+const QUICK_MODEL_ID = "gpt-oss-120b";
+
+// Helper to get default model based on cached billing status
+function getInitialModel(): string {
+  // Check for dev override first
+  if (import.meta.env.VITE_DEV_MODEL_OVERRIDE) {
+    return aliasModelName(import.meta.env.VITE_DEV_MODEL_OVERRIDE);
+  }
+
+  try {
+    // Priority 1: Check local storage for last used model
+    const selectedModel = localStorage.getItem("selectedModel");
+    if (selectedModel) {
+      return selectedModel;
+    }
+
+    // Priority 2: Check cached billing status for pro/max/team users
+    const cachedBillingStr = localStorage.getItem("cachedBillingStatus");
+    if (cachedBillingStr) {
+      const cachedBilling = JSON.parse(cachedBillingStr) as BillingStatus;
+      const planName = cachedBilling.product_name?.toLowerCase() || "";
+
+      // Pro, Max, or Team users get Quick model
+      if (planName.includes("pro") || planName.includes("max") || planName.includes("team")) {
+        return QUICK_MODEL_ID;
+      }
+    }
+  } catch (error) {
+    console.error("Failed to load initial model:", error);
+  }
+
+  // Priority 3: Default to free model
+  return DEFAULT_MODEL_ID;
+}
 
 export const LocalStateProvider = ({ children }: { children: React.ReactNode }) => {
   /** The model that should be assumed when a chat doesn't yet have one */
@@ -28,18 +62,10 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
     systemPrompt: null as string | null,
     userImages: [] as File[],
     sentViaVoice: false,
-    model:
-      aliasModelName(import.meta.env.VITE_DEV_MODEL_OVERRIDE) ||
-      (() => {
-        try {
-          return localStorage.getItem("selectedModel") || DEFAULT_MODEL_ID;
-        } catch (error) {
-          console.error("Failed to load model from localStorage:", error);
-          return DEFAULT_MODEL_ID;
-        }
-      })(),
+    model: getInitialModel(),
     availableModels: [llamaModel] as OpenSecretModel[],
     hasWhisperModel: true, // Default to true to avoid hiding button during loading
+    thinkingEnabled: false, // Default to reasoning without thinking (V3.1)
     billingStatus: null as BillingStatus | null,
     searchQuery: "",
     isSearchVisible: false,
@@ -113,6 +139,58 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
 
   function setBillingStatus(status: BillingStatus) {
     setLocalState((prev) => ({ ...prev, billingStatus: status }));
+
+    const planName = status.product_name?.toLowerCase() || "";
+    const isPaidPlan =
+      planName.includes("pro") ||
+      planName.includes("max") ||
+      planName.includes("team") ||
+      planName.includes("starter");
+
+    const isProMaxOrTeam =
+      planName.includes("pro") || planName.includes("max") || planName.includes("team");
+
+    // Check if billing plan changed from cached version
+    let billingChanged = false;
+    try {
+      const cachedBillingStr = localStorage.getItem("cachedBillingStatus");
+      if (cachedBillingStr) {
+        const cachedBilling = JSON.parse(cachedBillingStr) as BillingStatus;
+        const cachedPlan = cachedBilling.product_name?.toLowerCase() || "";
+        billingChanged = cachedPlan !== planName;
+      }
+    } catch (error) {
+      console.error("Failed to check cached billing:", error);
+    }
+
+    // Cache billing status to localStorage only for paid users
+    try {
+      if (isPaidPlan) {
+        localStorage.setItem("cachedBillingStatus", JSON.stringify(status));
+      } else {
+        // Clear cache for free users
+        localStorage.removeItem("cachedBillingStatus");
+      }
+    } catch (error) {
+      console.error("Failed to cache billing status:", error);
+    }
+
+    // Update model if: 1) no custom selectedModel OR 2) billing plan changed
+    try {
+      const selectedModel = localStorage.getItem("selectedModel");
+      const shouldUpdateModel = !selectedModel || billingChanged;
+
+      if (shouldUpdateModel) {
+        if (isProMaxOrTeam) {
+          setModel(QUICK_MODEL_ID);
+        } else if (billingChanged) {
+          // User downgraded, switch back to free model
+          setModel(DEFAULT_MODEL_ID);
+        }
+      }
+    } catch (error) {
+      console.error("Failed to update model based on billing status:", error);
+    }
   }
 
   function setSearchQuery(query: string) {
@@ -296,6 +374,10 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
     setLocalState((prev) => ({ ...prev, hasWhisperModel: hasWhisper }));
   }
 
+  function setThinkingEnabled(enabled: boolean) {
+    setLocalState((prev) => ({ ...prev, thinkingEnabled: enabled }));
+  }
+
   return (
     <LocalStateContext.Provider
       value={{
@@ -305,6 +387,8 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
         setAvailableModels,
         hasWhisperModel: localState.hasWhisperModel,
         setHasWhisperModel,
+        thinkingEnabled: localState.thinkingEnabled,
+        setThinkingEnabled,
         userPrompt: localState.userPrompt,
         systemPrompt: localState.systemPrompt,
         userImages: localState.userImages,

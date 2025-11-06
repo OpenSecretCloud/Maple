@@ -35,7 +35,8 @@ import {
   SquarePen,
   Search,
   Loader2,
-  Globe
+  Globe,
+  Brain
 } from "lucide-react";
 import RecordRTC from "recordrtc";
 import { useQueryClient } from "@tanstack/react-query";
@@ -48,7 +49,7 @@ import { fileToDataURL } from "@/utils/file";
 import { useOpenAI } from "@/ai/useOpenAi";
 import { DEFAULT_MODEL_ID } from "@/state/LocalStateContext";
 import { Markdown } from "@/components/markdown";
-import { ModelSelector, MODEL_CONFIG } from "@/components/ModelSelector";
+import { ModelSelector, CATEGORY_MODELS } from "@/components/ModelSelector";
 import { useLocalState } from "@/state/useLocalState";
 import { useOpenSecret } from "@opensecret/react";
 import { UpgradePromptDialog } from "@/components/UpgradePromptDialog";
@@ -1355,18 +1356,6 @@ export function UnifiedChat() {
       setImageUrls(newUrlMap);
       setDraftImages((prev) => [...prev, ...validFiles]);
 
-      // Auto-switch to vision model if needed
-      const supportsVision = MODEL_CONFIG[localState.model]?.supportsVision;
-      if (!supportsVision && validFiles.length > 0) {
-        // Find first vision-capable model user has access to
-        const visionModels = localState.availableModels.filter(
-          (m) => MODEL_CONFIG[m.id]?.supportsVision
-        );
-        if (visionModels.length > 0) {
-          localState.setModel(visionModels[0].id);
-        }
-      }
-
       // Clear input to allow re-uploading same file
       e.target.value = "";
     },
@@ -2468,6 +2457,40 @@ export function UnifiedChat() {
                             }
                           />
 
+                          {/* Thinking toggle button - only visible when reasoning model is selected */}
+                          {(localState.model === CATEGORY_MODELS.reasoning_on ||
+                            localState.model === CATEGORY_MODELS.reasoning_off) && (
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              className="h-8 w-8 p-0"
+                              onClick={() => {
+                                const newThinkingEnabled = !localState.thinkingEnabled;
+                                localState.setThinkingEnabled(newThinkingEnabled);
+                                // Switch between R1 (with thinking) and V3.1 (without)
+                                localState.setModel(
+                                  newThinkingEnabled
+                                    ? CATEGORY_MODELS.reasoning_on
+                                    : CATEGORY_MODELS.reasoning_off
+                                );
+                              }}
+                              aria-label={
+                                localState.thinkingEnabled
+                                  ? "Disable thinking mode"
+                                  : "Enable thinking mode"
+                              }
+                            >
+                              <Brain
+                                className={`h-4 w-4 ${
+                                  localState.thinkingEnabled
+                                    ? "text-purple-500"
+                                    : "text-muted-foreground"
+                                }`}
+                              />
+                            </Button>
+                          )}
+
                           {/* Attachment dropdown */}
                           <DropdownMenu>
                             <DropdownMenuTrigger asChild>
@@ -2674,6 +2697,40 @@ export function UnifiedChat() {
                             )
                           }
                         />
+
+                        {/* Thinking toggle button - only visible when reasoning model is selected */}
+                        {(localState.model === CATEGORY_MODELS.reasoning_on ||
+                          localState.model === CATEGORY_MODELS.reasoning_off) && (
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            className="h-8 w-8 p-0"
+                            onClick={() => {
+                              const newThinkingEnabled = !localState.thinkingEnabled;
+                              localState.setThinkingEnabled(newThinkingEnabled);
+                              // Switch between R1 (with thinking) and V3.1 (without)
+                              localState.setModel(
+                                newThinkingEnabled
+                                  ? CATEGORY_MODELS.reasoning_on
+                                  : CATEGORY_MODELS.reasoning_off
+                              );
+                            }}
+                            aria-label={
+                              localState.thinkingEnabled
+                                ? "Disable thinking mode"
+                                : "Enable thinking mode"
+                            }
+                          >
+                            <Brain
+                              className={`h-4 w-4 ${
+                                localState.thinkingEnabled
+                                  ? "text-purple-500"
+                                  : "text-muted-foreground"
+                              }`}
+                            />
+                          </Button>
+                        )}
 
                         {/* Attachment dropdown */}
                         <DropdownMenu>
