@@ -2507,10 +2507,14 @@ export function UnifiedChat() {
                                 return;
                               }
 
-                              // Step 2: Check if this is their first time (show info dialog)
+                              // Step 2: Check if this is their first time
                               const hasSeenWebSearchInfo =
                                 localStorage.getItem("hasSeenWebSearchInfo") === "true";
                               if (!hasSeenWebSearchInfo) {
+                                // Immediately enable web search and set flag
+                                localStorage.setItem("hasSeenWebSearchInfo", "true");
+                                setIsWebSearchEnabled(true);
+                                // Show informational dialog
                                 setWebSearchInfoDialogOpen(true);
                                 return;
                               }
@@ -2764,10 +2768,14 @@ export function UnifiedChat() {
                               return;
                             }
 
-                            // Step 2: Check if this is their first time (show info dialog)
+                            // Step 2: Check if this is their first time
                             const hasSeenWebSearchInfo =
                               localStorage.getItem("hasSeenWebSearchInfo") === "true";
                             if (!hasSeenWebSearchInfo) {
+                              // Immediately enable web search and set flag
+                              localStorage.setItem("hasSeenWebSearchInfo", "true");
+                              setIsWebSearchEnabled(true);
+                              // Show informational dialog
                               setWebSearchInfoDialogOpen(true);
                               return;
                             }
@@ -2926,16 +2934,8 @@ export function UnifiedChat() {
         {/* Web search info dialog for first-time paid users */}
         <WebSearchInfoDialog
           open={webSearchInfoDialogOpen}
-          onOpenChange={(open) => {
-            // When dialog is closed (any way), mark as seen and enable web search
-            if (!open) {
-              localStorage.setItem("hasSeenWebSearchInfo", "true");
-              setIsWebSearchEnabled(true);
-            }
-            setWebSearchInfoDialogOpen(open);
-          }}
+          onOpenChange={setWebSearchInfoDialogOpen}
           onConfirm={() => {
-            // Just close the dialog (onOpenChange handles the rest)
             setWebSearchInfoDialogOpen(false);
           }}
         />
