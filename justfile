@@ -30,9 +30,9 @@ update-version version:
     # Parse version into components
     IFS='.' read -r major minor patch <<< "{{version}}"
     
-    # Calculate Android versionCode: 1 + MMM (minor) + PPP (patch) + 000 (counter reset)
-    # Format: 1MMMPPPCCC (10 digits total)
-    android_version_code=$(printf "1%03d%03d000" "$minor" "$patch")
+    # Calculate Android versionCode: M + MMM (minor) + PPP (patch) + 000 (counter reset)
+    # Format: MMMMPPPCCC (10 digits total)
+    android_version_code=$(printf "%d%03d%03d000" "$major" "$minor" "$patch")
     echo "Calculated Android versionCode: $android_version_code"
     
     # Update package.json
