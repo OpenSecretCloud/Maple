@@ -27,7 +27,12 @@ import {
   PurchaseCreditsRequest,
   PurchaseCreditsZapriteRequest,
   CheckoutResponse,
-  UpdateCreditSettingsRequest
+  UpdateCreditSettingsRequest,
+  checkPassCode,
+  redeemPassCode,
+  PassCheckResponse,
+  PassRedeemRequest,
+  PassRedeemResponse
 } from "./billingApi";
 import type {
   TeamStatus,
@@ -189,6 +194,15 @@ class BillingService {
 
   async updateApiCreditSettings(data: UpdateCreditSettingsRequest): Promise<ApiCreditSettings> {
     return this.executeWithToken((token) => updateApiCreditSettings(token, data));
+  }
+
+  // Subscription Pass methods
+  async checkPassCode(passCode: string): Promise<PassCheckResponse> {
+    return checkPassCode(passCode);
+  }
+
+  async redeemPassCode(data: PassRedeemRequest): Promise<PassRedeemResponse> {
+    return this.executeWithToken((token) => redeemPassCode(token, data));
   }
 }
 

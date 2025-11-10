@@ -897,25 +897,35 @@ function PricingPage() {
           );
         })()}
 
-        <div className="w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col items-center gap-3 mt-8">
-          <div className="inline-flex items-center gap-4 px-6 py-2.5 rounded-full bg-[hsl(var(--marketing-card))]/50 backdrop-blur-sm border border-[hsl(var(--marketing-card-border))]">
-            <div className="flex items-center gap-2 text-[hsl(var(--bitcoin))] text-base font-light">
-              <Bitcoin className="w-4.5 h-4.5" />
-              <span>Pay with Bitcoin</span>
-            </div>
-            <Switch
-              id="bitcoin-toggle"
-              checked={useBitcoin}
-              onCheckedChange={setUseBitcoin}
-              disabled={isGuestUser}
-              className="data-[state=checked]:bg-[hsl(var(--bitcoin))] data-[state=unchecked]:border-foreground/30 scale-100"
-            />
-          </div>
-          {isGuestUser && (
-            <div className="text-sm text-amber-600 dark:text-amber-500 font-medium">
-              Anonymous accounts must pay with Bitcoin (yearly only)
-            </div>
+        <div className="w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col items-center gap-6 mt-8">
+          {!isIOSPlatform && (
+            <button
+              onClick={() => navigate({ to: "/redeem" })}
+              className="text-base text-foreground/70 hover:text-foreground transition-colors underline underline-offset-4 decoration-foreground/30 hover:decoration-foreground"
+            >
+              Have a subscription pass code?
+            </button>
           )}
+          <div className="flex flex-col items-center gap-3">
+            <div className="inline-flex items-center gap-4 px-6 py-2.5 rounded-full bg-[hsl(var(--marketing-card))]/50 backdrop-blur-sm border border-[hsl(var(--marketing-card-border))]">
+              <div className="flex items-center gap-2 text-[hsl(var(--bitcoin))] text-base font-light">
+                <Bitcoin className="w-4.5 h-4.5" />
+                <span>Pay with Bitcoin</span>
+              </div>
+              <Switch
+                id="bitcoin-toggle"
+                checked={useBitcoin}
+                onCheckedChange={setUseBitcoin}
+                disabled={isGuestUser}
+                className="data-[state=checked]:bg-[hsl(var(--bitcoin))] data-[state=unchecked]:border-foreground/30 scale-100"
+              />
+            </div>
+            {isGuestUser && (
+              <div className="text-sm text-amber-600 dark:text-amber-500 font-medium">
+                Anonymous accounts must pay with Bitcoin (yearly only)
+              </div>
+            )}
+          </div>
         </div>
 
         <PricingFAQ />
