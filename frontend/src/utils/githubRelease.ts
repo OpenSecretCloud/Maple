@@ -71,7 +71,7 @@ export async function getLatestDownloadInfo(): Promise<DownloadInfo | null> {
       macOS: `${baseDownloadUrl}/Maple_${version}_universal.dmg`,
       linuxAppImage: `${baseDownloadUrl}/Maple_${version}_amd64.AppImage`,
       linuxDeb: `${baseDownloadUrl}/Maple_${version}_amd64.deb`,
-      linuxRpm: `${baseDownloadUrl}/Maple-${version}-1.x86_64.rpm`,
+      linuxRpm: `${baseDownloadUrl}/Maple_${version}_x86_64.rpm`,
       androidApk: `${baseDownloadUrl}/app-universal-release.apk`
     },
     releaseUrl: release.html_url

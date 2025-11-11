@@ -25,7 +25,7 @@ const FALLBACK_URLS: DownloadUrls = {
   macOS: `${FALLBACK_BASE_URL}/Maple_${FALLBACK_VERSION}_universal.dmg`,
   linuxAppImage: `${FALLBACK_BASE_URL}/Maple_${FALLBACK_VERSION}_amd64.AppImage`,
   linuxDeb: `${FALLBACK_BASE_URL}/Maple_${FALLBACK_VERSION}_amd64.deb`,
-  linuxRpm: `${FALLBACK_BASE_URL}/Maple-${FALLBACK_VERSION}-1.x86_64.rpm`,
+  linuxRpm: `${FALLBACK_BASE_URL}/Maple_${FALLBACK_VERSION}_x86_64.rpm`,
   androidApk: `${FALLBACK_BASE_URL}/app-universal-release.apk`
 };
 
