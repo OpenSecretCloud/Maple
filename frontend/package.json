@@ -42,6 +42,7 @@
     "clsx": "^2.1.1",
     "gpt-tokenizer": "^3.0.1",
     "katex": "^0.16.25",
+    "lingo.dev": "^0.114.5",
     "lucide-react": "^0.436.0",
     "openai": "5.20.0",
     "react": "^18.3.1",
