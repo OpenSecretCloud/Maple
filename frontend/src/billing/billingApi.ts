@@ -14,7 +14,7 @@ export type BillingStatus = {
   current_period_end: string | null;
   can_chat: boolean;
   chats_remaining: number | null;
-  payment_provider: "stripe" | "zaprite" | null;
+  payment_provider: "stripe" | "zaprite" | "subscription_pass" | null;
   total_tokens: number | null;
   used_tokens: number | null;
   usage_reset_date: string | null;

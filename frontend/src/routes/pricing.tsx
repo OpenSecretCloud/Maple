@@ -300,6 +300,14 @@ function PricingPage() {
       return "Contact Us";
     }
 
+    // If user is on subscription pass, only show button for current plan
+    if (freshBillingStatus?.payment_provider === "subscription_pass") {
+      if (isCurrentPlan) {
+        return "Start Chatting";
+      }
+      return "Contact Us";
+    }
+
     // For team plan
     if (isTeamPlan) {
       if (isCurrentPlan) {
@@ -457,6 +465,19 @@ function PricingPage() {
       const currentPlanName = freshBillingStatus?.product_name?.toLowerCase();
       const isCurrentlyOnFreePlan = currentPlanName?.includes("free");
       const isTargetFreePlan = targetPlanName.includes("free");
+      const isCurrentPlan = currentPlanName === targetPlanName;
+
+      // If user is on subscription pass
+      if (freshBillingStatus?.payment_provider === "subscription_pass") {
+        if (isCurrentPlan) {
+          // Current plan: go home
+          navigate({ to: "/" });
+        } else {
+          // Other plans: contact support
+          window.location.href = "mailto:support@opensecret.cloud";
+        }
+        return;
+      }
 
       // If on free plan and clicking free plan, go home
       if (isCurrentlyOnFreePlan && isTargetFreePlan) {
