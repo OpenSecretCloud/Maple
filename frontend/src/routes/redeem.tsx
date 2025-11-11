@@ -260,7 +260,7 @@ function RedeemPage() {
         />
 
         <div className="pt-8 w-full max-w-2xl mx-auto px-4 sm:px-6 lg:px-8">
-          {isLoggedIn && isOnNonFreePlan && (
+          {isLoggedIn && isOnNonFreePlan && !redeemSuccess && (
             <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-900/50 text-amber-800 dark:text-amber-100 rounded-lg p-6 flex items-start gap-3 mb-6">
               <div className="rounded-full bg-amber-100 dark:bg-amber-800 p-1">
                 <AlertTriangle className="w-6 h-6 text-amber-600 dark:text-amber-200" />
