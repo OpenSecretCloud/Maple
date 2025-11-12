@@ -69,7 +69,6 @@ function DownloadPage() {
           }
           subtitle={
             <div className="space-y-2">
-              <p>Available for macOS and Ubuntu Linux</p>
               <p>Access your private AI chat with end-to-end encryption</p>
             </div>
           }
@@ -238,40 +237,41 @@ function DownloadPage() {
                 Download our native Android app for phones and tablets.
               </p>
               <div className="flex flex-col items-center gap-4">
-                <p className="text-[hsl(var(--marketing-text-muted))] text-sm text-center">
-                  Join our beta program to test the latest features:
-                </p>
                 <a
-                  href="https://play.google.com/apps/testing/cloud.opensecret.maple"
-                  className="py-3 px-6 rounded-lg text-center font-medium transition-all duration-300
-                  dark:bg-white/90 dark:text-black dark:hover:bg-[hsl(var(--purple))]/80 dark:hover:text-[hsl(var(--foreground))] dark:active:bg-white/80
-                  bg-background text-foreground hover:bg-[hsl(var(--purple))] hover:text-[hsl(var(--foreground))] active:bg-background/80
-                  border border-[hsl(var(--purple))]/30 hover:border-[hsl(var(--purple))]
-                  shadow-[0_0_15px_rgba(var(--purple-rgb),0.2)] hover:shadow-[0_0_25px_rgba(var(--purple-rgb),0.3)]"
+                  href="https://play.google.com/store/apps/details?id=cloud.opensecret.maple"
+                  className="inline-block"
                   target="_blank"
                   rel="noopener noreferrer"
                 >
-                  Join Google Play Beta
+                  <img src="/google-play-badge.png" alt="Get it on Google Play" className="h-12" />
                 </a>
                 <div className="w-full border-t border-[hsl(var(--marketing-card-border))] pt-4">
                   <p className="text-[hsl(var(--marketing-text-muted))] text-sm mb-3 text-center">
-                    Or download the APK directly:
+                    Want to test the latest features before they hit the Play Store? Join our beta
+                    program.
                   </p>
-                  <a
-                    href={downloadUrls.androidApk}
-                    className="py-2 px-4 rounded-lg text-center font-medium transition-all duration-300 block
-                    dark:bg-white/90 dark:text-black dark:hover:bg-[hsl(var(--purple))]/80 dark:hover:text-[hsl(var(--foreground))] dark:active:bg-white/80
-                    bg-background text-foreground hover:bg-[hsl(var(--purple))] hover:text-[hsl(var(--foreground))] active:bg-background/80
-                    border border-[hsl(var(--purple))]/30 hover:border-[hsl(var(--purple))]"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                  >
-                    Download APK (Beta)
-                  </a>
+                  <div className="flex flex-col items-center gap-2">
+                    <a
+                      href="https://play.google.com/apps/testing/cloud.opensecret.maple"
+                      className="py-2 px-4 rounded-lg text-center text-sm font-medium transition-all duration-300
+                      dark:bg-white/90 dark:text-black dark:hover:bg-[hsl(var(--purple))]/80 dark:hover:text-[hsl(var(--foreground))] dark:active:bg-white/80
+                      bg-background text-foreground hover:bg-[hsl(var(--purple))] hover:text-[hsl(var(--foreground))] active:bg-background/80
+                      border border-[hsl(var(--purple))]/30 hover:border-[hsl(var(--purple))]"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      Join Google Play Beta
+                    </a>
+                    <a
+                      href={downloadUrls.androidApk}
+                      className="text-xs text-[hsl(var(--marketing-text-muted))] hover:text-foreground hover:underline"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      or download APK directly
+                    </a>
+                  </div>
                 </div>
-                <p className="text-[hsl(var(--marketing-text-muted))] text-xs text-center">
-                  Beta version - help us test new features before the official release
-                </p>
               </div>
             </div>
           </div>
