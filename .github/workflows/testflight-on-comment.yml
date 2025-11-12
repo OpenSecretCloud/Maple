@@ -80,19 +80,13 @@ jobs:
         with:
           targets: aarch64-apple-ios
 
-      - name: Install sccache
-        run: |
-          brew install sccache
-          sccache --version
-
-      - name: Cache sccache
-        uses: actions/cache@v4
+      - name: Cache Xcode DerivedData and SourcePackages
+        uses: irgaly/xcode-cache@v1
         with:
-          path: ~/Library/Caches/Mozilla.sccache
-          key: ${{ runner.os }}-sccache-testflight-${{ hashFiles('**/Cargo.lock') }}
+          key: xcode-cache-testflight-${{ github.workflow }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-sccache-testflight-
-            ${{ runner.os }}-sccache-
+            xcode-cache-testflight-${{ github.workflow }}-
+            xcode-cache-testflight-
 
       - name: Install dependencies (macOS)
         run: |
@@ -120,12 +114,6 @@ jobs:
           echo "${{ secrets.APPLE_API_PRIVATE_KEY }}" | base64 --decode > ~/.private_keys/AuthKey_${{ secrets.APPLE_API_KEY }}.p8
           chmod 600 ~/.private_keys/AuthKey_${{ secrets.APPLE_API_KEY }}.p8
           echo "APPLE_API_KEY_PATH=~/.private_keys/AuthKey_${{ secrets.APPLE_API_KEY }}.p8" >> $GITHUB_ENV
-
-      - name: Configure sccache
-        run: |
-          echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
-          echo "SCCACHE_CACHE_SIZE=2G" >> $GITHUB_ENV
-          sccache --show-stats
       
       - name: Build Tauri iOS App
         working-directory: ./frontend
