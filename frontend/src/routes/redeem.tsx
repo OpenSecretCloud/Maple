@@ -277,6 +277,9 @@ function RedeemPage() {
                   To redeem this pass code, you'll need to cancel your current subscription and wait
                   for it to expire, or let it naturally expire at the end of your billing period.
                 </p>
+                <p className="text-sm mt-2">
+                  You can create a new free account to redeem this code.
+                </p>
                 <Button
                   onClick={() => navigate({ to: "/pricing" })}
                   variant="outline"
@@ -424,13 +427,27 @@ function RedeemPage() {
                 ) : isLoggedIn ? (
                   "Redeem Pass Code"
                 ) : (
-                  "Sign In to Redeem"
+                  "Create Account to Redeem"
                 )}
               </Button>
 
               {!isLoggedIn && (
                 <p className="text-center text-sm text-[hsl(var(--marketing-text-muted))]">
-                  You must be logged in to redeem a pass code
+                  Already have a free account,{" "}
+                  <button
+                    onClick={() =>
+                      navigate({
+                        to: "/login",
+                        search: {
+                          next: "/redeem",
+                          code: trimmedCode
+                        }
+                      })
+                    }
+                    className="text-[hsl(var(--purple))] hover:underline"
+                  >
+                    log in
+                  </button>
                 </p>
               )}
             </div>
