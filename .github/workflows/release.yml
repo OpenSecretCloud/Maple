@@ -49,11 +49,30 @@ jobs:
         with:
           targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
 
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
+      - name: Install sccache (macOS)
+        if: matrix.platform == 'macos-latest'
+        run: |
+          brew install sccache
+          sccache --version
+
+      - name: Install sccache (Linux)
+        if: matrix.platform == 'ubuntu-latest'
+        run: |
+          SCCACHE_VERSION=0.8.2
+          SCCACHE_URL="https://github.com/mozilla/sccache/releases/download/v${SCCACHE_VERSION}/sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl.tar.gz"
+          curl -L "$SCCACHE_URL" | tar xz
+          sudo mv sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl/sccache /usr/local/bin/
+          chmod +x /usr/local/bin/sccache
+          sccache --version
+
+      - name: Cache sccache
+        uses: actions/cache@v4
         with:
-          workspaces: "frontend/src-tauri -> target"
-          cache-on-failure: true
+          path: ${{ matrix.platform == 'macos-latest' && '~/Library/Caches/Mozilla.sccache' || '~/.cache/sccache' }}
+          key: ${{ runner.os }}-sccache-release-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-sccache-release-
+            ${{ runner.os }}-sccache-
 
       - name: Install dependencies (macOS)
         if: matrix.platform == 'macos-latest'
@@ -77,6 +96,12 @@ jobs:
       - name: Install frontend dependencies
         working-directory: ./frontend
         run: bun install
+
+      - name: Configure sccache
+        run: |
+          echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
+          echo "SCCACHE_CACHE_SIZE=2G" >> $GITHUB_ENV
+          sccache --show-stats
 
       - name: Build Tauri App
         uses: tauri-apps/tauri-action@v0
@@ -157,22 +182,23 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-gradle-
 
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: "frontend/src-tauri -> target"
-          cache-on-failure: true
+      - name: Install sccache
+        run: |
+          SCCACHE_VERSION=0.8.2
+          SCCACHE_URL="https://github.com/mozilla/sccache/releases/download/v${SCCACHE_VERSION}/sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl.tar.gz"
+          curl -L "$SCCACHE_URL" | tar xz
+          sudo mv sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl/sccache /usr/local/bin/
+          chmod +x /usr/local/bin/sccache
+          sccache --version
 
-      - name: Cache Cargo registry
+      - name: Cache sccache
         uses: actions/cache@v4
         with:
-          path: |
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          path: ~/.cache/sccache
+          key: ${{ runner.os }}-sccache-android-release-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-registry-
+            ${{ runner.os }}-sccache-android-release-
+            ${{ runner.os }}-sccache-
 
       - name: Cache Cargo bin
         uses: actions/cache@v4
@@ -237,6 +263,13 @@ jobs:
           EOF
           
           echo "Generated tauri.properties with version $VERSION and versionCode $VERSION_CODE"
+
+      - name: Configure sccache
+        run: |
+          echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
+          echo "SCCACHE_DIR=$HOME/.cache/sccache" >> $GITHUB_ENV
+          echo "SCCACHE_CACHE_SIZE=2G" >> $GITHUB_ENV
+          sccache --show-stats
 
       - name: Build Tauri Android App (Signed Release)
         working-directory: ./frontend

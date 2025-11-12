@@ -61,22 +61,23 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-gradle-
 
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: "frontend/src-tauri -> target"
-          cache-on-failure: true
+      - name: Install sccache
+        run: |
+          SCCACHE_VERSION=0.8.2
+          SCCACHE_URL="https://github.com/mozilla/sccache/releases/download/v${SCCACHE_VERSION}/sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl.tar.gz"
+          curl -L "$SCCACHE_URL" | tar xz
+          sudo mv sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl/sccache /usr/local/bin/
+          chmod +x /usr/local/bin/sccache
+          sccache --version
 
-      - name: Cache Cargo registry
+      - name: Cache sccache
         uses: actions/cache@v4
         with:
-          path: |
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          path: ~/.cache/sccache
+          key: ${{ runner.os }}-sccache-android-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-registry-
+            ${{ runner.os }}-sccache-android-
+            ${{ runner.os }}-sccache-
 
       - name: Cache Cargo bin
         uses: actions/cache@v4
@@ -142,6 +143,13 @@ jobs:
           
           echo "Generated tauri.properties with version $VERSION and versionCode $VERSION_CODE"
 
+      - name: Configure sccache
+        run: |
+          echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
+          echo "SCCACHE_DIR=$HOME/.cache/sccache" >> $GITHUB_ENV
+          echo "SCCACHE_CACHE_SIZE=2G" >> $GITHUB_ENV
+          sccache --show-stats
+
       - name: Build Tauri Android App (Signed Release)
         working-directory: ./frontend
         run: |
@@ -183,6 +191,9 @@ jobs:
           VITE_OPEN_SECRET_API_URL: ${{ github.event_name == 'pull_request' && 'https://enclave.secretgpt.ai' || 'https://enclave.trymaple.ai' }}
           VITE_MAPLE_BILLING_API_URL: ${{ github.event_name == 'pull_request' && 'https://billing-dev.opensecret.cloud' || 'https://billing.opensecret.cloud' }}
           VITE_CLIENT_ID: ba5a14b5-d915-47b1-b7b1-afda52bc5fc6
+
+      - name: Show sccache stats
+        run: sccache --show-stats
 
       - name: Upload Android APK
         uses: actions/upload-artifact@v4

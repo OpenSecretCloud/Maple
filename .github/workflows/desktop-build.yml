@@ -25,11 +25,19 @@ jobs:
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
 
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
+      - name: Install sccache
+        run: |
+          brew install sccache
+          sccache --version
+
+      - name: Cache sccache
+        uses: actions/cache@v4
         with:
-          workspaces: "frontend/src-tauri -> target"
-          cache-on-failure: true
+          path: ~/Library/Caches/Mozilla.sccache
+          key: ${{ runner.os }}-sccache-macos-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-sccache-macos-
+            ${{ runner.os }}-sccache-
 
       - name: Install dependencies (macOS)
         run: |
@@ -38,6 +46,12 @@ jobs:
       - name: Install frontend dependencies
         working-directory: ./frontend
         run: bun install
+
+      - name: Configure sccache
+        run: |
+          echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
+          echo "SCCACHE_CACHE_SIZE=2G" >> $GITHUB_ENV
+          sccache --show-stats
 
       - name: Import Apple Developer Certificate
         env:
@@ -102,11 +116,23 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
+      - name: Install sccache
+        run: |
+          SCCACHE_VERSION=0.8.2
+          SCCACHE_URL="https://github.com/mozilla/sccache/releases/download/v${SCCACHE_VERSION}/sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl.tar.gz"
+          curl -L "$SCCACHE_URL" | tar xz
+          sudo mv sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl/sccache /usr/local/bin/
+          chmod +x /usr/local/bin/sccache
+          sccache --version
+
+      - name: Cache sccache
+        uses: actions/cache@v4
         with:
-          workspaces: "frontend/src-tauri -> target"
-          cache-on-failure: true
+          path: ~/.cache/sccache
+          key: ${{ runner.os }}-sccache-linux-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-sccache-linux-
+            ${{ runner.os }}-sccache-
 
       - name: Install Linux dependencies
         run: |
@@ -129,6 +155,13 @@ jobs:
         run: cargo install tauri-cli --version "2.9.2" --locked
         env:
           CARGO_CFG_TARGET_OS: linux
+
+      - name: Configure sccache
+        run: |
+          echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
+          echo "SCCACHE_DIR=$HOME/.cache/sccache" >> $GITHUB_ENV
+          echo "SCCACHE_CACHE_SIZE=2G" >> $GITHUB_ENV
+          sccache --show-stats
 
       - name: Build Tauri App (Linux)
         working-directory: ./frontend
