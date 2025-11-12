@@ -2,6 +2,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./app";
 import { waitForPlatform } from "@/utils/platform";
+import { LingoProviderWrapper, loadDictionary } from "lingo.dev/react/client";
 
 // Initialize platform detection before rendering
 async function initializeApp() {
@@ -15,7 +16,9 @@ async function initializeApp() {
     const root = createRoot(rootElement);
     root.render(
       <StrictMode>
-        <App />
+        <LingoProviderWrapper loadDictionary={(locale) => loadDictionary(locale)}>
+          <App />
+        </LingoProviderWrapper>
       </StrictMode>
     );
   }
