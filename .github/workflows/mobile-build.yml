@@ -22,6 +22,16 @@ jobs:
         with:
           targets: aarch64-apple-ios
 
+      - name: Cache Homebrew
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Caches/Homebrew
+            /opt/homebrew/Cellar/openssl@3
+          key: ${{ runner.os }}-brew-${{ hashFiles('.github/workflows/mobile-build.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-brew-
+
       - name: Cache Xcode DerivedData and SourcePackages
         uses: irgaly/xcode-cache@v1
         with:

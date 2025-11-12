@@ -88,22 +88,10 @@ jobs:
             ${{ runner.os }}-sccache-claude-
             ${{ runner.os }}-sccache-
 
-      - name: Cache APT packages
-        uses: actions/cache@v4
-        with:
-          path: /var/cache/apt/archives
-          key: ${{ runner.os }}-apt-${{ hashFiles('.github/workflows/claude.yml') }}
-          restore-keys: |
-            ${{ runner.os }}-apt-
-
       - name: Install Linux dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev \
-              build-essential \
-              curl \
-              wget \
-              file \
               libssl-dev \
               libgtk-3-dev \
               libayatana-appindicator3-dev \

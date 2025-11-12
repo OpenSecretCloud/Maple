@@ -88,15 +88,6 @@ jobs:
             ${{ runner.os }}-cargo-bin-tauri-cli-
             ${{ runner.os }}-cargo-bin-
 
-      - name: Cache APT packages
-        uses: actions/cache@v4
-        with:
-          path: /var/cache/apt/archives
-          key: ${{ runner.os }}-apt-android-${{ hashFiles('.github/workflows/android-build.yml') }}
-          restore-keys: |
-            ${{ runner.os }}-apt-android-
-            ${{ runner.os }}-apt-
-
       - name: Install Linux dependencies
         run: |
           sudo apt-get update

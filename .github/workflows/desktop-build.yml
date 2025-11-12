@@ -25,6 +25,17 @@ jobs:
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
 
+      - name: Cache Homebrew
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Caches/Homebrew
+            /opt/homebrew/Cellar/sccache
+            /opt/homebrew/Cellar/openssl@3
+          key: ${{ runner.os }}-brew-${{ hashFiles('.github/workflows/desktop-build.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-brew-
+
       - name: Install sccache
         run: |
           brew install sccache
@@ -149,10 +160,6 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev \
-              build-essential \
-              curl \
-              wget \
-              file \
               libssl-dev \
               libgtk-3-dev \
               libayatana-appindicator3-dev \

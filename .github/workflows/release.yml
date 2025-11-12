@@ -49,6 +49,18 @@ jobs:
         with:
           targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
 
+      - name: Cache Homebrew
+        if: matrix.platform == 'macos-latest'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Caches/Homebrew
+            /opt/homebrew/Cellar/sccache
+            /opt/homebrew/Cellar/openssl@3
+          key: ${{ runner.os }}-brew-${{ hashFiles('.github/workflows/release.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-brew-
+
       - name: Install sccache (macOS)
         if: matrix.platform == 'macos-latest'
         run: |
@@ -84,10 +96,6 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev \
-              build-essential \
-              curl \
-              wget \
-              file \
               libssl-dev \
               libgtk-3-dev \
               libayatana-appindicator3-dev \
@@ -207,15 +215,6 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-bin-tauri-cli-
             ${{ runner.os }}-cargo-bin-
-
-      - name: Cache APT packages
-        uses: actions/cache@v4
-        with:
-          path: /var/cache/apt/archives
-          key: ${{ runner.os }}-apt-android-${{ hashFiles('.github/workflows/release.yml') }}
-          restore-keys: |
-            ${{ runner.os }}-apt-android-
-            ${{ runner.os }}-apt-
 
       - name: Install Linux dependencies
         run: |
