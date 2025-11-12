@@ -70,28 +70,28 @@ jobs:
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin,aarch64-apple-ios
 
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: "frontend/src-tauri -> target"
-          cache-on-failure: true
+      - name: Install sccache
+        run: |
+          SCCACHE_VERSION=0.8.2
+          SCCACHE_URL="https://github.com/mozilla/sccache/releases/download/v${SCCACHE_VERSION}/sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl.tar.gz"
+          curl -L "$SCCACHE_URL" | tar xz
+          sudo mv sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl/sccache /usr/local/bin/
+          chmod +x /usr/local/bin/sccache
+          sccache --version
 
-      - name: Cache APT packages
+      - name: Cache sccache
         uses: actions/cache@v4
         with:
-          path: /var/cache/apt/archives
-          key: ${{ runner.os }}-apt-${{ hashFiles('.github/workflows/claude.yml') }}
+          path: ~/.cache/sccache
+          key: ${{ runner.os }}-sccache-claude-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-apt-
+            ${{ runner.os }}-sccache-claude-
+            ${{ runner.os }}-sccache-
 
       - name: Install Linux dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev \
-              build-essential \
-              curl \
-              wget \
-              file \
               libssl-dev \
               libgtk-3-dev \
               libayatana-appindicator3-dev \
@@ -101,24 +101,20 @@ jobs:
         working-directory: ./frontend
         run: bun install
 
-      - name: Cache Cargo registry
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-registry-
-
-      - name: Cache Cargo bin
+      - name: Cache Cargo bin (Tauri CLI)
         uses: actions/cache@v4
         with:
           path: ~/.cargo/bin/
-          key: ${{ runner.os }}-cargo-bin-tauri-cli
+          key: ${{ runner.os }}-cargo-bin-tauri-cli-2.9.2
           restore-keys: |
+            ${{ runner.os }}-cargo-bin-tauri-cli-
             ${{ runner.os }}-cargo-bin-
+
+      - name: Configure sccache
+        run: |
+          echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
+          echo "SCCACHE_DIR=$HOME/.cache/sccache" >> $GITHUB_ENV
+          echo "SCCACHE_CACHE_SIZE=2G" >> $GITHUB_ENV
 
       - name: Install Tauri CLI
         run: |

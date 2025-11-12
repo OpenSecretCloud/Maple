@@ -80,15 +80,32 @@ jobs:
         with:
           targets: aarch64-apple-ios
 
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
+      - name: Cache Homebrew
+        uses: actions/cache@v4
         with:
-          workspaces: "frontend/src-tauri -> target"
-          cache-on-failure: true
+          path: |
+            ~/Library/Caches/Homebrew
+            /opt/homebrew/Cellar/openssl@3
+          key: ${{ runner.os }}-brew-${{ hashFiles('.github/workflows/testflight-on-comment.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-brew-
 
-      - name: Install dependencies (macOS)
-        run: |
-          brew install openssl@3
+      - name: Cache Xcode DerivedData and SourcePackages
+        uses: irgaly/xcode-cache@v1
+        with:
+          key: xcode-cache-testflight-${{ github.workflow }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            xcode-cache-testflight-${{ github.workflow }}-
+            xcode-cache-testflight-
+
+      - name: Cache Cargo bin (Tauri CLI)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/
+          key: ${{ runner.os }}-cargo-bin-tauri-cli-2.9.2
+          restore-keys: |
+            ${{ runner.os }}-cargo-bin-tauri-cli-
+            ${{ runner.os }}-cargo-bin-
 
       - name: Install frontend dependencies
         working-directory: ./frontend
@@ -100,7 +117,12 @@ jobs:
           xcode-version: '16.4'
 
       - name: Install Tauri CLI
-        run: cargo install tauri-cli --version "2.9.2" --locked
+        run: |
+          if ! command -v cargo-tauri &> /dev/null; then
+            cargo install tauri-cli --version "2.9.2" --locked
+          else
+            echo "Tauri CLI already installed"
+          fi
         env:
           # Workaround for getrandom v0.2.16 (https://github.com/rust-random/getrandom/issues/641)
           # cargo install builds for the host; on macOS runners target_os is "macos"
