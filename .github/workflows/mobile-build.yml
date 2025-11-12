@@ -30,6 +30,15 @@ jobs:
             xcode-cache-ios-${{ github.workflow }}-
             xcode-cache-ios-
 
+      - name: Cache Cargo bin (Tauri CLI)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/
+          key: ${{ runner.os }}-cargo-bin-tauri-cli-2.9.2
+          restore-keys: |
+            ${{ runner.os }}-cargo-bin-tauri-cli-
+            ${{ runner.os }}-cargo-bin-
+
       - name: Install dependencies (macOS)
         run: |
           brew install openssl@3
