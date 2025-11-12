@@ -51,7 +51,6 @@ jobs:
         run: |
           echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
           echo "SCCACHE_CACHE_SIZE=2G" >> $GITHUB_ENV
-          sccache --show-stats
 
       - name: Import Apple Developer Certificate
         env:
@@ -93,6 +92,9 @@ jobs:
         with:
           projectPath: './frontend'
           args: --target ${{ matrix.target }}
+
+      - name: Show sccache stats
+        run: sccache --show-stats
 
       - name: Upload macOS Build
         uses: actions/upload-artifact@v4
@@ -152,7 +154,12 @@ jobs:
         run: bun install
 
       - name: Install Tauri CLI
-        run: cargo install tauri-cli --version "2.9.2" --locked
+        run: |
+          if ! command -v cargo-tauri &> /dev/null; then
+            cargo install tauri-cli --version "2.9.2" --locked
+          else
+            echo "Tauri CLI already installed"
+          fi
         env:
           CARGO_CFG_TARGET_OS: linux
 
@@ -161,7 +168,6 @@ jobs:
           echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
           echo "SCCACHE_DIR=$HOME/.cache/sccache" >> $GITHUB_ENV
           echo "SCCACHE_CACHE_SIZE=2G" >> $GITHUB_ENV
-          sccache --show-stats
 
       - name: Build Tauri App (Linux)
         working-directory: ./frontend
@@ -172,6 +178,9 @@ jobs:
           VITE_OPEN_SECRET_API_URL: ${{ github.event_name == 'pull_request' && 'https://enclave.secretgpt.ai' || 'https://enclave.trymaple.ai' }}
           VITE_MAPLE_BILLING_API_URL: ${{ github.event_name == 'pull_request' && 'https://billing-dev.opensecret.cloud' || 'https://billing.opensecret.cloud' }}
           VITE_CLIENT_ID: ba5a14b5-d915-47b1-b7b1-afda52bc5fc6
+
+      - name: Show sccache stats
+        run: sccache --show-stats
 
       - name: Upload Linux Builds
         uses: actions/upload-artifact@v4

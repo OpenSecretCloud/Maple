@@ -102,7 +102,12 @@ jobs:
           xcode-version: '16.4'
 
       - name: Install Tauri CLI
-        run: cargo install tauri-cli --version "2.9.2" --locked
+        run: |
+          if ! command -v cargo-tauri &> /dev/null; then
+            cargo install tauri-cli --version "2.9.2" --locked
+          else
+            echo "Tauri CLI already installed"
+          fi
         env:
           # Workaround for getrandom v0.2.16 (https://github.com/rust-random/getrandom/issues/641)
           # cargo install builds for the host; on macOS runners target_os is "macos"

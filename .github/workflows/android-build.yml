@@ -148,7 +148,6 @@ jobs:
           echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
           echo "SCCACHE_DIR=$HOME/.cache/sccache" >> $GITHUB_ENV
           echo "SCCACHE_CACHE_SIZE=2G" >> $GITHUB_ENV
-          sccache --show-stats
 
       - name: Build Tauri Android App (Signed Release)
         working-directory: ./frontend
