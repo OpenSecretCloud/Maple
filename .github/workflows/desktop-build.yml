@@ -39,6 +39,7 @@ jobs:
       - name: Install sccache
         run: |
           brew install sccache
+          brew link --overwrite --force sccache
           sccache --version
 
       - name: Cache sccache
@@ -49,10 +50,6 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-sccache-macos-
             ${{ runner.os }}-sccache-
-
-      - name: Install dependencies (macOS)
-        run: |
-          brew install openssl@3
 
       - name: Install frontend dependencies
         working-directory: ./frontend

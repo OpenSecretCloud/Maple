@@ -65,6 +65,7 @@ jobs:
         if: matrix.platform == 'macos-latest'
         run: |
           brew install sccache
+          brew link --overwrite --force sccache
           sccache --version
 
       - name: Install sccache (Linux)
@@ -85,11 +86,6 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-sccache-release-
             ${{ runner.os }}-sccache-
-
-      - name: Install dependencies (macOS)
-        if: matrix.platform == 'macos-latest'
-        run: |
-          brew install openssl@3
 
       - name: Install dependencies (Linux)
         if: matrix.platform == 'ubuntu-latest'

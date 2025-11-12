@@ -49,10 +49,6 @@ jobs:
             ${{ runner.os }}-cargo-bin-tauri-cli-
             ${{ runner.os }}-cargo-bin-
 
-      - name: Install dependencies (macOS)
-        run: |
-          brew install openssl@3
-
       - name: Install frontend dependencies
         working-directory: ./frontend
         run: bun install
