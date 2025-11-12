@@ -2507,10 +2507,12 @@ export function UnifiedChat() {
                                 return;
                               }
 
-                              // Step 2: Check if this is their first time (show info dialog)
+                              // Step 2: Check if this is their first time (enable web search, set flag, show popup)
                               const hasSeenWebSearchInfo =
                                 localStorage.getItem("hasSeenWebSearchInfo") === "true";
                               if (!hasSeenWebSearchInfo) {
+                                localStorage.setItem("hasSeenWebSearchInfo", "true");
+                                setIsWebSearchEnabled(true);
                                 setWebSearchInfoDialogOpen(true);
                                 return;
                               }
@@ -2764,10 +2766,12 @@ export function UnifiedChat() {
                               return;
                             }
 
-                            // Step 2: Check if this is their first time (show info dialog)
+                            // Step 2: Check if this is their first time (enable web search, set flag, show popup)
                             const hasSeenWebSearchInfo =
                               localStorage.getItem("hasSeenWebSearchInfo") === "true";
                             if (!hasSeenWebSearchInfo) {
+                              localStorage.setItem("hasSeenWebSearchInfo", "true");
+                              setIsWebSearchEnabled(true);
                               setWebSearchInfoDialogOpen(true);
                               return;
                             }
@@ -2927,15 +2931,11 @@ export function UnifiedChat() {
         <WebSearchInfoDialog
           open={webSearchInfoDialogOpen}
           onOpenChange={(open) => {
-            // When dialog is closed (any way), mark as seen and enable web search
-            if (!open) {
-              localStorage.setItem("hasSeenWebSearchInfo", "true");
-              setIsWebSearchEnabled(true);
-            }
+            // When dialog is closed via X or backdrop, just dismiss - web search already enabled on click
             setWebSearchInfoDialogOpen(open);
           }}
           onConfirm={() => {
-            // Just close the dialog (onOpenChange handles the rest)
+            // "Got it" button - just close (web search already enabled on click)
             setWebSearchInfoDialogOpen(false);
           }}
         />
