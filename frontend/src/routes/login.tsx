@@ -21,13 +21,15 @@ import { isIOS, isTauri } from "@/utils/platform";
 type LoginSearchParams = {
   next?: string;
   selected_plan?: string;
+  code?: string;
 };
 
 export const Route = createFileRoute("/login")({
   component: LoginPage,
   validateSearch: (search: Record<string, unknown>): LoginSearchParams => ({
     next: typeof search.next === "string" ? search.next : undefined,
-    selected_plan: typeof search.selected_plan === "string" ? search.selected_plan : undefined
+    selected_plan: typeof search.selected_plan === "string" ? search.selected_plan : undefined,
+    code: typeof search.code === "string" ? search.code : undefined
   })
 });
 
@@ -36,7 +38,7 @@ type LoginMethod = "email" | "github" | "google" | "apple" | "guest" | null;
 function LoginPage() {
   const navigate = useNavigate();
   const os = useOpenSecret();
-  const { next, selected_plan } = Route.useSearch();
+  const { next, selected_plan, code } = Route.useSearch();
   const [loginMethod, setLoginMethod] = useState<LoginMethod>(null);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -53,11 +55,16 @@ function LoginPage() {
           to: "/pricing",
           search: { selected_plan }
         });
+      } else if (next === "/redeem" && code) {
+        navigate({
+          to: "/redeem",
+          search: { code }
+        });
       } else {
         navigate({ to: next || "/" });
       }
     }
-  }, [os.auth.user, navigate, next, selected_plan]);
+  }, [os.auth.user, navigate, next, selected_plan, code]);
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -111,6 +118,11 @@ function LoginPage() {
           desktopAuthUrl += `&selected_plan=${encodeURIComponent(selected_plan)}`;
         }
 
+        // If there's a redemption code, add it to the URL
+        if (code) {
+          desktopAuthUrl += `&code=${encodeURIComponent(code)}`;
+        }
+
         // Use the opener plugin by directly invoking the command
         // This works for both desktop and mobile (iOS/Android)
         console.log("[OAuth] Opening URL in external browser:", desktopAuthUrl);
@@ -123,6 +135,9 @@ function LoginPage() {
         const { auth_url } = await os.initiateGitHubAuth("");
         if (selected_plan) {
           sessionStorage.setItem("selected_plan", selected_plan);
+        }
+        if (code) {
+          sessionStorage.setItem("redeem_code", code);
         }
         window.location.href = auth_url;
       }
@@ -145,6 +160,11 @@ function LoginPage() {
           desktopAuthUrl += `&selected_plan=${encodeURIComponent(selected_plan)}`;
         }
 
+        // If there's a redemption code, add it to the URL
+        if (code) {
+          desktopAuthUrl += `&code=${encodeURIComponent(code)}`;
+        }
+
         // Use the opener plugin by directly invoking the command
         // This works for both desktop and mobile (iOS/Android)
         console.log("[OAuth] Opening URL in external browser:", desktopAuthUrl);
@@ -157,6 +177,9 @@ function LoginPage() {
         const { auth_url } = await os.initiateGoogleAuth("");
         if (selected_plan) {
           sessionStorage.setItem("selected_plan", selected_plan);
+        }
+        if (code) {
+          sessionStorage.setItem("redeem_code", code);
         }
         window.location.href = auth_url;
       }
@@ -187,6 +210,11 @@ function LoginPage() {
           navigate({
             to: "/pricing",
             search: { selected_plan }
+          });
+        } else if (next === "/redeem" && code) {
+          navigate({
+            to: "/redeem",
+            search: { code }
           });
         } else {
           navigate({ to: next || "/" });
@@ -264,6 +292,11 @@ function LoginPage() {
                 to: "/pricing",
                 search: { selected_plan }
               });
+            } else if (next === "/redeem" && code) {
+              navigate({
+                to: "/redeem",
+                search: { code }
+              });
             } else {
               navigate({ to: next || "/" });
             }
@@ -292,6 +325,11 @@ function LoginPage() {
           desktopAuthUrl += `&selected_plan=${encodeURIComponent(selected_plan)}`;
         }
 
+        // If there's a redemption code, add it to the URL
+        if (code) {
+          desktopAuthUrl += `&code=${encodeURIComponent(code)}`;
+        }
+
         // Use the opener plugin by directly invoking the command
         console.log("[OAuth] Opening URL in external browser:", desktopAuthUrl);
         invoke("plugin:opener|open_url", { url: desktopAuthUrl }).catch((error: Error) => {
@@ -301,6 +339,10 @@ function LoginPage() {
       } else {
         // Web flow - use AppleAuthProvider component which will initiate the flow
         console.log("[OAuth] Using web flow for Apple Sign In (Web only)");
+        // Store redemption code in sessionStorage for AppleAuthProvider
+        if (code) {
+          sessionStorage.setItem("redeem_code", code);
+        }
         // The AppleAuthProvider component handles everything for web
         // It will be triggered by the onClick event on the button
       }

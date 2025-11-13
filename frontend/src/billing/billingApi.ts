@@ -14,7 +14,7 @@ export type BillingStatus = {
   current_period_end: string | null;
   can_chat: boolean;
   chats_remaining: number | null;
-  payment_provider: "stripe" | "zaprite" | null;
+  payment_provider: "stripe" | "zaprite" | "subscription_pass" | null;
   total_tokens: number | null;
   used_tokens: number | null;
   usage_reset_date: string | null;
@@ -738,6 +738,101 @@ export async function updateApiCreditSettings(
       throw new Error("Unauthorized");
     }
     throw new Error(`Failed to update credit settings: ${errorText}`);
+  }
+
+  return response.json();
+}
+
+// Subscription Pass Types
+export type PassStatus = "pending" | "active" | "redeemed" | "expired" | "revoked";
+
+export type PassCheckResponse = {
+  valid: boolean;
+  plan_name?: string;
+  plan_description?: string;
+  duration_months?: number;
+  status?: PassStatus;
+  expires_at?: string;
+  message?: string | null;
+};
+
+export type PassRedeemRequest = {
+  pass_code: string;
+};
+
+export type PassRedeemResponse = {
+  success: boolean;
+  subscription: {
+    plan_name: string;
+    product_id: string;
+    duration_months: number;
+    start_date: string;
+    end_date: string;
+  };
+};
+
+// Subscription Pass Endpoints
+export async function checkPassCode(passCode: string): Promise<PassCheckResponse> {
+  const response = await fetch(
+    `${import.meta.env.VITE_MAPLE_BILLING_API_URL}/v1/maple/pass/check/${passCode}`,
+    {
+      headers: {
+        "Content-Type": "application/json"
+      }
+    }
+  );
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error("Check pass code error:", errorText);
+    if (response.status === 404) {
+      return {
+        valid: false,
+        message: "Invalid pass code"
+      };
+    }
+    throw new Error(`Failed to check pass code: ${errorText}`);
+  }
+
+  return response.json();
+}
+
+export async function redeemPassCode(
+  thirdPartyToken: string,
+  data: PassRedeemRequest
+): Promise<PassRedeemResponse> {
+  const response = await fetch(
+    `${import.meta.env.VITE_MAPLE_BILLING_API_URL}/v1/maple/pass/redeem`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${thirdPartyToken}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(data)
+    }
+  );
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error("Redeem pass code error:", errorText);
+    if (response.status === 401) {
+      throw new Error("Unauthorized");
+    }
+    if (response.status === 404) {
+      throw new Error("Invalid pass code");
+    }
+    if (response.status === 400) {
+      // Try to parse error message for user-friendly display
+      try {
+        const errorData = JSON.parse(errorText);
+        throw new Error(errorData.message || errorData.error || errorText);
+      } catch (parseError) {
+        console.error("Failed to parse error response:", parseError);
+        throw new Error(errorText);
+      }
+    }
+    throw new Error(`Failed to redeem pass code: ${errorText}`);
   }
 
   return response.json();
