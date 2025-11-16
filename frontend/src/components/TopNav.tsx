@@ -4,6 +4,7 @@ import { Button } from "./ui/button";
 import { useOpenSecret } from "@opensecret/react";
 import { Menu, X } from "lucide-react";
 import { useState } from "react";
+import { LocaleSwitcher } from "lingo.dev/react/client";
 
 export function TopNav() {
   const os = useOpenSecret();
@@ -65,6 +66,11 @@ export function TopNav() {
             </div>
 
             <div className="flex items-center gap-4">
+              {/* Language Switcher */}
+              <div className="hidden sm:block">
+                <LocaleSwitcher locales={["en", "es"]} />
+              </div>
+
               {/* Login/Chat Button */}
               {os.auth.user ? (
                 <Button
@@ -116,6 +122,9 @@ export function TopNav() {
               >
                 Guides
               </a>
+              <div className="pt-4 border-t border-[#E2E2E2]/10">
+                <LocaleSwitcher locales={["en", "es"]} />
+              </div>
             </div>
           </div>
         )}
