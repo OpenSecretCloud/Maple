@@ -82,21 +82,6 @@ export const MODEL_CONFIG: Record<string, ModelCfg> = {
     requiresPro: true,
     tokenLimit: 128000
   },
-  "mistral-small-3-1-24b": {
-    displayName: "Mistral Small 3.1 24B",
-    shortName: "Mistral Small",
-    badges: ["Pro"],
-    requiresPro: true,
-    supportsVision: true,
-    tokenLimit: 128000
-  },
-  "qwen2-5-72b": {
-    displayName: "Qwen 2.5 72B",
-    shortName: "Qwen 2.5",
-    badges: ["Pro"],
-    requiresPro: true,
-    tokenLimit: 128000
-  },
   "qwen3-coder-480b": {
     displayName: "Qwen3 Coder 480B",
     shortName: "Qwen3 Coder",

@@ -193,7 +193,7 @@ export function UpgradePromptDialog({
         benefits: [
           "All models run in secure, encrypted environments",
           "Access to DeepSeek R1 for advanced reasoning",
-          "OpenAI GPT-OSS, Mistral, Qwen, and more",
+          "OpenAI GPT-OSS, Qwen, and other advanced models",
           "Higher token limits for longer conversations",
           "Priority access to new models as they launch"
         ]
