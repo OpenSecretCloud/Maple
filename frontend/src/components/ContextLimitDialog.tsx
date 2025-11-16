@@ -62,8 +62,8 @@ export function ContextLimitDialog({
                 <li className="flex items-start gap-2">
                   <MessageCircle className="h-4 w-4 mt-0.5 shrink-0" />
                   <span>
-                    <strong>Switch to a model with more context</strong> - Try DeepSeek R1, Mistral,
-                    or other models that support 128k tokens
+                    <strong>Switch to a model with more context</strong> - Try DeepSeek R1 or other
+                    models that support 128k tokens
                   </span>
                 </li>
               )}
