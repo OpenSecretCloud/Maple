@@ -90,7 +90,7 @@ export function UpgradePromptDialog({
         benefits: [
           "Images stay private with end-to-end encryption",
           "Upload JPEG, PNG, and WebP formats securely",
-          "Use advanced vision models like Gemma 3",
+          "Use advanced vision models like Gemma 3 and Qwen3-VL",
           "Analyze diagrams, screenshots, and photos privately",
           "Extract text from images without exposing data"
         ]

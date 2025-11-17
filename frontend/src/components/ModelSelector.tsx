@@ -88,6 +88,14 @@ export const MODEL_CONFIG: Record<string, ModelCfg> = {
     badges: ["Pro"],
     requiresPro: true,
     tokenLimit: 128000
+  },
+  "qwen3-vl-30b": {
+    displayName: "Qwen3-VL 30B",
+    shortName: "Qwen3-VL",
+    badges: ["Pro", "New"],
+    requiresPro: true,
+    supportsVision: true,
+    tokenLimit: 256000
   }
 };
 
