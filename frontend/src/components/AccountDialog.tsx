@@ -111,6 +111,19 @@ export function AccountDialog() {
                 </SelectGroup>
               </SelectContent>
             </Select>
+            {billingStatus?.current_period_end && (
+              <div className="text-sm text-muted-foreground">
+                {billingStatus.payment_provider === "subscription_pass" ||
+                billingStatus.payment_provider === "zaprite"
+                  ? "Expires on "
+                  : "Renews on "}
+                {new Date(billingStatus.current_period_end).toLocaleDateString(undefined, {
+                  year: "numeric",
+                  month: "long",
+                  day: "numeric"
+                })}
+              </div>
+            )}
           </div>
           <div className="flex flex-col space-y-2">
             <Button
