@@ -83,7 +83,11 @@ export const PRICING_PLANS: PricingPlan[] = [
         included: true,
         icon: <Check className="w-4 h-4 text-green-500" />
       },
-      { text: "Gemma 3 27B", included: true, icon: <Check className="w-4 h-4 text-green-500" /> },
+      {
+        text: "Gemma 3 27B",
+        included: true,
+        icon: <Check className="w-4 h-4 text-green-500" />
+      },
       { text: "Image Upload", included: true, icon: <Check className="w-4 h-4 text-green-500" /> },
       {
         text: "Document Upload (PDF, TXT, MD)",
