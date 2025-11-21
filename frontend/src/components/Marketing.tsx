@@ -327,7 +327,7 @@ export function Marketing() {
         <div className="flex flex-col sm:flex-row justify-center items-center gap-4 mt-8">
           <Link
             to="/downloads"
-            className="inline-flex items-center gap-2 h-10 px-6 rounded-lg text-center font-medium transition-all duration-300 
+            className="inline-flex items-center gap-2 h-10 px-6 rounded-lg text-center font-medium transition-all duration-300
               dark:bg-white/90 dark:text-black dark:hover:bg-white dark:active:bg-white/80
               bg-black text-white hover:bg-black/90 active:bg-black/80
               border border-[hsl(var(--marketing-card-border))]"
@@ -347,14 +347,20 @@ export function Marketing() {
               className="h-10 w-auto"
             />
           </a>
-          <a
-            href="https://play.google.com/store/apps/details?id=cloud.opensecret.maple"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-block"
-          >
-            <img src="/google-play-badge.png" alt="Get it on Google Play" className="h-10 w-auto" />
-          </a>
+          {!isIOSPlatform && (
+            <a
+              href="https://play.google.com/store/apps/details?id=cloud.opensecret.maple"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-block"
+            >
+              <img
+                src="/google-play-badge.png"
+                alt="Get it on Google Play"
+                className="h-10 w-auto"
+              />
+            </a>
+          )}
         </div>
       </section>
 
