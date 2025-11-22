@@ -7,6 +7,7 @@ import { Apple } from "@/components/icons/Apple";
 import { Android } from "@/components/icons/Android";
 import { useState, useEffect } from "react";
 import { getLatestDownloadInfo } from "@/utils/githubRelease";
+import { isIOS } from "@/utils/platform";
 import packageJson from "../../package.json";
 
 interface DownloadUrls {
@@ -30,6 +31,7 @@ const FALLBACK_URLS: DownloadUrls = {
 };
 
 function DownloadPage() {
+  const isIOSPlatform = isIOS();
   const [downloadUrls, setDownloadUrls] = useState<DownloadUrls>(FALLBACK_URLS);
   const [currentVersion, setCurrentVersion] = useState<string>(FALLBACK_VERSION);
   const [releaseUrl, setReleaseUrl] = useState<string>(
@@ -228,52 +230,58 @@ function DownloadPage() {
                 </div>
               </div>
             </div>
-            <div className="flex flex-col border border-[hsl(var(--marketing-card-border))] bg-[hsl(var(--marketing-card))]/75 text-foreground p-6 rounded-lg hover:border-foreground/30 transition-all duration-300">
-              <div className="p-3 rounded-full bg-[hsl(var(--marketing-card))]/50 border border-[hsl(var(--purple))]/30 w-fit mb-4">
-                <Android className="w-6 h-6 text-[hsl(var(--purple))]" />
-              </div>
-              <h3 className="text-xl font-medium mb-2">Android</h3>
-              <p className="text-[hsl(var(--marketing-text-muted))] mb-6 flex-grow">
-                Download our native Android app for phones and tablets.
-              </p>
-              <div className="flex flex-col items-center gap-4">
-                <a
-                  href="https://play.google.com/store/apps/details?id=cloud.opensecret.maple"
-                  className="inline-block"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  <img src="/google-play-badge.png" alt="Get it on Google Play" className="h-12" />
-                </a>
-                <div className="w-full border-t border-[hsl(var(--marketing-card-border))] pt-4">
-                  <p className="text-[hsl(var(--marketing-text-muted))] text-sm mb-3 text-center">
-                    Want to test the latest features before they hit the Play Store? Join our beta
-                    program.
-                  </p>
-                  <div className="flex flex-col items-center gap-2">
-                    <a
-                      href="https://play.google.com/apps/testing/cloud.opensecret.maple"
-                      className="py-2 px-4 rounded-lg text-center text-sm font-medium transition-all duration-300
-                      dark:bg-white/90 dark:text-black dark:hover:bg-[hsl(var(--purple))]/80 dark:hover:text-[hsl(var(--foreground))] dark:active:bg-white/80
-                      bg-background text-foreground hover:bg-[hsl(var(--purple))] hover:text-[hsl(var(--foreground))] active:bg-background/80
-                      border border-[hsl(var(--purple))]/30 hover:border-[hsl(var(--purple))]"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                    >
-                      Join Google Play Beta
-                    </a>
-                    <a
-                      href={downloadUrls.androidApk}
-                      className="text-xs text-[hsl(var(--marketing-text-muted))] hover:text-foreground hover:underline"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                    >
-                      or download APK directly
-                    </a>
+            {!isIOSPlatform && (
+              <div className="flex flex-col border border-[hsl(var(--marketing-card-border))] bg-[hsl(var(--marketing-card))]/75 text-foreground p-6 rounded-lg hover:border-foreground/30 transition-all duration-300">
+                <div className="p-3 rounded-full bg-[hsl(var(--marketing-card))]/50 border border-[hsl(var(--purple))]/30 w-fit mb-4">
+                  <Android className="w-6 h-6 text-[hsl(var(--purple))]" />
+                </div>
+                <h3 className="text-xl font-medium mb-2">Android</h3>
+                <p className="text-[hsl(var(--marketing-text-muted))] mb-6 flex-grow">
+                  Download our native Android app for phones and tablets.
+                </p>
+                <div className="flex flex-col items-center gap-4">
+                  <a
+                    href="https://play.google.com/store/apps/details?id=cloud.opensecret.maple"
+                    className="inline-block"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    <img
+                      src="/google-play-badge.png"
+                      alt="Get it on Google Play"
+                      className="h-12"
+                    />
+                  </a>
+                  <div className="w-full border-t border-[hsl(var(--marketing-card-border))] pt-4">
+                    <p className="text-[hsl(var(--marketing-text-muted))] text-sm mb-3 text-center">
+                      Want to test the latest features before they hit the Play Store? Join our beta
+                      program.
+                    </p>
+                    <div className="flex flex-col items-center gap-2">
+                      <a
+                        href="https://play.google.com/apps/testing/cloud.opensecret.maple"
+                        className="py-2 px-4 rounded-lg text-center text-sm font-medium transition-all duration-300
+                        dark:bg-white/90 dark:text-black dark:hover:bg-[hsl(var(--purple))]/80 dark:hover:text-[hsl(var(--foreground))] dark:active:bg-white/80
+                        bg-background text-foreground hover:bg-[hsl(var(--purple))] hover:text-[hsl(var(--foreground))] active:bg-background/80
+                        border border-[hsl(var(--purple))]/30 hover:border-[hsl(var(--purple))]"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >
+                        Join Google Play Beta
+                      </a>
+                      <a
+                        href={downloadUrls.androidApk}
+                        className="text-xs text-[hsl(var(--marketing-text-muted))] hover:text-foreground hover:underline"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >
+                        or download APK directly
+                      </a>
+                    </div>
                   </div>
                 </div>
               </div>
-            </div>
+            )}
           </div>
         </section>
 
