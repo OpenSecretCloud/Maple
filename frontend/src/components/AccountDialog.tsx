@@ -117,11 +117,14 @@ export function AccountDialog() {
                 billingStatus.payment_provider === "zaprite"
                   ? "Expires on "
                   : "Renews on "}
-                {new Date(billingStatus.current_period_end).toLocaleDateString(undefined, {
-                  year: "numeric",
-                  month: "long",
-                  day: "numeric"
-                })}
+                {new Date(Number(billingStatus.current_period_end) * 1000).toLocaleDateString(
+                  undefined,
+                  {
+                    year: "numeric",
+                    month: "long",
+                    day: "numeric"
+                  }
+                )}
               </div>
             )}
           </div>
