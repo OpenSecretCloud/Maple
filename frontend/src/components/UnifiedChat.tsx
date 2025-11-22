@@ -1322,7 +1322,11 @@ export function UnifiedChat() {
       billingStatus.product_name?.toLowerCase().includes("max") ||
       billingStatus.product_name?.toLowerCase().includes("team"));
 
-  const canUseImages = hasProAccess;
+  const hasStarterAccess =
+    billingStatus &&
+    (billingStatus.product_name?.toLowerCase().includes("starter") || hasProAccess);
+
+  const canUseImages = hasStarterAccess;
   const canUseDocuments = hasProAccess;
   const canUseVoice = hasProAccess && localState.hasWhisperModel;
   const canUseWebSearch = hasProAccess;
