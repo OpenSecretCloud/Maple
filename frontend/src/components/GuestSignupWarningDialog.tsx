@@ -68,8 +68,9 @@ export function GuestSignupWarningDialog({
                   htmlFor="bitcoin-payment"
                   className="text-sm font-medium leading-relaxed cursor-pointer break-words"
                 >
-                  I understand I <strong>MUST pay for a full year in Bitcoin only</strong>. No
-                  credit card, no Stripe, no monthly payment options, and{" "}
+                  I understand I{" "}
+                  <strong>MUST pay for a full year in Bitcoin or redeem a subscription pass</strong>
+                  . No credit card, no Stripe, no monthly payment options, and{" "}
                   <strong>no free trial</strong> are available for anonymous accounts.
                 </Label>
               </div>
