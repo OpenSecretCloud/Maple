@@ -51,7 +51,7 @@ export function GuestPaymentWarningDialog({ open, onOpenChange }: GuestPaymentWa
             </p>
             <p className="text-sm text-muted-foreground">
               To start chatting with Maple AI, you need to subscribe to a paid plan. Anonymous
-              accounts must pay for a full year using Bitcoin.
+              accounts must pay for a full year using Bitcoin or redeem a subscription pass.
             </p>
           </div>
 
