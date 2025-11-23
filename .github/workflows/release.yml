@@ -57,7 +57,8 @@ jobs:
             ~/Library/Caches/Homebrew
             /opt/homebrew/Cellar/sccache
             /opt/homebrew/Cellar/openssl@3
-          key: ${{ runner.os }}-brew-${{ hashFiles('.github/workflows/release.yml') }}
+          # Workaround for hashFiles bug on macOS runners: https://github.com/actions/runner-images/issues/13341
+          key: ${{ runner.os }}-brew-v1
           restore-keys: |
             ${{ runner.os }}-brew-
 
@@ -82,7 +83,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ matrix.platform == 'macos-latest' && '~/Library/Caches/Mozilla.sccache' || '~/.cache/sccache' }}
-          key: ${{ runner.os }}-sccache-release-${{ hashFiles('**/Cargo.lock') }}
+          # Workaround for hashFiles bug on macOS runners: https://github.com/actions/runner-images/issues/13341
+          key: ${{ runner.os }}-sccache-release-${{ matrix.platform == 'macos-latest' && 'v1' || hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-sccache-release-
             ${{ runner.os }}-sccache-
