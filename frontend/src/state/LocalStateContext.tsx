@@ -72,7 +72,7 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
     draftMessages: new Map<string, string>()
   });
 
-  const { get, put, list, del } = useOpenSecret();
+  const { get, put, list, del, delAll } = useOpenSecret();
 
   async function persistChat(chat: Chat) {
     const chatToSave = {
@@ -285,11 +285,17 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
   }
 
   async function clearHistory() {
-    const items = await list();
-    await del("history_list");
-    await Promise.all(
-      items.filter((item) => item.key.startsWith("chat_")).map(async (chat) => del(chat.key))
-    );
+    try {
+      await delAll();
+    } catch (error) {
+      console.error("Failed to clear history:", error);
+      // Fallback to manual deletion if bulk delete fails (e.g. old SDK version)
+      const items = await list();
+      await del("history_list");
+      await Promise.all(
+        items.filter((item) => item.key.startsWith("chat_")).map(async (chat) => del(chat.key))
+      );
+    }
   }
 
   async function deleteChat(chatId: string) {
