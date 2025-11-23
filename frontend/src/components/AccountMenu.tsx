@@ -54,19 +54,37 @@ import { ApiKeyManagementDialog } from "@/components/apikeys/ApiKeyManagementDia
 
 function ConfirmDeleteDialog() {
   const { clearHistory } = useLocalState();
+  const os = useOpenSecret();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
 
   async function handleDeleteHistory() {
+    // 1. Delete archived chats (KV)
     try {
       await clearHistory();
-      console.log("History cleared");
+      console.log("History (KV) cleared");
     } catch (error) {
       console.error("Error clearing history:", error);
-    } finally {
-      queryClient.invalidateQueries({ queryKey: ["chatHistory"] });
-      navigate({ to: "/" });
+      // Continue to delete server conversations even if this fails
     }
+
+    // 2. Delete server conversations (API) if any exist
+    try {
+      // Check if we have any conversations to delete
+      const conversations = await os.listConversations({ limit: 1 });
+      if (conversations.data && conversations.data.length > 0) {
+        await os.deleteConversations();
+        console.log("Server conversations deleted");
+      }
+    } catch (e) {
+      console.error("Error deleting conversations:", e);
+    }
+
+    // Always refresh UI and navigate home
+    queryClient.invalidateQueries({ queryKey: ["chatHistory"] });
+    queryClient.invalidateQueries({ queryKey: ["conversations"] });
+    queryClient.invalidateQueries({ queryKey: ["archivedChats"] });
+    navigate({ to: "/" });
   }
 
   return (
