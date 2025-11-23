@@ -1,5 +1,5 @@
 import { createFileRoute, useNavigate, Link } from "@tanstack/react-router";
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 import { useOpenSecret } from "@opensecret/react";
 import { AlertDestructive } from "@/components/AlertDestructive";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -28,12 +28,14 @@ function formatProviderName(provider: string): string {
 function OAuthCallback() {
   const [isProcessing, setIsProcessing] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [redirectFailed, setRedirectFailed] = useState(false);
+  const [deepLinkUrl, setDeepLinkUrl] = useState<string>("");
   const navigate = useNavigate();
   const { handleGitHubCallback, handleGoogleCallback, handleAppleCallback } = useOpenSecret();
   const processedRef = useRef(false);
 
   // Helper functions for the callback process
-  const handleSuccessfulAuth = () => {
+  const handleSuccessfulAuth = useCallback(() => {
     // Check if this is a Tauri app auth flow (desktop or mobile)
     const isTauriAuth = localStorage.getItem("redirect-to-native") === "true";
 
@@ -45,15 +47,35 @@ function OAuthCallback() {
       const accessToken = localStorage.getItem("access_token") || "";
       const refreshToken = localStorage.getItem("refresh_token");
 
-      let deepLinkUrl = `cloud.opensecret.maple://auth?access_token=${encodeURIComponent(accessToken)}`;
+      let deepLink = `cloud.opensecret.maple://auth?access_token=${encodeURIComponent(accessToken)}`;
 
       if (refreshToken) {
-        deepLinkUrl += `&refresh_token=${encodeURIComponent(refreshToken)}`;
+        deepLink += `&refresh_token=${encodeURIComponent(refreshToken)}`;
       }
 
-      setTimeout(() => {
-        window.location.href = deepLinkUrl;
-      }, 1000);
+      // Store the deep link for manual fallback
+      setDeepLinkUrl(deepLink);
+
+      // Set a timeout to detect if the redirect failed
+      // If the user is still on this page after 5 seconds, show error
+      const redirectTimer = setTimeout(() => {
+        setRedirectFailed(true);
+        setIsProcessing(false);
+      }, 5000);
+
+      // Attempt the redirect
+      try {
+        window.location.href = deepLink;
+
+        // If we're still here after a brief moment, the redirect may have failed
+        // The timer above will catch this
+      } catch (error) {
+        // Clear the timer and show error immediately if redirect throws
+        clearTimeout(redirectTimer);
+        setRedirectFailed(true);
+        setIsProcessing(false);
+        console.error("Failed to redirect to app:", error);
+      }
 
       return;
     }
@@ -72,7 +94,7 @@ function OAuthCallback() {
         navigate({ to: "/" });
       }
     }, 2000);
-  };
+  }, [navigate, setDeepLinkUrl, setIsProcessing, setRedirectFailed]);
 
   const handleAuthError = (error: unknown) => {
     console.error(`Authentication callback error:`, error);
@@ -150,10 +172,55 @@ function OAuthCallback() {
     };
 
     processCallback();
-  }, [handleGitHubCallback, handleGoogleCallback, handleAppleCallback, navigate, provider]);
+  }, [
+    handleGitHubCallback,
+    handleGoogleCallback,
+    handleAppleCallback,
+    handleSuccessfulAuth,
+    navigate,
+    provider
+  ]);
 
   // If this is a Tauri app auth flow (desktop or mobile), show a different UI
-  if (localStorage.getItem("redirect-to-native") === "true") {
+  if (localStorage.getItem("redirect-to-native") === "true" || redirectFailed) {
+    if (redirectFailed) {
+      return (
+        <Card className="max-w-md mx-auto mt-20">
+          <CardHeader>
+            <CardTitle>Redirect Failed</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <AlertDestructive
+              title="Unable to redirect to app"
+              description="The automatic redirect to the Maple app failed. Please try one of the options below."
+            />
+            <div className="mt-4 space-y-3">
+              <p className="text-sm text-muted-foreground">
+                If the Maple app is installed, click the button below to manually open it:
+              </p>
+              <Button
+                onClick={() => {
+                  window.location.href = deepLinkUrl;
+                }}
+                className="w-full"
+              >
+                Open Maple App
+              </Button>
+              <p className="text-sm text-muted-foreground">
+                Or copy this link and paste it into your browser:
+              </p>
+              <div className="bg-muted p-2 rounded text-xs break-all font-mono">{deepLinkUrl}</div>
+              <div className="pt-2">
+                <Button variant="outline" asChild className="w-full">
+                  <Link to="/login">Back to Login</Link>
+                </Button>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      );
+    }
+
     return (
       <Card className="max-w-md mx-auto mt-20">
         <CardHeader>
