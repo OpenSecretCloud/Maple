@@ -32,7 +32,8 @@ jobs:
             ~/Library/Caches/Homebrew
             /opt/homebrew/Cellar/sccache
             /opt/homebrew/Cellar/openssl@3
-          key: ${{ runner.os }}-brew-${{ hashFiles('.github/workflows/desktop-build.yml') }}
+          # Workaround for hashFiles bug on macOS runners: https://github.com/actions/runner-images/issues/13341
+          key: ${{ runner.os }}-brew-v1
           restore-keys: |
             ${{ runner.os }}-brew-
 
@@ -46,7 +47,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/Library/Caches/Mozilla.sccache
-          key: ${{ runner.os }}-sccache-macos-${{ hashFiles('**/Cargo.lock') }}
+          # Workaround for hashFiles bug on macOS runners: https://github.com/actions/runner-images/issues/13341
+          key: ${{ runner.os }}-sccache-macos-v1
           restore-keys: |
             ${{ runner.os }}-sccache-macos-
             ${{ runner.os }}-sccache-
