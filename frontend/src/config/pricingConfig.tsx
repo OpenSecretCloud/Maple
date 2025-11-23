@@ -1,7 +1,8 @@
 import { Check, X } from "lucide-react";
+import { ModelTooltip } from "@/components/ModelTooltip";
 
 export type PlanFeature = {
-  text: string;
+  text: string | React.ReactNode;
   included: boolean;
   icon?: React.ReactNode;
 };
@@ -140,7 +141,12 @@ export const PRICING_PLANS: PricingPlan[] = [
         icon: <Check className="w-4 h-4 text-green-500" />
       },
       {
-        text: "6 Powerful Models (including DeepSeek R1)",
+        text: (
+          <span className="flex items-center">
+            6 Powerful Models (including DeepSeek R1)
+            <ModelTooltip />
+          </span>
+        ),
         included: true,
         icon: <Check className="w-4 h-4 text-green-500" />
       },
@@ -195,7 +201,12 @@ export const PRICING_PLANS: PricingPlan[] = [
         icon: <Check className="w-4 h-4 text-green-500" />
       },
       {
-        text: "6 Powerful Models (including DeepSeek R1)",
+        text: (
+          <span className="flex items-center">
+            6 Powerful Models (including DeepSeek R1)
+            <ModelTooltip />
+          </span>
+        ),
         included: true,
         icon: <Check className="w-4 h-4 text-green-500" />
       },
@@ -259,7 +270,12 @@ export const PRICING_PLANS: PricingPlan[] = [
         icon: <Check className="w-4 h-4 text-green-500" />
       },
       {
-        text: "6 Powerful Models (including DeepSeek R1)",
+        text: (
+          <span className="flex items-center">
+            6 Powerful Models (including DeepSeek R1)
+            <ModelTooltip />
+          </span>
+        ),
         included: true,
         icon: <Check className="w-4 h-4 text-green-500" />
       },
