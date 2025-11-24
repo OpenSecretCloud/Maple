@@ -86,16 +86,14 @@ jobs:
           path: |
             ~/Library/Caches/Homebrew
             /opt/homebrew/Cellar/openssl@3
-          # Workaround for hashFiles bug on macOS runners: https://github.com/actions/runner-images/issues/13341
-          key: ${{ runner.os }}-brew-v1
+          key: ${{ runner.os }}-brew-${{ hashFiles('.github/workflows/testflight-on-comment.yml') }}
           restore-keys: |
             ${{ runner.os }}-brew-
 
       - name: Cache Xcode DerivedData and SourcePackages
         uses: irgaly/xcode-cache@v1
         with:
-          # Workaround for hashFiles bug on macOS runners: https://github.com/actions/runner-images/issues/13341
-          key: xcode-cache-testflight-${{ github.workflow }}-v1
+          key: xcode-cache-testflight-${{ github.workflow }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             xcode-cache-testflight-${{ github.workflow }}-
             xcode-cache-testflight-
