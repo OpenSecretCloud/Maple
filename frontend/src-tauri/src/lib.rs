@@ -104,11 +104,12 @@ pub fn run() {
                 });
 
                 // Create a native menu with a "Check for Updates" option
+                // Note: Linux menus are disabled due to gtk/glib dependency issues
                 {
                     #[cfg(target_os = "macos")]
                     use tauri::menu::{MenuBuilder, SubmenuBuilder};
 
-                    #[cfg(not(target_os = "macos"))]
+                    #[cfg(target_os = "windows")]
                     use tauri::menu::MenuBuilder;
 
                     // Define menu item ID for "Check for Updates"
@@ -159,9 +160,10 @@ pub fn run() {
                         );
                     }
 
-                    #[cfg(not(target_os = "macos"))]
+                    #[cfg(target_os = "windows")]
                     {
-                        // For Windows/Linux, we need to include edit functionality while keeping a simpler structure
+                        // For Windows, we include edit functionality while keeping a simpler structure
+                        // Linux menus are disabled due to janky behavior and gtk/glib dependency issues
                         let menu = MenuBuilder::new(handle)
                             .about(None)
                             .text(check_updates_id, "Check for Updates")
@@ -180,12 +182,14 @@ pub fn run() {
 
                         app.set_menu(menu)?;
 
-                        log::info!("Setting up Windows/Linux menu with About, Check for Updates, and Edit options");
+                        log::info!("Setting up Windows menu with About, Check for Updates, and Edit options");
                     }
 
-                    // Handle menu events
-                    let app_handle_for_menu = app.handle().clone();
-                    app.on_menu_event(move |_window, event| {
+                    // Handle menu events (only on platforms where menus are enabled)
+                    #[cfg(any(target_os = "macos", target_os = "windows"))]
+                    {
+                        let app_handle_for_menu = app.handle().clone();
+                        app.on_menu_event(move |_window, event| {
                         // Menu event handler receives events for all menu items
                         log::info!("Menu event received: {:?}", event.id());
 
@@ -218,6 +222,7 @@ pub fn run() {
                             });
                         }
                     });
+                    }
                 }
             }
 
