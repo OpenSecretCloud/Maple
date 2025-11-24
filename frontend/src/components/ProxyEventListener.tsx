@@ -2,11 +2,17 @@ import { useEffect } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { useNotification } from "@/contexts/NotificationContext";
 import { Server } from "lucide-react";
+import { isTauri } from "@/utils/platform";
 
 export function ProxyEventListener() {
   const { showNotification } = useNotification();
 
   useEffect(() => {
+    // Only setup listeners if running on Tauri (not web)
+    if (!isTauri()) {
+      return;
+    }
+
     let unlistenAutoStarted: (() => void) | null = null;
     let unlistenAutoStartFailed: (() => void) | null = null;
 
