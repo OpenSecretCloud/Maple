@@ -207,6 +207,14 @@ function SignupPage() {
 
   const handleGuestSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
+
+    // Blur the active element (password input) to prevent conflicts with password managers
+    // (like Bitwarden) that might try to show a popup/overlay when Enter is pressed,
+    // which can conflict with the GuestCredentialsDialog.
+    if (document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
+
     setIsLoading(true);
     setError(null);
     const formData = new FormData(e.currentTarget);
