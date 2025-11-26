@@ -143,12 +143,20 @@ export function getPromoSeenKey(promoName: string): string {
  * Check if a promo has been seen
  */
 export function hasSeenPromo(promoName: string): boolean {
-  return localStorage.getItem(getPromoSeenKey(promoName)) === "true";
+  try {
+    return localStorage.getItem(getPromoSeenKey(promoName)) === "true";
+  } catch {
+    return false;
+  }
 }
 
 /**
  * Mark a promo as seen
  */
 export function markPromoAsSeen(promoName: string): void {
-  localStorage.setItem(getPromoSeenKey(promoName), "true");
+  try {
+    localStorage.setItem(getPromoSeenKey(promoName), "true");
+  } catch {
+    // Silently fail if localStorage is unavailable
+  }
 }
