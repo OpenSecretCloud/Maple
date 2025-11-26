@@ -53,9 +53,8 @@ export const PRICING_PLANS: PricingPlan[] = [
         included: false,
         icon: <X className="w-4 h-4 text-red-500" />
       },
-      { text: "Text-to-Speech", included: false, icon: <X className="w-4 h-4 text-red-500" /> },
       {
-        text: "6 Powerful Models (including DeepSeek R1)",
+        text: "7 Powerful Models (including DeepSeek R1)",
         included: false,
         icon: <X className="w-4 h-4 text-red-500" />
       },
@@ -135,12 +134,7 @@ export const PRICING_PLANS: PricingPlan[] = [
         icon: <Check className="w-4 h-4 text-green-500" />
       },
       {
-        text: "Text-to-Speech",
-        included: true,
-        icon: <Check className="w-4 h-4 text-green-500" />
-      },
-      {
-        text: "6 Powerful Models (including DeepSeek R1)",
+        text: "7 Powerful Models (including DeepSeek R1)",
         included: true,
         icon: <Check className="w-4 h-4 text-green-500" />
       },
@@ -190,12 +184,7 @@ export const PRICING_PLANS: PricingPlan[] = [
         icon: <Check className="w-4 h-4 text-green-500" />
       },
       {
-        text: "Text-to-Speech",
-        included: true,
-        icon: <Check className="w-4 h-4 text-green-500" />
-      },
-      {
-        text: "6 Powerful Models (including DeepSeek R1)",
+        text: "7 Powerful Models (including DeepSeek R1)",
         included: true,
         icon: <Check className="w-4 h-4 text-green-500" />
       },
@@ -254,12 +243,7 @@ export const PRICING_PLANS: PricingPlan[] = [
         icon: <Check className="w-4 h-4 text-green-500" />
       },
       {
-        text: "Text-to-Speech",
-        included: true,
-        icon: <Check className="w-4 h-4 text-green-500" />
-      },
-      {
-        text: "6 Powerful Models (including DeepSeek R1)",
+        text: "7 Powerful Models (including DeepSeek R1)",
         included: true,
         icon: <Check className="w-4 h-4 text-green-500" />
       },

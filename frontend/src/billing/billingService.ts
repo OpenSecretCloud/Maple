@@ -3,10 +3,12 @@ import {
   fetchBillingStatus,
   fetchPortalUrl,
   fetchProducts,
+  fetchDiscount,
   createCheckoutSession,
   createZapriteCheckoutSession,
   BillingStatus,
   BillingProduct,
+  DiscountResponse,
   fetchTeamStatus,
   createTeam,
   inviteTeamMembers,
@@ -105,6 +107,10 @@ class BillingService {
 
   async getProducts(version?: string): Promise<BillingProduct[]> {
     return fetchProducts(version);
+  }
+
+  async getDiscount(): Promise<DiscountResponse> {
+    return fetchDiscount();
   }
 
   async createCheckoutSession(

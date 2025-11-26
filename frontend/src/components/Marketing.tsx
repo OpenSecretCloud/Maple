@@ -1,12 +1,23 @@
 import { Link } from "@tanstack/react-router";
 import { VerificationStatus } from "./VerificationStatus";
-import { ArrowRight, Check, Lock, MessageSquareMore, Shield, Sparkles, Laptop } from "lucide-react";
+import {
+  ArrowRight,
+  Check,
+  Lock,
+  MessageSquareMore,
+  Shield,
+  Sparkles,
+  Laptop,
+  Tag
+} from "lucide-react";
 import { Footer } from "./Footer";
 import { useQuery } from "@tanstack/react-query";
 import { getBillingService } from "@/billing/billingService";
 import { PRICING_PLANS, type PlanFeature } from "@/config/pricingConfig";
 import { isIOS } from "@/utils/platform";
 import { ComparisonChart } from "./ComparisonChart";
+import type { DiscountResponse } from "@/billing/billingApi";
+import { Badge } from "@/components/ui/badge";
 
 function CTAButton({
   children,
@@ -86,8 +97,9 @@ function PricingTier({
   features,
   ctaText,
   popular = false,
-  productId = "", // Add productId parameter
-  isIOS = false // Add iOS detection parameter
+  productId = "",
+  isIOS = false,
+  discount
 }: {
   name: string;
   price: string;
@@ -95,23 +107,39 @@ function PricingTier({
   features: PlanFeature[];
   ctaText: string;
   popular?: boolean;
-  productId?: string; // Add type for productId
-  isIOS?: boolean; // Add type for iOS detection
+  productId?: string;
+  isIOS?: boolean;
+  discount?: DiscountResponse;
 }) {
   const isFreeplan = name.toLowerCase().includes("free");
+  const discountPercent = discount?.active ? discount.percent_off : 0;
+  const originalPrice = price.replace("$", "");
+  const discountedPrice =
+    !isFreeplan && discountPercent > 0
+      ? `$${(Number(originalPrice) * ((100 - discountPercent) / 100)).toFixed(0)}`
+      : price;
+  const showDiscount = !isFreeplan && discountPercent > 0;
 
   return (
     <div
-      className={`flex flex-col p-8 rounded-xl ${popular ? "border-2 border-[hsl(var(--purple))] bg-gradient-to-b from-[hsl(var(--marketing-card))] to-[hsl(var(--marketing-card))]/80 relative shadow-[0_0_30px_rgba(148,105,248,0.2)]" : "border border-[hsl(var(--marketing-card-border))] bg-[hsl(var(--marketing-card))]/50"}`}
+      className={`flex flex-col p-8 rounded-xl relative ${popular ? "border-2 border-[hsl(var(--purple))] bg-gradient-to-b from-[hsl(var(--marketing-card))] to-[hsl(var(--marketing-card))]/80 shadow-[0_0_30px_rgba(148,105,248,0.2)]" : "border border-[hsl(var(--marketing-card-border))] bg-[hsl(var(--marketing-card))]/50"}`}
     >
       {popular && (
         <div className="absolute -top-4 left-1/2 transform -translate-x-1/2 bg-[hsl(var(--purple))] text-[hsl(var(--marketing-card))] px-4 py-1 rounded-full text-sm font-medium text-center min-w-[110px] whitespace-normal">
           Most Popular
         </div>
       )}
+      {showDiscount && (
+        <Badge className="absolute -top-3 right-4 bg-gradient-to-r from-pink-500 to-orange-500 text-white">
+          {discountPercent}% OFF
+        </Badge>
+      )}
       <h3 className="text-xl font-medium text-foreground">{name}</h3>
       <div className="mt-4 mb-2">
-        <span className="text-4xl font-bold text-foreground">{price}</span>
+        <span className="text-4xl font-bold text-foreground">{discountedPrice}</span>
+        {showDiscount && (
+          <span className="text-xl line-through text-foreground/50 ml-2">{price}</span>
+        )}
         {name === "Team" ? (
           <span className="text-[hsl(var(--marketing-text-muted))] ml-2">/user /mo</span>
         ) : (
@@ -120,6 +148,12 @@ function PricingTier({
           )
         )}
       </div>
+      {showDiscount && discount?.active && discount.duration_months && (
+        <p className="text-xs text-foreground/50 -mt-1 mb-2">
+          {discountPercent}% off for first {discount.duration_months} month
+          {discount.duration_months > 1 ? "s" : ""}
+        </p>
+      )}
       <p className="text-[hsl(var(--marketing-text-muted))] mb-6">{description}</p>
       <div className="flex flex-col gap-3 mb-8">
         {features.map((feature, index) => (
@@ -188,10 +222,7 @@ export function Marketing() {
   const isIOSPlatform = isIOS();
 
   // Fetch products to get product IDs for pricing tiers
-  const {
-    data: products
-    // We don't need to use loading state as we provide empty string fallback
-  } = useQuery({
+  const { data: products } = useQuery({
     queryKey: ["marketing-products"],
     queryFn: async () => {
       try {
@@ -202,7 +233,17 @@ export function Marketing() {
         return [];
       }
     },
-    retry: 1 // Only retry once for faster error feedback
+    retry: 1
+  });
+
+  // Fetch active discount/promotion
+  const { data: discount } = useQuery<DiscountResponse>({
+    queryKey: ["discount"],
+    queryFn: async () => {
+      const billingService = getBillingService();
+      return await billingService.getDiscount();
+    },
+    staleTime: 5 * 60 * 1000
   });
 
   // Find product IDs for each tier
@@ -632,6 +673,24 @@ export function Marketing() {
             </p>
           </div>
 
+          {/* Promotion Banner */}
+          {discount?.active && (
+            <div className="mb-8 bg-gradient-to-r from-pink-500/10 to-orange-500/10 border border-pink-500/30 rounded-lg p-4 flex items-center gap-3">
+              <div className="rounded-full bg-gradient-to-r from-pink-500 to-orange-500 p-2">
+                <Tag className="w-5 h-5 text-white" />
+              </div>
+              <div className="flex-1">
+                <p className="font-medium text-foreground">{discount.name}</p>
+                <p className="text-sm text-[hsl(var(--marketing-text-muted))]">
+                  {discount.description}
+                </p>
+              </div>
+              <Badge className="bg-gradient-to-r from-pink-500 to-orange-500 text-white text-lg px-3 py-1">
+                {discount.percent_off}% OFF
+              </Badge>
+            </div>
+          )}
+
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8">
             {PRICING_PLANS.filter((plan) => {
               // Always hide Starter plan on marketing page
@@ -647,6 +706,7 @@ export function Marketing() {
                 popular={plan.popular}
                 productId={getProductId(plan.name)}
                 isIOS={isIOSPlatform}
+                discount={discount}
               />
             ))}
           </div>

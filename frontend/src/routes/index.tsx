@@ -7,11 +7,13 @@ import { VerificationModal } from "@/components/VerificationModal";
 import { GuestPaymentWarningDialog } from "@/components/GuestPaymentWarningDialog";
 import { TeamManagementDialog } from "@/components/team/TeamManagementDialog";
 import { ApiKeyManagementDialog } from "@/components/apikeys/ApiKeyManagementDialog";
+import { PromoDialog, hasSeenPromo, markPromoAsSeen } from "@/components/PromoDialog";
 import { useOpenSecret } from "@opensecret/react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { getBillingService } from "@/billing/billingService";
 import { useLocalState } from "@/state/useLocalState";
 import type { TeamStatus } from "@/types/team";
+import type { DiscountResponse } from "@/billing/billingApi";
 
 type IndexSearchOptions = {
   login?: string;
@@ -48,6 +50,7 @@ function Index() {
   const [apiKeyDialogOpen, setApiKeyDialogOpen] = useState(false);
   const [showCreditSuccess, setShowCreditSuccess] = useState(false);
   const [showGuestPaymentWarning, setShowGuestPaymentWarning] = useState(false);
+  const [promoDialogOpen, setPromoDialogOpen] = useState(false);
 
   // Proactively fetch billing status for authenticated users
   useQuery({
@@ -78,6 +81,17 @@ function Index() {
       const billingService = getBillingService();
       return await billingService.getTeamStatus();
     },
+    enabled: !!os.auth.user
+  });
+
+  // Fetch active discount/promotion for promo dialog
+  const { data: discount } = useQuery<DiscountResponse>({
+    queryKey: ["discount"],
+    queryFn: async () => {
+      const billingService = getBillingService();
+      return await billingService.getDiscount();
+    },
+    staleTime: 5 * 60 * 1000,
     enabled: !!os.auth.user
   });
 
@@ -120,6 +134,32 @@ function Index() {
     }
   }, [shouldShowGuestPaymentWarning]);
 
+  // Show promo dialog for free users with active discount (one-time per promo)
+  // This has LOWEST priority - don't show if other important dialogs should be visible
+  useEffect(() => {
+    if (!os.auth.user || !billingStatus || !discount?.active) return;
+
+    // Check if higher-priority dialogs should be shown
+    const needsEmailVerification =
+      !import.meta.env.DEV && !isGuestUser && !os.auth.user.user.email_verified;
+
+    // Don't show promo if higher-priority dialogs are active
+    if (needsEmailVerification || shouldShowGuestPaymentWarning) return;
+
+    if (isOnFreePlan && !hasSeenPromo(discount.name)) {
+      // Mark as seen IMMEDIATELY (before showing) to prevent bugs
+      markPromoAsSeen(discount.name);
+      setPromoDialogOpen(true);
+    }
+  }, [
+    os.auth.user,
+    billingStatus,
+    discount,
+    isGuestUser,
+    isOnFreePlan,
+    shouldShowGuestPaymentWarning
+  ]);
+
   // Show marketing page for non-authenticated users
   if (!os.auth.user) {
     return (
@@ -156,6 +196,11 @@ function Index() {
         onOpenChange={setApiKeyDialogOpen}
         showCreditSuccessMessage={showCreditSuccess}
       />
+
+      {/* Promo Dialog - shows once per promo for free users */}
+      {discount?.active && (
+        <PromoDialog open={promoDialogOpen} onOpenChange={setPromoDialogOpen} discount={discount} />
+      )}
     </>
   );
 }

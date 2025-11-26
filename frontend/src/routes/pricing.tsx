@@ -6,7 +6,8 @@ import { FullPageMain } from "@/components/FullPageMain";
 import { getBillingService } from "@/billing/billingService";
 import { useQuery } from "@tanstack/react-query";
 import { MarketingHeader } from "@/components/MarketingHeader";
-import { Loader2, Check, AlertTriangle, Bitcoin } from "lucide-react";
+import { Loader2, Check, AlertTriangle, Bitcoin, Tag } from "lucide-react";
+import type { DiscountResponse } from "@/billing/billingApi";
 import { Badge } from "@/components/ui/badge";
 import { useLocalState } from "@/state/useLocalState";
 import { Button } from "@/components/ui/button";
@@ -229,6 +230,16 @@ function PricingPage() {
       }
     },
     enabled: isLoggedIn
+  });
+
+  // Fetch active discount/promotion
+  const { data: discount } = useQuery<DiscountResponse>({
+    queryKey: ["discount"],
+    queryFn: async () => {
+      const billingService = getBillingService();
+      return await billingService.getDiscount();
+    },
+    staleTime: 5 * 60 * 1000 // Cache for 5 minutes
   });
 
   const {
@@ -698,6 +709,26 @@ function PricingPage() {
           </div>
         )}
 
+        {/* Promotion Banner */}
+        {discount?.active && (
+          <div className="w-full max-w-7xl mx-auto mt-4 px-4 sm:px-6 lg:px-8">
+            <div className="bg-gradient-to-r from-pink-500/10 to-orange-500/10 border border-pink-500/30 rounded-lg p-4 flex items-center gap-3">
+              <div className="rounded-full bg-gradient-to-r from-pink-500 to-orange-500 p-2">
+                <Tag className="w-5 h-5 text-white" />
+              </div>
+              <div className="flex-1">
+                <p className="font-medium text-foreground">{discount.name}</p>
+                <p className="text-sm text-[hsl(var(--marketing-text-muted))]">
+                  {discount.description}
+                </p>
+              </div>
+              <Badge className="bg-gradient-to-r from-pink-500 to-orange-500 text-white text-lg px-3 py-1">
+                {discount.percent_off}% OFF
+              </Badge>
+            </div>
+          </div>
+        )}
+
         {(() => {
           const filteredPlans = PRICING_PLANS.filter((plan) => {
             // Always hide Starter plan unless user is currently on Starter
@@ -741,16 +772,48 @@ function PricingPage() {
                   monthlyPrice = monthlyOriginalPrice;
                 }
 
-                // Calculate yearly prices for Bitcoin (10% off)
+                // Determine active discount percentage
+                const promoDiscountPercent = discount?.active ? discount.percent_off : 0;
+                const promoDurationMonths = discount?.active ? discount.duration_months : undefined;
+                const bitcoinYearlyDiscountPercent = 10;
+
+                // Use promo discount if active, otherwise fall back to Bitcoin yearly discount
+                const effectiveDiscountPercent =
+                  promoDiscountPercent > 0 ? promoDiscountPercent : bitcoinYearlyDiscountPercent;
+                const effectiveMultiplier = (100 - effectiveDiscountPercent) / 100;
+
+                // Calculate yearly prices for Bitcoin (with effective discount)
                 const yearlyDiscountedPrice = product
-                  ? (Math.floor(product.default_price.unit_amount * 12 * 0.9) / 100).toFixed(2)
-                  : (Number(monthlyOriginalPrice) * 12 * 0.9).toFixed(2);
+                  ? (
+                      Math.floor(product.default_price.unit_amount * 12 * effectiveMultiplier) / 100
+                    ).toFixed(2)
+                  : (Number(monthlyOriginalPrice) * 12 * effectiveMultiplier).toFixed(2);
 
                 // Calculate monthly equivalent of yearly Bitcoin price
                 const monthlyEquivalentPrice = (Number(yearlyDiscountedPrice) / 12).toFixed(2);
 
-                const displayPrice =
-                  useBitcoin && !isFreeplan ? monthlyEquivalentPrice : monthlyPrice;
+                // Calculate promo discounted price (applies to monthly)
+                const promoMultiplier = (100 - promoDiscountPercent) / 100;
+                const promoDiscountedPrice = (
+                  Number(monthlyOriginalPrice) * promoMultiplier
+                ).toFixed(0);
+
+                // Determine display price based on active discounts
+                let displayPrice = monthlyPrice;
+                if (!isFreeplan) {
+                  if (useBitcoin && !isTeamPlan) {
+                    displayPrice = monthlyEquivalentPrice;
+                  } else if (promoDiscountPercent > 0) {
+                    displayPrice = promoDiscountedPrice;
+                  }
+                }
+
+                // Determine which discount badge to show
+                // Promo takes precedence over Bitcoin discount when active
+                const hasActivePromo = promoDiscountPercent > 0;
+                const showPromoBadge = !isFreeplan && hasActivePromo && !(useBitcoin && isTeamPlan);
+                const showBitcoinBadge =
+                  !isFreeplan && useBitcoin && !isTeamPlan && !hasActivePromo;
 
                 return (
                   <div
@@ -773,9 +836,14 @@ function PricingPage() {
                         Current Plan
                       </Badge>
                     )}
-                    {!isFreeplan && useBitcoin && !isTeamPlan && (
+                    {showPromoBadge && (
                       <Badge className="absolute -top-3 right-4 bg-gradient-to-r from-pink-500 to-orange-500 text-white">
-                        10% OFF
+                        {promoDiscountPercent}% OFF
+                      </Badge>
+                    )}
+                    {showBitcoinBadge && (
+                      <Badge className="absolute -top-3 right-4 bg-gradient-to-r from-pink-500 to-orange-500 text-white">
+                        {bitcoinYearlyDiscountPercent}% OFF
                       </Badge>
                     )}
                     <div className="grid grid-rows-[auto_auto_1fr_auto_auto] h-full gap-4 sm:gap-6 md:gap-8">
@@ -816,7 +884,7 @@ function PricingPage() {
                               <span className="text-2xl sm:text-3xl font-bold">
                                 ${displayPrice}
                               </span>
-                              {useBitcoin && !isTeamPlan && (
+                              {(showBitcoinBadge || showPromoBadge) && (
                                 <span className="text-lg sm:text-xl line-through text-foreground/50">
                                   ${monthlyOriginalPrice}
                                 </span>
@@ -831,17 +899,33 @@ function PricingPage() {
                               </div>
                             </div>
                             <div className="space-y-0.5 sm:space-y-1 mt-1">
-                              {useBitcoin && !isTeamPlan && (
+                              {showBitcoinBadge && (
                                 <>
                                   <p className="text-sm sm:text-base text-foreground/90 font-medium">
-                                    {isTeamPlan
-                                      ? `Billed yearly at $${yearlyDiscountedPrice} per user`
-                                      : `Billed yearly at $${yearlyDiscountedPrice}`}
+                                    Billed yearly at ${yearlyDiscountedPrice}
                                   </p>
                                   <p className="text-xs sm:text-sm text-foreground/50">
-                                    Save 10% with annual billing
+                                    Save {bitcoinYearlyDiscountPercent}% with annual billing
                                   </p>
                                 </>
+                              )}
+                              {showPromoBadge && useBitcoin && !isTeamPlan && (
+                                <>
+                                  <p className="text-sm sm:text-base text-foreground/90 font-medium">
+                                    Billed yearly at ${yearlyDiscountedPrice}
+                                  </p>
+                                  <p className="text-xs sm:text-sm text-foreground/50">
+                                    Save {promoDiscountPercent}% with annual billing
+                                  </p>
+                                </>
+                              )}
+                              {showPromoBadge && !useBitcoin && (
+                                <p className="text-xs sm:text-sm text-foreground/50">
+                                  {promoDiscountPercent}% off
+                                  {promoDurationMonths
+                                    ? ` for first ${promoDurationMonths} month${promoDurationMonths > 1 ? "s" : ""}`
+                                    : " applied"}
+                                </p>
                               )}
                             </div>
                           </>
