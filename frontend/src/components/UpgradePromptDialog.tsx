@@ -13,7 +13,6 @@ import {
   Sparkles,
   Check,
   Cpu,
-  Volume2,
   FileText,
   Gauge,
   MessageCircle,
@@ -25,7 +24,7 @@ import { useLocalState } from "@/state/useLocalState";
 interface UpgradePromptDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  feature: "image" | "voice" | "model" | "tts" | "document" | "usage" | "tokens" | "websearch";
+  feature: "image" | "voice" | "model" | "document" | "usage" | "tokens" | "websearch";
   modelName?: string;
 }
 
@@ -107,19 +106,6 @@ export function UpgradePromptDialog({
           "Private transcription with Whisper Large v3",
           "Support for multiple languages",
           "No audio data is stored or used for training"
-        ]
-      };
-    } else if (feature === "tts") {
-      return {
-        icon: <Volume2 className="h-8 w-8" />,
-        title: "Text-to-Speech",
-        description: "Listen to AI responses with natural-sounding voices",
-        requiredPlan: "Pro",
-        benefits: [
-          "Audio generation happens privately on secure servers",
-          "Natural-sounding AI voices",
-          "Perfect for accessibility or multitasking",
-          "Listen to long responses hands-free"
         ]
       };
     } else if (feature === "document") {
@@ -235,7 +221,7 @@ export function UpgradePromptDialog({
             <div className="pt-2 border-t">
               <p className="text-sm text-muted-foreground">
                 {isFreeTier
-                  ? "Plus access to 6 powerful models, image & document processing, and more"
+                  ? "Plus access to 7 powerful models, image & document processing, and more"
                   : isPro
                     ? "Plus access to DeepSeek R1, 10x more usage, API access, and priority support"
                     : "Explore our pricing options for the best plan for your needs"}
