@@ -41,6 +41,44 @@ export type BillingProduct = {
   is_available?: boolean;
 };
 
+// Discount Types
+export type DiscountResponse =
+  | {
+      active: true;
+      name: string;
+      description: string;
+      percent_off: number;
+      duration_months?: number;
+      starts_at: number;
+      expires_at: number;
+    }
+  | {
+      active: false;
+    };
+
+export async function fetchDiscount(): Promise<DiscountResponse> {
+  try {
+    const response = await fetch(
+      `${import.meta.env.VITE_MAPLE_BILLING_API_URL}/v1/maple/discount`,
+      {
+        headers: {
+          "Content-Type": "application/json"
+        }
+      }
+    );
+
+    if (!response.ok) {
+      console.error("Discount fetch error:", response.status);
+      return { active: false };
+    }
+
+    return response.json() as Promise<DiscountResponse>;
+  } catch (error) {
+    console.error("Error fetching discount:", error);
+    return { active: false };
+  }
+}
+
 export async function fetchBillingStatus(thirdPartyToken: string): Promise<BillingStatus> {
   try {
     const response = await fetch(
