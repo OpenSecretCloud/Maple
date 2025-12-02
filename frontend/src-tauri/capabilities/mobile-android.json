@@ -9,7 +9,6 @@
   "permissions": [
     "core:default",
     "core:event:default",
-    "dialog:default",
     "deep-link:default",
     "fs:default",
     {

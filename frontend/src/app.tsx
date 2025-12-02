@@ -13,6 +13,7 @@ import { BillingServiceProvider } from "./components/BillingServiceProvider";
 import { DeepLinkHandler } from "./components/DeepLinkHandler";
 import { NotificationProvider } from "./contexts/NotificationContext";
 import { ProxyEventListener } from "./components/ProxyEventListener";
+import { UpdateEventListener } from "./components/UpdateEventListener";
 
 // Create a new router instance
 const router = createRouter({
@@ -99,6 +100,7 @@ export default function App() {
               <TooltipProvider>
                 <BillingServiceProvider>
                   <ProxyEventListener />
+                  <UpdateEventListener />
                   <DeepLinkHandler />
                   <InnerApp />
                 </BillingServiceProvider>
