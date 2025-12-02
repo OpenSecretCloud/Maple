@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Maple",
-  "version": "2.0.7",
+  "version": "2.0.8",
   "identifier": "cloud.opensecret.maple",
   "build": {
     "frontendDist": "../dist",
@@ -75,7 +75,7 @@
       "developmentTeam": "X773Y823TN"
     },
     "android": {
-      "versionCode": 2000007000
+      "versionCode": 2000008000
     },
     "windows": {
       "certificateThumbprint": null,
