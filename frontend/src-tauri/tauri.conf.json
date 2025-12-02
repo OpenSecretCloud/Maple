@@ -28,7 +28,10 @@
           "appLink": false
         },
         {
-          "host": "trymaple.ai"
+          "scheme": ["https"],
+          "host": "trymaple.ai",
+          "pathPrefix": ["/payment-success", "/payment-canceled", "/pricing"],
+          "appLink": true
         }
       ]
     }
