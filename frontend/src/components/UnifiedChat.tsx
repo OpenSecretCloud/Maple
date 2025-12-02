@@ -2255,7 +2255,9 @@ export function UnifiedChat() {
   };
 
   return (
-    <div className="grid h-dvh min-h-0 w-full grid-cols-1 md:grid-cols-[280px_1fr] overflow-hidden">
+    <div
+      className={`grid h-dvh min-h-0 w-full grid-cols-1 overflow-hidden ${isSidebarOpen ? "md:grid-cols-[280px_1fr]" : ""}`}
+    >
       {/* Use the existing Sidebar component */}
       <Sidebar chatId={chatId} isOpen={isSidebarOpen} onToggle={toggleSidebar} />
 
@@ -2271,9 +2273,9 @@ export function UnifiedChat() {
           </div>
         )}
 
-        {/* Mobile sidebar toggle */}
+        {/* Sidebar toggle - visible when sidebar is closed */}
         {!isSidebarOpen && (
-          <div className="fixed top-[9.5px] left-4 z-20 md:hidden">
+          <div className="fixed top-[9.5px] left-4 z-20">
             <SidebarToggle onToggle={toggleSidebar} />
           </div>
         )}
@@ -2289,37 +2291,39 @@ export function UnifiedChat() {
               >
                 {conversation?.metadata?.title || "Chat"}
               </h1>
-              {/* Mobile new chat button - positioned on the right */}
-              <Button
-                variant="outline"
-                size="icon"
-                className="md:hidden absolute right-0 h-9 w-9"
-                onClick={() => {
-                  // Clear conversation and start new chat
-                  const usp = new URLSearchParams(window.location.search);
-                  usp.delete("conversation_id");
-                  const newUrl = usp.toString()
-                    ? `${window.location.pathname}?${usp.toString()}`
-                    : window.location.pathname;
-                  window.history.replaceState(null, "", newUrl);
-                  window.dispatchEvent(new Event("newchat"));
-                  setChatId(undefined);
-                  setConversation(null);
-                  setMessages([]);
-                  setLastSeenItemId(undefined);
-                  // Clear pagination state
-                  setOldestItemId(undefined);
-                  setHasMoreOlderMessages(false);
-                  setIsLoadingOlderMessages(false);
-                  // Close sidebar if open
-                  if (isSidebarOpen) {
-                    toggleSidebar();
-                  }
-                }}
-                aria-label="New chat"
-              >
-                <SquarePen className="h-4 w-4" />
-              </Button>
+              {/* New chat button - visible when sidebar is closed */}
+              {!isSidebarOpen && (
+                <Button
+                  variant="outline"
+                  size="icon"
+                  className="absolute right-0 h-9 w-9"
+                  onClick={() => {
+                    // Clear conversation and start new chat
+                    const usp = new URLSearchParams(window.location.search);
+                    usp.delete("conversation_id");
+                    const newUrl = usp.toString()
+                      ? `${window.location.pathname}?${usp.toString()}`
+                      : window.location.pathname;
+                    window.history.replaceState(null, "", newUrl);
+                    window.dispatchEvent(new Event("newchat"));
+                    setChatId(undefined);
+                    setConversation(null);
+                    setMessages([]);
+                    setLastSeenItemId(undefined);
+                    // Clear pagination state
+                    setOldestItemId(undefined);
+                    setHasMoreOlderMessages(false);
+                    setIsLoadingOlderMessages(false);
+                    // Close sidebar if open
+                    if (isSidebarOpen) {
+                      toggleSidebar();
+                    }
+                  }}
+                  aria-label="New chat"
+                >
+                  <SquarePen className="h-4 w-4" />
+                </Button>
+              )}
             </div>
           </div>
         )}
