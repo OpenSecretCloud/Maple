@@ -23,8 +23,8 @@ export function Sidebar({
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   async function addChat() {
-    // If sidebar is open, close it
-    if (isOpen) {
+    // If sidebar is open on mobile, close it
+    if (isOpen && isMobile) {
       onToggle();
     }
 
@@ -74,10 +74,14 @@ export function Sidebar({
 
   const sidebarRef = useRef<HTMLDivElement>(null);
 
+  // Use the centralized hook for mobile detection
+  const isMobile = useIsMobile();
+
   // Modified click outside handler to ignore clicks in dropdowns and dialogs
+  // Only applies on mobile - desktop users use the toggle button
   const handleClickOutside = useCallback(
     (event: MouseEvent | TouchEvent) => {
-      if (isOpen) {
+      if (isOpen && isMobile) {
         // Check if the click was inside a dropdown or dialog
         const target = event.target as HTMLElement;
         const isInDropdown = target.closest('[role="menu"]');
@@ -89,13 +93,10 @@ export function Sidebar({
         }
       }
     },
-    [isOpen, onToggle]
+    [isOpen, onToggle, isMobile]
   );
 
   useClickOutside(sidebarRef, handleClickOutside);
-
-  // Use the centralized hook for mobile detection
-  const isMobile = useIsMobile();
 
   // Track if component is mounted to prevent state updates after unmount
   const isMountedRef = useRef(true);
@@ -135,20 +136,20 @@ export function Sidebar({
       ref={sidebarRef}
       className={cn([
         "fixed md:static z-10 h-full overflow-y-hidden",
-        isOpen ? "block w-[280px]" : "hidden md:block md:w-[280px]"
+        isOpen ? "block w-[280px]" : "hidden"
       ])}
     >
       <div className="h-full border-r border-input dark:bg-background bg-[hsl(var(--footer-bg))] backdrop-blur-lg flex flex-col items-stretch w-[280px]">
         {/* Header section matching UnifiedChat's h-14 */}
         <div className="h-14 flex items-center px-4 md:py-2">
           <div className="flex justify-between items-center gap-2 w-full">
-            <Button variant="outline" size="icon" className="md:hidden h-9 w-9" onClick={onToggle}>
+            <Button variant="outline" size="icon" className="h-9 w-9" onClick={onToggle}>
               <PanelRightOpen className="h-4 w-4" />
             </Button>
             <Button
               variant="outline"
               size="icon"
-              className="md:w-full gap-2 h-9 md:h-10"
+              className="flex-1 gap-2 h-9 md:h-10"
               onClick={addChat}
             >
               <SquarePenIcon className="h-4 w-4" />
@@ -204,7 +205,7 @@ export function Sidebar({
 
 export function SidebarToggle({ onToggle }: { onToggle: () => void }) {
   return (
-    <Button variant="outline" size="icon" className="md:hidden h-9 w-9" onClick={onToggle}>
+    <Button variant="outline" size="icon" className="h-9 w-9" onClick={onToggle}>
       <PanelRightClose className="h-4 w-4" />
     </Button>
   );
