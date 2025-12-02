@@ -106,32 +106,53 @@ function LoginPage() {
   };
 
   const handleGitHubLogin = async () => {
+    setError(null);
+    const platform = isIOSPlatform ? "iOS" : "Android/Desktop";
+    setError(`[DEBUG] GitHub click detected. Tauri=${isTauriEnv}, Platform=${platform}`);
+
     try {
       console.log("[OAuth] Using", isTauriEnv ? "Tauri" : "web", "flow");
 
       if (isTauriEnv) {
-        // For Tauri (desktop or mobile), redirect to the web app's desktop-auth route
         let desktopAuthUrl = "https://trymaple.ai/desktop-auth?provider=github";
 
-        // If there's a selected plan, add it to the URL
         if (selected_plan) {
           desktopAuthUrl += `&selected_plan=${encodeURIComponent(selected_plan)}`;
         }
 
-        // If there's a redemption code, add it to the URL
         if (code) {
           desktopAuthUrl += `&code=${encodeURIComponent(code)}`;
         }
 
-        // Use the opener plugin by directly invoking the command
-        // This works for both desktop and mobile (iOS/Android)
         console.log("[OAuth] Opening URL in external browser:", desktopAuthUrl);
-        invoke("plugin:opener|open_url", { url: desktopAuthUrl }).catch((error: Error) => {
-          console.error("[OAuth] Failed to open external browser:", error);
-          setError("Failed to open authentication page in browser");
-        });
+        setError(`[DEBUG] Attempting to open: ${desktopAuthUrl}`);
+
+        try {
+          const result = await invoke("plugin:opener|open_url", { url: desktopAuthUrl });
+          console.log("[OAuth] invoke result:", result);
+          setError(`[DEBUG] invoke succeeded, result: ${JSON.stringify(result)}`);
+        } catch (invokeError) {
+          const errMsg =
+            invokeError instanceof Error ? invokeError.message : JSON.stringify(invokeError);
+          console.error("[OAuth] invoke failed:", invokeError);
+          setError(`[ERROR] invoke failed: ${errMsg}`);
+
+          // Try fallback with plugin import
+          try {
+            setError(`[DEBUG] Trying fallback with plugin import...`);
+            const { openUrl } = await import("@tauri-apps/plugin-opener");
+            await openUrl(desktopAuthUrl);
+            setError(`[DEBUG] Fallback openUrl succeeded`);
+          } catch (fallbackError) {
+            const fbErrMsg =
+              fallbackError instanceof Error
+                ? fallbackError.message
+                : JSON.stringify(fallbackError);
+            console.error("[OAuth] Fallback also failed:", fallbackError);
+            setError(`[ERROR] Both methods failed. invoke: ${errMsg} | fallback: ${fbErrMsg}`);
+          }
+        }
       } else {
-        // Web flow remains unchanged
         const { auth_url } = await os.initiateGitHubAuth("");
         if (selected_plan) {
           sessionStorage.setItem("selected_plan", selected_plan);
@@ -142,38 +163,59 @@ function LoginPage() {
         window.location.href = auth_url;
       }
     } catch (error) {
+      const errMsg = error instanceof Error ? error.message : JSON.stringify(error);
       console.error("Failed to initiate GitHub login:", error);
-      setError("Failed to initiate GitHub login. Please try again.");
+      setError(`[ERROR] Outer catch: ${errMsg}`);
     }
   };
 
   const handleGoogleLogin = async () => {
+    setError(null);
+    const platform = isIOSPlatform ? "iOS" : "Android/Desktop";
+    setError(`[DEBUG] Google click detected. Tauri=${isTauriEnv}, Platform=${platform}`);
+
     try {
       console.log("[OAuth] Using", isTauriEnv ? "Tauri" : "web", "flow");
 
       if (isTauriEnv) {
-        // For Tauri (desktop or mobile), redirect to the web app's desktop-auth route
         let desktopAuthUrl = "https://trymaple.ai/desktop-auth?provider=google";
 
-        // If there's a selected plan, add it to the URL
         if (selected_plan) {
           desktopAuthUrl += `&selected_plan=${encodeURIComponent(selected_plan)}`;
         }
 
-        // If there's a redemption code, add it to the URL
         if (code) {
           desktopAuthUrl += `&code=${encodeURIComponent(code)}`;
         }
 
-        // Use the opener plugin by directly invoking the command
-        // This works for both desktop and mobile (iOS/Android)
         console.log("[OAuth] Opening URL in external browser:", desktopAuthUrl);
-        invoke("plugin:opener|open_url", { url: desktopAuthUrl }).catch((error: Error) => {
-          console.error("[OAuth] Failed to open external browser:", error);
-          setError("Failed to open authentication page in browser");
-        });
+        setError(`[DEBUG] Attempting to open: ${desktopAuthUrl}`);
+
+        try {
+          const result = await invoke("plugin:opener|open_url", { url: desktopAuthUrl });
+          console.log("[OAuth] invoke result:", result);
+          setError(`[DEBUG] invoke succeeded, result: ${JSON.stringify(result)}`);
+        } catch (invokeError) {
+          const errMsg =
+            invokeError instanceof Error ? invokeError.message : JSON.stringify(invokeError);
+          console.error("[OAuth] invoke failed:", invokeError);
+          setError(`[ERROR] invoke failed: ${errMsg}`);
+
+          try {
+            setError(`[DEBUG] Trying fallback with plugin import...`);
+            const { openUrl } = await import("@tauri-apps/plugin-opener");
+            await openUrl(desktopAuthUrl);
+            setError(`[DEBUG] Fallback openUrl succeeded`);
+          } catch (fallbackError) {
+            const fbErrMsg =
+              fallbackError instanceof Error
+                ? fallbackError.message
+                : JSON.stringify(fallbackError);
+            console.error("[OAuth] Fallback also failed:", fallbackError);
+            setError(`[ERROR] Both methods failed. invoke: ${errMsg} | fallback: ${fbErrMsg}`);
+          }
+        }
       } else {
-        // Web flow remains unchanged
         const { auth_url } = await os.initiateGoogleAuth("");
         if (selected_plan) {
           sessionStorage.setItem("selected_plan", selected_plan);
@@ -184,8 +226,9 @@ function LoginPage() {
         window.location.href = auth_url;
       }
     } catch (error) {
+      const errMsg = error instanceof Error ? error.message : JSON.stringify(error);
       console.error("Failed to initiate Google login:", error);
-      setError("Failed to initiate Google login. Please try again.");
+      setError(`[ERROR] Outer catch: ${errMsg}`);
     }
   };
 
@@ -317,25 +360,47 @@ function LoginPage() {
           setError(errorMessage);
         }
       } else if (isTauriEnv) {
-        // For Tauri desktop and Android, redirect to the web app's desktop-auth route
+        setError(
+          `[DEBUG] Apple click (non-iOS Tauri). Platform=${isIOSPlatform ? "iOS" : "Android/Desktop"}`
+        );
+
         let desktopAuthUrl = "https://trymaple.ai/desktop-auth?provider=apple";
 
-        // If there's a selected plan, add it to the URL
         if (selected_plan) {
           desktopAuthUrl += `&selected_plan=${encodeURIComponent(selected_plan)}`;
         }
 
-        // If there's a redemption code, add it to the URL
         if (code) {
           desktopAuthUrl += `&code=${encodeURIComponent(code)}`;
         }
 
-        // Use the opener plugin by directly invoking the command
         console.log("[OAuth] Opening URL in external browser:", desktopAuthUrl);
-        invoke("plugin:opener|open_url", { url: desktopAuthUrl }).catch((error: Error) => {
-          console.error("[OAuth] Failed to open external browser:", error);
-          setError("Failed to open authentication page in browser");
-        });
+        setError(`[DEBUG] Attempting to open: ${desktopAuthUrl}`);
+
+        try {
+          const result = await invoke("plugin:opener|open_url", { url: desktopAuthUrl });
+          console.log("[OAuth] invoke result:", result);
+          setError(`[DEBUG] invoke succeeded, result: ${JSON.stringify(result)}`);
+        } catch (invokeError) {
+          const errMsg =
+            invokeError instanceof Error ? invokeError.message : JSON.stringify(invokeError);
+          console.error("[OAuth] invoke failed:", invokeError);
+          setError(`[ERROR] invoke failed: ${errMsg}`);
+
+          try {
+            setError(`[DEBUG] Trying fallback with plugin import...`);
+            const { openUrl } = await import("@tauri-apps/plugin-opener");
+            await openUrl(desktopAuthUrl);
+            setError(`[DEBUG] Fallback openUrl succeeded`);
+          } catch (fallbackError) {
+            const fbErrMsg =
+              fallbackError instanceof Error
+                ? fallbackError.message
+                : JSON.stringify(fallbackError);
+            console.error("[OAuth] Fallback also failed:", fallbackError);
+            setError(`[ERROR] Both methods failed. invoke: ${errMsg} | fallback: ${fbErrMsg}`);
+          }
+        }
       } else {
         // Web flow - use AppleAuthProvider component which will initiate the flow
         console.log("[OAuth] Using web flow for Apple Sign In (Web only)");
