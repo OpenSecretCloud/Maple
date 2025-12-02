@@ -181,7 +181,7 @@ jobs:
             frontend/src-tauri/gen/android/.gradle
             frontend/src-tauri/gen/android/build
             frontend/src-tauri/gen/android/app/build
-          key: ${{ runner.os }}-gradle-${{ hashFiles('frontend/src-tauri/gen/android/**/*.gradle*', 'frontend/src-tauri/gen/android/gradle-wrapper.properties') }}
+          key: ${{ runner.os }}-gradle-${{ hashFiles('frontend/src-tauri/gen/android/**/*.gradle*', 'frontend/src-tauri/gen/android/gradle-wrapper.properties', 'frontend/src-tauri/tauri.conf.json', 'frontend/src-tauri/capabilities/**') }}
           restore-keys: |
             ${{ runner.os }}-gradle-
 
