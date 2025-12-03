@@ -1,3 +1,7 @@
+# Load environment variables from frontend/.env.local
+set dotenv-path := "frontend/.env.local"
+set dotenv-required := false
+
 # List available commands
 default:
     @just --list
@@ -13,12 +17,51 @@ dev:
 build:
     cd frontend && bun run build
 
-# Test the frontend (needs local backend running)
-test:
-    cd tests && bun test 
-
 format:
     cd frontend && bun run format
+
+lint:
+    cd frontend && bun run lint
+
+# Run Tauri iOS development build (default simulator)
+ios-dev:
+    cd frontend && bun run tauri ios dev
+
+# Run Tauri iOS development build on specific simulator (e.g., "iPhone 16 Pro iOS 26")
+ios-dev-sim simulator:
+    cd frontend && bun run tauri ios dev '{{simulator}}'
+
+# Run Tauri iOS development build on physical device (e.g., "Your iPhone")
+ios-dev-device device:
+    cd frontend && bun run tauri ios dev --device '{{device}}'
+
+# Build Tauri Android release
+android-build:
+    cd frontend && bun run tauri android build
+
+# Build Tauri desktop release
+desktop-build:
+    cd frontend && bun tauri build
+
+# Build Tauri desktop release (with CC unset for compatibility)
+desktop-build-no-cc:
+    cd frontend && unset CC && bun tauri build
+
+# Format Rust code
+rust-fmt:
+    cd frontend/src-tauri && cargo fmt
+
+# Check Rust code compiles
+rust-check:
+    cd frontend/src-tauri && cargo check
+
+# Run Clippy lints on Rust code
+rust-clippy:
+    cd frontend/src-tauri && cargo clippy
+
+# Run all Rust checks (fmt check + clippy)
+rust-lint:
+    cd frontend/src-tauri && cargo fmt --check && cargo clippy -- -D warnings
 
 # Update version across all required files
 update-version version:
