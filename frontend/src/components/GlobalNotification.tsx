@@ -1,14 +1,21 @@
 import { useEffect, useState, useCallback, useRef } from "react";
-import { CheckCircle, AlertCircle, X, Server } from "lucide-react";
+import { CheckCircle, AlertCircle, X, Server, Download } from "lucide-react";
 import { cn } from "@/utils/utils";
+
+export interface NotificationAction {
+  label: string;
+  onClick: () => void;
+  variant?: "primary" | "secondary";
+}
 
 export interface Notification {
   id: string;
-  type: "success" | "error" | "info";
+  type: "success" | "error" | "info" | "update";
   title: string;
   message?: string;
   icon?: React.ReactNode;
   duration?: number; // ms, 0 = permanent
+  actions?: NotificationAction[];
 }
 
 interface GlobalNotificationProps {
@@ -68,36 +75,67 @@ export function GlobalNotification({ notification, onDismiss }: GlobalNotificati
         return <AlertCircle className="h-5 w-5 text-destructive" />;
       case "info":
         return <Server className="h-5 w-5 text-primary" />;
+      case "update":
+        return <Download className="h-5 w-5 text-primary" />;
     }
   };
+
+  const hasActions = notification.actions && notification.actions.length > 0;
 
   return (
     <div className="fixed top-4 right-4 z-50 pointer-events-none">
       <div
         className={cn(
-          "pointer-events-auto flex items-start gap-3 rounded-lg border bg-card text-card-foreground p-4 shadow-lg transition-all duration-200 min-w-[320px] max-w-md",
+          "pointer-events-auto flex flex-col gap-3 rounded-lg border bg-card text-card-foreground p-4 shadow-lg transition-all duration-200 min-w-[320px] max-w-md",
           isLeaving ? "opacity-0 translate-x-full" : "opacity-100 translate-x-0",
           notification.type === "error" && "border-destructive/50 dark:border-destructive",
           notification.type === "success" && "border-green-500/50 dark:border-green-500",
-          notification.type === "info" && "border-primary/50"
+          notification.type === "info" && "border-primary/50",
+          notification.type === "update" && "border-primary/50"
         )}
       >
-        <div className="flex-shrink-0">{getIcon()}</div>
+        <div className="flex items-start gap-3">
+          <div className="flex-shrink-0">{getIcon()}</div>
 
-        <div className="flex-1 min-w-0">
-          <h4 className="text-sm font-medium leading-tight">{notification.title}</h4>
-          {notification.message && (
-            <p className="text-xs text-muted-foreground mt-1">{notification.message}</p>
+          <div className="flex-1 min-w-0">
+            <h4 className="text-sm font-medium leading-tight">{notification.title}</h4>
+            {notification.message && (
+              <p className="text-xs text-muted-foreground mt-1">{notification.message}</p>
+            )}
+          </div>
+
+          {!hasActions && (
+            <button
+              onClick={handleDismiss}
+              className="flex-shrink-0 rounded-sm opacity-70 hover:opacity-100 transition-opacity"
+            >
+              <X className="h-4 w-4" />
+              <span className="sr-only">Close</span>
+            </button>
           )}
         </div>
 
-        <button
-          onClick={handleDismiss}
-          className="flex-shrink-0 rounded-sm opacity-70 hover:opacity-100 transition-opacity"
-        >
-          <X className="h-4 w-4" />
-          <span className="sr-only">Close</span>
-        </button>
+        {hasActions && (
+          <div className="flex justify-end gap-2">
+            {notification.actions!.map((action, index) => (
+              <button
+                key={index}
+                onClick={() => {
+                  action.onClick();
+                  handleDismiss();
+                }}
+                className={cn(
+                  "px-3 py-1.5 text-xs font-medium rounded-md transition-colors",
+                  action.variant === "primary"
+                    ? "bg-primary text-primary-foreground hover:bg-primary/90"
+                    : "text-muted-foreground hover:text-foreground hover:bg-muted"
+                )}
+              >
+                {action.label}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );

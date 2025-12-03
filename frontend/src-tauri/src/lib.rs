@@ -5,6 +5,13 @@ use tauri_plugin_opener;
 mod proxy;
 mod pdf_extractor;
 
+#[cfg(desktop)]
+#[tauri::command]
+fn restart_for_update(app_handle: tauri::AppHandle) {
+    log::info!("User requested restart for update");
+    app_handle.restart();
+}
+
 // This handles incoming deep links
 fn handle_deep_link_event(url: &str, app: &tauri::AppHandle) {
     log::info!("[Deep Link] Received: {}", url);
@@ -23,7 +30,6 @@ pub fn run() {
             log::info!("Single instance detected: {}, {argv:?}, {cwd}", app.package_info().name);
         }))
         .plugin(tauri_plugin_log::Builder::default().level(log::LevelFilter::Info).build())
-        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_os::init())
@@ -37,6 +43,7 @@ pub fn run() {
             proxy::save_proxy_settings,
             proxy::test_proxy_port,
             pdf_extractor::extract_document_content,
+            restart_for_update,
         ])
         .setup(|app| {
             // Initialize proxy auto-start
@@ -232,7 +239,6 @@ pub fn run() {
                 .level(log::LevelFilter::Info)
                 .build(),
         )
-        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_os::init())
@@ -362,41 +368,22 @@ async fn check_for_updates(app_handle: tauri::AppHandle) -> Result<(), String> {
                                 return Ok(());
                             }
 
-                            // Mark as downloaded to prevent further update dialogs
+                            // Mark as downloaded to prevent further update notifications
                             UPDATE_DOWNLOADED.store(true, Ordering::SeqCst);
 
-                            // Show a dialog prompting the user to restart
-                            let message = format!(
-                                "An update to version {} has been downloaded and is ready to install. \
-                                Would you like to restart the application now to apply the update?", 
-                                update.version
-                            );
+                            // Emit event to frontend for toast notification
+                            #[derive(Clone, serde::Serialize)]
+                            struct UpdateReadyPayload {
+                                version: String,
+                            }
 
-                            use tauri_plugin_dialog::{
-                                DialogExt, MessageDialogButtons, MessageDialogKind,
-                            };
-                            let dialog = app_handle.dialog();
-
-                            // Show a friendly info dialog with Yes/No buttons
-                            dialog
-                                .message(message)
-                                .title("Maple Update")
-                                .kind(MessageDialogKind::Info) // Use info icon for a friendlier look
-                                .buttons(MessageDialogButtons::OkCancelCustom(
-                                    "Yes".to_string(),
-                                    "No".to_string(),
-                                ))
-                                .show(move |should_restart| {
-                                    if should_restart {
-                                        log::info!("User chose to restart now for update");
-
-                                        // Restart the application instead of just exiting
-                                        // This will automatically apply the update
-                                        app_handle.restart();
-                                    } else {
-                                        log::info!("User chose to postpone update restart");
-                                    }
-                                });
+                            if let Err(e) = app_handle.emit("update-ready", UpdateReadyPayload {
+                                version: update.version.clone(),
+                            }) {
+                                log::error!("Failed to emit update-ready event: {}", e);
+                            } else {
+                                log::info!("Emitted update-ready event for version {}", update.version);
+                            }
                         }
                         Err(e) => {
                             log::error!("Failed to install update: {}", e);
