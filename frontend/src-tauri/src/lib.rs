@@ -3,6 +3,7 @@ use tauri_plugin_deep_link::DeepLinkExt;
 
 mod pdf_extractor;
 mod proxy;
+mod tts;
 
 #[cfg(desktop)]
 #[tauri::command]
@@ -34,6 +35,7 @@ pub fn run() {
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_fs::init())
         .manage(proxy::ProxyState::new())
+        .manage(tts::TTSState::new())
         .invoke_handler(tauri::generate_handler![
             proxy::start_proxy,
             proxy::stop_proxy,
@@ -43,6 +45,11 @@ pub fn run() {
             proxy::test_proxy_port,
             pdf_extractor::extract_document_content,
             restart_for_update,
+            tts::tts_get_status,
+            tts::tts_download_models,
+            tts::tts_load_models,
+            tts::tts_synthesize,
+            tts::tts_unload_models,
         ])
         .setup(|app| {
             // Initialize proxy auto-start
