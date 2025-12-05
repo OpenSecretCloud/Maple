@@ -99,7 +99,7 @@ const ValueIcon = ({ value }: { value: string }) => {
   switch (value) {
     case "Yes":
       return (
-        <div className="flex items-center justify-center w-6 h-6 bg-green-100 dark:bg-green-900/30 rounded-full">
+        <div className="flex items-center justify-center w-6 h-6 bg-green-300 dark:bg-green-900/30 rounded-full">
           <Check className="w-4 h-4 text-green-600 dark:text-green-400" aria-label="Available" />
         </div>
       );
