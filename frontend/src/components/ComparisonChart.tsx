@@ -66,6 +66,33 @@ const comparisonData: ComparisonData[] = [
     grok: "$"
   },
   {
+    feature: "Document Upload",
+    maple: "Yes",
+    lumo: "Yes",
+    duckAI: "No",
+    chatGPT: "Yes",
+    claude: "Yes",
+    grok: "Yes"
+  },
+  {
+    feature: "Image Analysis",
+    maple: "Yes",
+    lumo: "No",
+    duckAI: "Yes",
+    chatGPT: "Yes",
+    claude: "Yes",
+    grok: "Yes"
+  },
+  {
+    feature: "Voice Mode",
+    maple: "Yes",
+    lumo: "No",
+    duckAI: "No",
+    chatGPT: "Yes",
+    claude: "Yes",
+    grok: "Yes"
+  },
+  {
     feature: "Integration With Coding IDE",
     maple: "Yes",
     lumo: "No",
