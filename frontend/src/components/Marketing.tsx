@@ -421,10 +421,11 @@ export function Marketing() {
                 { src: "/badge-openai-logo.png", alt: "OpenAI", label: "OpenAI GPT-OSS" },
                 { src: "/badge-google-logo.png", alt: "Google", label: "Google Gemma" },
                 { src: "/badge-deepseek-logo.png", alt: "DeepSeek", label: "DeepSeek R1" },
+                { src: "/badge-qwen-logo.png", alt: "Qwen", label: "Qwen3 Coder" },
                 { src: "/badge-meta-logo.png", alt: "Meta", label: "Meta Llama" }
               ];
               return (
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8">
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-8">
                   {models.map((model) => (
                     <div key={model.label} className="flex flex-col items-center">
                       <img
