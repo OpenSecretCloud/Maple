@@ -6,8 +6,6 @@ interface ComparisonData {
   lumo: string;
   duckAI: string;
   chatGPT: string;
-  claude: string;
-  grok: string;
 }
 
 const comparisonData: ComparisonData[] = [
@@ -16,108 +14,84 @@ const comparisonData: ComparisonData[] = [
     maple: "Yes",
     lumo: "No",
     duckAI: "No",
-    chatGPT: "No",
-    claude: "No",
-    grok: "No"
+    chatGPT: "No"
   },
   {
     feature: "Open-Source Code",
     maple: "Yes",
     lumo: "Partial",
     duckAI: "No",
-    chatGPT: "No",
-    claude: "No",
-    grok: "No"
+    chatGPT: "No"
   },
   {
     feature: "Open Models",
     maple: "Yes",
     lumo: "Yes",
     duckAI: "Partial",
-    chatGPT: "No",
-    claude: "No",
-    grok: "No"
+    chatGPT: "No"
   },
   {
     feature: "Never uses your data to train AI",
     maple: "Yes",
     lumo: "?",
     duckAI: "?",
-    chatGPT: "No",
-    claude: "No",
-    grok: "No"
+    chatGPT: "No"
   },
   {
     feature: "Doesn't log your chats",
     maple: "Yes",
     lumo: "?",
     duckAI: "?",
-    chatGPT: "No",
-    claude: "No",
-    grok: "No"
+    chatGPT: "No"
   },
   {
     feature: "Zero Data Retention",
     maple: "Yes",
     lumo: "?",
     duckAI: "?",
-    chatGPT: "$",
-    claude: "$",
-    grok: "$"
+    chatGPT: "$"
   },
   {
     feature: "Document Upload",
     maple: "Yes",
     lumo: "Yes",
     duckAI: "No",
-    chatGPT: "Yes",
-    claude: "Yes",
-    grok: "Yes"
+    chatGPT: "Yes"
   },
   {
     feature: "Image Analysis",
     maple: "Yes",
     lumo: "No",
     duckAI: "Yes",
-    chatGPT: "Yes",
-    claude: "Yes",
-    grok: "Yes"
+    chatGPT: "Yes"
   },
   {
     feature: "Voice Mode",
     maple: "Yes",
     lumo: "No",
     duckAI: "No",
-    chatGPT: "Yes",
-    claude: "Yes",
-    grok: "Yes"
+    chatGPT: "Yes"
   },
   {
     feature: "Integration With Coding IDE",
     maple: "Yes",
     lumo: "No",
     duckAI: "No",
-    chatGPT: "Yes",
-    claude: "Yes",
-    grok: "Yes"
+    chatGPT: "Yes"
   },
   {
     feature: "Teams Plan",
     maple: "Yes",
     lumo: "No",
     duckAI: "No",
-    chatGPT: "Yes",
-    claude: "Yes",
-    grok: "Yes"
+    chatGPT: "Yes"
   },
   {
     feature: "Developer API",
     maple: "Yes",
     lumo: "No",
     duckAI: "No",
-    chatGPT: "Yes",
-    claude: "Yes",
-    grok: "Yes"
+    chatGPT: "Yes"
   }
 ];
 
@@ -172,9 +146,7 @@ export function ComparisonChart() {
     { key: "maple", name: "Maple", highlight: true },
     { key: "lumo", name: "Lumo", highlight: false },
     { key: "duckAI", name: "Duck AI", highlight: false },
-    { key: "chatGPT", name: "ChatGPT", highlight: false },
-    { key: "claude", name: "Claude", highlight: false },
-    { key: "grok", name: "Grok", highlight: false }
+    { key: "chatGPT", name: "ChatGPT, Gemini, Claude, Grok", highlight: false }
   ];
 
   return (
@@ -197,7 +169,7 @@ export function ComparisonChart() {
               <div
                 className="grid border-b border-[hsl(var(--marketing-card-border))]"
                 style={{
-                  gridTemplateColumns: "minmax(200px, 1.5fr) repeat(6, minmax(80px, 1fr))"
+                  gridTemplateColumns: "minmax(200px, 1.5fr) repeat(4, minmax(80px, 1fr))"
                 }}
               >
                 <div className="p-3 font-medium text-foreground bg-[hsl(var(--marketing-card-highlight))]/30 text-sm"></div>
@@ -223,7 +195,7 @@ export function ComparisonChart() {
                     index % 2 === 0 ? "bg-[hsl(var(--marketing-card-highlight))]/20" : ""
                   }`}
                   style={{
-                    gridTemplateColumns: "minmax(200px, 1.5fr) repeat(6, minmax(80px, 1fr))"
+                    gridTemplateColumns: "minmax(200px, 1.5fr) repeat(4, minmax(80px, 1fr))"
                   }}
                 >
                   <div className="p-3 font-medium text-foreground bg-[hsl(var(--marketing-card-highlight))]/30">
