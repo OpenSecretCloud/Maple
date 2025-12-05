@@ -15,7 +15,7 @@ import { Switch } from "@/components/ui/switch";
 import { PRICING_PLANS } from "@/config/pricingConfig";
 import { VerificationModal } from "@/components/VerificationModal";
 import { TeamSeatDialog } from "@/components/TeamSeatDialog";
-import { isIOS, isAndroid, isMobile } from "@/utils/platform";
+import { isIOS, isAndroid, isMobile, isTauri } from "@/utils/platform";
 import packageJson from "../../package.json";
 
 // File type constants for upload features
@@ -469,7 +469,25 @@ function PricingPage() {
 
       // If user is on Zaprite plan, redirect to email
       if (freshBillingStatus?.payment_provider === "zaprite") {
-        window.location.href = "mailto:support@opensecret.cloud";
+        // Use Tauri opener plugin for all Tauri platforms, fallback to window.location for web
+        if (isTauri()) {
+          import("@tauri-apps/api/core")
+            .then((coreModule) => {
+              return coreModule.invoke("plugin:opener|open_url", {
+                url: "mailto:support@opensecret.cloud"
+              });
+            })
+            .then(() => {
+              console.log("[Contact] Successfully opened mailto link with Tauri opener");
+            })
+            .catch((err) => {
+              console.error("[Contact] Failed to open mailto link with Tauri opener:", err);
+              // Fallback for web or if Tauri fails
+              window.location.href = "mailto:support@opensecret.cloud";
+            });
+        } else {
+          window.location.href = "mailto:support@opensecret.cloud";
+        }
         return;
       }
 
@@ -485,7 +503,25 @@ function PricingPage() {
           navigate({ to: "/" });
         } else {
           // Other plans: contact support
-          window.location.href = "mailto:support@opensecret.cloud";
+          // Use Tauri opener plugin for all Tauri platforms, fallback to window.location for web
+          if (isTauri()) {
+            import("@tauri-apps/api/core")
+              .then((coreModule) => {
+                return coreModule.invoke("plugin:opener|open_url", {
+                  url: "mailto:support@opensecret.cloud"
+                });
+              })
+              .then(() => {
+                console.log("[Contact] Successfully opened mailto link with Tauri opener");
+              })
+              .catch((err) => {
+                console.error("[Contact] Failed to open mailto link with Tauri opener:", err);
+                // Fallback for web or if Tauri fails
+                window.location.href = "mailto:support@opensecret.cloud";
+              });
+          } else {
+            window.location.href = "mailto:support@opensecret.cloud";
+          }
         }
         return;
       }

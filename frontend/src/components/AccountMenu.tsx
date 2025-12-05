@@ -13,7 +13,7 @@ import {
   FileText,
   ChevronLeft
 } from "lucide-react";
-import { isMobile } from "@/utils/platform";
+import { isMobile, isTauri } from "@/utils/platform";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -175,19 +175,26 @@ export function AccountMenu() {
 
   const handleOpenExternalUrl = async (url: string) => {
     try {
-      // Check if we're on a mobile platform
-      if (isMobile()) {
+      // Check if we're on any Tauri platform (mobile or desktop)
+      const isInTauri = isTauri();
+
+      if (isInTauri) {
         const { invoke } = await import("@tauri-apps/api/core");
         await invoke("plugin:opener|open_url", { url })
           .then(() => {
-            console.log("[External Link] Successfully opened URL in external browser");
+            console.log("[External Link] Successfully opened URL with Tauri opener");
           })
           .catch((err: Error) => {
-            console.error("[External Link] Failed to open external browser:", err);
-            alert("Failed to open browser. Please try again.");
+            console.error("[External Link] Failed to open with Tauri opener:", err);
+            // Fallback to window.open on desktop (may work), alert on mobile
+            if (isMobile()) {
+              alert("Failed to open link. Please try again.");
+            } else {
+              window.open(url, "_blank", "noopener,noreferrer");
+            }
           });
       } else {
-        // Default browser opening for non-mobile platforms
+        // Default browser opening for web platform
         window.open(url, "_blank", "noopener,noreferrer");
       }
     } catch (error) {
@@ -380,11 +387,17 @@ export function AccountMenu() {
                     <FileText className="mr-2 h-4 w-4" />
                     <span>Terms of Service</span>
                   </DropdownMenuItem>
-                  <DropdownMenuItem asChild>
-                    <a href="mailto:support@opensecret.cloud">
-                      <Mail className="mr-2 h-4 w-4" />
-                      <span>Contact Us</span>
-                    </a>
+                  <DropdownMenuItem
+                    onClick={(e) => {
+                      e.preventDefault();
+                      handleOpenExternalUrl("mailto:support@opensecret.cloud");
+                    }}
+                    onSelect={(e) => {
+                      e.preventDefault();
+                    }}
+                  >
+                    <Mail className="mr-2 h-4 w-4" />
+                    <span>Contact Us</span>
                   </DropdownMenuItem>
                 </DropdownMenuGroup>
               </div>
