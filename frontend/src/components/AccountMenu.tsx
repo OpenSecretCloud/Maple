@@ -13,7 +13,7 @@ import {
   FileText,
   ChevronLeft
 } from "lucide-react";
-import { isMobile } from "@/utils/platform";
+import { isMobile, isTauri } from "@/utils/platform";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -176,8 +176,7 @@ export function AccountMenu() {
   const handleOpenExternalUrl = async (url: string) => {
     try {
       // Check if we're on any Tauri platform (mobile or desktop)
-      const { isTauri } = await import("@tauri-apps/api/core");
-      const isInTauri = await isTauri();
+      const isInTauri = isTauri();
 
       if (isInTauri) {
         const { invoke } = await import("@tauri-apps/api/core");
