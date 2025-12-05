@@ -413,7 +413,7 @@ export function Marketing() {
                 <span className="text-[hsl(var(--purple))] font-medium">No data sharing.</span>
               </h2>
               <p className="text-xl text-[hsl(var(--marketing-text-muted))] max-w-2xl mx-auto">
-                We use large open models from the biggest providers.
+                We use full-size open models from the biggest providers.
               </p>
             </div>
             {(() => {
