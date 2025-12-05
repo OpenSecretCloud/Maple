@@ -36,7 +36,9 @@ import {
   Search,
   Loader2,
   Globe,
-  Brain
+  Brain,
+  Volume2,
+  Square
 } from "lucide-react";
 import RecordRTC from "recordrtc";
 import { useQueryClient } from "@tanstack/react-query";
@@ -57,6 +59,8 @@ import { DocumentPlatformDialog } from "@/components/DocumentPlatformDialog";
 import { ContextLimitDialog } from "@/components/ContextLimitDialog";
 import { RecordingOverlay } from "@/components/RecordingOverlay";
 import { WebSearchInfoDialog } from "@/components/WebSearchInfoDialog";
+import { TTSDownloadDialog } from "@/components/TTSDownloadDialog";
+import { useTTS } from "@/services/tts/TTSContext";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { AlertCircle } from "lucide-react";
 import {
@@ -168,6 +172,62 @@ function CopyButton({ text }: { text: string }) {
       aria-label={isCopied ? "Copied" : "Copy to clipboard"}
     >
       {isCopied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+    </Button>
+  );
+}
+
+// TTS play button component
+function TTSButton({
+  text,
+  messageId,
+  onNeedsSetup
+}: {
+  text: string;
+  messageId: string;
+  onNeedsSetup: () => void;
+}) {
+  const { status, isPlaying, currentPlayingId, speak, stop, isTauriEnv } = useTTS();
+  const isThisPlaying = isPlaying && currentPlayingId === messageId;
+
+  // Don't render the button at all if not in Tauri environment
+  if (!isTauriEnv) {
+    return null;
+  }
+
+  const handleClick = async () => {
+    if (status === "not_downloaded" || status === "error") {
+      onNeedsSetup();
+      return;
+    }
+
+    if (status === "ready") {
+      if (isThisPlaying) {
+        stop();
+      } else {
+        await speak(text, messageId);
+      }
+    }
+  };
+
+  const isDisabled = status === "checking" || status === "downloading" || status === "loading";
+  const showSpinner = isDisabled;
+
+  return (
+    <Button
+      variant="ghost"
+      size="sm"
+      className="h-7 w-7 p-0 text-muted-foreground hover:text-foreground"
+      onClick={handleClick}
+      disabled={isDisabled}
+      aria-label={isThisPlaying ? "Stop speaking" : "Read aloud"}
+    >
+      {showSpinner ? (
+        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+      ) : isThisPlaying ? (
+        <Square className="h-3.5 w-3.5" />
+      ) : (
+        <Volume2 className="h-3.5 w-3.5" />
+      )}
     </Button>
   );
 }
@@ -355,13 +415,15 @@ const MessageList = memo(
     isGenerating,
     chatId,
     firstMessageRef,
-    isLoadingOlderMessages
+    isLoadingOlderMessages,
+    onTTSSetupOpen
   }: {
     messages: Message[];
     isGenerating: boolean;
     chatId?: string;
     firstMessageRef?: React.RefObject<HTMLDivElement>;
     isLoadingOlderMessages?: boolean;
+    onTTSSetupOpen: () => void;
   }) => {
     // Build Maps for O(1) lookup of tool calls and outputs by call_id
     // This handles out-of-order tool calls/outputs (e.g., parallel tool execution)
@@ -561,6 +623,14 @@ const MessageList = memo(
                                 .map((p) => ("text" in p ? p.text : ""))
                                 .join("")}
                             />
+                            <TTSButton
+                              text={message.content
+                                .filter((p) => "text" in p && p.text)
+                                .map((p) => ("text" in p ? p.text : ""))
+                                .join("")}
+                              messageId={message.id}
+                              onNeedsSetup={onTTSSetupOpen}
+                            />
                           </div>
                         )}
                     </div>
@@ -653,6 +723,7 @@ export function UnifiedChat() {
   const [documentPlatformDialogOpen, setDocumentPlatformDialogOpen] = useState(false);
   const [contextLimitDialogOpen, setContextLimitDialogOpen] = useState(false);
   const [webSearchInfoDialogOpen, setWebSearchInfoDialogOpen] = useState(false);
+  const [ttsSetupDialogOpen, setTtsSetupDialogOpen] = useState(false);
 
   // Audio recording states
   const [isRecording, setIsRecording] = useState(false);
@@ -2344,6 +2415,7 @@ export function UnifiedChat() {
                   chatId={chatId}
                   firstMessageRef={firstMessageRef}
                   isLoadingOlderMessages={isLoadingOlderMessages}
+                  onTTSSetupOpen={() => setTtsSetupDialogOpen(true)}
                 />
               </div>
 
@@ -2947,6 +3019,9 @@ export function UnifiedChat() {
             setWebSearchInfoDialogOpen(false);
           }}
         />
+
+        {/* TTS setup dialog */}
+        <TTSDownloadDialog open={ttsSetupDialogOpen} onOpenChange={setTtsSetupDialogOpen} />
 
         {/* Hidden file inputs - must be outside conditional rendering to work in both views */}
         <input
