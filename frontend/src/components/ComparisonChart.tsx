@@ -105,13 +105,13 @@ const ValueIcon = ({ value }: { value: string }) => {
       );
     case "No":
       return (
-        <div className="flex items-center justify-center w-6 h-6 bg-red-100 dark:bg-red-900/30 rounded-full">
+        <div className="flex items-center justify-center w-6 h-6 bg-red-300 dark:bg-red-900/30 rounded-full">
           <X className="w-4 h-4 text-red-600 dark:text-red-400" aria-label="Not Available" />
         </div>
       );
     case "?":
       return (
-        <div className="flex items-center justify-center w-6 h-6 bg-yellow-100 dark:bg-yellow-900/30 rounded-full">
+        <div className="flex items-center justify-center w-6 h-6 bg-yellow-300 dark:bg-yellow-900/30 rounded-full">
           <HelpCircle
             className="w-4 h-4 text-yellow-600 dark:text-yellow-400"
             aria-label="Unknown or Unclear"
@@ -120,7 +120,7 @@ const ValueIcon = ({ value }: { value: string }) => {
       );
     case "$":
       return (
-        <div className="flex items-center justify-center w-6 h-6 bg-blue-100 dark:bg-blue-900/30 rounded-full">
+        <div className="flex items-center justify-center w-6 h-6 bg-blue-300 dark:bg-blue-900/30 rounded-full">
           <DollarSign
             className="w-4 h-4 text-blue-600 dark:text-blue-400"
             aria-label="Paid Feature"
@@ -129,7 +129,7 @@ const ValueIcon = ({ value }: { value: string }) => {
       );
     case "Partial":
       return (
-        <div className="flex items-center justify-center w-6 h-6 bg-orange-100 dark:bg-orange-900/30 rounded-full">
+        <div className="flex items-center justify-center w-6 h-6 bg-orange-300 dark:bg-orange-900/30 rounded-full">
           <MinusCircle
             className="w-4 h-4 text-orange-600 dark:text-orange-400"
             aria-label="Partially Available"
