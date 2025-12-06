@@ -433,7 +433,7 @@ export function Marketing() {
                         alt={model.alt}
                         loading="lazy"
                         decoding="async"
-                        className="w-72 h-24 object-contain mb-4"
+                        className="max-w-full h-24 object-contain mb-4"
                       />
                       <span className="text-lg font-medium text-foreground">{model.label}</span>
                     </div>
