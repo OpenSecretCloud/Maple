@@ -6,8 +6,6 @@ interface ComparisonData {
   lumo: string;
   duckAI: string;
   chatGPT: string;
-  claude: string;
-  grok: string;
 }
 
 const comparisonData: ComparisonData[] = [
@@ -16,81 +14,84 @@ const comparisonData: ComparisonData[] = [
     maple: "Yes",
     lumo: "No",
     duckAI: "No",
-    chatGPT: "No",
-    claude: "No",
-    grok: "No"
+    chatGPT: "No"
   },
   {
     feature: "Open-Source Code",
     maple: "Yes",
     lumo: "Partial",
     duckAI: "No",
-    chatGPT: "No",
-    claude: "No",
-    grok: "No"
+    chatGPT: "No"
   },
   {
     feature: "Open Models",
     maple: "Yes",
     lumo: "Yes",
     duckAI: "Partial",
-    chatGPT: "No",
-    claude: "No",
-    grok: "No"
+    chatGPT: "No"
   },
   {
     feature: "Never uses your data to train AI",
     maple: "Yes",
     lumo: "?",
     duckAI: "?",
-    chatGPT: "No",
-    claude: "No",
-    grok: "No"
+    chatGPT: "No"
   },
   {
     feature: "Doesn't log your chats",
     maple: "Yes",
     lumo: "?",
     duckAI: "?",
-    chatGPT: "No",
-    claude: "No",
-    grok: "No"
+    chatGPT: "No"
   },
   {
     feature: "Zero Data Retention",
     maple: "Yes",
     lumo: "?",
     duckAI: "?",
-    chatGPT: "$",
-    claude: "$",
-    grok: "$"
+    chatGPT: "$"
+  },
+  {
+    feature: "Document Upload",
+    maple: "Yes",
+    lumo: "Yes",
+    duckAI: "No",
+    chatGPT: "Yes"
+  },
+  {
+    feature: "Image Analysis",
+    maple: "Yes",
+    lumo: "No",
+    duckAI: "Yes",
+    chatGPT: "Yes"
+  },
+  {
+    feature: "Voice Mode",
+    maple: "Yes",
+    lumo: "No",
+    duckAI: "No",
+    chatGPT: "Yes"
   },
   {
     feature: "Integration With Coding IDE",
     maple: "Yes",
     lumo: "No",
     duckAI: "No",
-    chatGPT: "Yes",
-    claude: "Yes",
-    grok: "Yes"
+    chatGPT: "Yes"
   },
   {
     feature: "Teams Plan",
     maple: "Yes",
     lumo: "No",
     duckAI: "No",
-    chatGPT: "Yes",
-    claude: "Yes",
-    grok: "Yes"
+    chatGPT: "Yes"
   },
   {
     feature: "Developer API",
     maple: "Yes",
     lumo: "No",
     duckAI: "No",
-    chatGPT: "Yes",
-    claude: "Yes",
-    grok: "Yes"
+    chatGPT: "Yes"
   }
 ];
 
@@ -98,19 +99,19 @@ const ValueIcon = ({ value }: { value: string }) => {
   switch (value) {
     case "Yes":
       return (
-        <div className="flex items-center justify-center w-6 h-6 bg-green-100 dark:bg-green-900/30 rounded-full">
+        <div className="flex items-center justify-center w-6 h-6 bg-green-300 dark:bg-green-900/30 rounded-full">
           <Check className="w-4 h-4 text-green-600 dark:text-green-400" aria-label="Available" />
         </div>
       );
     case "No":
       return (
-        <div className="flex items-center justify-center w-6 h-6 bg-red-100 dark:bg-red-900/30 rounded-full">
+        <div className="flex items-center justify-center w-6 h-6 bg-red-300 dark:bg-red-900/30 rounded-full">
           <X className="w-4 h-4 text-red-600 dark:text-red-400" aria-label="Not Available" />
         </div>
       );
     case "?":
       return (
-        <div className="flex items-center justify-center w-6 h-6 bg-yellow-100 dark:bg-yellow-900/30 rounded-full">
+        <div className="flex items-center justify-center w-6 h-6 bg-yellow-300 dark:bg-yellow-900/30 rounded-full">
           <HelpCircle
             className="w-4 h-4 text-yellow-600 dark:text-yellow-400"
             aria-label="Unknown or Unclear"
@@ -119,7 +120,7 @@ const ValueIcon = ({ value }: { value: string }) => {
       );
     case "$":
       return (
-        <div className="flex items-center justify-center w-6 h-6 bg-blue-100 dark:bg-blue-900/30 rounded-full">
+        <div className="flex items-center justify-center w-6 h-6 bg-blue-300 dark:bg-blue-900/30 rounded-full">
           <DollarSign
             className="w-4 h-4 text-blue-600 dark:text-blue-400"
             aria-label="Paid Feature"
@@ -128,7 +129,7 @@ const ValueIcon = ({ value }: { value: string }) => {
       );
     case "Partial":
       return (
-        <div className="flex items-center justify-center w-6 h-6 bg-orange-100 dark:bg-orange-900/30 rounded-full">
+        <div className="flex items-center justify-center w-6 h-6 bg-orange-300 dark:bg-orange-900/30 rounded-full">
           <MinusCircle
             className="w-4 h-4 text-orange-600 dark:text-orange-400"
             aria-label="Partially Available"
@@ -145,9 +146,7 @@ export function ComparisonChart() {
     { key: "maple", name: "Maple", highlight: true },
     { key: "lumo", name: "Lumo", highlight: false },
     { key: "duckAI", name: "Duck AI", highlight: false },
-    { key: "chatGPT", name: "ChatGPT", highlight: false },
-    { key: "claude", name: "Claude", highlight: false },
-    { key: "grok", name: "Grok", highlight: false }
+    { key: "chatGPT", name: "ChatGPT, Gemini, Claude, Grok", highlight: false }
   ];
 
   return (
@@ -170,7 +169,7 @@ export function ComparisonChart() {
               <div
                 className="grid border-b border-[hsl(var(--marketing-card-border))]"
                 style={{
-                  gridTemplateColumns: "minmax(200px, 1.5fr) repeat(6, minmax(80px, 1fr))"
+                  gridTemplateColumns: "minmax(200px, 1.5fr) repeat(4, minmax(80px, 1fr))"
                 }}
               >
                 <div className="p-3 font-medium text-foreground bg-[hsl(var(--marketing-card-highlight))]/30 text-sm"></div>
@@ -196,7 +195,7 @@ export function ComparisonChart() {
                     index % 2 === 0 ? "bg-[hsl(var(--marketing-card-highlight))]/20" : ""
                   }`}
                   style={{
-                    gridTemplateColumns: "minmax(200px, 1.5fr) repeat(6, minmax(80px, 1fr))"
+                    gridTemplateColumns: "minmax(200px, 1.5fr) repeat(4, minmax(80px, 1fr))"
                   }}
                 >
                   <div className="p-3 font-medium text-foreground bg-[hsl(var(--marketing-card-highlight))]/30">

@@ -19,6 +19,14 @@ import { ComparisonChart } from "./ComparisonChart";
 import type { DiscountResponse } from "@/billing/billingApi";
 import { Badge } from "@/components/ui/badge";
 
+const AI_MODELS = [
+  { src: "/badge-openai-logo.png", alt: "OpenAI", labels: ["OpenAI GPT-OSS"] },
+  { src: "/badge-google-logo.png", alt: "Google", labels: ["Google Gemma"] },
+  { src: "/badge-deepseek-logo.png", alt: "DeepSeek", labels: ["DeepSeek R1", "DeepSeek V3.1 Terminus"] },
+  { src: "/badge-qwen-logo.png", alt: "Qwen", labels: ["Qwen3 Coder", "Qwen3-VL"] },
+  { src: "/badge-meta-logo.png", alt: "Meta", labels: ["Meta Llama"] }
+];
+
 function CTAButton({
   children,
   to,
@@ -279,7 +287,7 @@ export function Marketing() {
             <div className="flex gap-4 flex-col sm:flex-row">
               <CTAButton to="/signup" primary>
                 <Sparkles className="h-5 w-5" />
-                Start Secure Chat
+                Start Chatting
               </CTAButton>
               <CTAButton to="/login">Log In</CTAButton>
             </div>
@@ -369,9 +377,8 @@ export function Marketing() {
           <Link
             to="/downloads"
             className="inline-flex items-center gap-2 h-10 px-6 rounded-lg text-center font-medium transition-all duration-300
-              dark:bg-white/90 dark:text-black dark:hover:bg-white dark:active:bg-white/80
               bg-black text-white hover:bg-black/90 active:bg-black/80
-              border border-[hsl(var(--marketing-card-border))]"
+              border border-[hsl(var(--marketing-text-muted))]"
           >
             <Laptop className="h-5 w-5" />
             <span>Desktop</span>
@@ -405,8 +412,51 @@ export function Marketing() {
         </div>
       </section>
 
+      {/* AI Models Section */}
+      <section className="w-full py-16 dark:bg-[hsl(var(--section-alt))] bg-[hsl(var(--section-alt))]">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="text-center mb-12">
+            <h2 className="text-4xl font-light mb-4">
+              Powerful AI models.{" "}
+              <span className="text-[hsl(var(--purple))] font-medium">No data sharing.</span>
+            </h2>
+            <p className="text-xl text-[hsl(var(--marketing-text-muted))] max-w-2xl mx-auto">
+              We use full-size open models from the biggest providers.
+            </p>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-8">
+            {AI_MODELS.map((model) => (
+              <div key={model.alt} className="flex flex-col items-center">
+                <img
+                  src={model.src}
+                  alt={model.alt}
+                  loading="lazy"
+                  decoding="async"
+                  className="max-w-full h-24 object-contain mb-4"
+                />
+                <div className="flex flex-col items-center">
+                  {model.labels.map((label, index) => (
+                    <span key={index} className="text-lg font-medium text-foreground">
+                      {label}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="text-center">
+            <p className="text-xl text-[hsl(var(--marketing-text-muted))] max-w-2xl mx-auto">
+              <br />
+              None of your data is transmitted to these companies.
+              <br />
+              Get the best without the mess.
+            </p>
+          </div>
+        </div>
+      </section>
+
       {/* Features Section */}
-      <section className="w-full py-20 dark:bg-[hsl(var(--section-alt))] bg-[hsl(var(--section-alt))]">
+      <section className="w-full py-20">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="text-center mb-16">
             <h2 className="text-4xl font-light mb-4">
@@ -442,7 +492,7 @@ export function Marketing() {
       </section>
 
       {/* Proof/Verification Section */}
-      <section className="w-full py-20">
+      <section className="w-full py-20 dark:bg-[hsl(var(--section-alt))] bg-[hsl(var(--section-alt))]">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-16 items-center">
             <div>
