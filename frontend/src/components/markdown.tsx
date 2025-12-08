@@ -270,11 +270,11 @@ function ResponsiveTable({ children, className, ...rest }: JSX.IntrinsicElements
   const { node, inline, ...safeRest } = rest as Record<string, unknown>;
 
   return (
-    <div className="my-4 w-full max-w-full overflow-hidden">
-      <div className="overflow-x-auto overflow-y-hidden rounded-md border border-border/50 shadow-sm">
+    <div className="my-4 -mx-4 px-4 overflow-x-auto">
+      <div className="inline-block rounded-md border border-border/50 shadow-sm">
         <table
           className={className || ""}
-          style={{ width: "max-content" }}
+          style={{ minWidth: "max-content" }}
           {...(safeRest as object)}
         >
           {children}

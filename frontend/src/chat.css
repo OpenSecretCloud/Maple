@@ -609,7 +609,11 @@
 .markdown-body table td {
   padding: 6px 13px;
   border: 1px solid var(--color-border-default);
-  white-space: nowrap;
+  min-width: 80px;
+  max-width: 300px;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  white-space: normal;
 }
 
 .markdown-body table tr {
