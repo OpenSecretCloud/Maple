@@ -2,8 +2,8 @@ use tauri::{Emitter, Manager};
 use tauri_plugin_deep_link::DeepLinkExt;
 use tauri_plugin_opener;
 
-mod proxy;
 mod pdf_extractor;
+mod proxy;
 
 #[cfg(desktop)]
 #[tauri::command]
@@ -377,12 +377,18 @@ async fn check_for_updates(app_handle: tauri::AppHandle) -> Result<(), String> {
                                 version: String,
                             }
 
-                            if let Err(e) = app_handle.emit("update-ready", UpdateReadyPayload {
-                                version: update.version.clone(),
-                            }) {
+                            if let Err(e) = app_handle.emit(
+                                "update-ready",
+                                UpdateReadyPayload {
+                                    version: update.version.clone(),
+                                },
+                            ) {
                                 log::error!("Failed to emit update-ready event: {}", e);
                             } else {
-                                log::info!("Emitted update-ready event for version {}", update.version);
+                                log::info!(
+                                    "Emitted update-ready event for version {}",
+                                    update.version
+                                );
                             }
                         }
                         Err(e) => {

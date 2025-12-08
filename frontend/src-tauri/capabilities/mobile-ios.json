@@ -15,6 +15,9 @@
       "identifier": "opener:allow-open-url",
       "allow": [
         {
+          "url": "mailto:*"
+        },
+        {
           "url": "http://localhost:5173/*"
         },
         {
