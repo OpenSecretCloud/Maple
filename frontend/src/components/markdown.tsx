@@ -269,16 +269,48 @@ function ResponsiveTable({ children, className, ...rest }: JSX.IntrinsicElements
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const { node, inline, ...safeRest } = rest as Record<string, unknown>;
 
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [canScrollLeft, setCanScrollLeft] = useState(false);
+  const [canScrollRight, setCanScrollRight] = useState(false);
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+
+    const checkScroll = () => {
+      const { scrollLeft, scrollWidth, clientWidth } = el;
+      setCanScrollLeft(scrollLeft > 0);
+      setCanScrollRight(scrollLeft + clientWidth < scrollWidth - 1);
+    };
+
+    checkScroll();
+    el.addEventListener("scroll", checkScroll);
+    window.addEventListener("resize", checkScroll);
+
+    return () => {
+      el.removeEventListener("scroll", checkScroll);
+      window.removeEventListener("resize", checkScroll);
+    };
+  }, []);
+
   return (
-    <div className="my-4 w-full max-w-full overflow-hidden">
-      <div className="overflow-x-auto overflow-y-hidden rounded-md border border-border/50 shadow-sm">
-        <table
-          className={className || ""}
-          style={{ width: "max-content" }}
-          {...(safeRest as object)}
-        >
-          {children}
-        </table>
+    <div className="my-4 -mx-4 px-4 relative">
+      {canScrollLeft && (
+        <div className="absolute left-[15px] top-0 bottom-0 w-8 pointer-events-none bg-gradient-to-r from-background to-transparent z-10" />
+      )}
+      {canScrollRight && (
+        <div className="absolute right-[15px] top-0 bottom-0 w-8 pointer-events-none bg-gradient-to-l from-background to-transparent z-10" />
+      )}
+      <div ref={scrollRef} className="overflow-x-auto">
+        <div className="inline-block rounded-md border border-border/50 shadow-sm">
+          <table
+            className={className || ""}
+            style={{ minWidth: "max-content" }}
+            {...(safeRest as object)}
+          >
+            {children}
+          </table>
+        </div>
       </div>
     </div>
   );
