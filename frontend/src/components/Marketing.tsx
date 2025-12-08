@@ -413,7 +413,7 @@ export function Marketing() {
       </section>
 
       {/* AI Models Section */}
-      <section className="w-full py-16">
+      <section className="w-full py-16 dark:bg-[hsl(var(--section-alt))] bg-[hsl(var(--section-alt))]">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="text-center mb-12">
             <h2 className="text-4xl font-light mb-4">
@@ -456,7 +456,7 @@ export function Marketing() {
       </section>
 
       {/* Features Section */}
-      <section className="w-full py-20 dark:bg-[hsl(var(--section-alt))] bg-[hsl(var(--section-alt))]">
+      <section className="w-full py-20">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="text-center mb-16">
             <h2 className="text-4xl font-light mb-4">
@@ -492,7 +492,7 @@ export function Marketing() {
       </section>
 
       {/* Proof/Verification Section */}
-      <section className="w-full py-20">
+      <section className="w-full py-20 dark:bg-[hsl(var(--section-alt))] bg-[hsl(var(--section-alt))]">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-16 items-center">
             <div>
