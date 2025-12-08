@@ -20,11 +20,11 @@ import type { DiscountResponse } from "@/billing/billingApi";
 import { Badge } from "@/components/ui/badge";
 
 const AI_MODELS = [
-  { src: "/badge-openai-logo.png", alt: "OpenAI", label: "OpenAI GPT-OSS" },
-  { src: "/badge-google-logo.png", alt: "Google", label: "Google Gemma" },
-  { src: "/badge-deepseek-logo.png", alt: "DeepSeek", label: "DeepSeek R1" },
-  { src: "/badge-qwen-logo.png", alt: "Qwen", label: "Qwen3 Coder" },
-  { src: "/badge-meta-logo.png", alt: "Meta", label: "Meta Llama" }
+  { src: "/badge-openai-logo.png", alt: "OpenAI", labels: ["OpenAI GPT-OSS"] },
+  { src: "/badge-google-logo.png", alt: "Google", labels: ["Google Gemma"] },
+  { src: "/badge-deepseek-logo.png", alt: "DeepSeek", labels: ["DeepSeek R1", "DeepSeek V3.1 Terminus"] },
+  { src: "/badge-qwen-logo.png", alt: "Qwen", labels: ["Qwen3 Coder", "Qwen3-VL"] },
+  { src: "/badge-meta-logo.png", alt: "Meta", labels: ["Meta Llama"] }
 ];
 
 function CTAButton({
@@ -426,7 +426,7 @@ export function Marketing() {
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-8">
             {AI_MODELS.map((model) => (
-              <div key={model.label} className="flex flex-col items-center">
+              <div key={model.alt} className="flex flex-col items-center">
                 <img
                   src={model.src}
                   alt={model.alt}
@@ -434,7 +434,13 @@ export function Marketing() {
                   decoding="async"
                   className="max-w-full h-24 object-contain mb-4"
                 />
-                <span className="text-lg font-medium text-foreground">{model.label}</span>
+                <div className="flex flex-col items-center">
+                  {model.labels.map((label, index) => (
+                    <span key={index} className="text-lg font-medium text-foreground">
+                      {label}
+                    </span>
+                  ))}
+                </div>
               </div>
             ))}
           </div>
