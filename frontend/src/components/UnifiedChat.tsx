@@ -36,7 +36,9 @@ import {
   Search,
   Loader2,
   Globe,
-  Brain
+  Brain,
+  Maximize2,
+  Minimize2
 } from "lucide-react";
 import RecordRTC from "recordrtc";
 import { useQueryClient } from "@tanstack/react-query";
@@ -662,6 +664,16 @@ export function UnifiedChat() {
 
   // Web search toggle state
   const [isWebSearchEnabled, setIsWebSearchEnabled] = useState(false);
+
+  // Fullscreen mode for power users - persisted in localStorage
+  const [isFullscreen, setIsFullscreen] = useState(() => {
+    return localStorage.getItem("chatFullscreen") === "true";
+  });
+
+  // Save fullscreen preference to localStorage when it changes
+  useEffect(() => {
+    localStorage.setItem("chatFullscreen", isFullscreen.toString());
+  }, [isFullscreen]);
 
   // Easter egg state (for future features)
   const [logoTapCount, setLogoTapCount] = useState(0);
@@ -2355,35 +2367,52 @@ export function UnifiedChat() {
         {/* Input Area - centered when no messages, fixed at bottom when chatting */}
         {messages.length === 0 && !chatId ? (
           // Centered input for new chat
-          <div className="absolute inset-0 flex flex-col justify-center px-4">
-            <div className="w-full max-w-4xl mx-auto">
-              {/* Logo section - raised higher */}
-              <div className="flex flex-col items-center -mt-20 mb-16">
-                {/* Logo with Maple text - combined image */}
-                <div
-                  className="flex items-center justify-center mb-3"
-                  onClick={handleLogoTap}
-                  style={{ cursor: "default" }}
-                >
-                  <img
-                    src="/maple-leaf-and-maple-white.png"
-                    alt="Maple"
-                    className="h-12 hidden dark:block"
-                  />
-                  <img
-                    src="/maple-leaf-and-maple-black.png"
-                    alt="Maple"
-                    className="h-12 block dark:hidden"
-                  />
-                </div>
+          <div
+            className={`absolute inset-0 flex flex-col px-4 transition-all duration-300 ${
+              isFullscreen ? "justify-start pt-8" : "justify-center"
+            }`}
+          >
+            <div
+              className={`w-full mx-auto transition-all duration-300 ${
+                isFullscreen ? "max-w-6xl h-full flex flex-col" : "max-w-4xl"
+              }`}
+            >
+              {/* Logo section - hidden in fullscreen */}
+              {!isFullscreen && (
+                <div className="flex flex-col items-center -mt-20 mb-16">
+                  {/* Logo with Maple text - combined image */}
+                  <div
+                    className="flex items-center justify-center mb-3"
+                    onClick={handleLogoTap}
+                    style={{ cursor: "default" }}
+                  >
+                    <img
+                      src="/maple-leaf-and-maple-white.png"
+                      alt="Maple"
+                      className="h-12 hidden dark:block"
+                    />
+                    <img
+                      src="/maple-leaf-and-maple-black.png"
+                      alt="Maple"
+                      className="h-12 block dark:hidden"
+                    />
+                  </div>
 
-                {/* Subtitle right under the logo */}
-                <p className="text-xl font-light text-muted-foreground">Private AI Chat</p>
-              </div>
+                  {/* Subtitle right under the logo */}
+                  <p className="text-xl font-light text-muted-foreground">Private AI Chat</p>
+                </div>
+              )}
 
               {/* Main prompt section with more emphasis */}
-              <div className="flex flex-col items-center gap-6">
-                <h1 className="text-3xl font-medium text-foreground">How can I help you today?</h1>
+              <div
+                className={`flex flex-col items-center gap-6 ${isFullscreen ? "flex-1 justify-center" : ""}`}
+              >
+                {/* "How can I help you today?" - hidden in fullscreen */}
+                {!isFullscreen && (
+                  <h1 className="text-3xl font-medium text-foreground">
+                    How can I help you today?
+                  </h1>
+                )}
 
                 {/* Input form */}
                 <form onSubmit={handleSendMessage} className="w-full relative">
@@ -2438,7 +2467,25 @@ export function UnifiedChat() {
                     )}
 
                     {/* Main input container with purple focus border */}
-                    <div className="relative rounded-xl border-2 border-border focus-within:border-purple-500 transition-colors bg-background overflow-hidden">
+                    <div
+                      className={`relative rounded-xl border-2 border-border focus-within:border-purple-500 transition-all bg-background overflow-hidden ${
+                        isFullscreen ? "flex flex-col h-[70vh] max-h-[800px]" : ""
+                      }`}
+                    >
+                      {/* Fullscreen toggle button - top right corner */}
+                      <button
+                        type="button"
+                        onClick={() => setIsFullscreen(!isFullscreen)}
+                        className="absolute right-2 top-2 z-10 p-1.5 rounded-md text-muted-foreground/60 hover:text-foreground hover:bg-muted/50 transition-colors"
+                        aria-label={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+                      >
+                        {isFullscreen ? (
+                          <Minimize2 className="h-4 w-4" />
+                        ) : (
+                          <Maximize2 className="h-4 w-4" />
+                        )}
+                      </button>
+
                       <Textarea
                         ref={textareaRef}
                         value={input}
@@ -2446,8 +2493,10 @@ export function UnifiedChat() {
                         onKeyDown={handleKeyDown}
                         placeholder="Message Maple..."
                         disabled={isGenerating || isRecording}
-                        className="w-full resize-none min-h-[120px] max-h-[200px] px-5 pt-4 pb-2 border-0 bg-transparent focus-visible:ring-0 focus-visible:ring-offset-0 placeholder:text-muted-foreground/60 text-base"
-                        rows={4}
+                        className={`w-full resize-none px-5 pt-4 pb-2 pr-10 border-0 bg-transparent focus-visible:ring-0 focus-visible:ring-offset-0 placeholder:text-muted-foreground/60 text-base ${
+                          isFullscreen ? "flex-1 min-h-0" : "min-h-[120px] max-h-[200px]"
+                        }`}
+                        rows={isFullscreen ? undefined : 4}
                         id="message"
                       />
 
@@ -2636,10 +2685,12 @@ export function UnifiedChat() {
                   </div>
                 </form>
 
-                {/* Footer text */}
-                <p className="text-sm text-center text-muted-foreground/60">
-                  Encrypted at every step
-                </p>
+                {/* Footer text - hidden in fullscreen */}
+                {!isFullscreen && (
+                  <p className="text-sm text-center text-muted-foreground/60">
+                    Encrypted at every step
+                  </p>
+                )}
               </div>
             </div>
           </div>
