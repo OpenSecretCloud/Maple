@@ -669,11 +669,20 @@ export function UnifiedChat() {
   const [isFullscreen, setIsFullscreen] = useState(() => {
     return localStorage.getItem("chatFullscreen") === "true";
   });
+  const [isFullscreenAnimating, setIsFullscreenAnimating] = useState(false);
 
   // Save fullscreen preference to localStorage when it changes
   useEffect(() => {
     localStorage.setItem("chatFullscreen", isFullscreen.toString());
   }, [isFullscreen]);
+
+  // Toggle fullscreen with animation
+  const toggleFullscreen = useCallback(() => {
+    setIsFullscreenAnimating(true);
+    setIsFullscreen((prev) => !prev);
+    // Reset animation state after transition completes
+    setTimeout(() => setIsFullscreenAnimating(false), 300);
+  }, []);
 
   // Easter egg state (for future features)
   const [logoTapCount, setLogoTapCount] = useState(0);
@@ -2368,14 +2377,14 @@ export function UnifiedChat() {
         {messages.length === 0 && !chatId ? (
           // Centered input for new chat
           <div
-            className={`absolute inset-0 flex flex-col px-4 transition-all duration-300 ${
-              isFullscreen ? "justify-start pt-8" : "justify-center"
-            }`}
+            className={`absolute inset-0 flex flex-col px-4 ${
+              isFullscreenAnimating ? "transition-all duration-300" : ""
+            } ${isFullscreen ? "justify-start pt-8" : "justify-center"}`}
           >
             <div
-              className={`w-full mx-auto transition-all duration-300 ${
-                isFullscreen ? "max-w-6xl h-full flex flex-col" : "max-w-4xl"
-              }`}
+              className={`w-full mx-auto ${
+                isFullscreenAnimating ? "transition-all duration-300" : ""
+              } ${isFullscreen ? "max-w-6xl h-full flex flex-col" : "max-w-4xl"}`}
             >
               {/* Logo section - hidden in fullscreen */}
               {!isFullscreen && (
@@ -2468,14 +2477,14 @@ export function UnifiedChat() {
 
                     {/* Main input container with purple focus border */}
                     <div
-                      className={`relative rounded-xl border-2 border-border focus-within:border-purple-500 transition-all bg-background overflow-hidden ${
-                        isFullscreen ? "flex flex-col h-[70vh] max-h-[800px]" : ""
-                      }`}
+                      className={`relative rounded-xl border-2 border-border focus-within:border-purple-500 bg-background overflow-hidden ${
+                        isFullscreenAnimating ? "transition-all duration-300" : "transition-colors"
+                      } ${isFullscreen ? "flex flex-col h-[70vh] max-h-[800px]" : ""}`}
                     >
                       {/* Fullscreen toggle button - top right corner */}
                       <button
                         type="button"
-                        onClick={() => setIsFullscreen(!isFullscreen)}
+                        onClick={toggleFullscreen}
                         className="absolute right-2 top-2 z-10 p-1.5 rounded-md text-muted-foreground/60 hover:text-foreground hover:bg-muted/50 transition-colors"
                         aria-label={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
                       >
