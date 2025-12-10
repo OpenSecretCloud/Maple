@@ -2691,6 +2691,22 @@ export function UnifiedChat() {
                     Encrypted at every step
                   </p>
                 )}
+
+                {/* Tiny branding in bottom right when fullscreen */}
+                {isFullscreen && (
+                  <div className="fixed bottom-4 right-4">
+                    <img
+                      src="/maple-leaf-and-maple-white.png"
+                      alt="Maple"
+                      className="h-6 hidden dark:block"
+                    />
+                    <img
+                      src="/maple-leaf-and-maple-black.png"
+                      alt="Maple"
+                      className="h-6 block dark:hidden"
+                    />
+                  </div>
+                )}
               </div>
             </div>
           </div>
