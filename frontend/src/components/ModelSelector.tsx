@@ -121,7 +121,7 @@ export const CATEGORY_MODELS = {
 
 const CATEGORY_INFO = {
   free: {
-    label: "Free",
+    label: "General",
     icon: Sparkles,
     description: "Balanced & capable"
   },
@@ -267,7 +267,7 @@ export function ModelSelector({ hasImages = false }: { hasImages?: boolean }) {
 
   // Get current category based on selected model
   const getCurrentCategory = (): string => {
-    if (model === CATEGORY_MODELS.free) return "Free";
+    if (model === CATEGORY_MODELS.free) return "General";
     if (model === CATEGORY_MODELS.quick) return "Quick";
     if (model === CATEGORY_MODELS.reasoning_on || model === CATEGORY_MODELS.reasoning_off) {
       return "Reasoning";

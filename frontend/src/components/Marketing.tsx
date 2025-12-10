@@ -22,7 +22,11 @@ import { Badge } from "@/components/ui/badge";
 const AI_MODELS = [
   { src: "/badge-openai-logo.png", alt: "OpenAI", labels: ["OpenAI GPT-OSS"] },
   { src: "/badge-google-logo.png", alt: "Google", labels: ["Google Gemma"] },
-  { src: "/badge-deepseek-logo.png", alt: "DeepSeek", labels: ["DeepSeek R1", "DeepSeek V3.1 Terminus"] },
+  {
+    src: "/badge-deepseek-logo.png",
+    alt: "DeepSeek",
+    labels: ["DeepSeek R1", "DeepSeek V3.1 Terminus"]
+  },
   { src: "/badge-qwen-logo.png", alt: "Qwen", labels: ["Qwen3 Coder", "Qwen3-VL"] },
   { src: "/badge-meta-logo.png", alt: "Meta", labels: ["Meta Llama"] }
 ];
