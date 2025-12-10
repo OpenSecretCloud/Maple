@@ -92,8 +92,8 @@ export const MODEL_CONFIG: Record<string, ModelCfg> = {
   "qwen3-vl-30b": {
     displayName: "Qwen3-VL 30B",
     shortName: "Qwen3-VL",
-    badges: ["Pro", "New"],
-    requiresPro: true,
+    badges: ["New"],
+    requiresStarter: true,
     supportsVision: true,
     tokenLimit: 256000
   }
