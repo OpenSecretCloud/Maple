@@ -92,8 +92,8 @@ export const MODEL_CONFIG: Record<string, ModelCfg> = {
   "qwen3-vl-30b": {
     displayName: "Qwen3-VL 30B",
     shortName: "Qwen3-VL",
-    badges: ["Pro", "New"],
-    requiresPro: true,
+    badges: ["New"],
+    requiresStarter: true,
     supportsVision: true,
     tokenLimit: 256000
   }
@@ -116,7 +116,7 @@ export const CATEGORY_MODELS = {
   reasoning_on: "deepseek-r1-0528", // R1 with thinking
   reasoning_off: "deepseek-v31-terminus", // V3.1 without thinking
   math: "qwen3-coder-480b",
-  image: "gemma-3-27b" // Gemma for image analysis
+  image: "qwen3-vl-30b" // Qwen3-VL for image analysis
 };
 
 const CATEGORY_INFO = {
