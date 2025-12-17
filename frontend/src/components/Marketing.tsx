@@ -25,7 +25,7 @@ const AI_MODELS = [
   {
     src: "/badge-deepseek-logo.png",
     alt: "DeepSeek",
-    labels: ["DeepSeek R1", "DeepSeek V3.1 Terminus"]
+    labels: ["DeepSeek R1"]
   },
   { src: "/badge-qwen-logo.png", alt: "Qwen", labels: ["Qwen3 Coder", "Qwen3-VL"] },
   { src: "/badge-meta-logo.png", alt: "Meta", labels: ["Meta Llama"] }
