@@ -68,13 +68,6 @@ export const MODEL_CONFIG: Record<string, ModelCfg> = {
     requiresPro: true,
     tokenLimit: 130000
   },
-  "deepseek-v31-terminus": {
-    displayName: "DeepSeek V3.1 Terminus",
-    shortName: "DeepSeek V3.1",
-    badges: ["Pro", "New"],
-    requiresPro: true,
-    tokenLimit: 130000
-  },
   "gpt-oss-120b": {
     displayName: "OpenAI GPT-OSS 120B",
     shortName: "GPT-OSS",
@@ -114,7 +107,7 @@ export const CATEGORY_MODELS = {
   free: "llama-3.3-70b",
   quick: "gpt-oss-120b",
   reasoning_on: "deepseek-r1-0528", // R1 with thinking
-  reasoning_off: "deepseek-v31-terminus", // V3.1 without thinking
+  reasoning_off: "deepseek-r1-0528", // R1 without thinking (brain toggle temporarily disabled)
   math: "qwen3-coder-480b",
   image: "qwen3-vl-30b" // Qwen3-VL for image analysis
 };
