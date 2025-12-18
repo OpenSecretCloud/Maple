@@ -1652,6 +1652,7 @@ export function UnifiedChat() {
   const processStreamingResponse = useCallback(async (stream: AsyncIterable<unknown>) => {
     let serverAssistantId: string | undefined;
     let accumulatedContent = "";
+    let accumulatedReasoning = "";
 
     for await (const event of stream) {
       const eventType = (event as { type: string }).type;
@@ -1803,6 +1804,65 @@ export function UnifiedChat() {
           });
         }
       } else if (
+        eventType === "response.reasoning_text.delta" &&
+        (event as { delta?: string }).delta
+      ) {
+        // Reasoning text delta - accumulate reasoning content (for models like Kimi K2)
+        const delta = (event as { delta: string }).delta;
+        accumulatedReasoning += delta;
+
+        if (serverAssistantId) {
+          setMessages((prev) => {
+            const msgToUpdate = prev.find((m) => m.id === serverAssistantId);
+            if (msgToUpdate && msgToUpdate.type === "message") {
+              const message = msgToUpdate as unknown as ExtendedMessage;
+              // Wrap reasoning in <think> tag (no closing tag while streaming)
+              const displayText = `<think>${accumulatedReasoning}`;
+              const outputContent: OutputTextContent = {
+                type: "output_text",
+                text: displayText,
+                annotations: []
+              };
+              const updated = {
+                ...message,
+                content: [outputContent],
+                status: "streaming" as const
+              } as unknown as Message;
+              return mergeMessagesById(prev, [updated]);
+            }
+            return prev;
+          });
+        }
+      } else if (eventType === "response.reasoning_text.done") {
+        // Reasoning completed - update with complete text and close think tag
+        const doneEvent = event as { text?: string };
+        if (doneEvent.text) {
+          accumulatedReasoning = doneEvent.text;
+        }
+
+        if (serverAssistantId) {
+          setMessages((prev) => {
+            const msgToUpdate = prev.find((m) => m.id === serverAssistantId);
+            if (msgToUpdate && msgToUpdate.type === "message") {
+              const message = msgToUpdate as unknown as ExtendedMessage;
+              // Close the think tag now that reasoning is done
+              const displayText = `<think>${accumulatedReasoning}</think>${accumulatedContent}`;
+              const outputContent: OutputTextContent = {
+                type: "output_text",
+                text: displayText,
+                annotations: []
+              };
+              const updated = {
+                ...message,
+                content: [outputContent],
+                status: "streaming" as const
+              } as unknown as Message;
+              return mergeMessagesById(prev, [updated]);
+            }
+            return prev;
+          });
+        }
+      } else if (
         eventType === "response.output_text.delta" &&
         (event as { delta?: string }).delta
       ) {
@@ -1815,9 +1875,14 @@ export function UnifiedChat() {
             const msgToUpdate = prev.find((m) => m.id === serverAssistantId);
             if (msgToUpdate && msgToUpdate.type === "message") {
               const message = msgToUpdate as unknown as ExtendedMessage;
+              // Prepend reasoning if exists (wrapped in think tags)
+              let displayText = accumulatedContent;
+              if (accumulatedReasoning) {
+                displayText = `<think>${accumulatedReasoning}</think>\n\n${accumulatedContent}`;
+              }
               const outputContent: OutputTextContent = {
                 type: "output_text",
-                text: accumulatedContent,
+                text: displayText,
                 annotations: []
               };
               const updated = {
