@@ -1935,8 +1935,26 @@ export function UnifiedChat() {
           });
         }
       } else if (eventType === "response.output_item.done") {
-        if (serverAssistantId) {
-          // Update status to completed
+        // Handle completion for any item type (reasoning, message, etc.)
+        const doneEvent = event as { item?: { id?: string; type?: string } };
+        const itemId = doneEvent.item?.id;
+
+        if (itemId) {
+          setMessages((prev) => {
+            const itemToUpdate = prev.find((m) => m.id === itemId);
+            if (itemToUpdate) {
+              const updated = {
+                ...itemToUpdate,
+                status: "completed"
+              } as unknown as Message;
+              return mergeMessagesById(prev, [updated]);
+            }
+            return prev;
+          });
+          // Update lastSeenItemId for polling (use the latest completed item)
+          setLastSeenItemId(itemId);
+        } else if (serverAssistantId) {
+          // Fallback to serverAssistantId if item.id not in event
           setMessages((prev) => {
             const msgToUpdate = prev.find((m) => m.id === serverAssistantId);
             if (msgToUpdate) {
