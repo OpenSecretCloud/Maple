@@ -50,7 +50,7 @@ import { useIsMobile } from "@/utils/utils";
 import { fileToDataURL } from "@/utils/file";
 import { useOpenAI } from "@/ai/useOpenAi";
 import { DEFAULT_MODEL_ID } from "@/state/LocalStateContext";
-import { Markdown } from "@/components/markdown";
+import { Markdown, ThinkingBlock } from "@/components/markdown";
 import { ModelSelector, CATEGORY_MODELS } from "@/components/ModelSelector";
 import { useLocalState } from "@/state/useLocalState";
 import { useOpenSecret } from "@opensecret/react";
@@ -103,13 +103,24 @@ type ExtendedMessage = OpenAIMessage & {
   status?: "completed" | "in_progress" | "incomplete" | "streaming" | "error";
 };
 
-// Union type for all possible conversation items (messages, tool calls, tool outputs, web search)
+// Reasoning item type for model thinking/reasoning (e.g., Kimi K2)
+type ReasoningContentItem = { type: "text"; text: string };
+type ReasoningItem = {
+  type: "reasoning";
+  id: string;
+  content: ReasoningContentItem[];
+  status?: "completed" | "in_progress" | "incomplete" | "streaming";
+  created_at?: number;
+};
+
+// Union type for all possible conversation items (messages, tool calls, tool outputs, web search, reasoning)
 // This combines OpenAI's native types with response streaming types
 type Message =
   | ExtendedMessage
   | (ResponseFunctionWebSearch & { id: string })
   | (ResponseFunctionToolCall & { id: string })
-  | (ResponseFunctionToolCallOutputItem & { id: string });
+  | (ResponseFunctionToolCallOutputItem & { id: string })
+  | ReasoningItem;
 
 // Helper function to merge messages while ensuring uniqueness by ID
 // This prevents duplicate key warnings in React by deduplicating messages
@@ -454,6 +465,29 @@ const MessageList = memo(
               >
                 <div className="max-w-4xl mx-auto">
                   <ToolCallRenderer tool={webSearch} />
+                </div>
+              </div>
+            );
+          }
+
+          // Reasoning item - render with ThinkingBlock (for models like Kimi K2)
+          if (itemType === "reasoning") {
+            const reasoning = item as ReasoningItem;
+            const text = reasoning.content
+              .filter((c) => c.type === "text")
+              .map((c) => c.text)
+              .join("");
+            const isThinking =
+              reasoning.status === "in_progress" || reasoning.status === "streaming";
+
+            return (
+              <div
+                key={item.id}
+                ref={index === 0 ? firstMessageRef : undefined}
+                className="py-2 px-4"
+              >
+                <div className="max-w-4xl mx-auto">
+                  <ThinkingBlock content={text} isThinking={isThinking} />
                 </div>
               </div>
             );
@@ -1651,6 +1685,7 @@ export function UnifiedChat() {
   // Helper function to process streaming response - used by both initial request and retry
   const processStreamingResponse = useCallback(async (stream: AsyncIterable<unknown>) => {
     let serverAssistantId: string | undefined;
+    let serverReasoningId: string | undefined;
     let accumulatedContent = "";
     let accumulatedReasoning = "";
 
@@ -1698,6 +1733,24 @@ export function UnifiedChat() {
           } as unknown as Message;
 
           setMessages((prev) => mergeMessagesById(prev, [webSearchItem]));
+        }
+      } else if (
+        eventType === "response.output_item.added" &&
+        (event as { item?: { type?: string } }).item?.type === "reasoning"
+      ) {
+        // Reasoning item created - add immediately as a flat item (for models like Kimi K2)
+        const eventWithItem = event as { item?: { id?: string } };
+        if (eventWithItem.item?.id) {
+          serverReasoningId = eventWithItem.item.id;
+
+          const reasoningItem: ReasoningItem = {
+            id: serverReasoningId,
+            type: "reasoning",
+            content: [],
+            status: "in_progress"
+          };
+
+          setMessages((prev) => mergeMessagesById(prev, [reasoningItem]));
         }
       } else if (eventType === "response.web_search_call.in_progress") {
         // Update web search status
@@ -1807,56 +1860,47 @@ export function UnifiedChat() {
         eventType === "response.reasoning_text.delta" &&
         (event as { delta?: string }).delta
       ) {
-        // Reasoning text delta - accumulate reasoning content (for models like Kimi K2)
-        const delta = (event as { delta: string }).delta;
+        // Reasoning text delta - update the reasoning item (for models like Kimi K2)
+        const reasoningEvent = event as { delta: string; item_id?: string };
+        const delta = reasoningEvent.delta;
         accumulatedReasoning += delta;
 
-        if (serverAssistantId) {
+        // Use item_id from event if available, otherwise fall back to serverReasoningId
+        const reasoningId = reasoningEvent.item_id || serverReasoningId;
+
+        if (reasoningId) {
           setMessages((prev) => {
-            const msgToUpdate = prev.find((m) => m.id === serverAssistantId);
-            if (msgToUpdate && msgToUpdate.type === "message") {
-              const message = msgToUpdate as unknown as ExtendedMessage;
-              // Wrap reasoning in <think> tag (no closing tag while streaming)
-              const displayText = `<think>${accumulatedReasoning}`;
-              const outputContent: OutputTextContent = {
-                type: "output_text",
-                text: displayText,
-                annotations: []
+            const itemToUpdate = prev.find((m) => m.id === reasoningId);
+            if (itemToUpdate && itemToUpdate.type === "reasoning") {
+              const updated: ReasoningItem = {
+                ...(itemToUpdate as ReasoningItem),
+                content: [{ type: "text", text: accumulatedReasoning }],
+                status: "streaming"
               };
-              const updated = {
-                ...message,
-                content: [outputContent],
-                status: "streaming" as const
-              } as unknown as Message;
               return mergeMessagesById(prev, [updated]);
             }
             return prev;
           });
         }
       } else if (eventType === "response.reasoning_text.done") {
-        // Reasoning completed - update with complete text and close think tag
-        const doneEvent = event as { text?: string };
+        // Reasoning completed - finalize the reasoning item
+        const doneEvent = event as { text?: string; item_id?: string };
         if (doneEvent.text) {
           accumulatedReasoning = doneEvent.text;
         }
 
-        if (serverAssistantId) {
+        // Use item_id from event if available, otherwise fall back to serverReasoningId
+        const reasoningId = doneEvent.item_id || serverReasoningId;
+
+        if (reasoningId) {
           setMessages((prev) => {
-            const msgToUpdate = prev.find((m) => m.id === serverAssistantId);
-            if (msgToUpdate && msgToUpdate.type === "message") {
-              const message = msgToUpdate as unknown as ExtendedMessage;
-              // Close the think tag now that reasoning is done
-              const displayText = `<think>${accumulatedReasoning}</think>${accumulatedContent}`;
-              const outputContent: OutputTextContent = {
-                type: "output_text",
-                text: displayText,
-                annotations: []
+            const itemToUpdate = prev.find((m) => m.id === reasoningId);
+            if (itemToUpdate && itemToUpdate.type === "reasoning") {
+              const updated: ReasoningItem = {
+                ...(itemToUpdate as ReasoningItem),
+                content: [{ type: "text", text: accumulatedReasoning }],
+                status: "completed"
               };
-              const updated = {
-                ...message,
-                content: [outputContent],
-                status: "streaming" as const
-              } as unknown as Message;
               return mergeMessagesById(prev, [updated]);
             }
             return prev;
@@ -1875,14 +1919,9 @@ export function UnifiedChat() {
             const msgToUpdate = prev.find((m) => m.id === serverAssistantId);
             if (msgToUpdate && msgToUpdate.type === "message") {
               const message = msgToUpdate as unknown as ExtendedMessage;
-              // Prepend reasoning if exists (wrapped in think tags)
-              let displayText = accumulatedContent;
-              if (accumulatedReasoning) {
-                displayText = `<think>${accumulatedReasoning}</think>\n\n${accumulatedContent}`;
-              }
               const outputContent: OutputTextContent = {
                 type: "output_text",
-                text: displayText,
+                text: accumulatedContent,
                 annotations: []
               };
               const updated = {
