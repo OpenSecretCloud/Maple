@@ -22,13 +22,13 @@ async function copyToClipboard(text: string) {
   }
 }
 
-interface ThinkingBlockProps {
+export interface ThinkingBlockProps {
   content: string;
   isThinking: boolean;
   duration?: number;
 }
 
-function ThinkingBlock({ content, isThinking, duration }: ThinkingBlockProps) {
+export function ThinkingBlock({ content, isThinking, duration }: ThinkingBlockProps) {
   const [isExpanded, setIsExpanded] = useState(false);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const startTimeRef = useRef<number | null>(null);

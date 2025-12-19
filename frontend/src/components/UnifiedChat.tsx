@@ -50,7 +50,7 @@ import { useIsMobile } from "@/utils/utils";
 import { fileToDataURL } from "@/utils/file";
 import { useOpenAI } from "@/ai/useOpenAi";
 import { DEFAULT_MODEL_ID } from "@/state/LocalStateContext";
-import { Markdown } from "@/components/markdown";
+import { Markdown, ThinkingBlock } from "@/components/markdown";
 import { ModelSelector, CATEGORY_MODELS } from "@/components/ModelSelector";
 import { useLocalState } from "@/state/useLocalState";
 import { useOpenSecret } from "@opensecret/react";
@@ -103,13 +103,24 @@ type ExtendedMessage = OpenAIMessage & {
   status?: "completed" | "in_progress" | "incomplete" | "streaming" | "error";
 };
 
-// Union type for all possible conversation items (messages, tool calls, tool outputs, web search)
+// Reasoning item type for model thinking/reasoning (e.g., Kimi K2)
+type ReasoningContentItem = { type: "text"; text: string };
+type ReasoningItem = {
+  type: "reasoning";
+  id: string;
+  content: ReasoningContentItem[];
+  status?: "completed" | "in_progress" | "incomplete" | "streaming";
+  created_at?: number;
+};
+
+// Union type for all possible conversation items (messages, tool calls, tool outputs, web search, reasoning)
 // This combines OpenAI's native types with response streaming types
 type Message =
   | ExtendedMessage
   | (ResponseFunctionWebSearch & { id: string })
   | (ResponseFunctionToolCall & { id: string })
-  | (ResponseFunctionToolCallOutputItem & { id: string });
+  | (ResponseFunctionToolCallOutputItem & { id: string })
+  | ReasoningItem;
 
 // Helper function to merge messages while ensuring uniqueness by ID
 // This prevents duplicate key warnings in React by deduplicating messages
@@ -350,6 +361,11 @@ function ToolCallRenderer({
   return null;
 }
 
+// Types for grouping messages into turns
+type MessageGroup =
+  | { type: "user"; message: ExtendedMessage; id: string }
+  | { type: "assistant"; items: Message[]; id: string };
+
 // Memoized message list component to prevent re-renders on input changes
 const MessageList = memo(
   ({
@@ -366,7 +382,6 @@ const MessageList = memo(
     isLoadingOlderMessages?: boolean;
   }) => {
     // Build Maps for O(1) lookup of tool calls and outputs by call_id
-    // This handles out-of-order tool calls/outputs (e.g., parallel tool execution)
     const { callMap, outputMap } = useMemo(() => {
       const calls = new Map<string, Message>();
       const outputs = new Map<string, Message>();
@@ -382,6 +397,191 @@ const MessageList = memo(
       return { callMap: calls, outputMap: outputs };
     }, [messages]);
 
+    // Group messages into user turns and assistant turns
+    // Assistant turns include: reasoning, tool calls, tool outputs, web search, and assistant messages
+    const groupedMessages = useMemo(() => {
+      const groups: MessageGroup[] = [];
+      let currentAssistantItems: Message[] = [];
+
+      for (const item of messages) {
+        // Check if this is a user message
+        if (item.type === "message" && (item as unknown as ExtendedMessage).role === "user") {
+          // Flush any pending assistant items first
+          if (currentAssistantItems.length > 0) {
+            groups.push({
+              type: "assistant",
+              items: currentAssistantItems,
+              id: `assistant-${currentAssistantItems[0].id}`
+            });
+            currentAssistantItems = [];
+          }
+          groups.push({
+            type: "user",
+            message: item as unknown as ExtendedMessage,
+            id: item.id
+          });
+        } else {
+          // This is an assistant-related item (reasoning, tool calls, assistant message, etc.)
+          currentAssistantItems.push(item);
+        }
+      }
+
+      // Don't forget trailing assistant items
+      if (currentAssistantItems.length > 0) {
+        groups.push({
+          type: "assistant",
+          items: currentAssistantItems,
+          id: `assistant-${currentAssistantItems[0].id}`
+        });
+      }
+
+      return groups;
+    }, [messages]);
+
+    // Helper to render an individual item within an assistant group
+    const renderAssistantItem = (item: Message) => {
+      const itemType = item.type;
+
+      // Tool calls - render with pairing
+      if (itemType === "function_call") {
+        const toolCall = item as unknown as ResponseFunctionToolCall;
+        const output = outputMap.get(toolCall.call_id) as
+          | ResponseFunctionToolCallOutputItem
+          | undefined;
+
+        return (
+          <div key={item.id} className="mb-2">
+            <ToolCallRenderer tool={toolCall} toolOutput={output} />
+          </div>
+        );
+      }
+
+      // Tool outputs - skip if already rendered with call
+      if (itemType === "function_call_output") {
+        const output = item as unknown as ResponseFunctionToolCallOutputItem;
+        const matchingCall = callMap.get(output.call_id);
+
+        if (matchingCall) {
+          return null; // Already rendered with the call
+        }
+        return (
+          <div key={item.id} className="mb-2">
+            <ToolCallRenderer tool={output} />
+          </div>
+        );
+      }
+
+      // Web search
+      if (itemType === "web_search_call") {
+        const webSearch = item as unknown as ResponseFunctionWebSearch;
+        return (
+          <div key={item.id} className="mb-2">
+            <ToolCallRenderer tool={webSearch} />
+          </div>
+        );
+      }
+
+      // Reasoning - render with ThinkingBlock
+      if (itemType === "reasoning") {
+        const reasoning = item as ReasoningItem;
+        const text = reasoning.content
+          .filter((c) => c.type === "text")
+          .map((c) => c.text)
+          .join("");
+        const isThinking = reasoning.status === "in_progress" || reasoning.status === "streaming";
+
+        return (
+          <div key={item.id} className="mb-2">
+            <ThinkingBlock content={text} isThinking={isThinking} />
+          </div>
+        );
+      }
+
+      // Assistant message content
+      if (itemType === "message") {
+        const message = item as unknown as ExtendedMessage;
+        if (message.role !== "assistant") return null;
+
+        const isAssistantLoading = message.status === "in_progress";
+        if ((!message.content || message.content.length === 0) && !isAssistantLoading) {
+          return null;
+        }
+
+        return (
+          <div key={item.id}>
+            <div className="prose prose-sm dark:prose-invert max-w-none">
+              <div className="space-y-3">
+                {message.content?.map((part, partIdx) => {
+                  if (
+                    (part.type === "input_text" ||
+                      part.type === "output_text" ||
+                      part.type === "text") &&
+                    "text" in part &&
+                    part.text
+                  ) {
+                    return (
+                      <div key={partIdx}>
+                        <Markdown
+                          content={part.text}
+                          loading={(message as { status?: string }).status === "streaming"}
+                          chatId={chatId || ""}
+                        />
+                      </div>
+                    );
+                  }
+                  if (part.type === "input_image" && "image_url" in part && part.image_url) {
+                    return (
+                      <div key={partIdx}>
+                        <img
+                          src={part.image_url}
+                          alt={`Image ${partIdx + 1}`}
+                          className="max-w-full rounded-lg"
+                          style={{ maxHeight: "400px", objectFit: "contain" }}
+                        />
+                      </div>
+                    );
+                  }
+                  return null;
+                })}
+              </div>
+            </div>
+
+            {/* Status indicators */}
+            {message.status === "in_progress" && (
+              <div className="flex items-center gap-1 text-muted-foreground mt-2">
+                <div className="w-2 h-2 bg-foreground/60 rounded-full animate-pulse" />
+                <div className="w-2 h-2 bg-foreground/60 rounded-full animate-pulse delay-75" />
+                <div className="w-2 h-2 bg-foreground/60 rounded-full animate-pulse delay-150" />
+              </div>
+            )}
+            {message.status === "incomplete" && (
+              <div className="inline-flex items-center gap-2 text-sm text-muted-foreground bg-muted/50 px-3 py-1.5 rounded-md mt-2">
+                <div className="w-1.5 h-1.5 rounded-full bg-yellow-500" />
+                <span>Chat Canceled</span>
+              </div>
+            )}
+          </div>
+        );
+      }
+
+      return null;
+    };
+
+    // Get all text content from an assistant group for the copy button
+    const getAssistantGroupText = (items: Message[]) => {
+      return items
+        .filter((item) => item.type === "message")
+        .flatMap((item) => {
+          const message = item as unknown as ExtendedMessage;
+          return (
+            message.content
+              ?.filter((p) => "text" in p && p.text)
+              .map((p) => ("text" in p ? p.text : "")) || []
+          );
+        })
+        .join("");
+    };
+
     return (
       <>
         {/* Loading indicator for older messages */}
@@ -395,107 +595,29 @@ const MessageList = memo(
           </div>
         )}
 
-        {messages.map((item, index) => {
-          // Handle different item types - messages, tool calls, tool outputs
-          const itemType = item.type;
-
-          // Tool calls and outputs - render as standalone items with pairing
-          if (itemType === "function_call") {
-            const toolCall = item as unknown as ResponseFunctionToolCall;
-            // Look up matching output by call_id (handles out-of-order arrival)
-            const output = outputMap.get(toolCall.call_id) as
-              | ResponseFunctionToolCallOutputItem
-              | undefined;
+        {groupedMessages.map((group, groupIndex) => {
+          if (group.type === "user") {
+            const message = group.message;
+            if (!message.content || message.content.length === 0) return null;
 
             return (
               <div
-                key={item.id}
-                ref={index === 0 ? firstMessageRef : undefined}
-                className="py-2 px-4"
-              >
-                <div className="max-w-4xl mx-auto">
-                  <ToolCallRenderer tool={toolCall} toolOutput={output} />
-                </div>
-              </div>
-            );
-          }
-
-          if (itemType === "function_call_output") {
-            const output = item as unknown as ResponseFunctionToolCallOutputItem;
-            // Check if matching call exists (handles out-of-order arrival)
-            const matchingCall = callMap.get(output.call_id);
-
-            if (matchingCall) {
-              // Already rendered with the call, skip
-              return null;
-            } else {
-              // Orphan output (call hasn't arrived yet), render standalone
-              return (
-                <div
-                  key={item.id}
-                  ref={index === 0 ? firstMessageRef : undefined}
-                  className="py-2 px-4"
-                >
-                  <div className="max-w-4xl mx-auto">
-                    <ToolCallRenderer tool={output} />
-                  </div>
-                </div>
-              );
-            }
-          }
-
-          if (itemType === "web_search_call") {
-            const webSearch = item as unknown as ResponseFunctionWebSearch;
-            return (
-              <div
-                key={item.id}
-                ref={index === 0 ? firstMessageRef : undefined}
-                className="py-2 px-4"
-              >
-                <div className="max-w-4xl mx-auto">
-                  <ToolCallRenderer tool={webSearch} />
-                </div>
-              </div>
-            );
-          }
-
-          // Regular message - render with role and content
-          if (itemType === "message") {
-            const message = item as unknown as ExtendedMessage;
-            // Skip if no content, UNLESS it's an assistant message with in_progress status
-            // (we want to show the three-dot loading indicator for those)
-            const isAssistantLoading =
-              message.role === "assistant" && message.status === "in_progress";
-            if ((!message.content || message.content.length === 0) && !isAssistantLoading)
-              return null;
-
-            return (
-              <div
-                key={message.id}
-                ref={index === 0 ? firstMessageRef : undefined}
-                className={`group py-6 px-4 ${message.role === "user" ? "bg-muted/30" : ""}`}
+                key={group.id}
+                ref={groupIndex === 0 ? firstMessageRef : undefined}
+                className="group py-6 px-4 bg-muted/30"
               >
                 <div className="flex flex-col md:flex-row gap-3 max-w-4xl mx-auto">
                   <div className="flex-shrink-0">
-                    {message.role === "user" ? (
-                      <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center">
-                        <User className="h-4 w-4 text-primary" />
-                      </div>
-                    ) : (
-                      <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center">
-                        <Bot className="h-4 w-4 text-primary" />
-                      </div>
-                    )}
+                    <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center">
+                      <User className="h-4 w-4 text-primary" />
+                    </div>
                   </div>
                   <div className="flex-1 overflow-hidden w-full md:w-auto">
                     <div className="space-y-2">
-                      <div className="font-semibold text-sm">
-                        {message.role === "user" ? "You" : "Maple"}
-                      </div>
+                      <div className="font-semibold text-sm">You</div>
                       <div className="prose prose-sm dark:prose-invert max-w-none">
                         <div className="space-y-3">
                           {message.content.map((part, partIdx) => {
-                            // Text content
                             if (
                               (part.type === "input_text" ||
                                 part.type === "output_text" ||
@@ -505,18 +627,11 @@ const MessageList = memo(
                             ) {
                               return (
                                 <div key={partIdx}>
-                                  <Markdown
-                                    content={part.text}
-                                    loading={
-                                      (message as { status?: string }).status === "streaming"
-                                    }
-                                    chatId={chatId || ""}
-                                  />
+                                  <Markdown content={part.text} chatId={chatId || ""} />
                                 </div>
                               );
                             }
-                            // Image content
-                            else if (
+                            if (
                               part.type === "input_image" &&
                               "image_url" in part &&
                               part.image_url
@@ -536,35 +651,6 @@ const MessageList = memo(
                           })}
                         </div>
                       </div>
-
-                      {/* Status indicators */}
-                      {message.role === "assistant" && message.status === "in_progress" && (
-                        <div className="flex items-center gap-1 text-muted-foreground">
-                          <div className="w-2 h-2 bg-foreground/60 rounded-full animate-pulse" />
-                          <div className="w-2 h-2 bg-foreground/60 rounded-full animate-pulse delay-75" />
-                          <div className="w-2 h-2 bg-foreground/60 rounded-full animate-pulse delay-150" />
-                        </div>
-                      )}
-                      {message.role === "assistant" && message.status === "incomplete" && (
-                        <div className="inline-flex items-center gap-2 text-sm text-muted-foreground bg-muted/50 px-3 py-1.5 rounded-md mt-2">
-                          <div className="w-1.5 h-1.5 rounded-full bg-yellow-500" />
-                          <span>Chat Canceled</span>
-                        </div>
-                      )}
-
-                      {/* Actions - always visible on mobile, show on hover for desktop */}
-                      {message.role === "assistant" &&
-                        message.content &&
-                        message.content.length > 0 && (
-                          <div className="flex gap-1 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
-                            <CopyButton
-                              text={message.content
-                                .filter((p) => "text" in p && p.text)
-                                .map((p) => ("text" in p ? p.text : ""))
-                                .join("")}
-                            />
-                          </div>
-                        )}
                     </div>
                   </div>
                 </div>
@@ -572,37 +658,106 @@ const MessageList = memo(
             );
           }
 
-          // Unknown item type
+          // Assistant group - render all items in one Maple box
+          if (group.type === "assistant") {
+            const hasContent = group.items.some((item) => {
+              if (item.type === "message") {
+                const msg = item as unknown as ExtendedMessage;
+                return (
+                  msg.role === "assistant" &&
+                  (msg.content?.length > 0 || msg.status === "in_progress")
+                );
+              }
+              return true; // reasoning, tool calls always count
+            });
+
+            if (!hasContent) return null;
+
+            const textContent = getAssistantGroupText(group.items);
+
+            return (
+              <div
+                key={group.id}
+                ref={groupIndex === 0 ? firstMessageRef : undefined}
+                className="group py-6 px-4"
+              >
+                <div className="flex flex-col md:flex-row gap-3 max-w-4xl mx-auto">
+                  <div className="flex-shrink-0">
+                    <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center">
+                      <Bot className="h-4 w-4 text-primary" />
+                    </div>
+                  </div>
+                  <div className="flex-1 overflow-hidden w-full md:w-auto">
+                    <div className="space-y-2">
+                      <div className="font-semibold text-sm">Maple</div>
+                      {group.items.map((item) => renderAssistantItem(item))}
+                      {/* Copy button for the assistant's text content */}
+                      {textContent && (
+                        <div className="flex gap-1 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
+                          <CopyButton text={textContent} />
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            );
+          }
+
           return null;
         })}
 
         {/* Loading indicator - modern style */}
-        {isGenerating &&
-          !messages.some(
+        {/* Only show when generating AND no assistant content is being rendered */}
+        {(() => {
+          // Check if the last item is tool-related (means we're in tool phase, already rendering in Maple box)
+          const lastItem = messages[messages.length - 1];
+          const isLastItemToolRelated =
+            lastItem &&
+            (lastItem.type === "function_call" ||
+              lastItem.type === "function_call_output" ||
+              lastItem.type === "web_search_call");
+
+          const hasStreamingAssistant = messages.some(
             (item) =>
               item.type === "message" &&
               (item as unknown as ExtendedMessage).role === "assistant" &&
               ((item as { status?: string }).status === "streaming" ||
                 (item as { status?: string }).status === "in_progress")
-          ) && (
-            <div className="group py-6 px-4">
-              <div className="flex gap-3 max-w-4xl mx-auto">
-                <div className="flex-shrink-0">
-                  <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center">
-                    <Bot className="h-4 w-4 text-primary" />
-                  </div>
+          );
+
+          const hasStreamingReasoning = messages.some(
+            (item) =>
+              item.type === "reasoning" &&
+              ((item as { status?: string }).status === "streaming" ||
+                (item as { status?: string }).status === "in_progress")
+          );
+
+          return (
+            isGenerating &&
+            !hasStreamingAssistant &&
+            !hasStreamingReasoning &&
+            !isLastItemToolRelated
+          );
+        })() && (
+          <div className="group py-6 px-4">
+            <div className="flex gap-3 max-w-4xl mx-auto">
+              <div className="flex-shrink-0">
+                <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center">
+                  <Bot className="h-4 w-4 text-primary" />
                 </div>
-                <div className="flex-1 space-y-2">
-                  <div className="font-semibold text-sm">Maple</div>
-                  <div className="flex items-center gap-1">
-                    <div className="w-2 h-2 bg-foreground/60 rounded-full animate-pulse" />
-                    <div className="w-2 h-2 bg-foreground/60 rounded-full animate-pulse delay-75" />
-                    <div className="w-2 h-2 bg-foreground/60 rounded-full animate-pulse delay-150" />
-                  </div>
+              </div>
+              <div className="flex-1 space-y-2">
+                <div className="font-semibold text-sm">Maple</div>
+                <div className="flex items-center gap-1">
+                  <div className="w-2 h-2 bg-foreground/60 rounded-full animate-pulse" />
+                  <div className="w-2 h-2 bg-foreground/60 rounded-full animate-pulse delay-75" />
+                  <div className="w-2 h-2 bg-foreground/60 rounded-full animate-pulse delay-150" />
                 </div>
               </div>
             </div>
-          )}
+          </div>
+        )}
       </>
     );
   }
@@ -1651,7 +1806,9 @@ export function UnifiedChat() {
   // Helper function to process streaming response - used by both initial request and retry
   const processStreamingResponse = useCallback(async (stream: AsyncIterable<unknown>) => {
     let serverAssistantId: string | undefined;
+    let serverReasoningId: string | undefined;
     let accumulatedContent = "";
+    let accumulatedReasoning = "";
 
     for await (const event of stream) {
       const eventType = (event as { type: string }).type;
@@ -1697,6 +1854,24 @@ export function UnifiedChat() {
           } as unknown as Message;
 
           setMessages((prev) => mergeMessagesById(prev, [webSearchItem]));
+        }
+      } else if (
+        eventType === "response.output_item.added" &&
+        (event as { item?: { type?: string } }).item?.type === "reasoning"
+      ) {
+        // Reasoning item created - add immediately as a flat item (for models like Kimi K2)
+        const eventWithItem = event as { item?: { id?: string } };
+        if (eventWithItem.item?.id) {
+          serverReasoningId = eventWithItem.item.id;
+
+          const reasoningItem: ReasoningItem = {
+            id: serverReasoningId,
+            type: "reasoning",
+            content: [],
+            status: "in_progress"
+          };
+
+          setMessages((prev) => mergeMessagesById(prev, [reasoningItem]));
         }
       } else if (eventType === "response.web_search_call.in_progress") {
         // Update web search status
@@ -1803,6 +1978,56 @@ export function UnifiedChat() {
           });
         }
       } else if (
+        eventType === "response.reasoning_text.delta" &&
+        (event as { delta?: string }).delta
+      ) {
+        // Reasoning text delta - update the reasoning item (for models like Kimi K2)
+        const reasoningEvent = event as { delta: string; item_id?: string };
+        const delta = reasoningEvent.delta;
+        accumulatedReasoning += delta;
+
+        // Use item_id from event if available, otherwise fall back to serverReasoningId
+        const reasoningId = reasoningEvent.item_id || serverReasoningId;
+
+        if (reasoningId) {
+          setMessages((prev) => {
+            const itemToUpdate = prev.find((m) => m.id === reasoningId);
+            if (itemToUpdate && itemToUpdate.type === "reasoning") {
+              const updated: ReasoningItem = {
+                ...(itemToUpdate as ReasoningItem),
+                content: [{ type: "text", text: accumulatedReasoning }],
+                status: "streaming"
+              };
+              return mergeMessagesById(prev, [updated]);
+            }
+            return prev;
+          });
+        }
+      } else if (eventType === "response.reasoning_text.done") {
+        // Reasoning completed - finalize the reasoning item
+        const doneEvent = event as { text?: string; item_id?: string };
+        if (doneEvent.text) {
+          accumulatedReasoning = doneEvent.text;
+        }
+
+        // Use item_id from event if available, otherwise fall back to serverReasoningId
+        const reasoningId = doneEvent.item_id || serverReasoningId;
+
+        if (reasoningId) {
+          setMessages((prev) => {
+            const itemToUpdate = prev.find((m) => m.id === reasoningId);
+            if (itemToUpdate && itemToUpdate.type === "reasoning") {
+              const updated: ReasoningItem = {
+                ...(itemToUpdate as ReasoningItem),
+                content: [{ type: "text", text: accumulatedReasoning }],
+                status: "completed"
+              };
+              return mergeMessagesById(prev, [updated]);
+            }
+            return prev;
+          });
+        }
+      } else if (
         eventType === "response.output_text.delta" &&
         (event as { delta?: string }).delta
       ) {
@@ -1831,8 +2056,26 @@ export function UnifiedChat() {
           });
         }
       } else if (eventType === "response.output_item.done") {
-        if (serverAssistantId) {
-          // Update status to completed
+        // Handle completion for any item type (reasoning, message, etc.)
+        const doneEvent = event as { item?: { id?: string; type?: string } };
+        const itemId = doneEvent.item?.id;
+
+        if (itemId) {
+          setMessages((prev) => {
+            const itemToUpdate = prev.find((m) => m.id === itemId);
+            if (itemToUpdate) {
+              const updated = {
+                ...itemToUpdate,
+                status: "completed"
+              } as unknown as Message;
+              return mergeMessagesById(prev, [updated]);
+            }
+            return prev;
+          });
+          // Update lastSeenItemId for polling (use the latest completed item)
+          setLastSeenItemId(itemId);
+        } else if (serverAssistantId) {
+          // Fallback to serverAssistantId if item.id not in event
           setMessages((prev) => {
             const msgToUpdate = prev.find((m) => m.id === serverAssistantId);
             if (msgToUpdate) {
@@ -2525,41 +2768,39 @@ export function UnifiedChat() {
                             }
                           />
 
-                          {/* Thinking toggle button - temporarily disabled while we remove V3.1 */}
-                          {/* eslint-disable-next-line no-constant-binary-expression */}
-                          {false &&
-                            (localState.model === CATEGORY_MODELS.reasoning_on ||
-                              localState.model === CATEGORY_MODELS.reasoning_off) && (
-                              <Button
-                                type="button"
-                                variant="ghost"
-                                size="sm"
-                                className="h-8 w-8 p-0"
-                                onClick={() => {
-                                  const newThinkingEnabled = !localState.thinkingEnabled;
-                                  localState.setThinkingEnabled(newThinkingEnabled);
-                                  // Switch between R1 (with thinking) and V3.1 (without)
-                                  localState.setModel(
-                                    newThinkingEnabled
-                                      ? CATEGORY_MODELS.reasoning_on
-                                      : CATEGORY_MODELS.reasoning_off
-                                  );
-                                }}
-                                aria-label={
+                          {/* Thinking toggle button - visible when reasoning model is selected */}
+                          {(localState.model === CATEGORY_MODELS.reasoning_on ||
+                            localState.model === CATEGORY_MODELS.reasoning_off) && (
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              className="h-8 w-8 p-0"
+                              onClick={() => {
+                                const newThinkingEnabled = !localState.thinkingEnabled;
+                                localState.setThinkingEnabled(newThinkingEnabled);
+                                // Switch between Kimi K2 (with thinking) and DeepSeek R1 (without)
+                                localState.setModel(
+                                  newThinkingEnabled
+                                    ? CATEGORY_MODELS.reasoning_on
+                                    : CATEGORY_MODELS.reasoning_off
+                                );
+                              }}
+                              aria-label={
+                                localState.thinkingEnabled
+                                  ? "Disable thinking mode"
+                                  : "Enable thinking mode"
+                              }
+                            >
+                              <Brain
+                                className={`h-4 w-4 ${
                                   localState.thinkingEnabled
-                                    ? "Disable thinking mode"
-                                    : "Enable thinking mode"
-                                }
-                              >
-                                <Brain
-                                  className={`h-4 w-4 ${
-                                    localState.thinkingEnabled
-                                      ? "text-purple-500"
-                                      : "text-muted-foreground"
-                                  }`}
-                                />
-                              </Button>
-                            )}
+                                    ? "text-purple-500"
+                                    : "text-muted-foreground"
+                                }`}
+                              />
+                            </Button>
+                          )}
 
                           {/* Web search toggle button - always visible */}
                           <Button
@@ -2804,41 +3045,39 @@ export function UnifiedChat() {
                           }
                         />
 
-                        {/* Thinking toggle button - temporarily disabled while we remove V3.1 */}
-                        {/* eslint-disable-next-line no-constant-binary-expression */}
-                        {false &&
-                          (localState.model === CATEGORY_MODELS.reasoning_on ||
-                            localState.model === CATEGORY_MODELS.reasoning_off) && (
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="sm"
-                              className="h-8 w-8 p-0"
-                              onClick={() => {
-                                const newThinkingEnabled = !localState.thinkingEnabled;
-                                localState.setThinkingEnabled(newThinkingEnabled);
-                                // Switch between R1 (with thinking) and V3.1 (without)
-                                localState.setModel(
-                                  newThinkingEnabled
-                                    ? CATEGORY_MODELS.reasoning_on
-                                    : CATEGORY_MODELS.reasoning_off
-                                );
-                              }}
-                              aria-label={
+                        {/* Thinking toggle button - visible when reasoning model is selected */}
+                        {(localState.model === CATEGORY_MODELS.reasoning_on ||
+                          localState.model === CATEGORY_MODELS.reasoning_off) && (
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            className="h-8 w-8 p-0"
+                            onClick={() => {
+                              const newThinkingEnabled = !localState.thinkingEnabled;
+                              localState.setThinkingEnabled(newThinkingEnabled);
+                              // Switch between Kimi K2 (with thinking) and DeepSeek R1 (without)
+                              localState.setModel(
+                                newThinkingEnabled
+                                  ? CATEGORY_MODELS.reasoning_on
+                                  : CATEGORY_MODELS.reasoning_off
+                              );
+                            }}
+                            aria-label={
+                              localState.thinkingEnabled
+                                ? "Disable thinking mode"
+                                : "Enable thinking mode"
+                            }
+                          >
+                            <Brain
+                              className={`h-4 w-4 ${
                                 localState.thinkingEnabled
-                                  ? "Disable thinking mode"
-                                  : "Enable thinking mode"
-                              }
-                            >
-                              <Brain
-                                className={`h-4 w-4 ${
-                                  localState.thinkingEnabled
-                                    ? "text-purple-500"
-                                    : "text-muted-foreground"
-                                }`}
-                              />
-                            </Button>
-                          )}
+                                  ? "text-purple-500"
+                                  : "text-muted-foreground"
+                              }`}
+                            />
+                          </Button>
+                        )}
 
                         {/* Web search toggle button - always visible */}
                         <Button
