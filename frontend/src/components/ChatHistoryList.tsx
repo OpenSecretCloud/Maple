@@ -1,14 +1,23 @@
 import { useState, useMemo, useCallback, useEffect, useRef, useContext } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { MoreHorizontal, Trash, Pencil, ChevronDown, ChevronRight } from "lucide-react";
+import {
+  MoreHorizontal,
+  Trash,
+  Pencil,
+  ChevronDown,
+  ChevronRight,
+  CheckSquare
+} from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger
 } from "@/components/ui/dropdown-menu";
+import { Checkbox } from "@/components/ui/checkbox";
 import { RenameChatDialog } from "@/components/RenameChatDialog";
 import { DeleteChatDialog } from "@/components/DeleteChatDialog";
+import { BulkDeleteDialog } from "@/components/BulkDeleteDialog";
 import { useOpenAI } from "@/ai/useOpenAi";
 import { useOpenSecret } from "@opensecret/react";
 import { useRouter } from "@tanstack/react-router";
@@ -18,6 +27,10 @@ interface ChatHistoryListProps {
   currentChatId?: string;
   searchQuery?: string;
   isMobile?: boolean;
+  isSelectionMode?: boolean;
+  onExitSelectionMode?: () => void;
+  selectedIds: Set<string>;
+  onSelectionChange: (ids: Set<string>) => void;
 }
 
 interface Conversation {
@@ -40,7 +53,11 @@ interface ArchivedChat {
 export function ChatHistoryList({
   currentChatId,
   searchQuery = "",
-  isMobile = false
+  isMobile = false,
+  isSelectionMode = false,
+  onExitSelectionMode,
+  selectedIds,
+  onSelectionChange
 }: ChatHistoryListProps) {
   const openai = useOpenAI();
   const opensecret = useOpenSecret();
@@ -49,8 +66,11 @@ export function ChatHistoryList({
   const localState = useContext(LocalStateContext);
   const [isRenameDialogOpen, setIsRenameDialogOpen] = useState(false);
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
+  const [isBulkDeleteDialogOpen, setIsBulkDeleteDialogOpen] = useState(false);
+  const [isBulkDeleting, setIsBulkDeleting] = useState(false);
   const [selectedChat, setSelectedChat] = useState<{ id: string; title: string } | null>(null);
   const [isArchivedExpanded, setIsArchivedExpanded] = useState(false);
+  const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Pagination states
   const [oldestConversationId, setOldestConversationId] = useState<string | undefined>();
@@ -321,6 +341,132 @@ export function ChatHistoryList({
     [openai, currentChatId, archivedChats, localState, queryClient, router]
   );
 
+  const MAX_SELECTION = 20;
+
+  // Toggle selection of a single chat
+  const toggleSelection = useCallback(
+    (chatId: string) => {
+      const newSelection = new Set(selectedIds);
+      if (newSelection.has(chatId)) {
+        newSelection.delete(chatId);
+      } else {
+        // Enforce max selection limit
+        if (newSelection.size >= MAX_SELECTION) {
+          return;
+        }
+        newSelection.add(chatId);
+      }
+      onSelectionChange(newSelection);
+    },
+    [selectedIds, onSelectionChange]
+  );
+
+  // Handle bulk delete
+  const handleBulkDelete = useCallback(async () => {
+    if (selectedIds.size === 0) return;
+
+    setIsBulkDeleting(true);
+    try {
+      const idsToDelete = Array.from(selectedIds);
+
+      // Separate archived chats from API conversations
+      const archivedIds = idsToDelete.filter((id) => archivedChats?.some((chat) => chat.id === id));
+      const conversationIds = idsToDelete.filter(
+        (id) => !archivedChats?.some((chat) => chat.id === id)
+      );
+
+      // Delete API conversations using batch delete
+      if (conversationIds.length > 0 && opensecret) {
+        const result = await opensecret.batchDeleteConversations(conversationIds);
+
+        // Remove successfully deleted conversations from local state
+        const deletedIds = new Set(
+          result.data.filter((item) => item.deleted).map((item) => item.id)
+        );
+        setConversations((prev) => prev.filter((conv) => !deletedIds.has(conv.id)));
+      }
+
+      // Delete archived chats individually
+      for (const id of archivedIds) {
+        if (localState?.deleteChat) {
+          await localState.deleteChat(id);
+        }
+      }
+
+      // Refresh archived chats if any were deleted
+      if (archivedIds.length > 0) {
+        queryClient.invalidateQueries({ queryKey: ["archivedChats"] });
+      }
+
+      // If current chat was deleted, navigate to home
+      if (selectedIds.has(currentChatId || "")) {
+        const params = new URLSearchParams(window.location.search);
+        params.delete("conversation_id");
+        window.history.replaceState({}, "", params.toString() ? `/?${params}` : "/");
+        window.dispatchEvent(new Event("newchat"));
+      }
+
+      // Clear selection and exit selection mode
+      onSelectionChange(new Set());
+      onExitSelectionMode?.();
+      setIsBulkDeleteDialogOpen(false);
+    } catch (error) {
+      console.error("Error bulk deleting chats:", error);
+    } finally {
+      setIsBulkDeleting(false);
+    }
+  }, [
+    selectedIds,
+    archivedChats,
+    opensecret,
+    localState,
+    queryClient,
+    currentChatId,
+    onSelectionChange,
+    onExitSelectionMode
+  ]);
+
+  // Long press handlers for mobile selection mode activation
+  const handleLongPressStart = useCallback(
+    (chatId: string) => {
+      if (isSelectionMode) return; // Already in selection mode
+
+      longPressTimerRef.current = setTimeout(() => {
+        // Enter selection mode and select this chat
+        onSelectionChange(new Set([chatId]));
+      }, 500); // 500ms long press
+    },
+    [isSelectionMode, onSelectionChange]
+  );
+
+  const handleLongPressEnd = useCallback(() => {
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+  }, []);
+
+  // Cleanup long-press timer on unmount
+  useEffect(() => {
+    return () => {
+      if (longPressTimerRef.current) {
+        clearTimeout(longPressTimerRef.current);
+        longPressTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  // Expose bulk delete dialog trigger
+  useEffect(() => {
+    const handleOpenBulkDelete = () => {
+      if (selectedIds.size > 0) {
+        setIsBulkDeleteDialogOpen(true);
+      }
+    };
+    window.addEventListener("openbulkdelete", handleOpenBulkDelete);
+    return () => window.removeEventListener("openbulkdelete", handleOpenBulkDelete);
+  }, [selectedIds.size]);
+
   const handleOpenRenameDialog = useCallback((conv: Conversation) => {
     const title = conv.metadata?.title || "Untitled Chat";
     setSelectedChat({ id: conv.id, title });
@@ -440,6 +586,7 @@ export function ChatHistoryList({
       {filteredConversations.map((conv: Conversation, index: number) => {
         const title = conv.metadata?.title || "Untitled Chat";
         const isActive = conv.id === currentChatId;
+        const isSelected = selectedIds.has(conv.id);
         const isLastConversation = index === filteredConversations.length - 1;
         // Only attach ref when not searching and it's the last item
         const shouldAttachRef = isLastConversation && !searchQuery.trim();
@@ -447,46 +594,81 @@ export function ChatHistoryList({
         return (
           <div
             key={conv.id}
-            className="relative group"
+            className={`relative group select-none ${isSelected ? "bg-primary/10 rounded-lg" : ""}`}
             ref={shouldAttachRef ? lastConversationRef : undefined}
+            onContextMenu={(e) => e.preventDefault()}
           >
             <div
-              onClick={() => handleSelectConversation(conv.id)}
+              onClick={() => {
+                if (isSelectionMode) {
+                  toggleSelection(conv.id);
+                } else {
+                  handleSelectConversation(conv.id);
+                }
+              }}
+              onMouseDown={() => isMobile && handleLongPressStart(conv.id)}
+              onMouseUp={handleLongPressEnd}
+              onMouseLeave={handleLongPressEnd}
+              onTouchStart={() => isMobile && handleLongPressStart(conv.id)}
+              onTouchEnd={handleLongPressEnd}
+              onTouchCancel={handleLongPressEnd}
               className={`rounded-lg py-2 transition-all hover:text-primary cursor-pointer ${
-                isActive ? "text-primary" : "text-muted-foreground"
-              }`}
+                isActive && !isSelectionMode ? "text-primary" : "text-muted-foreground"
+              } ${isSelectionMode ? "pl-8" : ""}`}
             >
-              <div className="overflow-hidden whitespace-nowrap hover:underline pr-8">{title}</div>
+              {isSelectionMode && (
+                <div className="absolute left-1.5 top-1/2 -translate-y-1/2">
+                  <Checkbox
+                    checked={isSelected}
+                    onCheckedChange={() => toggleSelection(conv.id)}
+                    onClick={(e) => e.stopPropagation()}
+                    className="data-[state=checked]:bg-primary"
+                  />
+                </div>
+              )}
+              <div
+                className={`overflow-hidden whitespace-nowrap ${!isSelectionMode ? "hover:underline" : ""} pr-8`}
+              >
+                {title}
+              </div>
               <div className="text-xs opacity-70 mt-1">
                 {new Date(conv.created_at * 1000).toLocaleDateString()}
               </div>
             </div>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <button
-                  className={`z-50 bg-background/80 absolute right-2 top-1/2 transform -translate-y-1/2 text-primary transition-opacity p-2 ${
-                    isMobile ? "opacity-100" : "opacity-0 group-hover:opacity-100"
-                  }`}
-                  onClick={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                  }}
-                >
-                  <MoreHorizontal size={16} />
-                </button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent>
-                <DropdownMenuItem onClick={() => handleOpenRenameDialog(conv)}>
-                  <Pencil className="mr-2 h-4 w-4" />
-                  <span>Rename Chat</span>
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => handleOpenDeleteDialog(conv)}>
-                  <Trash className="mr-2 h-4 w-4" />
-                  <span>Delete Chat</span>
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-            <div className="absolute inset-y-0 right-0 w-[3rem] bg-gradient-to-l from-background to-transparent pointer-events-none"></div>
+            {!isSelectionMode && (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <button
+                    className={`z-50 bg-background/80 absolute right-2 top-1/2 transform -translate-y-1/2 text-primary transition-opacity p-2 ${
+                      isMobile ? "opacity-100" : "opacity-0 group-hover:opacity-100"
+                    }`}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                    }}
+                  >
+                    <MoreHorizontal size={16} />
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent>
+                  <DropdownMenuItem onClick={() => onSelectionChange(new Set([conv.id]))}>
+                    <CheckSquare className="mr-2 h-4 w-4" />
+                    <span>Select</span>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => handleOpenRenameDialog(conv)}>
+                    <Pencil className="mr-2 h-4 w-4" />
+                    <span>Rename Chat</span>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => handleOpenDeleteDialog(conv)}>
+                    <Trash className="mr-2 h-4 w-4" />
+                    <span>Delete Chat</span>
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            )}
+            {!isSelectionMode && (
+              <div className="absolute inset-y-0 right-0 w-[3rem] bg-gradient-to-l from-background to-transparent pointer-events-none"></div>
+            )}
           </div>
         );
       })}
@@ -589,6 +771,14 @@ export function ChatHistoryList({
           />
         </>
       )}
+
+      <BulkDeleteDialog
+        open={isBulkDeleteDialogOpen}
+        onOpenChange={setIsBulkDeleteDialogOpen}
+        onConfirm={handleBulkDelete}
+        count={selectedIds.size}
+        isDeleting={isBulkDeleting}
+      />
     </>
   );
 }

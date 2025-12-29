@@ -1,9 +1,17 @@
-import { Search, SquarePenIcon, PanelRightClose, PanelRightOpen, XCircle } from "lucide-react";
+import {
+  Search,
+  SquarePenIcon,
+  PanelRightClose,
+  PanelRightOpen,
+  XCircle,
+  Trash2,
+  X
+} from "lucide-react";
 import { Button } from "./ui/button";
 import { useLocation, useRouter } from "@tanstack/react-router";
 import { ChatHistoryList } from "./ChatHistoryList";
 import { AccountMenu } from "./AccountMenu";
-import { useRef, useEffect, KeyboardEvent, useCallback, useLayoutEffect } from "react";
+import { useRef, useEffect, KeyboardEvent, useCallback, useLayoutEffect, useState } from "react";
 import { cn, useClickOutside, useIsMobile } from "@/utils/utils";
 import { Input } from "./ui/input";
 import { useLocalState } from "@/state/useLocalState";
@@ -21,6 +29,28 @@ export function Sidebar({
   const location = useLocation();
   const { searchQuery, setSearchQuery, isSearchVisible, setIsSearchVisible } = useLocalState();
   const searchInputRef = useRef<HTMLInputElement>(null);
+
+  // Multi-select state
+  const [isSelectionMode, setIsSelectionMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+
+  // Enter selection mode when items are selected (e.g., via long press)
+  useEffect(() => {
+    if (selectedIds.size > 0 && !isSelectionMode) {
+      setIsSelectionMode(true);
+    }
+  }, [selectedIds.size, isSelectionMode]);
+
+  const exitSelectionMode = useCallback(() => {
+    setIsSelectionMode(false);
+    setSelectedIds(new Set());
+  }, []);
+
+  const handleDeleteSelected = useCallback(() => {
+    if (selectedIds.size > 0) {
+      window.dispatchEvent(new Event("openbulkdelete"));
+    }
+  }, [selectedIds.size]);
 
   async function addChat() {
     // If sidebar is open on mobile, close it
@@ -157,17 +187,48 @@ export function Sidebar({
             </Button>
           </div>
         </div>
-        <div className="flex justify-between items-center px-4">
-          <h2 className="font-semibold">History</h2>
-          <Button
-            variant="outline"
-            size="icon"
-            className="h-9 w-9"
-            onClick={toggleSearch}
-            aria-label={isSearchVisible ? "Hide search" : "Search chat history"}
-          >
-            <Search className="h-4 w-4" />
-          </Button>
+        <div className={`flex justify-between items-center px-4 ${isSelectionMode ? "mb-2" : ""}`}>
+          {isSelectionMode ? (
+            <>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8"
+                  onClick={exitSelectionMode}
+                  aria-label="Cancel selection"
+                >
+                  <X className="h-4 w-4" />
+                </Button>
+                <span className="text-sm font-medium">
+                  {selectedIds.size >= 20 ? "max" : selectedIds.size} selected
+                </span>
+              </div>
+              <Button
+                variant="destructive"
+                size="sm"
+                className="h-8"
+                onClick={handleDeleteSelected}
+                disabled={selectedIds.size === 0}
+              >
+                <Trash2 className="h-4 w-4 mr-1" />
+                Delete
+              </Button>
+            </>
+          ) : (
+            <>
+              <h2 className="font-semibold">History</h2>
+              <Button
+                variant="outline"
+                size="icon"
+                className="h-9 w-9"
+                onClick={toggleSearch}
+                aria-label={isSearchVisible ? "Hide search" : "Search chat history"}
+              >
+                <Search className="h-4 w-4" />
+              </Button>
+            </>
+          )}
         </div>
         {isSearchVisible && (
           <div className="relative transition-all duration-200 ease-in-out px-4">
@@ -193,7 +254,15 @@ export function Sidebar({
           </div>
         )}
         <nav className="flex flex-col gap-2 flex-1 overflow-y-auto px-4">
-          <ChatHistoryList currentChatId={chatId} searchQuery={searchQuery} isMobile={isMobile} />
+          <ChatHistoryList
+            currentChatId={chatId}
+            searchQuery={searchQuery}
+            isMobile={isMobile}
+            isSelectionMode={isSelectionMode}
+            onExitSelectionMode={exitSelectionMode}
+            selectedIds={selectedIds}
+            onSelectionChange={setSelectedIds}
+          />
         </nav>
         <div className="px-4 pb-4">
           <AccountMenu />
