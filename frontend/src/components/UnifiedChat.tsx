@@ -817,8 +817,10 @@ export function UnifiedChat() {
   const [isProcessingSend, setIsProcessingSend] = useState(false);
   const [audioError, setAudioError] = useState<string | null>(null);
 
-  // Web search toggle state
-  const [isWebSearchEnabled, setIsWebSearchEnabled] = useState(false);
+  // Web search toggle state - persisted in localStorage
+  const [isWebSearchEnabled, setIsWebSearchEnabled] = useState(() => {
+    return localStorage.getItem("webSearchEnabled") === "true";
+  });
 
   // Fullscreen mode for power users - persisted in localStorage
   const [isFullscreen, setIsFullscreen] = useState(() => {
@@ -830,6 +832,11 @@ export function UnifiedChat() {
   useEffect(() => {
     localStorage.setItem("chatFullscreen", isFullscreen.toString());
   }, [isFullscreen]);
+
+  // Save web search preference to localStorage when it changes
+  useEffect(() => {
+    localStorage.setItem("webSearchEnabled", isWebSearchEnabled.toString());
+  }, [isWebSearchEnabled]);
 
   // Toggle fullscreen with animation
   const toggleFullscreen = useCallback(() => {
