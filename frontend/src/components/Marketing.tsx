@@ -27,6 +27,11 @@ const AI_MODELS = [
     alt: "DeepSeek",
     labels: ["DeepSeek R1"]
   },
+  {
+    src: "/badge-kimi-logo.png",
+    alt: "Moonshot",
+    labels: ["Kimi K2"]
+  },
   { src: "/badge-qwen-logo.png", alt: "Qwen", labels: ["Qwen3 Coder", "Qwen3-VL"] },
   { src: "/badge-meta-logo.png", alt: "Meta", labels: ["Meta Llama"] }
 ];
@@ -428,7 +433,7 @@ export function Marketing() {
               We use full-size open models from the biggest providers.
             </p>
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-8">
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-8">
             {AI_MODELS.map((model) => (
               <div key={model.alt} className="flex flex-col items-center">
                 <img
