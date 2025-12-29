@@ -1,6 +1,6 @@
 [package]
 name = "maple"
-version = "2.0.11"
+version = "2.0.12"
 description = "Maple AI"
 authors = ["tony@opensecret.cloud"]
 license = "MIT"
