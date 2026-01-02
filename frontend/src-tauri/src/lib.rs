@@ -1,6 +1,5 @@
-use tauri::{Emitter, Manager};
+use tauri::Emitter;
 use tauri_plugin_deep_link::DeepLinkExt;
-use tauri_plugin_opener;
 
 mod pdf_extractor;
 mod proxy;
@@ -67,7 +66,7 @@ pub fn run() {
             app.deep_link().on_open_url(move |event| {
                 if let Some(url) = event.urls().first() {
                     // Use the cloned app_handle
-                    handle_deep_link_event(&url.to_string(), &app_handle);
+                    handle_deep_link_event(url.as_ref(), &app_handle);
                 }
             });
             // Optionally register the scheme at runtime
