@@ -6,6 +6,21 @@ Common user questions and suggested responses.
 
 ## Billing & Payments
 
+### Q: How do I cancel my subscription?
+
+**Answer:**
+1. Log in to Maple at trymaple.ai
+2. Click on your account menu in the sidebar (bottom left)
+3. Select "Manage Subscription"
+4. This opens the Stripe billing portal where you can cancel
+
+**Note:** Only available for Stripe subscriptions. Bitcoin/Zaprite yearly plans are prepaid and non-refundable.
+
+**References:**
+- Account menu: `/frontend/src/components/AccountMenu.tsx`
+
+---
+
 ### Q: Can I pay with Bitcoin monthly instead of yearly?
 
 **Answer:** No, Bitcoin payments are yearly only since there's no way to auto-renew. We don't offer refunds for unused months on prepaid annual plans.
@@ -206,6 +221,20 @@ None of your data is transmitted to model providers - everything stays within se
 
 **References:**
 - Model config: `/frontend/src/components/ModelSelector.tsx`
+
+---
+
+### Q: Can you add Grok / ChatGPT / Claude / [other closed-source model]?
+
+**Answer:** No. We only support open-source models that run entirely within our secure enclaves. Adding closed-source models (Grok, ChatGPT, Claude, etc.) would mean routing your data through third-party servers where those companies could see your conversations. That would break our end-to-end encryption guarantee.
+
+This is fundamental to how Maple works - your data never leaves our private infrastructure.
+
+---
+
+### Q: Do you support image generation?
+
+**Answer:** No, we don't support image generation and have no plans to add it.
 
 ---
 
