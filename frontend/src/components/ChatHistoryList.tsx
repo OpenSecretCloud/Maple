@@ -91,6 +91,7 @@ export function ChatHistoryList({
   const pullDistanceRef = useRef(0);
   const wheelDeltaAccumulator = useRef(0);
   const lastRefreshTime = useRef(0);
+  const isRefreshingRef = useRef(false);
 
   // Fetch initial conversations from API using the OpenSecret SDK
   const { isPending, error } = useQuery({
@@ -185,6 +186,7 @@ export function ChatHistoryList({
 
   // Pull-to-refresh handler
   const handleRefresh = useCallback(async () => {
+    isRefreshingRef.current = true;
     setIsPullRefreshing(true);
     try {
       await pollForUpdates();
@@ -195,6 +197,7 @@ export function ChatHistoryList({
       setTimeout(() => {
         setIsPullRefreshing(false);
         setPullDistance(0);
+        isRefreshingRef.current = false;
         // Record the time when refresh completes for cooldown
         lastRefreshTime.current = Date.now();
       }, 300);
@@ -211,14 +214,14 @@ export function ChatHistoryList({
 
     const handleTouchStart = (e: TouchEvent) => {
       // Only start pull if we're at the top of the scroll
-      if (container.scrollTop === 0 && !isPullRefreshing) {
+      if (container.scrollTop === 0 && !isRefreshingRef.current) {
         pullStartY.current = e.touches[0].clientY;
         isPulling.current = true;
       }
     };
 
     const handleTouchMove = (e: TouchEvent) => {
-      if (!isPulling.current || isPullRefreshing) return;
+      if (!isPulling.current || isRefreshingRef.current) return;
 
       const currentY = e.touches[0].clientY;
       const distance = currentY - pullStartY.current;
@@ -258,14 +261,14 @@ export function ChatHistoryList({
       if (isDesktopPlatform) return;
 
       // Only start pull if we're at the top of the scroll
-      if (container.scrollTop === 0 && !isPullRefreshing) {
+      if (container.scrollTop === 0 && !isRefreshingRef.current) {
         pullStartY.current = e.clientY;
         isPulling.current = true;
       }
     };
 
     const handleMouseMove = (e: MouseEvent) => {
-      if (!isPulling.current || isPullRefreshing || isDesktopPlatform) return;
+      if (!isPulling.current || isRefreshingRef.current || isDesktopPlatform) return;
 
       const currentY = e.clientY;
       const distance = currentY - pullStartY.current;
@@ -302,7 +305,7 @@ export function ChatHistoryList({
     const WHEEL_THRESHOLD = -50; // Require accumulated scroll before triggering
 
     const handleWheel = (e: WheelEvent) => {
-      if (!isDesktopPlatform || isPullRefreshing) return;
+      if (!isDesktopPlatform || isRefreshingRef.current) return;
 
       // Only handle if the event target is within our container
       if (!container.contains(e.target as Node)) return;
