@@ -6,7 +6,8 @@ import {
   Pencil,
   ChevronDown,
   ChevronRight,
-  CheckSquare
+  CheckSquare,
+  RefreshCw
 } from "lucide-react";
 import {
   DropdownMenu,
@@ -31,6 +32,7 @@ interface ChatHistoryListProps {
   onExitSelectionMode?: () => void;
   selectedIds: Set<string>;
   onSelectionChange: (ids: Set<string>) => void;
+  containerRef?: React.RefObject<HTMLElement>;
 }
 
 interface Conversation {
@@ -57,7 +59,8 @@ export function ChatHistoryList({
   isSelectionMode = false,
   onExitSelectionMode,
   selectedIds,
-  onSelectionChange
+  onSelectionChange,
+  containerRef
 }: ChatHistoryListProps) {
   const openai = useOpenAI();
   const opensecret = useOpenSecret();
@@ -78,6 +81,12 @@ export function ChatHistoryList({
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const lastConversationRef = useRef<HTMLDivElement>(null);
   const [conversations, setConversations] = useState<Conversation[]>([]);
+
+  // Pull-to-refresh states
+  const [isPullRefreshing, setIsPullRefreshing] = useState(false);
+  const [pullDistance, setPullDistance] = useState(0);
+  const pullStartY = useRef(0);
+  const isPulling = useRef(false);
 
   // Fetch initial conversations from API using the OpenSecret SDK
   const { isPending, error } = useQuery({
@@ -169,6 +178,116 @@ export function ChatHistoryList({
       // Fail silently - don't disrupt the UI
     }
   }, [opensecret]);
+
+  // Pull-to-refresh handler
+  const handleRefresh = useCallback(async () => {
+    setIsPullRefreshing(true);
+    await pollForUpdates();
+    // Add a small delay to show the refresh indicator
+    setTimeout(() => {
+      setIsPullRefreshing(false);
+      setPullDistance(0);
+    }, 300);
+  }, [pollForUpdates]);
+
+  // Pull-to-refresh event handlers
+  useEffect(() => {
+    const container = containerRef?.current;
+    if (!container) return;
+
+    const handleTouchStart = (e: TouchEvent) => {
+      // Only start pull if we're at the top of the scroll
+      if (container.scrollTop === 0 && !isPullRefreshing) {
+        pullStartY.current = e.touches[0].clientY;
+        isPulling.current = true;
+      }
+    };
+
+    const handleTouchMove = (e: TouchEvent) => {
+      if (!isPulling.current || isPullRefreshing) return;
+
+      const currentY = e.touches[0].clientY;
+      const distance = currentY - pullStartY.current;
+
+      // Only allow pulling down (positive distance) and when at top
+      if (distance > 0 && container.scrollTop === 0) {
+        // Prevent default scroll behavior
+        e.preventDefault();
+        // Apply resistance: diminishing returns as you pull further
+        const resistanceFactor = 0.4;
+        const adjustedDistance = Math.min(distance * resistanceFactor, 80);
+        setPullDistance(adjustedDistance);
+      }
+    };
+
+    const handleTouchEnd = () => {
+      if (!isPulling.current) return;
+
+      isPulling.current = false;
+
+      // Trigger refresh if pulled far enough (threshold: 60px)
+      if (pullDistance > 60) {
+        handleRefresh();
+      } else {
+        // Reset if not pulled far enough
+        setPullDistance(0);
+      }
+    };
+
+    const handleMouseDown = (e: MouseEvent) => {
+      // Only start pull if we're at the top of the scroll
+      if (container.scrollTop === 0 && !isPullRefreshing) {
+        pullStartY.current = e.clientY;
+        isPulling.current = true;
+      }
+    };
+
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!isPulling.current || isPullRefreshing) return;
+
+      const currentY = e.clientY;
+      const distance = currentY - pullStartY.current;
+
+      // Only allow pulling down (positive distance) and when at top
+      if (distance > 0 && container.scrollTop === 0) {
+        // Apply resistance: diminishing returns as you pull further
+        const resistanceFactor = 0.4;
+        const adjustedDistance = Math.min(distance * resistanceFactor, 80);
+        setPullDistance(adjustedDistance);
+      }
+    };
+
+    const handleMouseUp = () => {
+      if (!isPulling.current) return;
+
+      isPulling.current = false;
+
+      // Trigger refresh if pulled far enough (threshold: 60px)
+      if (pullDistance > 60) {
+        handleRefresh();
+      } else {
+        // Reset if not pulled far enough
+        setPullDistance(0);
+      }
+    };
+
+    // Add event listeners for touch (mobile) and mouse (desktop)
+    container.addEventListener("touchstart", handleTouchStart, { passive: true });
+    container.addEventListener("touchmove", handleTouchMove, { passive: false });
+    container.addEventListener("touchend", handleTouchEnd);
+    container.addEventListener("mousedown", handleMouseDown);
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", handleMouseUp);
+
+    return () => {
+      container.removeEventListener("touchstart", handleTouchStart);
+      container.removeEventListener("touchmove", handleTouchMove);
+      container.removeEventListener("touchend", handleTouchEnd);
+      container.removeEventListener("mousedown", handleMouseDown);
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+    };
+  }, [containerRef, isPullRefreshing, pullDistance, handleRefresh]);
 
   // Set up polling every 60 seconds
   useEffect(() => {
@@ -583,6 +702,24 @@ export function ChatHistoryList({
 
   return (
     <>
+      {/* Pull-to-refresh indicator */}
+      {pullDistance > 0 && (
+        <div
+          className="flex items-center justify-center transition-all duration-200 ease-out"
+          style={{
+            height: `${pullDistance}px`,
+            opacity: Math.min(pullDistance / 60, 1)
+          }}
+        >
+          <RefreshCw
+            className={`h-4 w-4 text-muted-foreground ${isPullRefreshing ? "animate-spin" : ""}`}
+            style={{
+              transform: isPullRefreshing ? "none" : `rotate(${pullDistance * 3}deg)`
+            }}
+          />
+        </div>
+      )}
+
       {filteredConversations.map((conv: Conversation, index: number) => {
         const title = conv.metadata?.title || "Untitled Chat";
         const isActive = conv.id === currentChatId;
