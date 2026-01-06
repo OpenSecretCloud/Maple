@@ -290,6 +290,9 @@ export function ChatHistoryList({
     const handleWheel = (e: WheelEvent) => {
       if (!isDesktopPlatform || isPullRefreshing) return;
 
+      // Only handle if the event target is within our container
+      if (!container.contains(e.target as Node)) return;
+
       // Check if we're at the top and trying to scroll up
       if (container.scrollTop === 0 && e.deltaY < 0) {
         // Prevent default to avoid browser overscroll bounce
@@ -318,10 +321,14 @@ export function ChatHistoryList({
       container.removeEventListener("touchstart", handleTouchStart);
       container.removeEventListener("touchmove", handleTouchMove);
       container.removeEventListener("touchend", handleTouchEnd);
-      container.removeEventListener("wheel", handleWheel);
-      container.removeEventListener("mousedown", handleMouseDown);
-      window.removeEventListener("mousemove", handleMouseMove);
-      window.removeEventListener("mouseup", handleMouseUp);
+
+      if (isDesktopPlatform) {
+        container.removeEventListener("wheel", handleWheel);
+      } else {
+        container.removeEventListener("mousedown", handleMouseDown);
+        window.removeEventListener("mousemove", handleMouseMove);
+        window.removeEventListener("mouseup", handleMouseUp);
+      }
     };
   }, [containerRef, isPullRefreshing, handleRefresh]);
 
