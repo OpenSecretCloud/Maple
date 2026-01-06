@@ -90,7 +90,7 @@ export function ChatHistoryList({
   const isPulling = useRef(false);
   const pullDistanceRef = useRef(0);
   const wheelDeltaAccumulator = useRef(0);
-  const isRefreshingRef = useRef(false);
+  const lastRefreshTime = useRef(0);
 
   // Fetch initial conversations from API using the OpenSecret SDK
   const { isPending, error } = useQuery({
@@ -185,8 +185,6 @@ export function ChatHistoryList({
 
   // Pull-to-refresh handler
   const handleRefresh = useCallback(async () => {
-    // Set ref immediately to block rapid-fire events
-    isRefreshingRef.current = true;
     setIsPullRefreshing(true);
     try {
       await pollForUpdates();
@@ -197,7 +195,8 @@ export function ChatHistoryList({
       setTimeout(() => {
         setIsPullRefreshing(false);
         setPullDistance(0);
-        isRefreshingRef.current = false;
+        // Record the time when refresh completes for cooldown
+        lastRefreshTime.current = Date.now();
       }, 300);
     }
   }, [pollForUpdates]);
@@ -241,11 +240,15 @@ export function ChatHistoryList({
 
       isPulling.current = false;
 
-      // Trigger refresh if pulled far enough (threshold: 60px)
-      if (pullDistanceRef.current > 60) {
+      // Check cooldown: enforce 5-second delay between refreshes
+      const timeSinceLastRefresh = Date.now() - lastRefreshTime.current;
+      const cooldownPeriod = 5000; // 5 seconds
+
+      // Trigger refresh if pulled far enough (threshold: 60px) and cooldown elapsed
+      if (pullDistanceRef.current > 60 && timeSinceLastRefresh >= cooldownPeriod) {
         handleRefresh();
       } else {
-        // Reset if not pulled far enough
+        // Reset if not pulled far enough or still in cooldown
         setPullDistance(0);
       }
     };
@@ -282,11 +285,15 @@ export function ChatHistoryList({
 
       isPulling.current = false;
 
-      // Trigger refresh if pulled far enough (threshold: 60px)
-      if (pullDistanceRef.current > 60) {
+      // Check cooldown: enforce 5-second delay between refreshes
+      const timeSinceLastRefresh = Date.now() - lastRefreshTime.current;
+      const cooldownPeriod = 5000; // 5 seconds
+
+      // Trigger refresh if pulled far enough (threshold: 60px) and cooldown elapsed
+      if (pullDistanceRef.current > 60 && timeSinceLastRefresh >= cooldownPeriod) {
         handleRefresh();
       } else {
-        // Reset if not pulled far enough
+        // Reset if not pulled far enough or still in cooldown
         setPullDistance(0);
       }
     };
@@ -295,10 +302,14 @@ export function ChatHistoryList({
     const WHEEL_THRESHOLD = -50; // Require accumulated scroll before triggering
 
     const handleWheel = (e: WheelEvent) => {
-      if (!isDesktopPlatform || isRefreshingRef.current) return;
+      if (!isDesktopPlatform || isPullRefreshing) return;
 
       // Only handle if the event target is within our container
       if (!container.contains(e.target as Node)) return;
+
+      // Check cooldown: enforce 5-second delay between refreshes
+      const timeSinceLastRefresh = Date.now() - lastRefreshTime.current;
+      const cooldownPeriod = 5000; // 5 seconds
 
       // Check if we're at the top and trying to scroll up
       if (container.scrollTop === 0 && e.deltaY < 0) {
@@ -313,8 +324,11 @@ export function ChatHistoryList({
         pullDistanceRef.current = visualDistance;
         setPullDistance(visualDistance);
 
-        // Trigger refresh if threshold is reached
-        if (wheelDeltaAccumulator.current <= WHEEL_THRESHOLD) {
+        // Trigger refresh if threshold is reached and cooldown elapsed
+        if (
+          wheelDeltaAccumulator.current <= WHEEL_THRESHOLD &&
+          timeSinceLastRefresh >= cooldownPeriod
+        ) {
           wheelDeltaAccumulator.current = 0;
           handleRefresh();
         }
