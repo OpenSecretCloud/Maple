@@ -90,6 +90,7 @@ export function ChatHistoryList({
   const isPulling = useRef(false);
   const pullDistanceRef = useRef(0);
   const wheelDeltaAccumulator = useRef(0);
+  const isRefreshingRef = useRef(false);
 
   // Fetch initial conversations from API using the OpenSecret SDK
   const { isPending, error } = useQuery({
@@ -184,6 +185,8 @@ export function ChatHistoryList({
 
   // Pull-to-refresh handler
   const handleRefresh = useCallback(async () => {
+    // Set ref immediately to block rapid-fire events
+    isRefreshingRef.current = true;
     setIsPullRefreshing(true);
     try {
       await pollForUpdates();
@@ -194,6 +197,7 @@ export function ChatHistoryList({
       setTimeout(() => {
         setIsPullRefreshing(false);
         setPullDistance(0);
+        isRefreshingRef.current = false;
       }, 300);
     }
   }, [pollForUpdates]);
@@ -291,7 +295,7 @@ export function ChatHistoryList({
     const WHEEL_THRESHOLD = -50; // Require accumulated scroll before triggering
 
     const handleWheel = (e: WheelEvent) => {
-      if (!isDesktopPlatform || isPullRefreshing) return;
+      if (!isDesktopPlatform || isRefreshingRef.current) return;
 
       // Only handle if the event target is within our container
       if (!container.contains(e.target as Node)) return;
@@ -352,7 +356,7 @@ export function ChatHistoryList({
         window.removeEventListener("mouseup", handleMouseUp);
       }
     };
-  }, [containerRef, isPullRefreshing, handleRefresh]);
+  }, [containerRef, handleRefresh]);
 
   // Set up polling every 60 seconds
   useEffect(() => {
