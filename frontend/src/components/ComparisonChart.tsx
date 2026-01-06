@@ -66,7 +66,7 @@ const comparisonData: ComparisonData[] = [
     chatGPT: "Yes"
   },
   {
-    feature: "Voice Mode",
+    feature: "Voice Input",
     maple: "Yes",
     lumo: "No",
     duckAI: "No",
