@@ -9,6 +9,7 @@ import {
   CheckSquare,
   RefreshCw
 } from "lucide-react";
+import { getPlatformInfo } from "@/utils/platform";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -87,6 +88,7 @@ export function ChatHistoryList({
   const [pullDistance, setPullDistance] = useState(0);
   const pullStartY = useRef(0);
   const isPulling = useRef(false);
+  const pullDistanceRef = useRef(0);
 
   // Fetch initial conversations from API using the OpenSecret SDK
   const { isPending, error } = useQuery({
@@ -182,18 +184,26 @@ export function ChatHistoryList({
   // Pull-to-refresh handler
   const handleRefresh = useCallback(async () => {
     setIsPullRefreshing(true);
-    await pollForUpdates();
-    // Add a small delay to show the refresh indicator
-    setTimeout(() => {
-      setIsPullRefreshing(false);
-      setPullDistance(0);
-    }, 300);
+    try {
+      await pollForUpdates();
+    } catch (error) {
+      console.error("Refresh failed:", error);
+    } finally {
+      // Add a small delay to show the refresh indicator
+      setTimeout(() => {
+        setIsPullRefreshing(false);
+        setPullDistance(0);
+      }, 300);
+    }
   }, [pollForUpdates]);
 
   // Pull-to-refresh event handlers
   useEffect(() => {
     const container = containerRef?.current;
     if (!container) return;
+
+    const platformInfo = getPlatformInfo();
+    const isDesktopPlatform = platformInfo.isDesktop || platformInfo.isWeb;
 
     const handleTouchStart = (e: TouchEvent) => {
       // Only start pull if we're at the top of the scroll
@@ -216,6 +226,7 @@ export function ChatHistoryList({
         // Apply resistance: diminishing returns as you pull further
         const resistanceFactor = 0.4;
         const adjustedDistance = Math.min(distance * resistanceFactor, 80);
+        pullDistanceRef.current = adjustedDistance;
         setPullDistance(adjustedDistance);
       }
     };
@@ -226,7 +237,7 @@ export function ChatHistoryList({
       isPulling.current = false;
 
       // Trigger refresh if pulled far enough (threshold: 60px)
-      if (pullDistance > 60) {
+      if (pullDistanceRef.current > 60) {
         handleRefresh();
       } else {
         // Reset if not pulled far enough
@@ -235,6 +246,9 @@ export function ChatHistoryList({
     };
 
     const handleMouseDown = (e: MouseEvent) => {
+      // Only for mobile platforms - desktop uses wheel event
+      if (isDesktopPlatform) return;
+
       // Only start pull if we're at the top of the scroll
       if (container.scrollTop === 0 && !isPullRefreshing) {
         pullStartY.current = e.clientY;
@@ -243,7 +257,7 @@ export function ChatHistoryList({
     };
 
     const handleMouseMove = (e: MouseEvent) => {
-      if (!isPulling.current || isPullRefreshing) return;
+      if (!isPulling.current || isPullRefreshing || isDesktopPlatform) return;
 
       const currentY = e.clientY;
       const distance = currentY - pullStartY.current;
@@ -253,17 +267,18 @@ export function ChatHistoryList({
         // Apply resistance: diminishing returns as you pull further
         const resistanceFactor = 0.4;
         const adjustedDistance = Math.min(distance * resistanceFactor, 80);
+        pullDistanceRef.current = adjustedDistance;
         setPullDistance(adjustedDistance);
       }
     };
 
     const handleMouseUp = () => {
-      if (!isPulling.current) return;
+      if (!isPulling.current || isDesktopPlatform) return;
 
       isPulling.current = false;
 
       // Trigger refresh if pulled far enough (threshold: 60px)
-      if (pullDistance > 60) {
+      if (pullDistanceRef.current > 60) {
         handleRefresh();
       } else {
         // Reset if not pulled far enough
@@ -271,23 +286,44 @@ export function ChatHistoryList({
       }
     };
 
-    // Add event listeners for touch (mobile) and mouse (desktop)
+    // Desktop: detect scroll up when already at top (overscroll)
+    const handleWheel = (e: WheelEvent) => {
+      if (!isDesktopPlatform || isPullRefreshing) return;
+
+      // Check if we're at the top and trying to scroll up
+      if (container.scrollTop === 0 && e.deltaY < 0) {
+        // Prevent default to avoid browser overscroll bounce
+        e.preventDefault();
+        // Trigger refresh on upward scroll attempt
+        handleRefresh();
+      }
+    };
+
+    // Add event listeners based on platform
     container.addEventListener("touchstart", handleTouchStart, { passive: true });
     container.addEventListener("touchmove", handleTouchMove, { passive: false });
     container.addEventListener("touchend", handleTouchEnd);
-    container.addEventListener("mousedown", handleMouseDown);
-    window.addEventListener("mousemove", handleMouseMove);
-    window.addEventListener("mouseup", handleMouseUp);
+
+    if (isDesktopPlatform) {
+      // Desktop: use wheel event for scroll-to-refresh
+      container.addEventListener("wheel", handleWheel, { passive: false });
+    } else {
+      // Mobile: use mouse events for pull-to-refresh
+      container.addEventListener("mousedown", handleMouseDown);
+      window.addEventListener("mousemove", handleMouseMove);
+      window.addEventListener("mouseup", handleMouseUp);
+    }
 
     return () => {
       container.removeEventListener("touchstart", handleTouchStart);
       container.removeEventListener("touchmove", handleTouchMove);
       container.removeEventListener("touchend", handleTouchEnd);
+      container.removeEventListener("wheel", handleWheel);
       container.removeEventListener("mousedown", handleMouseDown);
       window.removeEventListener("mousemove", handleMouseMove);
       window.removeEventListener("mouseup", handleMouseUp);
     };
-  }, [containerRef, isPullRefreshing, pullDistance, handleRefresh]);
+  }, [containerRef, isPullRefreshing, handleRefresh]);
 
   // Set up polling every 60 seconds
   useEffect(() => {
