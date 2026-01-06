@@ -89,6 +89,7 @@ export function ChatHistoryList({
   const pullStartY = useRef(0);
   const isPulling = useRef(false);
   const pullDistanceRef = useRef(0);
+  const wheelDeltaAccumulator = useRef(0);
 
   // Fetch initial conversations from API using the OpenSecret SDK
   const { isPending, error } = useQuery({
@@ -287,6 +288,8 @@ export function ChatHistoryList({
     };
 
     // Desktop: detect scroll up when already at top (overscroll)
+    const WHEEL_THRESHOLD = -50; // Require accumulated scroll before triggering
+
     const handleWheel = (e: WheelEvent) => {
       if (!isDesktopPlatform || isPullRefreshing) return;
 
@@ -297,8 +300,27 @@ export function ChatHistoryList({
       if (container.scrollTop === 0 && e.deltaY < 0) {
         // Prevent default to avoid browser overscroll bounce
         e.preventDefault();
-        // Trigger refresh on upward scroll attempt
-        handleRefresh();
+
+        // Accumulate wheel delta to require sustained scroll
+        wheelDeltaAccumulator.current += e.deltaY;
+
+        // Update pull distance for visual feedback (map wheel delta to pull distance)
+        const visualDistance = Math.min(Math.abs(wheelDeltaAccumulator.current) * 0.8, 80);
+        pullDistanceRef.current = visualDistance;
+        setPullDistance(visualDistance);
+
+        // Trigger refresh if threshold is reached
+        if (wheelDeltaAccumulator.current <= WHEEL_THRESHOLD) {
+          wheelDeltaAccumulator.current = 0;
+          handleRefresh();
+        }
+      } else {
+        // Reset accumulator and visual feedback if not at top or scrolling down
+        wheelDeltaAccumulator.current = 0;
+        if (pullDistanceRef.current > 0) {
+          pullDistanceRef.current = 0;
+          setPullDistance(0);
+        }
       }
     };
 
