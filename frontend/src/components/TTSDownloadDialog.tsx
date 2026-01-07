@@ -104,7 +104,7 @@ export function TTSDownloadDialog({ open, onOpenChange }: TTSDownloadDialogProps
                 </span>
               </div>
               {!isChecking && (
-                <div className="w-full bg-secondary rounded-full h-2.5 overflow-hidden">
+                <div className="w-full bg-primary/20 rounded-full h-2.5 overflow-hidden">
                   <div
                     className="bg-primary h-2.5 rounded-full transition-all duration-300 ease-out"
                     style={{ width: `${isLoading ? 100 : downloadProgress}%` }}

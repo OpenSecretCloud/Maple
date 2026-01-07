@@ -205,6 +205,15 @@ function TTSButton({
   const isThisPlaying = isPlaying && currentPlayingId === messageId;
   const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Cleanup timer on unmount
+  useEffect(() => {
+    return () => {
+      if (longPressTimer.current) {
+        clearTimeout(longPressTimer.current);
+      }
+    };
+  }, []);
+
   // Don't render the button at all if not in Tauri environment
   if (!isTauriEnv) {
     return null;
@@ -780,7 +789,7 @@ const MessageList = memo(
                       {group.items.map((item) => renderAssistantItem(item))}
                       {/* Copy and TTS buttons for the assistant's text content */}
                       {textContent && (
-                        <div className="flex gap-1 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
+                        <div className="flex gap-1">
                           <CopyButton text={textContent} />
                           <TTSButton
                             text={textContent}

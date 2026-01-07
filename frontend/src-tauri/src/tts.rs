@@ -100,7 +100,8 @@ impl UnicodeProcessor {
                 if val < self.indexer.len() {
                     row[j] = self.indexer[val];
                 } else {
-                    row[j] = -1;
+                    // Use 0 (padding token) for out-of-vocabulary characters
+                    row[j] = 0;
                 }
             }
             text_ids.push(row);
