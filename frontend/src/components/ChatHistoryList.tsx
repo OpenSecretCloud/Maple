@@ -205,6 +205,10 @@ export function ChatHistoryList({
 
     const handleTouchStart = (e: TouchEvent) => {
       if (container.scrollTop === 0 && !isRefreshingRef.current) {
+        if (longPressTimerRef.current) {
+          clearTimeout(longPressTimerRef.current);
+          longPressTimerRef.current = null;
+        }
         pullStartY.current = e.touches[0].clientY;
         isPulling.current = true;
       }
@@ -218,6 +222,10 @@ export function ChatHistoryList({
 
       if (distance > 0 && container.scrollTop === 0) {
         e.preventDefault();
+        if (longPressTimerRef.current) {
+          clearTimeout(longPressTimerRef.current);
+          longPressTimerRef.current = null;
+        }
         const resistanceFactor = 0.4;
         const adjustedDistance = Math.min(distance * resistanceFactor, 80);
         pullDistanceRef.current = adjustedDistance;
@@ -242,6 +250,10 @@ export function ChatHistoryList({
       if (container.scrollTop === 0 && !isRefreshingRef.current) {
         const target = e.target as HTMLElement;
         if (target.closest('button, a, input, [role="menuitem"]')) return;
+        if (longPressTimerRef.current) {
+          clearTimeout(longPressTimerRef.current);
+          longPressTimerRef.current = null;
+        }
         pullStartY.current = e.clientY;
         isPulling.current = true;
       }
@@ -255,6 +267,10 @@ export function ChatHistoryList({
 
       if (distance > 0 && container.scrollTop === 0) {
         e.preventDefault();
+        if (longPressTimerRef.current) {
+          clearTimeout(longPressTimerRef.current);
+          longPressTimerRef.current = null;
+        }
         const resistanceFactor = 0.4;
         const adjustedDistance = Math.min(distance * resistanceFactor, 80);
         pullDistanceRef.current = adjustedDistance;
