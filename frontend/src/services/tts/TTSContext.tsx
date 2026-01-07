@@ -7,7 +7,7 @@ import {
   useEffect,
   ReactNode
 } from "react";
-import { isTauri } from "@/utils/platform";
+import { isTauriDesktop } from "@/utils/platform";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
@@ -58,8 +58,8 @@ interface TTSContextValue {
 const TTSContext = createContext<TTSContextValue | null>(null);
 
 export function TTSProvider({ children }: { children: ReactNode }) {
-  // Check Tauri environment once at mount - same pattern as PDF feature
-  const isTauriEnv = isTauri();
+  // Check Tauri desktop environment once at mount - TTS is desktop-only
+  const isTauriEnv = isTauriDesktop();
 
   // Initial status depends on whether we're in Tauri
   const [status, setStatus] = useState<TTSStatus>(isTauriEnv ? "checking" : "not_available");
@@ -165,6 +165,9 @@ export function TTSProvider({ children }: { children: ReactNode }) {
       // Stop any currently playing audio
       if (audioRef.current) {
         audioRef.current.pause();
+        if (audioRef.current.src) {
+          URL.revokeObjectURL(audioRef.current.src);
+        }
         audioRef.current = null;
       }
 
@@ -200,6 +203,10 @@ export function TTSProvider({ children }: { children: ReactNode }) {
         console.error("TTS synthesis failed:", err);
         setIsPlaying(false);
         setCurrentPlayingId(null);
+        if (audioRef.current?.src) {
+          URL.revokeObjectURL(audioRef.current.src);
+        }
+        audioRef.current = null;
       }
     },
     [isTauriEnv, status]
@@ -208,6 +215,9 @@ export function TTSProvider({ children }: { children: ReactNode }) {
   const stop = useCallback(() => {
     if (audioRef.current) {
       audioRef.current.pause();
+      if (audioRef.current.src) {
+        URL.revokeObjectURL(audioRef.current.src);
+      }
       audioRef.current = null;
     }
     setIsPlaying(false);
@@ -222,6 +232,9 @@ export function TTSProvider({ children }: { children: ReactNode }) {
       }
       if (audioRef.current) {
         audioRef.current.pause();
+        if (audioRef.current.src) {
+          URL.revokeObjectURL(audioRef.current.src);
+        }
       }
     };
   }, []);
