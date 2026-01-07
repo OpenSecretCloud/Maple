@@ -50,6 +50,7 @@ pub fn run() {
             tts::tts_load_models,
             tts::tts_synthesize,
             tts::tts_unload_models,
+            tts::tts_delete_models,
         ])
         .setup(|app| {
             // Initialize proxy auto-start
