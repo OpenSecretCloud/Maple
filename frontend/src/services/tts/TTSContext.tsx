@@ -223,6 +223,15 @@ export function TTSProvider({ children }: { children: ReactNode }) {
         const audio = new Audio(audioUrl);
         audioRef.current = audio;
 
+        // Prevent TTS from hijacking system media controls (play/pause, next/prev track)
+        if ("mediaSession" in navigator) {
+          navigator.mediaSession.metadata = null;
+          navigator.mediaSession.setActionHandler("play", null);
+          navigator.mediaSession.setActionHandler("pause", null);
+          navigator.mediaSession.setActionHandler("previoustrack", null);
+          navigator.mediaSession.setActionHandler("nexttrack", null);
+        }
+
         audio.onended = () => {
           setIsPlaying(false);
           setCurrentPlayingId(null);
