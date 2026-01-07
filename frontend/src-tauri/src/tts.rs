@@ -812,3 +812,23 @@ pub async fn tts_unload_models(state: tauri::State<'_, Mutex<TTSState>>) -> Resu
     log::info!("TTS models unloaded");
     Ok(())
 }
+
+#[tauri::command]
+pub async fn tts_delete_models(state: tauri::State<'_, Mutex<TTSState>>) -> Result<(), String> {
+    // First unload models from memory
+    {
+        let mut guard = state.lock().map_err(|e| e.to_string())?;
+        guard.tts = None;
+        guard.style = None;
+    }
+
+    // Delete the models directory
+    let models_dir = get_tts_models_dir().map_err(|e| e.to_string())?;
+    if models_dir.exists() {
+        fs::remove_dir_all(&models_dir)
+            .map_err(|e| format!("Failed to delete TTS models: {}", e))?;
+    }
+
+    log::info!("TTS models deleted");
+    Ok(())
+}

@@ -18,6 +18,7 @@ export type TTSStatus =
   | "downloading"
   | "loading"
   | "ready"
+  | "deleting"
   | "error";
 
 interface TTSStatusResponse {
@@ -51,6 +52,7 @@ interface TTSContextValue {
 
   checkStatus: () => Promise<void>;
   startDownload: () => Promise<void>;
+  deleteModels: () => Promise<void>;
   speak: (text: string, messageId: string) => Promise<void>;
   stop: () => void;
 }
@@ -158,6 +160,33 @@ export function TTSProvider({ children }: { children: ReactNode }) {
     }
   }, [isTauriEnv]);
 
+  const deleteModels = useCallback(async () => {
+    if (!isTauriEnv) return;
+
+    try {
+      setStatus("deleting");
+      setError(null);
+
+      // Stop any playing audio first
+      if (audioRef.current) {
+        audioRef.current.pause();
+        if (audioRef.current.src) {
+          URL.revokeObjectURL(audioRef.current.src);
+        }
+        audioRef.current = null;
+      }
+      setIsPlaying(false);
+      setCurrentPlayingId(null);
+
+      await invoke("tts_delete_models");
+      setStatus("not_downloaded");
+    } catch (err) {
+      console.error("Failed to delete TTS models:", err);
+      setStatus("error");
+      setError(err instanceof Error ? err.message : "Failed to delete TTS models");
+    }
+  }, [isTauriEnv]);
+
   const speak = useCallback(
     async (text: string, messageId: string) => {
       if (!isTauriEnv || status !== "ready") return;
@@ -252,6 +281,7 @@ export function TTSProvider({ children }: { children: ReactNode }) {
         isTauriEnv,
         checkStatus,
         startDownload,
+        deleteModels,
         speak,
         stop
       }}

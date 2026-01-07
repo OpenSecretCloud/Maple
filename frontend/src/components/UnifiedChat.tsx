@@ -193,14 +193,17 @@ function CopyButton({ text }: { text: string }) {
 function TTSButton({
   text,
   messageId,
-  onNeedsSetup
+  onNeedsSetup,
+  onManage
 }: {
   text: string;
   messageId: string;
   onNeedsSetup: () => void;
+  onManage: () => void;
 }) {
   const { status, isPlaying, currentPlayingId, speak, stop, isTauriEnv } = useTTS();
   const isThisPlaying = isPlaying && currentPlayingId === messageId;
+  const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Don't render the button at all if not in Tauri environment
   if (!isTauriEnv) {
@@ -222,7 +225,24 @@ function TTSButton({
     }
   };
 
-  const isDisabled = status === "checking" || status === "downloading" || status === "loading";
+  const handlePointerDown = () => {
+    longPressTimer.current = setTimeout(() => {
+      onManage();
+    }, 500);
+  };
+
+  const handlePointerUp = () => {
+    if (longPressTimer.current) {
+      clearTimeout(longPressTimer.current);
+      longPressTimer.current = null;
+    }
+  };
+
+  const isDisabled =
+    status === "checking" ||
+    status === "downloading" ||
+    status === "loading" ||
+    status === "deleting";
   const showSpinner = isDisabled;
 
   return (
@@ -231,6 +251,9 @@ function TTSButton({
       size="sm"
       className="h-7 w-7 p-0 text-muted-foreground hover:text-foreground"
       onClick={handleClick}
+      onPointerDown={handlePointerDown}
+      onPointerUp={handlePointerUp}
+      onPointerLeave={handlePointerUp}
       disabled={isDisabled}
       aria-label={isThisPlaying ? "Stop speaking" : "Read aloud"}
     >
@@ -434,7 +457,8 @@ const MessageList = memo(
     chatId,
     firstMessageRef,
     isLoadingOlderMessages,
-    onTTSSetupOpen
+    onTTSSetupOpen,
+    onTTSManage
   }: {
     messages: Message[];
     isGenerating: boolean;
@@ -442,6 +466,7 @@ const MessageList = memo(
     firstMessageRef?: React.RefObject<HTMLDivElement>;
     isLoadingOlderMessages?: boolean;
     onTTSSetupOpen: () => void;
+    onTTSManage: () => void;
   }) => {
     // Build Maps for O(1) lookup of tool calls and outputs by call_id
     const { callMap, outputMap } = useMemo(() => {
@@ -761,6 +786,7 @@ const MessageList = memo(
                             text={textContent}
                             messageId={group.id}
                             onNeedsSetup={onTTSSetupOpen}
+                            onManage={onTTSManage}
                           />
                         </div>
                       )}
@@ -2684,6 +2710,7 @@ export function UnifiedChat() {
                   firstMessageRef={firstMessageRef}
                   isLoadingOlderMessages={isLoadingOlderMessages}
                   onTTSSetupOpen={() => setTtsSetupDialogOpen(true)}
+                  onTTSManage={() => setTtsSetupDialogOpen(true)}
                 />
               </div>
 

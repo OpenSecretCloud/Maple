@@ -7,7 +7,7 @@ import {
   DialogTitle
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { Volume2, Download, AlertCircle, Loader2, Check } from "lucide-react";
+import { Volume2, Download, AlertCircle, Loader2, Check, Trash2 } from "lucide-react";
 import { useTTS } from "@/services/tts/TTSContext";
 
 interface TTSDownloadDialogProps {
@@ -16,19 +16,32 @@ interface TTSDownloadDialogProps {
 }
 
 export function TTSDownloadDialog({ open, onOpenChange }: TTSDownloadDialogProps) {
-  const { status, error, downloadProgress, downloadDetail, totalSizeMB, startDownload } = useTTS();
+  const {
+    status,
+    error,
+    downloadProgress,
+    downloadDetail,
+    totalSizeMB,
+    startDownload,
+    deleteModels
+  } = useTTS();
 
   const handleDownload = async () => {
     await startDownload();
   };
 
+  const handleDelete = async () => {
+    await deleteModels();
+  };
+
   const isChecking = status === "checking";
   const isDownloading = status === "downloading";
   const isLoading = status === "loading";
+  const isDeleting = status === "deleting";
   const isReady = status === "ready";
   const hasError = status === "error";
   const isNotAvailable = status === "not_available";
-  const isProcessing = isChecking || isDownloading || isLoading;
+  const isProcessing = isChecking || isDownloading || isLoading || isDeleting;
 
   return (
     <Dialog open={open} onOpenChange={isProcessing ? undefined : onOpenChange}>
@@ -106,12 +119,36 @@ export function TTSDownloadDialog({ open, onOpenChange }: TTSDownloadDialogProps
             </div>
           )}
 
+          {isDeleting && (
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              <span>Deleting TTS models...</span>
+            </div>
+          )}
+
           {isReady && (
-            <div className="flex items-center gap-3 p-3 rounded-lg bg-green-500/10 text-green-600 dark:text-green-400">
-              <Check className="h-5 w-5 shrink-0" />
-              <p className="text-sm">
-                TTS is ready! Click the speaker icon on any assistant message to listen.
-              </p>
+            <div className="space-y-4">
+              <div className="flex items-center gap-3 p-3 rounded-lg bg-green-500/10 text-green-600 dark:text-green-400">
+                <Check className="h-5 w-5 shrink-0" />
+                <p className="text-sm">
+                  TTS is ready! Click the speaker icon on any assistant message to listen.
+                </p>
+              </div>
+              <div className="border-t pt-4">
+                <p className="text-sm text-muted-foreground mb-3">
+                  Models are stored locally (~{Math.round(totalSizeMB)} MB). You can delete them to
+                  free up space.
+                </p>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleDelete}
+                  className="text-destructive hover:text-destructive"
+                >
+                  <Trash2 className="h-4 w-4 mr-2" />
+                  Delete TTS Models
+                </Button>
+              </div>
             </div>
           )}
 
@@ -132,11 +169,17 @@ export function TTSDownloadDialog({ open, onOpenChange }: TTSDownloadDialogProps
 
         <DialogFooter className="gap-2 sm:gap-0">
           {isReady ? (
-            <Button onClick={() => onOpenChange(false)}>Got it</Button>
+            <Button onClick={() => onOpenChange(false)}>Close</Button>
           ) : isProcessing ? (
             <Button disabled variant="outline">
               <Loader2 className="h-4 w-4 animate-spin mr-2" />
-              {isChecking ? "Checking..." : isLoading ? "Loading..." : "Downloading..."}
+              {isChecking
+                ? "Checking..."
+                : isLoading
+                  ? "Loading..."
+                  : isDeleting
+                    ? "Deleting..."
+                    : "Downloading..."}
             </Button>
           ) : isNotAvailable ? (
             <Button variant="outline" onClick={() => onOpenChange(false)}>
