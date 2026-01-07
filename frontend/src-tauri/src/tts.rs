@@ -3,6 +3,7 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use futures_util::StreamExt;
 use hound::{SampleFormat, WavSpec, WavWriter};
 use ndarray::{Array, Array3};
+use once_cell::sync::Lazy;
 use ort::{session::Session, value::Value};
 use rand::thread_rng;
 use rand_distr::{Distribution, Normal};
@@ -14,6 +15,37 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter};
 use unicode_normalization::UnicodeNormalization;
+
+// Pre-compiled regexes for text preprocessing (compiled once, reused)
+static RE_BOLD: Lazy<Regex> = Lazy::new(|| Regex::new(r"\*\*([^*]+)\*\*").unwrap());
+static RE_BOLD2: Lazy<Regex> = Lazy::new(|| Regex::new(r"__([^_]+)__").unwrap());
+static RE_ITALIC: Lazy<Regex> = Lazy::new(|| Regex::new(r"\*([^*]+)\*").unwrap());
+static RE_ITALIC2: Lazy<Regex> = Lazy::new(|| Regex::new(r"_([^_\s][^_]*)_").unwrap());
+static RE_STRIKE: Lazy<Regex> = Lazy::new(|| Regex::new(r"~~([^~]+)~~").unwrap());
+static RE_CODE: Lazy<Regex> = Lazy::new(|| Regex::new(r"`([^`]+)`").unwrap());
+static RE_CODEBLOCK: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?s)```[^`]*```").unwrap());
+static RE_HEADER: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?m)^#{1,6}\s*").unwrap());
+static RE_EMOJI: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"[\x{1F600}-\x{1F64F}\x{1F300}-\x{1F5FF}\x{1F680}-\x{1F6FF}\x{1F700}-\x{1F77F}\x{1F780}-\x{1F7FF}\x{1F800}-\x{1F8FF}\x{1F900}-\x{1F9FF}\x{1FA00}-\x{1FA6F}\x{1FA70}-\x{1FAFF}\x{2600}-\x{26FF}\x{2700}-\x{27BF}\x{1F1E6}-\x{1F1FF}]+").unwrap()
+});
+static RE_DIACRITICS: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"[\u{0302}\u{0303}\u{0304}\u{0305}\u{0306}\u{0307}\u{0308}\u{030A}\u{030B}\u{030C}\u{0327}\u{0328}\u{0329}\u{032A}\u{032B}\u{032C}\u{032D}\u{032E}\u{032F}]").unwrap()
+});
+static RE_SPACE_COMMA: Lazy<Regex> = Lazy::new(|| Regex::new(r" ,").unwrap());
+static RE_SPACE_PERIOD: Lazy<Regex> = Lazy::new(|| Regex::new(r" \.").unwrap());
+static RE_SPACE_EXCL: Lazy<Regex> = Lazy::new(|| Regex::new(r" !").unwrap());
+static RE_SPACE_QUEST: Lazy<Regex> = Lazy::new(|| Regex::new(r" \?").unwrap());
+static RE_SPACE_SEMI: Lazy<Regex> = Lazy::new(|| Regex::new(r" ;").unwrap());
+static RE_SPACE_COLON: Lazy<Regex> = Lazy::new(|| Regex::new(r" :").unwrap());
+static RE_SPACE_APOS: Lazy<Regex> = Lazy::new(|| Regex::new(r" '").unwrap());
+static RE_DUP_DQUOTE: Lazy<Regex> = Lazy::new(|| Regex::new(r#""{2,}"#).unwrap());
+static RE_DUP_SQUOTE: Lazy<Regex> = Lazy::new(|| Regex::new(r"'{2,}").unwrap());
+static RE_DUP_BTICK: Lazy<Regex> = Lazy::new(|| Regex::new(r"`{2,}").unwrap());
+static RE_MULTI_SPACE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s+").unwrap());
+static RE_ENDS_PUNCT: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"[.!?;:,'"\u{201C}\u{201D}\u{2018}\u{2019})\]}…。」』】〉》›»]$"#).unwrap()
+});
+static RE_SENTENCE: Lazy<Regex> = Lazy::new(|| Regex::new(r"([.!?])\s+").unwrap());
 
 const HUGGINGFACE_BASE_URL: &str = "https://huggingface.co/Supertone/supertonic/resolve/main";
 
@@ -115,33 +147,16 @@ impl UnicodeProcessor {
 fn preprocess_text(text: &str) -> String {
     let mut text: String = text.nfkd().collect();
 
-    // Remove markdown formatting
-    // Bold: **text** or __text__
-    let bold_pattern = Regex::new(r"\*\*([^*]+)\*\*").unwrap();
-    text = bold_pattern.replace_all(&text, "$1").to_string();
-    let bold_pattern2 = Regex::new(r"__([^_]+)__").unwrap();
-    text = bold_pattern2.replace_all(&text, "$1").to_string();
-    // Italic: *text* or _text_
-    let italic_pattern = Regex::new(r"\*([^*]+)\*").unwrap();
-    text = italic_pattern.replace_all(&text, "$1").to_string();
-    let italic_pattern2 = Regex::new(r"_([^_\s][^_]*)_").unwrap();
-    text = italic_pattern2.replace_all(&text, "$1").to_string();
-    // Strikethrough: ~~text~~
-    let strike_pattern = Regex::new(r"~~([^~]+)~~").unwrap();
-    text = strike_pattern.replace_all(&text, "$1").to_string();
-    // Inline code: `text`
-    let code_pattern = Regex::new(r"`([^`]+)`").unwrap();
-    text = code_pattern.replace_all(&text, "$1").to_string();
-    // Code blocks: ```...```
-    let codeblock_pattern = Regex::new(r"(?s)```[^`]*```").unwrap();
-    text = codeblock_pattern.replace_all(&text, "").to_string();
-    // Headers: # text
-    let header_pattern = Regex::new(r"(?m)^#{1,6}\s*").unwrap();
-    text = header_pattern.replace_all(&text, "").to_string();
-
-    // Remove emojis
-    let emoji_pattern = Regex::new(r"[\x{1F600}-\x{1F64F}\x{1F300}-\x{1F5FF}\x{1F680}-\x{1F6FF}\x{1F700}-\x{1F77F}\x{1F780}-\x{1F7FF}\x{1F800}-\x{1F8FF}\x{1F900}-\x{1F9FF}\x{1FA00}-\x{1FA6F}\x{1FA70}-\x{1FAFF}\x{2600}-\x{26FF}\x{2700}-\x{27BF}\x{1F1E6}-\x{1F1FF}]+").unwrap();
-    text = emoji_pattern.replace_all(&text, "").to_string();
+    // Remove markdown formatting (using pre-compiled regexes)
+    text = RE_BOLD.replace_all(&text, "$1").to_string();
+    text = RE_BOLD2.replace_all(&text, "$1").to_string();
+    text = RE_ITALIC.replace_all(&text, "$1").to_string();
+    text = RE_ITALIC2.replace_all(&text, "$1").to_string();
+    text = RE_STRIKE.replace_all(&text, "$1").to_string();
+    text = RE_CODE.replace_all(&text, "$1").to_string();
+    text = RE_CODEBLOCK.replace_all(&text, "").to_string();
+    text = RE_HEADER.replace_all(&text, "").to_string();
+    text = RE_EMOJI.replace_all(&text, "").to_string();
 
     // Replace various dashes and symbols
     let replacements = [
@@ -167,9 +182,7 @@ fn preprocess_text(text: &str) -> String {
         text = text.replace(from, to);
     }
 
-    // Remove combining diacritics
-    let diacritics_pattern = Regex::new(r"[\u{0302}\u{0303}\u{0304}\u{0305}\u{0306}\u{0307}\u{0308}\u{030A}\u{030B}\u{030C}\u{0327}\u{0328}\u{0329}\u{032A}\u{032B}\u{032C}\u{032D}\u{032E}\u{032F}]").unwrap();
-    text = diacritics_pattern.replace_all(&text, "").to_string();
+    text = RE_DIACRITICS.replace_all(&text, "").to_string();
 
     // Remove special symbols
     for symbol in &["♥", "☆", "♡", "©", "\\"] {
@@ -182,61 +195,26 @@ fn preprocess_text(text: &str) -> String {
     text = text.replace("i.e.,", "that is, ");
 
     // Fix spacing around punctuation
-    text = Regex::new(r" ,")
-        .unwrap()
-        .replace_all(&text, ",")
-        .to_string();
-    text = Regex::new(r" \.")
-        .unwrap()
-        .replace_all(&text, ".")
-        .to_string();
-    text = Regex::new(r" !")
-        .unwrap()
-        .replace_all(&text, "!")
-        .to_string();
-    text = Regex::new(r" \?")
-        .unwrap()
-        .replace_all(&text, "?")
-        .to_string();
-    text = Regex::new(r" ;")
-        .unwrap()
-        .replace_all(&text, ";")
-        .to_string();
-    text = Regex::new(r" :")
-        .unwrap()
-        .replace_all(&text, ":")
-        .to_string();
-    text = Regex::new(r" '")
-        .unwrap()
-        .replace_all(&text, "'")
-        .to_string();
+    text = RE_SPACE_COMMA.replace_all(&text, ",").to_string();
+    text = RE_SPACE_PERIOD.replace_all(&text, ".").to_string();
+    text = RE_SPACE_EXCL.replace_all(&text, "!").to_string();
+    text = RE_SPACE_QUEST.replace_all(&text, "?").to_string();
+    text = RE_SPACE_SEMI.replace_all(&text, ";").to_string();
+    text = RE_SPACE_COLON.replace_all(&text, ":").to_string();
+    text = RE_SPACE_APOS.replace_all(&text, "'").to_string();
 
-    // Remove duplicate quotes
-    while text.contains("\"\"") {
-        text = text.replace("\"\"", "\"");
-    }
-    while text.contains("''") {
-        text = text.replace("''", "'");
-    }
-    while text.contains("``") {
-        text = text.replace("``", "`");
-    }
+    // Remove duplicate quotes (single regex pass instead of while loop)
+    text = RE_DUP_DQUOTE.replace_all(&text, "\"").to_string();
+    text = RE_DUP_SQUOTE.replace_all(&text, "'").to_string();
+    text = RE_DUP_BTICK.replace_all(&text, "`").to_string();
 
     // Remove extra spaces
-    text = Regex::new(r"\s+")
-        .unwrap()
-        .replace_all(&text, " ")
-        .to_string();
+    text = RE_MULTI_SPACE.replace_all(&text, " ").to_string();
     text = text.trim().to_string();
 
     // Add period if no ending punctuation
-    if !text.is_empty() {
-        let ends_with_punct =
-            Regex::new(r#"[.!?;:,'"\u{201C}\u{201D}\u{2018}\u{2019})\]}…。」』】〉》›»]$"#)
-                .unwrap();
-        if !ends_with_punct.is_match(&text) {
-            text.push('.');
-        }
+    if !text.is_empty() && !RE_ENDS_PUNCT.is_match(&text) {
+        text.push('.');
     }
     text
 }
@@ -301,15 +279,36 @@ fn sample_noisy_latent(
     (noisy_latent, latent_mask)
 }
 
+/// Split text by words when it exceeds max_len
+fn split_by_words(text: &str, max_len: usize) -> Vec<String> {
+    let mut result = Vec::new();
+    let mut current = String::new();
+
+    for word in text.split_whitespace() {
+        if current.len() + word.len() + 1 > max_len && !current.is_empty() {
+            result.push(current.trim().to_string());
+            current.clear();
+        }
+        if !current.is_empty() {
+            current.push(' ');
+        }
+        current.push_str(word);
+    }
+
+    if !current.is_empty() {
+        result.push(current.trim().to_string());
+    }
+    result
+}
+
 fn chunk_text(text: &str, max_len: usize) -> Vec<String> {
     let text = text.trim();
     if text.is_empty() {
         return vec![String::new()];
     }
 
-    let para_re = Regex::new(r"\n\s*\n").unwrap();
-    let sentence_re = Regex::new(r"([.!?])\s+").unwrap();
-    let paragraphs: Vec<&str> = para_re.split(text).collect();
+    static RE_PARA: Lazy<Regex> = Lazy::new(|| Regex::new(r"\n\s*\n").unwrap());
+    let paragraphs: Vec<&str> = RE_PARA.split(text).collect();
     let mut chunks = Vec::new();
 
     for para in paragraphs {
@@ -327,11 +326,21 @@ fn chunk_text(text: &str, max_len: usize) -> Vec<String> {
         let mut current = String::new();
         let mut last_end = 0;
 
-        for m in sentence_re.find_iter(para) {
+        for m in RE_SENTENCE.find_iter(para) {
             let sentence = para[last_end..m.start() + 1].trim(); // +1 to include punctuation
             last_end = m.end();
 
             if sentence.is_empty() {
+                continue;
+            }
+
+            // If single sentence exceeds max_len, split by words
+            if sentence.len() > max_len {
+                if !current.is_empty() {
+                    chunks.push(current.trim().to_string());
+                    current.clear();
+                }
+                chunks.extend(split_by_words(sentence, max_len));
                 continue;
             }
 
@@ -349,18 +358,23 @@ fn chunk_text(text: &str, max_len: usize) -> Vec<String> {
         // Remaining text after last sentence boundary
         let remaining = para[last_end..].trim();
         if !remaining.is_empty() {
-            if current.len() + remaining.len() + 1 > max_len && !current.is_empty() {
+            // If remaining exceeds max_len, split by words
+            if remaining.len() > max_len {
+                if !current.is_empty() {
+                    chunks.push(current.trim().to_string());
+                }
+                chunks.extend(split_by_words(remaining, max_len));
+            } else if current.len() + remaining.len() + 1 > max_len && !current.is_empty() {
                 chunks.push(current.trim().to_string());
-                current = remaining.to_string();
+                chunks.push(remaining.to_string());
             } else {
                 if !current.is_empty() {
                     current.push(' ');
                 }
                 current.push_str(remaining);
+                chunks.push(current.trim().to_string());
             }
-        }
-
-        if !current.is_empty() {
+        } else if !current.is_empty() {
             chunks.push(current.trim().to_string());
         }
     }
@@ -547,6 +561,8 @@ fn get_tts_models_dir() -> Result<PathBuf> {
 }
 
 fn load_voice_style(models_dir: &Path) -> Result<Style> {
+    // TODO: Add voice selection API - currently hardcoded to F2
+    // Available voices: F1, F2, M1, M2
     let style_path = models_dir.join("F2.json");
     let file = File::open(&style_path).context("Failed to open voice style file")?;
     let reader = BufReader::new(file);
