@@ -300,16 +300,19 @@ fn chunk_text(text: &str, max_len: usize) -> Vec<String> {
             continue;
         }
 
-        // Split by sentence boundaries
+        // Split by sentence boundaries, keeping punctuation
         let mut current = String::new();
+        let mut last_end = 0;
 
-        for part in sentence_re.split(para) {
-            let part = part.trim();
-            if part.is_empty() {
+        for m in sentence_re.find_iter(para) {
+            let sentence = para[last_end..m.start() + 1].trim(); // +1 to include punctuation
+            last_end = m.end();
+
+            if sentence.is_empty() {
                 continue;
             }
 
-            if current.len() + part.len() + 1 > max_len && !current.is_empty() {
+            if current.len() + sentence.len() + 1 > max_len && !current.is_empty() {
                 chunks.push(current.trim().to_string());
                 current.clear();
             }
@@ -317,7 +320,21 @@ fn chunk_text(text: &str, max_len: usize) -> Vec<String> {
             if !current.is_empty() {
                 current.push(' ');
             }
-            current.push_str(part);
+            current.push_str(sentence);
+        }
+
+        // Remaining text after last sentence boundary
+        let remaining = para[last_end..].trim();
+        if !remaining.is_empty() {
+            if current.len() + remaining.len() + 1 > max_len && !current.is_empty() {
+                chunks.push(current.trim().to_string());
+                current = remaining.to_string();
+            } else {
+                if !current.is_empty() {
+                    current.push(' ');
+                }
+                current.push_str(remaining);
+            }
         }
 
         if !current.is_empty() {
@@ -629,15 +646,22 @@ struct DownloadProgress {
 
 #[tauri::command]
 pub async fn tts_download_models(app: AppHandle) -> Result<(), String> {
+    use std::time::Duration;
+
     let models_dir = get_tts_models_dir().map_err(|e| e.to_string())?;
     fs::create_dir_all(&models_dir)
         .map_err(|e| format!("Failed to create models directory: {}", e))?;
 
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(300))
+        .connect_timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
     let mut total_downloaded: u64 = 0;
 
     for (file_name, url_path, expected_size) in MODEL_FILES {
         let file_path = models_dir.join(file_name);
+        let temp_path = file_path.with_extension("part");
 
         // Skip if already downloaded
         if file_path.exists() {
@@ -653,6 +677,9 @@ pub async fn tts_download_models(app: AppHandle) -> Result<(), String> {
             );
             continue;
         }
+
+        // Clean up any partial download from previous attempt
+        let _ = fs::remove_file(&temp_path);
 
         let url = format!("{}/{}", HUGGINGFACE_BASE_URL, url_path);
         log::info!("Downloading TTS model: {}", file_name);
@@ -671,7 +698,7 @@ pub async fn tts_download_models(app: AppHandle) -> Result<(), String> {
             ));
         }
 
-        let mut file = File::create(&file_path)
+        let mut file = File::create(&temp_path)
             .map_err(|e| format!("Failed to create file {}: {}", file_name, e))?;
 
         let mut stream = response.bytes_stream();
@@ -695,6 +722,13 @@ pub async fn tts_download_models(app: AppHandle) -> Result<(), String> {
                 },
             );
         }
+
+        // Flush and rename temp file to final path
+        file.flush()
+            .map_err(|e| format!("Failed to flush file {}: {}", file_name, e))?;
+        drop(file);
+        fs::rename(&temp_path, &file_path)
+            .map_err(|e| format!("Failed to finalize {}: {}", file_name, e))?;
 
         total_downloaded += expected_size;
         log::info!("Downloaded TTS model: {}", file_name);
