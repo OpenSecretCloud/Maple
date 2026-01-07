@@ -446,6 +446,14 @@ export function ChatHistoryList({
     }
   }, []);
 
+  // Cancel long-press when user starts scrolling (touch move)
+  const handleLongPressMove = useCallback(() => {
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+  }, []);
+
   // Cleanup long-press timer on unmount
   useEffect(() => {
     return () => {
@@ -610,6 +618,7 @@ export function ChatHistoryList({
               onMouseUp={handleLongPressEnd}
               onMouseLeave={handleLongPressEnd}
               onTouchStart={() => isMobile && handleLongPressStart(conv.id)}
+              onTouchMove={handleLongPressMove}
               onTouchEnd={handleLongPressEnd}
               onTouchCancel={handleLongPressEnd}
               className={`rounded-lg py-2 transition-all hover:text-primary cursor-pointer ${
