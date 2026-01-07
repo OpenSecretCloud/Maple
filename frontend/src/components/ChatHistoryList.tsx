@@ -238,7 +238,10 @@ export function ChatHistoryList({
     };
 
     const handleMouseDown = (e: MouseEvent) => {
+      if (e.button !== 0) return;
       if (container.scrollTop === 0 && !isRefreshingRef.current) {
+        const target = e.target as HTMLElement;
+        if (target.closest('button, a, input, [role="menuitem"]')) return;
         pullStartY.current = e.clientY;
         isPulling.current = true;
       }
@@ -251,6 +254,7 @@ export function ChatHistoryList({
       const distance = currentY - pullStartY.current;
 
       if (distance > 0 && container.scrollTop === 0) {
+        e.preventDefault();
         const resistanceFactor = 0.4;
         const adjustedDistance = Math.min(distance * resistanceFactor, 80);
         pullDistanceRef.current = adjustedDistance;
