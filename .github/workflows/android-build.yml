@@ -57,7 +57,7 @@ jobs:
             frontend/src-tauri/gen/android/.gradle
             frontend/src-tauri/gen/android/build
             frontend/src-tauri/gen/android/app/build
-          key: ${{ runner.os }}-gradle-${{ hashFiles('frontend/src-tauri/gen/android/**/*.gradle*', 'frontend/src-tauri/gen/android/gradle-wrapper.properties') }}
+          key: ${{ runner.os }}-gradle-${{ hashFiles('frontend/src-tauri/gen/android/**/*.gradle*', 'frontend/src-tauri/gen/android/gradle-wrapper.properties', 'frontend/src-tauri/tauri.conf.json', 'frontend/src-tauri/capabilities/**') }}
           restore-keys: |
             ${{ runner.os }}-gradle-
 
@@ -140,6 +140,13 @@ jobs:
           echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
           echo "SCCACHE_DIR=$HOME/.cache/sccache" >> $GITHUB_ENV
           echo "SCCACHE_CACHE_SIZE=2G" >> $GITHUB_ENV
+
+      - name: Clean Gradle build cache
+        run: |
+          # Clear Gradle build cache to ensure fresh builds when capabilities change
+          rm -rf ~/.gradle/caches/build-cache-*
+          rm -rf frontend/src-tauri/gen/android/.gradle/build-cache
+          rm -rf frontend/src-tauri/gen/android/app/build
 
       - name: Build Tauri Android App (Signed Release)
         working-directory: ./frontend
