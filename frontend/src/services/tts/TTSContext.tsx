@@ -204,7 +204,17 @@ export function TTSProvider({ children }: { children: ReactNode }) {
         setIsPlaying(true);
         setCurrentPlayingId(messageId);
 
-        const result = await invoke<TTSSynthesizeResponse>("tts_synthesize", { text });
+        // Preprocess text to remove think blocks and other non-speakable content
+        const processedText = preprocessTextForTTS(text);
+        if (!processedText) {
+          setIsPlaying(false);
+          setCurrentPlayingId(null);
+          return;
+        }
+
+        const result = await invoke<TTSSynthesizeResponse>("tts_synthesize", {
+          text: processedText
+        });
 
         // Create audio from base64
         const audioBlob = base64ToBlob(result.audio_base64, "audio/wav");
@@ -297,6 +307,21 @@ export function useTTS() {
     throw new Error("useTTS must be used within a TTSProvider");
   }
   return context;
+}
+
+/**
+ * Preprocess text for TTS by removing think blocks and other non-speakable content
+ */
+function preprocessTextForTTS(text: string): string {
+  let processed = text;
+
+  // Remove <think>...</think> blocks (chain of thought reasoning)
+  processed = processed.replace(/<think>[\s\S]*?<\/think>/g, "");
+
+  // Remove unclosed <think> tags (streaming edge case)
+  processed = processed.replace(/<think>[\s\S]*$/g, "");
+
+  return processed.trim();
 }
 
 function base64ToBlob(base64: string, mimeType: string): Blob {

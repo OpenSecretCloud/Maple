@@ -88,13 +88,12 @@ impl UnicodeProcessor {
     }
 
     fn call(&self, text_list: &[String]) -> (Vec<Vec<i64>>, Array3<f32>) {
-        let processed_texts: Vec<String> = text_list.iter().map(|t| preprocess_text(t)).collect();
-        let text_ids_lengths: Vec<usize> =
-            processed_texts.iter().map(|t| t.chars().count()).collect();
+        // Text should already be preprocessed before reaching here
+        let text_ids_lengths: Vec<usize> = text_list.iter().map(|t| t.chars().count()).collect();
         let max_len = *text_ids_lengths.iter().max().unwrap_or(&0);
 
         let mut text_ids = Vec::new();
-        for text in &processed_texts {
+        for text in text_list {
             let mut row = vec![0i64; max_len];
             let unicode_vals: Vec<usize> = text.chars().map(|c| c as usize).collect();
             for (j, &val) in unicode_vals.iter().enumerate() {
@@ -115,6 +114,30 @@ impl UnicodeProcessor {
 fn preprocess_text(text: &str) -> String {
     let mut text: String = text.nfkd().collect();
 
+    // Remove markdown formatting
+    // Bold: **text** or __text__
+    let bold_pattern = Regex::new(r"\*\*([^*]+)\*\*").unwrap();
+    text = bold_pattern.replace_all(&text, "$1").to_string();
+    let bold_pattern2 = Regex::new(r"__([^_]+)__").unwrap();
+    text = bold_pattern2.replace_all(&text, "$1").to_string();
+    // Italic: *text* or _text_
+    let italic_pattern = Regex::new(r"\*([^*]+)\*").unwrap();
+    text = italic_pattern.replace_all(&text, "$1").to_string();
+    let italic_pattern2 = Regex::new(r"_([^_\s][^_]*)_").unwrap();
+    text = italic_pattern2.replace_all(&text, "$1").to_string();
+    // Strikethrough: ~~text~~
+    let strike_pattern = Regex::new(r"~~([^~]+)~~").unwrap();
+    text = strike_pattern.replace_all(&text, "$1").to_string();
+    // Inline code: `text`
+    let code_pattern = Regex::new(r"`([^`]+)`").unwrap();
+    text = code_pattern.replace_all(&text, "$1").to_string();
+    // Code blocks: ```...```
+    let codeblock_pattern = Regex::new(r"(?s)```[^`]*```").unwrap();
+    text = codeblock_pattern.replace_all(&text, "").to_string();
+    // Headers: # text
+    let header_pattern = Regex::new(r"(?m)^#{1,6}\s*").unwrap();
+    text = header_pattern.replace_all(&text, "").to_string();
+
     // Remove emojis
     let emoji_pattern = Regex::new(r"[\x{1F600}-\x{1F64F}\x{1F300}-\x{1F5FF}\x{1F680}-\x{1F6FF}\x{1F700}-\x{1F77F}\x{1F780}-\x{1F7FF}\x{1F800}-\x{1F8FF}\x{1F900}-\x{1F9FF}\x{1FA00}-\x{1FA6F}\x{1FA70}-\x{1FAFF}\x{2600}-\x{26FF}\x{2700}-\x{27BF}\x{1F1E6}-\x{1F1FF}]+").unwrap();
     text = emoji_pattern.replace_all(&text, "").to_string();
@@ -125,7 +148,6 @@ fn preprocess_text(text: &str) -> String {
         ("‑", "-"),
         ("—", "-"),
         ("¯", " "),
-        ("_", " "),
         ("\u{201C}", "\""),
         ("\u{201D}", "\""),
         ("\u{2018}", "'"),
@@ -390,7 +412,12 @@ impl TextToSpeech {
                 continue;
             }
 
-            let (wav, duration) = self.infer(&[chunk.clone()], style, total_step, speed)?;
+            let processed_chunk = preprocess_text(chunk);
+            if processed_chunk.trim().is_empty() {
+                continue;
+            }
+
+            let (wav, duration) = self.infer(&[processed_chunk], style, total_step, speed)?;
             let dur = duration[0];
             let wav_len = (self.sample_rate as f32 * dur) as usize;
             let wav_chunk = &wav[..wav_len.min(wav.len())];
@@ -780,11 +807,17 @@ pub async fn tts_synthesize(
         .clone();
     let tts = guard.tts.as_mut().ok_or("TTS engine not loaded")?;
 
-    log::info!("Synthesizing TTS for text: {} chars", text.len());
+    if text.trim().is_empty() {
+        return Err("No text to synthesize".to_string());
+    }
 
     let audio = tts
         .synthesize(&text, &style, 10, 1.2)
         .map_err(|e| format!("TTS synthesis failed: {}", e))?;
+
+    if audio.is_empty() {
+        return Err("No speakable text after preprocessing".to_string());
+    }
 
     let duration_seconds = audio.len() as f32 / tts.sample_rate as f32;
     let sample_rate = tts.sample_rate;
