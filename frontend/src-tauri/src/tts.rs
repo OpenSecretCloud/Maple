@@ -15,30 +15,37 @@ use std::sync::Mutex;
 use tauri::{AppHandle, Emitter};
 use unicode_normalization::UnicodeNormalization;
 
-const HUGGINGFACE_BASE_URL: &str = "https://huggingface.co/Supertone/supertonic/resolve/main";
+const HUGGINGFACE_BASE_URL: &str = "https://huggingface.co/Supertone/supertonic-2/resolve/main";
 
 const MODEL_FILES: &[(&str, &str, u64)] = &[
     (
         "duration_predictor.onnx",
         "onnx/duration_predictor.onnx",
-        1_670_000,
+        1_520_000,
     ),
-    ("text_encoder.onnx", "onnx/text_encoder.onnx", 29_360_000),
+    ("text_encoder.onnx", "onnx/text_encoder.onnx", 27_400_000),
     (
         "vector_estimator.onnx",
         "onnx/vector_estimator.onnx",
-        139_460_000,
+        132_000_000,
     ),
-    ("vocoder.onnx", "onnx/vocoder.onnx", 105_900_000),
+    ("vocoder.onnx", "onnx/vocoder.onnx", 101_000_000),
     ("tts.json", "onnx/tts.json", 9_000),
-    ("unicode_indexer.json", "onnx/unicode_indexer.json", 268_000),
-    ("F1.json", "voice_styles/F1.json", 421_000),
-    ("F2.json", "voice_styles/F2.json", 421_000),
+    ("unicode_indexer.json", "onnx/unicode_indexer.json", 262_000),
+    // 10 voice styles: 5 female (F1-F5), 5 male (M1-M5)
+    ("F1.json", "voice_styles/F1.json", 420_000),
+    ("F2.json", "voice_styles/F2.json", 420_000),
+    ("F3.json", "voice_styles/F3.json", 420_000),
+    ("F4.json", "voice_styles/F4.json", 420_000),
+    ("F5.json", "voice_styles/F5.json", 420_000),
     ("M1.json", "voice_styles/M1.json", 421_000),
-    ("M2.json", "voice_styles/M2.json", 421_000),
+    ("M2.json", "voice_styles/M2.json", 420_000),
+    ("M3.json", "voice_styles/M3.json", 420_000),
+    ("M4.json", "voice_styles/M4.json", 420_000),
+    ("M5.json", "voice_styles/M5.json", 420_000),
 ];
 
-const TOTAL_MODEL_SIZE: u64 = 278_401_000; // ~265 MB
+const TOTAL_MODEL_SIZE: u64 = 266_392_000; // ~254 MB
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -87,8 +94,11 @@ impl UnicodeProcessor {
         UnicodeProcessor { indexer }
     }
 
-    fn call(&self, text_list: &[String]) -> (Vec<Vec<i64>>, Array3<f32>) {
-        let processed_texts: Vec<String> = text_list.iter().map(|t| preprocess_text(t)).collect();
+    fn call(&self, text_list: &[String], lang: &str) -> (Vec<Vec<i64>>, Array3<f32>) {
+        let processed_texts: Vec<String> = text_list
+            .iter()
+            .map(|t| preprocess_text(t, lang))
+            .collect();
         let text_ids_lengths: Vec<usize> =
             processed_texts.iter().map(|t| t.chars().count()).collect();
         let max_len = *text_ids_lengths.iter().max().unwrap_or(&0);
@@ -112,7 +122,7 @@ impl UnicodeProcessor {
     }
 }
 
-fn preprocess_text(text: &str) -> String {
+fn preprocess_text(text: &str, lang: &str) -> String {
     let mut text: String = text.nfkd().collect();
 
     // Remove emojis
@@ -124,7 +134,6 @@ fn preprocess_text(text: &str) -> String {
         ("–", "-"),
         ("‑", "-"),
         ("—", "-"),
-        ("¯", " "),
         ("_", " "),
         ("\u{201C}", "\""),
         ("\u{201D}", "\""),
@@ -143,10 +152,6 @@ fn preprocess_text(text: &str) -> String {
     for (from, to) in &replacements {
         text = text.replace(from, to);
     }
-
-    // Remove combining diacritics
-    let diacritics_pattern = Regex::new(r"[\u{0302}\u{0303}\u{0304}\u{0305}\u{0306}\u{0307}\u{0308}\u{030A}\u{030B}\u{030C}\u{0327}\u{0328}\u{0329}\u{032A}\u{032B}\u{032C}\u{032D}\u{032E}\u{032F}]").unwrap();
-    text = diacritics_pattern.replace_all(&text, "").to_string();
 
     // Remove special symbols
     for symbol in &["♥", "☆", "♡", "©", "\\"] {
@@ -215,7 +220,9 @@ fn preprocess_text(text: &str) -> String {
             text.push('.');
         }
     }
-    text
+
+    // Wrap text with language tags (required for Supertonic v2)
+    format!("<{}>{}</{}>", lang, text, lang)
 }
 
 fn length_to_mask(lengths: &[usize], max_len: Option<usize>) -> Array3<f32> {
@@ -377,11 +384,14 @@ impl TextToSpeech {
     fn synthesize(
         &mut self,
         text: &str,
+        lang: &str,
         style: &Style,
         total_step: usize,
         speed: f32,
     ) -> Result<Vec<f32>> {
-        let chunks = chunk_text(text, 300);
+        // Korean uses smaller chunks (120 chars) vs others (300 chars)
+        let max_chunk_len = if lang == "ko" { 120 } else { 300 };
+        let chunks = chunk_text(text, max_chunk_len);
         let mut wav_cat: Vec<f32> = Vec::new();
         let silence_duration = 0.05;
 
@@ -390,7 +400,7 @@ impl TextToSpeech {
                 continue;
             }
 
-            let (wav, duration) = self.infer(&[chunk.clone()], style, total_step, speed)?;
+            let (wav, duration) = self.infer(&[chunk.clone()], lang, style, total_step, speed)?;
             let dur = duration[0];
             let wav_len = (self.sample_rate as f32 * dur) as usize;
             let wav_chunk = &wav[..wav_len.min(wav.len())];
@@ -407,12 +417,13 @@ impl TextToSpeech {
     fn infer(
         &mut self,
         text_list: &[String],
+        lang: &str,
         style: &Style,
         total_step: usize,
         speed: f32,
     ) -> Result<(Vec<f32>, Vec<f32>)> {
         let bsz = text_list.len();
-        let (text_ids, text_mask) = self.text_processor.call(text_list);
+        let (text_ids, text_mask) = self.text_processor.call(text_list, lang);
 
         let text_ids_array = {
             let text_ids_shape = (bsz, text_ids[0].len());
@@ -782,8 +793,11 @@ pub async fn tts_synthesize(
 
     log::info!("Synthesizing TTS for text: {} chars", text.len());
 
+    // Default to English for now (multilingual support can be added later)
+    let lang = "en";
+
     let audio = tts
-        .synthesize(&text, &style, 10, 1.2)
+        .synthesize(&text, lang, &style, 10, 1.2)
         .map_err(|e| format!("TTS synthesis failed: {}", e))?;
 
     let duration_seconds = audio.len() as f32 / tts.sample_rate as f32;
