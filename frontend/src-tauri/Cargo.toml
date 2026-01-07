@@ -39,7 +39,8 @@ axum = "0.8"
 pdf-extract = "0.7"
 base64 = "0.22"
 
-# TTS dependencies (Supertonic)
+[target.'cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))'.dependencies]
+# TTS dependencies (Supertonic) - desktop only
 ort = "2.0.0-rc.7"
 ndarray = { version = "0.16", features = ["rayon"] }
 rand = "0.8"

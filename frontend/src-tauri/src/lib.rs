@@ -3,6 +3,7 @@ use tauri_plugin_deep_link::DeepLinkExt;
 
 mod pdf_extractor;
 mod proxy;
+#[cfg(desktop)]
 mod tts;
 
 #[cfg(desktop)]
