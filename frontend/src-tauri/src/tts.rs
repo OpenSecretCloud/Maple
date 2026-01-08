@@ -463,7 +463,7 @@ impl TextToSpeech {
         };
 
         let text_ids_value = Value::from_array(text_ids_array)?;
-        let text_mask_value = Value::from_array(text_mask.clone())?;
+        let text_mask_value = Value::from_array(text_mask)?;
         let style_dp_value = Value::from_array(style.dp.clone())?;
 
         // Predict duration
@@ -497,6 +497,7 @@ impl TextToSpeech {
             ),
             text_emb_data.to_vec(),
         )?;
+        let text_emb_value = Value::from_array(text_emb)?;
 
         // Sample noisy latent
         let (mut xt, latent_mask) = sample_noisy_latent(
@@ -506,25 +507,23 @@ impl TextToSpeech {
             self.cfgs.ttl.chunk_compress_factor,
             self.cfgs.ttl.latent_dim,
         );
+        let latent_mask_value = Value::from_array(latent_mask)?;
 
         let total_step_array = Array::from_elem(bsz, total_step as f32);
+        let total_step_value = Value::from_array(total_step_array)?;
 
         // Denoising loop
         for step in 0..total_step {
             let current_step_array = Array::from_elem(bsz, step as f32);
             let xt_value = Value::from_array(xt.clone())?;
-            let text_emb_value = Value::from_array(text_emb.clone())?;
-            let latent_mask_value = Value::from_array(latent_mask.clone())?;
-            let text_mask_value2 = Value::from_array(text_mask.clone())?;
             let current_step_value = Value::from_array(current_step_array)?;
-            let total_step_value = Value::from_array(total_step_array.clone())?;
 
             let vector_est_outputs = self.vector_est_ort.run(ort::inputs! {
                 "noisy_latent" => &xt_value,
                 "text_emb" => &text_emb_value,
                 "style_ttl" => &style_ttl_value,
                 "latent_mask" => &latent_mask_value,
-                "text_mask" => &text_mask_value2,
+                "text_mask" => &text_mask_value,
                 "current_step" => &current_step_value,
                 "total_step" => &total_step_value
             })?;
@@ -705,7 +704,7 @@ pub async fn tts_download_models(app: AppHandle) -> Result<(), String> {
 
     for (file_name, url_path, expected_size) in MODEL_FILES {
         let file_path = models_dir.join(file_name);
-        let temp_path = file_path.with_extension("part");
+        let temp_path = models_dir.join(format!("{file_name}.part"));
 
         // Skip if already downloaded
         if file_path.exists() {
@@ -770,6 +769,8 @@ pub async fn tts_download_models(app: AppHandle) -> Result<(), String> {
         // Flush and rename temp file to final path
         file.flush()
             .map_err(|e| format!("Failed to flush file {}: {}", file_name, e))?;
+        file.sync_all()
+            .map_err(|e| format!("Failed to sync file {}: {}", file_name, e))?;
         drop(file);
         fs::rename(&temp_path, &file_path)
             .map_err(|e| format!("Failed to finalize {}: {}", file_name, e))?;
@@ -836,8 +837,8 @@ pub async fn tts_synthesize(
         return Err("No speakable text after preprocessing".to_string());
     }
 
-    let duration_seconds = audio.len() as f32 / tts.sample_rate as f32;
     let sample_rate = tts.sample_rate;
+    let duration_seconds = audio.len() as f32 / sample_rate as f32;
 
     // Drop the guard before encoding to release the lock
     drop(guard);

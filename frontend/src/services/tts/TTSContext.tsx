@@ -77,6 +77,13 @@ export function TTSProvider({ children }: { children: ReactNode }) {
   const audioUrlRef = useRef<string | null>(null);
   const unlistenRef = useRef<(() => void) | null>(null);
 
+  const cleanupDownloadListener = useCallback(() => {
+    if (unlistenRef.current) {
+      unlistenRef.current();
+      unlistenRef.current = null;
+    }
+  }, []);
+
   // Check TTS status from Rust backend
   const checkStatus = useCallback(async () => {
     if (!isTauriEnv) {
@@ -127,6 +134,8 @@ export function TTSProvider({ children }: { children: ReactNode }) {
       setDownloadDetail("Starting download...");
       setError(null);
 
+      cleanupDownloadListener();
+
       // Set up event listener for progress
       const unlisten = await listen<DownloadProgress>("tts-download-progress", (event) => {
         const { percent, file_name } = event.payload;
@@ -137,10 +146,6 @@ export function TTSProvider({ children }: { children: ReactNode }) {
 
       // Start the download
       await invoke("tts_download_models");
-
-      // Clean up listener
-      unlisten();
-      unlistenRef.current = null;
 
       // Load the models after download
       setStatus("loading");
@@ -153,14 +158,10 @@ export function TTSProvider({ children }: { children: ReactNode }) {
       console.error("TTS download failed:", err);
       setStatus("error");
       setError(err instanceof Error ? err.message : "Failed to download TTS models");
-
-      // Clean up listener on error
-      if (unlistenRef.current) {
-        unlistenRef.current();
-        unlistenRef.current = null;
-      }
+    } finally {
+      cleanupDownloadListener();
     }
-  }, [isTauriEnv]);
+  }, [isTauriEnv, cleanupDownloadListener]);
 
   const stop = useCallback(() => {
     if (audioUrlRef.current) {
@@ -176,7 +177,9 @@ export function TTSProvider({ children }: { children: ReactNode }) {
       sourceNodeRef.current = null;
     }
     if (audioContextRef.current) {
-      audioContextRef.current.close();
+      void audioContextRef.current.close().catch(() => {
+        // Ignore
+      });
       audioContextRef.current = null;
     }
     setIsPlaying(false);
@@ -209,17 +212,15 @@ export function TTSProvider({ children }: { children: ReactNode }) {
       // Stop any currently playing audio
       stop();
 
+      // Preprocess text to remove think blocks and other non-speakable content
+      const processedText = preprocessTextForTTS(text);
+      if (!processedText) {
+        return;
+      }
+
       try {
         setIsPlaying(true);
         setCurrentPlayingId(messageId);
-
-        // Preprocess text to remove think blocks and other non-speakable content
-        const processedText = preprocessTextForTTS(text);
-        if (!processedText) {
-          setIsPlaying(false);
-          setCurrentPlayingId(null);
-          return;
-        }
 
         const result = await invoke<TTSSynthesizeResponse>("tts_synthesize", {
           text: processedText
@@ -254,7 +255,9 @@ export function TTSProvider({ children }: { children: ReactNode }) {
             URL.revokeObjectURL(audioUrlRef.current);
             audioUrlRef.current = null;
           }
-          audioContext.close();
+          void audioContext.close().catch(() => {
+            // Ignore
+          });
           audioContextRef.current = null;
           sourceNodeRef.current = null;
         };
@@ -282,7 +285,9 @@ export function TTSProvider({ children }: { children: ReactNode }) {
         }
       }
       if (audioContextRef.current) {
-        audioContextRef.current.close();
+        void audioContextRef.current.close().catch(() => {
+          // Ignore
+        });
       }
       if (audioUrlRef.current) {
         URL.revokeObjectURL(audioUrlRef.current);
