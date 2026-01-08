@@ -79,6 +79,7 @@ export function ChatHistoryList({
   const [oldestConversationId, setOldestConversationId] = useState<string | undefined>();
   const [hasMoreConversations, setHasMoreConversations] = useState(false);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const isLoadingMoreRef = useRef(false);
   const lastConversationRef = useRef<HTMLDivElement>(null);
   const [conversations, setConversations] = useState<Conversation[]>([]);
 
@@ -203,22 +204,28 @@ export function ChatHistoryList({
         // This prevents "gap filler" items (after a delete) from being incorrectly prepended.
         setConversations((prev) => {
           const prevById = new Map(prev.map((c) => [c.id, c]));
-          const serverIds = new Set<string>();
 
-          const next: Conversation[] = newConversations.map((c) => {
-            serverIds.add(c.id);
+          const addedIds = new Set<string>();
+          const next: Conversation[] = [];
+
+          for (const c of newConversations) {
+            if (addedIds.has(c.id)) continue;
+            addedIds.add(c.id);
+
             const existing = prevById.get(c.id);
             if (existing && existing.metadata?.title === c.metadata?.title) {
-              return existing;
+              next.push(existing);
+              continue;
             }
-            return c;
-          });
+
+            next.push(c);
+          }
 
           // Preserve any older conversations we already loaded via pagination.
           for (const existing of prev) {
-            if (!serverIds.has(existing.id)) {
-              next.push(existing);
-            }
+            if (addedIds.has(existing.id)) continue;
+            addedIds.add(existing.id);
+            next.push(existing);
           }
 
           if (next.length === prev.length && next.every((c, i) => c === prev[i])) {
@@ -381,7 +388,9 @@ export function ChatHistoryList({
 
   // Load more older conversations for pagination
   const loadMoreConversations = useCallback(async () => {
-    if (!opensecret || !oldestConversationId || isLoadingMore) return;
+    if (!opensecret || !oldestConversationId || isLoadingMoreRef.current) return;
+
+    isLoadingMoreRef.current = true;
 
     setIsLoadingMore(true);
 
@@ -396,7 +405,18 @@ export function ChatHistoryList({
 
       if (olderConversations.length > 0) {
         // Append older conversations to the end of existing conversations
-        setConversations((prev) => [...prev, ...olderConversations]);
+        setConversations((prev) => {
+          const seen = new Set(prev.map((c) => c.id));
+          const merged = [...prev];
+
+          for (const c of olderConversations) {
+            if (seen.has(c.id)) continue;
+            seen.add(c.id);
+            merged.push(c);
+          }
+
+          return merged;
+        });
 
         // Update pagination state
         const newOldestId = olderConversations[olderConversations.length - 1].id;
@@ -409,9 +429,10 @@ export function ChatHistoryList({
     } catch (error) {
       console.error("Failed to load more conversations:", error);
     } finally {
+      isLoadingMoreRef.current = false;
       setIsLoadingMore(false);
     }
-  }, [opensecret, oldestConversationId, isLoadingMore]);
+  }, [opensecret, oldestConversationId]);
 
   // Set up IntersectionObserver for loading more conversations
   useEffect(() => {
