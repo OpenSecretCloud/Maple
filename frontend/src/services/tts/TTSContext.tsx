@@ -74,6 +74,7 @@ export function TTSProvider({ children }: { children: ReactNode }) {
 
   const audioContextRef = useRef<AudioContext | null>(null);
   const sourceNodeRef = useRef<AudioBufferSourceNode | null>(null);
+  const audioUrlRef = useRef<string | null>(null);
   const unlistenRef = useRef<(() => void) | null>(null);
 
   // Check TTS status from Rust backend
@@ -161,6 +162,27 @@ export function TTSProvider({ children }: { children: ReactNode }) {
     }
   }, [isTauriEnv]);
 
+  const stop = useCallback(() => {
+    if (audioUrlRef.current) {
+      URL.revokeObjectURL(audioUrlRef.current);
+      audioUrlRef.current = null;
+    }
+    if (sourceNodeRef.current) {
+      try {
+        sourceNodeRef.current.stop();
+      } catch {
+        // Ignore error if already stopped
+      }
+      sourceNodeRef.current = null;
+    }
+    if (audioContextRef.current) {
+      audioContextRef.current.close();
+      audioContextRef.current = null;
+    }
+    setIsPlaying(false);
+    setCurrentPlayingId(null);
+  }, []);
+
   const deleteModels = useCallback(async () => {
     if (!isTauriEnv) return;
 
@@ -169,20 +191,7 @@ export function TTSProvider({ children }: { children: ReactNode }) {
       setError(null);
 
       // Stop any playing audio first
-      if (sourceNodeRef.current) {
-        try {
-          sourceNodeRef.current.stop();
-        } catch {
-          // Ignore
-        }
-        sourceNodeRef.current = null;
-      }
-      if (audioContextRef.current) {
-        audioContextRef.current.close();
-        audioContextRef.current = null;
-      }
-      setIsPlaying(false);
-      setCurrentPlayingId(null);
+      stop();
 
       await invoke("tts_delete_models");
       setStatus("not_downloaded");
@@ -191,25 +200,14 @@ export function TTSProvider({ children }: { children: ReactNode }) {
       setStatus("error");
       setError(err instanceof Error ? err.message : "Failed to delete TTS models");
     }
-  }, [isTauriEnv]);
+  }, [isTauriEnv, stop]);
 
   const speak = useCallback(
     async (text: string, messageId: string) => {
       if (!isTauriEnv || status !== "ready") return;
 
       // Stop any currently playing audio
-      if (sourceNodeRef.current) {
-        try {
-          sourceNodeRef.current.stop();
-        } catch {
-          // Ignore
-        }
-        sourceNodeRef.current = null;
-      }
-      if (audioContextRef.current) {
-        audioContextRef.current.close();
-        audioContextRef.current = null;
-      }
+      stop();
 
       try {
         setIsPlaying(true);
@@ -230,6 +228,7 @@ export function TTSProvider({ children }: { children: ReactNode }) {
         // Create audio from base64
         const audioBlob = base64ToBlob(result.audio_base64, "audio/wav");
         const audioUrl = URL.createObjectURL(audioBlob);
+        audioUrlRef.current = audioUrl;
 
         // Use Web Audio API instead of HTMLAudioElement to avoid hijacking media controls
         const audioContext = new AudioContext();
@@ -245,9 +244,16 @@ export function TTSProvider({ children }: { children: ReactNode }) {
         sourceNodeRef.current = source;
 
         source.onended = () => {
+          if (sourceNodeRef.current !== source) {
+            return;
+          }
           setIsPlaying(false);
           setCurrentPlayingId(null);
-          URL.revokeObjectURL(audioUrl);
+
+          if (audioUrlRef.current === audioUrl) {
+            URL.revokeObjectURL(audioUrlRef.current);
+            audioUrlRef.current = null;
+          }
           audioContext.close();
           audioContextRef.current = null;
           sourceNodeRef.current = null;
@@ -256,34 +262,11 @@ export function TTSProvider({ children }: { children: ReactNode }) {
         source.start(0);
       } catch (err) {
         console.error("TTS synthesis failed:", err);
-        setIsPlaying(false);
-        setCurrentPlayingId(null);
-        if (audioContextRef.current) {
-          audioContextRef.current.close();
-          audioContextRef.current = null;
-        }
-        sourceNodeRef.current = null;
+        stop();
       }
     },
-    [isTauriEnv, status]
+    [isTauriEnv, status, stop]
   );
-
-  const stop = useCallback(() => {
-    if (sourceNodeRef.current) {
-      try {
-        sourceNodeRef.current.stop();
-      } catch {
-        // Ignore error if already stopped
-      }
-      sourceNodeRef.current = null;
-    }
-    if (audioContextRef.current) {
-      audioContextRef.current.close();
-      audioContextRef.current = null;
-    }
-    setIsPlaying(false);
-    setCurrentPlayingId(null);
-  }, []);
 
   // Clean up on unmount
   useEffect(() => {
@@ -300,6 +283,10 @@ export function TTSProvider({ children }: { children: ReactNode }) {
       }
       if (audioContextRef.current) {
         audioContextRef.current.close();
+      }
+      if (audioUrlRef.current) {
+        URL.revokeObjectURL(audioUrlRef.current);
+        audioUrlRef.current = null;
       }
     };
   }, []);
