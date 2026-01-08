@@ -6,7 +6,8 @@ import {
   Pencil,
   ChevronDown,
   ChevronRight,
-  CheckSquare
+  CheckSquare,
+  RefreshCw
 } from "lucide-react";
 import {
   DropdownMenu,
@@ -31,6 +32,7 @@ interface ChatHistoryListProps {
   onExitSelectionMode?: () => void;
   selectedIds: Set<string>;
   onSelectionChange: (ids: Set<string>) => void;
+  containerRef?: React.RefObject<HTMLElement>;
 }
 
 interface Conversation {
@@ -57,7 +59,8 @@ export function ChatHistoryList({
   isSelectionMode = false,
   onExitSelectionMode,
   selectedIds,
-  onSelectionChange
+  onSelectionChange,
+  containerRef
 }: ChatHistoryListProps) {
   const openai = useOpenAI();
   const opensecret = useOpenSecret();
@@ -76,8 +79,73 @@ export function ChatHistoryList({
   const [oldestConversationId, setOldestConversationId] = useState<string | undefined>();
   const [hasMoreConversations, setHasMoreConversations] = useState(false);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const isLoadingMoreRef = useRef(false);
   const lastConversationRef = useRef<HTMLDivElement>(null);
   const [conversations, setConversations] = useState<Conversation[]>([]);
+
+  // Pull-to-refresh (imperative updates to avoid reflow/re-render jank on iOS)
+  const [isPullRefreshing, setIsPullRefreshing] = useState(false);
+  const pullStartY = useRef(0);
+  const isPulling = useRef(false);
+  const pullDistanceRef = useRef(0);
+  const isRefreshingRef = useRef(false);
+  const pullRafRef = useRef<number | null>(null);
+  const pullContentRef = useRef<HTMLDivElement>(null);
+  const pullIndicatorRef = useRef<HTMLDivElement>(null);
+  const refreshIconRef = useRef<SVGSVGElement>(null);
+
+  const applyPullStyles = useCallback(() => {
+    const distance = pullDistanceRef.current;
+
+    if (pullContentRef.current) {
+      pullContentRef.current.style.transform = `translate3d(0, ${distance}px, 0)`;
+    }
+
+    if (pullIndicatorRef.current) {
+      const clamped = Math.min(distance, 60);
+      pullIndicatorRef.current.style.opacity = `${Math.min(distance / 60, 1)}`;
+      pullIndicatorRef.current.style.transform = `translate3d(0, ${clamped - 60}px, 0)`;
+    }
+
+    if (refreshIconRef.current) {
+      refreshIconRef.current.style.transform = isRefreshingRef.current
+        ? "none"
+        : `rotate(${distance * 3}deg)`;
+    }
+  }, []);
+
+  const scheduleApplyPullStyles = useCallback(() => {
+    if (pullRafRef.current != null) return;
+    pullRafRef.current = requestAnimationFrame(() => {
+      pullRafRef.current = null;
+      applyPullStyles();
+    });
+  }, [applyPullStyles]);
+
+  const setPullDistancePx = useCallback(
+    (distance: number, opts?: { transition?: boolean }) => {
+      pullDistanceRef.current = distance;
+
+      if (pullContentRef.current) {
+        pullContentRef.current.style.transition = opts?.transition
+          ? "transform 200ms ease-out"
+          : "none";
+      }
+
+      scheduleApplyPullStyles();
+    },
+    [scheduleApplyPullStyles]
+  );
+
+  useEffect(() => {
+    setPullDistancePx(0);
+    return () => {
+      if (pullRafRef.current != null) {
+        cancelAnimationFrame(pullRafRef.current);
+        pullRafRef.current = null;
+      }
+    };
+  }, [setPullDistancePx]);
 
   // Fetch initial conversations from API using the OpenSecret SDK
   const { isPending, error } = useQuery({
@@ -132,36 +200,39 @@ export function ChatHistoryList({
       const newConversations = response.data || [];
 
       if (newConversations.length > 0) {
-        // Merge new conversations with deduplication and metadata updates
+        // Use server ordering as the source of truth for the latest page.
+        // This prevents "gap filler" items (after a delete) from being incorrectly prepended.
         setConversations((prev) => {
-          const newConversationsMap = new Map(newConversations.map((c) => [c.id, c]));
-          let hasChanges = false;
+          const prevById = new Map(prev.map((c) => [c.id, c]));
 
-          // First, update existing conversations if their metadata changed (e.g., title)
-          const updatedConversations = prev.map((existingConv) => {
-            const newVersion = newConversationsMap.get(existingConv.id);
-            if (newVersion) {
-              // Remove from map so we don't add it again
-              newConversationsMap.delete(existingConv.id);
-              // Check if title or other metadata changed
-              if (existingConv.metadata?.title !== newVersion.metadata?.title) {
-                hasChanges = true;
-                return newVersion;
-              }
+          const addedIds = new Set<string>();
+          const next: Conversation[] = [];
+
+          for (const c of newConversations) {
+            if (addedIds.has(c.id)) continue;
+            addedIds.add(c.id);
+
+            const existing = prevById.get(c.id);
+            if (existing && existing.metadata?.title === c.metadata?.title) {
+              next.push(existing);
+              continue;
             }
-            return existingConv;
-          });
 
-          // Add any remaining new conversations (ones we haven't seen before)
-          const trulyNewConversations = Array.from(newConversationsMap.values());
+            next.push(c);
+          }
 
-          if (!hasChanges && trulyNewConversations.length === 0) {
+          // Preserve any older conversations we already loaded via pagination.
+          for (const existing of prev) {
+            if (addedIds.has(existing.id)) continue;
+            addedIds.add(existing.id);
+            next.push(existing);
+          }
+
+          if (next.length === prev.length && next.every((c, i) => c === prev[i])) {
             return prev;
           }
 
-          // Conversations come in desc order (newest first), so no need to reverse
-          // Prepend new conversations to the beginning (newest first in our list)
-          return [...trulyNewConversations, ...updatedConversations];
+          return next;
         });
       }
     } catch (error) {
@@ -169,6 +240,138 @@ export function ChatHistoryList({
       // Fail silently - don't disrupt the UI
     }
   }, [opensecret]);
+
+  // Pull-to-refresh handler
+  const handleRefresh = useCallback(async () => {
+    isRefreshingRef.current = true;
+    setIsPullRefreshing(true);
+    setPullDistancePx(60, { transition: true });
+    try {
+      await pollForUpdates();
+    } catch (error) {
+      console.error("Refresh failed:", error);
+    } finally {
+      setTimeout(() => {
+        setIsPullRefreshing(false);
+        isRefreshingRef.current = false;
+        setPullDistancePx(0, { transition: true });
+      }, 300);
+    }
+  }, [pollForUpdates, setPullDistancePx]);
+
+  // Pull-to-refresh event handlers - unified for all platforms (touch + mouse drag only)
+  useEffect(() => {
+    const container = containerRef?.current;
+    if (!container) return;
+
+    const handleTouchStart = (e: TouchEvent) => {
+      if (container.scrollTop <= 0 && !isRefreshingRef.current) {
+        if (longPressTimerRef.current) {
+          clearTimeout(longPressTimerRef.current);
+          longPressTimerRef.current = null;
+        }
+        pullStartY.current = e.touches[0].clientY;
+        isPulling.current = true;
+        setPullDistancePx(0);
+      }
+    };
+
+    const handleTouchMove = (e: TouchEvent) => {
+      if (!isPulling.current || isRefreshingRef.current) return;
+
+      const currentY = e.touches[0].clientY;
+      const distance = currentY - pullStartY.current;
+
+      if (distance > 0 && container.scrollTop <= 0) {
+        e.preventDefault();
+        if (longPressTimerRef.current) {
+          clearTimeout(longPressTimerRef.current);
+          longPressTimerRef.current = null;
+        }
+        const resistanceFactor = 0.4;
+        const adjustedDistance = Math.min(distance * resistanceFactor, 80);
+        setPullDistancePx(adjustedDistance);
+      }
+    };
+
+    const handleTouchEnd = () => {
+      if (!isPulling.current) return;
+      isPulling.current = false;
+
+      if (pullDistanceRef.current > 60) {
+        setPullDistancePx(60, { transition: true });
+        handleRefresh();
+      } else {
+        setPullDistancePx(0, { transition: true });
+      }
+    };
+
+    const handleMouseDown = (e: MouseEvent) => {
+      if (e.button !== 0) return;
+      if (container.scrollTop <= 0 && !isRefreshingRef.current) {
+        const target = e.target as HTMLElement;
+        if (target.closest('button, a, input, [role="menuitem"]')) return;
+        if (longPressTimerRef.current) {
+          clearTimeout(longPressTimerRef.current);
+          longPressTimerRef.current = null;
+        }
+        pullStartY.current = e.clientY;
+        isPulling.current = true;
+        setPullDistancePx(0);
+      }
+    };
+
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!isPulling.current || isRefreshingRef.current) return;
+
+      const currentY = e.clientY;
+      const distance = currentY - pullStartY.current;
+
+      if (distance > 0 && container.scrollTop <= 0) {
+        e.preventDefault();
+        if (longPressTimerRef.current) {
+          clearTimeout(longPressTimerRef.current);
+          longPressTimerRef.current = null;
+        }
+        const resistanceFactor = 0.4;
+        const adjustedDistance = Math.min(distance * resistanceFactor, 80);
+        setPullDistancePx(adjustedDistance);
+      }
+    };
+
+    const handleMouseUp = () => {
+      if (!isPulling.current) return;
+      isPulling.current = false;
+
+      if (pullDistanceRef.current > 60) {
+        setPullDistancePx(60, { transition: true });
+        handleRefresh();
+      } else {
+        setPullDistancePx(0, { transition: true });
+      }
+    };
+
+    // Touch events for mobile
+    container.addEventListener("touchstart", handleTouchStart, { passive: true });
+    container.addEventListener("touchmove", handleTouchMove, { passive: false });
+    container.addEventListener("touchend", handleTouchEnd);
+    container.addEventListener("touchcancel", handleTouchEnd);
+
+    // Mouse events for desktop (click and drag)
+    container.addEventListener("mousedown", handleMouseDown);
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", handleMouseUp);
+
+    return () => {
+      container.removeEventListener("touchstart", handleTouchStart);
+      container.removeEventListener("touchmove", handleTouchMove);
+      container.removeEventListener("touchend", handleTouchEnd);
+      container.removeEventListener("touchcancel", handleTouchEnd);
+      container.removeEventListener("mousedown", handleMouseDown);
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+    };
+  }, [containerRef, handleRefresh, setPullDistancePx]);
 
   // Set up polling every 60 seconds
   useEffect(() => {
@@ -185,7 +388,9 @@ export function ChatHistoryList({
 
   // Load more older conversations for pagination
   const loadMoreConversations = useCallback(async () => {
-    if (!opensecret || !oldestConversationId || isLoadingMore) return;
+    if (!opensecret || !oldestConversationId || isLoadingMoreRef.current) return;
+
+    isLoadingMoreRef.current = true;
 
     setIsLoadingMore(true);
 
@@ -200,7 +405,18 @@ export function ChatHistoryList({
 
       if (olderConversations.length > 0) {
         // Append older conversations to the end of existing conversations
-        setConversations((prev) => [...prev, ...olderConversations]);
+        setConversations((prev) => {
+          const seen = new Set(prev.map((c) => c.id));
+          const merged = [...prev];
+
+          for (const c of olderConversations) {
+            if (seen.has(c.id)) continue;
+            seen.add(c.id);
+            merged.push(c);
+          }
+
+          return merged;
+        });
 
         // Update pagination state
         const newOldestId = olderConversations[olderConversations.length - 1].id;
@@ -213,9 +429,10 @@ export function ChatHistoryList({
     } catch (error) {
       console.error("Failed to load more conversations:", error);
     } finally {
+      isLoadingMoreRef.current = false;
       setIsLoadingMore(false);
     }
-  }, [opensecret, oldestConversationId, isLoadingMore]);
+  }, [opensecret, oldestConversationId]);
 
   // Set up IntersectionObserver for loading more conversations
   useEffect(() => {
@@ -591,177 +808,196 @@ export function ChatHistoryList({
 
   return (
     <>
-      {filteredConversations.map((conv: Conversation, index: number) => {
-        const title = conv.metadata?.title || "Untitled Chat";
-        const isActive = conv.id === currentChatId;
-        const isSelected = selectedIds.has(conv.id);
-        const isLastConversation = index === filteredConversations.length - 1;
-        // Only attach ref when not searching and it's the last item
-        const shouldAttachRef = isLastConversation && !searchQuery.trim();
+      <div
+        ref={pullIndicatorRef}
+        className="pointer-events-none absolute left-0 right-0 top-0 z-10 flex h-[60px] items-center justify-center opacity-0"
+        style={{
+          transform: "translate3d(0, -60px, 0)",
+          willChange: "transform, opacity"
+        }}
+        aria-hidden="true"
+      >
+        <RefreshCw
+          ref={refreshIconRef}
+          className={`h-4 w-4 text-muted-foreground ${isPullRefreshing ? "animate-spin" : ""}`}
+        />
+      </div>
 
-        return (
-          <div
-            key={conv.id}
-            className={`relative group select-none ${isSelected ? "bg-primary/10 rounded-lg" : ""}`}
-            ref={shouldAttachRef ? lastConversationRef : undefined}
-            onContextMenu={(e) => e.preventDefault()}
-          >
+      <div ref={pullContentRef} className="flex flex-col gap-2" style={{ willChange: "transform" }}>
+        {filteredConversations.map((conv: Conversation, index: number) => {
+          const title = conv.metadata?.title || "Untitled Chat";
+          const isActive = conv.id === currentChatId;
+          const isSelected = selectedIds.has(conv.id);
+          const isLastConversation = index === filteredConversations.length - 1;
+          // Only attach ref when not searching and it's the last item
+          const shouldAttachRef = isLastConversation && !searchQuery.trim();
+
+          return (
             <div
-              onClick={() => {
-                if (isSelectionMode) {
-                  toggleSelection(conv.id);
-                } else {
-                  handleSelectConversation(conv.id);
-                }
-              }}
-              onMouseDown={() => isMobile && handleLongPressStart(conv.id)}
-              onMouseUp={handleLongPressEnd}
-              onMouseLeave={handleLongPressEnd}
-              onTouchStart={() => isMobile && handleLongPressStart(conv.id)}
-              onTouchMove={handleLongPressMove}
-              onTouchEnd={handleLongPressEnd}
-              onTouchCancel={handleLongPressEnd}
-              className={`rounded-lg py-2 transition-all hover:text-primary cursor-pointer ${
-                isActive && !isSelectionMode ? "text-primary" : "text-muted-foreground"
-              } ${isSelectionMode ? "pl-8" : ""}`}
+              key={conv.id}
+              className={`relative group select-none ${isSelected ? "bg-primary/10 rounded-lg" : ""}`}
+              ref={shouldAttachRef ? lastConversationRef : undefined}
+              onContextMenu={(e) => e.preventDefault()}
             >
-              {isSelectionMode && (
-                <div className="absolute left-1.5 top-1/2 -translate-y-1/2">
-                  <Checkbox
-                    checked={isSelected}
-                    onCheckedChange={() => toggleSelection(conv.id)}
-                    onClick={(e) => e.stopPropagation()}
-                    className="data-[state=checked]:bg-primary"
-                  />
-                </div>
-              )}
               <div
-                className={`overflow-hidden whitespace-nowrap ${!isSelectionMode ? "hover:underline" : ""} pr-8`}
+                onClick={() => {
+                  if (isSelectionMode) {
+                    toggleSelection(conv.id);
+                  } else {
+                    handleSelectConversation(conv.id);
+                  }
+                }}
+                onMouseDown={() => isMobile && handleLongPressStart(conv.id)}
+                onMouseUp={handleLongPressEnd}
+                onMouseLeave={handleLongPressEnd}
+                onTouchStart={() => isMobile && handleLongPressStart(conv.id)}
+                onTouchMove={handleLongPressMove}
+                onTouchEnd={handleLongPressEnd}
+                onTouchCancel={handleLongPressEnd}
+                className={`rounded-lg py-2 transition-all hover:text-primary cursor-pointer ${
+                  isActive && !isSelectionMode ? "text-primary" : "text-muted-foreground"
+                } ${isSelectionMode ? "pl-8" : ""}`}
               >
-                {title}
-              </div>
-              <div className="text-xs opacity-70 mt-1">
-                {new Date(conv.created_at * 1000).toLocaleDateString()}
-              </div>
-            </div>
-            {!isSelectionMode && (
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <button
-                    className={`z-50 bg-background/80 absolute right-2 top-1/2 transform -translate-y-1/2 text-primary transition-opacity p-2 ${
-                      isMobile ? "opacity-100" : "opacity-0 group-hover:opacity-100"
-                    }`}
-                    onClick={(e) => {
-                      e.preventDefault();
-                      e.stopPropagation();
-                    }}
-                  >
-                    <MoreHorizontal size={16} />
-                  </button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent>
-                  <DropdownMenuItem onClick={() => onSelectionChange(new Set([conv.id]))}>
-                    <CheckSquare className="mr-2 h-4 w-4" />
-                    <span>Select</span>
-                  </DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => handleOpenRenameDialog(conv)}>
-                    <Pencil className="mr-2 h-4 w-4" />
-                    <span>Rename Chat</span>
-                  </DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => handleOpenDeleteDialog(conv)}>
-                    <Trash className="mr-2 h-4 w-4" />
-                    <span>Delete Chat</span>
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
-            )}
-            {!isSelectionMode && (
-              <div className="absolute inset-y-0 right-0 w-[3rem] bg-gradient-to-l from-background to-transparent pointer-events-none"></div>
-            )}
-          </div>
-        );
-      })}
-
-      {/* Loading indicator for pagination */}
-      {isLoadingMore && (
-        <div className="flex items-center justify-center py-4">
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <div className="w-2 h-2 bg-foreground/60 rounded-full animate-pulse" />
-            <div className="w-2 h-2 bg-foreground/60 rounded-full animate-pulse delay-75" />
-            <div className="w-2 h-2 bg-foreground/60 rounded-full animate-pulse delay-150" />
-          </div>
-        </div>
-      )}
-
-      {/* Archived Chats Section - only show if there are archived chats */}
-      {filteredArchivedChats && filteredArchivedChats.length > 0 && (
-        <div className="mt-4">
-          <button
-            onClick={() => setIsArchivedExpanded(!isArchivedExpanded)}
-            className="flex items-center gap-2 w-full text-sm text-muted-foreground hover:text-foreground transition-colors mb-2"
-          >
-            {isArchivedExpanded ? (
-              <ChevronDown className="h-4 w-4" />
-            ) : (
-              <ChevronRight className="h-4 w-4" />
-            )}
-            <span>Archived ({filteredArchivedChats.length})</span>
-          </button>
-
-          {isArchivedExpanded && (
-            <div className="flex flex-col gap-2">
-              {filteredArchivedChats.map((chat) => {
-                const isActive = chat.id === currentChatId;
-                return (
-                  <div key={chat.id} className="relative group">
-                    <div
-                      onClick={() => {
-                        router.navigate({ to: "/chat/$chatId", params: { chatId: chat.id } });
-                      }}
-                      className={`rounded-lg py-2 transition-all hover:text-primary cursor-pointer ${
-                        isActive ? "text-primary" : "text-muted-foreground"
-                      }`}
-                    >
-                      <div className="overflow-hidden whitespace-nowrap hover:underline pr-8">
-                        {chat.title}
-                      </div>
-                      <div className="text-xs opacity-70 mt-1">
-                        {new Date(chat.updated_at || chat.created_at).toLocaleDateString()}
-                      </div>
-                    </div>
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <button
-                          className={`z-50 bg-background/80 absolute right-2 top-1/2 transform -translate-y-1/2 text-primary transition-opacity p-2 ${
-                            isMobile ? "opacity-100" : "opacity-0 group-hover:opacity-100"
-                          }`}
-                          onClick={(e) => {
-                            e.preventDefault();
-                            e.stopPropagation();
-                          }}
-                        >
-                          <MoreHorizontal size={16} />
-                        </button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent>
-                        <DropdownMenuItem onClick={() => handleOpenRenameDialogArchived(chat)}>
-                          <Pencil className="mr-2 h-4 w-4" />
-                          <span>Rename Chat</span>
-                        </DropdownMenuItem>
-                        <DropdownMenuItem onClick={() => handleOpenDeleteDialogArchived(chat)}>
-                          <Trash className="mr-2 h-4 w-4" />
-                          <span>Delete Chat</span>
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                    <div className="absolute inset-y-0 right-0 w-[3rem] bg-gradient-to-l from-background to-transparent pointer-events-none"></div>
+                {isSelectionMode && (
+                  <div className="absolute left-1.5 top-1/2 -translate-y-1/2">
+                    <Checkbox
+                      checked={isSelected}
+                      onCheckedChange={() => toggleSelection(conv.id)}
+                      onClick={(e) => e.stopPropagation()}
+                      className="data-[state=checked]:bg-primary"
+                    />
                   </div>
-                );
-              })}
+                )}
+                <div
+                  className={`overflow-hidden whitespace-nowrap ${
+                    !isSelectionMode ? "hover:underline" : ""
+                  } pr-8`}
+                >
+                  {title}
+                </div>
+                <div className="text-xs opacity-70 mt-1">
+                  {new Date(conv.created_at * 1000).toLocaleDateString()}
+                </div>
+              </div>
+              {!isSelectionMode && (
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <button
+                      className={`z-50 bg-background/80 absolute right-2 top-1/2 transform -translate-y-1/2 text-primary transition-opacity p-2 ${
+                        isMobile ? "opacity-100" : "opacity-0 group-hover:opacity-100"
+                      }`}
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                      }}
+                    >
+                      <MoreHorizontal size={16} />
+                    </button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent>
+                    <DropdownMenuItem onClick={() => onSelectionChange(new Set([conv.id]))}>
+                      <CheckSquare className="mr-2 h-4 w-4" />
+                      <span>Select</span>
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => handleOpenRenameDialog(conv)}>
+                      <Pencil className="mr-2 h-4 w-4" />
+                      <span>Rename Chat</span>
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => handleOpenDeleteDialog(conv)}>
+                      <Trash className="mr-2 h-4 w-4" />
+                      <span>Delete Chat</span>
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              )}
+              {!isSelectionMode && (
+                <div className="absolute inset-y-0 right-0 w-[3rem] bg-gradient-to-l from-background to-transparent pointer-events-none"></div>
+              )}
             </div>
-          )}
-        </div>
-      )}
+          );
+        })}
+
+        {/* Loading indicator for pagination */}
+        {isLoadingMore && (
+          <div className="flex items-center justify-center py-4">
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <div className="w-2 h-2 bg-foreground/60 rounded-full animate-pulse" />
+              <div className="w-2 h-2 bg-foreground/60 rounded-full animate-pulse delay-75" />
+              <div className="w-2 h-2 bg-foreground/60 rounded-full animate-pulse delay-150" />
+            </div>
+          </div>
+        )}
+
+        {/* Archived Chats Section - only show if there are archived chats */}
+        {filteredArchivedChats && filteredArchivedChats.length > 0 && (
+          <div className="mt-4">
+            <button
+              onClick={() => setIsArchivedExpanded(!isArchivedExpanded)}
+              className="flex items-center gap-2 w-full text-sm text-muted-foreground hover:text-foreground transition-colors mb-2"
+            >
+              {isArchivedExpanded ? (
+                <ChevronDown className="h-4 w-4" />
+              ) : (
+                <ChevronRight className="h-4 w-4" />
+              )}
+              <span>Archived ({filteredArchivedChats.length})</span>
+            </button>
+
+            {isArchivedExpanded && (
+              <div className="flex flex-col gap-2">
+                {filteredArchivedChats.map((chat) => {
+                  const isActive = chat.id === currentChatId;
+                  return (
+                    <div key={chat.id} className="relative group">
+                      <div
+                        onClick={() => {
+                          router.navigate({ to: "/chat/$chatId", params: { chatId: chat.id } });
+                        }}
+                        className={`rounded-lg py-2 transition-all hover:text-primary cursor-pointer ${
+                          isActive ? "text-primary" : "text-muted-foreground"
+                        }`}
+                      >
+                        <div className="overflow-hidden whitespace-nowrap hover:underline pr-8">
+                          {chat.title}
+                        </div>
+                        <div className="text-xs opacity-70 mt-1">
+                          {new Date(chat.updated_at || chat.created_at).toLocaleDateString()}
+                        </div>
+                      </div>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <button
+                            className={`z-50 bg-background/80 absolute right-2 top-1/2 transform -translate-y-1/2 text-primary transition-opacity p-2 ${
+                              isMobile ? "opacity-100" : "opacity-0 group-hover:opacity-100"
+                            }`}
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                            }}
+                          >
+                            <MoreHorizontal size={16} />
+                          </button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent>
+                          <DropdownMenuItem onClick={() => handleOpenRenameDialogArchived(chat)}>
+                            <Pencil className="mr-2 h-4 w-4" />
+                            <span>Rename Chat</span>
+                          </DropdownMenuItem>
+                          <DropdownMenuItem onClick={() => handleOpenDeleteDialogArchived(chat)}>
+                            <Trash className="mr-2 h-4 w-4" />
+                            <span>Delete Chat</span>
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                      <div className="absolute inset-y-0 right-0 w-[3rem] bg-gradient-to-l from-background to-transparent pointer-events-none"></div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
 
       {selectedChat && (
         <>

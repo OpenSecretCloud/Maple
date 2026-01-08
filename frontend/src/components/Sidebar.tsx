@@ -103,6 +103,7 @@ export function Sidebar({
   };
 
   const sidebarRef = useRef<HTMLDivElement>(null);
+  const historyContainerRef = useRef<HTMLElement>(null);
 
   // Use the centralized hook for mobile detection
   const isMobile = useIsMobile();
@@ -253,7 +254,7 @@ export function Sidebar({
             )}
           </div>
         )}
-        <nav className="flex flex-col gap-2 flex-1 overflow-y-auto px-4">
+        <nav ref={historyContainerRef} className="relative flex-1 overflow-y-auto px-4">
           <ChatHistoryList
             currentChatId={chatId}
             searchQuery={searchQuery}
@@ -262,6 +263,7 @@ export function Sidebar({
             onExitSelectionMode={exitSelectionMode}
             selectedIds={selectedIds}
             onSelectionChange={setSelectedIds}
+            containerRef={historyContainerRef}
           />
         </nav>
         <div className="px-4 pb-4">
