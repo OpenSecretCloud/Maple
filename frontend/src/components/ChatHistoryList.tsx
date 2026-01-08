@@ -199,36 +199,33 @@ export function ChatHistoryList({
       const newConversations = response.data || [];
 
       if (newConversations.length > 0) {
-        // Merge new conversations with deduplication and metadata updates
+        // Use server ordering as the source of truth for the latest page.
+        // This prevents "gap filler" items (after a delete) from being incorrectly prepended.
         setConversations((prev) => {
-          const newConversationsMap = new Map(newConversations.map((c) => [c.id, c]));
-          let hasChanges = false;
+          const prevById = new Map(prev.map((c) => [c.id, c]));
+          const serverIds = new Set<string>();
 
-          // First, update existing conversations if their metadata changed (e.g., title)
-          const updatedConversations = prev.map((existingConv) => {
-            const newVersion = newConversationsMap.get(existingConv.id);
-            if (newVersion) {
-              // Remove from map so we don't add it again
-              newConversationsMap.delete(existingConv.id);
-              // Check if title or other metadata changed
-              if (existingConv.metadata?.title !== newVersion.metadata?.title) {
-                hasChanges = true;
-                return newVersion;
-              }
+          const next: Conversation[] = newConversations.map((c) => {
+            serverIds.add(c.id);
+            const existing = prevById.get(c.id);
+            if (existing && existing.metadata?.title === c.metadata?.title) {
+              return existing;
             }
-            return existingConv;
+            return c;
           });
 
-          // Add any remaining new conversations (ones we haven't seen before)
-          const trulyNewConversations = Array.from(newConversationsMap.values());
+          // Preserve any older conversations we already loaded via pagination.
+          for (const existing of prev) {
+            if (!serverIds.has(existing.id)) {
+              next.push(existing);
+            }
+          }
 
-          if (!hasChanges && trulyNewConversations.length === 0) {
+          if (next.length === prev.length && next.every((c, i) => c === prev[i])) {
             return prev;
           }
 
-          // Conversations come in desc order (newest first), so no need to reverse
-          // Prepend new conversations to the beginning (newest first in our list)
-          return [...trulyNewConversations, ...updatedConversations];
+          return next;
         });
       }
     } catch (error) {
