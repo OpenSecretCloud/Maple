@@ -43,9 +43,17 @@ android-build:
 desktop-build:
     cd frontend && bun tauri build
 
+# Build Tauri desktop debug
+desktop-build-debug:
+    cd frontend && bun tauri build --debug
+
 # Build Tauri desktop release (with CC unset for compatibility)
 desktop-build-no-cc:
     cd frontend && unset CC && bun tauri build
+
+# Build Tauri desktop debug (with CC unset for compatibility)
+desktop-build-debug-no-cc:
+    cd frontend && unset CC && bun tauri build --debug
 
 # Format Rust code
 rust-fmt:

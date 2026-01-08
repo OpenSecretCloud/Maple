@@ -38,7 +38,9 @@ import {
   Globe,
   Brain,
   Maximize2,
-  Minimize2
+  Minimize2,
+  Volume2,
+  Square
 } from "lucide-react";
 import RecordRTC from "recordrtc";
 import { useQueryClient } from "@tanstack/react-query";
@@ -59,6 +61,8 @@ import { DocumentPlatformDialog } from "@/components/DocumentPlatformDialog";
 import { ContextLimitDialog } from "@/components/ContextLimitDialog";
 import { RecordingOverlay } from "@/components/RecordingOverlay";
 import { WebSearchInfoDialog } from "@/components/WebSearchInfoDialog";
+import { TTSDownloadDialog } from "@/components/TTSDownloadDialog";
+import { useTTS } from "@/services/tts/TTSContext";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { AlertCircle } from "lucide-react";
 import {
@@ -181,6 +185,94 @@ function CopyButton({ text }: { text: string }) {
       aria-label={isCopied ? "Copied" : "Copy to clipboard"}
     >
       {isCopied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+    </Button>
+  );
+}
+
+// TTS play button component
+function TTSButton({
+  text,
+  messageId,
+  onNeedsSetup,
+  onManage
+}: {
+  text: string;
+  messageId: string;
+  onNeedsSetup: () => void;
+  onManage: () => void;
+}) {
+  const { status, isPlaying, currentPlayingId, speak, stop, isTauriEnv } = useTTS();
+  const isThisPlaying = isPlaying && currentPlayingId === messageId;
+  const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Cleanup timer on unmount
+  useEffect(() => {
+    return () => {
+      if (longPressTimer.current) {
+        clearTimeout(longPressTimer.current);
+      }
+    };
+  }, []);
+
+  // Don't render the button at all if not in Tauri environment
+  if (!isTauriEnv) {
+    return null;
+  }
+
+  const handleClick = async () => {
+    if (status === "not_downloaded" || status === "error") {
+      onNeedsSetup();
+      return;
+    }
+
+    if (status === "ready") {
+      if (isThisPlaying) {
+        stop();
+      } else {
+        await speak(text, messageId);
+      }
+    }
+  };
+
+  const handlePointerDown = () => {
+    longPressTimer.current = setTimeout(() => {
+      onManage();
+    }, 500);
+  };
+
+  const handlePointerUp = () => {
+    if (longPressTimer.current) {
+      clearTimeout(longPressTimer.current);
+      longPressTimer.current = null;
+    }
+  };
+
+  const isDisabled =
+    status === "checking" ||
+    status === "downloading" ||
+    status === "loading" ||
+    status === "deleting";
+  const showSpinner = isDisabled;
+
+  return (
+    <Button
+      variant="ghost"
+      size="sm"
+      className="h-7 w-7 p-0 text-muted-foreground hover:text-foreground"
+      onClick={handleClick}
+      onPointerDown={handlePointerDown}
+      onPointerUp={handlePointerUp}
+      onPointerLeave={handlePointerUp}
+      disabled={isDisabled}
+      aria-label={isThisPlaying ? "Stop speaking" : "Read aloud"}
+    >
+      {showSpinner ? (
+        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+      ) : isThisPlaying ? (
+        <Square className="h-3.5 w-3.5" />
+      ) : (
+        <Volume2 className="h-3.5 w-3.5" />
+      )}
     </Button>
   );
 }
@@ -373,13 +465,17 @@ const MessageList = memo(
     isGenerating,
     chatId,
     firstMessageRef,
-    isLoadingOlderMessages
+    isLoadingOlderMessages,
+    onTTSSetupOpen,
+    onTTSManage
   }: {
     messages: Message[];
     isGenerating: boolean;
     chatId?: string;
     firstMessageRef?: React.RefObject<HTMLDivElement>;
     isLoadingOlderMessages?: boolean;
+    onTTSSetupOpen: () => void;
+    onTTSManage: () => void;
   }) => {
     // Build Maps for O(1) lookup of tool calls and outputs by call_id
     const { callMap, outputMap } = useMemo(() => {
@@ -691,10 +787,16 @@ const MessageList = memo(
                     <div className="space-y-2">
                       <div className="font-semibold text-sm">Maple</div>
                       {group.items.map((item) => renderAssistantItem(item))}
-                      {/* Copy button for the assistant's text content */}
+                      {/* Copy and TTS buttons for the assistant's text content */}
                       {textContent && (
-                        <div className="flex gap-1 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
+                        <div className="flex gap-1">
                           <CopyButton text={textContent} />
+                          <TTSButton
+                            text={textContent}
+                            messageId={group.id}
+                            onNeedsSetup={onTTSSetupOpen}
+                            onManage={onTTSManage}
+                          />
                         </div>
                       )}
                     </div>
@@ -810,6 +912,7 @@ export function UnifiedChat() {
   const [documentPlatformDialogOpen, setDocumentPlatformDialogOpen] = useState(false);
   const [contextLimitDialogOpen, setContextLimitDialogOpen] = useState(false);
   const [webSearchInfoDialogOpen, setWebSearchInfoDialogOpen] = useState(false);
+  const [ttsSetupDialogOpen, setTtsSetupDialogOpen] = useState(false);
 
   // Audio recording states
   const [isRecording, setIsRecording] = useState(false);
@@ -2615,6 +2718,8 @@ export function UnifiedChat() {
                   chatId={chatId}
                   firstMessageRef={firstMessageRef}
                   isLoadingOlderMessages={isLoadingOlderMessages}
+                  onTTSSetupOpen={() => setTtsSetupDialogOpen(true)}
+                  onTTSManage={() => setTtsSetupDialogOpen(true)}
                 />
               </div>
 
@@ -3273,6 +3378,9 @@ export function UnifiedChat() {
             setWebSearchInfoDialogOpen(false);
           }}
         />
+
+        {/* TTS setup dialog */}
+        <TTSDownloadDialog open={ttsSetupDialogOpen} onOpenChange={setTtsSetupDialogOpen} />
 
         {/* Hidden file inputs - must be outside conditional rendering to work in both views */}
         <input
