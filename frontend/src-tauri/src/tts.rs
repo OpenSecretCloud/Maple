@@ -9,6 +9,7 @@ use rand::thread_rng;
 use rand_distr::{Distribution, Normal};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::fs::{self, File};
 use std::io::{BufReader, Cursor, Write};
 use std::path::{Path, PathBuf};
@@ -47,30 +48,85 @@ static RE_ENDS_PUNCT: Lazy<Regex> = Lazy::new(|| {
 });
 static RE_SENTENCE: Lazy<Regex> = Lazy::new(|| Regex::new(r"([.!?])\s+").unwrap());
 
-const HUGGINGFACE_BASE_URL: &str = "https://huggingface.co/Supertone/supertonic/resolve/main";
+// Pin model downloads to a specific repo revision to ensure integrity and reproducibility.
+const HUGGINGFACE_REVISION: &str = "b6856d033f622c63ea29441795be266a1133e227";
+const HUGGINGFACE_BASE_URL: &str = "https://huggingface.co/Supertone/supertonic/resolve";
 
-const MODEL_FILES: &[(&str, &str, u64)] = &[
+// (file_name, url_path, expected_size_bytes, expected_sha256_hex)
+const MODEL_FILES: &[(&str, &str, u64, &str)] = &[
     (
         "duration_predictor.onnx",
         "onnx/duration_predictor.onnx",
-        1_670_000,
+        1_500_789,
+        "b861580c56a0cba2a2b82aa697ecb3c5a163c3240c60a0ddfac369d21d054092",
     ),
-    ("text_encoder.onnx", "onnx/text_encoder.onnx", 29_360_000),
+    (
+        "text_encoder.onnx",
+        "onnx/text_encoder.onnx",
+        27_348_373,
+        "ba0c8ea74aeb5df00d21a89b8d47c71317f47120232e3deef95024dba37dbd88",
+    ),
     (
         "vector_estimator.onnx",
         "onnx/vector_estimator.onnx",
-        139_460_000,
+        132_471_364,
+        "b3f82ecd2e9decc4e2236048b03628a1c1d5f14a792ba274a59b7325107aa6a6",
     ),
-    ("vocoder.onnx", "onnx/vocoder.onnx", 105_900_000),
-    ("tts.json", "onnx/tts.json", 9_000),
-    ("unicode_indexer.json", "onnx/unicode_indexer.json", 268_000),
-    ("F1.json", "voice_styles/F1.json", 421_000),
-    ("F2.json", "voice_styles/F2.json", 421_000),
-    ("M1.json", "voice_styles/M1.json", 421_000),
-    ("M2.json", "voice_styles/M2.json", 421_000),
+    (
+        "vocoder.onnx",
+        "onnx/vocoder.onnx",
+        101_405_066,
+        "19bd51f47a186069c752403518a40f7ea4c647455056d2511f7249691ecddf7c",
+    ),
+    (
+        "tts.json",
+        "onnx/tts.json",
+        8_645,
+        "4dac5f986698a3ace9a97ea2545d43f6c8ba120d25e005f8c905128281be9b6d",
+    ),
+    (
+        "unicode_indexer.json",
+        "onnx/unicode_indexer.json",
+        262_134,
+        "0c3800ba4fb1fc760c9070eb43a0ad5a68279ec165742591a68ea3edca452978",
+    ),
+    (
+        "F1.json",
+        "voice_styles/F1.json",
+        420_622,
+        "1450bcad84a2790eaf73f85e763dd5bae7c399f55d692c4835cf4f7686b5a10f",
+    ),
+    (
+        "F2.json",
+        "voice_styles/F2.json",
+        420_905,
+        "47c8d44445ef8ac8aae8ef5806feca21903483cbd4f1232e405184a40520a549",
+    ),
+    (
+        "M1.json",
+        "voice_styles/M1.json",
+        421_053,
+        "273c9ba6582d2e00383d8fbe2f5d660d86e8fba849c91ff695384d1a6e2e02f1",
+    ),
+    (
+        "M2.json",
+        "voice_styles/M2.json",
+        421_027,
+        "26898a9ec3de1b5bf8cc3f6cbf41930543ca0403f2201e12aad849691ff315dd",
+    ),
 ];
 
-const TOTAL_MODEL_SIZE: u64 = 278_401_000; // ~265 MB
+const TOTAL_MODEL_SIZE: u64 = 264_679_978; // bytes
+
+fn bytes_to_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for &b in bytes {
+        out.push(HEX[(b >> 4) as usize] as char);
+        out.push(HEX[(b & 0x0f) as usize] as char);
+    }
+    out
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -456,6 +512,10 @@ impl TextToSpeech {
         let bsz = text_list.len();
         let (text_ids, text_mask) = self.text_processor.call(text_list);
 
+        if text_ids.is_empty() || text_ids[0].is_empty() {
+            return Err(anyhow::anyhow!("Empty text input"));
+        }
+
         let text_ids_array = {
             let text_ids_shape = (bsz, text_ids[0].len());
             let flat: Vec<i64> = text_ids.into_iter().flatten().collect();
@@ -515,7 +575,7 @@ impl TextToSpeech {
         // Denoising loop
         for step in 0..total_step {
             let current_step_array = Array::from_elem(bsz, step as f32);
-            let xt_value = Value::from_array(xt.clone())?;
+            let xt_value = Value::from_array(xt)?;
             let current_step_value = Value::from_array(current_step_array)?;
 
             let vector_est_outputs = self.vector_est_ort.run(ort::inputs! {
@@ -664,9 +724,13 @@ pub async fn tts_get_status(
 ) -> Result<TTSStatusResponse, String> {
     let models_dir = get_tts_models_dir().map_err(|e| e.to_string())?;
 
-    let models_downloaded = MODEL_FILES
-        .iter()
-        .all(|(name, _, _)| models_dir.join(name).exists());
+    let models_downloaded =
+        MODEL_FILES.iter().all(|(name, _, expected_size, _)| {
+            match fs::metadata(models_dir.join(name)) {
+                Ok(meta) => meta.len() == *expected_size,
+                Err(_) => false,
+            }
+        });
     let models_loaded = {
         let guard = state.lock().map_err(|e| e.to_string())?;
         guard.tts.is_some() && guard.style.is_some()
@@ -702,14 +766,14 @@ pub async fn tts_download_models(app: AppHandle) -> Result<(), String> {
         .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
     let mut total_downloaded: u64 = 0;
 
-    for (file_name, url_path, expected_size) in MODEL_FILES {
+    for (file_name, url_path, expected_size, expected_sha256) in MODEL_FILES {
         let file_path = models_dir.join(file_name);
         let temp_path = models_dir.join(format!("{file_name}.part"));
 
         // Skip if already downloaded
         if file_path.exists() {
             if let Ok(meta) = fs::metadata(&file_path) {
-                if meta.len() > 0 {
+                if meta.len() == *expected_size {
                     total_downloaded += expected_size;
                     let _ = app.emit(
                         "tts-download-progress",
@@ -731,7 +795,10 @@ pub async fn tts_download_models(app: AppHandle) -> Result<(), String> {
         // Clean up any partial download from previous attempt
         let _ = fs::remove_file(&temp_path);
 
-        let url = format!("{}/{}", HUGGINGFACE_BASE_URL, url_path);
+        let url = format!(
+            "{}/{}/{}",
+            HUGGINGFACE_BASE_URL, HUGGINGFACE_REVISION, url_path
+        );
         log::info!("Downloading TTS model: {}", file_name);
 
         let response = client
@@ -749,6 +816,7 @@ pub async fn tts_download_models(app: AppHandle) -> Result<(), String> {
         }
 
         let expected_len = response.content_length();
+        let mut hasher = Sha256::new();
 
         let mut file = File::create(&temp_path)
             .map_err(|e| format!("Failed to create file {}: {}", file_name, e))?;
@@ -760,6 +828,8 @@ pub async fn tts_download_models(app: AppHandle) -> Result<(), String> {
             let chunk = chunk.map_err(|e| format!("Download error: {}", e))?;
             file.write_all(&chunk)
                 .map_err(|e| format!("Write error: {}", e))?;
+
+            hasher.update(&chunk);
 
             file_downloaded += chunk.len() as u64;
             let current_total = total_downloaded + file_downloaded;
@@ -784,6 +854,25 @@ pub async fn tts_download_models(app: AppHandle) -> Result<(), String> {
                     file_name, expected_len, file_downloaded
                 ));
             }
+        }
+
+        if file_downloaded != *expected_size {
+            drop(file);
+            let _ = fs::remove_file(&temp_path);
+            return Err(format!(
+                "Unexpected download size for {}: expected {} bytes, got {}",
+                file_name, expected_size, file_downloaded
+            ));
+        }
+
+        let actual_sha256 = bytes_to_hex(hasher.finalize().as_ref());
+        if actual_sha256 != *expected_sha256 {
+            drop(file);
+            let _ = fs::remove_file(&temp_path);
+            return Err(format!(
+                "Checksum mismatch for {}: expected {}, got {}",
+                file_name, expected_sha256, actual_sha256
+            ));
         }
 
         // Flush and rename temp file to final path
