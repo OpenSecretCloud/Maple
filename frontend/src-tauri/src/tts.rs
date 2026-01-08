@@ -708,17 +708,24 @@ pub async fn tts_download_models(app: AppHandle) -> Result<(), String> {
 
         // Skip if already downloaded
         if file_path.exists() {
-            total_downloaded += expected_size;
-            let _ = app.emit(
-                "tts-download-progress",
-                DownloadProgress {
-                    downloaded: total_downloaded,
-                    total: TOTAL_MODEL_SIZE,
-                    file_name: file_name.to_string(),
-                    percent: (total_downloaded as f64 / TOTAL_MODEL_SIZE as f64) * 100.0,
-                },
-            );
-            continue;
+            if let Ok(meta) = fs::metadata(&file_path) {
+                if meta.len() > 0 {
+                    total_downloaded += expected_size;
+                    let _ = app.emit(
+                        "tts-download-progress",
+                        DownloadProgress {
+                            downloaded: total_downloaded,
+                            total: TOTAL_MODEL_SIZE,
+                            file_name: file_name.to_string(),
+                            percent: (total_downloaded as f64 / TOTAL_MODEL_SIZE as f64) * 100.0,
+                        },
+                    );
+                    continue;
+                }
+            }
+
+            // Zero-byte or unreadable file: treat as invalid and re-download
+            let _ = fs::remove_file(&file_path);
         }
 
         // Clean up any partial download from previous attempt
@@ -740,6 +747,8 @@ pub async fn tts_download_models(app: AppHandle) -> Result<(), String> {
                 response.status()
             ));
         }
+
+        let expected_len = response.content_length();
 
         let mut file = File::create(&temp_path)
             .map_err(|e| format!("Failed to create file {}: {}", file_name, e))?;
@@ -764,6 +773,17 @@ pub async fn tts_download_models(app: AppHandle) -> Result<(), String> {
                     percent: (current_total as f64 / TOTAL_MODEL_SIZE as f64) * 100.0,
                 },
             );
+        }
+
+        if let Some(expected_len) = expected_len {
+            if file_downloaded != expected_len {
+                drop(file);
+                let _ = fs::remove_file(&temp_path);
+                return Err(format!(
+                    "Incomplete download for {}: expected {} bytes, got {}",
+                    file_name, expected_len, file_downloaded
+                ));
+            }
         }
 
         // Flush and rename temp file to final path
