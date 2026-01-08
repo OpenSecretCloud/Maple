@@ -333,6 +333,9 @@ export function useTTS() {
 function preprocessTextForTTS(text: string): string {
   let processed = text;
 
+  // Remove fenced code blocks (```lang\n...\n```), including optional language tags
+  processed = stripFencedCodeBlocks(processed);
+
   // Remove <think>...</think> blocks (chain of thought reasoning)
   processed = processed.replace(/<think>[\s\S]*?<\/think>/g, "");
 
@@ -340,6 +343,42 @@ function preprocessTextForTTS(text: string): string {
   processed = processed.replace(/<think>[\s\S]*$/g, "");
 
   return processed.trim();
+}
+
+function stripFencedCodeBlocks(text: string): string {
+  const lines = text.split(/\r?\n/);
+  const output: string[] = [];
+
+  let inFence = false;
+  let fenceChar: "`" | "~" | null = null;
+  let fenceLen = 0;
+
+  for (const line of lines) {
+    if (!inFence) {
+      const openMatch = line.match(/^\s*(?:>+\s*)?([`~]{3,})[^\n]*$/);
+      if (openMatch) {
+        inFence = true;
+        fenceChar = openMatch[1][0] as "`" | "~";
+        fenceLen = openMatch[1].length;
+        continue;
+      }
+
+      output.push(line);
+      continue;
+    }
+
+    const closeMatch = line.match(/^\s*(?:>+\s*)?([`~]{3,})\s*$/);
+    if (closeMatch) {
+      const fence = closeMatch[1];
+      if (fenceChar && fence[0] === fenceChar && fence.length >= fenceLen) {
+        inFence = false;
+        fenceChar = null;
+        fenceLen = 0;
+      }
+    }
+  }
+
+  return output.join("\n");
 }
 
 function base64ToBlob(base64: string, mimeType: string): Blob {
