@@ -254,10 +254,7 @@ export function Sidebar({
             )}
           </div>
         )}
-        <nav
-          ref={historyContainerRef as React.RefObject<HTMLElement>}
-          className="flex flex-col gap-2 flex-1 overflow-y-auto px-4"
-        >
+        <nav ref={historyContainerRef} className="relative flex-1 overflow-y-auto px-4">
           <ChatHistoryList
             currentChatId={chatId}
             searchQuery={searchQuery}
@@ -266,7 +263,7 @@ export function Sidebar({
             onExitSelectionMode={exitSelectionMode}
             selectedIds={selectedIds}
             onSelectionChange={setSelectedIds}
-            containerRef={historyContainerRef as React.RefObject<HTMLElement>}
+            containerRef={historyContainerRef}
           />
         </nav>
         <div className="px-4 pb-4">
