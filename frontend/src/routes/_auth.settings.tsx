@@ -41,7 +41,13 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Separator } from "@/components/ui/separator";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue
+} from "@/components/ui/select";
 import { getBillingService } from "@/billing/billingService";
 import { useLocalState } from "@/state/useLocalState";
 import type { TeamStatus } from "@/types/team";
@@ -204,74 +210,104 @@ function SettingsPage() {
           </div>
         )}
 
-        <div className="h-14 flex items-center px-4 border-b">
-          <div className="flex items-center gap-2">
-            <Button
-              variant="ghost"
-              size="sm"
-              className="gap-2"
-              onClick={() => navigate({ to: "/" })}
-            >
-              <ArrowLeft className="h-4 w-4" />
-              Back
-            </Button>
-            <Separator orientation="vertical" className="h-6" />
-            <h1 className="text-base font-semibold">Settings</h1>
-          </div>
+        <div className="h-14 flex items-center justify-between px-4 border-b">
+          <Button variant="ghost" size="sm" className="gap-2" onClick={() => navigate({ to: "/" })}>
+            <ArrowLeft className="h-4 w-4" />
+            Back
+          </Button>
 
-          <div className="ml-auto flex items-center gap-2">
-            <Button variant="outline" size="sm" className="gap-2" onClick={signOut}>
-              <LogOut className="h-4 w-4" />
-              Log out
-            </Button>
-          </div>
+          <Button variant="outline" size="sm" className="gap-2" onClick={signOut}>
+            <LogOut className="h-4 w-4" />
+            Log out
+          </Button>
         </div>
 
         <div className="flex-1 min-h-0 overflow-y-auto">
-          <div className="mx-auto w-full max-w-5xl p-4 md:p-6">
-            <div className="grid gap-6 md:grid-cols-[220px_1fr]">
-              <nav className="space-y-1">
-                {navItems
-                  .filter((i) => !i.hidden)
-                  .map((item) => (
-                    <Button
-                      key={item.tab}
-                      variant={effectiveTab === item.tab ? "secondary" : "ghost"}
-                      className="w-full justify-start gap-2"
-                      asChild
-                    >
-                      <Link to="/settings" search={{ tab: item.tab }}>
-                        <item.icon className="h-4 w-4" />
-                        <span className="flex-1 text-left">{item.label}</span>
-                        {item.badge}
-                      </Link>
-                    </Button>
-                  ))}
-              </nav>
+          <div className="w-full px-4 py-6 md:px-8">
+            <div className="w-full max-w-6xl">
+              <div className="mb-6 space-y-1">
+                <h1 className="text-2xl font-semibold tracking-tight">Settings</h1>
+                <p className="text-sm text-muted-foreground">
+                  Manage your account, billing, and application preferences.
+                </p>
+              </div>
 
-              <div className="min-w-0">
-                {effectiveTab === "account" && <AccountSection onSignOut={signOut} />}
-                {effectiveTab === "billing" && (
-                  <BillingSection
-                    billingStatus={billingStatus}
-                    isMobilePlatform={isMobilePlatform}
-                  />
-                )}
-                {effectiveTab === "team" && (
-                  <TeamSection
-                    billingStatus={billingStatus}
-                    teamStatus={teamStatus}
-                    autoOpenSetup={autoOpenTeamSetup}
-                  />
-                )}
-                {effectiveTab === "api" && (
-                  <ApiSection
-                    isMobilePlatform={isMobilePlatform}
-                    showCreditSuccessMessage={showApiCreditSuccessMessage}
-                  />
-                )}
-                {effectiveTab === "history" && <HistorySection />}
-                {effectiveTab === "about" && <AboutSection />}
+              <div className="grid gap-6 lg:grid-cols-[240px_1fr]">
+                <div className="lg:hidden">
+                  <Select
+                    value={effectiveTab}
+                    onValueChange={(value) =>
+                      navigate({ to: "/settings", search: { tab: value as SettingsTab } })
+                    }
+                  >
+                    <SelectTrigger className="w-full">
+                      <SelectValue placeholder="Select a section" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {navItems
+                        .filter((i) => !i.hidden)
+                        .map((item) => (
+                          <SelectItem
+                            key={item.tab}
+                            value={item.tab}
+                          >{`${item.label}${item.tab === "team" && showTeamSetupAlert ? " (setup required)" : ""}`}</SelectItem>
+                        ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <nav className="hidden lg:block">
+                  <div className="rounded-xl border bg-card p-2">
+                    {navItems
+                      .filter((i) => !i.hidden)
+                      .map((item) => {
+                        const isActive = effectiveTab === item.tab;
+
+                        return (
+                          <Link
+                            key={item.tab}
+                            to="/settings"
+                            search={{ tab: item.tab }}
+                            className={cn(
+                              "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
+                              isActive
+                                ? "bg-muted text-foreground"
+                                : "text-muted-foreground hover:bg-muted/50 hover:text-foreground"
+                            )}
+                          >
+                            <item.icon className="h-4 w-4 shrink-0" />
+                            <span className="flex-1">{item.label}</span>
+                            {item.badge}
+                          </Link>
+                        );
+                      })}
+                  </div>
+                </nav>
+
+                <div className="min-w-0">
+                  {effectiveTab === "account" && <AccountSection onSignOut={signOut} />}
+                  {effectiveTab === "billing" && (
+                    <BillingSection
+                      billingStatus={billingStatus}
+                      isMobilePlatform={isMobilePlatform}
+                    />
+                  )}
+                  {effectiveTab === "team" && (
+                    <TeamSection
+                      billingStatus={billingStatus}
+                      teamStatus={teamStatus}
+                      autoOpenSetup={autoOpenTeamSetup}
+                    />
+                  )}
+                  {effectiveTab === "api" && (
+                    <ApiSection
+                      isMobilePlatform={isMobilePlatform}
+                      showCreditSuccessMessage={showApiCreditSuccessMessage}
+                    />
+                  )}
+                  {effectiveTab === "history" && <HistorySection />}
+                  {effectiveTab === "about" && <AboutSection />}
+                </div>
               </div>
             </div>
           </div>

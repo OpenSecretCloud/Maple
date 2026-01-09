@@ -1,5 +1,4 @@
 import { useState } from "react";
-import { DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -14,6 +13,21 @@ interface TeamDashboardProps {
   teamStatus?: TeamStatus;
 }
 
+function DashboardHeader({
+  title,
+  description
+}: {
+  title: React.ReactNode;
+  description?: React.ReactNode;
+}) {
+  return (
+    <div className="space-y-1">
+      <h2 className="text-base font-semibold leading-none tracking-tight">{title}</h2>
+      {description ? <div className="text-sm text-muted-foreground">{description}</div> : null}
+    </div>
+  );
+}
+
 export function TeamDashboard({ teamStatus }: TeamDashboardProps) {
   const [isInviteDialogOpen, setIsInviteDialogOpen] = useState(false);
   const [isEditingName, setIsEditingName] = useState(false);
@@ -23,14 +37,7 @@ export function TeamDashboard({ teamStatus }: TeamDashboardProps) {
   const queryClient = useQueryClient();
 
   if (!teamStatus) {
-    return (
-      <>
-        <DialogHeader>
-          <DialogTitle>Team Dashboard</DialogTitle>
-          <DialogDescription>Loading team information...</DialogDescription>
-        </DialogHeader>
-      </>
-    );
+    return <DashboardHeader title="Team Dashboard" description="Loading team information..." />;
   }
 
   const seatsUsed = teamStatus.seats_used || 0;
@@ -94,9 +101,7 @@ export function TeamDashboard({ teamStatus }: TeamDashboardProps) {
   if (!isAdmin) {
     return (
       <>
-        <DialogHeader>
-          <DialogTitle className="text-base">Team Information</DialogTitle>
-        </DialogHeader>
+        <DashboardHeader title="Team Information" />
 
         <div className="mt-3 space-y-3 overflow-hidden">
           {/* Compact team info */}
@@ -132,9 +137,7 @@ export function TeamDashboard({ teamStatus }: TeamDashboardProps) {
   // Full admin view
   return (
     <>
-      <DialogHeader>
-        <DialogTitle className="text-base">Team Dashboard</DialogTitle>
-      </DialogHeader>
+      <DashboardHeader title="Team Dashboard" />
 
       <div className="mt-3 space-y-3 overflow-hidden">
         {/* Seat limit exceeded warning */}
