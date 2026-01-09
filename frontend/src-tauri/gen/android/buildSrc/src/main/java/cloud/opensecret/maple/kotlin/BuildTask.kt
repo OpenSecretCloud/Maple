@@ -16,6 +16,19 @@ open class BuildTask : DefaultTask() {
 
     @TaskAction
     fun assemble() {
+        if (shouldSkipRustBuild()) {
+            val target = target ?: throw GradleException("target cannot be null")
+            val lib = expectedJniLib(target)
+            if (!lib.exists()) {
+                throw GradleException(
+                    "skipRustBuild=true but prebuilt Rust library is missing at ${lib.absolutePath}"
+                )
+            }
+
+            project.logger.lifecycle("skipRustBuild=true; using prebuilt Rust library at ${lib.absolutePath}")
+            return
+        }
+
         val userHome = System.getProperty("user.home")
         val executable = if (File("$userHome/.bun/bin/bun").exists()) {
             "$userHome/.bun/bin/bun"
@@ -31,6 +44,23 @@ open class BuildTask : DefaultTask() {
                 throw e;
             }
         }
+    }
+
+    private fun shouldSkipRustBuild(): Boolean {
+        val raw = project.findProperty("skipRustBuild")?.toString() ?: return false
+        return raw.equals("true", ignoreCase = true) || raw == "1" || raw.equals("yes", ignoreCase = true)
+    }
+
+    private fun expectedJniLib(target: String): File {
+        val abi = when (target) {
+            "aarch64" -> "arm64-v8a"
+            "armv7" -> "armeabi-v7a"
+            "i686" -> "x86"
+            "x86_64" -> "x86_64"
+            else -> throw GradleException("Unknown target '$target'")
+        }
+
+        return File(project.projectDir, "src/main/jniLibs/$abi/libapp_lib.so")
     }
 
     fun runTauriCli(executable: String) {
