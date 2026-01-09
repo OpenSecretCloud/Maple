@@ -233,6 +233,11 @@ export function TTSProvider({ children }: { children: ReactNode }) {
 
         // Use Web Audio API instead of HTMLAudioElement to avoid hijacking media controls
         const audioContext = new AudioContext();
+
+        // iOS requires explicit resume() - AudioContext may start suspended even with user gesture
+        // This is safe on other platforms (no-op if already running)
+        await audioContext.resume();
+
         const arrayBuffer = await audioBlob.arrayBuffer();
         const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
 
