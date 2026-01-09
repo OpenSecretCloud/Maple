@@ -163,7 +163,7 @@ jobs:
           # Create ranlib symlink that OpenSSL expects
           sudo ln -sf $NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib /usr/local/bin/${{ matrix.ranlib_link }}
 
-          cargo build --manifest-path frontend/src-tauri/Cargo.toml --release --target ${{ matrix.rust_target }}
+          cargo build --manifest-path frontend/src-tauri/Cargo.toml --release --target ${{ matrix.rust_target }} --lib
 
           mkdir -p artifacts
           cp frontend/src-tauri/target/${{ matrix.rust_target }}/release/libapp_lib.so artifacts/libapp_lib-${{ matrix.abi }}.so
