@@ -17,6 +17,11 @@ open class RustPlugin : Plugin<Project> {
     override fun apply(project: Project) = with(project) {
         config = extensions.create("rust", Config::class.java)
 
+        val skipRustBuild =
+            (findProperty("skipRustBuild") as? String)?.toBooleanStrictOrNull() == true ||
+                (findProperty("skipRustBuild") as? Boolean) == true ||
+                hasProperty("skipRustBuild")
+
         val defaultAbiList = listOf("arm64-v8a", "armeabi-v7a", "x86", "x86_64");
         val abiList = (findProperty("abiList") as? String)?.split(',') ?: defaultAbiList
 
@@ -47,6 +52,11 @@ open class RustPlugin : Plugin<Project> {
         }
 
         afterEvaluate {
+            if (skipRustBuild) {
+                logger.lifecycle("RustPlugin: skipping Rust build tasks (-PskipRustBuild)")
+                return@afterEvaluate
+            }
+
             for (profile in listOf("debug", "release")) {
                 val profileCapitalized = profile.replaceFirstChar { it.uppercase() }
                 val buildTask = tasks.maybeCreate(
