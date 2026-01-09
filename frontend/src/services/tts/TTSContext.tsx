@@ -49,6 +49,7 @@ interface TTSContextValue {
   isPlaying: boolean;
   currentPlayingId: string | null;
   isTauriEnv: boolean;
+  lastPlaybackError: string | null;
 
   checkStatus: () => Promise<void>;
   startDownload: () => Promise<void>;
@@ -71,6 +72,7 @@ export function TTSProvider({ children }: { children: ReactNode }) {
   const [totalSizeMB, setTotalSizeMB] = useState(264);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentPlayingId, setCurrentPlayingId] = useState<string | null>(null);
+  const [lastPlaybackError, setLastPlaybackError] = useState<string | null>(null);
 
   const audioContextRef = useRef<AudioContext | null>(null);
   const sourceNodeRef = useRef<AudioBufferSourceNode | null>(null);
@@ -221,25 +223,37 @@ export function TTSProvider({ children }: { children: ReactNode }) {
       try {
         setIsPlaying(true);
         setCurrentPlayingId(messageId);
+        setLastPlaybackError(null);
 
+        console.log("[TTS] Starting synthesis for message:", messageId);
         const result = await invoke<TTSSynthesizeResponse>("tts_synthesize", {
           text: processedText
         });
+        console.log("[TTS] Synthesis complete, duration:", result.duration_seconds, "s");
 
         // Create audio from base64
         const audioBlob = base64ToBlob(result.audio_base64, "audio/wav");
+        console.log("[TTS] Audio blob created, size:", audioBlob.size, "bytes");
         const audioUrl = URL.createObjectURL(audioBlob);
         audioUrlRef.current = audioUrl;
 
         // Use Web Audio API instead of HTMLAudioElement to avoid hijacking media controls
         const audioContext = new AudioContext();
+        console.log("[TTS] AudioContext created, state:", audioContext.state);
 
         // iOS requires explicit resume() - AudioContext may start suspended even with user gesture
         // This is safe on other platforms (no-op if already running)
         await audioContext.resume();
+        console.log("[TTS] AudioContext after resume, state:", audioContext.state);
 
         const arrayBuffer = await audioBlob.arrayBuffer();
         const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+        console.log(
+          "[TTS] Audio decoded, duration:",
+          audioBuffer.duration,
+          "s, channels:",
+          audioBuffer.numberOfChannels
+        );
 
         const source = audioContext.createBufferSource();
         source.buffer = audioBuffer;
@@ -250,6 +264,7 @@ export function TTSProvider({ children }: { children: ReactNode }) {
         sourceNodeRef.current = source;
 
         source.onended = () => {
+          console.log("[TTS] Playback ended");
           if (sourceNodeRef.current !== source) {
             return;
           }
@@ -267,9 +282,13 @@ export function TTSProvider({ children }: { children: ReactNode }) {
           sourceNodeRef.current = null;
         };
 
+        console.log("[TTS] Starting playback...");
         source.start(0);
+        console.log("[TTS] Playback started, AudioContext state:", audioContext.state);
       } catch (err) {
-        console.error("TTS synthesis failed:", err);
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        console.error("[TTS] Playback failed:", errorMsg);
+        setLastPlaybackError(errorMsg);
         stop();
       }
     },
@@ -312,6 +331,7 @@ export function TTSProvider({ children }: { children: ReactNode }) {
         isPlaying,
         currentPlayingId,
         isTauriEnv,
+        lastPlaybackError,
         checkStatus,
         startDownload,
         deleteModels,

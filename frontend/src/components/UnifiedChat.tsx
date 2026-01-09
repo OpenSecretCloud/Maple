@@ -63,6 +63,7 @@ import { RecordingOverlay } from "@/components/RecordingOverlay";
 import { WebSearchInfoDialog } from "@/components/WebSearchInfoDialog";
 import { TTSDownloadDialog } from "@/components/TTSDownloadDialog";
 import { useTTS } from "@/services/tts/TTSContext";
+import { useNotification } from "@/contexts/NotificationContext";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { AlertCircle } from "lucide-react";
 import {
@@ -201,9 +202,29 @@ function TTSButton({
   onNeedsSetup: () => void;
   onManage: () => void;
 }) {
-  const { status, isPlaying, currentPlayingId, speak, stop, isTauriEnv } = useTTS();
+  const { status, isPlaying, currentPlayingId, speak, stop, isTauriEnv, lastPlaybackError } =
+    useTTS();
+  const { showNotification } = useNotification();
   const isThisPlaying = isPlaying && currentPlayingId === messageId;
   const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const prevPlaybackError = useRef<string | null>(null);
+
+  // Show notification when playback error occurs for this message
+  useEffect(() => {
+    if (
+      lastPlaybackError &&
+      lastPlaybackError !== prevPlaybackError.current &&
+      currentPlayingId === messageId
+    ) {
+      showNotification({
+        type: "error",
+        title: "TTS Playback Failed",
+        message: lastPlaybackError,
+        duration: 8000
+      });
+    }
+    prevPlaybackError.current = lastPlaybackError;
+  }, [lastPlaybackError, currentPlayingId, messageId, showNotification]);
 
   // Cleanup timer on unmount
   useEffect(() => {
