@@ -93,13 +93,53 @@ jobs:
 
           # Generate Android project + required autogen files without compiling Rust.
           cargo tauri android init --ci
+
+          # The repo contains a tracked Android Gradle project at src-tauri/gen/android.
+          # Depending on Tauri CLI behavior, `android init` may generate into a subdir like
+          # src-tauri/gen/android/<app-name>. We always copy the generated artifacts back
+          # into src-tauri/gen/android so downstream jobs have a stable path.
+          ANDROID_GEN_DIR="src-tauri/gen/android"
+
+          TAURI_SETTINGS_PATH=$(find "$ANDROID_GEN_DIR" -maxdepth 3 -name tauri.settings.gradle -print -quit || true)
+          if [ -z "$TAURI_SETTINGS_PATH" ]; then
+            echo "ERROR: tauri.settings.gradle not found anywhere under $ANDROID_GEN_DIR"
+            echo "=== Contents of $ANDROID_GEN_DIR (depth 3) ==="
+            find "$ANDROID_GEN_DIR" -maxdepth 3 -type f -print | sort | head -200
+            exit 1
+          fi
+
+          GENERATED_PROJECT_DIR=$(dirname "$TAURI_SETTINGS_PATH")
+          echo "Found tauri.settings.gradle at: $TAURI_SETTINGS_PATH"
+
+          if [ "$GENERATED_PROJECT_DIR" != "$ANDROID_GEN_DIR" ]; then
+            echo "Copying generated Android files from $GENERATED_PROJECT_DIR -> $ANDROID_GEN_DIR"
+
+            cp "$GENERATED_PROJECT_DIR/tauri.settings.gradle" "$ANDROID_GEN_DIR/tauri.settings.gradle"
+
+            mkdir -p "$ANDROID_GEN_DIR/app/src/main/assets"
+            cp "$GENERATED_PROJECT_DIR/app/tauri.build.gradle.kts" "$ANDROID_GEN_DIR/app/tauri.build.gradle.kts"
+            cp "$GENERATED_PROJECT_DIR/app/src/main/assets/tauri.conf.json" "$ANDROID_GEN_DIR/app/src/main/assets/tauri.conf.json"
+            cp "$GENERATED_PROJECT_DIR/app/proguard-tauri.pro" "$ANDROID_GEN_DIR/app/proguard-tauri.pro"
+
+            SRC_GENERATED_DIR=$(find "$GENERATED_PROJECT_DIR/app/src/main/java" -type d -name generated -print -quit || true)
+            if [ -z "$SRC_GENERATED_DIR" ]; then
+              echo "ERROR: Missing generated Kotlin sources directory under $GENERATED_PROJECT_DIR/app/src/main/java"
+              exit 1
+            fi
+
+            REL_GENERATED_DIR=${SRC_GENERATED_DIR#"$GENERATED_PROJECT_DIR/"}
+            DEST_GENERATED_PARENT="$ANDROID_GEN_DIR/$(dirname "$REL_GENERATED_DIR")"
+            rm -rf "$ANDROID_GEN_DIR/$REL_GENERATED_DIR"
+            mkdir -p "$DEST_GENERATED_PARENT"
+            cp -R "$SRC_GENERATED_DIR" "$DEST_GENERATED_PARENT/"
+          fi
           
           # Verify required generated files exist
           REQUIRED_FILES=(
-            "src-tauri/gen/android/tauri.settings.gradle"
-            "src-tauri/gen/android/app/tauri.build.gradle.kts"
-            "src-tauri/gen/android/app/src/main/assets/tauri.conf.json"
-            "src-tauri/gen/android/app/proguard-tauri.pro"
+            "$ANDROID_GEN_DIR/tauri.settings.gradle"
+            "$ANDROID_GEN_DIR/app/tauri.build.gradle.kts"
+            "$ANDROID_GEN_DIR/app/src/main/assets/tauri.conf.json"
+            "$ANDROID_GEN_DIR/app/proguard-tauri.pro"
           )
 
           for f in "${REQUIRED_FILES[@]}"; do
@@ -109,9 +149,9 @@ jobs:
             fi
           done
 
-          GENERATED_DIR=$(find src-tauri/gen/android/app/src/main/java -type d -name generated -print -quit || true)
+          GENERATED_DIR=$(find "$ANDROID_GEN_DIR/app/src/main/java" -type d -name generated -print -quit || true)
           if [ -z "$GENERATED_DIR" ]; then
-            echo "ERROR: Missing generated Kotlin sources directory under src-tauri/gen/android/app/src/main/java"
+            echo "ERROR: Missing generated Kotlin sources directory under $ANDROID_GEN_DIR/app/src/main/java"
             exit 1
           fi
 
@@ -122,10 +162,10 @@ jobs:
 
           echo "=== Generated files OK ==="
           echo "tauri.settings.gradle:"
-          sed -n '1,200p' src-tauri/gen/android/tauri.settings.gradle
+          sed -n '1,200p' "$ANDROID_GEN_DIR/tauri.settings.gradle"
           echo ""
           echo "tauri.build.gradle.kts:"
-          cat src-tauri/gen/android/app/tauri.build.gradle.kts
+          cat "$ANDROID_GEN_DIR/app/tauri.build.gradle.kts"
           echo ""
           echo "generated sources dir: $GENERATED_DIR"
           ls -la "$GENERATED_DIR" | head -50
