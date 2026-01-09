@@ -757,13 +757,13 @@ pub async fn tts_download_models(app: AppHandle) -> Result<(), String> {
 
     let models_dir = get_tts_models_dir().map_err(|e| e.to_string())?;
     fs::create_dir_all(&models_dir)
-        .map_err(|e| format!("Failed to create models directory: {}", e))?;
+        .map_err(|e| format!("Failed to create models directory: {e}"))?;
 
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(300))
         .connect_timeout(Duration::from_secs(30))
         .build()
-        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+        .map_err(|e| format!("Failed to create HTTP client: {e}"))?;
     let mut total_downloaded: u64 = 0;
 
     for (file_name, url_path, expected_size, expected_sha256) in MODEL_FILES {
@@ -795,17 +795,14 @@ pub async fn tts_download_models(app: AppHandle) -> Result<(), String> {
         // Clean up any partial download from previous attempt
         let _ = fs::remove_file(&temp_path);
 
-        let url = format!(
-            "{}/{}/{}",
-            HUGGINGFACE_BASE_URL, HUGGINGFACE_REVISION, url_path
-        );
-        log::info!("Downloading TTS model: {}", file_name);
+        let url = format!("{HUGGINGFACE_BASE_URL}/{HUGGINGFACE_REVISION}/{url_path}");
+        log::info!("Downloading TTS model: {file_name}");
 
         let response = client
             .get(&url)
             .send()
             .await
-            .map_err(|e| format!("Failed to download {}: {}", file_name, e))?;
+            .map_err(|e| format!("Failed to download {file_name}: {e}"))?;
 
         if !response.status().is_success() {
             return Err(format!(
@@ -819,15 +816,15 @@ pub async fn tts_download_models(app: AppHandle) -> Result<(), String> {
         let mut hasher = Sha256::new();
 
         let mut file = File::create(&temp_path)
-            .map_err(|e| format!("Failed to create file {}: {}", file_name, e))?;
+            .map_err(|e| format!("Failed to create file {file_name}: {e}"))?;
 
         let mut stream = response.bytes_stream();
         let mut file_downloaded: u64 = 0;
 
         while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(|e| format!("Download error: {}", e))?;
+            let chunk = chunk.map_err(|e| format!("Download error: {e}"))?;
             file.write_all(&chunk)
-                .map_err(|e| format!("Write error: {}", e))?;
+                .map_err(|e| format!("Write error: {e}"))?;
 
             hasher.update(&chunk);
 
@@ -850,8 +847,7 @@ pub async fn tts_download_models(app: AppHandle) -> Result<(), String> {
                 drop(file);
                 let _ = fs::remove_file(&temp_path);
                 return Err(format!(
-                    "Incomplete download for {}: expected {} bytes, got {}",
-                    file_name, expected_len, file_downloaded
+                    "Incomplete download for {file_name}: expected {expected_len} bytes, got {file_downloaded}"
                 ));
             }
         }
@@ -860,8 +856,7 @@ pub async fn tts_download_models(app: AppHandle) -> Result<(), String> {
             drop(file);
             let _ = fs::remove_file(&temp_path);
             return Err(format!(
-                "Unexpected download size for {}: expected {} bytes, got {}",
-                file_name, expected_size, file_downloaded
+                "Unexpected download size for {file_name}: expected {expected_size} bytes, got {file_downloaded}"
             ));
         }
 
@@ -870,22 +865,21 @@ pub async fn tts_download_models(app: AppHandle) -> Result<(), String> {
             drop(file);
             let _ = fs::remove_file(&temp_path);
             return Err(format!(
-                "Checksum mismatch for {}: expected {}, got {}",
-                file_name, expected_sha256, actual_sha256
+                "Checksum mismatch for {file_name}: expected {expected_sha256}, got {actual_sha256}"
             ));
         }
 
         // Flush and rename temp file to final path
         file.flush()
-            .map_err(|e| format!("Failed to flush file {}: {}", file_name, e))?;
+            .map_err(|e| format!("Failed to flush file {file_name}: {e}"))?;
         file.sync_all()
-            .map_err(|e| format!("Failed to sync file {}: {}", file_name, e))?;
+            .map_err(|e| format!("Failed to sync file {file_name}: {e}"))?;
         drop(file);
         fs::rename(&temp_path, &file_path)
-            .map_err(|e| format!("Failed to finalize {}: {}", file_name, e))?;
+            .map_err(|e| format!("Failed to finalize {file_name}: {e}"))?;
 
         total_downloaded += expected_size;
-        log::info!("Downloaded TTS model: {}", file_name);
+        log::info!("Downloaded TTS model: {file_name}");
     }
 
     Ok(())
@@ -895,12 +889,12 @@ pub async fn tts_download_models(app: AppHandle) -> Result<(), String> {
 pub async fn tts_load_models(state: tauri::State<'_, Mutex<TTSState>>) -> Result<(), String> {
     let models_dir = get_tts_models_dir().map_err(|e| e.to_string())?;
 
-    log::info!("Loading TTS models from {:?}", models_dir);
+    log::info!("Loading TTS models from {models_dir:?}");
 
     let tts =
-        load_tts_engine(&models_dir).map_err(|e| format!("Failed to load TTS engine: {}", e))?;
+        load_tts_engine(&models_dir).map_err(|e| format!("Failed to load TTS engine: {e}"))?;
     let style =
-        load_voice_style(&models_dir).map_err(|e| format!("Failed to load voice style: {}", e))?;
+        load_voice_style(&models_dir).map_err(|e| format!("Failed to load voice style: {e}"))?;
 
     {
         let mut guard = state.lock().map_err(|e| e.to_string())?;
@@ -940,7 +934,7 @@ pub async fn tts_synthesize(
 
     let audio = tts
         .synthesize(&text, &style, 10, 1.2)
-        .map_err(|e| format!("TTS synthesis failed: {}", e))?;
+        .map_err(|e| format!("TTS synthesis failed: {e}"))?;
 
     if audio.is_empty() {
         return Err("No speakable text after preprocessing".to_string());
@@ -953,9 +947,9 @@ pub async fn tts_synthesize(
     drop(guard);
 
     let audio_base64 =
-        wav_to_base64(&audio, sample_rate).map_err(|e| format!("Failed to encode audio: {}", e))?;
+        wav_to_base64(&audio, sample_rate).map_err(|e| format!("Failed to encode audio: {e}"))?;
 
-    log::info!("TTS synthesis complete: {:.2}s audio", duration_seconds);
+    log::info!("TTS synthesis complete: {duration_seconds:.2}s audio");
 
     Ok(TTSSynthesizeResponse {
         audio_base64,
@@ -985,8 +979,7 @@ pub async fn tts_delete_models(state: tauri::State<'_, Mutex<TTSState>>) -> Resu
     // Delete the models directory
     let models_dir = get_tts_models_dir().map_err(|e| e.to_string())?;
     if models_dir.exists() {
-        fs::remove_dir_all(&models_dir)
-            .map_err(|e| format!("Failed to delete TTS models: {}", e))?;
+        fs::remove_dir_all(&models_dir).map_err(|e| format!("Failed to delete TTS models: {e}"))?;
     }
 
     log::info!("TTS models deleted");
