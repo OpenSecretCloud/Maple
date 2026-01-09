@@ -159,6 +159,49 @@ jobs:
               ;;
           esac
 
+      - name: Cache Cargo bin (Tauri CLI)
+        if: matrix.short_name == 'aarch64'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/
+          key: ${{ runner.os }}-cargo-bin-tauri-cli-2.9.2
+          restore-keys: |
+            ${{ runner.os }}-cargo-bin-tauri-cli-
+
+      - name: Install Tauri CLI (aarch64 only, for generating gradle files)
+        if: matrix.short_name == 'aarch64'
+        run: |
+          if ! command -v cargo-tauri &> /dev/null; then
+            cargo install tauri-cli --version "2.9.2" --locked
+          fi
+        env:
+          CARGO_CFG_TARGET_OS: linux
+
+      - name: Generate tauri.settings.gradle (aarch64 only)
+        if: matrix.short_name == 'aarch64'
+        working-directory: ./frontend
+        run: |
+          # Run tauri android build which will generate the gradle files, then fail at Rust compile (that's ok)
+          # We just need the tauri.settings.gradle file
+          cargo tauri android build 2>&1 || true
+          
+          # Verify the file was generated
+          if [ -f "src-tauri/gen/android/tauri.settings.gradle" ]; then
+            echo "tauri.settings.gradle generated successfully"
+            cat src-tauri/gen/android/tauri.settings.gradle
+          else
+            echo "ERROR: tauri.settings.gradle was not generated"
+            exit 1
+          fi
+
+      - name: Upload tauri.settings.gradle (aarch64 only)
+        if: matrix.short_name == 'aarch64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: tauri-settings-gradle
+          path: frontend/src-tauri/gen/android/tauri.settings.gradle
+          retention-days: 1
+
       - name: Build Rust library for ${{ matrix.target }}
         working-directory: ./frontend/src-tauri
         run: |
@@ -190,21 +233,6 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v1
-        with:
-          bun-version: 1.2.2
-
-      - name: Cache Bun dependencies
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.bun/install/cache
-            frontend/node_modules
-          key: ${{ runner.os }}-bun-${{ hashFiles('frontend/bun.lockb') }}
-          restore-keys: |
-            ${{ runner.os }}-bun-
-
       - name: Setup Android NDK
         uses: nttld/setup-ndk@v1
         id: setup-ndk
@@ -222,10 +250,6 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-gradle-
 
-      - name: Install frontend dependencies
-        working-directory: ./frontend
-        run: bun install
-
       - name: Download frontend dist
         uses: actions/download-artifact@v4
         with:
@@ -237,6 +261,12 @@ jobs:
         with:
           pattern: android-lib-*
           path: native-libs
+
+      - name: Download tauri.settings.gradle
+        uses: actions/download-artifact@v4
+        with:
+          name: tauri-settings-gradle
+          path: frontend/src-tauri/gen/android
 
       - name: Place native libraries in jniLibs
         run: |
