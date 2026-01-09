@@ -86,23 +86,38 @@ echo "========================================"
     --compile_no_warning_as_error \
     --cmake_extra_defines "${CMAKE_EXTRA_DEFINES}"
 
-# The static library should be at:
-# build/iOS/Release/Release-iphoneos/libonnxruntime.a
-IOS_ARM64_LIB="build/iOS/Release/Release-iphoneos/libonnxruntime.a"
+# ONNX Runtime builds multiple static libraries, we need to combine them
+# The libraries are in build/iOS/Release/Release-iphoneos/
+IOS_ARM64_BUILD_DIR="build/iOS/Release/Release-iphoneos"
+IOS_ARM64_COMBINED_LIB="${IOS_ARM64_BUILD_DIR}/libonnxruntime_combined.a"
 
-if [ ! -f "$IOS_ARM64_LIB" ]; then
-    # Try alternate location
-    IOS_ARM64_LIB=$(find build -name "libonnxruntime.a" -path "*iphoneos*" | head -n 1)
-fi
+echo ""
+echo "Combining iOS arm64 static libraries..."
 
-if [ ! -f "$IOS_ARM64_LIB" ]; then
-    echo "Error: Could not find iOS arm64 static library"
-    echo "Searching for any .a files:"
-    find build -name "*.a" -type f
+# Find all ONNX Runtime static libraries and combine them
+# We need: onnxruntime_*, onnx*, protobuf-lite, re2, cpuinfo, abseil libs, etc.
+IOS_ARM64_LIBS=$(find build/iOS/Release -name "*.a" -path "*Release-iphoneos*" -type f | grep -v "gtest\|gmock" | sort -u)
+
+if [ -z "$IOS_ARM64_LIBS" ]; then
+    echo "Error: Could not find iOS arm64 static libraries"
     exit 1
 fi
 
-echo "Found iOS arm64 library: $IOS_ARM64_LIB"
+echo "Found libraries to combine:"
+echo "$IOS_ARM64_LIBS" | head -20
+echo "..."
+
+# Use libtool to combine all static libraries into one
+libtool -static -o "$IOS_ARM64_COMBINED_LIB" $IOS_ARM64_LIBS
+
+if [ ! -f "$IOS_ARM64_COMBINED_LIB" ]; then
+    echo "Error: Failed to create combined library"
+    exit 1
+fi
+
+IOS_ARM64_LIB="$IOS_ARM64_COMBINED_LIB"
+echo "Created combined library: $IOS_ARM64_LIB"
+ls -lh "$IOS_ARM64_LIB"
 
 # Build for iOS simulator (arm64 for Apple Silicon Macs)
 echo ""
@@ -122,40 +137,30 @@ echo "========================================"
     --compile_no_warning_as_error \
     --cmake_extra_defines "${CMAKE_EXTRA_DEFINES}"
 
-IOS_SIM_ARM64_LIB=$(find build -name "libonnxruntime.a" -path "*iphonesimulator*" -path "*arm64*" | head -n 1)
+# Combine simulator arm64 libraries
+IOS_SIM_ARM64_BUILD_DIR="build/iOS/Release/Release-iphonesimulator"
+IOS_SIM_ARM64_COMBINED_LIB="${IOS_SIM_ARM64_BUILD_DIR}/libonnxruntime_combined.a"
 
-if [ -z "$IOS_SIM_ARM64_LIB" ]; then
-    IOS_SIM_ARM64_LIB=$(find build -name "libonnxruntime.a" -path "*iphonesimulator*" | head -n 1)
-fi
-
-echo "Found iOS simulator arm64 library: $IOS_SIM_ARM64_LIB"
-
-# Build for iOS simulator (x86_64 for Intel Macs)
 echo ""
-echo "========================================"
-echo "Building for iOS simulator (x86_64)..."
-echo "========================================"
+echo "Combining iOS simulator arm64 static libraries..."
 
-./build.sh \
-    --config Release \
-    --use_xcode \
-    --ios \
-    --apple_sysroot iphonesimulator \
-    --osx_arch x86_64 \
-    --apple_deploy_target "${IOS_DEPLOYMENT_TARGET}" \
-    --parallel \
-    --skip_tests \
-    --compile_no_warning_as_error \
-    --cmake_extra_defines "${CMAKE_EXTRA_DEFINES}"
+IOS_SIM_ARM64_LIBS=$(find build/iOS/Release -name "*.a" -path "*Release-iphonesimulator*" -type f | grep -v "gtest\|gmock" | sort -u)
 
-IOS_SIM_X64_LIB=$(find build -name "libonnxruntime.a" -path "*iphonesimulator*" -path "*x86_64*" | head -n 1)
-
-if [ -z "$IOS_SIM_X64_LIB" ]; then
-    # If we can't find a separate x86_64 lib, it might be combined
-    echo "Warning: Could not find separate x86_64 simulator library"
+if [ -n "$IOS_SIM_ARM64_LIBS" ]; then
+    libtool -static -o "$IOS_SIM_ARM64_COMBINED_LIB" $IOS_SIM_ARM64_LIBS
+    IOS_SIM_ARM64_LIB="$IOS_SIM_ARM64_COMBINED_LIB"
+    echo "Created combined simulator arm64 library: $IOS_SIM_ARM64_LIB"
+    ls -lh "$IOS_SIM_ARM64_LIB"
+else
+    echo "Warning: No simulator arm64 libraries found"
+    IOS_SIM_ARM64_LIB=""
 fi
 
-echo "Found iOS simulator x86_64 library: $IOS_SIM_X64_LIB"
+# Skip x86_64 simulator build for now - arm64 simulator works on Apple Silicon
+# which is what GitHub Actions uses. This significantly speeds up the build.
+echo ""
+echo "Skipping x86_64 simulator build (arm64 simulator is sufficient for Apple Silicon)"
+IOS_SIM_X64_LIB=""
 
 # Create output directories
 echo ""
@@ -165,20 +170,17 @@ echo "========================================"
 
 mkdir -p "${OUTPUT_DIR}"
 mkdir -p "${XCFRAMEWORK_DIR}/ios-arm64"
-mkdir -p "${XCFRAMEWORK_DIR}/ios-arm64_x86_64-simulator"
+mkdir -p "${XCFRAMEWORK_DIR}/ios-arm64-simulator"
 mkdir -p "${XCFRAMEWORK_DIR}/Headers"
 
 # Copy the device library
 cp "$IOS_ARM64_LIB" "${XCFRAMEWORK_DIR}/ios-arm64/libonnxruntime.a"
 
-# Create fat library for simulator (arm64 + x86_64)
-if [ -n "$IOS_SIM_X64_LIB" ] && [ -f "$IOS_SIM_X64_LIB" ]; then
-    echo "Creating fat simulator library..."
-    lipo -create "$IOS_SIM_ARM64_LIB" "$IOS_SIM_X64_LIB" \
-        -output "${XCFRAMEWORK_DIR}/ios-arm64_x86_64-simulator/libonnxruntime.a"
+# Copy the simulator library (arm64 only for now)
+if [ -n "$IOS_SIM_ARM64_LIB" ] && [ -f "$IOS_SIM_ARM64_LIB" ]; then
+    cp "$IOS_SIM_ARM64_LIB" "${XCFRAMEWORK_DIR}/ios-arm64-simulator/libonnxruntime.a"
 else
-    # Just use the arm64 simulator library
-    cp "$IOS_SIM_ARM64_LIB" "${XCFRAMEWORK_DIR}/ios-arm64_x86_64-simulator/libonnxruntime.a"
+    echo "Warning: No simulator library available"
 fi
 
 # Copy headers
@@ -218,13 +220,12 @@ cat > "${XCFRAMEWORK_DIR}/Info.plist" << 'PLIST'
             <key>HeadersPath</key>
             <string>Headers</string>
             <key>LibraryIdentifier</key>
-            <string>ios-arm64_x86_64-simulator</string>
+            <string>ios-arm64-simulator</string>
             <key>LibraryPath</key>
             <string>libonnxruntime.a</string>
             <key>SupportedArchitectures</key>
             <array>
                 <string>arm64</string>
-                <string>x86_64</string>
             </array>
             <key>SupportedPlatform</key>
             <string>ios</string>
@@ -253,7 +254,7 @@ ls -la "${XCFRAMEWORK_DIR}"
 echo ""
 echo "Static library sizes:"
 ls -lh "${XCFRAMEWORK_DIR}/ios-arm64/libonnxruntime.a"
-ls -lh "${XCFRAMEWORK_DIR}/ios-arm64_x86_64-simulator/libonnxruntime.a"
+ls -lh "${XCFRAMEWORK_DIR}/ios-arm64-simulator/libonnxruntime.a" 2>/dev/null || echo "No simulator library"
 echo ""
-echo "To verify the library contains all symbols:"
-echo "  nm ${XCFRAMEWORK_DIR}/ios-arm64/libonnxruntime.a | grep -i abseil"
+echo "Verifying library contains key symbols:"
+nm "${XCFRAMEWORK_DIR}/ios-arm64/libonnxruntime.a" 2>/dev/null | grep -i "OrtCreateSession" | head -3 || echo "Symbols check skipped"

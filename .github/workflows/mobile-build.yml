@@ -87,7 +87,7 @@ jobs:
       - name: Configure Cargo for iOS ONNX Runtime
         run: |
           # Create cargo config with absolute paths for iOS builds
-          # This overrides ort-sys's build script to use our pre-built library
+          # This overrides ort-sys's build script to use our built-from-source library
           WORKSPACE="${{ github.workspace }}"
           mkdir -p "${WORKSPACE}/frontend/src-tauri/.cargo"
           cat > "${WORKSPACE}/frontend/src-tauri/.cargo/config.toml" << EOF
@@ -99,11 +99,11 @@ jobs:
           rustc-link-lib = ["static=onnxruntime"]
           
           [target.aarch64-apple-ios-sim.onnxruntime]
-          rustc-link-search = ["${WORKSPACE}/frontend/src-tauri/onnxruntime-ios/onnxruntime.xcframework/ios-arm64_x86_64-simulator"]
+          rustc-link-search = ["${WORKSPACE}/frontend/src-tauri/onnxruntime-ios/onnxruntime.xcframework/ios-arm64-simulator"]
           rustc-link-lib = ["static=onnxruntime"]
           
           [target.x86_64-apple-ios.onnxruntime]
-          rustc-link-search = ["${WORKSPACE}/frontend/src-tauri/onnxruntime-ios/onnxruntime.xcframework/ios-arm64_x86_64-simulator"]
+          rustc-link-search = ["${WORKSPACE}/frontend/src-tauri/onnxruntime-ios/onnxruntime.xcframework/ios-arm64-simulator"]
           rustc-link-lib = ["static=onnxruntime"]
           EOF
           
