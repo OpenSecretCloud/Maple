@@ -15,8 +15,8 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TAURI_DIR="$(dirname "$SCRIPT_DIR")"
-# Use 1.22.0 by default - 1.20.1 has Eigen hash mismatch issues with GitLab
-ORT_VERSION="${1:-1.22.0}"
+# Use latest 1.22.2 - older versions have Eigen hash mismatch issues with GitLab
+ORT_VERSION="${1:-1.22.2}"
 BUILD_DIR="${TAURI_DIR}/onnxruntime-build"
 OUTPUT_DIR="${TAURI_DIR}/onnxruntime-ios"
 XCFRAMEWORK_DIR="${OUTPUT_DIR}/onnxruntime.xcframework"
