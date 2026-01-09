@@ -49,16 +49,48 @@ fi
 mkdir -p "$BUILD_DIR"
 cd "$BUILD_DIR"
 
-# Clone ONNX Runtime if not already cloned
+# Clone ONNX Runtime if not already cloned (with retry for transient network errors)
+clone_with_retry() {
+    local max_attempts=3
+    local attempt=1
+    while [ $attempt -le $max_attempts ]; do
+        echo "Attempt $attempt of $max_attempts..."
+        if git clone --depth 1 --branch "v${ORT_VERSION}" --recursive https://github.com/microsoft/onnxruntime.git; then
+            return 0
+        fi
+        echo "Clone failed, waiting 10 seconds before retry..."
+        sleep 10
+        attempt=$((attempt + 1))
+    done
+    echo "Failed to clone after $max_attempts attempts"
+    return 1
+}
+
+submodule_update_with_retry() {
+    local max_attempts=3
+    local attempt=1
+    while [ $attempt -le $max_attempts ]; do
+        echo "Attempt $attempt of $max_attempts..."
+        if git submodule update --init --recursive; then
+            return 0
+        fi
+        echo "Submodule update failed, waiting 10 seconds before retry..."
+        sleep 10
+        attempt=$((attempt + 1))
+    done
+    echo "Failed to update submodules after $max_attempts attempts"
+    return 1
+}
+
 if [ ! -d "onnxruntime" ]; then
     echo "Cloning ONNX Runtime repository..."
-    git clone --depth 1 --branch "v${ORT_VERSION}" --recursive https://github.com/microsoft/onnxruntime.git
+    clone_with_retry
 else
     echo "ONNX Runtime repository already cloned"
     cd onnxruntime
     git fetch --tags
     git checkout "v${ORT_VERSION}"
-    git submodule update --init --recursive
+    submodule_update_with_retry
     cd ..
 fi
 
