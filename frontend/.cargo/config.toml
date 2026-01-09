@@ -1,0 +1,13 @@
+# iOS ONNX Runtime setup for the `ort-sys` crate.
+#
+# We keep the xcframework under `frontend/src-tauri/onnxruntime-ios/onnxruntime.xcframework`
+# and point `ort-sys` at the correct slice via `ORT_LIB_LOCATION`.
+
+[target.aarch64-apple-ios.env]
+ORT_LIB_LOCATION = { value = "src-tauri/onnxruntime-ios/onnxruntime.xcframework/ios-arm64", relative = true }
+
+[target.aarch64-apple-ios-sim.env]
+ORT_LIB_LOCATION = { value = "src-tauri/onnxruntime-ios/onnxruntime.xcframework/ios-arm64_x86_64-simulator", relative = true }
+
+[target.x86_64-apple-ios.env]
+ORT_LIB_LOCATION = { value = "src-tauri/onnxruntime-ios/onnxruntime.xcframework/ios-arm64_x86_64-simulator", relative = true }

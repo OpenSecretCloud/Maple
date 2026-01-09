@@ -2,3 +2,7 @@
 # will have compiled files and executables
 /target/
 /gen/schemas
+
+# ONNX Runtime iOS build artifacts
+/onnxruntime-ios/
+/onnxruntime-build/

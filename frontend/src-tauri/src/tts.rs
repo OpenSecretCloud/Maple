@@ -14,7 +14,7 @@ use std::fs::{self, File};
 use std::io::{BufReader, Cursor, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use unicode_normalization::UnicodeNormalization;
 
 // Pre-compiled regexes for text preprocessing (compiled once, reused)
@@ -611,10 +611,11 @@ impl TextToSpeech {
     }
 }
 
-fn get_tts_models_dir() -> Result<PathBuf> {
-    let data_dir = dirs::data_local_dir()
-        .context("Failed to get local data directory")?
-        .join("cloud.opensecret.maple")
+fn get_tts_models_dir(app: &AppHandle) -> Result<PathBuf> {
+    let data_dir = app
+        .path()
+        .app_local_data_dir()
+        .context("Failed to get app local data directory")?
         .join("tts_models");
     Ok(data_dir)
 }
@@ -720,9 +721,10 @@ pub struct TTSStatusResponse {
 
 #[tauri::command]
 pub async fn tts_get_status(
+    app: AppHandle,
     state: tauri::State<'_, Mutex<TTSState>>,
 ) -> Result<TTSStatusResponse, String> {
-    let models_dir = get_tts_models_dir().map_err(|e| e.to_string())?;
+    let models_dir = get_tts_models_dir(&app).map_err(|e| e.to_string())?;
 
     let models_downloaded =
         MODEL_FILES.iter().all(|(name, _, expected_size, _)| {
@@ -755,7 +757,7 @@ struct DownloadProgress {
 pub async fn tts_download_models(app: AppHandle) -> Result<(), String> {
     use std::time::Duration;
 
-    let models_dir = get_tts_models_dir().map_err(|e| e.to_string())?;
+    let models_dir = get_tts_models_dir(&app).map_err(|e| e.to_string())?;
     fs::create_dir_all(&models_dir)
         .map_err(|e| format!("Failed to create models directory: {e}"))?;
 
@@ -886,8 +888,11 @@ pub async fn tts_download_models(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn tts_load_models(state: tauri::State<'_, Mutex<TTSState>>) -> Result<(), String> {
-    let models_dir = get_tts_models_dir().map_err(|e| e.to_string())?;
+pub async fn tts_load_models(
+    app: AppHandle,
+    state: tauri::State<'_, Mutex<TTSState>>,
+) -> Result<(), String> {
+    let models_dir = get_tts_models_dir(&app).map_err(|e| e.to_string())?;
 
     log::info!("Loading TTS models from {models_dir:?}");
 
@@ -968,7 +973,10 @@ pub async fn tts_unload_models(state: tauri::State<'_, Mutex<TTSState>>) -> Resu
 }
 
 #[tauri::command]
-pub async fn tts_delete_models(state: tauri::State<'_, Mutex<TTSState>>) -> Result<(), String> {
+pub async fn tts_delete_models(
+    app: AppHandle,
+    state: tauri::State<'_, Mutex<TTSState>>,
+) -> Result<(), String> {
     // First unload models from memory
     {
         let mut guard = state.lock().map_err(|e| e.to_string())?;
@@ -977,7 +985,7 @@ pub async fn tts_delete_models(state: tauri::State<'_, Mutex<TTSState>>) -> Resu
     }
 
     // Delete the models directory
-    let models_dir = get_tts_models_dir().map_err(|e| e.to_string())?;
+    let models_dir = get_tts_models_dir(&app).map_err(|e| e.to_string())?;
     if models_dir.exists() {
         fs::remove_dir_all(&models_dir).map_err(|e| format!("Failed to delete TTS models: {e}"))?;
     }
