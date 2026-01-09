@@ -1,32 +1,23 @@
 # Cargo configuration for iOS builds with ONNX Runtime
-# This file sets the ORT_LIB_LOCATION environment variable so that ort-sys
-# can find the pre-built ONNX Runtime static libraries during compilation.
+# 
+# This file uses Cargo's build script override feature to provide the
+# ONNX Runtime library location for iOS targets. This overrides ort-sys's
+# build script output, which would otherwise fail because ORT_LIB_LOCATION
+# cannot be set in a target-specific way.
+#
+# The `onnxruntime` key matches ort-sys's `links = "onnxruntime"` declaration.
 
-# The [env] section sets environment variables for ALL cargo invocations.
-# This is needed because xcodebuild runs cargo in a subprocess that doesn't
-# inherit GitHub Actions environment variables.
-[env]
-# The path is relative to the .cargo directory's parent (frontend/src-tauri)
-# ort-sys will look for libonnxruntime.a in this directory
-ORT_LIB_LOCATION = { value = "onnxruntime-ios/onnxruntime.xcframework/ios-arm64", relative = true }
+# iOS arm64 device target - override ort-sys build script
+[target.aarch64-apple-ios.onnxruntime]
+rustc-link-search = ["onnxruntime-ios/onnxruntime.xcframework/ios-arm64"]
+rustc-link-lib = ["static=onnxruntime"]
 
-# iOS arm64 device target configuration
-[target.aarch64-apple-ios]
-rustflags = [
-    "-L", "native=onnxruntime-ios/onnxruntime.xcframework/ios-arm64",
-    "-l", "static=onnxruntime",
-]
+# iOS simulator (arm64) target
+[target.aarch64-apple-ios-sim.onnxruntime]
+rustc-link-search = ["onnxruntime-ios/onnxruntime.xcframework/ios-arm64_x86_64-simulator"]
+rustc-link-lib = ["static=onnxruntime"]
 
-# iOS simulator (arm64) target configuration  
-[target.aarch64-apple-ios-sim]
-rustflags = [
-    "-L", "native=onnxruntime-ios/onnxruntime.xcframework/ios-arm64_x86_64-simulator",
-    "-l", "static=onnxruntime",
-]
-
-# iOS simulator (x86_64) target configuration
-[target.x86_64-apple-ios]
-rustflags = [
-    "-L", "native=onnxruntime-ios/onnxruntime.xcframework/ios-arm64_x86_64-simulator",
-    "-l", "static=onnxruntime",
-]
+# iOS simulator (x86_64) target
+[target.x86_64-apple-ios.onnxruntime]
+rustc-link-search = ["onnxruntime-ios/onnxruntime.xcframework/ios-arm64_x86_64-simulator"]
+rustc-link-lib = ["static=onnxruntime"]
