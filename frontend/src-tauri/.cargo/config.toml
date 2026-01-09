@@ -1,0 +1,32 @@
+# Cargo configuration for iOS builds with ONNX Runtime
+# This file sets the ORT_LIB_LOCATION environment variable so that ort-sys
+# can find the pre-built ONNX Runtime static libraries during compilation.
+
+# The [env] section sets environment variables for ALL cargo invocations.
+# This is needed because xcodebuild runs cargo in a subprocess that doesn't
+# inherit GitHub Actions environment variables.
+[env]
+# The path is relative to the .cargo directory's parent (frontend/src-tauri)
+# ort-sys will look for libonnxruntime.a in this directory
+ORT_LIB_LOCATION = { value = "onnxruntime-ios/onnxruntime.xcframework/ios-arm64", relative = true }
+
+# iOS arm64 device target configuration
+[target.aarch64-apple-ios]
+rustflags = [
+    "-L", "native=onnxruntime-ios/onnxruntime.xcframework/ios-arm64",
+    "-l", "static=onnxruntime",
+]
+
+# iOS simulator (arm64) target configuration  
+[target.aarch64-apple-ios-sim]
+rustflags = [
+    "-L", "native=onnxruntime-ios/onnxruntime.xcframework/ios-arm64_x86_64-simulator",
+    "-l", "static=onnxruntime",
+]
+
+# iOS simulator (x86_64) target configuration
+[target.x86_64-apple-ios]
+rustflags = [
+    "-L", "native=onnxruntime-ios/onnxruntime.xcframework/ios-arm64_x86_64-simulator",
+    "-l", "static=onnxruntime",
+]
