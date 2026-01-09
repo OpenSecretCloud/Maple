@@ -105,6 +105,8 @@ jobs:
           VITE_OPEN_SECRET_API_URL: https://enclave.trymaple.ai
           VITE_MAPLE_BILLING_API_URL: https://billing.opensecret.cloud
           VITE_CLIENT_ID: ba5a14b5-d915-47b1-b7b1-afda52bc5fc6
+          # ONNX Runtime location for ort-sys crate
+          ORT_LIB_LOCATION: ${{ github.workspace }}/frontend/src-tauri/onnxruntime-ios/onnxruntime.xcframework/ios-arm64
 
       - name: Upload iOS App
         uses: actions/upload-artifact@v4
