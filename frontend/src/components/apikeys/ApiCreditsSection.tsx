@@ -108,8 +108,8 @@ export function ApiCreditsSection({ showSuccessMessage = false }: ApiCreditsSect
       } else {
         // For web or desktop, use regular URLs with query params
         const baseUrl = window.location.origin;
-        successUrl = `${baseUrl}/?credits_success=true`;
-        cancelUrl = method === "stripe" ? `${baseUrl}/` : undefined;
+        successUrl = `${baseUrl}/settings?tab=api&credits_success=true`;
+        cancelUrl = method === "stripe" ? `${baseUrl}/settings?tab=api` : undefined;
       }
 
       if (method === "stripe") {
