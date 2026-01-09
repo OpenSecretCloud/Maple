@@ -59,11 +59,11 @@ for header in cpu_provider_factory.h onnxruntime_c_api.h onnxruntime_cxx_api.h o
 done
 
 echo "Downloading iOS arm64 static library (this may take a while)..."
-curl -L -o "$XCFRAMEWORK_DIR/ios-arm64/onnxruntime.a" \
+curl -L -o "$XCFRAMEWORK_DIR/ios-arm64/libonnxruntime.a" \
     "$HF_BASE_URL/$ORT_VERSION/onnxruntime.xcframework/ios-arm64/onnxruntime.a"
 
 echo "Downloading iOS simulator static library (this may take a while)..."
-curl -L -o "$XCFRAMEWORK_DIR/ios-arm64_x86_64-simulator/onnxruntime.a" \
+curl -L -o "$XCFRAMEWORK_DIR/ios-arm64_x86_64-simulator/libonnxruntime.a" \
     "$HF_BASE_URL/$ORT_VERSION/onnxruntime.xcframework/ios-arm64_x86_64-simulator/onnxruntime.a"
 
 echo ""
@@ -74,5 +74,5 @@ echo "Contents:"
 ls -la "$XCFRAMEWORK_DIR"
 echo ""
 echo "Static library sizes:"
-ls -lh "$XCFRAMEWORK_DIR/ios-arm64/onnxruntime.a"
-ls -lh "$XCFRAMEWORK_DIR/ios-arm64_x86_64-simulator/onnxruntime.a"
+ls -lh "$XCFRAMEWORK_DIR/ios-arm64/libonnxruntime.a"
+ls -lh "$XCFRAMEWORK_DIR/ios-arm64_x86_64-simulator/libonnxruntime.a"

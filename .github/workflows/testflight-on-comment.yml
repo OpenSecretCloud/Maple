@@ -116,9 +116,9 @@ jobs:
         id: cache-onnxruntime
         with:
           path: frontend/src-tauri/onnxruntime-ios
-          key: onnxruntime-ios-1.20.1
+          key: onnxruntime-ios-1.20.1-v2
           restore-keys: |
-            onnxruntime-ios-
+            onnxruntime-ios-1.20.1-v2
 
       - name: Download ONNX Runtime for iOS
         if: steps.cache-onnxruntime.outputs.cache-hit != 'true'
@@ -126,6 +126,12 @@ jobs:
         run: |
           chmod +x scripts/setup-ios-onnxruntime.sh
           ./scripts/setup-ios-onnxruntime.sh
+
+      - name: Verify ONNX Runtime files
+        run: |
+          echo "ORT_LIB_LOCATION will be: ${{ github.workspace }}/frontend/src-tauri/onnxruntime-ios/onnxruntime.xcframework/ios-arm64"
+          ls -la ${{ github.workspace }}/frontend/src-tauri/onnxruntime-ios/onnxruntime.xcframework/ios-arm64/
+          file ${{ github.workspace }}/frontend/src-tauri/onnxruntime-ios/onnxruntime.xcframework/ios-arm64/libonnxruntime.a || echo "File not found or not a valid archive"
 
       - name: Setup Xcode
         uses: maxim-lobanov/setup-xcode@v1
