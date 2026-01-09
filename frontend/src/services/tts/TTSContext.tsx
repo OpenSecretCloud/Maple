@@ -7,7 +7,7 @@ import {
   useEffect,
   ReactNode
 } from "react";
-import { isTauriDesktop } from "@/utils/platform";
+import { isTauriDesktop, isTauri, isIOS } from "@/utils/platform";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
@@ -60,8 +60,8 @@ interface TTSContextValue {
 const TTSContext = createContext<TTSContextValue | null>(null);
 
 export function TTSProvider({ children }: { children: ReactNode }) {
-  // Check Tauri desktop environment once at mount - TTS is desktop-only
-  const isTauriEnv = isTauriDesktop();
+  // TTS is supported on desktop + iOS (not Android)
+  const isTauriEnv = isTauriDesktop() || (isTauri() && isIOS());
 
   // Initial status depends on whether we're in Tauri
   const [status, setStatus] = useState<TTSStatus>(isTauriEnv ? "checking" : "not_available");

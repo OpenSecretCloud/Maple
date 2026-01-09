@@ -116,6 +116,24 @@ jobs:
         with:
           xcode-version: '16.4'
 
+      - name: Cache ONNX Runtime iOS xcframework
+        uses: actions/cache@v4
+        id: cache-onnxruntime
+        with:
+          path: |
+            frontend/src-tauri/onnxruntime-ios
+          key: onnxruntime-ios-xcframework-1.22.2-${{ hashFiles('frontend/src-tauri/scripts/build-ios-onnxruntime.sh') }}
+          restore-keys: |
+            onnxruntime-ios-xcframework-1.22.2-
+
+      - name: Build ONNX Runtime xcframework (if needed)
+        if: steps.cache-onnxruntime.outputs.cache-hit != 'true'
+        working-directory: ./frontend/src-tauri
+        run: |
+          chmod +x scripts/build-ios-onnxruntime.sh
+          ./scripts/build-ios-onnxruntime.sh 1.22.2
+        timeout-minutes: 90
+
       - name: Install Tauri CLI
         run: |
           if ! command -v cargo-tauri &> /dev/null; then
