@@ -55,7 +55,7 @@ sha2 = "0.10"
 
 [target.'cfg(target_os = "ios")'.dependencies]
 # TTS dependencies (Supertonic) - iOS
-# Uses pre-built ONNX Runtime xcframework from HuggingFace
+# We build ONNX Runtime 1.22.0 from source for iOS (see scripts/build-ios-onnxruntime.sh)
 # We disable download-binaries and copy-dylibs since we link our own xcframework
 # Need "std" for Error trait impl and file operations, "ndarray" for tensor creation
 ort = { version = "2.0.0-rc.10", default-features = false, features = ["std", "ndarray"] }

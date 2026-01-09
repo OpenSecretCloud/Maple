@@ -60,16 +60,16 @@ jobs:
           path: |
             frontend/src-tauri/onnxruntime-ios
             frontend/src-tauri/onnxruntime-build
-          key: onnxruntime-ios-built-1.20.1-v1
+          key: onnxruntime-ios-built-1.22.0-v1
           restore-keys: |
-            onnxruntime-ios-built-1.20.1-
+            onnxruntime-ios-built-1.22.0-
 
       - name: Build ONNX Runtime for iOS from source
         if: steps.cache-onnxruntime.outputs.cache-hit != 'true'
         working-directory: ./frontend/src-tauri
         run: |
           chmod +x scripts/build-ios-onnxruntime.sh
-          ./scripts/build-ios-onnxruntime.sh 1.20.1
+          ./scripts/build-ios-onnxruntime.sh 1.22.0
         timeout-minutes: 90
 
       - name: Verify ONNX Runtime files
