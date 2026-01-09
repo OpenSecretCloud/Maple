@@ -178,9 +178,6 @@ jobs:
           path: |
             ~/.gradle/caches
             ~/.gradle/wrapper
-            frontend/src-tauri/gen/android/.gradle
-            frontend/src-tauri/gen/android/build
-            frontend/src-tauri/gen/android/app/build
           key: ${{ runner.os }}-gradle-${{ hashFiles('frontend/src-tauri/gen/android/**/*.gradle*', 'frontend/src-tauri/gen/android/gradle-wrapper.properties') }}
           restore-keys: |
             ${{ runner.os }}-gradle-
