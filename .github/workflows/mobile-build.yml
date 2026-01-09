@@ -158,7 +158,11 @@ jobs:
           retention-days: 5
 
       - name: Submit to TestFlight
-        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        # TODO: Remove ios-tts condition after PR #378 is merged
+        # For this PR, we want to test TestFlight submissions on every build
+        if: |
+          (github.event_name == 'push' && github.ref == 'refs/heads/master') ||
+          (github.event_name == 'pull_request' && github.head_ref == 'ios-tts')
         run: |
           # Find the actual path of the IPA file
           IPA_PATH=$(find frontend/src-tauri/gen/apple/build -name "*.ipa" | head -n 1)
