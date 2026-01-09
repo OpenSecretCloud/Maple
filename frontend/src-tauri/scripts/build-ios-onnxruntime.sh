@@ -64,30 +64,6 @@ fi
 
 cd onnxruntime
 
-# Fix Eigen hash mismatch issue
-# GitLab regenerates archive files periodically, causing hash mismatches
-# We patch deps.txt to remove hashes - cmake will skip verification with empty hash
-# This is safe because we're building from a known ONNX Runtime release tag
-echo ""
-echo "========================================"
-echo "Patching deps.txt to fix hash mismatches..."
-echo "========================================"
-if [ -f "cmake/deps.txt" ]; then
-    # Show current eigen entries
-    echo "Current eigen entries:"
-    grep -i "eigen" cmake/deps.txt || echo "No eigen entries found"
-    
-    # For each line starting with eigen (case insensitive), keep URL but remove hash
-    # The format is: name;url;hash
-    # We want: name;url;  (empty hash makes cmake skip verification)
-    # Using perl for more reliable in-place editing on macOS
-    perl -i.bak -pe 's/^(eigen[^;]*;[^;]+);[a-f0-9]+$/$1;/i' cmake/deps.txt
-    
-    echo ""
-    echo "Patched eigen entries:"
-    grep -i "eigen" cmake/deps.txt || echo "No eigen entries found"
-fi
-
 # Common cmake extra defines to work around compatibility issues
 # CMAKE_POLICY_VERSION_MINIMUM=3.5 fixes nsync compatibility with newer CMake
 CMAKE_EXTRA_DEFINES="CMAKE_POLICY_VERSION_MINIMUM=3.5"
