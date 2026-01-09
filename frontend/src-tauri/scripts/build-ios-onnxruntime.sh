@@ -151,48 +151,15 @@ IOS_ARM64_LIB="$IOS_ARM64_COMBINED_LIB"
 echo "Created combined library: $IOS_ARM64_LIB"
 ls -lh "$IOS_ARM64_LIB"
 
-# Build for iOS simulator (arm64 for Apple Silicon Macs)
+# SKIP SIMULATOR BUILD for now
+# The simulator build has a bug where it tries to link against the wrong iconv library:
+# "ld: building for 'iOS-simulator', but linking in dylib built for 'iOS'"
+# For TestFlight/App Store deployment, we only need the device build anyway.
+# Local development can use the desktop version or a physical device.
 echo ""
-echo "========================================"
-echo "Building for iOS simulator (arm64)..."
-echo "========================================"
-
-./build.sh \
-    --config Release \
-    --use_xcode \
-    --ios \
-    --apple_sysroot iphonesimulator \
-    --osx_arch arm64 \
-    --apple_deploy_target "${IOS_DEPLOYMENT_TARGET}" \
-    --parallel \
-    --skip_tests \
-    --compile_no_warning_as_error \
-    --cmake_extra_defines "${CMAKE_EXTRA_DEFINES}"
-
-# Combine simulator arm64 libraries
-IOS_SIM_ARM64_BUILD_DIR="build/iOS/Release/Release-iphonesimulator"
-IOS_SIM_ARM64_COMBINED_LIB="${IOS_SIM_ARM64_BUILD_DIR}/libonnxruntime_combined.a"
-
-echo ""
-echo "Combining iOS simulator arm64 static libraries..."
-
-IOS_SIM_ARM64_LIBS=$(find build/iOS/Release -name "*.a" -path "*Release-iphonesimulator*" -type f | grep -v "gtest\|gmock" | sort -u)
-
-if [ -n "$IOS_SIM_ARM64_LIBS" ]; then
-    libtool -static -o "$IOS_SIM_ARM64_COMBINED_LIB" $IOS_SIM_ARM64_LIBS
-    IOS_SIM_ARM64_LIB="$IOS_SIM_ARM64_COMBINED_LIB"
-    echo "Created combined simulator arm64 library: $IOS_SIM_ARM64_LIB"
-    ls -lh "$IOS_SIM_ARM64_LIB"
-else
-    echo "Warning: No simulator arm64 libraries found"
-    IOS_SIM_ARM64_LIB=""
-fi
-
-# Skip x86_64 simulator build for now - arm64 simulator works on Apple Silicon
-# which is what GitHub Actions uses. This significantly speeds up the build.
-echo ""
-echo "Skipping x86_64 simulator build (arm64 simulator is sufficient for Apple Silicon)"
-IOS_SIM_X64_LIB=""
+echo "Skipping iOS simulator build (known ONNX Runtime CMake bug with libiconv)"
+echo "Device build is sufficient for TestFlight deployment"
+IOS_SIM_ARM64_LIB=""
 
 # Create output directories
 echo ""
