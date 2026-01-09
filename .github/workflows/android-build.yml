@@ -48,6 +48,72 @@ jobs:
           path: frontend/dist
           retention-days: 1
 
+  # Generate Tauri gradle files (runs in parallel with build-rust)
+  generate-gradle-files:
+    runs-on: ubuntu-latest-8-cores
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: 1.2.2
+
+      - name: Cache Bun dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.bun/install/cache
+            frontend/node_modules
+          key: ${{ runner.os }}-bun-${{ hashFiles('frontend/bun.lockb') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo bin (Tauri CLI)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/
+          key: ${{ runner.os }}-cargo-bin-tauri-cli-2.9.2
+          restore-keys: |
+            ${{ runner.os }}-cargo-bin-tauri-cli-
+
+      - name: Install frontend dependencies
+        working-directory: ./frontend
+        run: bun install
+
+      - name: Install Tauri CLI
+        run: |
+          if ! command -v cargo-tauri &> /dev/null; then
+            cargo install tauri-cli --version "2.9.2" --locked
+          fi
+        env:
+          CARGO_CFG_TARGET_OS: linux
+
+      - name: Generate tauri.settings.gradle
+        working-directory: ./frontend
+        run: |
+          # Run tauri android build - it will generate gradle files then fail at Rust compile (expected)
+          cargo tauri android build 2>&1 || true
+          
+          # Verify the file was generated
+          if [ -f "src-tauri/gen/android/tauri.settings.gradle" ]; then
+            echo "tauri.settings.gradle generated successfully:"
+            cat src-tauri/gen/android/tauri.settings.gradle
+          else
+            echo "ERROR: tauri.settings.gradle was not generated"
+            exit 1
+          fi
+
+      - name: Upload tauri.settings.gradle
+        uses: actions/upload-artifact@v4
+        with:
+          name: tauri-settings-gradle
+          path: frontend/src-tauri/gen/android/tauri.settings.gradle
+          retention-days: 1
+
   # Build each Rust target in parallel
   build-rust:
     runs-on: ubuntu-latest-8-cores
@@ -159,49 +225,6 @@ jobs:
               ;;
           esac
 
-      - name: Cache Cargo bin (Tauri CLI)
-        if: matrix.short_name == 'aarch64'
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/bin/
-          key: ${{ runner.os }}-cargo-bin-tauri-cli-2.9.2
-          restore-keys: |
-            ${{ runner.os }}-cargo-bin-tauri-cli-
-
-      - name: Install Tauri CLI (aarch64 only, for generating gradle files)
-        if: matrix.short_name == 'aarch64'
-        run: |
-          if ! command -v cargo-tauri &> /dev/null; then
-            cargo install tauri-cli --version "2.9.2" --locked
-          fi
-        env:
-          CARGO_CFG_TARGET_OS: linux
-
-      - name: Generate tauri.settings.gradle (aarch64 only)
-        if: matrix.short_name == 'aarch64'
-        working-directory: ./frontend
-        run: |
-          # Run tauri android build which will generate the gradle files, then fail at Rust compile (that's ok)
-          # We just need the tauri.settings.gradle file
-          cargo tauri android build 2>&1 || true
-          
-          # Verify the file was generated
-          if [ -f "src-tauri/gen/android/tauri.settings.gradle" ]; then
-            echo "tauri.settings.gradle generated successfully"
-            cat src-tauri/gen/android/tauri.settings.gradle
-          else
-            echo "ERROR: tauri.settings.gradle was not generated"
-            exit 1
-          fi
-
-      - name: Upload tauri.settings.gradle (aarch64 only)
-        if: matrix.short_name == 'aarch64'
-        uses: actions/upload-artifact@v4
-        with:
-          name: tauri-settings-gradle
-          path: frontend/src-tauri/gen/android/tauri.settings.gradle
-          retention-days: 1
-
       - name: Build Rust library for ${{ matrix.target }}
         working-directory: ./frontend/src-tauri
         run: |
@@ -220,7 +243,7 @@ jobs:
   # Package everything with Gradle
   package-android:
     runs-on: ubuntu-latest-8-cores
-    needs: build-rust
+    needs: [build-rust, generate-gradle-files]
     steps:
       - uses: actions/checkout@v4
 
