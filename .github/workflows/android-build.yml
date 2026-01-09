@@ -7,19 +7,10 @@ on:
     branches: [ master ]
 
 jobs:
-  build-android:
+  frontend-build:
     runs-on: ubuntu-latest-8-cores
     steps:
       - uses: actions/checkout@v4
-
-      - name: Setup Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: '21'
-
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v1
@@ -36,10 +27,174 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-bun-
 
+      - name: Install frontend dependencies
+        working-directory: ./frontend
+        run: bun install
+
+      - name: Build frontend
+        working-directory: ./frontend
+        run: bun run build
+        env:
+          VITE_OPEN_SECRET_API_URL: ${{ github.event_name == 'pull_request' && 'https://enclave.secretgpt.ai' || 'https://enclave.trymaple.ai' }}
+          VITE_MAPLE_BILLING_API_URL: ${{ github.event_name == 'pull_request' && 'https://billing-dev.opensecret.cloud' || 'https://billing.opensecret.cloud' }}
+          VITE_CLIENT_ID: ba5a14b5-d915-47b1-b7b1-afda52bc5fc6
+
+      - name: Upload frontend dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist
+          retention-days: 1
+
+  rust-build:
+    needs: frontend-build
+    runs-on: ubuntu-latest-8-cores
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - rust_target: aarch64-linux-android
+            target_env: aarch64_linux_android
+            cargo_target_env: AARCH64_LINUX_ANDROID
+            abi: arm64-v8a
+            cc: aarch64-linux-android24-clang
+            cxx: aarch64-linux-android24-clang++
+            ranlib_link: aarch64-linux-android-ranlib
+          - rust_target: armv7-linux-androideabi
+            target_env: armv7_linux_androideabi
+            cargo_target_env: ARMV7_LINUX_ANDROIDEABI
+            abi: armeabi-v7a
+            cc: armv7a-linux-androideabi24-clang
+            cxx: armv7a-linux-androideabi24-clang++
+            ranlib_link: armv7a-linux-androideabi-ranlib
+          - rust_target: i686-linux-android
+            target_env: i686_linux_android
+            cargo_target_env: I686_LINUX_ANDROID
+            abi: x86
+            cc: i686-linux-android24-clang
+            cxx: i686-linux-android24-clang++
+            ranlib_link: i686-linux-android-ranlib
+          - rust_target: x86_64-linux-android
+            target_env: x86_64_linux_android
+            cargo_target_env: X86_64_LINUX_ANDROID
+            abi: x86_64
+            cc: x86_64-linux-android24-clang
+            cxx: x86_64-linux-android24-clang++
+            ranlib_link: x86_64-linux-android-ranlib
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download frontend dist
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend-dist
+
+      - name: Restore frontend dist
+        run: |
+          rm -rf frontend/dist
+          mkdir -p frontend/dist
+
+          if [ -d frontend-dist/dist ]; then
+            cp -a frontend-dist/dist/. frontend/dist/
+          elif [ -d frontend-dist/frontend/dist ]; then
+            cp -a frontend-dist/frontend/dist/. frontend/dist/
+          else
+            cp -a frontend-dist/. frontend/dist/
+          fi
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android,i686-linux-android
+          targets: ${{ matrix.rust_target }}
+
+      - name: Setup Android NDK
+        uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: r27c
+          add-to-path: true
+
+      - name: Install sccache
+        run: |
+          SCCACHE_VERSION=0.8.2
+          SCCACHE_URL="https://github.com/mozilla/sccache/releases/download/v${SCCACHE_VERSION}/sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl.tar.gz"
+          curl -L "$SCCACHE_URL" | tar xz
+          sudo mv sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl/sccache /usr/local/bin/
+          chmod +x /usr/local/bin/sccache
+          sccache --version
+
+      - name: Cache sccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/sccache
+          key: ${{ runner.os }}-sccache-android-${{ matrix.rust_target }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-sccache-android-${{ matrix.rust_target }}-
+            ${{ runner.os }}-sccache-android-
+            ${{ runner.os }}-sccache-
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libssl-dev
+
+      - name: Configure sccache
+        run: |
+          echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
+          echo "SCCACHE_DIR=$HOME/.cache/sccache" >> $GITHUB_ENV
+          echo "SCCACHE_CACHE_SIZE=2G" >> $GITHUB_ENV
+
+      - name: Build Rust library (${{ matrix.rust_target }})
+        run: |
+          export NDK_HOME=${{ steps.setup-ndk.outputs.ndk-path }}
+          export PATH=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH
+
+          # C toolchain env for build scripts (e.g. openssl-sys)
+          export AR_${{ matrix.target_env }}=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
+          export CC_${{ matrix.target_env }}=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/${{ matrix.cc }}
+          export CXX_${{ matrix.target_env }}=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/${{ matrix.cxx }}
+          export RANLIB_${{ matrix.target_env }}=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib
+
+          # Explicit linker for cargo (belt + suspenders)
+          export CARGO_TARGET_${{ matrix.cargo_target_env }}_LINKER=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/${{ matrix.cc }}
+
+          # Create ranlib symlink that OpenSSL expects
+          sudo ln -sf $NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib /usr/local/bin/${{ matrix.ranlib_link }}
+
+          cargo build --manifest-path frontend/src-tauri/Cargo.toml --release --target ${{ matrix.rust_target }}
+
+          mkdir -p artifacts
+          cp frontend/src-tauri/target/${{ matrix.rust_target }}/release/libapp_lib.so artifacts/libapp_lib-${{ matrix.abi }}.so
+
+      - name: Show sccache stats
+        run: sccache --show-stats
+
+      - name: Upload Rust library (${{ matrix.abi }})
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-lib-${{ matrix.abi }}
+          path: artifacts/libapp_lib-${{ matrix.abi }}.so
+          retention-days: 1
+
+  build-android:
+    needs: rust-build
+    runs-on: ubuntu-latest-8-cores
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Setup Android NDK
         uses: nttld/setup-ndk@v1
@@ -58,24 +213,6 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-gradle-
 
-      - name: Install sccache
-        run: |
-          SCCACHE_VERSION=0.8.2
-          SCCACHE_URL="https://github.com/mozilla/sccache/releases/download/v${SCCACHE_VERSION}/sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl.tar.gz"
-          curl -L "$SCCACHE_URL" | tar xz
-          sudo mv sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl/sccache /usr/local/bin/
-          chmod +x /usr/local/bin/sccache
-          sccache --version
-
-      - name: Cache sccache
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/sccache
-          key: ${{ runner.os }}-sccache-android-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-sccache-android-
-            ${{ runner.os }}-sccache-
-
       - name: Cache Cargo bin (Tauri CLI)
         uses: actions/cache@v4
         with:
@@ -90,10 +227,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libssl-dev
 
-      - name: Install frontend dependencies
-        working-directory: ./frontend
-        run: bun install
-
       - name: Install Tauri CLI
         run: |
           if ! command -v cargo-tauri &> /dev/null; then
@@ -103,6 +236,17 @@ jobs:
           fi
         env:
           CARGO_CFG_TARGET_OS: linux
+
+      - name: Initialize Tauri Android project
+        working-directory: ./frontend
+        run: |
+          export ANDROID_HOME=$ANDROID_SDK_ROOT
+          cargo tauri android init --ci --skip-targets-install
+
+      - name: Verify Tauri Android Gradle files
+        run: |
+          test -f frontend/src-tauri/gen/android/tauri.settings.gradle
+          test -f frontend/src-tauri/gen/android/app/tauri.build.gradle.kts
 
       - name: Setup Android signing
         env:
@@ -132,56 +276,33 @@ jobs:
           
           echo "Generated tauri.properties with version $VERSION and versionCode $VERSION_CODE"
 
-      - name: Configure sccache
-        run: |
-          echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
-          echo "SCCACHE_DIR=$HOME/.cache/sccache" >> $GITHUB_ENV
-          echo "SCCACHE_CACHE_SIZE=2G" >> $GITHUB_ENV
+      - name: Download Rust libraries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: rust-lib-*
+          merge-multiple: true
+          path: rust-libs
 
-      - name: Build Tauri Android App (Signed Release)
-        working-directory: ./frontend
+      - name: Install prebuilt Rust libraries
+        run: |
+          mkdir -p frontend/src-tauri/gen/android/app/src/main/jniLibs/arm64-v8a
+          mkdir -p frontend/src-tauri/gen/android/app/src/main/jniLibs/armeabi-v7a
+          mkdir -p frontend/src-tauri/gen/android/app/src/main/jniLibs/x86
+          mkdir -p frontend/src-tauri/gen/android/app/src/main/jniLibs/x86_64
+
+          cp rust-libs/libapp_lib-arm64-v8a.so frontend/src-tauri/gen/android/app/src/main/jniLibs/arm64-v8a/libapp_lib.so
+          cp rust-libs/libapp_lib-armeabi-v7a.so frontend/src-tauri/gen/android/app/src/main/jniLibs/armeabi-v7a/libapp_lib.so
+          cp rust-libs/libapp_lib-x86.so frontend/src-tauri/gen/android/app/src/main/jniLibs/x86/libapp_lib.so
+          cp rust-libs/libapp_lib-x86_64.so frontend/src-tauri/gen/android/app/src/main/jniLibs/x86_64/libapp_lib.so
+
+      - name: Build Android APK + AAB (Signed Release)
+        working-directory: ./frontend/src-tauri/gen/android
         run: |
           export ANDROID_HOME=$ANDROID_SDK_ROOT
           export NDK_HOME=${{ steps.setup-ndk.outputs.ndk-path }}
-
-          # Set up Android NDK toolchain paths
           export PATH=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH
 
-          # Set up cross-compilation environment variables for each target
-          export AR_aarch64_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
-          export CC_aarch64_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang
-          export CXX_aarch64_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang++
-          export RANLIB_aarch64_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib
-
-          export AR_armv7_linux_androideabi=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
-          export CC_armv7_linux_androideabi=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi24-clang
-          export CXX_armv7_linux_androideabi=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi24-clang++
-          export RANLIB_armv7_linux_androideabi=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib
-
-          export AR_x86_64_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
-          export CC_x86_64_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android24-clang
-          export CXX_x86_64_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android24-clang++
-          export RANLIB_x86_64_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib
-
-          export AR_i686_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
-          export CC_i686_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/i686-linux-android24-clang
-          export CXX_i686_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/i686-linux-android24-clang++
-          export RANLIB_i686_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib
-
-          # Create symlinks for ranlib that OpenSSL expects
-          sudo ln -sf $NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib /usr/local/bin/aarch64-linux-android-ranlib
-          sudo ln -sf $NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib /usr/local/bin/armv7a-linux-androideabi-ranlib
-          sudo ln -sf $NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib /usr/local/bin/x86_64-linux-android-ranlib
-          sudo ln -sf $NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib /usr/local/bin/i686-linux-android-ranlib
-
-          cargo tauri android build
-        env:
-          VITE_OPEN_SECRET_API_URL: ${{ github.event_name == 'pull_request' && 'https://enclave.secretgpt.ai' || 'https://enclave.trymaple.ai' }}
-          VITE_MAPLE_BILLING_API_URL: ${{ github.event_name == 'pull_request' && 'https://billing-dev.opensecret.cloud' || 'https://billing.opensecret.cloud' }}
-          VITE_CLIENT_ID: ba5a14b5-d915-47b1-b7b1-afda52bc5fc6
-
-      - name: Show sccache stats
-        run: sccache --show-stats
+          ./gradlew :app:assembleUniversalRelease :app:bundleUniversalRelease -PskipRustBuild=true
 
       - name: Upload Android APK
         uses: actions/upload-artifact@v4
