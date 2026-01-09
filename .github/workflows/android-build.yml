@@ -92,7 +92,7 @@ jobs:
           cargo fetch --locked --manifest-path src-tauri/Cargo.toml
 
           # Generate Android project + required autogen files without compiling Rust.
-          cargo tauri android init --ci --force
+          cargo tauri android init --ci
           
           # Verify required generated files exist
           REQUIRED_FILES=(
