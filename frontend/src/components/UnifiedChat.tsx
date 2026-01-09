@@ -963,6 +963,7 @@ export function UnifiedChat() {
   const assistantStreamingRef = useRef(false);
 
   const abortControllerRef = useRef<AbortController | null>(null);
+  const billingRefreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const documentInputRef = useRef<HTMLInputElement>(null);
 
@@ -991,6 +992,15 @@ export function UnifiedChat() {
       textareaRef.current.style.height = `${Math.min(scrollHeight, 200)}px`;
     }
   }, [input]);
+
+  // Cleanup billing refresh timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (billingRefreshTimeoutRef.current) {
+        clearTimeout(billingRefreshTimeoutRef.current);
+      }
+    };
+  }, []);
 
   // Auto-focus textbox on desktop (not mobile to avoid keyboard popup interrupting reading)
   // Focus when: app launches, new chat, conversation loads, or assistant finishes streaming
@@ -2365,6 +2375,12 @@ export function UnifiedChat() {
           // Re-enable polling after streaming completes
           assistantStreamingRef.current = false;
           setCurrentResponseId(undefined);
+
+          // Invalidate billing status after a delay to allow backend processing
+          billingRefreshTimeoutRef.current = setTimeout(() => {
+            queryClient.invalidateQueries({ queryKey: ["billingStatus"] });
+            billingRefreshTimeoutRef.current = null;
+          }, 3000);
         }
       } catch (error) {
         console.error("Failed to send message:", error);
