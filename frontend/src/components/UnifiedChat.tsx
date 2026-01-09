@@ -2365,6 +2365,11 @@ export function UnifiedChat() {
           // Re-enable polling after streaming completes
           assistantStreamingRef.current = false;
           setCurrentResponseId(undefined);
+
+          // Invalidate billing status after a delay to allow backend processing
+          setTimeout(() => {
+            queryClient.invalidateQueries({ queryKey: ["billingStatus"] });
+          }, 3000);
         }
       } catch (error) {
         console.error("Failed to send message:", error);
