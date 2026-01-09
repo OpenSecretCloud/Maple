@@ -63,6 +63,10 @@ fi
 
 cd onnxruntime
 
+# Common cmake extra defines to work around compatibility issues
+# CMAKE_POLICY_VERSION_MINIMUM=3.5 fixes nsync compatibility with newer CMake
+CMAKE_EXTRA_DEFINES="CMAKE_POLICY_VERSION_MINIMUM=3.5"
+
 # Build for iOS device (arm64)
 echo ""
 echo "========================================"
@@ -78,7 +82,8 @@ echo "========================================"
     --apple_deploy_target "${IOS_DEPLOYMENT_TARGET}" \
     --parallel \
     --skip_tests \
-    --compile_no_warning_as_error
+    --compile_no_warning_as_error \
+    --cmake_extra_defines "${CMAKE_EXTRA_DEFINES}"
 
 # The static library should be at:
 # build/iOS/Release/Release-iphoneos/libonnxruntime.a
@@ -113,7 +118,8 @@ echo "========================================"
     --apple_deploy_target "${IOS_DEPLOYMENT_TARGET}" \
     --parallel \
     --skip_tests \
-    --compile_no_warning_as_error
+    --compile_no_warning_as_error \
+    --cmake_extra_defines "${CMAKE_EXTRA_DEFINES}"
 
 IOS_SIM_ARM64_LIB=$(find build -name "libonnxruntime.a" -path "*iphonesimulator*" -path "*arm64*" | head -n 1)
 
@@ -138,7 +144,8 @@ echo "========================================"
     --apple_deploy_target "${IOS_DEPLOYMENT_TARGET}" \
     --parallel \
     --skip_tests \
-    --compile_no_warning_as_error
+    --compile_no_warning_as_error \
+    --cmake_extra_defines "${CMAKE_EXTRA_DEFINES}"
 
 IOS_SIM_X64_LIB=$(find build -name "libonnxruntime.a" -path "*iphonesimulator*" -path "*x86_64*" | head -n 1)
 
