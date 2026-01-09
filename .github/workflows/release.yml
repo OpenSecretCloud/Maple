@@ -30,9 +30,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: macos-latest
+          - platform: macos-latest-xlarge
             args: --target universal-apple-darwin
-          - platform: ubuntu-latest
+          - platform: ubuntu-latest-8-cores
             args: ""
 
     runs-on: ${{ matrix.platform }}
@@ -47,10 +47,10 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+          targets: ${{ matrix.platform == 'macos-latest-xlarge' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
 
       - name: Cache Homebrew
-        if: matrix.platform == 'macos-latest'
+        if: matrix.platform == 'macos-latest-xlarge'
         uses: actions/cache@v4
         with:
           path: |
@@ -62,14 +62,14 @@ jobs:
             ${{ runner.os }}-brew-
 
       - name: Install sccache (macOS)
-        if: matrix.platform == 'macos-latest'
+        if: matrix.platform == 'macos-latest-xlarge'
         run: |
           brew install sccache
           brew link --overwrite --force sccache
           sccache --version
 
       - name: Install sccache (Linux)
-        if: matrix.platform == 'ubuntu-latest'
+        if: matrix.platform == 'ubuntu-latest-8-cores'
         run: |
           SCCACHE_VERSION=0.8.2
           SCCACHE_URL="https://github.com/mozilla/sccache/releases/download/v${SCCACHE_VERSION}/sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl.tar.gz"
@@ -81,14 +81,14 @@ jobs:
       - name: Cache sccache
         uses: actions/cache@v4
         with:
-          path: ${{ matrix.platform == 'macos-latest' && '~/Library/Caches/Mozilla.sccache' || '~/.cache/sccache' }}
+          path: ${{ matrix.platform == 'macos-latest-xlarge' && '~/Library/Caches/Mozilla.sccache' || '~/.cache/sccache' }}
           key: ${{ runner.os }}-sccache-release-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-sccache-release-
             ${{ runner.os }}-sccache-
 
       - name: Install dependencies (Linux)
-        if: matrix.platform == 'ubuntu-latest'
+        if: matrix.platform == 'ubuntu-latest-8-cores'
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev \
@@ -132,7 +132,7 @@ jobs:
 
   build-android:
     needs: create-release
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest-8-cores
     steps:
       - uses: actions/checkout@v4
 
