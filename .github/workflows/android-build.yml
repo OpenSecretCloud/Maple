@@ -6,20 +6,17 @@ on:
   pull_request:
     branches: [ master ]
 
+env:
+  VITE_OPEN_SECRET_API_URL: ${{ github.event_name == 'pull_request' && 'https://enclave.secretgpt.ai' || 'https://enclave.trymaple.ai' }}
+  VITE_MAPLE_BILLING_API_URL: ${{ github.event_name == 'pull_request' && 'https://billing-dev.opensecret.cloud' || 'https://billing.opensecret.cloud' }}
+  VITE_CLIENT_ID: ba5a14b5-d915-47b1-b7b1-afda52bc5fc6
+
 jobs:
-  build-android:
+  # Build frontend once, shared by all jobs
+  build-frontend:
     runs-on: ubuntu-latest-8-cores
     steps:
       - uses: actions/checkout@v4
-
-      - name: Setup Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: '21'
-
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v1
@@ -36,10 +33,319 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-bun-
 
+      - name: Install frontend dependencies
+        working-directory: ./frontend
+        run: bun install
+
+      - name: Build frontend
+        working-directory: ./frontend
+        run: bun run build
+
+      - name: Upload frontend dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist
+          retention-days: 1
+
+  # Generate Tauri Android files required by the Gradle build (runs in parallel with build-rust)
+  generate-gradle-files:
+    runs-on: ubuntu-latest-8-cores
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Cache Cargo bin (Tauri CLI)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/
+          key: ${{ runner.os }}-cargo-bin-tauri-cli-2.9.2
+          restore-keys: |
+            ${{ runner.os }}-cargo-bin-tauri-cli-
+
+      - name: Install Tauri CLI
+        run: |
+          if ! command -v cargo-tauri &> /dev/null; then
+            cargo install tauri-cli --version "2.9.2" --locked
+          fi
+        env:
+          CARGO_CFG_TARGET_OS: linux
+
+      - name: Generate Tauri Android files
+        working-directory: ./frontend
+        run: |
+          set -euo pipefail
+
+          # Ensure all Tauri + plugin crates exist in the cargo registry so tauri.settings.gradle can be generated.
+          cargo fetch --locked --manifest-path src-tauri/Cargo.toml
+
+          # Generate Android project + required autogen files without compiling Rust.
+          cargo tauri android init --ci
+
+          # The repo contains a tracked Android Gradle project at src-tauri/gen/android.
+          # Depending on Tauri CLI behavior, `android init` may generate into a subdir like
+          # src-tauri/gen/android/<app-name>. We always copy the generated artifacts back
+          # into src-tauri/gen/android so downstream jobs have a stable path.
+          ANDROID_GEN_DIR="src-tauri/gen/android"
+
+          TAURI_SETTINGS_PATH=$(find "$ANDROID_GEN_DIR" -maxdepth 3 -name tauri.settings.gradle -print -quit || true)
+          if [ -z "$TAURI_SETTINGS_PATH" ]; then
+            echo "ERROR: tauri.settings.gradle not found anywhere under $ANDROID_GEN_DIR"
+            echo "=== Contents of $ANDROID_GEN_DIR (depth 3) ==="
+            find "$ANDROID_GEN_DIR" -maxdepth 3 -type f -print | sort | head -200
+            exit 1
+          fi
+
+          GENERATED_PROJECT_DIR=$(dirname "$TAURI_SETTINGS_PATH")
+          echo "Found tauri.settings.gradle at: $TAURI_SETTINGS_PATH"
+
+          if [ "$GENERATED_PROJECT_DIR" != "$ANDROID_GEN_DIR" ]; then
+            echo "Copying generated Android files from $GENERATED_PROJECT_DIR -> $ANDROID_GEN_DIR"
+
+            cp "$GENERATED_PROJECT_DIR/tauri.settings.gradle" "$ANDROID_GEN_DIR/tauri.settings.gradle"
+
+            mkdir -p "$ANDROID_GEN_DIR/app/src/main/assets"
+            cp "$GENERATED_PROJECT_DIR/app/tauri.build.gradle.kts" "$ANDROID_GEN_DIR/app/tauri.build.gradle.kts"
+            cp "$GENERATED_PROJECT_DIR/app/src/main/assets/tauri.conf.json" "$ANDROID_GEN_DIR/app/src/main/assets/tauri.conf.json"
+            cp "$GENERATED_PROJECT_DIR/app/proguard-tauri.pro" "$ANDROID_GEN_DIR/app/proguard-tauri.pro"
+
+            SRC_GENERATED_DIR=$(find "$GENERATED_PROJECT_DIR/app/src/main/java" -type d -name generated -print -quit || true)
+            if [ -z "$SRC_GENERATED_DIR" ]; then
+              echo "ERROR: Missing generated Kotlin sources directory under $GENERATED_PROJECT_DIR/app/src/main/java"
+              exit 1
+            fi
+
+            REL_GENERATED_DIR=${SRC_GENERATED_DIR#"$GENERATED_PROJECT_DIR/"}
+            DEST_GENERATED_PARENT="$ANDROID_GEN_DIR/$(dirname "$REL_GENERATED_DIR")"
+            rm -rf "$ANDROID_GEN_DIR/$REL_GENERATED_DIR"
+            mkdir -p "$DEST_GENERATED_PARENT"
+            cp -R "$SRC_GENERATED_DIR" "$DEST_GENERATED_PARENT/"
+          fi
+          
+          # Verify required generated files exist
+          REQUIRED_FILES=(
+            "$ANDROID_GEN_DIR/tauri.settings.gradle"
+            "$ANDROID_GEN_DIR/app/tauri.build.gradle.kts"
+            "$ANDROID_GEN_DIR/app/src/main/assets/tauri.conf.json"
+            "$ANDROID_GEN_DIR/app/proguard-tauri.pro"
+          )
+
+          for f in "${REQUIRED_FILES[@]}"; do
+            if [ ! -f "$f" ]; then
+              echo "ERROR: Missing generated file: $f"
+              exit 1
+            fi
+          done
+
+          GENERATED_DIR=$(find "$ANDROID_GEN_DIR/app/src/main/java" -type d -name generated -print -quit || true)
+          if [ -z "$GENERATED_DIR" ]; then
+            echo "ERROR: Missing generated Kotlin sources directory under $ANDROID_GEN_DIR/app/src/main/java"
+            exit 1
+          fi
+
+          if ! find "$GENERATED_DIR" -type f -name "*.kt" -print -quit | grep -q .; then
+            echo "ERROR: No generated Kotlin sources found in $GENERATED_DIR"
+            exit 1
+          fi
+
+          echo "=== Generated files OK ==="
+          echo "tauri.settings.gradle:"
+          sed -n '1,200p' "$ANDROID_GEN_DIR/tauri.settings.gradle"
+          echo ""
+          echo "tauri.build.gradle.kts:"
+          cat "$ANDROID_GEN_DIR/app/tauri.build.gradle.kts"
+          echo ""
+          echo "generated sources dir: $GENERATED_DIR"
+          ls -la "$GENERATED_DIR" | head -50
+
+      - name: Upload Tauri Android generated files
+        uses: actions/upload-artifact@v4
+        with:
+          name: tauri-android-generated
+          path: |
+            frontend/src-tauri/gen/android/tauri.settings.gradle
+            frontend/src-tauri/gen/android/.tauri/**
+            frontend/src-tauri/gen/android/app/tauri.build.gradle.kts
+            frontend/src-tauri/gen/android/app/src/main/assets/tauri.conf.json
+            frontend/src-tauri/gen/android/app/src/main/java/**/generated/**
+            frontend/src-tauri/gen/android/app/proguard-tauri.pro
+          retention-days: 1
+
+  # Build each Rust target in parallel
+  build-rust:
+    runs-on: ubuntu-latest-8-cores
+    needs: build-frontend
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-linux-android
+            jni_dir: arm64-v8a
+            short_name: aarch64
+          - target: armv7-linux-androideabi
+            jni_dir: armeabi-v7a
+            short_name: armv7
+          - target: i686-linux-android
+            jni_dir: x86
+            short_name: i686
+          - target: x86_64-linux-android
+            jni_dir: x86_64
+            short_name: x86_64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download frontend dist
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android,i686-linux-android
+          targets: ${{ matrix.target }}
+
+      - name: Setup Android NDK
+        uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: r27c
+          add-to-path: true
+
+      - name: Install sccache
+        run: |
+          SCCACHE_VERSION=0.8.2
+          SCCACHE_URL="https://github.com/mozilla/sccache/releases/download/v${SCCACHE_VERSION}/sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl.tar.gz"
+          curl -L "$SCCACHE_URL" | tar xz
+          sudo mv sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl/sccache /usr/local/bin/
+          chmod +x /usr/local/bin/sccache
+
+      - name: Cache sccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/sccache
+          key: ${{ runner.os }}-sccache-android-${{ matrix.short_name }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-sccache-android-${{ matrix.short_name }}-
+            ${{ runner.os }}-sccache-android-
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libssl-dev
+
+      - name: Configure build environment
+        run: |
+          echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
+          echo "SCCACHE_DIR=$HOME/.cache/sccache" >> $GITHUB_ENV
+          echo "SCCACHE_CACHE_SIZE=2G" >> $GITHUB_ENV
+          
+          NDK_HOME=${{ steps.setup-ndk.outputs.ndk-path }}
+          
+          # Set up cross-compilation environment for this target (CC, AR, RANLIB, and LINKER)
+          case "${{ matrix.target }}" in
+            aarch64-linux-android)
+              echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang" >> $GITHUB_ENV
+              echo "AR_aarch64_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar" >> $GITHUB_ENV
+              echo "CC_aarch64_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang" >> $GITHUB_ENV
+              echo "CXX_aarch64_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang++" >> $GITHUB_ENV
+              echo "RANLIB_aarch64_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib" >> $GITHUB_ENV
+              sudo ln -sf $NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib /usr/local/bin/aarch64-linux-android-ranlib
+              sudo ln -sf $NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib /usr/bin/aarch64-linux-android-ranlib
+              ;;
+            armv7-linux-androideabi)
+              echo "CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_LINKER=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi24-clang" >> $GITHUB_ENV
+              echo "AR_armv7_linux_androideabi=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar" >> $GITHUB_ENV
+              echo "CC_armv7_linux_androideabi=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi24-clang" >> $GITHUB_ENV
+              echo "CXX_armv7_linux_androideabi=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi24-clang++" >> $GITHUB_ENV
+              echo "RANLIB_armv7_linux_androideabi=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib" >> $GITHUB_ENV
+              sudo ln -sf $NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib /usr/local/bin/armv7a-linux-androideabi-ranlib
+              sudo ln -sf $NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib /usr/local/bin/arm-linux-androideabi-ranlib
+              sudo ln -sf $NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib /usr/bin/armv7a-linux-androideabi-ranlib
+              sudo ln -sf $NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib /usr/bin/arm-linux-androideabi-ranlib
+              ;;
+            i686-linux-android)
+              echo "CARGO_TARGET_I686_LINUX_ANDROID_LINKER=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/i686-linux-android24-clang" >> $GITHUB_ENV
+              echo "AR_i686_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar" >> $GITHUB_ENV
+              echo "CC_i686_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/i686-linux-android24-clang" >> $GITHUB_ENV
+              echo "CXX_i686_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/i686-linux-android24-clang++" >> $GITHUB_ENV
+              echo "RANLIB_i686_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib" >> $GITHUB_ENV
+              sudo ln -sf $NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib /usr/local/bin/i686-linux-android-ranlib
+              sudo ln -sf $NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib /usr/bin/i686-linux-android-ranlib
+              ;;
+            x86_64-linux-android)
+              echo "CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android24-clang" >> $GITHUB_ENV
+              echo "AR_x86_64_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar" >> $GITHUB_ENV
+              echo "CC_x86_64_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android24-clang" >> $GITHUB_ENV
+              echo "CXX_x86_64_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android24-clang++" >> $GITHUB_ENV
+              echo "RANLIB_x86_64_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib" >> $GITHUB_ENV
+              sudo ln -sf $NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib /usr/local/bin/x86_64-linux-android-ranlib
+              sudo ln -sf $NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib /usr/bin/x86_64-linux-android-ranlib
+              ;;
+          esac
+
+      - name: Build Rust library for ${{ matrix.target }}
+        working-directory: ./frontend/src-tauri
+        run: |
+          cargo build --release --target ${{ matrix.target }} --lib
+
+      - name: Show sccache stats
+        run: sccache --show-stats
+
+      - name: Upload native library
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-lib-${{ matrix.short_name }}
+          path: frontend/src-tauri/target/${{ matrix.target }}/release/*.so
+          retention-days: 1
+
+  # Package everything with Gradle
+  package-android:
+    runs-on: ubuntu-latest-8-cores
+    needs: [build-rust, generate-gradle-files]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache Cargo registry (for tauri-android Gradle projects)
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
 
       - name: Setup Android NDK
         uses: nttld/setup-ndk@v1
@@ -58,51 +364,48 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-gradle-
 
-      - name: Install sccache
-        run: |
-          SCCACHE_VERSION=0.8.2
-          SCCACHE_URL="https://github.com/mozilla/sccache/releases/download/v${SCCACHE_VERSION}/sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl.tar.gz"
-          curl -L "$SCCACHE_URL" | tar xz
-          sudo mv sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl/sccache /usr/local/bin/
-          chmod +x /usr/local/bin/sccache
-          sccache --version
-
-      - name: Cache sccache
-        uses: actions/cache@v4
+      - name: Download frontend dist
+        uses: actions/download-artifact@v4
         with:
-          path: ~/.cache/sccache
-          key: ${{ runner.os }}-sccache-android-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-sccache-android-
-            ${{ runner.os }}-sccache-
+          name: frontend-dist
+          path: frontend/dist
 
-      - name: Cache Cargo bin (Tauri CLI)
-        uses: actions/cache@v4
+      - name: Download all native libraries
+        uses: actions/download-artifact@v4
         with:
-          path: ~/.cargo/bin/
-          key: ${{ runner.os }}-cargo-bin-tauri-cli-2.9.2
-          restore-keys: |
-            ${{ runner.os }}-cargo-bin-tauri-cli-
-            ${{ runner.os }}-cargo-bin-
+          pattern: android-lib-*
+          path: native-libs
 
-      - name: Install Linux dependencies
+      - name: Download Tauri Android generated files
+        uses: actions/download-artifact@v4
+        with:
+          name: tauri-android-generated
+          path: tauri-android-generated
+
+      - name: Place Tauri Android generated files
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libssl-dev
+          # Copy generated files into the checked out Android project
+          cp -R tauri-android-generated/. frontend/src-tauri/gen/android/
 
-      - name: Install frontend dependencies
-        working-directory: ./frontend
-        run: bun install
+          echo "=== Tauri generated files placed ==="
+          ls -la frontend/src-tauri/gen/android/tauri.settings.gradle
+          ls -la frontend/src-tauri/gen/android/app/tauri.build.gradle.kts
+          ls -la frontend/src-tauri/gen/android/app/src/main/assets/tauri.conf.json
 
-      - name: Install Tauri CLI
+      - name: Place native libraries in jniLibs
         run: |
-          if ! command -v cargo-tauri &> /dev/null; then
-            cargo install tauri-cli --version "2.9.2" --locked
-          else
-            echo "Tauri CLI already installed"
-          fi
-        env:
-          CARGO_CFG_TARGET_OS: linux
+          # Create jniLibs directories
+          mkdir -p frontend/src-tauri/gen/android/app/src/main/jniLibs/{arm64-v8a,armeabi-v7a,x86,x86_64}
+          
+          # Copy libraries to correct locations
+          cp native-libs/android-lib-aarch64/*.so frontend/src-tauri/gen/android/app/src/main/jniLibs/arm64-v8a/
+          cp native-libs/android-lib-armv7/*.so frontend/src-tauri/gen/android/app/src/main/jniLibs/armeabi-v7a/
+          cp native-libs/android-lib-i686/*.so frontend/src-tauri/gen/android/app/src/main/jniLibs/x86/
+          cp native-libs/android-lib-x86_64/*.so frontend/src-tauri/gen/android/app/src/main/jniLibs/x86_64/
+          
+          # Verify
+          echo "=== Native libraries placed ==="
+          find frontend/src-tauri/gen/android/app/src/main/jniLibs -name "*.so" -exec ls -la {} \;
 
       - name: Setup Android signing
         env:
@@ -116,10 +419,8 @@ jobs:
           echo "password=$ANDROID_KEY_PASSWORD" >> keystore.properties
           echo "storeFile=$RUNNER_TEMP/keystore.jks" >> keystore.properties
 
-      - name: Generate tauri.properties (Workaround for Tauri 2.9.x bug)
+      - name: Generate tauri.properties
         run: |
-          # Workaround for Tauri 2.9.x not generating tauri.properties correctly
-          # See: https://github.com/tauri-apps/tauri/issues/YOUR_ISSUE_NUMBER
           VERSION=$(jq -r '.version' frontend/src-tauri/tauri.conf.json)
           VERSION_CODE=$(jq -r '.bundle.android.versionCode' frontend/src-tauri/tauri.conf.json)
           
@@ -132,69 +433,25 @@ jobs:
           
           echo "Generated tauri.properties with version $VERSION and versionCode $VERSION_CODE"
 
-      - name: Configure sccache
-        run: |
-          echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
-          echo "SCCACHE_DIR=$HOME/.cache/sccache" >> $GITHUB_ENV
-          echo "SCCACHE_CACHE_SIZE=2G" >> $GITHUB_ENV
-
-      - name: Build Tauri Android App (Signed Release)
-        working-directory: ./frontend
+      - name: Build APK and AAB with Gradle
+        working-directory: ./frontend/src-tauri/gen/android
         run: |
           export ANDROID_HOME=$ANDROID_SDK_ROOT
           export NDK_HOME=${{ steps.setup-ndk.outputs.ndk-path }}
-
-          # Set up Android NDK toolchain paths
-          export PATH=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH
-
-          # Set up cross-compilation environment variables for each target
-          export AR_aarch64_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
-          export CC_aarch64_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang
-          export CXX_aarch64_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang++
-          export RANLIB_aarch64_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib
-
-          export AR_armv7_linux_androideabi=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
-          export CC_armv7_linux_androideabi=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi24-clang
-          export CXX_armv7_linux_androideabi=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi24-clang++
-          export RANLIB_armv7_linux_androideabi=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib
-
-          export AR_x86_64_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
-          export CC_x86_64_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android24-clang
-          export CXX_x86_64_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android24-clang++
-          export RANLIB_x86_64_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib
-
-          export AR_i686_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
-          export CC_i686_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/i686-linux-android24-clang
-          export CXX_i686_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/i686-linux-android24-clang++
-          export RANLIB_i686_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib
-
-          # Create symlinks for ranlib that OpenSSL expects
-          sudo ln -sf $NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib /usr/local/bin/aarch64-linux-android-ranlib
-          sudo ln -sf $NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib /usr/local/bin/armv7a-linux-androideabi-ranlib
-          sudo ln -sf $NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib /usr/local/bin/x86_64-linux-android-ranlib
-          sudo ln -sf $NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib /usr/local/bin/i686-linux-android-ranlib
-
-          cargo tauri android build
-        env:
-          VITE_OPEN_SECRET_API_URL: ${{ github.event_name == 'pull_request' && 'https://enclave.secretgpt.ai' || 'https://enclave.trymaple.ai' }}
-          VITE_MAPLE_BILLING_API_URL: ${{ github.event_name == 'pull_request' && 'https://billing-dev.opensecret.cloud' || 'https://billing.opensecret.cloud' }}
-          VITE_CLIENT_ID: ba5a14b5-d915-47b1-b7b1-afda52bc5fc6
-
-      - name: Show sccache stats
-        run: sccache --show-stats
+          
+          # Build both APK and AAB in parallel
+          ./gradlew assembleUniversalRelease bundleUniversalRelease --parallel -PskipRustBuild=true
 
       - name: Upload Android APK
         uses: actions/upload-artifact@v4
         with:
           name: maple-android-apk
-          path: |
-            frontend/src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk
+          path: frontend/src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk
           retention-days: 5
 
       - name: Upload Android AAB
         uses: actions/upload-artifact@v4
         with:
           name: maple-android-aab
-          path: |
-            frontend/src-tauri/gen/android/app/build/outputs/bundle/universalRelease/app-universal-release.aab
+          path: frontend/src-tauri/gen/android/app/build/outputs/bundle/universalRelease/app-universal-release.aab
           retention-days: 5
