@@ -54,23 +54,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v1
-        with:
-          bun-version: 1.2.2
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache Bun dependencies
+      - name: Cache Cargo registry
         uses: actions/cache@v4
         with:
           path: |
-            ~/.bun/install/cache
-            frontend/node_modules
-          key: ${{ runner.os }}-bun-${{ hashFiles('frontend/bun.lockb') }}
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-bun-
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+            ${{ runner.os }}-cargo-registry-
 
       - name: Cache Cargo bin (Tauri CLI)
         uses: actions/cache@v4
@@ -79,10 +74,6 @@ jobs:
           key: ${{ runner.os }}-cargo-bin-tauri-cli-2.9.2
           restore-keys: |
             ${{ runner.os }}-cargo-bin-tauri-cli-
-
-      - name: Install frontend dependencies
-        working-directory: ./frontend
-        run: bun install
 
       - name: Install Tauri CLI
         run: |
@@ -95,8 +86,13 @@ jobs:
       - name: Generate Tauri Android files
         working-directory: ./frontend
         run: |
-          # Run tauri android build - it will generate gradle files then fail at Rust compile (expected)
-          cargo tauri android build 2>&1 || true
+          set -euo pipefail
+
+          # Ensure all Tauri + plugin crates exist in the cargo registry so tauri.settings.gradle can be generated.
+          cargo fetch --locked --manifest-path src-tauri/Cargo.toml
+
+          # Generate Android project + required autogen files without compiling Rust.
+          cargo tauri android init --ci --force
           
           # Verify required generated files exist
           REQUIRED_FILES=(
@@ -237,6 +233,7 @@ jobs:
               echo "CXX_aarch64_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang++" >> $GITHUB_ENV
               echo "RANLIB_aarch64_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib" >> $GITHUB_ENV
               sudo ln -sf $NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib /usr/local/bin/aarch64-linux-android-ranlib
+              sudo ln -sf $NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib /usr/bin/aarch64-linux-android-ranlib
               ;;
             armv7-linux-androideabi)
               echo "CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_LINKER=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi24-clang" >> $GITHUB_ENV
@@ -245,6 +242,9 @@ jobs:
               echo "CXX_armv7_linux_androideabi=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi24-clang++" >> $GITHUB_ENV
               echo "RANLIB_armv7_linux_androideabi=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib" >> $GITHUB_ENV
               sudo ln -sf $NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib /usr/local/bin/armv7a-linux-androideabi-ranlib
+              sudo ln -sf $NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib /usr/local/bin/arm-linux-androideabi-ranlib
+              sudo ln -sf $NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib /usr/bin/armv7a-linux-androideabi-ranlib
+              sudo ln -sf $NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib /usr/bin/arm-linux-androideabi-ranlib
               ;;
             i686-linux-android)
               echo "CARGO_TARGET_I686_LINUX_ANDROID_LINKER=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/i686-linux-android24-clang" >> $GITHUB_ENV
@@ -253,6 +253,7 @@ jobs:
               echo "CXX_i686_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/i686-linux-android24-clang++" >> $GITHUB_ENV
               echo "RANLIB_i686_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib" >> $GITHUB_ENV
               sudo ln -sf $NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib /usr/local/bin/i686-linux-android-ranlib
+              sudo ln -sf $NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib /usr/bin/i686-linux-android-ranlib
               ;;
             x86_64-linux-android)
               echo "CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android24-clang" >> $GITHUB_ENV
@@ -261,6 +262,7 @@ jobs:
               echo "CXX_x86_64_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android24-clang++" >> $GITHUB_ENV
               echo "RANLIB_x86_64_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib" >> $GITHUB_ENV
               sudo ln -sf $NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib /usr/local/bin/x86_64-linux-android-ranlib
+              sudo ln -sf $NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib /usr/bin/x86_64-linux-android-ranlib
               ;;
           esac
 
