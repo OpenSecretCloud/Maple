@@ -64,7 +64,7 @@ jobs:
   deploy-testflight:
     needs: check-comment
     if: needs.check-comment.outputs.should-deploy == 'true'
-    runs-on: macos-latest
+    runs-on: macos-latest-xlarge
     steps:
       - uses: actions/checkout@v4
         with:
