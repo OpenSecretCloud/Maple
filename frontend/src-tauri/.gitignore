@@ -3,5 +3,9 @@
 /target/
 /gen/schemas
 
-# ONNX Runtime iOS xcframework (downloaded at build time)
+# ONNX Runtime iOS (built from source)
 /onnxruntime-ios/
+/onnxruntime-build/
+
+# Generated cargo config for iOS builds
+/.cargo/
