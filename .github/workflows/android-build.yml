@@ -92,26 +92,33 @@ jobs:
         env:
           CARGO_CFG_TARGET_OS: linux
 
-      - name: Generate tauri.settings.gradle
+      - name: Generate Tauri gradle files
         working-directory: ./frontend
         run: |
           # Run tauri android build - it will generate gradle files then fail at Rust compile (expected)
           cargo tauri android build 2>&1 || true
           
-          # Verify the file was generated
-          if [ -f "src-tauri/gen/android/tauri.settings.gradle" ]; then
-            echo "tauri.settings.gradle generated successfully:"
+          # Verify the files were generated
+          if [ -f "src-tauri/gen/android/tauri.settings.gradle" ] && [ -f "src-tauri/gen/android/app/tauri.build.gradle.kts" ]; then
+            echo "=== tauri.settings.gradle ==="
             cat src-tauri/gen/android/tauri.settings.gradle
+            echo ""
+            echo "=== tauri.build.gradle.kts ==="
+            cat src-tauri/gen/android/app/tauri.build.gradle.kts
           else
-            echo "ERROR: tauri.settings.gradle was not generated"
+            echo "ERROR: Tauri gradle files were not generated"
+            ls -la src-tauri/gen/android/
+            ls -la src-tauri/gen/android/app/ || true
             exit 1
           fi
 
-      - name: Upload tauri.settings.gradle
+      - name: Upload Tauri gradle files
         uses: actions/upload-artifact@v4
         with:
-          name: tauri-settings-gradle
-          path: frontend/src-tauri/gen/android/tauri.settings.gradle
+          name: tauri-gradle-files
+          path: |
+            frontend/src-tauri/gen/android/tauri.settings.gradle
+            frontend/src-tauri/gen/android/app/tauri.build.gradle.kts
           retention-days: 1
 
   # Build each Rust target in parallel
@@ -285,11 +292,22 @@ jobs:
           pattern: android-lib-*
           path: native-libs
 
-      - name: Download tauri.settings.gradle
+      - name: Download Tauri gradle files
         uses: actions/download-artifact@v4
         with:
-          name: tauri-settings-gradle
-          path: frontend/src-tauri/gen/android
+          name: tauri-gradle-files
+          path: tauri-gradle-files
+
+      - name: Place Tauri gradle files
+        run: |
+          # Move files to correct locations (artifact preserves directory structure from common prefix)
+          cp tauri-gradle-files/tauri.settings.gradle frontend/src-tauri/gen/android/
+          mkdir -p frontend/src-tauri/gen/android/app
+          cp tauri-gradle-files/app/tauri.build.gradle.kts frontend/src-tauri/gen/android/app/
+          
+          echo "=== Tauri gradle files placed ==="
+          ls -la frontend/src-tauri/gen/android/tauri.settings.gradle
+          ls -la frontend/src-tauri/gen/android/app/tauri.build.gradle.kts
 
       - name: Place native libraries in jniLibs
         run: |
