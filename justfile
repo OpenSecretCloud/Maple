@@ -35,6 +35,26 @@ ios-dev-sim simulator:
 ios-dev-device device:
     cd frontend && bun run tauri ios dev --device '{{device}}'
 
+# Build ONNX Runtime for iOS (device + simulator) - required for TTS
+ios-build-onnxruntime:
+    cd frontend/src-tauri && ./scripts/build-ios-onnxruntime-all.sh
+
+# Setup cargo config for iOS ONNX Runtime (run after building ONNX Runtime)
+ios-setup-cargo-config:
+    cd frontend/src-tauri && ./scripts/setup-ios-cargo-config.sh
+
+# Fix arm64-sim Xcode architecture issue (run if you get arm64-sim errors)
+ios-fix-arch:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd frontend/src-tauri/gen/apple
+    echo "Fixing arm64-sim architecture issue..."
+    perl -i -0pe 's/ARCHS = \(\s*arm64,\s*"arm64-sim",\s*\);/ARCHS = arm64;/g' maple.xcodeproj/project.pbxproj
+    sed -i '' 's/VALID_ARCHS = "arm64  arm64-sim";/VALID_ARCHS = arm64;/g' maple.xcodeproj/project.pbxproj
+    sed -i '' 's/"EXCLUDED_ARCHS\[sdk=iphoneos\*\]" = "arm64-sim x86_64";/"EXCLUDED_ARCHS[sdk=iphoneos*]" = x86_64;/g' maple.xcodeproj/project.pbxproj
+    sed -i '' 's/"EXCLUDED_ARCHS\[sdk=iphonesimulator\*\]" = arm64;/"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = "";/g' maple.xcodeproj/project.pbxproj
+    echo "Fixed! Verify with: grep -E 'ARCHS =|VALID_ARCHS|EXCLUDED_ARCHS' maple.xcodeproj/project.pbxproj"
+
 # Build Tauri Android release
 android-build:
     cd frontend && bun run tauri android build
