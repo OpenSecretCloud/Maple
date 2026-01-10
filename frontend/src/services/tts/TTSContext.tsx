@@ -7,7 +7,7 @@ import {
   useEffect,
   ReactNode
 } from "react";
-import { isTauriDesktop } from "@/utils/platform";
+import { isTauriDesktop, isIOS, isTauri } from "@/utils/platform";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
@@ -49,6 +49,7 @@ interface TTSContextValue {
   isPlaying: boolean;
   currentPlayingId: string | null;
   isTauriEnv: boolean;
+  lastPlaybackError: string | null;
 
   checkStatus: () => Promise<void>;
   startDownload: () => Promise<void>;
@@ -60,8 +61,8 @@ interface TTSContextValue {
 const TTSContext = createContext<TTSContextValue | null>(null);
 
 export function TTSProvider({ children }: { children: ReactNode }) {
-  // Check Tauri desktop environment once at mount - TTS is desktop-only
-  const isTauriEnv = isTauriDesktop();
+  // Check Tauri environment - TTS is available on desktop and iOS (not Android)
+  const isTauriEnv = isTauriDesktop() || (isTauri() && isIOS());
 
   // Initial status depends on whether we're in Tauri
   const [status, setStatus] = useState<TTSStatus>(isTauriEnv ? "checking" : "not_available");
@@ -71,9 +72,9 @@ export function TTSProvider({ children }: { children: ReactNode }) {
   const [totalSizeMB, setTotalSizeMB] = useState(264);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentPlayingId, setCurrentPlayingId] = useState<string | null>(null);
+  const [lastPlaybackError, setLastPlaybackError] = useState<string | null>(null);
 
-  const audioContextRef = useRef<AudioContext | null>(null);
-  const sourceNodeRef = useRef<AudioBufferSourceNode | null>(null);
+  const audioElementRef = useRef<HTMLAudioElement | null>(null);
   const audioUrlRef = useRef<string | null>(null);
   const unlistenRef = useRef<(() => void) | null>(null);
 
@@ -164,23 +165,13 @@ export function TTSProvider({ children }: { children: ReactNode }) {
   }, [isTauriEnv, cleanupDownloadListener]);
 
   const stop = useCallback(() => {
+    if (audioElementRef.current) {
+      audioElementRef.current.pause();
+      audioElementRef.current = null;
+    }
     if (audioUrlRef.current) {
       URL.revokeObjectURL(audioUrlRef.current);
       audioUrlRef.current = null;
-    }
-    if (sourceNodeRef.current) {
-      try {
-        sourceNodeRef.current.stop();
-      } catch {
-        // Ignore error if already stopped
-      }
-      sourceNodeRef.current = null;
-    }
-    if (audioContextRef.current) {
-      void audioContextRef.current.close().catch(() => {
-        // Ignore
-      });
-      audioContextRef.current = null;
     }
     setIsPlaying(false);
     setCurrentPlayingId(null);
@@ -221,50 +212,56 @@ export function TTSProvider({ children }: { children: ReactNode }) {
       try {
         setIsPlaying(true);
         setCurrentPlayingId(messageId);
+        setLastPlaybackError(null);
 
+        console.log("[TTS] Starting synthesis for message:", messageId);
         const result = await invoke<TTSSynthesizeResponse>("tts_synthesize", {
           text: processedText
         });
+        console.log("[TTS] Synthesis complete, duration:", result.duration_seconds, "s");
 
         // Create audio from base64
         const audioBlob = base64ToBlob(result.audio_base64, "audio/wav");
+        console.log("[TTS] Audio blob created, size:", audioBlob.size, "bytes");
         const audioUrl = URL.createObjectURL(audioBlob);
         audioUrlRef.current = audioUrl;
 
-        // Use Web Audio API instead of HTMLAudioElement to avoid hijacking media controls
-        const audioContext = new AudioContext();
-        const arrayBuffer = await audioBlob.arrayBuffer();
-        const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+        // Use HTMLAudioElement - this is what worked in the old iOS TTS implementation (PR #235)
+        // Web Audio API has issues on iOS WKWebView
+        const audio = new Audio(audioUrl);
+        audioElementRef.current = audio;
 
-        const source = audioContext.createBufferSource();
-        source.buffer = audioBuffer;
-        source.connect(audioContext.destination);
-
-        // Store context and source for stop functionality
-        audioContextRef.current = audioContext;
-        sourceNodeRef.current = source;
-
-        source.onended = () => {
-          if (sourceNodeRef.current !== source) {
-            return;
-          }
+        audio.onended = () => {
+          console.log("[TTS] Playback ended");
           setIsPlaying(false);
           setCurrentPlayingId(null);
-
           if (audioUrlRef.current === audioUrl) {
             URL.revokeObjectURL(audioUrlRef.current);
             audioUrlRef.current = null;
           }
-          void audioContext.close().catch(() => {
-            // Ignore
-          });
-          audioContextRef.current = null;
-          sourceNodeRef.current = null;
+          audioElementRef.current = null;
         };
 
-        source.start(0);
+        audio.onerror = (e) => {
+          const errorMsg = `Audio playback error: ${audio.error?.message || "unknown"}`;
+          console.error("[TTS] Audio error:", e, audio.error);
+          setLastPlaybackError(errorMsg);
+          setIsPlaying(false);
+          setCurrentPlayingId(null);
+          if (audioUrlRef.current === audioUrl) {
+            URL.revokeObjectURL(audioUrlRef.current);
+            audioUrlRef.current = null;
+          }
+          audioElementRef.current = null;
+        };
+
+        console.log("[TTS] Starting playback with HTMLAudioElement...");
+        await audio.play();
+        console.log("[TTS] Playback started");
       } catch (err) {
-        console.error("TTS synthesis failed:", err);
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        console.error("[TTS] Playback failed:", errorMsg);
+        setLastPlaybackError(errorMsg);
         stop();
       }
     },
@@ -277,17 +274,9 @@ export function TTSProvider({ children }: { children: ReactNode }) {
       if (unlistenRef.current) {
         unlistenRef.current();
       }
-      if (sourceNodeRef.current) {
-        try {
-          sourceNodeRef.current.stop();
-        } catch {
-          // Ignore
-        }
-      }
-      if (audioContextRef.current) {
-        void audioContextRef.current.close().catch(() => {
-          // Ignore
-        });
+      if (audioElementRef.current) {
+        audioElementRef.current.pause();
+        audioElementRef.current = null;
       }
       if (audioUrlRef.current) {
         URL.revokeObjectURL(audioUrlRef.current);
@@ -307,6 +296,7 @@ export function TTSProvider({ children }: { children: ReactNode }) {
         isPlaying,
         currentPlayingId,
         isTauriEnv,
+        lastPlaybackError,
         checkStatus,
         startDownload,
         deleteModels,

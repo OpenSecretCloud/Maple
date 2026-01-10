@@ -612,11 +612,24 @@ impl TextToSpeech {
 }
 
 fn get_tts_models_dir() -> Result<PathBuf> {
-    let data_dir = dirs::data_local_dir()
-        .context("Failed to get local data directory")?
-        .join("cloud.opensecret.maple")
-        .join("tts_models");
-    Ok(data_dir)
+    // On iOS, we need to use a different approach since dirs::data_local_dir() may not work
+    #[cfg(target_os = "ios")]
+    {
+        // On iOS, use the app's Documents directory which is accessible and persists
+        // NSHomeDirectory() + /Documents/tts_models
+        let home = std::env::var("HOME").context("Failed to get HOME directory on iOS")?;
+        let data_dir = PathBuf::from(home).join("Documents").join("tts_models");
+        return Ok(data_dir);
+    }
+    
+    #[cfg(not(target_os = "ios"))]
+    {
+        let data_dir = dirs::data_local_dir()
+            .context("Failed to get local data directory")?
+            .join("cloud.opensecret.maple")
+            .join("tts_models");
+        Ok(data_dir)
+    }
 }
 
 fn load_voice_style(models_dir: &Path) -> Result<Style> {

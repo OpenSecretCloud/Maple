@@ -3,7 +3,8 @@ use tauri_plugin_deep_link::DeepLinkExt;
 
 mod pdf_extractor;
 mod proxy;
-#[cfg(desktop)]
+// TTS is available on desktop and iOS (not Android)
+#[cfg(any(desktop, target_os = "ios"))]
 mod tts;
 
 #[cfg(desktop)]
@@ -240,6 +241,7 @@ pub fn run() {
         })
         .plugin(tauri_plugin_updater::Builder::new().build());
 
+    // Mobile (iOS and Android) configuration
     #[cfg(not(desktop))]
     let mut builder = tauri::Builder::default()
         .plugin(
@@ -258,10 +260,45 @@ pub fn run() {
         builder = builder.plugin(tauri_plugin_sign_in_with_apple::init());
     }
 
-    #[cfg(not(desktop))]
+    // Add TTS state management for iOS
+    #[cfg(all(not(desktop), target_os = "ios"))]
+    {
+        builder = builder.manage(tts::TTSState::new());
+    }
+
+    // Android-specific configuration (no TTS)
+    #[cfg(all(not(desktop), target_os = "android"))]
     let app = builder
         .invoke_handler(tauri::generate_handler![
             pdf_extractor::extract_document_content,
+        ])
+        .setup(|app| {
+            // Set up the deep link handler for mobile
+            let app_handle = app.handle().clone();
+
+            // Register deep link handler - note that iOS does not support runtime registration
+            // but the handler for incoming URLs still works
+            app.deep_link().on_open_url(move |event| {
+                if let Some(url) = event.urls().first() {
+                    handle_deep_link_event(url.as_ref(), &app_handle);
+                }
+            });
+
+            Ok(())
+        })
+        .plugin(tauri_plugin_updater::Builder::new().build());
+
+    // iOS-specific configuration (with TTS)
+    #[cfg(all(not(desktop), target_os = "ios"))]
+    let app = builder
+        .invoke_handler(tauri::generate_handler![
+            pdf_extractor::extract_document_content,
+            tts::tts_get_status,
+            tts::tts_download_models,
+            tts::tts_load_models,
+            tts::tts_synthesize,
+            tts::tts_unload_models,
+            tts::tts_delete_models,
         ])
         .setup(|app| {
             // Set up the deep link handler for mobile
