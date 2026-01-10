@@ -238,11 +238,11 @@ function DownloadPage() {
                   <Android className="w-6 h-6 text-[hsl(var(--purple))]" />
                 </div>
                 <h3 className="text-xl font-medium mb-2">Android</h3>
-                <p className="text-[hsl(var(--marketing-text-muted))] mb-6 flex-grow">
+                <p className="text-[hsl(var(--marketing-text-muted))] mb-6">
                   Download our native Android app for phones and tablets.
                 </p>
                 <div className="flex flex-col items-center">
-                  <div className="h-[80px] flex flex-col items-center justify-center gap-1">
+                  <div className="h-[80px] flex flex-col items-center justify-center gap-2">
                     <a
                       href="https://play.google.com/store/apps/details?id=cloud.opensecret.maple"
                       className="inline-block"
@@ -265,7 +265,7 @@ function DownloadPage() {
                     </a>
                   </div>
                   <div className="w-full border-t border-[hsl(var(--marketing-card-border))] pt-4 mt-4">
-                    <p className="text-[hsl(var(--marketing-text-muted))] text-sm mb-5 text-center">
+                    <p className="text-[hsl(var(--marketing-text-muted))] text-sm mb-3 text-center">
                       Want to test the latest features before they hit the Play Store? Join our beta
                       program.
                     </p>
