@@ -195,20 +195,22 @@ function DownloadPage() {
               <p className="text-[hsl(var(--marketing-text-muted))] mb-6 flex-grow">
                 Download our native iOS app for iPhones and iPads.
               </p>
-              <div className="flex flex-col items-center gap-4">
-                <a
-                  href="https://apps.apple.com/us/app/id6743764835"
-                  className="inline-block"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  <img
-                    src="/app-store-badge.svg"
-                    alt="Download on the App Store"
-                    className="h-12"
-                  />
-                </a>
-                <div className="w-full border-t border-[hsl(var(--marketing-card-border))] pt-4">
+              <div className="flex flex-col items-center">
+                <div className="h-[80px] flex items-center justify-center">
+                  <a
+                    href="https://apps.apple.com/us/app/id6743764835"
+                    className="inline-block"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    <img
+                      src="/app-store-badge.svg"
+                      alt="Download on the App Store"
+                      className="h-12"
+                    />
+                  </a>
+                </div>
+                <div className="w-full border-t border-[hsl(var(--marketing-card-border))] pt-4 mt-4">
                   <p className="text-[hsl(var(--marketing-text-muted))] text-sm mb-3 text-center">
                     Want to test the latest features before they hit the App Store? Join our beta
                     program.
@@ -236,23 +238,33 @@ function DownloadPage() {
                   <Android className="w-6 h-6 text-[hsl(var(--purple))]" />
                 </div>
                 <h3 className="text-xl font-medium mb-2">Android</h3>
-                <p className="text-[hsl(var(--marketing-text-muted))] mb-6 flex-grow">
+                <p className="text-[hsl(var(--marketing-text-muted))] mb-6">
                   Download our native Android app for phones and tablets.
                 </p>
-                <div className="flex flex-col items-center gap-4">
-                  <a
-                    href="https://play.google.com/store/apps/details?id=cloud.opensecret.maple"
-                    className="inline-block"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                  >
-                    <img
-                      src="/google-play-badge.png"
-                      alt="Get it on Google Play"
-                      className="h-12"
-                    />
-                  </a>
-                  <div className="w-full border-t border-[hsl(var(--marketing-card-border))] pt-4">
+                <div className="flex flex-col items-center">
+                  <div className="h-[80px] flex flex-col items-center justify-center gap-2">
+                    <a
+                      href="https://play.google.com/store/apps/details?id=cloud.opensecret.maple"
+                      className="inline-block"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      <img
+                        src="/google-play-badge.png"
+                        alt="Get it on Google Play"
+                        className="h-12"
+                      />
+                    </a>
+                    <a
+                      href={downloadUrls.androidApk}
+                      className="text-xs text-[hsl(var(--marketing-text-muted))] hover:text-foreground hover:underline"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      or download APK directly
+                    </a>
+                  </div>
+                  <div className="w-full border-t border-[hsl(var(--marketing-card-border))] pt-4 mt-4">
                     <p className="text-[hsl(var(--marketing-text-muted))] text-sm mb-3 text-center">
                       Want to test the latest features before they hit the Play Store? Join our beta
                       program.
@@ -268,14 +280,6 @@ function DownloadPage() {
                         rel="noopener noreferrer"
                       >
                         Join Google Play Beta
-                      </a>
-                      <a
-                        href={downloadUrls.androidApk}
-                        className="text-xs text-[hsl(var(--marketing-text-muted))] hover:text-foreground hover:underline"
-                        target="_blank"
-                        rel="noopener noreferrer"
-                      >
-                        or download APK directly
                       </a>
                     </div>
                   </div>
