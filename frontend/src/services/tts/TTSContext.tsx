@@ -43,6 +43,7 @@ interface DownloadProgress {
 interface TTSContextValue {
   status: TTSStatus;
   error: string | null;
+  playbackError: string | null;
   downloadProgress: number;
   downloadDetail: string;
   totalSizeMB: number;
@@ -55,6 +56,7 @@ interface TTSContextValue {
   deleteModels: () => Promise<void>;
   speak: (text: string, messageId: string) => Promise<void>;
   stop: () => void;
+  clearPlaybackError: () => void;
 }
 
 const TTSContext = createContext<TTSContextValue | null>(null);
@@ -71,6 +73,7 @@ export function TTSProvider({ children }: { children: ReactNode }) {
   const [totalSizeMB, setTotalSizeMB] = useState(264);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentPlayingId, setCurrentPlayingId] = useState<string | null>(null);
+  const [playbackError, setPlaybackError] = useState<string | null>(null);
 
   const audioContextRef = useRef<AudioContext | null>(null);
   const sourceNodeRef = useRef<AudioBufferSourceNode | null>(null);
@@ -232,7 +235,21 @@ export function TTSProvider({ children }: { children: ReactNode }) {
         audioUrlRef.current = audioUrl;
 
         // Use Web Audio API instead of HTMLAudioElement to avoid hijacking media controls
-        const audioContext = new AudioContext();
+        // iOS Safari requires webkitAudioContext fallback
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+        if (!AudioContextClass) {
+          throw new Error(
+            "Audio playback is not available. If you have Lockdown Mode enabled, TTS will not work."
+          );
+        }
+        const audioContext = new AudioContextClass() as AudioContext;
+
+        // iOS requires user interaction to start audio - resume if suspended
+        if (audioContext.state === "suspended") {
+          await audioContext.resume();
+        }
+
         const arrayBuffer = await audioBlob.arrayBuffer();
         const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
 
@@ -264,12 +281,17 @@ export function TTSProvider({ children }: { children: ReactNode }) {
 
         source.start(0);
       } catch (err) {
-        console.error("TTS synthesis failed:", err);
+        console.error("TTS playback failed:", err);
+        setPlaybackError(err instanceof Error ? err.message : "TTS playback failed");
         stop();
       }
     },
     [isTauriEnv, status, stop]
   );
+
+  const clearPlaybackError = useCallback(() => {
+    setPlaybackError(null);
+  }, []);
 
   // Clean up on unmount
   useEffect(() => {
@@ -301,6 +323,7 @@ export function TTSProvider({ children }: { children: ReactNode }) {
       value={{
         status,
         error,
+        playbackError,
         downloadProgress,
         downloadDetail,
         totalSizeMB,
@@ -311,7 +334,8 @@ export function TTSProvider({ children }: { children: ReactNode }) {
         startDownload,
         deleteModels,
         speak,
-        stop
+        stop,
+        clearPlaybackError
       }}
     >
       {children}
