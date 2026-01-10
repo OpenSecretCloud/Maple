@@ -53,5 +53,22 @@ futures-util = "0.3"
 dirs = "5.0"
 sha2 = "0.10"
 
+[target.'cfg(target_os = "ios")'.dependencies]
+# TTS dependencies (Supertonic) - iOS
+# We build ONNX Runtime 1.22.2 from source for iOS (see scripts/build-ios-onnxruntime.sh)
+# We disable download-binaries and copy-dylibs since we link our own xcframework
+# Need "std" for Error trait impl and file operations, "ndarray" for tensor creation
+ort = { version = "2.0.0-rc.10", default-features = false, features = ["std", "ndarray"] }
+ndarray = { version = "0.16" }
+rand = "0.8"
+rand_distr = "0.4"
+hound = "3.5"
+unicode-normalization = "0.1"
+regex = "1.10"
+reqwest = { version = "0.12", features = ["stream"] }
+futures-util = "0.3"
+dirs = "5.0"
+sha2 = "0.10"
+
 [target.'cfg(target_os = "android")'.dependencies]
 openssl = { version = "0.10", default-features = false, features = ["vendored"] }
