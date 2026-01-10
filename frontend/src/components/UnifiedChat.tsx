@@ -874,6 +874,7 @@ export function UnifiedChat() {
   const os = useOpenSecret();
   const isTauriEnv = isTauri();
   const queryClient = useQueryClient();
+  const { playbackError, clearPlaybackError } = useTTS();
 
   // Track chatId from URL - use state so we can update it
   const [chatId, setChatId] = useState<string | undefined>(() => {
@@ -2659,6 +2660,26 @@ export function UnifiedChat() {
             <Alert variant="destructive" className="bg-background">
               <AlertCircle className="h-4 w-4" />
               <AlertDescription>{error}</AlertDescription>
+            </Alert>
+          </div>
+        )}
+
+        {/* TTS playback error - shows when audio context is unavailable (e.g., Lockdown Mode) */}
+        {playbackError && (
+          <div className="fixed top-16 left-1/2 -translate-x-1/2 z-50 w-full max-w-2xl px-4 md:left-[calc(50%+140px)]">
+            <Alert variant="destructive" className="bg-background">
+              <AlertCircle className="h-4 w-4" />
+              <AlertDescription className="flex items-center justify-between">
+                <span>{playbackError}</span>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 px-2 ml-2"
+                  onClick={clearPlaybackError}
+                >
+                  <X className="h-4 w-4" />
+                </Button>
+              </AlertDescription>
             </Alert>
           </div>
         )}
