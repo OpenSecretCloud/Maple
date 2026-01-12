@@ -1,5 +1,4 @@
 import { useState } from "react";
-import { DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import {
@@ -31,6 +30,21 @@ interface ApiKey {
 
 interface ApiKeyDashboardProps {
   showCreditSuccessMessage?: boolean;
+}
+
+function DashboardHeader({
+  title,
+  description
+}: {
+  title: React.ReactNode;
+  description?: React.ReactNode;
+}) {
+  return (
+    <div className="space-y-1">
+      <h2 className="text-base font-semibold leading-none tracking-tight">{title}</h2>
+      {description ? <div className="text-sm text-muted-foreground">{description}</div> : null}
+    </div>
+  );
 }
 
 export function ApiKeyDashboard({ showCreditSuccessMessage = false }: ApiKeyDashboardProps) {
@@ -91,46 +105,41 @@ export function ApiKeyDashboard({ showCreditSuccessMessage = false }: ApiKeyDash
   // Show loading state if billing status or API keys are loading
   if (isBillingLoading || isLoading) {
     return (
-      <>
-        <DialogHeader>
-          <DialogTitle className="text-base">API Management</DialogTitle>
-          <DialogDescription>Loading...</DialogDescription>
-        </DialogHeader>
+      <div className="space-y-4">
+        <DashboardHeader title="API Management" description="Loading..." />
         <div className="flex items-center justify-center py-8">
           <Loader2 className="h-6 w-6 animate-spin" />
         </div>
-      </>
+      </div>
     );
   }
 
   if (error) {
     return (
-      <>
-        <DialogHeader>
-          <DialogTitle className="text-base">API Management</DialogTitle>
-          <DialogDescription className="text-destructive">
-            Failed to load API keys. Please try again.
-          </DialogDescription>
-        </DialogHeader>
-      </>
+      <DashboardHeader
+        title="API Management"
+        description={
+          <span className="text-destructive">Failed to load API keys. Please try again.</span>
+        }
+      />
     );
   }
 
   // Show upgrade prompt for users without API access (Free and Starter plans)
   if (!hasApiAccess) {
     return (
-      <>
-        <DialogHeader>
-          <DialogTitle className="text-base flex items-center gap-2">
-            <Sparkles className="h-5 w-5 text-amber-500" />
-            Unlock API Access
-          </DialogTitle>
-          <DialogDescription>
-            Upgrade to a paid plan to access powerful API features
-          </DialogDescription>
-        </DialogHeader>
+      <div className="space-y-6">
+        <DashboardHeader
+          title={
+            <span className="flex items-center gap-2">
+              <Sparkles className="h-5 w-5 text-amber-500" />
+              Unlock API Access
+            </span>
+          }
+          description="Upgrade to a paid plan to access powerful API features"
+        />
 
-        <div className="mt-6 space-y-4">
+        <div className="space-y-4">
           <Card className="p-6 bg-gradient-to-br from-amber-500/10 to-orange-500/10 border-amber-500/20">
             <div className="space-y-4">
               <div className="flex items-center gap-3">
@@ -187,28 +196,30 @@ export function ApiKeyDashboard({ showCreditSuccessMessage = false }: ApiKeyDash
             </p>
           </div>
         </div>
-      </>
+      </div>
     );
   }
 
   return (
-    <>
-      <DialogHeader>
-        <DialogTitle className="text-base">API Access</DialogTitle>
-        <DialogDescription>
-          Manage API keys and configure access to Maple services.{" "}
-          <a
-            href="https://blog.trymaple.ai/maple-proxy-documentation/"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-primary underline hover:no-underline"
-          >
-            Read more
-          </a>
-        </DialogDescription>
-      </DialogHeader>
+    <div className="space-y-4">
+      <DashboardHeader
+        title="API Access"
+        description={
+          <span>
+            Manage API keys and configure access to Maple services.{" "}
+            <a
+              href="https://blog.trymaple.ai/maple-proxy-documentation/"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="underline hover:no-underline"
+            >
+              Read more
+            </a>
+          </span>
+        }
+      />
 
-      <Tabs defaultValue="credits" className="mt-4">
+      <Tabs defaultValue="credits">
         <TabsList
           className={`grid w-full ${isTauriDesktopPlatform ? "grid-cols-3" : "grid-cols-2"}`}
         >
@@ -280,6 +291,6 @@ export function ApiKeyDashboard({ showCreditSuccessMessage = false }: ApiKeyDash
         onOpenChange={setIsCreateDialogOpen}
         onKeyCreated={handleKeyCreated}
       />
-    </>
+    </div>
   );
 }

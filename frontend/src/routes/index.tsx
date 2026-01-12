@@ -5,14 +5,11 @@ import { Marketing } from "@/components/Marketing";
 import { TopNav } from "@/components/TopNav";
 import { VerificationModal } from "@/components/VerificationModal";
 import { GuestPaymentWarningDialog } from "@/components/GuestPaymentWarningDialog";
-import { TeamManagementDialog } from "@/components/team/TeamManagementDialog";
-import { ApiKeyManagementDialog } from "@/components/apikeys/ApiKeyManagementDialog";
 import { PromoDialog, hasSeenPromo, markPromoAsSeen } from "@/components/PromoDialog";
 import { useOpenSecret } from "@opensecret/react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { getBillingService } from "@/billing/billingService";
 import { useLocalState } from "@/state/useLocalState";
-import type { TeamStatus } from "@/types/team";
 import type { DiscountResponse } from "@/billing/billingApi";
 
 type IndexSearchOptions = {
@@ -40,15 +37,11 @@ export const Route = createFileRoute("/")({
 function Index() {
   const navigate = useNavigate();
   const os = useOpenSecret();
-  const queryClient = useQueryClient();
   const { setBillingStatus, billingStatus } = useLocalState();
 
   const { login, next, team_setup, credits_success } = Route.useSearch();
 
   // Modal states
-  const [teamDialogOpen, setTeamDialogOpen] = useState(false);
-  const [apiKeyDialogOpen, setApiKeyDialogOpen] = useState(false);
-  const [showCreditSuccess, setShowCreditSuccess] = useState(false);
   const [showGuestPaymentWarning, setShowGuestPaymentWarning] = useState(false);
   const [promoDialogOpen, setPromoDialogOpen] = useState(false);
 
@@ -74,16 +67,6 @@ function Index() {
     }
   }, [login, next, navigate]);
 
-  // Fetch team status for the dialog
-  const { data: teamStatus } = useQuery<TeamStatus>({
-    queryKey: ["teamStatus"],
-    queryFn: async () => {
-      const billingService = getBillingService();
-      return await billingService.getTeamStatus();
-    },
-    enabled: !!os.auth.user
-  });
-
   // Fetch active discount/promotion for promo dialog
   const { data: discount } = useQuery<DiscountResponse>({
     queryKey: ["discount"],
@@ -95,29 +78,17 @@ function Index() {
     enabled: !!os.auth.user
   });
 
-  // Auto-open team dialog if team_setup is true
+  // Team setup flow: route into Settings
   useEffect(() => {
-    if (team_setup && os.auth.user && teamStatus) {
-      setTeamDialogOpen(true);
-      // Clear the query param to prevent re-opening on refresh
-      navigate({ to: "/", replace: true });
-    }
-  }, [team_setup, os.auth.user, teamStatus, navigate]);
+    if (!team_setup || !os.auth.user) return;
+    navigate({ to: "/settings", search: { tab: "team", team_setup: true }, replace: true });
+  }, [team_setup, os.auth.user, navigate]);
 
-  // Handle credits_success - open API key dialog and refresh balance
+  // API credits success flow: route into Settings
   useEffect(() => {
-    if (credits_success && os.auth.user) {
-      setApiKeyDialogOpen(true);
-      setShowCreditSuccess(true);
-      // Refresh the credit balance
-      queryClient.invalidateQueries({ queryKey: ["apiCreditBalance"] });
-      // Clear the query param to prevent re-opening on refresh
-      navigate({ to: "/", replace: true });
-      // Clear success message after 5 seconds
-      const timer = setTimeout(() => setShowCreditSuccess(false), 5000);
-      return () => clearTimeout(timer);
-    }
-  }, [credits_success, os.auth.user, navigate, queryClient]);
+    if (!credits_success || !os.auth.user) return;
+    navigate({ to: "/settings", search: { tab: "api", credits_success: true }, replace: true });
+  }, [credits_success, os.auth.user, navigate]);
 
   // Check if guest user needs to pay
   const isGuestUser = os.auth.user?.user.login_method?.toLowerCase() === "guest";
@@ -181,20 +152,6 @@ function Index() {
       <GuestPaymentWarningDialog
         open={showGuestPaymentWarning}
         onOpenChange={setShowGuestPaymentWarning}
-      />
-
-      {/* Team Management Dialog */}
-      <TeamManagementDialog
-        open={teamDialogOpen}
-        onOpenChange={setTeamDialogOpen}
-        teamStatus={teamStatus}
-      />
-
-      {/* API Key Management Dialog */}
-      <ApiKeyManagementDialog
-        open={apiKeyDialogOpen}
-        onOpenChange={setApiKeyDialogOpen}
-        showCreditSuccessMessage={showCreditSuccess}
       />
 
       {/* Promo Dialog - shows once per promo for free users */}
