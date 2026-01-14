@@ -78,6 +78,7 @@ export function TTSProvider({ children }: { children: ReactNode }) {
   const audioContextRef = useRef<AudioContext | null>(null);
   const sourceNodeRef = useRef<AudioBufferSourceNode | null>(null);
   const audioUrlRef = useRef<string | null>(null);
+  const audioSessionPrevTypeRef = useRef<string | null>(null);
   const unlistenRef = useRef<(() => void) | null>(null);
 
   const cleanupDownloadListener = useCallback(() => {
@@ -185,6 +186,19 @@ export function TTSProvider({ children }: { children: ReactNode }) {
       });
       audioContextRef.current = null;
     }
+
+    if (audioSessionPrevTypeRef.current) {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const nav = navigator as any;
+        if (nav.audioSession && typeof nav.audioSession.type === "string") {
+          nav.audioSession.type = audioSessionPrevTypeRef.current;
+        }
+      } catch {
+        // Ignore
+      }
+      audioSessionPrevTypeRef.current = null;
+    }
     setIsPlaying(false);
     setCurrentPlayingId(null);
   }, []);
@@ -243,6 +257,20 @@ export function TTSProvider({ children }: { children: ReactNode }) {
             "Audio playback is not available. If you have Lockdown Mode enabled, TTS will not work."
           );
         }
+
+        // iOS: try to force media playback routing (speaker) for Web Audio.
+        // This helps avoid “only works with headphones / earpiece” routing issues.
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const nav = navigator as any;
+          if (nav.audioSession && typeof nav.audioSession.type === "string") {
+            audioSessionPrevTypeRef.current = nav.audioSession.type;
+            nav.audioSession.type = "playback";
+          }
+        } catch {
+          // Ignore
+        }
+
         const audioContext = new AudioContextClass() as AudioContext;
 
         // iOS requires user interaction to start audio - resume if suspended
@@ -277,6 +305,19 @@ export function TTSProvider({ children }: { children: ReactNode }) {
           });
           audioContextRef.current = null;
           sourceNodeRef.current = null;
+
+          if (audioSessionPrevTypeRef.current) {
+            try {
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              const nav = navigator as any;
+              if (nav.audioSession && typeof nav.audioSession.type === "string") {
+                nav.audioSession.type = audioSessionPrevTypeRef.current;
+              }
+            } catch {
+              // Ignore
+            }
+            audioSessionPrevTypeRef.current = null;
+          }
         };
 
         source.start(0);
