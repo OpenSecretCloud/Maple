@@ -79,6 +79,10 @@ export function TTSProvider({ children }: { children: ReactNode }) {
   const sourceNodeRef = useRef<AudioBufferSourceNode | null>(null);
   const audioUrlRef = useRef<string | null>(null);
   const audioSessionPrevTypeRef = useRef<string | null>(null);
+  const mediaSessionPrevStateRef = useRef<{
+    metadata: MediaMetadata | null;
+    playbackState: MediaSessionPlaybackState;
+  } | null>(null);
   const unlistenRef = useRef<(() => void) | null>(null);
 
   const cleanupDownloadListener = useCallback(() => {
@@ -199,6 +203,18 @@ export function TTSProvider({ children }: { children: ReactNode }) {
       }
       audioSessionPrevTypeRef.current = null;
     }
+
+    if (mediaSessionPrevStateRef.current) {
+      try {
+        if ("mediaSession" in navigator) {
+          navigator.mediaSession.metadata = mediaSessionPrevStateRef.current.metadata;
+          navigator.mediaSession.playbackState = mediaSessionPrevStateRef.current.playbackState;
+        }
+      } catch {
+        // Ignore
+      }
+      mediaSessionPrevStateRef.current = null;
+    }
     setIsPlaying(false);
     setCurrentPlayingId(null);
   }, []);
@@ -247,6 +263,35 @@ export function TTSProvider({ children }: { children: ReactNode }) {
         const audioBlob = base64ToBlob(result.audio_base64, "audio/wav");
         const audioUrl = URL.createObjectURL(audioBlob);
         audioUrlRef.current = audioUrl;
+
+        // iOS: set Now Playing metadata so the audio UI shows Maple instead of the origin hostname.
+        // This is iOS-only and should not affect desktop media controls.
+        try {
+          if (isIOS() && "mediaSession" in navigator && typeof MediaMetadata !== "undefined") {
+            if (!mediaSessionPrevStateRef.current) {
+              mediaSessionPrevStateRef.current = {
+                metadata: navigator.mediaSession.metadata,
+                playbackState: navigator.mediaSession.playbackState
+              };
+            }
+
+            navigator.mediaSession.metadata = new MediaMetadata({
+              title: "Maple AI",
+              artist: "Text to Speech",
+              artwork: [
+                {
+                  src: "/apple-touch-icon.png",
+                  sizes: "180x180",
+                  type: "image/png"
+                },
+                { src: "/favicon.png", sizes: "32x32", type: "image/png" }
+              ]
+            });
+            navigator.mediaSession.playbackState = "playing";
+          }
+        } catch {
+          // Ignore
+        }
 
         // Use Web Audio API instead of HTMLAudioElement to avoid hijacking media controls
         // iOS Safari requires webkitAudioContext fallback
@@ -318,6 +363,19 @@ export function TTSProvider({ children }: { children: ReactNode }) {
             }
             audioSessionPrevTypeRef.current = null;
           }
+
+          if (mediaSessionPrevStateRef.current) {
+            try {
+              if ("mediaSession" in navigator) {
+                navigator.mediaSession.metadata = mediaSessionPrevStateRef.current.metadata;
+                navigator.mediaSession.playbackState =
+                  mediaSessionPrevStateRef.current.playbackState;
+              }
+            } catch {
+              // Ignore
+            }
+            mediaSessionPrevStateRef.current = null;
+          }
         };
 
         source.start(0);
@@ -355,6 +413,31 @@ export function TTSProvider({ children }: { children: ReactNode }) {
       if (audioUrlRef.current) {
         URL.revokeObjectURL(audioUrlRef.current);
         audioUrlRef.current = null;
+      }
+
+      if (audioSessionPrevTypeRef.current) {
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const nav = navigator as any;
+          if (nav.audioSession && typeof nav.audioSession.type === "string") {
+            nav.audioSession.type = audioSessionPrevTypeRef.current;
+          }
+        } catch {
+          // Ignore
+        }
+        audioSessionPrevTypeRef.current = null;
+      }
+
+      if (mediaSessionPrevStateRef.current) {
+        try {
+          if ("mediaSession" in navigator) {
+            navigator.mediaSession.metadata = mediaSessionPrevStateRef.current.metadata;
+            navigator.mediaSession.playbackState = mediaSessionPrevStateRef.current.playbackState;
+          }
+        } catch {
+          // Ignore
+        }
+        mediaSessionPrevStateRef.current = null;
       }
     };
   }, []);
