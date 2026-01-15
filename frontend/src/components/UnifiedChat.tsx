@@ -2676,6 +2676,7 @@ export function UnifiedChat() {
                   size="sm"
                   className="h-6 px-2 ml-2"
                   onClick={clearPlaybackError}
+                  aria-label="Dismiss TTS error"
                 >
                   <X className="h-4 w-4" />
                 </Button>

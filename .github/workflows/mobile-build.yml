@@ -101,10 +101,6 @@ jobs:
           [target.aarch64-apple-ios-sim.onnxruntime]
           rustc-link-search = ["${WORKSPACE}/frontend/src-tauri/onnxruntime-ios/onnxruntime.xcframework/ios-arm64-simulator"]
           rustc-link-lib = ["static=onnxruntime"]
-          
-          [target.x86_64-apple-ios.onnxruntime]
-          rustc-link-search = ["${WORKSPACE}/frontend/src-tauri/onnxruntime-ios/onnxruntime.xcframework/ios-arm64-simulator"]
-          rustc-link-lib = ["static=onnxruntime"]
           EOF
           
           echo "Generated cargo config:"

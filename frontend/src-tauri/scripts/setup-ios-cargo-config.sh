@@ -40,10 +40,6 @@ rustc-link-lib = ["static=onnxruntime"]
 rustc-link-search = ["${XCFRAMEWORK_DIR}/ios-arm64-simulator"]
 rustc-link-lib = ["static=onnxruntime"]
 
-[target.x86_64-apple-ios.onnxruntime]
-rustc-link-search = ["${XCFRAMEWORK_DIR}/ios-arm64-simulator"]
-rustc-link-lib = ["static=onnxruntime"]
-
 [env]
 ORT_LIB_LOCATION = "${XCFRAMEWORK_DIR}/ios-arm64"
 EOF

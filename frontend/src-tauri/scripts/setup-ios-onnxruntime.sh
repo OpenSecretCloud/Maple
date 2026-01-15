@@ -7,7 +7,7 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TAURI_DIR="$(dirname "$SCRIPT_DIR")"
-ORT_VERSION="${ORT_VERSION:-1.20.1}"
+ORT_VERSION="${ORT_VERSION:-1.22.2}"
 ORT_DIR="$TAURI_DIR/onnxruntime-ios"
 XCFRAMEWORK_DIR="$ORT_DIR/onnxruntime.xcframework"
 

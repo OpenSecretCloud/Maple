@@ -621,7 +621,7 @@ fn get_tts_models_dir() -> Result<PathBuf> {
         let data_dir = PathBuf::from(home).join("Documents").join("tts_models");
         return Ok(data_dir);
     }
-    
+
     #[cfg(not(target_os = "ios"))]
     {
         let data_dir = dirs::data_local_dir()
