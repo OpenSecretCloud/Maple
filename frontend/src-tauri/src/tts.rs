@@ -615,10 +615,14 @@ fn get_tts_models_dir() -> Result<PathBuf> {
     // On iOS, we need to use a different approach since dirs::data_local_dir() may not work
     #[cfg(target_os = "ios")]
     {
-        // On iOS, use the app's Documents directory which is accessible and persists
-        // NSHomeDirectory() + /Documents/tts_models
+        // On iOS, store models under Library/Caches so they're not user-visible (Files app)
+        // and won't be iCloud-backed.
         let home = std::env::var("HOME").context("Failed to get HOME directory on iOS")?;
-        let data_dir = PathBuf::from(home).join("Documents").join("tts_models");
+        let data_dir = PathBuf::from(home)
+            .join("Library")
+            .join("Caches")
+            .join("cloud.opensecret.maple")
+            .join("tts_models");
         return Ok(data_dir);
     }
 
