@@ -156,7 +156,7 @@ function truncateMarkdownPreservingLinks(text: string, maxLength: number): strin
   while ((match = urlRegex.exec(text)) !== null) {
     // Check if this URL is inside a markdown link [text](url) - skip if so
     const beforeUrl = text.substring(0, match.index);
-    const isInMarkdownLink = beforeUrl.lastIndexOf("](") > beforeUrl.lastIndexOf(")");
+    const isInMarkdownLink = /\[[^\]]*\]?\($/.test(beforeUrl) || (beforeUrl.lastIndexOf("](") > beforeUrl.lastIndexOf(")"));
     if (!isInMarkdownLink) {
       urls.push({ start: match.index, end: match.index + match[0].length, url: match[0] });
     }
