@@ -50,6 +50,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Sidebar, SidebarToggle } from "@/components/Sidebar";
 import { useIsMobile } from "@/utils/utils";
 import { fileToDataURL } from "@/utils/file";
+import { truncateMarkdownPreservingLinks } from "@/utils/markdown";
 import { useOpenAI } from "@/ai/useOpenAi";
 import { DEFAULT_MODEL_ID } from "@/state/LocalStateContext";
 import { Markdown, ThinkingBlock } from "@/components/markdown";
@@ -337,7 +338,7 @@ function ToolCallRenderer({
     // If we have a toolOutput, render them grouped together
     if (toolOutput) {
       const output = toolOutput.output || "";
-      const preview = output.length > 150 ? output.substring(0, 150) + "..." : output;
+      const preview = truncateMarkdownPreservingLinks(output, 150);
       const hasMore = output.length > 150;
       const isWebSearch = functionCall.name === "web_search";
 
@@ -426,7 +427,7 @@ function ToolCallRenderer({
     const output = toolOutput.output || "";
 
     // Show preview (first 150 chars to match grouped rendering)
-    const preview = output.length > 150 ? output.substring(0, 150) + "..." : output;
+    const preview = truncateMarkdownPreservingLinks(output, 150);
     const hasMore = output.length > 150;
 
     return (
