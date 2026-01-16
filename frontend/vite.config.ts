@@ -11,5 +11,11 @@ export default defineConfig({
     alias: {
       "@": path.resolve(__dirname, "./src")
     }
+  },
+  server: {
+    // Bind to 0.0.0.0 so the iOS simulator can reach the dev server (dev-only).
+    host: "0.0.0.0",
+    port: 5173,
+    strictPort: true
   }
 });
