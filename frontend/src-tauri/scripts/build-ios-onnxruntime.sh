@@ -161,6 +161,11 @@ echo "Skipping iOS simulator build (known ONNX Runtime CMake bug with libiconv)"
 echo "Device build is sufficient for TestFlight deployment"
 IOS_SIM_ARM64_LIB=""
 
+HAS_SIM_LIB=false
+if [ -n "$IOS_SIM_ARM64_LIB" ] && [ -f "$IOS_SIM_ARM64_LIB" ]; then
+    HAS_SIM_LIB=true
+fi
+
 # Create output directories
 echo ""
 echo "========================================"
@@ -169,14 +174,17 @@ echo "========================================"
 
 mkdir -p "${OUTPUT_DIR}"
 mkdir -p "${XCFRAMEWORK_DIR}/ios-arm64"
-mkdir -p "${XCFRAMEWORK_DIR}/ios-arm64-simulator"
 mkdir -p "${XCFRAMEWORK_DIR}/Headers"
+
+if [ "$HAS_SIM_LIB" = true ]; then
+    mkdir -p "${XCFRAMEWORK_DIR}/ios-arm64-simulator"
+fi
 
 # Copy the device library
 cp "$IOS_ARM64_LIB" "${XCFRAMEWORK_DIR}/ios-arm64/libonnxruntime.a"
 
 # Copy the simulator library (arm64 only for now)
-if [ -n "$IOS_SIM_ARM64_LIB" ] && [ -f "$IOS_SIM_ARM64_LIB" ]; then
+if [ "$HAS_SIM_LIB" = true ]; then
     cp "$IOS_SIM_ARM64_LIB" "${XCFRAMEWORK_DIR}/ios-arm64-simulator/libonnxruntime.a"
 else
     echo "Warning: No simulator library available"
@@ -194,6 +202,7 @@ if [ -d "include/onnxruntime/core/session" ]; then
 fi
 
 # Create Info.plist for xcframework
+if [ "$HAS_SIM_LIB" = true ]; then
 cat > "${XCFRAMEWORK_DIR}/Info.plist" << 'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -239,6 +248,37 @@ cat > "${XCFRAMEWORK_DIR}/Info.plist" << 'PLIST'
 </dict>
 </plist>
 PLIST
+else
+cat > "${XCFRAMEWORK_DIR}/Info.plist" << 'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>AvailableLibraries</key>
+    <array>
+        <dict>
+            <key>HeadersPath</key>
+            <string>Headers</string>
+            <key>LibraryIdentifier</key>
+            <string>ios-arm64</string>
+            <key>LibraryPath</key>
+            <string>libonnxruntime.a</string>
+            <key>SupportedArchitectures</key>
+            <array>
+                <string>arm64</string>
+            </array>
+            <key>SupportedPlatform</key>
+            <string>ios</string>
+        </dict>
+    </array>
+    <key>CFBundlePackageType</key>
+    <string>XFWK</string>
+    <key>XCFrameworkFormatVersion</key>
+    <string>1.0</string>
+</dict>
+</plist>
+PLIST
+fi
 
 echo ""
 echo "========================================"
