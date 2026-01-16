@@ -7,23 +7,32 @@ export function truncateMarkdownPreservingLinks(text: string, maxLength: number)
     return text;
   }
 
-  // Find all plain URLs in the text (not already in markdown link format)
-  const urlRegex = /(https?:\/\/[^\s\])<>]+)/g;
-  const urls: { start: number; end: number; url: string }[] = [];
+  // Precompute all markdown link ranges first
+  const mdLinkRegex = /\[([^\]]*)\]\(([^)]+)\)/g;
+  const mdLinkRanges: { start: number; end: number }[] = [];
   let match;
 
+  while ((match = mdLinkRegex.exec(text)) !== null) {
+    mdLinkRanges.push({ start: match.index, end: match.index + match[0].length });
+  }
+
+  // Helper to check if an index falls inside any markdown link range
+  const isInsideMdLink = (index: number): boolean => {
+    return mdLinkRanges.some((range) => index >= range.start && index < range.end);
+  };
+
+  // Find all plain URLs that are not inside markdown links
+  const urlRegex = /(https?:\/\/[^\s\])<>]+)/g;
+  const plainUrls: { start: number; end: number; url: string }[] = [];
+
   while ((match = urlRegex.exec(text)) !== null) {
-    // Check if this URL is inside a markdown link [text](url) - skip if so
-    const beforeUrl = text.substring(0, match.index);
-    const isInMarkdownLink =
-      /\[[^\]]*\]?\($/.test(beforeUrl) || beforeUrl.lastIndexOf("](") > beforeUrl.lastIndexOf(")");
-    if (!isInMarkdownLink) {
-      urls.push({ start: match.index, end: match.index + match[0].length, url: match[0] });
+    if (!isInsideMdLink(match.index)) {
+      plainUrls.push({ start: match.index, end: match.index + match[0].length, url: match[0] });
     }
   }
 
   // Check if truncation point falls within a plain URL
-  for (const urlInfo of urls) {
+  for (const urlInfo of plainUrls) {
     if (maxLength > urlInfo.start && maxLength < urlInfo.end) {
       // Truncation would cut this URL - convert to markdown link with truncated display
       const beforeUrl = text.substring(0, urlInfo.start);
@@ -33,12 +42,11 @@ export function truncateMarkdownPreservingLinks(text: string, maxLength: number)
     }
   }
 
-  // Also handle existing markdown links
-  const mdLinkRegex = /\[([^\]]*)\]\(([^)]+)\)/g;
-  while ((match = mdLinkRegex.exec(text)) !== null) {
-    if (maxLength > match.index && maxLength < match.index + match[0].length) {
+  // Check if truncation point falls within a markdown link (reuse precomputed ranges)
+  for (const range of mdLinkRanges) {
+    if (maxLength > range.start && maxLength < range.end) {
       // Truncation would break this markdown link - truncate before it
-      const truncated = text.substring(0, match.index).trimEnd();
+      const truncated = text.substring(0, range.start).trimEnd();
       return truncated + "...";
     }
   }
