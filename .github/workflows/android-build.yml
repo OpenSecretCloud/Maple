@@ -127,13 +127,18 @@ jobs:
             ${{ runner.os }}-cargo-${{ matrix.rust_target }}-
             ${{ runner.os }}-cargo-
 
+      - name: Cache Android NDK
+        uses: actions/cache@v4
+        id: ndk-cache
+        with:
+          path: /home/runner/.setup-ndk/r27c
+          key: ${{ runner.os }}-ndk-r27c
+
       - name: Setup Android NDK
+        if: steps.ndk-cache.outputs.cache-hit != 'true'
         uses: nttld/setup-ndk@v1
-        id: setup-ndk
         with:
           ndk-version: r27c
-          add-to-path: true
-          local-cache: true
 
       - name: Install sccache
         run: |
@@ -181,7 +186,7 @@ jobs:
 
       - name: Build Rust library (${{ matrix.rust_target }})
         run: |
-          export NDK_HOME=${{ steps.setup-ndk.outputs.ndk-path }}
+          export NDK_HOME=/home/runner/.setup-ndk/r27c
           export PATH=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH
 
           # C toolchain env for build scripts (e.g. openssl-sys)
