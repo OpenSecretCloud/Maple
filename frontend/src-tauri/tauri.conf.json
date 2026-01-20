@@ -24,13 +24,21 @@
       },
       "mobile": [
         {
-          "scheme": ["cloud.opensecret.maple"],
-          "appLink": false
+          "scheme": ["https"],
+          "host": "trymaple.ai",
+          "pathPrefix": ["/payment-success"],
+          "appLink": true
         },
         {
           "scheme": ["https"],
           "host": "trymaple.ai",
-          "pathPrefix": ["/payment-success", "/payment-canceled", "/pricing"],
+          "pathPrefix": ["/payment-canceled"],
+          "appLink": true
+        },
+        {
+          "scheme": ["https"],
+          "host": "trymaple.ai",
+          "pathPrefix": ["/pricing"],
           "appLink": true
         }
       ]
