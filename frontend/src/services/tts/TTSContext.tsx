@@ -7,7 +7,7 @@ import {
   useEffect,
   ReactNode
 } from "react";
-import { isTauriDesktop } from "@/utils/platform";
+import { isTauriDesktop, isIOS, isTauri } from "@/utils/platform";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
@@ -43,6 +43,7 @@ interface DownloadProgress {
 interface TTSContextValue {
   status: TTSStatus;
   error: string | null;
+  playbackError: string | null;
   downloadProgress: number;
   downloadDetail: string;
   totalSizeMB: number;
@@ -55,13 +56,14 @@ interface TTSContextValue {
   deleteModels: () => Promise<void>;
   speak: (text: string, messageId: string) => Promise<void>;
   stop: () => void;
+  clearPlaybackError: () => void;
 }
 
 const TTSContext = createContext<TTSContextValue | null>(null);
 
 export function TTSProvider({ children }: { children: ReactNode }) {
-  // Check Tauri desktop environment once at mount - TTS is desktop-only
-  const isTauriEnv = isTauriDesktop();
+  // Check Tauri environment - TTS is available on desktop and iOS (not Android)
+  const isTauriEnv = isTauriDesktop() || (isTauri() && isIOS());
 
   // Initial status depends on whether we're in Tauri
   const [status, setStatus] = useState<TTSStatus>(isTauriEnv ? "checking" : "not_available");
@@ -71,10 +73,16 @@ export function TTSProvider({ children }: { children: ReactNode }) {
   const [totalSizeMB, setTotalSizeMB] = useState(264);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentPlayingId, setCurrentPlayingId] = useState<string | null>(null);
+  const [playbackError, setPlaybackError] = useState<string | null>(null);
 
   const audioContextRef = useRef<AudioContext | null>(null);
   const sourceNodeRef = useRef<AudioBufferSourceNode | null>(null);
   const audioUrlRef = useRef<string | null>(null);
+  const audioSessionPrevTypeRef = useRef<string | null>(null);
+  const mediaSessionPrevStateRef = useRef<{
+    metadata: MediaMetadata | null;
+    playbackState: MediaSessionPlaybackState;
+  } | null>(null);
   const unlistenRef = useRef<(() => void) | null>(null);
 
   const cleanupDownloadListener = useCallback(() => {
@@ -182,6 +190,31 @@ export function TTSProvider({ children }: { children: ReactNode }) {
       });
       audioContextRef.current = null;
     }
+
+    if (audioSessionPrevTypeRef.current) {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const nav = navigator as any;
+        if (nav.audioSession && typeof nav.audioSession.type === "string") {
+          nav.audioSession.type = audioSessionPrevTypeRef.current;
+        }
+      } catch {
+        // Ignore
+      }
+      audioSessionPrevTypeRef.current = null;
+    }
+
+    if (mediaSessionPrevStateRef.current) {
+      try {
+        if ("mediaSession" in navigator) {
+          navigator.mediaSession.metadata = mediaSessionPrevStateRef.current.metadata;
+          navigator.mediaSession.playbackState = mediaSessionPrevStateRef.current.playbackState;
+        }
+      } catch {
+        // Ignore
+      }
+      mediaSessionPrevStateRef.current = null;
+    }
     setIsPlaying(false);
     setCurrentPlayingId(null);
   }, []);
@@ -231,8 +264,65 @@ export function TTSProvider({ children }: { children: ReactNode }) {
         const audioUrl = URL.createObjectURL(audioBlob);
         audioUrlRef.current = audioUrl;
 
+        // iOS: set Now Playing metadata so the audio UI shows Maple instead of the origin hostname.
+        // This is iOS-only and should not affect desktop media controls.
+        try {
+          if (isIOS() && "mediaSession" in navigator && typeof MediaMetadata !== "undefined") {
+            if (!mediaSessionPrevStateRef.current) {
+              mediaSessionPrevStateRef.current = {
+                metadata: navigator.mediaSession.metadata,
+                playbackState: navigator.mediaSession.playbackState
+              };
+            }
+
+            navigator.mediaSession.metadata = new MediaMetadata({
+              title: "Maple AI",
+              artist: "Text to Speech",
+              artwork: [
+                {
+                  src: "/apple-touch-icon.png",
+                  sizes: "180x180",
+                  type: "image/png"
+                },
+                { src: "/favicon.png", sizes: "32x32", type: "image/png" }
+              ]
+            });
+            navigator.mediaSession.playbackState = "playing";
+          }
+        } catch {
+          // Ignore
+        }
+
         // Use Web Audio API instead of HTMLAudioElement to avoid hijacking media controls
-        const audioContext = new AudioContext();
+        // iOS Safari requires webkitAudioContext fallback
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+        if (!AudioContextClass) {
+          throw new Error(
+            "Audio playback is not available. If you have Lockdown Mode enabled, TTS will not work."
+          );
+        }
+
+        // iOS: try to force media playback routing (speaker) for Web Audio.
+        // This helps avoid “only works with headphones / earpiece” routing issues.
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const nav = navigator as any;
+          if (nav.audioSession && typeof nav.audioSession.type === "string") {
+            audioSessionPrevTypeRef.current = nav.audioSession.type;
+            nav.audioSession.type = "playback";
+          }
+        } catch {
+          // Ignore
+        }
+
+        const audioContext = new AudioContextClass() as AudioContext;
+
+        // iOS requires user interaction to start audio - resume if suspended
+        if (audioContext.state === "suspended") {
+          await audioContext.resume();
+        }
+
         const arrayBuffer = await audioBlob.arrayBuffer();
         const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
 
@@ -260,16 +350,47 @@ export function TTSProvider({ children }: { children: ReactNode }) {
           });
           audioContextRef.current = null;
           sourceNodeRef.current = null;
+
+          if (audioSessionPrevTypeRef.current) {
+            try {
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              const nav = navigator as any;
+              if (nav.audioSession && typeof nav.audioSession.type === "string") {
+                nav.audioSession.type = audioSessionPrevTypeRef.current;
+              }
+            } catch {
+              // Ignore
+            }
+            audioSessionPrevTypeRef.current = null;
+          }
+
+          if (mediaSessionPrevStateRef.current) {
+            try {
+              if ("mediaSession" in navigator) {
+                navigator.mediaSession.metadata = mediaSessionPrevStateRef.current.metadata;
+                navigator.mediaSession.playbackState =
+                  mediaSessionPrevStateRef.current.playbackState;
+              }
+            } catch {
+              // Ignore
+            }
+            mediaSessionPrevStateRef.current = null;
+          }
         };
 
         source.start(0);
       } catch (err) {
-        console.error("TTS synthesis failed:", err);
+        console.error("TTS playback failed:", err);
+        setPlaybackError(err instanceof Error ? err.message : "TTS playback failed");
         stop();
       }
     },
     [isTauriEnv, status, stop]
   );
+
+  const clearPlaybackError = useCallback(() => {
+    setPlaybackError(null);
+  }, []);
 
   // Clean up on unmount
   useEffect(() => {
@@ -293,6 +414,31 @@ export function TTSProvider({ children }: { children: ReactNode }) {
         URL.revokeObjectURL(audioUrlRef.current);
         audioUrlRef.current = null;
       }
+
+      if (audioSessionPrevTypeRef.current) {
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const nav = navigator as any;
+          if (nav.audioSession && typeof nav.audioSession.type === "string") {
+            nav.audioSession.type = audioSessionPrevTypeRef.current;
+          }
+        } catch {
+          // Ignore
+        }
+        audioSessionPrevTypeRef.current = null;
+      }
+
+      if (mediaSessionPrevStateRef.current) {
+        try {
+          if ("mediaSession" in navigator) {
+            navigator.mediaSession.metadata = mediaSessionPrevStateRef.current.metadata;
+            navigator.mediaSession.playbackState = mediaSessionPrevStateRef.current.playbackState;
+          }
+        } catch {
+          // Ignore
+        }
+        mediaSessionPrevStateRef.current = null;
+      }
     };
   }, []);
 
@@ -301,6 +447,7 @@ export function TTSProvider({ children }: { children: ReactNode }) {
       value={{
         status,
         error,
+        playbackError,
         downloadProgress,
         downloadDetail,
         totalSizeMB,
@@ -311,7 +458,8 @@ export function TTSProvider({ children }: { children: ReactNode }) {
         startDownload,
         deleteModels,
         speak,
-        stop
+        stop,
+        clearPlaybackError
       }}
     >
       {children}
