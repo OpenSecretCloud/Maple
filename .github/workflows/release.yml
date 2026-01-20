@@ -32,7 +32,7 @@ jobs:
         include:
           - platform: macos-latest-xlarge
             args: --target universal-apple-darwin
-          - platform: ubuntu-latest-8-cores
+          - platform: blacksmith-8vcpu-ubuntu-2404
             args: ""
 
     runs-on: ${{ matrix.platform }}
@@ -133,7 +133,7 @@ jobs:
   # Android build pipeline - parallelized for faster builds
   android-frontend-build:
     needs: create-release
-    runs-on: ubuntu-latest-8-cores
+    runs-on: blacksmith-8vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v4
 
@@ -173,7 +173,7 @@ jobs:
 
   android-rust-build:
     needs: android-frontend-build
-    runs-on: ubuntu-latest-8-cores
+    runs-on: blacksmith-8vcpu-ubuntu-2404
     strategy:
       fail-fast: false
       matrix:
@@ -338,7 +338,7 @@ jobs:
 
   build-android:
     needs: android-rust-build
-    runs-on: ubuntu-latest-8-cores
+    runs-on: blacksmith-8vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v4
 
