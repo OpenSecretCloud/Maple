@@ -284,6 +284,25 @@ jobs:
           echo "SCCACHE_DIR=$HOME/.cache/sccache" >> $GITHUB_ENV
           echo "SCCACHE_CACHE_SIZE=2G" >> $GITHUB_ENV
 
+      - name: Create cargo config for 16KB page size support
+        run: |
+          # Android 15+ requires 16KB page size alignment for native libraries
+          # https://developer.android.com/guide/practices/page-sizes
+          mkdir -p frontend/src-tauri/.cargo
+          cat > frontend/src-tauri/.cargo/config.toml << 'EOF'
+          [target.aarch64-linux-android]
+          rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
+
+          [target.armv7-linux-androideabi]
+          rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
+
+          [target.i686-linux-android]
+          rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
+
+          [target.x86_64-linux-android]
+          rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
+          EOF
+
       - name: Build Rust library (${{ matrix.rust_target }})
         run: |
           export NDK_HOME=${{ steps.setup-ndk.outputs.ndk-path }}
