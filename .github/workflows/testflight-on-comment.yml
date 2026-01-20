@@ -3,12 +3,6 @@ name: TestFlight on Comment
 on:
   issue_comment:
     types: [created]
-  # TODO: Remove this push trigger after PR #385 is merged
-  # This is a temporary workaround because issue_comment workflows run from master,
-  # so they don't pick up workflow changes from the PR branch
-  push:
-    branches:
-      - ios-tts-working
 
 permissions:
   contents: read
@@ -17,8 +11,7 @@ permissions:
 
 jobs:
   check-comment:
-    # Only run on issue_comment events, not on push
-    if: github.event_name == 'issue_comment' && github.event.issue.pull_request && contains(github.event.comment.body, 'testflight build')
+    if: github.event.issue.pull_request && contains(github.event.comment.body, 'testflight build')
     runs-on: ubuntu-latest
     outputs:
       should-deploy: ${{ steps.check.outputs.should-deploy }}
@@ -70,14 +63,12 @@ jobs:
 
   deploy-testflight:
     needs: check-comment
-    # Run on push to ios-tts branch OR when triggered by comment with approval
-    if: github.event_name == 'push' || needs.check-comment.outputs.should-deploy == 'true'
+    if: needs.check-comment.outputs.should-deploy == 'true'
     runs-on: macos-latest-xlarge
     steps:
       - uses: actions/checkout@v4
         with:
-          # For push events, use the current ref; for comment events, use the PR ref
-          ref: ${{ github.event_name == 'push' && github.ref || format('refs/pull/{0}/head', needs.check-comment.outputs.pr-number) }}
+          ref: ${{ format('refs/pull/{0}/head', needs.check-comment.outputs.pr-number) }}
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v1
