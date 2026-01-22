@@ -373,6 +373,14 @@ jobs:
             echo "Tauri proguard file not found (skipping): $TAURI_PROGUARD"
           fi
 
+          # Wry proguard rules (process {{package-unescaped}} placeholder)
+          WRY_PROGUARD="$WRY_DIR/src/android/kotlin/proguard-wry.pro"
+          if [ -f "$WRY_PROGUARD" ]; then
+            sed "s/{{package-unescaped}}/$PACKAGE/g" "$WRY_PROGUARD" > "$GEN_KOTLIN_DIR/proguard-wry.pro"
+          else
+            echo "Wry proguard file not found (skipping): $WRY_PROGUARD"
+          fi
+
       - name: Setup Android signing
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
