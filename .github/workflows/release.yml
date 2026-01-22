@@ -130,12 +130,20 @@ jobs:
           args: ${{ matrix.args }}
           assetNamePattern: '[name]_[version]_[arch].[ext]'
 
-  # Android build pipeline - parallelized for faster builds
-  android-frontend-build:
+  build-android:
     needs: create-release
     runs-on: ubuntu-latest-8-cores
     steps:
       - uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v1
@@ -152,105 +160,10 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-bun-
 
-      - name: Install frontend dependencies
-        working-directory: ./frontend
-        run: bun install
-
-      - name: Build frontend
-        working-directory: ./frontend
-        run: bun run build
-        env:
-          VITE_OPEN_SECRET_API_URL: https://enclave.trymaple.ai
-          VITE_MAPLE_BILLING_API_URL: https://billing.opensecret.cloud
-          VITE_CLIENT_ID: ba5a14b5-d915-47b1-b7b1-afda52bc5fc6
-
-      - name: Upload frontend dist
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-frontend-dist
-          path: frontend/dist
-          retention-days: 1
-
-  android-rust-build:
-    needs: android-frontend-build
-    runs-on: ubuntu-latest-8-cores
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - rust_target: aarch64-linux-android
-            target_env: aarch64_linux_android
-            cargo_target_env: AARCH64_LINUX_ANDROID
-            abi: arm64-v8a
-            cc: aarch64-linux-android24-clang
-            cxx: aarch64-linux-android24-clang++
-            ranlib_link: aarch64-linux-android-ranlib
-          - rust_target: armv7-linux-androideabi
-            target_env: armv7_linux_androideabi
-            cargo_target_env: ARMV7_LINUX_ANDROIDEABI
-            abi: armeabi-v7a
-            cc: armv7a-linux-androideabi24-clang
-            cxx: armv7a-linux-androideabi24-clang++
-            ranlib_link: armv7a-linux-androideabi-ranlib
-          - rust_target: i686-linux-android
-            target_env: i686_linux_android
-            cargo_target_env: I686_LINUX_ANDROID
-            abi: x86
-            cc: i686-linux-android24-clang
-            cxx: i686-linux-android24-clang++
-            ranlib_link: i686-linux-android-ranlib
-          - rust_target: x86_64-linux-android
-            target_env: x86_64_linux_android
-            cargo_target_env: X86_64_LINUX_ANDROID
-            abi: x86_64
-            cc: x86_64-linux-android24-clang
-            cxx: x86_64-linux-android24-clang++
-            ranlib_link: x86_64-linux-android-ranlib
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Download frontend dist
-        uses: actions/download-artifact@v4
-        with:
-          name: release-frontend-dist
-          path: frontend-dist
-
-      - name: Restore frontend dist
-        run: |
-          set -euo pipefail
-
-          rm -rf frontend/dist
-          mkdir -p frontend/dist
-
-          if [ -d frontend-dist/dist ]; then
-            cp -a frontend-dist/dist/. frontend/dist/
-          elif [ -d frontend-dist/frontend/dist ]; then
-            cp -a frontend-dist/frontend/dist/. frontend/dist/
-          else
-            cp -a frontend-dist/. frontend/dist/
-          fi
-
-          if [ ! -f frontend/dist/index.html ]; then
-            echo "Error: Frontend dist restoration failed - index.html not found"
-            exit 1
-          fi
-
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.rust_target }}
-
-      - name: Cache Cargo (registry + git)
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: ${{ runner.os }}-cargo-release-${{ matrix.rust_target }}-${{ hashFiles('frontend/src-tauri/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-release-${{ matrix.rust_target }}-
-            ${{ runner.os }}-cargo-
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android,i686-linux-android
 
       - name: Setup Android NDK
         uses: nttld/setup-ndk@v1
@@ -259,6 +172,16 @@ jobs:
           ndk-version: r27c
           add-to-path: true
           local-cache: true
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('frontend/src-tauri/gen/android/**/*.gradle*', 'frontend/src-tauri/gen/android/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
 
       - name: Install sccache
         run: |
@@ -273,11 +196,66 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/sccache
-          key: ${{ runner.os }}-sccache-android-release-${{ matrix.rust_target }}-${{ hashFiles('frontend/src-tauri/Cargo.lock') }}
+          key: ${{ runner.os }}-sccache-android-release-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-sccache-android-release-${{ matrix.rust_target }}-
             ${{ runner.os }}-sccache-android-release-
             ${{ runner.os }}-sccache-
+
+      - name: Cache Cargo bin (Tauri CLI)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/
+          key: ${{ runner.os }}-cargo-bin-tauri-cli-2.9.2
+          restore-keys: |
+            ${{ runner.os }}-cargo-bin-tauri-cli-
+            ${{ runner.os }}-cargo-bin-
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libssl-dev
+
+      - name: Install frontend dependencies
+        working-directory: ./frontend
+        run: bun install
+
+      - name: Install Tauri CLI
+        run: |
+          if ! command -v cargo-tauri &> /dev/null; then
+            cargo install tauri-cli --version "2.9.2" --locked
+          else
+            echo "Tauri CLI already installed"
+          fi
+        env:
+          CARGO_CFG_TARGET_OS: linux
+
+      - name: Setup Android signing
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          cd frontend/src-tauri/gen/android
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > $RUNNER_TEMP/keystore.jks
+          echo "keyAlias=$ANDROID_KEY_ALIAS" > keystore.properties
+          echo "password=$ANDROID_KEY_PASSWORD" >> keystore.properties
+          echo "storeFile=$RUNNER_TEMP/keystore.jks" >> keystore.properties
+
+      - name: Generate tauri.properties (Workaround for Tauri 2.9.x bug)
+        run: |
+          # Workaround for Tauri 2.9.x not generating tauri.properties correctly
+          # See: https://github.com/tauri-apps/tauri/issues/YOUR_ISSUE_NUMBER
+          VERSION=$(jq -r '.version' frontend/src-tauri/tauri.conf.json)
+          VERSION_CODE=$(jq -r '.bundle.android.versionCode' frontend/src-tauri/tauri.conf.json)
+          
+          mkdir -p frontend/src-tauri/gen/android/app
+          cat > frontend/src-tauri/gen/android/app/tauri.properties << EOF
+          // THIS IS AN AUTOGENERATED FILE. DO NOT EDIT THIS FILE DIRECTLY.
+          tauri.android.versionName=$VERSION
+          tauri.android.versionCode=$VERSION_CODE
+          EOF
+          
+          echo "Generated tauri.properties with version $VERSION and versionCode $VERSION_CODE"
 
       - name: Configure sccache
         run: |
@@ -304,260 +282,47 @@ jobs:
           rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
           EOF
 
-      - name: Build Rust library (${{ matrix.rust_target }})
-        run: |
-          export NDK_HOME=${{ steps.setup-ndk.outputs.ndk-path }}
-          export PATH=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH
-
-          # C toolchain env for build scripts (e.g. openssl-sys)
-          export AR_${{ matrix.target_env }}=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
-          export CC_${{ matrix.target_env }}=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/${{ matrix.cc }}
-          export CXX_${{ matrix.target_env }}=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/${{ matrix.cxx }}
-          export RANLIB_${{ matrix.target_env }}=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib
-
-          # Explicit linker for cargo (belt + suspenders)
-          export CARGO_TARGET_${{ matrix.cargo_target_env }}_LINKER=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/${{ matrix.cc }}
-
-          # Create ranlib symlink that OpenSSL expects
-          sudo ln -sf $NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib /usr/local/bin/${{ matrix.ranlib_link }}
-
-          cargo build --manifest-path frontend/src-tauri/Cargo.toml --release --target ${{ matrix.rust_target }} --lib
-
-          mkdir -p artifacts
-          cp frontend/src-tauri/target/${{ matrix.rust_target }}/release/libapp_lib.so artifacts/libapp_lib-${{ matrix.abi }}.so
-
-      - name: Show sccache stats
-        run: sccache --show-stats
-
-      - name: Upload Rust library (${{ matrix.abi }})
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-rust-lib-${{ matrix.abi }}
-          path: artifacts/libapp_lib-${{ matrix.abi }}.so
-          retention-days: 1
-
-  build-android:
-    needs: android-rust-build
-    runs-on: ubuntu-latest-8-cores
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: '21'
-
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache Cargo (registry + git)
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: ${{ runner.os }}-cargo-android-build-${{ hashFiles('frontend/src-tauri/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-android-build-
-            ${{ runner.os }}-cargo-
-
-      - name: Cache Gradle
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: ${{ runner.os }}-gradle-${{ hashFiles('frontend/src-tauri/gen/android/**/*.gradle*', 'frontend/src-tauri/gen/android/gradle-wrapper.properties') }}
-          restore-keys: |
-            ${{ runner.os }}-gradle-
-
-      - name: Fetch Rust dependencies (for Android Gradle plugin sources)
-        run: cargo fetch --manifest-path frontend/src-tauri/Cargo.toml
-
-      - name: Generate Tauri Android Gradle includes
-        run: |
-          set -euo pipefail
-
-          META=$(cargo metadata --format-version 1 --manifest-path frontend/src-tauri/Cargo.toml)
-
-          SETTINGS_FILE=frontend/src-tauri/gen/android/tauri.settings.gradle
-          BUILD_FILE=frontend/src-tauri/gen/android/app/tauri.build.gradle.kts
-
-          mkdir -p "$(dirname "$SETTINGS_FILE")" "$(dirname "$BUILD_FILE")"
-
-          echo "// THIS IS AN AUTOGENERATED FILE. DO NOT EDIT THIS FILE DIRECTLY." > "$SETTINGS_FILE"
-          echo "// THIS IS AN AUTOGENERATED FILE. DO NOT EDIT THIS FILE DIRECTLY." > "$BUILD_FILE"
-          echo "val implementation by configurations" >> "$BUILD_FILE"
-          echo "dependencies {" >> "$BUILD_FILE"
-
-          TAURI_MANIFEST=$(echo "$META" | jq -r '.packages[] | select(.name=="tauri") | .manifest_path' | head -n1)
-          if [ -z "$TAURI_MANIFEST" ] || [ "$TAURI_MANIFEST" = "null" ]; then
-            echo "Failed to locate the 'tauri' crate via cargo metadata"
-            exit 1
-          fi
-
-          TAURI_DIR=$(dirname "$TAURI_MANIFEST")
-          TAURI_ANDROID_DIR="$TAURI_DIR/mobile/android"
-          if [ ! -d "$TAURI_ANDROID_DIR" ]; then
-            echo "Expected Tauri Android project dir not found: $TAURI_ANDROID_DIR"
-            exit 1
-          fi
-
-          echo "include ':tauri-android'" >> "$SETTINGS_FILE"
-          echo "project(':tauri-android').projectDir = new File(\"$TAURI_ANDROID_DIR\")" >> "$SETTINGS_FILE"
-          echo "  implementation(project(\":tauri-android\"))" >> "$BUILD_FILE"
-
-          echo "$META" | jq -r '.packages[] | select(.name | startswith("tauri-plugin-")) | [.name, .manifest_path] | @tsv' |
-            while IFS=$'\t' read -r name manifest; do
-              dir=$(dirname "$manifest")
-              android_dir="$dir/android"
-              if [ -d "$android_dir" ]; then
-                echo "include ':$name'" >> "$SETTINGS_FILE"
-                echo "project(':$name').projectDir = new File(\"$android_dir\")" >> "$SETTINGS_FILE"
-                echo "  implementation(project(\":$name\"))" >> "$BUILD_FILE"
-              fi
-            done
-
-          echo "}" >> "$BUILD_FILE"
-
-      - name: Generate Android Kotlin bindings + assets (wry/tauri)
-        run: |
-          set -euo pipefail
-
-          PACKAGE=$(jq -r '.identifier' frontend/src-tauri/tauri.conf.json)
-          if [ -z "$PACKAGE" ] || [ "$PACKAGE" = "null" ]; then
-            echo "Failed to read .identifier from frontend/src-tauri/tauri.conf.json"
-            exit 1
-          fi
-
-          PACKAGE_DIR=$(echo "$PACKAGE" | tr '.' '/')
-          GEN_KOTLIN_DIR="frontend/src-tauri/gen/android/app/src/main/java/${PACKAGE_DIR}/generated"
-          mkdir -p "$GEN_KOTLIN_DIR"
-
-          # The library name (without lib prefix / .so suffix) that Wry/Tauri load via System.loadLibrary().
-          LIB_NAME=app_lib
-
-          META=$(cargo metadata --format-version 1 --manifest-path frontend/src-tauri/Cargo.toml)
-          TAURI_MANIFEST=$(echo "$META" | jq -r '.packages[] | select(.name=="tauri") | .manifest_path' | head -n1)
-          WRY_MANIFEST=$(echo "$META" | jq -r '.packages[] | select(.name=="wry") | .manifest_path' | head -n1)
-
-          if [ -z "$TAURI_MANIFEST" ] || [ "$TAURI_MANIFEST" = "null" ]; then
-            echo "Failed to locate the 'tauri' crate via cargo metadata"
-            exit 1
-          fi
-          if [ -z "$WRY_MANIFEST" ] || [ "$WRY_MANIFEST" = "null" ]; then
-            echo "Failed to locate the 'wry' crate via cargo metadata"
-            exit 1
-          fi
-
-          TAURI_DIR=$(dirname "$TAURI_MANIFEST")
-          WRY_DIR=$(dirname "$WRY_MANIFEST")
-
-          render_template() {
-            local src="$1"
-            local dst="$2"
-            sed \
-              -e "s/{{package}}/$PACKAGE/g" \
-              -e "s/{{library}}/$LIB_NAME/g" \
-              -e 's/{{class-init}}//g' \
-              -e 's/{{class-extension}}//g' \
-              "$src" > "$dst"
-          }
-
-          # TauriActivity
-          TAURI_ACTIVITY_TEMPLATE="$TAURI_DIR/mobile/android-codegen/TauriActivity.kt"
-          if [ ! -f "$TAURI_ACTIVITY_TEMPLATE" ]; then
-            echo "TauriActivity template not found: $TAURI_ACTIVITY_TEMPLATE"
-            exit 1
-          fi
-          render_template "$TAURI_ACTIVITY_TEMPLATE" "$GEN_KOTLIN_DIR/TauriActivity.kt"
-
-          # Wry kotlin bindings
-          for f in Ipc.kt Logger.kt PermissionHelper.kt RustWebChromeClient.kt RustWebView.kt RustWebViewClient.kt WryActivity.kt; do
-            SRC="$WRY_DIR/src/android/kotlin/$f"
-            if [ ! -f "$SRC" ]; then
-              echo "Wry kotlin template not found: $SRC"
-              exit 1
-            fi
-            render_template "$SRC" "$GEN_KOTLIN_DIR/$f"
-          done
-
-          # tauri.conf.json asset
-          mkdir -p frontend/src-tauri/gen/android/app/src/main/assets
-          cp frontend/src-tauri/tauri.conf.json frontend/src-tauri/gen/android/app/src/main/assets/tauri.conf.json
-
-          # Tauri proguard rules
-          TAURI_PROGUARD="$TAURI_DIR/mobile/proguard-tauri.pro"
-          if [ -f "$TAURI_PROGUARD" ]; then
-            cp "$TAURI_PROGUARD" frontend/src-tauri/gen/android/app/proguard-tauri.pro
-          else
-            echo "Tauri proguard file not found (skipping): $TAURI_PROGUARD"
-          fi
-
-      - name: Setup Android signing
-        env:
-          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-        run: |
-          cd frontend/src-tauri/gen/android
-          echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > $RUNNER_TEMP/keystore.jks
-          echo "keyAlias=$ANDROID_KEY_ALIAS" > keystore.properties
-          echo "password=$ANDROID_KEY_PASSWORD" >> keystore.properties
-          echo "storeFile=$RUNNER_TEMP/keystore.jks" >> keystore.properties
-
-      - name: Generate tauri.properties (Workaround for Tauri 2.9.x bug)
-        run: |
-          VERSION=$(jq -r '.version' frontend/src-tauri/tauri.conf.json)
-          VERSION_CODE=$(jq -r '.bundle.android.versionCode' frontend/src-tauri/tauri.conf.json)
-          
-          mkdir -p frontend/src-tauri/gen/android/app
-          cat > frontend/src-tauri/gen/android/app/tauri.properties << EOF
-          # THIS IS AN AUTOGENERATED FILE. DO NOT EDIT THIS FILE DIRECTLY.
-          tauri.android.versionName=$VERSION
-          tauri.android.versionCode=$VERSION_CODE
-          EOF
-          
-          echo "Generated tauri.properties with version $VERSION and versionCode $VERSION_CODE"
-
-      - name: Download Rust libraries
-        uses: actions/download-artifact@v4
-        with:
-          pattern: release-rust-lib-*
-          merge-multiple: true
-          path: rust-libs
-
-      - name: Install prebuilt Rust libraries
-        run: |
-          set -euo pipefail
-
-          for abi in arm64-v8a armeabi-v7a x86 x86_64; do
-            if [ ! -s "rust-libs/libapp_lib-${abi}.so" ]; then
-              echo "Error: Missing Rust library for ${abi}: rust-libs/libapp_lib-${abi}.so"
-              exit 1
-            fi
-          done
-
-          mkdir -p frontend/src-tauri/gen/android/app/src/main/jniLibs/arm64-v8a
-          mkdir -p frontend/src-tauri/gen/android/app/src/main/jniLibs/armeabi-v7a
-          mkdir -p frontend/src-tauri/gen/android/app/src/main/jniLibs/x86
-          mkdir -p frontend/src-tauri/gen/android/app/src/main/jniLibs/x86_64
-
-          cp rust-libs/libapp_lib-arm64-v8a.so frontend/src-tauri/gen/android/app/src/main/jniLibs/arm64-v8a/libapp_lib.so
-          cp rust-libs/libapp_lib-armeabi-v7a.so frontend/src-tauri/gen/android/app/src/main/jniLibs/armeabi-v7a/libapp_lib.so
-          cp rust-libs/libapp_lib-x86.so frontend/src-tauri/gen/android/app/src/main/jniLibs/x86/libapp_lib.so
-          cp rust-libs/libapp_lib-x86_64.so frontend/src-tauri/gen/android/app/src/main/jniLibs/x86_64/libapp_lib.so
-
-      - name: Build Android APK + AAB (Signed Release)
-        working-directory: ./frontend/src-tauri/gen/android
+      - name: Build Tauri Android App (Signed Release)
+        working-directory: ./frontend
         run: |
           export ANDROID_HOME=$ANDROID_SDK_ROOT
+          export NDK_HOME=${{ steps.setup-ndk.outputs.ndk-path }}
 
-          ./gradlew :app:assembleUniversalRelease :app:bundleUniversalRelease -PskipRustBuild=true
+          # Set up Android NDK toolchain paths
+          export PATH=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH
+
+          # Set up cross-compilation environment variables for each target
+          export AR_aarch64_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
+          export CC_aarch64_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang
+          export CXX_aarch64_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang++
+          export RANLIB_aarch64_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib
+
+          export AR_armv7_linux_androideabi=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
+          export CC_armv7_linux_androideabi=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi24-clang
+          export CXX_armv7_linux_androideabi=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi24-clang++
+          export RANLIB_armv7_linux_androideabi=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib
+
+          export AR_x86_64_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
+          export CC_x86_64_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android24-clang
+          export CXX_x86_64_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android24-clang++
+          export RANLIB_x86_64_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib
+
+          export AR_i686_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
+          export CC_i686_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/i686-linux-android24-clang
+          export CXX_i686_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/i686-linux-android24-clang++
+          export RANLIB_i686_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib
+
+          # Create symlinks for ranlib that OpenSSL expects
+          sudo ln -sf $NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib /usr/local/bin/aarch64-linux-android-ranlib
+          sudo ln -sf $NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib /usr/local/bin/armv7a-linux-androideabi-ranlib
+          sudo ln -sf $NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib /usr/local/bin/x86_64-linux-android-ranlib
+          sudo ln -sf $NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib /usr/local/bin/i686-linux-android-ranlib
+
+          cargo tauri android build
+        env:
+          VITE_OPEN_SECRET_API_URL: https://enclave.trymaple.ai
+          VITE_MAPLE_BILLING_API_URL: https://billing.opensecret.cloud
+          VITE_CLIENT_ID: ba5a14b5-d915-47b1-b7b1-afda52bc5fc6
 
       - name: Upload Android APK to Release
         env:
