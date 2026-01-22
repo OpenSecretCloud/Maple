@@ -365,10 +365,10 @@ jobs:
           mkdir -p frontend/src-tauri/gen/android/app/src/main/assets
           cp frontend/src-tauri/tauri.conf.json frontend/src-tauri/gen/android/app/src/main/assets/tauri.conf.json
 
-          # Tauri proguard rules
+          # Tauri proguard rules (process $PACKAGE placeholder)
           TAURI_PROGUARD="$TAURI_DIR/mobile/proguard-tauri.pro"
           if [ -f "$TAURI_PROGUARD" ]; then
-            cp "$TAURI_PROGUARD" frontend/src-tauri/gen/android/app/proguard-tauri.pro
+            sed "s/\\\$PACKAGE/$PACKAGE/g" "$TAURI_PROGUARD" > frontend/src-tauri/gen/android/app/proguard-tauri.pro
           else
             echo "Tauri proguard file not found (skipping): $TAURI_PROGUARD"
           fi
