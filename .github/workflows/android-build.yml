@@ -365,12 +365,20 @@ jobs:
           mkdir -p frontend/src-tauri/gen/android/app/src/main/assets
           cp frontend/src-tauri/tauri.conf.json frontend/src-tauri/gen/android/app/src/main/assets/tauri.conf.json
 
-          # Tauri proguard rules
+          # Tauri proguard rules (process $PACKAGE placeholder)
           TAURI_PROGUARD="$TAURI_DIR/mobile/proguard-tauri.pro"
           if [ -f "$TAURI_PROGUARD" ]; then
-            cp "$TAURI_PROGUARD" frontend/src-tauri/gen/android/app/proguard-tauri.pro
+            sed "s/\\\$PACKAGE/$PACKAGE/g" "$TAURI_PROGUARD" > frontend/src-tauri/gen/android/app/proguard-tauri.pro
           else
             echo "Tauri proguard file not found (skipping): $TAURI_PROGUARD"
+          fi
+
+          # Wry proguard rules (process {{package-unescaped}} placeholder)
+          WRY_PROGUARD="$WRY_DIR/src/android/kotlin/proguard-wry.pro"
+          if [ -f "$WRY_PROGUARD" ]; then
+            sed "s/{{package-unescaped}}/$PACKAGE/g" "$WRY_PROGUARD" > "$GEN_KOTLIN_DIR/proguard-wry.pro"
+          else
+            echo "Wry proguard file not found (skipping): $WRY_PROGUARD"
           fi
 
       - name: Setup Android signing
