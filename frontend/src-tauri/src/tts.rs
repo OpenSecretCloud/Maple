@@ -1002,3 +1002,41 @@ pub async fn tts_delete_models(state: tauri::State<'_, Mutex<TTSState>>) -> Resu
     log::info!("TTS models deleted");
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bytes_to_hex_is_lowercase_and_zero_padded() {
+        assert_eq!(bytes_to_hex(&[0x00, 0xab, 0xff]), "00abff");
+    }
+
+    #[test]
+    fn preprocess_text_strips_markdown_and_emoji_and_adds_period() {
+        assert_eq!(preprocess_text("**Hello** _world_ 😊"), "Hello world.");
+    }
+
+    #[test]
+    fn preprocess_text_does_not_add_punctuation_if_already_present() {
+        assert_eq!(preprocess_text("Hi!"), "Hi!");
+    }
+
+    #[test]
+    fn chunk_text_splits_long_sentence_by_words_when_needed() {
+        let chunks = chunk_text("Hello world. Bye.", 10);
+        assert_eq!(
+            chunks,
+            vec![
+                "Hello".to_string(),
+                "world.".to_string(),
+                "Bye.".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn chunk_text_returns_single_empty_chunk_for_empty_input() {
+        assert_eq!(chunk_text("   ", 10), vec![String::new()]);
+    }
+}

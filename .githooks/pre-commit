@@ -34,5 +34,20 @@ if ! bun run test; then
     exit 1
 fi
 
+# Run Rust unit tests only when relevant Rust/Tauri files are staged
+STAGED_FILES=$(git diff --cached --name-only)
+if echo "$STAGED_FILES" | grep -Eq '^frontend/src-tauri/.*\.(rs|toml|lock)$'; then
+    echo "Running Rust unit tests..."
+    cd "$REPO_ROOT/frontend/src-tauri" || exit 1
+    if ! cargo test --all-targets; then
+        echo ""
+        echo "Error: Rust tests failed! Please fix the test failures before committing."
+        echo "Run 'cd frontend/src-tauri && cargo test --all-targets' to see the errors."
+        exit 1
+    fi
+else
+    echo "No staged Rust changes detected; skipping Rust unit tests."
+fi
+
 echo "All checks passed! Proceeding with commit..."
 exit 0
