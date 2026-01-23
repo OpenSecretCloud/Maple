@@ -25,5 +25,14 @@ if ! bun run build; then
     exit 1
 fi
 
+# Run unit tests
+echo "Running bun test..."
+if ! bun run test; then
+    echo ""
+    echo "Error: Unit tests failed! Please fix failing tests before committing."
+    echo "Run 'cd frontend && bun run test' to see the failures."
+    exit 1
+fi
+
 echo "All checks passed! Proceeding with commit..."
 exit 0
