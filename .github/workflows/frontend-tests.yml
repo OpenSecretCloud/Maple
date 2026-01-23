@@ -1,0 +1,48 @@
+name: Frontend Tests
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+jobs:
+  test-frontend:
+    runs-on: ubuntu-latest-8-cores
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: 1.2.2
+
+      - name: Cache Bun dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.bun/install/cache
+            frontend/node_modules
+          key: ${{ runner.os }}-bun-${{ hashFiles('frontend/bun.lockb') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
+
+      - name: Install dependencies
+        working-directory: ./frontend
+        run: bun install
+
+      - name: Format check
+        working-directory: ./frontend
+        run: bun run format:check
+
+      - name: Lint
+        working-directory: ./frontend
+        run: bun run lint
+
+      - name: Typecheck
+        working-directory: ./frontend
+        run: bun run typecheck
+
+      - name: Unit tests
+        working-directory: ./frontend
+        run: bun run test
