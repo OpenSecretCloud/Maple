@@ -22,7 +22,7 @@ jobs:
 
       - name: Get version
         id: get_version
-        run: echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+        run: echo "version=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
 
   build-tauri:
     needs: create-release
@@ -103,8 +103,10 @@ jobs:
 
       - name: Configure sccache
         run: |
-          echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
-          echo "SCCACHE_CACHE_SIZE=2G" >> $GITHUB_ENV
+          {
+            echo "RUSTC_WRAPPER=sccache"
+            echo "SCCACHE_CACHE_SIZE=2G"
+          } >> "$GITHUB_ENV"
 
       - name: Build Tauri App
         uses: tauri-apps/tauri-action@v0
@@ -259,9 +261,11 @@ jobs:
 
       - name: Configure sccache
         run: |
-          echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
-          echo "SCCACHE_DIR=$HOME/.cache/sccache" >> $GITHUB_ENV
-          echo "SCCACHE_CACHE_SIZE=2G" >> $GITHUB_ENV
+          {
+            echo "RUSTC_WRAPPER=sccache"
+            echo "SCCACHE_DIR=$HOME/.cache/sccache"
+            echo "SCCACHE_CACHE_SIZE=2G"
+          } >> "$GITHUB_ENV"
 
       - name: Create cargo config for 16KB page size support
         run: |
