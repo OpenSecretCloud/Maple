@@ -18,6 +18,7 @@ export type BillingStatus = {
   total_tokens: number | null;
   used_tokens: number | null;
   usage_reset_date: string | null;
+  api_credit_balance?: number;
 };
 
 type BillingRecurringInfo = {

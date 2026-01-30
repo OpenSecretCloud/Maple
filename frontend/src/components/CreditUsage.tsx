@@ -22,6 +22,10 @@ export function CreditUsage() {
     return null;
   }
 
+  // Check if user has API credits - always show if they have any
+  const hasApiCredits =
+    billingStatus.api_credit_balance !== undefined && billingStatus.api_credit_balance > 0;
+
   // Set bar color based on usage
   const getBarColor = () => {
     if (percentUsed >= 90) return "rgb(239, 68, 68)"; // Tailwind red-500
@@ -29,10 +33,14 @@ export function CreditUsage() {
     return "rgb(16, 185, 129)"; // Tailwind emerald-500
   };
 
+  const formatCredits = (credits: number) => {
+    return new Intl.NumberFormat("en-US").format(credits);
+  };
+
   return (
     <div className="px-2 py-2 text-xs text-muted-foreground">
       <div className="mb-1 flex justify-between">
-        <span>Credit Usage</span>
+        <span>Plan Credits</span>
         <span>{roundedPercent}%</span>
       </div>
       <div className="h-2.5 w-full overflow-hidden rounded-full bg-muted">
@@ -44,8 +52,13 @@ export function CreditUsage() {
           }}
         />
       </div>
-      <div className="mt-1 text-xs text-right">
-        {formatResetDate(billingStatus.usage_reset_date)}
+      <div className="mt-1 flex justify-between text-xs">
+        {hasApiCredits && (
+          <span>+ {formatCredits(billingStatus.api_credit_balance ?? 0)} API credits</span>
+        )}
+        <span className={hasApiCredits ? "" : "ml-auto"}>
+          {formatResetDate(billingStatus.usage_reset_date)}
+        </span>
       </div>
     </div>
   );
