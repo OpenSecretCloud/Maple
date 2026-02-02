@@ -30,9 +30,9 @@ const AI_MODELS = [
   {
     src: "/badge-kimi-logo.png",
     alt: "Moonshot",
-    labels: ["Kimi K2"]
+    labels: ["Kimi K2", "Kimi K2.5"]
   },
-  { src: "/badge-qwen-logo.png", alt: "Qwen", labels: ["Qwen3 Coder", "Qwen3-VL"] },
+  { src: "/badge-qwen-logo.png", alt: "Qwen", labels: ["Qwen3-VL"] },
   { src: "/badge-meta-logo.png", alt: "Meta", labels: ["Meta Llama"] }
 ];
 

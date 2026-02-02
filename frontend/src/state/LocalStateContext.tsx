@@ -25,7 +25,7 @@ function getInitialModel(): string {
     // Priority 1: Check local storage for last used model
     const selectedModel = localStorage.getItem("selectedModel");
     if (selectedModel) {
-      return selectedModel;
+      return aliasModelName(selectedModel);
     }
 
     // Priority 2: Check cached billing status for pro/max/team users
@@ -76,9 +76,10 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
 
   async function persistChat(chat: Chat) {
     const chatToSave = {
+      ...chat,
+
       /** If a model is missing, assume the default Llama and write it now */
-      model: aliasModelName(chat.model) || DEFAULT_MODEL_ID,
-      ...chat
+      model: aliasModelName(chat.model) || DEFAULT_MODEL_ID
     };
 
     console.log("Persisting chat:", chatToSave);
