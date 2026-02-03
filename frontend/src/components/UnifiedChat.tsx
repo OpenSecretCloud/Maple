@@ -36,7 +36,6 @@ import {
   Search,
   Loader2,
   Globe,
-  Brain,
   Maximize2,
   Minimize2,
   Volume2,
@@ -54,7 +53,7 @@ import { truncateMarkdownPreservingLinks } from "@/utils/markdown";
 import { useOpenAI } from "@/ai/useOpenAi";
 import { DEFAULT_MODEL_ID } from "@/state/LocalStateContext";
 import { Markdown, ThinkingBlock } from "@/components/markdown";
-import { ModelSelector, CATEGORY_MODELS } from "@/components/ModelSelector";
+import { ModelSelector } from "@/components/ModelSelector";
 import { useLocalState } from "@/state/useLocalState";
 import { useOpenSecret } from "@opensecret/react";
 import { UpgradePromptDialog } from "@/components/UpgradePromptDialog";
@@ -2919,40 +2918,6 @@ export function UnifiedChat() {
                             }
                           />
 
-                          {/* Thinking toggle button - visible when reasoning model is selected */}
-                          {(localState.model === CATEGORY_MODELS.reasoning_on ||
-                            localState.model === CATEGORY_MODELS.reasoning_off) && (
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="sm"
-                              className="h-8 w-8 p-0"
-                              onClick={() => {
-                                const newThinkingEnabled = !localState.thinkingEnabled;
-                                localState.setThinkingEnabled(newThinkingEnabled);
-                                // Switch between Kimi K2 (with thinking) and DeepSeek R1 (without)
-                                localState.setModel(
-                                  newThinkingEnabled
-                                    ? CATEGORY_MODELS.reasoning_on
-                                    : CATEGORY_MODELS.reasoning_off
-                                );
-                              }}
-                              aria-label={
-                                localState.thinkingEnabled
-                                  ? "Disable thinking mode"
-                                  : "Enable thinking mode"
-                              }
-                            >
-                              <Brain
-                                className={`h-4 w-4 ${
-                                  localState.thinkingEnabled
-                                    ? "text-purple-500"
-                                    : "text-muted-foreground"
-                                }`}
-                              />
-                            </Button>
-                          )}
-
                           {/* Web search toggle button - always visible */}
                           <Button
                             type="button"
@@ -3195,40 +3160,6 @@ export function UnifiedChat() {
                             )
                           }
                         />
-
-                        {/* Thinking toggle button - visible when reasoning model is selected */}
-                        {(localState.model === CATEGORY_MODELS.reasoning_on ||
-                          localState.model === CATEGORY_MODELS.reasoning_off) && (
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="sm"
-                            className="h-8 w-8 p-0"
-                            onClick={() => {
-                              const newThinkingEnabled = !localState.thinkingEnabled;
-                              localState.setThinkingEnabled(newThinkingEnabled);
-                              // Switch between Kimi K2 (with thinking) and DeepSeek R1 (without)
-                              localState.setModel(
-                                newThinkingEnabled
-                                  ? CATEGORY_MODELS.reasoning_on
-                                  : CATEGORY_MODELS.reasoning_off
-                              );
-                            }}
-                            aria-label={
-                              localState.thinkingEnabled
-                                ? "Disable thinking mode"
-                                : "Enable thinking mode"
-                            }
-                          >
-                            <Brain
-                              className={`h-4 w-4 ${
-                                localState.thinkingEnabled
-                                  ? "text-purple-500"
-                                  : "text-muted-foreground"
-                              }`}
-                            />
-                          </Button>
-                        )}
 
                         {/* Web search toggle button - always visible */}
                         <Button

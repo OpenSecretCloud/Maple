@@ -6,9 +6,9 @@ import {
   ChevronLeft,
   Sparkles,
   Zap,
-  Brain,
   Code,
-  Image
+  Image,
+  Brain
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -68,13 +68,6 @@ export const MODEL_CONFIG: Record<string, ModelCfg> = {
     requiresPro: true,
     tokenLimit: 130000
   },
-  "kimi-k2-thinking": {
-    displayName: "Kimi K2 Thinking",
-    shortName: "Kimi K2",
-    badges: ["Pro", "Reasoning"],
-    requiresPro: true,
-    tokenLimit: 256000
-  },
   "kimi-k2-5": {
     displayName: "Kimi K2.5",
     shortName: "Kimi K2.5",
@@ -113,8 +106,7 @@ type ModelCategory = "free" | "quick" | "reasoning" | "math" | "image" | "advanc
 export const CATEGORY_MODELS = {
   free: "llama-3.3-70b",
   quick: "gpt-oss-120b",
-  reasoning_on: "kimi-k2-thinking", // Kimi K2 with thinking
-  reasoning_off: "deepseek-r1-0528", // DeepSeek R1 without thinking
+  reasoning: "deepseek-r1-0528",
   math: "kimi-k2-5",
   image: "qwen3-vl-30b" // Qwen3-VL for image analysis
 };
@@ -154,9 +146,7 @@ export function ModelSelector({ hasImages = false }: { hasImages?: boolean }) {
     availableModels,
     setAvailableModels,
     billingStatus,
-    setHasWhisperModel,
-    thinkingEnabled,
-    setThinkingEnabled
+    setHasWhisperModel
   } = useLocalState();
   const os = useOpenSecret();
   const isFetching = useRef(false);
@@ -243,16 +233,6 @@ export function ModelSelector({ hasImages = false }: { hasImages?: boolean }) {
     }
   }, [os, setAvailableModels, setHasWhisperModel]);
 
-  // Sync thinking toggle when model changes externally
-  useEffect(() => {
-    if (model === CATEGORY_MODELS.reasoning_on) {
-      setThinkingEnabled(true);
-    } else if (model === CATEGORY_MODELS.reasoning_off) {
-      setThinkingEnabled(false);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [model]);
-
   // Auto-switch to image analysis when images are uploaded
   useEffect(() => {
     if (chatHasImages && hasAccessToModel(CATEGORY_MODELS.image)) {
@@ -269,9 +249,7 @@ export function ModelSelector({ hasImages = false }: { hasImages?: boolean }) {
   const getCurrentCategory = (): string => {
     if (model === CATEGORY_MODELS.free) return "General";
     if (model === CATEGORY_MODELS.quick) return "Quick";
-    if (model === CATEGORY_MODELS.reasoning_on || model === CATEGORY_MODELS.reasoning_off) {
-      return "Reasoning";
-    }
+    if (model === CATEGORY_MODELS.reasoning) return "Reasoning";
     if (model === CATEGORY_MODELS.math) return "Math/Coding";
     if (model === CATEGORY_MODELS.image) return "Image Analysis";
     // If in advanced mode, show model name
@@ -313,15 +291,7 @@ export function ModelSelector({ hasImages = false }: { hasImages?: boolean }) {
       return;
     }
 
-    let targetModel: string;
-    if (category === "reasoning") {
-      // Use thinking state to pick R1 vs V3.1
-      targetModel = thinkingEnabled ? CATEGORY_MODELS.reasoning_on : CATEGORY_MODELS.reasoning_off;
-    } else if (category === "image") {
-      targetModel = CATEGORY_MODELS.image;
-    } else {
-      targetModel = CATEGORY_MODELS[category as keyof typeof CATEGORY_MODELS];
-    }
+    const targetModel = CATEGORY_MODELS[category as keyof typeof CATEGORY_MODELS];
 
     // Prevent switching to non-vision models if chat has images
     const targetModelConfig = MODEL_CONFIG[targetModel];
@@ -447,19 +417,12 @@ export function ModelSelector({ hasImages = false }: { hasImages?: boolean }) {
                 const isActive =
                   (category === "free" && model === CATEGORY_MODELS.free) ||
                   (category === "quick" && model === CATEGORY_MODELS.quick) ||
-                  (category === "reasoning" &&
-                    (model === CATEGORY_MODELS.reasoning_on ||
-                      model === CATEGORY_MODELS.reasoning_off)) ||
+                  (category === "reasoning" && model === CATEGORY_MODELS.reasoning) ||
                   (category === "math" && model === CATEGORY_MODELS.math) ||
                   (category === "image" && model === CATEGORY_MODELS.image);
 
                 // Check if user has access to this category's model
-                const targetModel =
-                  category === "reasoning"
-                    ? thinkingEnabled
-                      ? CATEGORY_MODELS.reasoning_on
-                      : CATEGORY_MODELS.reasoning_off
-                    : CATEGORY_MODELS[category];
+                const targetModel = CATEGORY_MODELS[category];
                 const hasAccess = hasAccessToModel(targetModel);
                 const targetModelConfig = MODEL_CONFIG[targetModel];
                 const requiresUpgrade = !hasAccess;

@@ -65,7 +65,6 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
     model: getInitialModel(),
     availableModels: [llamaModel] as OpenSecretModel[],
     hasWhisperModel: true, // Default to true to avoid hiding button during loading
-    thinkingEnabled: false, // Default to reasoning without thinking (V3.1)
     billingStatus: null as BillingStatus | null,
     searchQuery: "",
     isSearchVisible: false,
@@ -381,10 +380,6 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
     setLocalState((prev) => ({ ...prev, hasWhisperModel: hasWhisper }));
   }
 
-  function setThinkingEnabled(enabled: boolean) {
-    setLocalState((prev) => ({ ...prev, thinkingEnabled: enabled }));
-  }
-
   return (
     <LocalStateContext.Provider
       value={{
@@ -394,8 +389,6 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
         setAvailableModels,
         hasWhisperModel: localState.hasWhisperModel,
         setHasWhisperModel,
-        thinkingEnabled: localState.thinkingEnabled,
-        setThinkingEnabled,
         userPrompt: localState.userPrompt,
         systemPrompt: localState.systemPrompt,
         userImages: localState.userImages,
