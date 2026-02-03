@@ -162,9 +162,9 @@ export function ApiKeyDashboard({ showCreditSuccessMessage = false }: ApiKeyDash
                   <Rocket className="h-5 w-5 text-green-500" />
                 </div>
                 <div>
-                  <h3 className="font-semibold">Pay-As-You-Go Credits</h3>
+                  <h3 className="font-semibold">Extend Your Subscription</h3>
                   <p className="text-sm text-muted-foreground">
-                    Purchase credits for API usage at just $1 per 1,000 credits
+                    Purchase API credits to extend your usage when plan credits run out
                   </p>
                 </div>
               </div>
@@ -183,7 +183,7 @@ export function ApiKeyDashboard({ showCreditSuccessMessage = false }: ApiKeyDash
             </Button>
 
             <p className="text-xs text-muted-foreground text-center">
-              Unlock API access, increased limits, and premium features
+              Use your plan credits via API, and purchase extra credits to extend your usage
             </p>
           </div>
         </div>

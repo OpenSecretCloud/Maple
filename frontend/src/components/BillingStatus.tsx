@@ -50,6 +50,9 @@ export function BillingStatus() {
   const isFree = billingStatus.product_name.toLowerCase().includes("free");
   const isMax = billingStatus.product_name.toLowerCase().includes("max");
 
+  const hasApiAccess =
+    billingStatus.product_name?.toLowerCase().includes("pro") || isMax || isTeamPlan;
+
   const getChatsText = () => {
     if (isFree) {
       if (billingStatus.chats_remaining === null || billingStatus.chats_remaining <= 0) {
@@ -59,9 +62,13 @@ export function BillingStatus() {
     }
     if (!billingStatus.can_chat) {
       if (isMax) {
-        return "Contact us to increase your limits";
+        return hasApiAccess
+          ? "Purchase API credits or contact us to increase limits"
+          : "Contact us to increase your limits";
       }
-      return "You've run out of messages, upgrade to keep chatting!";
+      return hasApiAccess
+        ? "Upgrade your plan or purchase API credits to keep chatting!"
+        : "You've run out of messages, upgrade to keep chatting!";
     }
 
     // Show team name for team plans

@@ -193,7 +193,7 @@ export function ApiCreditsSection({ showSuccessMessage = false }: ApiCreditsSect
               {formatCredits(creditBalance?.balance || 0)}
             </p>
             <p className="text-xs text-muted-foreground mt-1">
-              $1 per 1,000 credits • Use for API requests
+              $1 per 1,000 credits • Extends your subscription when plan credits run out
             </p>
           </div>
         </div>

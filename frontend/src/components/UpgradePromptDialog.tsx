@@ -16,7 +16,8 @@ import {
   FileText,
   Gauge,
   MessageCircle,
-  Globe
+  Globe,
+  Coins
 } from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
 import { useLocalState } from "@/state/useLocalState";
@@ -42,6 +43,11 @@ export function UpgradePromptDialog({
     navigate({ to: "/pricing" });
   };
 
+  const handleBuyCredits = () => {
+    onOpenChange(false);
+    navigate({ to: "/", search: { api_settings: true } });
+  };
+
   const handleNewChat = () => {
     onOpenChange(false);
     // Trigger new chat event
@@ -57,6 +63,7 @@ export function UpgradePromptDialog({
   const isFreeTier = !localState.billingStatus?.product_name || currentPlan === "free";
   const isPro = currentPlan.includes("pro") && !currentPlan.includes("max");
   const isMax = currentPlan.includes("max");
+  const hasApiAccess = isPro || isMax || currentPlan.includes("team");
 
   const getNextPlan = () => {
     if (isFreeTier) return "Pro";
@@ -130,8 +137,8 @@ export function UpgradePromptDialog({
         description: isFreeTier
           ? "You've reached your daily free tier limit. Upgrade to Pro for unlimited daily usage."
           : isPro
-            ? "You've reached your Pro plan's monthly limit. Upgrade to Max for 10x more usage."
-            : "You've reached your monthly usage limit. Please wait for the next billing cycle.",
+            ? "You've reached your Pro plan's monthly limit. Upgrade to Max for 10x more usage, or purchase API credits to continue chatting."
+            : "You've reached your monthly usage limit. Purchase API credits to continue chatting, or wait for the next billing cycle.",
         requiredPlan: nextPlan,
         benefits: isFreeTier
           ? [
@@ -147,11 +154,12 @@ export function UpgradePromptDialog({
                 "10x more monthly messages with Max plan",
                 "Access to all premium models including DeepSeek R1",
                 "Highest priority during peak times",
-                "Maximum rate limits for power users"
+                "Maximum rate limits for power users",
+                "Or purchase API credits to keep chatting now"
               ]
             : [
                 "You're already on our highest individual plan",
-                "Consider Team plans for shared usage",
+                "Purchase API credits to extend your usage",
                 "Monthly usage automatically refreshes",
                 "Contact support for custom enterprise plans"
               ]
@@ -230,21 +238,28 @@ export function UpgradePromptDialog({
           ) : null}
         </div>
 
-        <DialogFooter className="gap-2 sm:gap-0">
+        <DialogFooter className="flex flex-col gap-2 sm:flex-col sm:justify-stretch sm:space-x-0">
+          {(info.requiredPlan !== "Max" || !isMax) && (
+            <Button onClick={handleUpgrade} className="w-full gap-2">
+              <Sparkles className="h-4 w-4" />
+              {isFreeTier ? "Upgrade to Pro" : isPro ? "Upgrade to Max" : "View Plans"}
+            </Button>
+          )}
+          {/* Show Buy Credits button for paid users hitting usage limits */}
+          {feature === "usage" && hasApiAccess && (
+            <Button variant="outline" onClick={handleBuyCredits} className="w-full gap-2">
+              <Coins className="h-4 w-4" />
+              Buy API Credits
+            </Button>
+          )}
           {/* Show "Start New Chat" for free tier conversation limit, "Maybe Later" for others */}
           {feature === "tokens" && isFreeTier ? (
-            <Button variant="outline" onClick={handleNewChat}>
+            <Button variant="ghost" onClick={handleNewChat} className="w-full">
               Start New Chat
             </Button>
           ) : (
-            <Button variant="outline" onClick={() => onOpenChange(false)}>
+            <Button variant="ghost" onClick={() => onOpenChange(false)} className="w-full">
               Maybe Later
-            </Button>
-          )}
-          {(info.requiredPlan !== "Max" || !isMax) && (
-            <Button onClick={handleUpgrade} className="gap-2">
-              <Sparkles className="h-4 w-4" />
-              {isFreeTier ? "Upgrade to Pro" : isPro ? "Upgrade to Max" : "View Plans"}
             </Button>
           )}
         </DialogFooter>

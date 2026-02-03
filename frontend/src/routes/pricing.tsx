@@ -158,6 +158,23 @@ function PricingFAQ() {
 
         <details className="group">
           <summary className="cursor-pointer text-lg font-medium hover:text-foreground/80">
+            Can I use my subscription for API access?
+          </summary>
+          <div className="mt-4 text-[hsl(var(--marketing-text-muted))] space-y-2">
+            <p>
+              Yes! Pro, Max, and Team plans include API access. Your subscription credits work
+              seamlessly with the API.
+            </p>
+            <ul className="list-disc list-inside space-y-1 ml-4">
+              <li>Use your plan credits via the API</li>
+              <li>When plan credits run out, API credits kick in automatically</li>
+              <li>Purchase additional API credits to extend your usage anytime</li>
+            </ul>
+          </div>
+        </details>
+
+        <details className="group">
+          <summary className="cursor-pointer text-lg font-medium hover:text-foreground/80">
             How did you build this?
           </summary>
           <p className="mt-4 text-[hsl(var(--marketing-text-muted))]">
