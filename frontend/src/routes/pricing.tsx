@@ -167,8 +167,8 @@ function PricingFAQ() {
             </p>
             <ul className="list-disc list-inside space-y-1 ml-4">
               <li>Use your plan credits via the API</li>
-              <li>When plan credits run out, API credits kick in automatically</li>
-              <li>Purchase additional API credits to extend your usage anytime</li>
+              <li>When plan credits run out, extra credits kick in automatically</li>
+              <li>Purchase extra credits to extend your usage anytime</li>
             </ul>
           </div>
         </details>

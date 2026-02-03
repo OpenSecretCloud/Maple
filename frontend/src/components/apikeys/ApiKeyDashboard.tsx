@@ -164,7 +164,7 @@ export function ApiKeyDashboard({ showCreditSuccessMessage = false }: ApiKeyDash
                 <div>
                   <h3 className="font-semibold">Extend Your Subscription</h3>
                   <p className="text-sm text-muted-foreground">
-                    Purchase API credits to extend your usage when plan credits run out
+                    Purchase extra credits to extend your usage when plan credits run out
                   </p>
                 </div>
               </div>

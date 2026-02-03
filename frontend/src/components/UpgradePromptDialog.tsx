@@ -137,8 +137,8 @@ export function UpgradePromptDialog({
         description: isFreeTier
           ? "You've reached your daily free tier limit. Upgrade to Pro for unlimited daily usage."
           : isPro
-            ? "You've reached your Pro plan's monthly limit. Upgrade to Max for 10x more usage, or purchase API credits to continue chatting."
-            : "You've reached your monthly usage limit. Purchase API credits to continue chatting, or wait for the next billing cycle.",
+            ? "You've reached your Pro plan's monthly limit. Upgrade to Max for 10x more usage, or purchase extra credits to continue chatting."
+            : "You've reached your monthly usage limit. Purchase extra credits to continue chatting, or wait for the next billing cycle.",
         requiredPlan: nextPlan,
         benefits: isFreeTier
           ? [
@@ -155,11 +155,11 @@ export function UpgradePromptDialog({
                 "Access to all premium models including DeepSeek R1",
                 "Highest priority during peak times",
                 "Maximum rate limits for power users",
-                "Or purchase API credits to keep chatting now"
+                "Or purchase extra credits to keep chatting now"
               ]
             : [
                 "You're already on our highest individual plan",
-                "Purchase API credits to extend your usage",
+                "Purchase extra credits to extend your usage",
                 "Monthly usage automatically refreshes",
                 "Contact support for custom enterprise plans"
               ]
@@ -249,7 +249,7 @@ export function UpgradePromptDialog({
           {feature === "usage" && hasApiAccess && (
             <Button variant="outline" onClick={handleBuyCredits} className="w-full gap-2">
               <Coins className="h-4 w-4" />
-              Buy API Credits
+              Buy Extra Credits
             </Button>
           )}
           {/* Show "Start New Chat" for free tier conversation limit, "Maybe Later" for others */}

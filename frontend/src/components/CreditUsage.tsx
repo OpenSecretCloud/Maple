@@ -54,7 +54,7 @@ export function CreditUsage() {
       </div>
       <div className="mt-1 flex justify-between text-xs">
         {hasApiCredits && (
-          <span>+ {formatCredits(billingStatus.api_credit_balance ?? 0)} API credits</span>
+          <span>+ {formatCredits(billingStatus.api_credit_balance ?? 0)} extra credits</span>
         )}
         <span className={hasApiCredits ? "" : "ml-auto"}>
           {formatResetDate(billingStatus.usage_reset_date)}
