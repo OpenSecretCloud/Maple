@@ -89,5 +89,9 @@ export function aliasModelName(modelName: string | undefined): string {
     return "llama-3.3-70b";
   }
 
+  if (modelName === "qwen3-coder-480b") {
+    return "kimi-k2-5";
+  }
+
   return modelName;
 }

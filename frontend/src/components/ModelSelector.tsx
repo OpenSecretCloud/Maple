@@ -71,8 +71,16 @@ export const MODEL_CONFIG: Record<string, ModelCfg> = {
   "kimi-k2-thinking": {
     displayName: "Kimi K2 Thinking",
     shortName: "Kimi K2",
-    badges: ["Pro", "Reasoning", "New"],
+    badges: ["Pro", "Reasoning"],
     requiresPro: true,
+    tokenLimit: 256000
+  },
+  "kimi-k2-5": {
+    displayName: "Kimi K2.5",
+    shortName: "Kimi K2.5",
+    badges: ["Pro", "New"],
+    requiresPro: true,
+    supportsVision: true,
     tokenLimit: 256000
   },
   "gpt-oss-120b": {
@@ -82,17 +90,9 @@ export const MODEL_CONFIG: Record<string, ModelCfg> = {
     requiresPro: true,
     tokenLimit: 128000
   },
-  "qwen3-coder-480b": {
-    displayName: "Qwen3 Coder 480B",
-    shortName: "Qwen3 Coder",
-    badges: ["Pro"],
-    requiresPro: true,
-    tokenLimit: 128000
-  },
   "qwen3-vl-30b": {
     displayName: "Qwen3-VL 30B",
     shortName: "Qwen3-VL",
-    badges: ["New"],
     requiresStarter: true,
     supportsVision: true,
     tokenLimit: 256000
@@ -115,7 +115,7 @@ export const CATEGORY_MODELS = {
   quick: "gpt-oss-120b",
   reasoning_on: "kimi-k2-thinking", // Kimi K2 with thinking
   reasoning_off: "deepseek-r1-0528", // DeepSeek R1 without thinking
-  math: "qwen3-coder-480b",
+  math: "kimi-k2-5",
   image: "qwen3-vl-30b" // Qwen3-VL for image analysis
 };
 
