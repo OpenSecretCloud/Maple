@@ -187,7 +187,7 @@ export function ApiCreditsSection({ showSuccessMessage = false }: ApiCreditsSect
       <Card className="p-4">
         <div className="flex items-center justify-between">
           <div>
-            <p className="text-sm text-muted-foreground">API Credit Balance</p>
+            <p className="text-sm text-muted-foreground">Extra Credit Balance</p>
             <p className="text-2xl font-bold flex items-center gap-2">
               <Coins className="h-5 w-5" />
               {formatCredits(creditBalance?.balance || 0)}

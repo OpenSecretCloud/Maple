@@ -63,11 +63,11 @@ export function BillingStatus() {
     if (!billingStatus.can_chat) {
       if (isMax) {
         return hasApiAccess
-          ? "Purchase API credits or contact us to increase limits"
+          ? "Purchase extra credits or contact us to increase limits"
           : "Contact us to increase your limits";
       }
       return hasApiAccess
-        ? "Upgrade your plan or purchase API credits to keep chatting!"
+        ? "Upgrade your plan or purchase extra credits to keep chatting!"
         : "You've run out of messages, upgrade to keep chatting!";
     }
 
