@@ -93,5 +93,10 @@ export function aliasModelName(modelName: string | undefined): string {
     return "kimi-k2-5";
   }
 
+  // Backwards compatibility: alias old k2-thinking to k2.5
+  if (modelName === "kimi-k2-thinking") {
+    return "kimi-k2-5";
+  }
+
   return modelName;
 }

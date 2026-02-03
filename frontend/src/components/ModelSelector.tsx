@@ -68,13 +68,6 @@ export const MODEL_CONFIG: Record<string, ModelCfg> = {
     requiresPro: true,
     tokenLimit: 130000
   },
-  "kimi-k2-thinking": {
-    displayName: "Kimi K2 Thinking",
-    shortName: "Kimi K2",
-    badges: ["Pro", "Reasoning"],
-    requiresPro: true,
-    tokenLimit: 256000
-  },
   "kimi-k2-5": {
     displayName: "Kimi K2.5",
     shortName: "Kimi K2.5",
@@ -113,7 +106,7 @@ type ModelCategory = "free" | "quick" | "reasoning" | "math" | "image" | "advanc
 export const CATEGORY_MODELS = {
   free: "llama-3.3-70b",
   quick: "gpt-oss-120b",
-  reasoning_on: "kimi-k2-thinking", // Kimi K2 with thinking
+  reasoning_on: "kimi-k2-5", // Kimi K2.5 with thinking
   reasoning_off: "deepseek-r1-0528", // DeepSeek R1 without thinking
   math: "kimi-k2-5",
   image: "qwen3-vl-30b" // Qwen3-VL for image analysis
