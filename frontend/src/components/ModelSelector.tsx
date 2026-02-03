@@ -71,7 +71,7 @@ export const MODEL_CONFIG: Record<string, ModelCfg> = {
   "kimi-k2-thinking": {
     displayName: "Kimi K2 Thinking",
     shortName: "Kimi K2",
-    badges: ["Pro", "Reasoning", "New"],
+    badges: ["Pro", "Reasoning"],
     requiresPro: true,
     tokenLimit: 256000
   },
@@ -93,7 +93,6 @@ export const MODEL_CONFIG: Record<string, ModelCfg> = {
   "qwen3-vl-30b": {
     displayName: "Qwen3-VL 30B",
     shortName: "Qwen3-VL",
-    badges: ["New"],
     requiresStarter: true,
     supportsVision: true,
     tokenLimit: 256000
