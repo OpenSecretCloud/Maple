@@ -93,5 +93,10 @@ export function aliasModelName(modelName: string | undefined): string {
     return "kimi-k2-5";
   }
 
+  // Alias kimi-k2 (old thinking model) to kimi-k2-5
+  if (modelName === "kimi-k2" || modelName === "kimi-k2-thinking") {
+    return "kimi-k2-5";
+  }
+
   return modelName;
 }

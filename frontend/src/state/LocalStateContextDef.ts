@@ -31,9 +31,6 @@ export type LocalState = {
   /** Whether the whisper transcription model is available */
   hasWhisperModel: boolean;
   setHasWhisperModel: (hasWhisper: boolean) => void;
-  /** Whether thinking mode is enabled for reasoning models */
-  thinkingEnabled: boolean;
-  setThinkingEnabled: (enabled: boolean) => void;
   userPrompt: string;
   systemPrompt: string | null;
   userImages: File[];
@@ -74,8 +71,6 @@ export const LocalStateContext = createContext<LocalState>({
   setAvailableModels: () => void 0,
   hasWhisperModel: true,
   setHasWhisperModel: () => void 0,
-  thinkingEnabled: false,
-  setThinkingEnabled: () => void 0,
   userPrompt: "",
   systemPrompt: null,
   userImages: [],
