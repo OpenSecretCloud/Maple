@@ -81,7 +81,8 @@ function DownloadPage() {
           <h2 className="text-3xl font-light mb-8 flex items-center gap-3">
             <Monitor className="w-7 h-7" /> Desktop Apps
             <span className="ml-3 text-xl text-[hsl(var(--marketing-text-muted))]">
-              A faster, more focused experience for your private AI chat
+              A faster, more focused experience for your private AI chat. Includes Maple Proxy for
+              local API access.
             </span>
           </h2>
 
@@ -159,8 +160,8 @@ function DownloadPage() {
               Windows version coming soon. In the meantime, you can use the{" "}
               <a href="/login" className="text-[hsl(var(--purple))] hover:underline">
                 web app
-              </a>{" "}
-              for full functionality.
+              </a>
+              .
             </p>
             <p className="text-sm">
               Current version: <span className="font-mono text-foreground">{currentVersion}</span>
