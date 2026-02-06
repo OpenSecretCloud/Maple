@@ -49,7 +49,7 @@ function PaymentSuccessPage() {
 
   // If team plan, redirect to home with team_setup param
   if (hasTeamPlan) {
-    return <Navigate to="/" search={{ team_setup: true }} />;
+    return <Navigate to="/settings" search={{ tab: "team", team_setup: true }} />;
   }
 
   // Otherwise, redirect to pricing page with success query parameter
