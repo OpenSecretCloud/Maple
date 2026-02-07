@@ -167,6 +167,17 @@ jobs:
         with:
           targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android,i686-linux-android
 
+      - name: Cache Cargo (registry + git)
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-android-${{ hashFiles('frontend/src-tauri/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-android-
+            ${{ runner.os }}-cargo-
+
       - name: Setup Android NDK
         uses: nttld/setup-ndk@v1
         id: setup-ndk
@@ -181,6 +192,9 @@ jobs:
           path: |
             ~/.gradle/caches
             ~/.gradle/wrapper
+            frontend/src-tauri/gen/android/.gradle
+            frontend/src-tauri/gen/android/build
+            frontend/src-tauri/gen/android/app/build
           key: ${{ runner.os }}-gradle-${{ hashFiles('frontend/src-tauri/gen/android/**/*.gradle*', 'frontend/src-tauri/gen/android/gradle-wrapper.properties') }}
           restore-keys: |
             ${{ runner.os }}-gradle-
