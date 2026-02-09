@@ -13,7 +13,7 @@ import {
   FileText,
   ChevronLeft
 } from "lucide-react";
-import { isMobile, isTauri } from "@/utils/platform";
+import { isMobile, isTauri, isIOS, isAndroid } from "@/utils/platform";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -51,6 +51,7 @@ import { useState } from "react";
 import type { TeamStatus } from "@/types/team";
 import { TeamManagementDialog } from "@/components/team/TeamManagementDialog";
 import { ApiKeyManagementDialog } from "@/components/apikeys/ApiKeyManagementDialog";
+import packageJson from "../../package.json";
 
 function ConfirmDeleteDialog() {
   const { clearHistory } = useLocalState();
@@ -129,9 +130,47 @@ export function AccountMenu() {
     enabled: isTeamPlan && !!os.auth.user && !!billingStatus
   });
 
+  // Fetch products with version check for mobile platforms to determine API Management availability
+  const isIOSPlatform = isIOS();
+  const isAndroidPlatform = isAndroid();
+  const { data: products } = useQuery({
+    queryKey: ["products", isIOSPlatform, isAndroidPlatform],
+    queryFn: async () => {
+      try {
+        const billingService = getBillingService();
+        // Send version for mobile builds (iOS/Android need it for App Store restrictions)
+        if (isIOSPlatform || isAndroidPlatform) {
+          const version = `v${packageJson.version}`;
+          return await billingService.getProducts(version);
+        }
+        return await billingService.getProducts();
+      } catch (error) {
+        console.error("Error fetching products for version check:", error);
+        return null;
+      }
+    },
+    enabled: isIOSPlatform || isAndroidPlatform
+  });
+
   // Show alert badge if user has team plan but hasn't created team yet
   const showTeamSetupAlert =
     isTeamPlan && teamStatus?.has_team_subscription && !teamStatus?.team_created;
+
+  // Determine if API Management should be shown
+  // On desktop/web: always show
+  // On iOS/Android: only show if version is approved (at least one product is available)
+  const showApiManagement = (() => {
+    if (!isMobile()) {
+      return true; // Always show on desktop/web
+    }
+    // On mobile, check if version is approved
+    // If products is null/undefined, default to false (hide until we know)
+    if (!products) {
+      return false;
+    }
+    // Show if at least one product is available (meaning version is approved)
+    return products.some((product) => product.is_available !== false);
+  })();
 
   const handleManageSubscription = async () => {
     if (!hasStripeAccount) return;
@@ -300,7 +339,7 @@ export function AccountMenu() {
                       </div>
                     </DropdownMenuItem>
                   )}
-                  {!isMobile() && (
+                  {showApiManagement && (
                     <DropdownMenuItem onClick={() => setIsApiKeyDialogOpen(true)}>
                       <Key className="mr-2 h-4 w-4" />
                       <span>API Management</span>
