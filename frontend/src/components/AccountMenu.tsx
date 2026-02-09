@@ -134,7 +134,7 @@ export function AccountMenu() {
   const isIOSPlatform = isIOS();
   const isAndroidPlatform = isAndroid();
   const { data: products } = useQuery({
-    queryKey: ["products", isIOSPlatform, isAndroidPlatform],
+    queryKey: ["products-version-check", isIOSPlatform, isAndroidPlatform],
     queryFn: async () => {
       try {
         const billingService = getBillingService();
