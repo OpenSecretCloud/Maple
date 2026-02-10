@@ -13,7 +13,7 @@ import {
   FileText,
   ChevronLeft
 } from "lucide-react";
-import { isMobile, isTauri, isIOS, isAndroid } from "@/utils/platform";
+import { isMobile, isTauri, isIOS } from "@/utils/platform";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -130,16 +130,15 @@ export function AccountMenu() {
     enabled: isTeamPlan && !!os.auth.user && !!billingStatus
   });
 
-  // Fetch products with version check for mobile platforms to determine API Management availability
+  // Fetch products with version check for iOS to determine API Management availability
   const isIOSPlatform = isIOS();
-  const isAndroidPlatform = isAndroid();
   const { data: products } = useQuery({
-    queryKey: ["products-version-check", isIOSPlatform, isAndroidPlatform],
+    queryKey: ["products-version-check", isIOSPlatform],
     queryFn: async () => {
       try {
         const billingService = getBillingService();
-        // Send version for mobile builds (iOS/Android need it for App Store restrictions)
-        if (isIOSPlatform || isAndroidPlatform) {
+        // Send version for iOS builds (App Store restrictions)
+        if (isIOSPlatform) {
           const version = `v${packageJson.version}`;
           return await billingService.getProducts(version);
         }
@@ -149,7 +148,7 @@ export function AccountMenu() {
         return null;
       }
     },
-    enabled: isIOSPlatform || isAndroidPlatform
+    enabled: isIOSPlatform
   });
 
   // Show alert badge if user has team plan but hasn't created team yet
@@ -157,13 +156,13 @@ export function AccountMenu() {
     isTeamPlan && teamStatus?.has_team_subscription && !teamStatus?.team_created;
 
   // Determine if API Management should be shown
-  // On desktop/web: always show
-  // On iOS/Android: only show if version is approved (at least one product is available)
+  // On desktop/web/Android: always show
+  // On iOS only: only show if version is approved (at least one product is available)
   const showApiManagement = (() => {
-    if (!isMobile()) {
-      return true; // Always show on desktop/web
+    if (!isIOSPlatform) {
+      return true; // Always show on desktop/web/Android
     }
-    // On mobile, check if version is approved
+    // On iOS, check if version is approved
     // If products is null/undefined, default to false (hide until we know)
     if (!products) {
       return false;
