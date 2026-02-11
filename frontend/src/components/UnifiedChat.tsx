@@ -2346,6 +2346,17 @@ export function UnifiedChat() {
 
           // Trigger sidebar refresh to show the new conversation
           window.dispatchEvent(new Event("conversationcreated"));
+
+          // Auto-assign to project if project_id param is present
+          const projectParam = new URLSearchParams(window.location.search).get("project_id");
+          if (projectParam) {
+            window.dispatchEvent(new CustomEvent("assignchattoproject", {
+              detail: { chatId: conversationId, projectId: projectParam }
+            }));
+            const cleaned = new URLSearchParams(window.location.search);
+            cleaned.delete("project_id");
+            window.history.replaceState(null, "", `${window.location.pathname}?${cleaned.toString()}`);
+          }
         }
 
         // Create abort controller for this request
