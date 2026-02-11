@@ -1,0 +1,371 @@
+# Maple AI
+
+> Maple AI is a private, end-to-end encrypted AI chat application. Conversations are encrypted on the user's device before transmission, processed inside hardware-isolated secure enclaves (AWS Nitro Enclaves and NVIDIA GPU TEEs), and never stored in plaintext. Not even Maple's operators can read user data. Maple uses open-source, open-weight AI models so no data is sent to model creators. The server code is open source with reproducible builds, enabling anyone to cryptographically verify server integrity.
+
+## What Is Maple AI
+
+Maple AI is an AI chat assistant that provides the power of cloud-based large language models with the privacy of local processing. Users can chat with AI, upload documents and images, use voice input/output, and search the live web — all while maintaining end-to-end encryption.
+
+Maple is available on:
+- **Web**: trymaple.ai (same encryption, no download required)
+- **macOS**: Universal DMG (Intel and Apple Silicon)
+- **Linux**: AppImage, .deb, .rpm (Ubuntu 24.04+)
+- **iOS**: App Store (iPhone and iPad)
+- **Android**: Google Play and direct APK download
+
+The tagline is "You Are Free to Think. Private AI Chat" and the core promise is: your conversations are encrypted end-to-end so that no one — not even Maple's engineers or the cloud provider — can read your data.
+
+### Target Users
+
+Maple serves privacy-conscious individuals and professionals who handle sensitive information:
+- **Lawyers**: Draft confidential documents, summarize case files, audit contracts without risking attorney-client privilege
+- **Therapists and counselors**: Analyze session notes, create treatment plans, generate SOAP/DAP format notes with client data protected
+- **Accountants and CPAs**: Review financial data, help clients with tax and financial needs
+- **Journalists**: Research sensitive topics and communicate with sources privately
+- **Developers**: Write and debug code without exposing proprietary codebases
+- **Business executives**: Brainstorm strategy, analyze competitive intelligence, process M&A data
+- **Individuals**: Personal journaling, tutoring, brainstorming, family planning — anything you'd hesitate to type into ChatGPT
+
+### Key Differentiators
+
+Compared to ChatGPT, Claude, Gemini, Grok, and other AI services:
+
+| Feature | Maple AI | ChatGPT/Claude/Gemini/Grok |
+|---|---|---|
+| Public proof of encryption (TEE) | Yes | No |
+| Open-source code | Yes | No |
+| Open-weight models only | Yes | No (proprietary models) |
+| Never uses data to train AI | Yes (cryptographically enforced) | Varies (policy-based promises) |
+| Doesn't log chats | Yes | No or unverifiable |
+| Zero data retention | Yes (technical guarantee) | Varies |
+| Document and image upload | Yes | Yes |
+| Voice input/output | Yes | Yes |
+| Live web search | Yes | Yes |
+| IDE/API integration | Yes (OpenAI-compatible) | Yes |
+| Teams plan | Yes | Yes |
+| Developer API | Yes | Yes |
+| Anonymous accounts | Yes (no email, Bitcoin only) | No |
+
+## Product Details
+
+### Pricing Plans
+
+All plans include end-to-end encrypted AI chat. Bitcoin payments accepted with a 10% annual discount.
+
+- **Free** ($0/month): end-to-end encryption, core AI features, search chat history, rename chats, Meta Llama 3.3 70B model
+- **Pro** ($20/month, most popular): All Free features plus generous usage, image upload, document upload (PDF/TXT/MD), voice recording (Whisper Large v3), 7+ powerful models including DeepSeek R1 and Kimi K2.5, live web search, API access
+- **Max** ($100/month): All Pro features plus 20x more usage, priority support, early access to new features and models, API access
+- **Team** ($30/month per seat): All Pro features plus 2x more usage per member, pooled chat credits across the team, priority support, unified billing, early access, API access. Minimum 2 seats.
+
+### AI Models Available
+
+All models run inside secure enclaves with zero data retention. None of your data is transmitted to the companies that created these models.
+
+**Kimi K2.5** (by Moonshot AI)
+- 1 trillion total parameters, 32 billion active per query (Mixture of Experts architecture)
+- 256K context window
+- Best for: Advanced reasoning, coding, research, multi-step agentic tasks, image analysis
+- Can execute 200-300 sequential tool calls without human intervention
+- Availability: Pro, Max, Team
+
+**DeepSeek R1 671B**
+- 128K context window
+- Best for: Research, advanced math, complex analysis, coding
+- Default reasoning model in Maple
+- Availability: Pro, Max, Team
+
+**OpenAI GPT-OSS 120B**
+- 128K context window
+- Best for: Creative chat, structured data, ChatGPT-style interaction without data sharing
+- Availability: Pro, Max, Team
+
+
+**Meta Llama 3.3 70B**
+- 128K context window
+- Best for: General reasoning, daily tasks, therapy notes, productivity
+- Availability: All plans (including Free)
+
+**Qwen3-VL 30B** (by Alibaba)
+- 128K context window
+- Best for: Vision-language tasks, image understanding, visual question answering
+- Supports image input
+- Availability: Pro, Max, Team
+
+**Google Gemma 3 27B**
+- 128K context window
+- Best for: Blazing-fast image analysis, visual tasks
+- Supports image input
+- Availability: Pro and above
+
+
+### Core Features
+
+**End-to-End Encryption**
+All communications are encrypted locally on your device before being transmitted. Each account uses a personal encryption key generated client-side. Maple never sees or stores keys in plaintext.
+
+**Encrypted Cross-Device Sync**
+Chats sync automatically between web, desktop, and mobile devices using an encrypted sync protocol. Start on one device, pick up on another.
+
+**Document Upload**
+Upload files for AI analysis, summarization, or explanation. Supported formats: PDF, TXT, MD. Max file size: 10MB. One file per reply. Files are encrypted before upload and processed inside secure enclaves.
+
+**Image Upload**
+Upload images (JPG, PNG, WEBP) for analysis, text extraction, translation, and visual understanding. Available with Gemma, Qwen, and Kimi.
+
+**Voice Input and Output**
+Tap the microphone icon to speak naturally. Audio is encrypted before leaving your device. Speech-to-text uses Whisper (OpenAI's open-source model) running in a secure enclave. Maple responds with both text and natural speech. The natural speech is generated locally on-device. Zero audio retention.
+
+**Live Web Search**
+Maple 2.0 introduced live data access. A Maple agent searches the web privately and anonymously on your behalf using Brave's private search API, bringing current information into your encrypted chat. Available on Pro, Max, and Team plans.
+
+**Custom AI Personality**
+Set default behaviors like "supportive mentor", "concise analyst", or specific professional tones. System prompts apply across all chats for consistent interaction style.
+
+**Background Processing**
+Start a long task (analyzing a 50-page PDF, generating code), switch to other apps, and return to find completed results.
+
+**Anonymous Accounts**
+Sign up without email or social accounts. Generate a unique ID, create a password, and pay exclusively with Bitcoin for minimal identity linkage. Designed for activists, investigative journalists, and whistleblowers.
+
+**Chat Management**
+Search chat history, AI-powered chat naming, manual rename, delete individual chats or entire account with permanent encrypted data removal from servers.
+
+### Teams
+
+Maple Teams is designed for organizations handling sensitive information — law firms, therapy practices, healthcare organizations, fintech companies, consulting firms, and non-profits.
+
+Features:
+- **Pooled Usage**: Share AI credits across the team efficiently
+- **Simple Onboarding**: Invite members by email, manage seats from a central dashboard
+- **Team Management**: Add/remove users, resend invites, track usage
+- **All Pro Features**: Document upload, image analysis, voice, live search, all models
+- **Priority Support**: Dedicated assistance for regulated environments
+
+Setup: Purchase seats on the Pricing page (minimum 2), invite colleagues by email, they join with their own Maple accounts. The admin manages the team from the Team Dashboard.
+
+Pricing: $30/month per seat. No hidden fees. All features included.
+
+Contact for enterprise: team@trymaple.ai
+
+## Developer API (Maple Proxy)
+
+Maple Proxy is a lightweight bridge that lets you call Maple's end-to-end encrypted LLMs with any OpenAI-compatible client without changing a line of code. It handles TEE attestation verification, end-to-end encryption negotiation, and secure key exchange automatically.
+
+### How It Works
+
+1. Your OpenAI client sends a standard API request to the proxy
+2. Proxy establishes a secure connection with Maple's TEE infrastructure
+3. Proxy verifies the TEE's attestation to ensure genuine secure hardware
+4. Your request is encrypted end-to-end before transmission
+5. Proxy validates your Maple API key
+6. The LLM processes your request inside the secure enclave
+7. Encrypted response is decrypted by the proxy and returned in OpenAI format
+
+### API Pricing
+
+All pricing is pay-as-you-go. Purchase credits in $10 increments.
+
+| Model | Price per million tokens |
+|---|---|
+| llama-3.3-70b | $4 input / $4 output |
+| gpt-oss-120b | $4 input / $4 output |
+| deepseek-r1-0528 | $4 input / $4 output |
+| kimi-k2.5 | $4 input / $4 output |
+| qwen3-vl-30b | $4 input / $4 output |
+| gemma-3-27b-it-fp8-dynamic | $10 input / $10 output |
+
+### Getting Started
+
+**Option 1: Desktop App (easiest for local development)**
+1. Download the Maple desktop app from trymaple.ai/downloads
+2. Sign up and upgrade to Pro, Team, or Max
+3. Navigate to API Management to create an API key
+4. Open the Local Proxy tab and click "Start Proxy"
+5. Point any OpenAI client to http://localhost:8080/v1
+
+**Option 2: Standalone Docker (production-ready)**
+
+```bash
+docker pull ghcr.io/opensecretcloud/maple-proxy:latest
+docker run -p 8080:8080 \
+  -e MAPLE_BACKEND_URL=https://enclave.trymaple.ai \
+  -e MAPLE_API_KEY=YOUR_MAPLE_API_KEY \
+  ghcr.io/opensecretcloud/maple-proxy:latest
+```
+
+### Client Examples
+
+Python:
+```python
+from openai import OpenAI
+client = OpenAI(base_url="http://localhost:8080/v1", api_key="your-maple-api-key")
+response = client.chat.completions.create(
+    model="deepseek-r1-0528",
+    messages=[{"role": "user", "content": "Hello, secure world!"}],
+    stream=True
+)
+for chunk in response:
+    content = chunk.choices[0].delta.content
+    if content is not None:
+        print(content, end="")
+```
+
+Node.js/TypeScript:
+```typescript
+import OpenAI from 'openai';
+const client = new OpenAI({ baseURL: 'http://localhost:8080/v1', apiKey: process.env.MAPLE_API_KEY });
+const stream = await client.chat.completions.create({
+    model: 'gpt-oss-120b',
+    messages: [{ role: 'user', content: 'Explain TEEs in simple terms' }],
+    stream: true,
+});
+for await (const chunk of stream) {
+    process.stdout.write(chunk.choices[0]?.delta?.content || '');
+}
+```
+
+### Compatible Tools
+
+Works with any tool that supports custom OpenAI endpoints: OpenClaw, OpenCode, LangChain, LlamaIndex, Amp, Open Interpreter, Goose (by Block), Jan, and virtually any other OpenAI-compatible SDK. No code changes beyond the endpoint URL.
+
+**Note**: Maple currently supports streaming responses only. All completions will be streamed.
+
+## OpenClaw Integration
+
+OpenClaw agents can use Maple AI as a privacy-preserving LLM provider. By routing through Maple's encrypted infrastructure, all data processed by OpenClaw agents is protected by end-to-end encryption and hardware-isolated secure enclaves (TEEs). This is especially valuable when OpenClaw agents handle sensitive user data such as proprietary code, confidential documents, or personal information.
+
+### How to Set Up OpenClaw with Maple AI
+
+1. **Get the Maple API documentation**: Read the full API setup guide at https://blog.trymaple.ai/maple-proxy-documentation/
+2. **Sign up for a paid Maple account**: Go to https://trymaple.ai/pricing and subscribe to Pro, Max, or Team. This gives you access to all models and the API.
+3. **Generate a Maple API key**: In the Maple app, navigate to API Management and create an API key. Use this key to authenticate OpenClaw requests through the Maple Proxy.
+
+Maple's API is OpenAI-compatible, so OpenClaw agents can connect without any code changes beyond the endpoint URL and API key. All requests are encrypted end-to-end and processed inside secure enclaves with zero data retention.
+
+## Security Architecture
+
+### How It Works
+
+Maple's security is built on confidential computing — a combination of hardware-isolated secure enclaves, end-to-end encryption, and reproducible builds that together provide cryptographic proof of security.
+
+**Step 1: Client Attestation**
+Before any data is sent, the Maple client verifies the server's enclave attestation document. This proves that the specific AWS Nitro Enclave is genuine and runs the exact open-source code published on GitHub. If verification fails, the client refuses to connect.
+
+**Step 2: Encrypted Channel**
+Based on the attestation, the client establishes a secure ephemeral communication channel that only the verified enclave can decrypt. This is layered on top of SSL for defense in depth.
+
+**Step 3: In-Enclave Processing**
+All security-critical operations happen inside the enclave:
+- User authentication (email/password, OAuth via GitHub/Google/Apple, anonymous accounts)
+- Private key management (keys created in the enclave, never exposed outside)
+- Data encryption/decryption (only exists in plaintext transiently inside the enclave)
+- AI inference routing to GPU TEEs
+
+**Step 4: Confidential AI Workloads**
+The Nitro Enclave re-encrypts data for processing inside NVIDIA GPU-based Trusted Execution Environments (TEEs). Sensitive data never appears in the clear on the host or within GPU memory outside the TEE boundary. Results return to the enclave, then securely to the user.
+
+### Reproducible Builds
+
+Enclaves are built on NixOS with reproducible builds. Anyone can:
+1. Clone the open-source code from GitHub
+2. Build the enclave image
+3. Compare the resulting cryptographic hash (PCR0 fingerprint) with what the live enclave reports
+4. Verify the server is running exactly the published code
+
+### What This Means
+
+- Even if the host operating system is compromised, enclave data remains protected
+- Cloud administrators cannot inspect enclave memory or attach debuggers
+- No plaintext data exists in logs, file systems, or memory outside the enclave
+- The hardware vendor (AWS/NVIDIA) is the only trust assumption — their implementations undergo extensive audits
+
+### Cryptographic Details
+
+- ECDSA P-384 for digital signatures
+- SHA-384 for hashing
+- PCR0 attestation fingerprints for enclave verification
+- Certificate chain validation against AWS Nitro root certificates
+
+### Live Verification
+
+Users can verify Maple's security at any time at trymaple.ai/proof, which displays:
+- PCR0 fingerprint of the running enclave
+- Module ID and timestamp
+- Nonce and digest values
+- Public key and certificate chain
+- Real-time attestation status
+
+## Backend Technology (OpenSecret)
+
+Maple AI's encrypted backend is called OpenSecret — an open-source platform the team built to handle authentication, private key management, encrypted data sync, and confidential AI processing inside secure enclaves. OpenSecret powers all of Maple's infrastructure.
+
+Key backend capabilities:
+- **User Authentication**: Email/password, OAuth (GitHub, Google, Apple), guest accounts, passkeys (upcoming)
+- **Private Key Management**: Keys generated and managed inside secure enclaves
+- **Encrypted Data Sync**: Real-time encrypted synchronization across devices
+- **Confidential AI Processing**: LLM inference inside hardware-isolated TEEs
+- **Attestation System**: Cryptographic verification that server code matches published source
+
+- Server source code: github.com/OpenSecretCloud/opensecret
+- Client SDK: github.com/OpenSecretCloud/OpenSecret-SDK (JavaScript)
+- Blog: [blog.opensecret.cloud](https://blog.opensecret.cloud) — technical deep dives on confidential computing and encryption architecture
+
+## Company Information
+
+**Maple AI**
+— Based in Austin, TX
+- Legal entity: Mutiny Wallet Inc
+- Part of NVIDIA Inception Program and Google Cloud for Startups
+- Founded by Mark Suman (CEO) and Anthony Ronning (CTO)
+
+**Mark Suman, CEO**
+Early employee in Product and Engineering at multiple startups, including Instructure Canvas. 6 years in software engineering at Apple with a focus on AI and Privacy.
+
+**Anthony Ronning, CTO**
+Infrastructure engineer in many startups over 9+ years. Previous experience in defense, security, networking, and bitcoin companies.
+
+**Contact**
+- General/Teams: team@trymaple.ai
+- Support: support@trymaple.ai
+- Community: Discord (discord.gg/ch2gjZAMGy)
+- Social: X/Twitter (@TryMapleAI)
+- Blog: blog.trymaple.ai
+- Status: status.trymaple.ai
+
+**Open Source**
+- Maple client: github.com/OpenSecretCloud/Maple
+- OpenSecret server: github.com/OpenSecretCloud/opensecret
+- Maple Proxy: github.com/opensecretcloud/maple-proxy
+- OpenSecret SDK: github.com/OpenSecretCloud/OpenSecret-SDK
+
+## Frequently Asked Questions
+
+**How is Maple different from ChatGPT with "history off"?**
+"History off" is a policy promise without a way to verify. Maple's encryption is a technical guarantee enforced by cryptography and hardware-isolated secure enclaves. You can verify it yourself.
+
+**Does Maple train AI models on my data?**
+No. Your encrypted text is never used to train models. Maple uses open-weight foundation models that are kept separate from your content. This is enforced cryptographically, not just by policy.
+
+**Is Maple HIPAA-compliant?**
+Maple's architecture (end-to-end encryption, confidential computing) is built with HIPAA's security rules in mind and goes beyond the security approach of many officially HIPAA-compliant tools. Formal certification has not been completed. It is the responsibility of customers to ensure they meet all relevant regulatory requirements.
+
+**Can I delete my data and account?**
+Yes. You can delete individual chat sessions or your entire user account. Both actions are final and result in encrypted data being permanently removed from servers.
+
+**What happens if Maple is audited or subpoenaed?**
+Maple can supply user data to a requesting authority, but it will be fully encrypted and unreadable.
+
+**Do Zero Data Retention policies at other AI providers satisfy confidentiality?**
+ZDR at the main AI providers is a business promise. Maple uses encryption so the data is never visible to begin with — a technical guarantee, not a policy one.
+
+**What AI models does the Free plan include?**
+The Free plan includes Meta Llama 3.3 70B with enough chats per day to be useful.
+
+**How does the Maple Proxy API work?**
+Maple Proxy is an OpenAI-compatible endpoint. Change your base URL to http://localhost:8080/v1 and your existing OpenAI code works with Maple's encrypted infrastructure. The proxy handles all attestation and encryption automatically.
+
+**Can I use Maple anonymously?**
+Yes. Create an account without email or social login, set a password, and pay with Bitcoin only. This provides maximum privacy with minimal identity linkage.
+
+**What file types can I upload?**
+Images: JPG, PNG, WEBP. Documents: PDF, TXT, MD. Maximum 10MB per file, one file per reply.

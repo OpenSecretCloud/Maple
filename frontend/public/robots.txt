@@ -1,0 +1,9 @@
+User-agent: *
+Allow: /
+Allow: /llms.txt
+Allow: /llms-full.txt
+
+Disallow: /api/
+Disallow: /desktop-auth
+
+Sitemap: https://trymaple.ai/sitemap.xml
