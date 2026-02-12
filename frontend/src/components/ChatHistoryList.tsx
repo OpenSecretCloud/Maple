@@ -949,6 +949,7 @@ export function ChatHistoryList({
                   isMobile={isMobile}
                   projects={projects}
                   currentProjectName={getProjectForChat(conv.id)?.name}
+                  currentProjectId={getProjectForChat(conv.id)?.id}
                   onSelect={() => onSelectionChange(new Set([conv.id]))}
                   onRename={() => handleOpenRenameDialog(conv)}
                   onDelete={() => handleOpenDeleteDialog(conv)}

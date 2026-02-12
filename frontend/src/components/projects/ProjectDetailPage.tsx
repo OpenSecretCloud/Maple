@@ -269,11 +269,12 @@ export function ProjectDetailPage({ projectId }: ProjectDetailPageProps) {
         )}
 
         {/* Header — centered title matching chat page */}
-        <div className="h-14 flex items-center px-4">
-          <div className="flex-1 flex items-center justify-center relative">
+        <div className="h-14 flex items-center px-4 relative">
+          <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
             <Folder className="h-4 w-4 text-muted-foreground mr-2 flex-shrink-0" />
             <h1 className="text-base font-medium truncate max-w-[20rem]">{project.name}</h1>
           </div>
+          <div className="flex-1" />
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="ghost" size="icon" className="h-9 w-9 flex-shrink-0">
@@ -296,7 +297,7 @@ export function ProjectDetailPage({ projectId }: ProjectDetailPageProps) {
 
         {/* Content — two columns on desktop, stacked on mobile */}
         <div className="flex-1 overflow-y-auto">
-          <div className="flex flex-col md:flex-row gap-6 p-6 max-w-5xl mx-auto">
+          <div className="flex flex-col md:flex-row gap-6 p-6 max-w-5xl mx-auto items-start">
             {/* Left column: Chat input + chat list */}
             <div className="flex-1 min-w-0">
               {/* Chat input — styled like UnifiedChat */}
@@ -366,7 +367,7 @@ export function ProjectDetailPage({ projectId }: ProjectDetailPageProps) {
             </div>
 
             {/* Right column: Custom instructions + Files */}
-            <div className="w-full md:w-80 space-y-6 flex-shrink-0">
+            <div className="w-full md:w-80 space-y-4 flex-shrink-0">
               {/* Custom Instructions */}
               <div>
                 <h3 className="text-sm font-medium mb-1">Custom instructions</h3>
@@ -522,9 +523,6 @@ function ProjectChatList({
     );
   }
 
-  // Other projects to move chats to
-  const otherProjects = projects.filter((p) => p.id !== project.id);
-
   return (
     <div className="space-y-1">
       {project.chatIds.map((chatId) => {
@@ -536,7 +534,7 @@ function ProjectChatList({
             chatId={chatId}
             title={title}
             project={project}
-            otherProjects={otherProjects}
+            allProjects={projects}
             onClick={() => onSelectConversation(chatId)}
             onRemove={() => onRemoveFromProject(chatId)}
             onMoveToProject={(targetId) => onMoveToProject(chatId, targetId)}
@@ -554,7 +552,7 @@ function ProjectChatRow({
   chatId,
   title,
   project,
-  otherProjects,
+  allProjects,
   onClick,
   onRemove,
   onMoveToProject,
@@ -565,7 +563,7 @@ function ProjectChatRow({
   chatId: string;
   title: string;
   project: Project;
-  otherProjects: { id: string; name: string }[];
+  allProjects: { id: string; name: string }[];
   onClick: () => void;
   onRemove: () => void;
   onMoveToProject: (projectId: string) => void;
@@ -584,8 +582,9 @@ function ProjectChatRow({
       <ChatContextMenu
         chatId={chatId}
         isMobile={isMobile}
-        projects={otherProjects}
+        projects={allProjects}
         currentProjectName={project.name}
+        currentProjectId={project.id}
         onRename={onRenameChat}
         onMoveToProject={onMoveToProject}
         onRemoveFromProject={onRemove}

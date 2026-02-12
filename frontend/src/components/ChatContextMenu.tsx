@@ -22,10 +22,11 @@ import {
 interface ChatContextMenuProps {
   chatId: string;
   isMobile: boolean;
-  // Available projects for "Move to project" submenu
+  // All projects for "Move to project" submenu
   projects: { id: string; name: string }[];
-  // If set, shows "Remove from {projectName}"
+  // If set, shows "Remove from {projectName}" and grays out current project in submenu
   currentProjectName?: string;
+  currentProjectId?: string;
   // Optional callbacks — item only rendered when provided
   onSelect?: () => void;
   onRename?: () => void;
@@ -39,6 +40,7 @@ export function ChatContextMenu({
   isMobile,
   projects,
   currentProjectName,
+  currentProjectId,
   onSelect,
   onRename,
   onMoveToProject,
@@ -150,12 +152,20 @@ export function ChatContextMenu({
               </DropdownMenuItem>
               {projects.length > 0 && <DropdownMenuSeparator />}
               <div className="max-h-[40vh] overflow-y-auto">
-                {projects.map((project) => (
-                  <DropdownMenuItem key={project.id} onClick={() => onMoveToProject(project.id)}>
-                    <Folder className="mr-2 h-4 w-4" />
-                    <span className="truncate">{project.name}</span>
-                  </DropdownMenuItem>
-                ))}
+                {projects.map((project) => {
+                  const isCurrent = project.id === currentProjectId;
+                  return (
+                    <DropdownMenuItem
+                      key={project.id}
+                      onClick={() => !isCurrent && onMoveToProject(project.id)}
+                      onSelect={(e) => isCurrent && e.preventDefault()}
+                      disabled={isCurrent}
+                    >
+                      <Folder className="mr-2 h-4 w-4" />
+                      <span className="truncate">{project.name}</span>
+                    </DropdownMenuItem>
+                  );
+                })}
               </div>
             </div>
           )}

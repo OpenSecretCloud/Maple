@@ -351,8 +351,6 @@ function ProjectEntry({
   onRenameChat: (chatId: string, title: string) => void;
   onDeleteChat: (chatId: string, title: string) => void;
 }) {
-  const otherProjects = allProjects.filter((p) => p.id !== project.id);
-
   return (
     <div className="mt-0.5">
       {/* Project name row */}
@@ -415,8 +413,9 @@ function ProjectEntry({
                 <ChatContextMenu
                   chatId={chat.id}
                   isMobile={isMobile}
-                  projects={otherProjects}
+                  projects={allProjects}
                   currentProjectName={project.name}
+                  currentProjectId={project.id}
                   onRename={() => onRenameChat(chat.id, title)}
                   onMoveToProject={(targetId) => onMoveChatToProject(chat.id, targetId)}
                   onRemoveFromProject={() => onRemoveChatFromProject(chat.id)}
