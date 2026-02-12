@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback } from "react";
+import { useState, useMemo, useCallback, useEffect } from "react";
 import {
   ChevronDown,
   ChevronRight,
@@ -41,6 +41,10 @@ interface ProjectsListProps {
 
 const MAX_CHATS_PER_PROJECT = 3;
 
+// Module-level state: survives component remounts (route changes) but resets on full page reload
+let _expandedProjectIds = new Set<string>();
+let _hasRenderedOnce = false;
+
 export function ProjectsList({
   conversations,
   currentChatId,
@@ -68,6 +72,27 @@ export function ProjectsList({
       return true;
     }
   });
+
+  // Track which projects have their chats visible — survives remounts but resets on page reload
+  const [expandedProjectIds, setExpandedProjectIds] = useState<Set<string>>(() => _expandedProjectIds);
+
+  // Sync module-level variable so remounts pick up the latest state
+  useEffect(() => {
+    _expandedProjectIds = expandedProjectIds;
+  }, [expandedProjectIds]);
+
+  // Auto-expand a project when the user navigates to a chat (skip first render after page refresh)
+  useEffect(() => {
+    if (!_hasRenderedOnce) {
+      _hasRenderedOnce = true;
+      return;
+    }
+    if (!currentChatId) return;
+    const ownerProject = projects.find((p) => p.chatIds.includes(currentChatId));
+    if (ownerProject && !expandedProjectIds.has(ownerProject.id)) {
+      setExpandedProjectIds((prev) => new Set([...prev, ownerProject.id]));
+    }
+  }, [currentChatId, projects, expandedProjectIds]);
 
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
   const [renameTarget, setRenameTarget] = useState<{ id: string; name: string } | null>(null);
@@ -265,6 +290,7 @@ export function ProjectsList({
                 project={project}
                 allProjects={projects}
                 chats={getProjectChats(project)}
+                showChats={expandedProjectIds.has(project.id)}
                 currentChatId={currentChatId}
                 isMobile={isMobile}
                 onProjectClick={handleProjectClick}
@@ -326,6 +352,7 @@ function ProjectEntry({
   project,
   allProjects,
   chats,
+  showChats,
   currentChatId,
   isMobile,
   onProjectClick,
@@ -340,6 +367,7 @@ function ProjectEntry({
   project: Project;
   allProjects: Project[];
   chats: { id: string; metadata?: { title?: string } }[];
+  showChats: boolean;
   currentChatId?: string;
   isMobile: boolean;
   onProjectClick: (projectId: string) => void;
@@ -357,7 +385,7 @@ function ProjectEntry({
       <div className="group/project flex items-center w-full rounded-md hover:bg-muted/50 transition-colors">
         <button
           onClick={() => onProjectClick(project.id)}
-          className="flex items-center gap-2 py-1.5 px-1 flex-1 min-w-0 font-medium hover:text-primary transition-colors truncate"
+          className="flex items-center gap-2 py-1.5 px-1 flex-1 min-w-0 text-muted-foreground hover:text-primary transition-colors truncate"
         >
           <Folder className="h-4 w-4 flex-shrink-0 text-muted-foreground" />
           <span className="truncate">{project.name}</span>
@@ -388,8 +416,8 @@ function ProjectEntry({
         </DropdownMenu>
       </div>
 
-      {/* Recent chats under this project — styled like Recents items */}
-      {chats.length > 0 && (
+      {/* Chats under this project — only shown when expanded */}
+      {showChats && chats.length > 0 && (
         <div className="flex flex-col -mt-1">
           {chats.map((chat) => {
             const title = chat.metadata?.title || "Untitled";
@@ -401,11 +429,11 @@ function ProjectEntry({
               >
                 <div
                   onClick={() => onChatClick(chat.id)}
-                  className={`rounded-lg py-2 pl-7 pr-8 transition-all hover:text-primary cursor-pointer ${
+                  className={`rounded-lg py-2 pl-7 transition-all hover:text-primary cursor-pointer ${
                     isActive ? "text-primary" : "text-muted-foreground"
                   }`}
                 >
-                  <div className="overflow-hidden whitespace-nowrap hover:underline">
+                  <div className="overflow-hidden whitespace-nowrap hover:underline pr-8">
                     {title}
                   </div>
                 </div>

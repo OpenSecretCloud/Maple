@@ -39,7 +39,9 @@ import {
   Maximize2,
   Minimize2,
   Volume2,
-  Square
+  Square,
+  Folder,
+  ChevronDown
 } from "lucide-react";
 import RecordRTC from "recordrtc";
 import { useQueryClient } from "@tanstack/react-query";
@@ -69,9 +71,11 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger
 } from "@/components/ui/dropdown-menu";
 import { isTauri } from "@/utils/platform";
+import { useProjects } from "@/state/useProjects";
 import type {
   InputTextContent,
   OutputTextContent,
@@ -875,6 +879,7 @@ export function UnifiedChat() {
   const isTauriEnv = isTauri();
   const queryClient = useQueryClient();
   const { playbackError, clearPlaybackError } = useTTS();
+  const { projects } = useProjects();
 
   // Track chatId from URL - use state so we can update it
   const [chatId, setChatId] = useState<string | undefined>(() => {
@@ -925,6 +930,16 @@ export function UnifiedChat() {
   const [isWebSearchEnabled, setIsWebSearchEnabled] = useState(() => {
     return localStorage.getItem("webSearchEnabled") === "true";
   });
+
+  // Project selector for new chats
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(() => {
+    const params = new URLSearchParams(window.location.search);
+    return params.get("project_id") || null;
+  });
+  const selectedProject = useMemo(
+    () => projects.find((p) => p.id === selectedProjectId) || null,
+    [projects, selectedProjectId]
+  );
 
   // Fullscreen mode for power users - persisted in localStorage
   const [isFullscreen, setIsFullscreen] = useState(() => {
@@ -1144,6 +1159,16 @@ export function UnifiedChat() {
       clearAllAttachments();
       // Reset scroll tracking
       prevMessageCountRef.current = 0;
+      // Check if navigating from a project page
+      const projectParam = new URLSearchParams(window.location.search).get("project_id");
+      setSelectedProjectId(projectParam || null);
+      if (projectParam) {
+        // Clean up the URL param
+        const cleaned = new URLSearchParams(window.location.search);
+        cleaned.delete("project_id");
+        const newUrl = cleaned.toString() ? `/?${cleaned.toString()}` : "/";
+        window.history.replaceState(null, "", newUrl);
+      }
     };
 
     // Handle conversation selection from sidebar
@@ -2347,15 +2372,11 @@ export function UnifiedChat() {
           // Trigger sidebar refresh to show the new conversation
           window.dispatchEvent(new Event("conversationcreated"));
 
-          // Auto-assign to project if project_id param is present
-          const projectParam = new URLSearchParams(window.location.search).get("project_id");
-          if (projectParam) {
+          // Auto-assign to project if one is selected
+          if (selectedProjectId) {
             window.dispatchEvent(new CustomEvent("assignchattoproject", {
-              detail: { chatId: conversationId, projectId: projectParam }
+              detail: { chatId: conversationId, projectId: selectedProjectId }
             }));
-            const cleaned = new URLSearchParams(window.location.search);
-            cleaned.delete("project_id");
-            window.history.replaceState(null, "", `${window.location.pathname}?${cleaned.toString()}`);
           }
         }
 
@@ -3011,6 +3032,55 @@ export function UnifiedChat() {
                               </DropdownMenuItem>
                             </DropdownMenuContent>
                           </DropdownMenu>
+
+                          {/* Project selector — only for new chats */}
+                          {!chatId && (
+                            <DropdownMenu>
+                              <DropdownMenuTrigger asChild>
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="sm"
+                                  className={`p-0 ${selectedProject ? "h-8 px-2 gap-1.5" : "h-8 w-8"}`}
+                                >
+                                  <Folder
+                                    className={`h-4 w-4 flex-shrink-0 ${
+                                      selectedProject ? "text-purple-500" : "text-muted-foreground"
+                                    }`}
+                                  />
+                                  {selectedProject && (
+                                    <>
+                                      <span className="text-xs truncate max-w-[120px]">
+                                        {selectedProject.name}
+                                      </span>
+                                      <ChevronDown className="h-3 w-3 flex-shrink-0 text-muted-foreground" />
+                                    </>
+                                  )}
+                                </Button>
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent align="start">
+                                <DropdownMenuItem onClick={() => setSelectedProjectId(null)}>
+                                  <Check
+                                    className={`mr-2 h-4 w-4 ${!selectedProjectId ? "opacity-100" : "opacity-0"}`}
+                                  />
+                                  <span>No project</span>
+                                </DropdownMenuItem>
+                                {projects.length > 0 && <DropdownMenuSeparator />}
+                                {projects.map((project) => (
+                                  <DropdownMenuItem
+                                    key={project.id}
+                                    onClick={() => setSelectedProjectId(project.id)}
+                                  >
+                                    <Check
+                                      className={`mr-2 h-4 w-4 ${selectedProjectId === project.id ? "opacity-100" : "opacity-0"}`}
+                                    />
+                                    <Folder className="mr-2 h-4 w-4 flex-shrink-0" />
+                                    <span className="truncate">{project.name}</span>
+                                  </DropdownMenuItem>
+                                ))}
+                              </DropdownMenuContent>
+                            </DropdownMenu>
+                          )}
                         </div>
 
                         <div className="flex items-center gap-2">
@@ -3254,6 +3324,55 @@ export function UnifiedChat() {
                             </DropdownMenuItem>
                           </DropdownMenuContent>
                         </DropdownMenu>
+
+                        {/* Project selector — only for new chats */}
+                        {!chatId && (
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                className={`p-0 ${selectedProject ? "h-8 px-2 gap-1.5" : "h-8 w-8"}`}
+                              >
+                                <Folder
+                                  className={`h-4 w-4 flex-shrink-0 ${
+                                    selectedProject ? "text-purple-500" : "text-muted-foreground"
+                                  }`}
+                                />
+                                {selectedProject && (
+                                  <>
+                                    <span className="text-xs truncate max-w-[120px]">
+                                      {selectedProject.name}
+                                    </span>
+                                    <ChevronDown className="h-3 w-3 flex-shrink-0 text-muted-foreground" />
+                                  </>
+                                )}
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="start">
+                              <DropdownMenuItem onClick={() => setSelectedProjectId(null)}>
+                                <Check
+                                  className={`mr-2 h-4 w-4 ${!selectedProjectId ? "opacity-100" : "opacity-0"}`}
+                                />
+                                <span>No project</span>
+                              </DropdownMenuItem>
+                              {projects.length > 0 && <DropdownMenuSeparator />}
+                              {projects.map((project) => (
+                                <DropdownMenuItem
+                                  key={project.id}
+                                  onClick={() => setSelectedProjectId(project.id)}
+                                >
+                                  <Check
+                                    className={`mr-2 h-4 w-4 ${selectedProjectId === project.id ? "opacity-100" : "opacity-0"}`}
+                                  />
+                                  <Folder className="mr-2 h-4 w-4 flex-shrink-0" />
+                                  <span className="truncate">{project.name}</span>
+                                </DropdownMenuItem>
+                              ))}
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        )}
                       </div>
 
                       <div className="flex items-center gap-2">

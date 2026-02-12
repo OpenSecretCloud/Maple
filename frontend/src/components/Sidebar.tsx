@@ -106,14 +106,18 @@ export function Sidebar({
       window.dispatchEvent(new Event("newchat"));
       document.getElementById("message")?.focus();
     } else if (location.pathname === "/") {
-      // Already on home with no conversation_id, just focus
+      // Already on home with no conversation_id — reset state (clears project selector etc.)
+      window.dispatchEvent(new Event("newchat"));
       document.getElementById("message")?.focus();
     } else {
       try {
         // Navigate to home without any query params
         await router.navigate({ to: `/` });
-        // Ensure element is available after navigation
-        setTimeout(() => document.getElementById("message")?.focus(), 0);
+        // Reset state after navigation
+        setTimeout(() => {
+          window.dispatchEvent(new Event("newchat"));
+          document.getElementById("message")?.focus();
+        }, 0);
       } catch (error) {
         console.error("Navigation failed:", error);
       }
