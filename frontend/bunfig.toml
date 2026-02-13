@@ -1,2 +1,3 @@
 [test]
 preload = ["src/lib/test/preload.ts", "src/lib/test/der-loader.ts"]
+root = "./src"
