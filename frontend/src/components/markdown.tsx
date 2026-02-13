@@ -88,16 +88,16 @@ export function ThinkingBlock({ content, isThinking, duration }: ThinkingBlockPr
         <Brain className="h-4 w-4 text-gray-500 dark:text-gray-400" />
         <span className="text-sm text-gray-600 dark:text-gray-300 font-medium">
           {isThinking ? (
-            <span className="flex items-center gap-2">
+            <span className="inline-flex items-center gap-2">
               Thinking for {durationText} seconds
-              <span className="flex gap-1">
-                <span className="animate-bounce" style={{ animationDelay: "0ms" }}>
+              <span className="inline-flex gap-1 items-baseline">
+                <span className="animate-bounce inline-block" style={{ animationDelay: "0ms" }}>
                   .
                 </span>
-                <span className="animate-bounce" style={{ animationDelay: "150ms" }}>
+                <span className="animate-bounce inline-block" style={{ animationDelay: "150ms" }}>
                   .
                 </span>
-                <span className="animate-bounce" style={{ animationDelay: "300ms" }}>
+                <span className="animate-bounce inline-block" style={{ animationDelay: "300ms" }}>
                   .
                 </span>
               </span>
