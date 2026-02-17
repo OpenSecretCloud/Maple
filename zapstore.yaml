@@ -1,0 +1,26 @@
+repository: https://github.com/OpenSecretCloud/Maple
+
+# The Release workflow copies the signed APK to this path before publishing.
+release_source: ./app-universal-release.apk
+
+name: Maple
+summary: Private AI Chat
+description: |
+  Maple is a private AI chat app by OpenSecret.
+
+  Learn more at https://trymaple.ai
+
+website: https://trymaple.ai
+license: MIT
+
+tags:
+  - ai
+  - chat
+  - privacy
+
+# Use a stable icon from the repo (otherwise zsp will extract from the APK).
+icon: ./frontend/src-tauri/icons/icon.png
+
+metadata_sources:
+  - github
+  - playstore

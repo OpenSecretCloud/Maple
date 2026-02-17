@@ -328,6 +328,43 @@ jobs:
           VITE_MAPLE_BILLING_API_URL: https://billing.opensecret.cloud
           VITE_CLIENT_ID: ba5a14b5-d915-47b1-b7b1-afda52bc5fc6
 
+      - name: Setup Go (zsp)
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22.x"
+          cache: true
+
+      - name: Install zsp
+        shell: bash
+        run: |
+          set -euo pipefail
+          go install "github.com/zapstore/zsp@v0.3.3"
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Prepare APK for Zapstore
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp frontend/src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk ./app-universal-release.apk
+
+      - name: Publish to Zapstore
+        env:
+          SIGN_WITH: ${{ secrets.ZAPSTORE_SIGN_WITH }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "${SIGN_WITH}" ]; then
+            echo "Missing required secret: ZAPSTORE_SIGN_WITH" >&2
+            exit 1
+          fi
+
+          zsp publish \
+            -y \
+            --skip-preview \
+            --commit "${{ github.sha }}" \
+            zapstore.yaml
+
       - name: Upload Android APK to Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
