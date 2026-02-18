@@ -1,0 +1,55 @@
+name: Publish to Zapstore
+
+on:
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          sparse-checkout: |
+            zapstore.yaml
+            frontend/src-tauri/icons/icon.png
+
+      - name: Download APK from release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ github.event.workflow_run.head_branch }}"
+          gh release download "$TAG" \
+            --pattern "app-universal-release.apk" \
+            --dir .
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22.x"
+
+      - name: Install zsp
+        run: |
+          go install "github.com/zapstore/zsp@v0.3.3"
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Publish to Zapstore
+        env:
+          SIGN_WITH: ${{ secrets.ZAPSTORE_SIGN_WITH }}
+        run: |
+          if [ -z "${SIGN_WITH}" ]; then
+            echo "Missing required secret: ZAPSTORE_SIGN_WITH" >&2
+            exit 1
+          fi
+
+          zsp publish \
+            -y \
+            --skip-preview \
+            --commit "${{ github.event.workflow_run.head_sha }}" \
+            zapstore.yaml
