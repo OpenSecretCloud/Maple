@@ -15,7 +15,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
           sparse-checkout: |
             zapstore.yaml
             frontend/src-tauri/icons/icon.png
@@ -23,8 +22,8 @@ jobs:
       - name: Download APK from release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.workflow_run.head_branch }}
         run: |
-          TAG="${{ github.event.workflow_run.head_branch }}"
           gh release download "$TAG" \
             --pattern "app-universal-release.apk" \
             --dir .
@@ -42,6 +41,7 @@ jobs:
       - name: Publish to Zapstore
         env:
           SIGN_WITH: ${{ secrets.ZAPSTORE_SIGN_WITH }}
+          COMMIT_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           if [ -z "${SIGN_WITH}" ]; then
             echo "Missing required secret: ZAPSTORE_SIGN_WITH" >&2
@@ -51,5 +51,5 @@ jobs:
           zsp publish \
             -y \
             --skip-preview \
-            --commit "${{ github.event.workflow_run.head_sha }}" \
+            --commit "$COMMIT_SHA" \
             zapstore.yaml
