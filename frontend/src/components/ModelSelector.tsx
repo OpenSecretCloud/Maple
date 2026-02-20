@@ -89,6 +89,13 @@ export const MODEL_CONFIG: Record<string, ModelCfg> = {
     requiresStarter: true,
     supportsVision: true,
     tokenLimit: 256000
+  },
+  "glm-5": {
+    displayName: "GLM-5",
+    shortName: "GLM-5",
+    badges: ["Pro", "New", "Beta"],
+    requiresPro: true,
+    tokenLimit: 202000
   }
 };
 
