@@ -57,7 +57,7 @@ function TypingIndicator() {
 }
 
 export function AssistantChat() {
-  const { messages, isLoading, error, sendMessage, loadHistory } = useAgent();
+  const { messages, isLoading, isTyping, error, sendMessage, loadHistory } = useAgent();
   const [input, setInput] = useState("");
   const [initialized, setInitialized] = useState(false);
   const [initializing, setInitializing] = useState(true);
@@ -83,7 +83,7 @@ export function AssistantChat() {
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, isLoading]);
+  }, [messages, isTyping]);
 
   const handleSend = useCallback(async () => {
     if (!input.trim() || isLoading) return;
@@ -142,7 +142,7 @@ export function AssistantChat() {
           <div className="min-w-0">
             <h1 className="text-sm font-semibold truncate">Assistant</h1>
             <p className="text-[11px] text-muted-foreground">
-              {isLoading ? "typing..." : "Maple AI"}
+              {isTyping ? "typing..." : "Maple AI"}
             </p>
           </div>
         </div>
@@ -167,7 +167,7 @@ export function AssistantChat() {
           <MessageBubble key={msg.id} message={msg} />
         ))}
 
-        {isLoading && <TypingIndicator />}
+        {isTyping && <TypingIndicator />}
 
         {error && (
           <div className="flex justify-center mb-3">

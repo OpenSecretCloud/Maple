@@ -21,9 +21,14 @@ export type AgentMessage = {
   step?: number;
 };
 
+type AgentTypingEvent = {
+  step: number;
+};
+
 type AgentChatState = {
   messages: AgentMessage[];
   isLoading: boolean;
+  isTyping: boolean;
   error: string | null;
 };
 
@@ -32,6 +37,7 @@ export function useAgent() {
   const [state, setState] = useState<AgentChatState>({
     messages: [],
     isLoading: false,
+    isTyping: false,
     error: null
   });
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -110,6 +116,7 @@ export function useAgent() {
         ...prev,
         messages: [...prev.messages, userMessage],
         isLoading: true,
+        isTyping: true,
         error: null
       }));
 
@@ -183,7 +190,14 @@ export function useAgent() {
                 const data = JSON.parse(dataStr);
                 console.log("[agent] Parsed event:", currentEvent, data);
 
-                if (currentEvent === "agent.message") {
+                if (currentEvent === "agent.typing") {
+                  const event = data as AgentTypingEvent;
+                  console.log("[agent] Typing indicator (step", event.step + ")");
+                  setState((prev) => ({
+                    ...prev,
+                    isTyping: true
+                  }));
+                } else if (currentEvent === "agent.message") {
                   const event = data as AgentMessageEvent;
                   for (const msg of event.messages) {
                     console.log(
@@ -200,7 +214,8 @@ export function useAgent() {
                     };
                     setState((prev) => ({
                       ...prev,
-                      messages: [...prev.messages, assistantMessage]
+                      messages: [...prev.messages, assistantMessage],
+                      isTyping: false
                     }));
                   }
                 } else if (currentEvent === "agent.error") {
@@ -209,11 +224,16 @@ export function useAgent() {
                   setState((prev) => ({
                     ...prev,
                     error: event.error,
-                    isLoading: false
+                    isLoading: false,
+                    isTyping: false
                   }));
                   return;
                 } else if (currentEvent === "agent.done") {
                   console.log("[agent] Agent done:", data);
+                  setState((prev) => ({
+                    ...prev,
+                    isTyping: false
+                  }));
                 }
               } catch (parseErr) {
                 console.warn(
@@ -230,16 +250,17 @@ export function useAgent() {
         }
 
         console.log("[agent] Finished processing stream");
-        setState((prev) => ({ ...prev, isLoading: false }));
+        setState((prev) => ({ ...prev, isLoading: false, isTyping: false }));
       } catch (err) {
         console.error("[agent] Error:", (err as Error).name, (err as Error).message);
         if ((err as Error).name === "AbortError") {
-          setState((prev) => ({ ...prev, isLoading: false }));
+          setState((prev) => ({ ...prev, isLoading: false, isTyping: false }));
           return;
         }
         setState((prev) => ({
           ...prev,
           isLoading: false,
+          isTyping: false,
           error: (err as Error).message || "Failed to send message"
         }));
       } finally {
@@ -254,12 +275,13 @@ export function useAgent() {
   }, []);
 
   const clearMessages = useCallback(() => {
-    setState({ messages: [], isLoading: false, error: null });
+    setState({ messages: [], isLoading: false, isTyping: false, error: null });
   }, []);
 
   return {
     messages: state.messages,
     isLoading: state.isLoading,
+    isTyping: state.isTyping,
     error: state.error,
     sendMessage,
     cancelRequest,
