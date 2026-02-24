@@ -354,7 +354,7 @@ export function ModelSelector({ hasImages = false }: { hasImages?: boolean }) {
   // Show current category or model name in the collapsed view
   const modelDisplay = (
     <div className="flex items-center gap-1">
-      <div className="text-xs font-medium">{getDropdownLabel()}</div>
+      <div className="text-sm font-medium">{getDropdownLabel()}</div>
     </div>
   );
 
