@@ -68,8 +68,6 @@ export const MODEL_CONFIG: Record<string, ModelCfg> = {
   "gpt-oss-120b": {
     displayName: "OpenAI GPT-OSS 120B",
     shortName: "GPT-OSS",
-    badges: ["Pro"],
-    requiresPro: true,
     tokenLimit: 128000
   },
   "qwen3-vl-30b": {
@@ -91,7 +89,7 @@ export function getModelTokenLimit(modelId: string): number {
 
 // Primary model options
 const PRIMARY_MODELS = {
-  quick: "llama-3.3-70b",
+  quick: "gpt-oss-120b",
   powerful: "kimi-k2-5"
 };
 

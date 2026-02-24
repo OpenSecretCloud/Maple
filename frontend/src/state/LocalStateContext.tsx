@@ -11,7 +11,7 @@ export {
   type LocalState
 } from "./LocalStateContextDef";
 
-export const DEFAULT_MODEL_ID = "llama-3.3-70b";
+export const DEFAULT_MODEL_ID = "gpt-oss-120b";
 
 // Helper to get default model based on cached billing status
 function getInitialModel(): string {
@@ -48,11 +48,11 @@ function getInitialModel(): string {
 
 export const LocalStateProvider = ({ children }: { children: React.ReactNode }) => {
   /** The model that should be assumed when a chat doesn't yet have one */
-  const llamaModel: OpenSecretModel = {
+  const defaultModel: OpenSecretModel = {
     id: DEFAULT_MODEL_ID,
     object: "model",
     created: Date.now(),
-    owned_by: "meta",
+    owned_by: "openai",
     tasks: ["generate"]
   };
 
@@ -62,7 +62,7 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
     userImages: [] as File[],
     sentViaVoice: false,
     model: getInitialModel(),
-    availableModels: [llamaModel] as OpenSecretModel[],
+    availableModels: [defaultModel] as OpenSecretModel[],
     hasWhisperModel: true, // Default to true to avoid hiding button during loading
     billingStatus: null as BillingStatus | null,
     searchQuery: "",
