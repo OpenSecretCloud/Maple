@@ -12,11 +12,13 @@ import {
   type AgentMessageEvent,
   type AgentErrorEvent
 } from "@opensecret/react";
+import { fileToDataURL } from "@/utils/file";
 
 export type AgentMessage = {
   id: string;
   role: "user" | "assistant";
   content: string;
+  imageUrls?: string[];
   timestamp: Date;
   step?: number;
 };
@@ -102,13 +104,25 @@ export function useAgent() {
   }, [nextId]);
 
   const sendMessage = useCallback(
-    async (input: string) => {
+    async (input: string, images?: File[]) => {
       if (!input.trim() || state.isLoading) return;
+
+      const imageDataUrls: string[] = [];
+      if (images && images.length > 0) {
+        for (const file of images) {
+          try {
+            imageDataUrls.push(await fileToDataURL(file));
+          } catch (error) {
+            console.error("[agent] Failed to convert image:", error);
+          }
+        }
+      }
 
       const userMessage: AgentMessage = {
         id: nextId(),
         role: "user",
         content: input.trim(),
+        imageUrls: imageDataUrls.length > 0 ? imageDataUrls : undefined,
         timestamp: new Date()
       };
 
@@ -124,17 +138,29 @@ export function useAgent() {
       abortControllerRef.current = controller;
 
       try {
+        let body: string;
+        if (imageDataUrls.length > 0) {
+          const messageContent: { type: string; text?: string; image_url?: string }[] = [
+            { type: "input_text", text: input.trim() }
+          ];
+          for (const dataUrl of imageDataUrls) {
+            messageContent.push({ type: "input_image", image_url: dataUrl });
+          }
+          body = JSON.stringify({ input: messageContent });
+        } else {
+          body = JSON.stringify({ input: input.trim() });
+        }
+
         console.log("[agent] Sending message:", input.trim().slice(0, 50) + "...");
         console.log("[agent] POST", `${apiUrl}/v1/agent/chat`);
 
-        // aiCustomFetch handles encryption/decryption + throws on !response.ok
         const response = await aiCustomFetch(`${apiUrl}/v1/agent/chat`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
             Accept: "text/event-stream"
           },
-          body: JSON.stringify({ input: input.trim() }),
+          body,
           signal: controller.signal
         });
 
