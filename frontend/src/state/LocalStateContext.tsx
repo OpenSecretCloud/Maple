@@ -11,8 +11,7 @@ export {
   type LocalState
 } from "./LocalStateContextDef";
 
-export const DEFAULT_MODEL_ID = "llama-3.3-70b";
-const QUICK_MODEL_ID = "gpt-oss-120b";
+export const DEFAULT_MODEL_ID = "gpt-oss-120b";
 
 // Helper to get default model based on cached billing status
 function getInitialModel(): string {
@@ -34,9 +33,9 @@ function getInitialModel(): string {
       const cachedBilling = JSON.parse(cachedBillingStr) as BillingStatus;
       const planName = cachedBilling.product_name?.toLowerCase() || "";
 
-      // Pro, Max, or Team users get Quick model
+      // Pro, Max, or Team users get default model
       if (planName.includes("pro") || planName.includes("max") || planName.includes("team")) {
-        return QUICK_MODEL_ID;
+        return DEFAULT_MODEL_ID;
       }
     }
   } catch (error) {
@@ -49,11 +48,11 @@ function getInitialModel(): string {
 
 export const LocalStateProvider = ({ children }: { children: React.ReactNode }) => {
   /** The model that should be assumed when a chat doesn't yet have one */
-  const llamaModel: OpenSecretModel = {
+  const defaultModel: OpenSecretModel = {
     id: DEFAULT_MODEL_ID,
     object: "model",
     created: Date.now(),
-    owned_by: "meta",
+    owned_by: "openai",
     tasks: ["generate"]
   };
 
@@ -63,7 +62,7 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
     userImages: [] as File[],
     sentViaVoice: false,
     model: getInitialModel(),
-    availableModels: [llamaModel] as OpenSecretModel[],
+    availableModels: [defaultModel] as OpenSecretModel[],
     hasWhisperModel: true, // Default to true to avoid hiding button during loading
     billingStatus: null as BillingStatus | null,
     searchQuery: "",
@@ -182,7 +181,7 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
 
       if (shouldUpdateModel) {
         if (isProMaxOrTeam) {
-          setModel(QUICK_MODEL_ID);
+          setModel(DEFAULT_MODEL_ID);
         } else if (billingChanged) {
           // User downgraded, switch back to free model
           setModel(DEFAULT_MODEL_ID);

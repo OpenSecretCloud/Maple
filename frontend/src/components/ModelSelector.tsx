@@ -1,15 +1,4 @@
-import {
-  ChevronDown,
-  Check,
-  Lock,
-  Camera,
-  ChevronLeft,
-  Sparkles,
-  Zap,
-  Code,
-  Image,
-  Brain
-} from "lucide-react";
+import { ChevronDown, Check, Lock, Camera, ChevronLeft, Zap, Brain } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -79,8 +68,6 @@ export const MODEL_CONFIG: Record<string, ModelCfg> = {
   "gpt-oss-120b": {
     displayName: "OpenAI GPT-OSS 120B",
     shortName: "GPT-OSS",
-    badges: ["Pro"],
-    requiresPro: true,
     tokenLimit: 128000
   },
   "qwen3-vl-30b": {
@@ -100,42 +87,22 @@ export function getModelTokenLimit(modelId: string): number {
   return MODEL_CONFIG[modelId]?.tokenLimit || DEFAULT_TOKEN_LIMIT;
 }
 
-// Model categories for simplified UI
-type ModelCategory = "free" | "quick" | "reasoning" | "math" | "image" | "advanced";
-
-export const CATEGORY_MODELS = {
-  free: "llama-3.3-70b",
+// Primary model options
+const PRIMARY_MODELS = {
   quick: "gpt-oss-120b",
-  reasoning: "deepseek-r1-0528",
-  math: "kimi-k2-5",
-  image: "qwen3-vl-30b" // Qwen3-VL for image analysis
+  powerful: "kimi-k2-5"
 };
 
-const CATEGORY_INFO = {
-  free: {
-    label: "General",
-    icon: Sparkles,
-    description: "Balanced & capable"
-  },
+const PRIMARY_INFO = {
   quick: {
     label: "Quick",
     icon: Zap,
-    description: "Fastest responses"
+    description: "Fast, everyday responses"
   },
-  reasoning: {
-    label: "Reasoning",
+  powerful: {
+    label: "Powerful",
     icon: Brain,
-    description: "Deep analysis"
-  },
-  math: {
-    label: "Math/Coding",
-    icon: Code,
-    description: "Technical tasks"
-  },
-  image: {
-    label: "Image Analysis",
-    icon: Image,
-    description: "Vision & analysis"
+    description: "Deeper thinking & analysis"
   }
 };
 
@@ -233,26 +200,32 @@ export function ModelSelector({ hasImages = false }: { hasImages?: boolean }) {
     }
   }, [os, setAvailableModels, setHasWhisperModel]);
 
-  // Auto-switch to image analysis when images are uploaded
+  // Auto-switch to a vision-capable model when images are uploaded
   useEffect(() => {
-    if (chatHasImages && hasAccessToModel(CATEGORY_MODELS.image)) {
-      // Only auto-switch if not already on a vision-capable model
-      const currentModelConfig = MODEL_CONFIG[model];
-      if (!currentModelConfig?.supportsVision) {
-        setModel(CATEGORY_MODELS.image);
-      }
+    if (!chatHasImages) return;
+    const currentModelConfig = MODEL_CONFIG[model];
+    if (currentModelConfig?.supportsVision) return; // Already on a vision model
+
+    const planName = billingStatus?.product_name?.toLowerCase() || "";
+    const isProMaxOrTeam =
+      planName.includes("pro") || planName.includes("max") || planName.includes("team");
+    const isStarter = planName.includes("starter");
+
+    if (isProMaxOrTeam) {
+      // Pro/Max/Team: switch to Powerful (kimi-k2-5 has vision)
+      setModel(PRIMARY_MODELS.powerful);
+    } else if (isStarter) {
+      // Starter: switch to qwen3-vl-30b
+      setModel("qwen3-vl-30b");
     }
+    // Free: no auto-switch (existing upgrade prompt handles it)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatHasImages]);
 
-  // Get current category based on selected model
-  const getCurrentCategory = (): string => {
-    if (model === CATEGORY_MODELS.free) return "General";
-    if (model === CATEGORY_MODELS.quick) return "Quick";
-    if (model === CATEGORY_MODELS.reasoning) return "Reasoning";
-    if (model === CATEGORY_MODELS.math) return "Math/Coding";
-    if (model === CATEGORY_MODELS.image) return "Image Analysis";
-    // If in advanced mode, show model name
+  // Get dropdown button label based on selected model
+  const getDropdownLabel = (): string => {
+    if (model === PRIMARY_MODELS.quick) return "Quick";
+    if (model === PRIMARY_MODELS.powerful) return "Powerful";
     const config = MODEL_CONFIG[model];
     return config?.displayName || model;
   };
@@ -284,14 +257,9 @@ export function ModelSelector({ hasImages = false }: { hasImages?: boolean }) {
     return true;
   };
 
-  // Handle category selection
-  const handleCategorySelect = (category: ModelCategory) => {
-    if (category === "advanced") {
-      setShowAdvanced(true);
-      return;
-    }
-
-    const targetModel = CATEGORY_MODELS[category as keyof typeof CATEGORY_MODELS];
+  // Handle primary option selection
+  const handlePrimarySelect = (key: "quick" | "powerful") => {
+    const targetModel = PRIMARY_MODELS[key];
 
     // Prevent switching to non-vision models if chat has images
     const targetModelConfig = MODEL_CONFIG[targetModel];
@@ -386,7 +354,7 @@ export function ModelSelector({ hasImages = false }: { hasImages?: boolean }) {
   // Show current category or model name in the collapsed view
   const modelDisplay = (
     <div className="flex items-center gap-1">
-      <div className="text-xs font-medium">{getCurrentCategory()}</div>
+      <div className="text-sm font-medium">{getDropdownLabel()}</div>
     </div>
   );
 
@@ -409,32 +377,25 @@ export function ModelSelector({ hasImages = false }: { hasImages?: boolean }) {
         </DropdownMenuTrigger>
         <DropdownMenuContent align="start" className="w-64 p-0">
           {!showAdvanced ? (
-            <div className="p-1 h-[300px] flex flex-col">
-              {/* Category options */}
-              {(["free", "quick", "reasoning", "math", "image"] as const).map((category) => {
-                const info = CATEGORY_INFO[category];
+            <div className="p-1 flex flex-col">
+              {/* Primary options */}
+              {(["quick", "powerful"] as const).map((key) => {
+                const info = PRIMARY_INFO[key];
                 const Icon = info.icon;
-                const isActive =
-                  (category === "free" && model === CATEGORY_MODELS.free) ||
-                  (category === "quick" && model === CATEGORY_MODELS.quick) ||
-                  (category === "reasoning" && model === CATEGORY_MODELS.reasoning) ||
-                  (category === "math" && model === CATEGORY_MODELS.math) ||
-                  (category === "image" && model === CATEGORY_MODELS.image);
-
-                // Check if user has access to this category's model
-                const targetModel = CATEGORY_MODELS[category];
+                const targetModel = PRIMARY_MODELS[key];
+                const isActive = model === targetModel;
                 const hasAccess = hasAccessToModel(targetModel);
                 const targetModelConfig = MODEL_CONFIG[targetModel];
                 const requiresUpgrade = !hasAccess;
 
-                // Disable non-vision categories if chat has images
+                // Disable non-vision options if chat has images
                 const isDisabledDueToImages = chatHasImages && !targetModelConfig?.supportsVision;
                 const isDisabled = isDisabledDueToImages || targetModelConfig?.disabled;
 
                 return (
                   <DropdownMenuItem
-                    key={category}
-                    onClick={() => handleCategorySelect(category)}
+                    key={key}
+                    onClick={() => handlePrimarySelect(key)}
                     className={`flex items-center gap-2 px-3 py-1.5 cursor-pointer ${
                       isDisabled ? "opacity-50 cursor-not-allowed" : ""
                     } ${requiresUpgrade ? "hover:bg-purple-50 dark:hover:bg-purple-950/20" : ""}`}
@@ -455,7 +416,7 @@ export function ModelSelector({ hasImages = false }: { hasImages?: boolean }) {
 
               <DropdownMenuSeparator />
 
-              {/* Advanced option */}
+              {/* More models option */}
               <DropdownMenuItem
                 onSelect={(e) => {
                   e.preventDefault();
@@ -465,13 +426,13 @@ export function ModelSelector({ hasImages = false }: { hasImages?: boolean }) {
               >
                 <ChevronLeft className="h-4 w-4 opacity-70 rotate-180" />
                 <div className="flex-1">
-                  <span className="text-sm font-medium">Advanced</span>
+                  <span className="text-sm font-medium">More models</span>
                   <div className="text-xs text-muted-foreground">All models</div>
                 </div>
               </DropdownMenuItem>
             </div>
           ) : (
-            <div className="p-1 h-[300px] flex flex-col">
+            <div className="p-1 flex flex-col">
               {/* Back button */}
               <DropdownMenuItem
                 onSelect={(e) => {
