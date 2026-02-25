@@ -16,7 +16,7 @@ import { sha256 } from "@noble/hashes/sha256";
 import { bytesToHex } from "@noble/hashes/utils";
 import { AppleAuthProvider } from "@/components/AppleAuthProvider";
 import { getBillingService } from "@/billing/billingService";
-import { isIOS, isTauri } from "@/utils/platform";
+import { isIOS, isTauri, isTauriDesktop } from "@/utils/platform";
 
 type LoginSearchParams = {
   next?: string;
@@ -50,6 +50,7 @@ function LoginPage() {
   // Use platform detection functions
   const isIOSPlatform = isIOS();
   const isTauriEnv = isTauri();
+  const isTauriDesktopEnv = isTauriDesktop();
 
   // Show paste code input after a delay when auto-navigated from OAuth
   useEffect(() => {
@@ -190,10 +191,12 @@ function LoginPage() {
           setError("Failed to open authentication page in browser");
         });
 
-        // Navigate to paste-code screen so user sees it while browser is open
-        setError(null);
-        setOauthProvider("GitHub");
-        setLoginMethod("paste-code");
+        // Navigate to paste-code screen so user sees it while browser is open (desktop only)
+        if (isTauriDesktopEnv) {
+          setError(null);
+          setOauthProvider("GitHub");
+          setLoginMethod("paste-code");
+        }
       } else {
         // Web flow remains unchanged
         const { auth_url } = await os.initiateGitHubAuth("");
@@ -237,10 +240,12 @@ function LoginPage() {
           setError("Failed to open authentication page in browser");
         });
 
-        // Navigate to paste-code screen so user sees it while browser is open
-        setError(null);
-        setOauthProvider("Google");
-        setLoginMethod("paste-code");
+        // Navigate to paste-code screen so user sees it while browser is open (desktop only)
+        if (isTauriDesktopEnv) {
+          setError(null);
+          setOauthProvider("Google");
+          setLoginMethod("paste-code");
+        }
       } else {
         // Web flow remains unchanged
         const { auth_url } = await os.initiateGoogleAuth("");
@@ -406,10 +411,12 @@ function LoginPage() {
           setError("Failed to open authentication page in browser");
         });
 
-        // Navigate to paste-code screen so user sees it while browser is open
-        setError(null);
-        setOauthProvider("Apple");
-        setLoginMethod("paste-code");
+        // Navigate to paste-code screen so user sees it while browser is open (desktop only)
+        if (isTauriDesktopEnv) {
+          setError(null);
+          setOauthProvider("Apple");
+          setLoginMethod("paste-code");
+        }
       } else {
         // Web flow - use AppleAuthProvider component which will initiate the flow
         console.log("[OAuth] Using web flow for Apple Sign In (Web only)");
