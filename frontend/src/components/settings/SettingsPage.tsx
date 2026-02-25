@@ -61,7 +61,19 @@ export function SettingsPage({ initialTab, creditsSuccess }: SettingsPageProps) 
   const navigate = useNavigate();
   const router = useRouter();
   const os = useOpenSecret();
-  const { billingStatus } = useLocalState();
+  const { billingStatus, setBillingStatus } = useLocalState();
+
+  // Fetch billing status for direct navigation (when index.tsx hasn't loaded it)
+  useQuery({
+    queryKey: ["billingStatus"],
+    queryFn: async () => {
+      const billingService = getBillingService();
+      const status = await billingService.getBillingStatus();
+      setBillingStatus(status);
+      return status;
+    },
+    enabled: !!os.auth.user
+  });
   const productName = billingStatus?.product_name || "";
   const isTeamPlan = productName.toLowerCase().includes("team");
 
@@ -112,6 +124,14 @@ export function SettingsPage({ initialTab, creditsSuccess }: SettingsPageProps) 
       setActiveTab(initialTab);
     }
   }, [initialTab]);
+
+  // Ensure activeTab is always a visible tab (prevent showing hidden tab content)
+  useEffect(() => {
+    const isTabVisible = visibleTabs.some((tab) => tab.id === activeTab);
+    if (!isTabVisible && visibleTabs.length > 0) {
+      setActiveTab(visibleTabs[0].id);
+    }
+  }, [activeTab, visibleTabs]);
 
   const handleTabChange = useCallback(
     (tab: SettingsTab) => {

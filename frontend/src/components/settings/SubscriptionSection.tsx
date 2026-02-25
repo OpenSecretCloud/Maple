@@ -50,7 +50,7 @@ export function SubscriptionSection() {
   };
 
   // Credit usage calculation
-  const hasCredits = billingStatus?.total_tokens && billingStatus?.used_tokens;
+  const hasCredits = billingStatus?.total_tokens != null && billingStatus?.used_tokens != null;
   const percentUsed = hasCredits
     ? Math.min(100, Math.max(0, (billingStatus.used_tokens! / billingStatus.total_tokens!) * 100))
     : 0;
