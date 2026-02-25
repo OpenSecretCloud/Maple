@@ -13,7 +13,7 @@ export function SubscriptionSection() {
   const [isPortalLoading, setIsPortalLoading] = useState(false);
 
   const productName = billingStatus?.product_name || "";
-  const hasStripeAccount = billingStatus?.stripe_customer_id !== null;
+  const hasStripeAccount = billingStatus?.stripe_customer_id != null;
   const isPro = productName.toLowerCase().includes("pro");
   const isMax = productName.toLowerCase().includes("max");
   const isStarter = productName.toLowerCase().includes("starter");
