@@ -125,13 +125,15 @@ function SignupPage() {
       const decoded = atob(pasteCodeValue.trim());
       const parsed = JSON.parse(decoded) as { access_token?: string; refresh_token?: string };
 
-      if (!parsed.access_token || !parsed.refresh_token) {
-        throw new Error("Invalid login code: missing tokens");
+      if (!parsed.access_token) {
+        throw new Error("Invalid login code: missing token");
       }
 
       // Store tokens in localStorage
       localStorage.setItem("access_token", parsed.access_token);
-      localStorage.setItem("refresh_token", parsed.refresh_token);
+      if (parsed.refresh_token) {
+        localStorage.setItem("refresh_token", parsed.refresh_token);
+      }
 
       // Clear any existing billing token
       try {
