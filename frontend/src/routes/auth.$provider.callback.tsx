@@ -1,9 +1,9 @@
 import { createFileRoute, useNavigate, Link } from "@tanstack/react-router";
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 import { useOpenSecret } from "@opensecret/react";
 import { AlertDestructive } from "@/components/AlertDestructive";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Loader2 } from "lucide-react";
+import { Loader2, Copy, Check, ExternalLink } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { getBillingService } from "@/billing/billingService";
 
@@ -28,9 +28,27 @@ function formatProviderName(provider: string): string {
 function OAuthCallback() {
   const [isProcessing, setIsProcessing] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [showCopyFallback, setShowCopyFallback] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [authCode, setAuthCode] = useState<string | null>(null);
   const navigate = useNavigate();
   const { handleGitHubCallback, handleGoogleCallback, handleAppleCallback } = useOpenSecret();
   const processedRef = useRef(false);
+
+  const handleCopyCode = useCallback(async () => {
+    if (!authCode) return;
+    try {
+      await navigator.clipboard.writeText(authCode);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Fallback: select the text in the input for manual copy
+      const input = document.querySelector<HTMLInputElement>("[data-auth-code]");
+      if (input) {
+        input.select();
+      }
+    }
+  }, [authCode]);
 
   // Helper functions for the callback process
   const handleSuccessfulAuth = () => {
@@ -45,15 +63,28 @@ function OAuthCallback() {
       const accessToken = localStorage.getItem("access_token") || "";
       const refreshToken = localStorage.getItem("refresh_token");
 
+      // Generate the fallback auth code for copy/paste flow
+      const codePayload = JSON.stringify({
+        access_token: accessToken,
+        refresh_token: refreshToken || ""
+      });
+      setAuthCode(btoa(codePayload));
+
       let deepLinkUrl = `cloud.opensecret.maple://auth?access_token=${encodeURIComponent(accessToken)}`;
 
       if (refreshToken) {
         deepLinkUrl += `&refresh_token=${encodeURIComponent(refreshToken)}`;
       }
 
+      // Attempt the deep link redirect
       setTimeout(() => {
         window.location.href = deepLinkUrl;
       }, 1000);
+
+      // Show the copy fallback after a few seconds in case the redirect doesn't work
+      setTimeout(() => {
+        setShowCopyFallback(true);
+      }, 3000);
 
       return;
     }
@@ -153,7 +184,7 @@ function OAuthCallback() {
   }, [handleGitHubCallback, handleGoogleCallback, handleAppleCallback, navigate, provider]);
 
   // If this is a Tauri app auth flow (desktop or mobile), show a different UI
-  if (localStorage.getItem("redirect-to-native") === "true") {
+  if (localStorage.getItem("redirect-to-native") === "true" || authCode) {
     return (
       <Card className="max-w-md mx-auto mt-20">
         <CardHeader>
@@ -161,9 +192,41 @@ function OAuthCallback() {
         </CardHeader>
         <CardContent>
           <p className="mb-4">Authentication successful! Redirecting you back to the app...</p>
-          <div className="flex justify-center">
+          <div className="flex justify-center mb-4">
             <Loader2 className="h-8 w-8 animate-spin" />
           </div>
+          {showCopyFallback && authCode && (
+            <div className="border-t pt-4 mt-2">
+              <p className="text-sm text-muted-foreground mb-3">
+                <ExternalLink className="inline h-4 w-4 mr-1" />
+                Not redirecting to the app? Copy the code below and paste it in the Maple app.
+              </p>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  readOnly
+                  value={authCode}
+                  data-auth-code
+                  className="flex-1 rounded-md border bg-muted px-3 py-2 text-xs font-mono truncate"
+                  onClick={(e) => (e.target as HTMLInputElement).select()}
+                />
+                <Button onClick={handleCopyCode} variant="outline" size="sm" className="shrink-0">
+                  {copied ? (
+                    <>
+                      <Check className="h-4 w-4 mr-1" /> Copied
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="h-4 w-4 mr-1" /> Copy
+                    </>
+                  )}
+                </Button>
+              </div>
+              <p className="text-xs text-muted-foreground mt-2">
+                In the Maple app, tap &quot;Paste Login Code&quot; on the login screen.
+              </p>
+            </div>
+          )}
         </CardContent>
       </Card>
     );

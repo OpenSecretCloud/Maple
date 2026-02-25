@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { AlertDestructive } from "@/components/AlertDestructive";
-import { Loader2, Github, Mail, UserCircle } from "lucide-react";
+import { Loader2, Github, Mail, UserCircle, ClipboardPaste } from "lucide-react";
 import { Google } from "@/components/icons/Google";
 import { Apple } from "@/components/icons/Apple";
 import { AuthMain } from "@/components/AuthMain";
@@ -33,7 +33,7 @@ export const Route = createFileRoute("/login")({
   })
 });
 
-type LoginMethod = "email" | "github" | "google" | "apple" | "guest" | null;
+type LoginMethod = "email" | "github" | "google" | "apple" | "guest" | "paste-code" | null;
 
 function LoginPage() {
   const navigate = useNavigate();
@@ -42,6 +42,8 @@ function LoginPage() {
   const [loginMethod, setLoginMethod] = useState<LoginMethod>(null);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+
+  const [pasteCodeValue, setPasteCodeValue] = useState("");
 
   // Use platform detection functions
   const isIOSPlatform = isIOS();
@@ -99,6 +101,46 @@ function LoginPage() {
         setError(`${error.message}`);
       } else {
         setError("Something went wrong. Please try again.");
+      }
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handlePasteCode = async () => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      const decoded = atob(pasteCodeValue.trim());
+      const parsed = JSON.parse(decoded) as { access_token?: string; refresh_token?: string };
+
+      if (!parsed.access_token || !parsed.refresh_token) {
+        throw new Error("Invalid login code: missing tokens");
+      }
+
+      // Store tokens in localStorage
+      localStorage.setItem("access_token", parsed.access_token);
+      localStorage.setItem("refresh_token", parsed.refresh_token);
+
+      // Clear any existing billing token
+      try {
+        getBillingService().clearToken();
+      } catch (billingError) {
+        console.warn("Failed to clear billing token:", billingError);
+      }
+
+      // Reload the app to pick up the new tokens
+      window.location.href = "/";
+    } catch (err) {
+      if (
+        err instanceof SyntaxError ||
+        (err instanceof DOMException && err.name === "InvalidCharacterError")
+      ) {
+        setError("Invalid login code. Please copy the code from the browser and try again.");
+      } else if (err instanceof Error) {
+        setError(err.message);
+      } else {
+        setError("Failed to process login code. Please try again.");
       }
     } finally {
       setIsLoading(false);
@@ -391,12 +433,71 @@ function LoginPage() {
           <UserCircle className="mr-2 h-4 w-4" />
           Log in as Anonymous
         </Button>
+        {isTauriEnv && (
+          <Button onClick={() => setLoginMethod("paste-code")} variant="outline" className="w-full">
+            <ClipboardPaste className="mr-2 h-4 w-4" />
+            Paste Login Code
+          </Button>
+        )}
         <div className="text-center text-sm">
           Need an account?{" "}
           <Link to="/signup" search={next ? { next } : undefined} className="underline">
             Sign Up
           </Link>
         </div>
+      </AuthMain>
+    );
+  }
+
+  if (loginMethod === "paste-code") {
+    return (
+      <AuthMain
+        title="Paste Login Code"
+        description="Paste the code from your browser to complete authentication."
+      >
+        {error && <AlertDestructive title="Error" description={error} />}
+        <div className="grid gap-2">
+          <Label htmlFor="auth-code">Login Code</Label>
+          <Input
+            id="auth-code"
+            type="text"
+            placeholder="Paste your login code here"
+            value={pasteCodeValue}
+            onChange={(e) => setPasteCodeValue(e.target.value)}
+            className="font-mono text-xs"
+            autoFocus
+          />
+          <p className="text-xs text-muted-foreground">
+            After signing in with your browser, copy the code shown on the success page and paste it
+            here.
+          </p>
+        </div>
+        <Button
+          onClick={handlePasteCode}
+          className="w-full"
+          disabled={isLoading || !pasteCodeValue.trim()}
+        >
+          {isLoading ? (
+            <>
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              Verifying...
+            </>
+          ) : (
+            "Complete Login"
+          )}
+        </Button>
+        <Button
+          type="button"
+          variant="outline"
+          onClick={() => {
+            setLoginMethod(null);
+            setPasteCodeValue("");
+            setError(null);
+          }}
+          className="w-full"
+        >
+          Back
+        </Button>
       </AuthMain>
     );
   }
