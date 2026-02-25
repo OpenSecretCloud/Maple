@@ -129,8 +129,9 @@ function SignupPage() {
         throw new Error("Invalid login code: missing token");
       }
 
-      // Store tokens in localStorage
+      // Store tokens in localStorage (clear old refresh token to prevent stale mismatch)
       localStorage.setItem("access_token", parsed.access_token);
+      localStorage.removeItem("refresh_token");
       if (parsed.refresh_token) {
         localStorage.setItem("refresh_token", parsed.refresh_token);
       }
