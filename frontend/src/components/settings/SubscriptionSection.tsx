@@ -5,7 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { ArrowUpCircle, Loader2, ExternalLink } from "lucide-react";
 import { useLocalState } from "@/state/useLocalState";
 import { getBillingService } from "@/billing/billingService";
-import { isMobile } from "@/utils/platform";
+import { isMobile, isTauri } from "@/utils/platform";
 import { formatResetDate } from "@/utils/dateFormat";
 
 export function SubscriptionSection() {
@@ -29,18 +29,25 @@ export function SubscriptionSection() {
       const billingService = getBillingService();
       const url = await billingService.getPortalUrl();
 
-      if (isMobile()) {
+      // Use external browser for all Tauri platforms (mobile and desktop)
+      if (isTauri()) {
         const { invoke } = await import("@tauri-apps/api/core");
         await invoke("plugin:opener|open_url", { url })
           .then(() => console.log("[Billing] Opened portal URL"))
           .catch((err: Error) => {
             console.error("[Billing] Failed to open browser:", err);
-            alert("Failed to open browser. Please try again.");
+            if (isMobile()) {
+              alert("Failed to open browser. Please try again.");
+            } else {
+              // Fallback to window.open on desktop
+              window.open(url, "_blank");
+            }
           });
         await new Promise((resolve) => setTimeout(resolve, 300));
         return;
       }
 
+      // Web flow
       window.open(url, "_blank");
     } catch (error) {
       console.error("Error fetching portal URL:", error);
