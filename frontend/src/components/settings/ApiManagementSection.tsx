@@ -46,10 +46,12 @@ export function ApiManagementSection({ creditsSuccess = false }: ApiManagementSe
     if (creditsSuccess) {
       setShowCreditSuccess(true);
       queryClient.invalidateQueries({ queryKey: ["apiCreditBalance"] });
+      // Clear credits_success from URL to prevent repeat flash on refresh
+      navigate({ to: "/settings", search: { tab: "api" }, replace: true });
       const timer = setTimeout(() => setShowCreditSuccess(false), 5000);
       return () => clearTimeout(timer);
     }
-  }, [creditsSuccess, queryClient]);
+  }, [creditsSuccess, queryClient, navigate]);
 
   // Check if user has API access
   const isBillingLoading = billingStatus === null;
