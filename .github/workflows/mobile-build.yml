@@ -35,10 +35,10 @@ jobs:
       - name: Cache Xcode DerivedData and SourcePackages
         uses: irgaly/xcode-cache@v1
         with:
-          key: xcode-cache-ios-${{ github.workflow }}-${{ hashFiles('**/Cargo.lock') }}
+          key: xcode-cache-ios-xcode26.2-${{ github.workflow }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            xcode-cache-ios-${{ github.workflow }}-
-            xcode-cache-ios-
+            xcode-cache-ios-xcode26.2-${{ github.workflow }}-
+            xcode-cache-ios-xcode26.2-
 
       - name: Cache Cargo bin (Tauri CLI)
         uses: actions/cache@v4
