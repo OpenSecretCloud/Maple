@@ -14,10 +14,9 @@ import {
 import { useNavigate, useRouter } from "@tanstack/react-router";
 import { useOpenSecret } from "@opensecret/react";
 import { useQuery } from "@tanstack/react-query";
-import { Sidebar, SidebarToggle } from "@/components/Sidebar";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { cn, useIsMobile } from "@/utils/utils";
+import { cn } from "@/utils/utils";
 import { useLocalState } from "@/state/useLocalState";
 import { getBillingService } from "@/billing/billingService";
 import { isIOS } from "@/utils/platform";
@@ -56,8 +55,6 @@ export function SettingsPage({ initialTab, creditsSuccess }: SettingsPageProps) 
   const [activeTab, setActiveTab] = useState<SettingsTab>(
     isValidTab(initialTab) ? initialTab : "profile"
   );
-  const isMobile = useIsMobile();
-  const [isSidebarOpen, setIsSidebarOpen] = useState(!isMobile);
   const navigate = useNavigate();
   const router = useRouter();
   const os = useOpenSecret();
@@ -142,8 +139,6 @@ export function SettingsPage({ initialTab, creditsSuccess }: SettingsPageProps) 
     navigate({ to: "/" });
   }, [navigate]);
 
-  const toggleSidebar = useCallback(() => setIsSidebarOpen((prev) => !prev), []);
-
   async function signOut() {
     try {
       try {
@@ -177,121 +172,121 @@ export function SettingsPage({ initialTab, creditsSuccess }: SettingsPageProps) 
   }, [activeTab, visibleTabs]);
 
   return (
-    <div
-      className={`grid h-dvh w-full grid-cols-1 ${isSidebarOpen ? "md:grid-cols-[280px_1fr]" : ""}`}
-    >
-      <Sidebar isOpen={isSidebarOpen} onToggle={toggleSidebar} />
-      <main className="flex h-dvh flex-col bg-card/90 backdrop-blur-lg overflow-hidden">
+    <div className="flex h-dvh w-full">
+      {/* Settings sidebar - hidden on mobile, shown on desktop */}
+      <aside className="hidden md:flex w-[280px] flex-col border-r border-input bg-sidebar">
+        {/* Sidebar header */}
+        <div className="h-14 flex items-center px-4 border-b border-input gap-2">
+          <Settings className="h-5 w-5 text-muted-foreground" />
+          <h1 className="text-lg font-semibold">Settings</h1>
+        </div>
+
+        {/* Settings navigation */}
+        <nav className="flex-1 overflow-y-auto py-4 px-3">
+          <div className="flex flex-col gap-1">
+            {visibleTabs.map((tab) => (
+              <button
+                key={tab.id}
+                onClick={() => handleTabChange(tab.id)}
+                className={cn(
+                  "flex items-center gap-3 px-3 py-2.5 rounded-md text-sm font-medium transition-colors text-left w-full",
+                  activeTab === tab.id
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:text-foreground hover:bg-muted"
+                )}
+              >
+                <tab.icon className="h-4 w-4 flex-shrink-0" />
+                <span className="flex-1">{tab.label}</span>
+                {tab.id === "team" && showTeamSetupAlert && (
+                  <Badge
+                    variant="secondary"
+                    className="py-0 px-1.5 text-xs bg-amber-500 text-white"
+                  >
+                    !
+                  </Badge>
+                )}
+              </button>
+            ))}
+          </div>
+        </nav>
+
+        {/* Sidebar footer */}
+        <div className="border-t border-input p-3 space-y-1">
+          <button
+            onClick={handleBackToChat}
+            className="flex items-center gap-3 px-3 py-2.5 rounded-md text-sm font-medium transition-colors text-left w-full text-muted-foreground hover:text-foreground hover:bg-muted"
+          >
+            <ArrowLeft className="h-4 w-4 flex-shrink-0" />
+            <span>Back to Chat</span>
+          </button>
+          <button
+            onClick={signOut}
+            className="flex items-center gap-3 px-3 py-2.5 rounded-md text-sm font-medium transition-colors text-left w-full text-destructive hover:bg-destructive/10"
+          >
+            <LogOut className="h-4 w-4 flex-shrink-0" />
+            <span>Log out</span>
+          </button>
+        </div>
+      </aside>
+
+      {/* Main content area */}
+      <main className="flex-1 flex h-dvh flex-col bg-card/90 backdrop-blur-lg overflow-hidden">
         {/* Header */}
         <div className="h-14 flex items-center px-4 border-b border-input gap-3">
-          {!isSidebarOpen && (
-            <div className="fixed top-[9.5px] left-4 z-20">
-              <SidebarToggle onToggle={toggleSidebar} />
-            </div>
-          )}
           <Button variant="ghost" size="sm" onClick={handleBackToChat} className="gap-2">
             <ArrowLeft className="h-4 w-4" />
             <span className="hidden sm:inline">Back to Chat</span>
           </Button>
           <div className="flex items-center gap-2">
-            <Settings className="h-4 w-4 text-muted-foreground" />
-            <h1 className="text-lg font-semibold">Settings</h1>
+            <Settings className="h-4 w-4 text-muted-foreground md:hidden" />
+            <h1 className="text-lg font-semibold md:hidden">Settings</h1>
           </div>
         </div>
 
-        {/* Content area */}
-        <div className="flex-1 min-h-0 flex flex-col md:flex-row overflow-hidden">
-          {/* Settings navigation - horizontal on mobile, vertical sidebar on desktop */}
-          <nav
-            className={cn(
-              "flex-shrink-0 border-b md:border-b-0 md:border-r border-input bg-muted/30",
-              "md:w-56 md:overflow-y-auto"
-            )}
-          >
-            {/* Mobile: horizontal scrollable tabs */}
-            <div className="flex md:hidden overflow-x-auto px-2 py-2 gap-1 scrollbar-hide">
-              {visibleTabs.map((tab) => (
-                <button
-                  key={tab.id}
-                  onClick={() => handleTabChange(tab.id)}
-                  className={cn(
-                    "flex items-center gap-1.5 px-3 py-2 rounded-md text-sm font-medium whitespace-nowrap transition-colors",
-                    activeTab === tab.id
-                      ? "bg-primary text-primary-foreground"
-                      : "text-muted-foreground hover:text-foreground hover:bg-muted"
-                  )}
-                >
-                  <tab.icon className="h-4 w-4" />
-                  {tab.label}
-                  {tab.id === "team" && showTeamSetupAlert && (
-                    <AlertCircle className="h-3 w-3 text-amber-500" />
-                  )}
-                </button>
-              ))}
-            </div>
+        {/* Mobile: horizontal scrollable tabs */}
+        <div className="flex md:hidden overflow-x-auto px-2 py-2 gap-1 border-b border-input bg-muted/30 scrollbar-hide">
+          {visibleTabs.map((tab) => (
+            <button
+              key={tab.id}
+              onClick={() => handleTabChange(tab.id)}
+              className={cn(
+                "flex items-center gap-1.5 px-3 py-2 rounded-md text-sm font-medium whitespace-nowrap transition-colors",
+                activeTab === tab.id
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:text-foreground hover:bg-muted"
+              )}
+            >
+              <tab.icon className="h-4 w-4" />
+              {tab.label}
+              {tab.id === "team" && showTeamSetupAlert && (
+                <AlertCircle className="h-3 w-3 text-amber-500" />
+              )}
+            </button>
+          ))}
+        </div>
 
-            {/* Desktop: vertical nav */}
-            <div className="hidden md:flex flex-col py-4 px-3 gap-1">
-              {visibleTabs.map((tab) => (
-                <button
-                  key={tab.id}
-                  onClick={() => handleTabChange(tab.id)}
-                  className={cn(
-                    "flex items-center gap-3 px-3 py-2.5 rounded-md text-sm font-medium transition-colors text-left w-full",
-                    activeTab === tab.id
-                      ? "bg-primary text-primary-foreground"
-                      : "text-muted-foreground hover:text-foreground hover:bg-muted"
-                  )}
-                >
-                  <tab.icon className="h-4 w-4 flex-shrink-0" />
-                  <span className="flex-1">{tab.label}</span>
-                  {tab.id === "team" && showTeamSetupAlert && (
-                    <Badge
-                      variant="secondary"
-                      className="py-0 px-1.5 text-xs bg-amber-500 text-white"
-                    >
-                      !
-                    </Badge>
-                  )}
-                </button>
-              ))}
+        {/* Settings content */}
+        <div className="flex-1 overflow-y-auto">
+          <div className="max-w-2xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
+            {activeTab === "profile" && <ProfileSection />}
+            {activeTab === "subscription" && <SubscriptionSection />}
+            {activeTab === "api" && <ApiManagementSection creditsSuccess={creditsSuccess} />}
+            {activeTab === "team" && <TeamManagementSection teamStatus={teamStatus} />}
+            {activeTab === "data" && <DataPrivacySection />}
+            {activeTab === "about" && <AboutSection />}
+          </div>
 
-              {/* Logout button at bottom of nav */}
-              <div className="mt-auto pt-4 border-t border-input mt-4">
-                <button
-                  onClick={signOut}
-                  className="flex items-center gap-3 px-3 py-2.5 rounded-md text-sm font-medium transition-colors text-left w-full text-destructive hover:bg-destructive/10"
-                >
-                  <LogOut className="h-4 w-4 flex-shrink-0" />
-                  <span>Log out</span>
-                </button>
-              </div>
-            </div>
-          </nav>
-
-          {/* Settings content */}
-          <div className="flex-1 overflow-y-auto">
-            <div className="max-w-2xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
-              {activeTab === "profile" && <ProfileSection />}
-              {activeTab === "subscription" && <SubscriptionSection />}
-              {activeTab === "api" && <ApiManagementSection creditsSuccess={creditsSuccess} />}
-              {activeTab === "team" && <TeamManagementSection teamStatus={teamStatus} />}
-              {activeTab === "data" && <DataPrivacySection />}
-              {activeTab === "about" && <AboutSection />}
-            </div>
-
-            {/* Mobile logout button */}
-            <div className="md:hidden px-4 pb-6">
-              <div className="max-w-2xl mx-auto">
-                <Button
-                  variant="outline"
-                  className="w-full border-destructive text-destructive hover:bg-destructive/10"
-                  onClick={signOut}
-                >
-                  <LogOut className="mr-2 h-4 w-4" />
-                  Log out
-                </Button>
-              </div>
+          {/* Mobile logout button */}
+          <div className="md:hidden px-4 pb-6">
+            <div className="max-w-2xl mx-auto">
+              <Button
+                variant="outline"
+                className="w-full border-destructive text-destructive hover:bg-destructive/10"
+                onClick={signOut}
+              >
+                <LogOut className="mr-2 h-4 w-4" />
+                Log out
+              </Button>
             </div>
           </div>
         </div>
