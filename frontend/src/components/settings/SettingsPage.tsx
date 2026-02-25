@@ -164,12 +164,20 @@ export function SettingsPage({ initialTab, creditsSuccess }: SettingsPageProps) 
   });
 
   // Ensure activeTab is always a visible tab (prevent showing hidden tab content)
+  // Also re-apply initialTab when it becomes visible (e.g., after billingStatus loads)
   useEffect(() => {
+    if (initialTab && isValidTab(initialTab)) {
+      const isInitialTabNowVisible = visibleTabs.some((tab) => tab.id === initialTab);
+      if (isInitialTabNowVisible) {
+        setActiveTab(initialTab);
+        return;
+      }
+    }
     const isTabVisible = visibleTabs.some((tab) => tab.id === activeTab);
     if (!isTabVisible && visibleTabs.length > 0) {
       setActiveTab(visibleTabs[0].id);
     }
-  }, [activeTab, visibleTabs]);
+  }, [activeTab, visibleTabs, initialTab]);
 
   return (
     <div className="flex h-dvh w-full">
