@@ -1,5 +1,8 @@
 name: Android App CI
 
+permissions:
+  contents: read
+
 on:
   push:
     branches: [ master ]
