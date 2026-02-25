@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import {
   User,
   CreditCard,
@@ -156,12 +156,16 @@ export function SettingsPage({ initialTab, creditsSuccess }: SettingsPageProps) 
     }
   }
 
-  // Filter tabs based on user's plan
-  const visibleTabs = TAB_CONFIG.filter((tab) => {
-    if (tab.requiresTeam && !isTeamPlan) return false;
-    if (tab.requiresApiAccess && !showApiManagement) return false;
-    return true;
-  });
+  // Filter tabs based on user's plan (memoized to prevent useEffect firing every render)
+  const visibleTabs = useMemo(
+    () =>
+      TAB_CONFIG.filter((tab) => {
+        if (tab.requiresTeam && !isTeamPlan) return false;
+        if (tab.requiresApiAccess && !showApiManagement) return false;
+        return true;
+      }),
+    [isTeamPlan, showApiManagement]
+  );
 
   // Ensure activeTab is always a visible tab (prevent showing hidden tab content)
   // Also re-apply initialTab when it becomes visible (e.g., after billingStatus loads)
