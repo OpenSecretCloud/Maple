@@ -130,7 +130,11 @@ export function ApiCreditsSection({ showSuccessMessage = false }: ApiCreditsSect
           await invoke("plugin:opener|open_url", { url: response.checkout_url }).catch(
             (err: Error) => {
               console.error("[Credits] Failed to open checkout with Tauri opener:", err);
-              window.location.href = response.checkout_url;
+              if (isMobile()) {
+                throw new Error("Failed to open payment page in external browser.");
+              } else {
+                window.open(response.checkout_url, "_blank");
+              }
             }
           );
         } else {
@@ -150,7 +154,11 @@ export function ApiCreditsSection({ showSuccessMessage = false }: ApiCreditsSect
           await invoke("plugin:opener|open_url", { url: response.checkout_url }).catch(
             (err: Error) => {
               console.error("[Credits] Failed to open checkout with Tauri opener:", err);
-              window.location.href = response.checkout_url;
+              if (isMobile()) {
+                throw new Error("Failed to open payment page in external browser.");
+              } else {
+                window.open(response.checkout_url, "_blank");
+              }
             }
           );
         } else {
