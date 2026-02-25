@@ -1,5 +1,8 @@
 name: Mobile App CI
 
+permissions:
+  contents: read
+
 on:
   push:
     branches: [ master ]
