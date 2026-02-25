@@ -5,12 +5,15 @@ import {
   PanelRightOpen,
   XCircle,
   Trash2,
-  X
+  X,
+  Settings
 } from "lucide-react";
 import { Button } from "./ui/button";
-import { useLocation, useRouter } from "@tanstack/react-router";
+import { useLocation, useRouter, useNavigate } from "@tanstack/react-router";
 import { ChatHistoryList } from "./ChatHistoryList";
-import { AccountMenu } from "./AccountMenu";
+import { CreditUsage } from "./CreditUsage";
+import { Badge } from "./ui/badge";
+import { Link } from "@tanstack/react-router";
 import { useRef, useEffect, KeyboardEvent, useCallback, useLayoutEffect, useState } from "react";
 import { cn, useClickOutside, useIsMobile } from "@/utils/utils";
 import { Input } from "./ui/input";
@@ -267,9 +270,32 @@ export function Sidebar({
           />
         </nav>
         <div className="px-4 pb-4">
-          <AccountMenu />
+          <SettingsButton />
         </div>
       </div>
+    </div>
+  );
+}
+
+function SettingsButton() {
+  const navigate = useNavigate();
+  const { billingStatus } = useLocalState();
+
+  return (
+    <div className="flex flex-col gap-2">
+      <Link to="/pricing" className="self-end">
+        <Badge
+          variant="secondary"
+          className="bg-[hsl(var(--primary))] text-[hsl(var(--primary-foreground))] hover:bg-[hsl(var(--primary))]/80 dark:bg-white dark:text-[hsl(var(--background))] dark:hover:bg-white/80 transition-colors cursor-pointer uppercase"
+        >
+          {billingStatus ? `${billingStatus.product_name} Plan` : "Loading..."}
+        </Badge>
+      </Link>
+      <CreditUsage />
+      <Button variant="outline" className="gap-2" onClick={() => navigate({ to: "/settings" })}>
+        <Settings className="w-4 h-4" />
+        Settings
+      </Button>
     </div>
   );
 }
