@@ -179,22 +179,27 @@ export function AccountMenu() {
       const billingService = getBillingService();
       const url = await billingService.getPortalUrl();
 
-      // Check if we're on a mobile platform
-      if (isMobile()) {
+      // Check if we're on any Tauri platform (mobile or desktop)
+      if (isTauri()) {
         console.log(
-          "[Billing] Mobile platform detected, using opener plugin to launch external browser for portal"
+          "[Billing] Tauri platform detected, using opener plugin to launch external browser for portal"
         );
 
         const { invoke } = await import("@tauri-apps/api/core");
 
-        // Use the opener plugin directly - with NO fallback for mobile platforms
+        // Use the opener plugin directly for all Tauri platforms
         await invoke("plugin:opener|open_url", { url })
           .then(() => {
             console.log("[Billing] Successfully opened portal URL in external browser");
           })
           .catch((err: Error) => {
             console.error("[Billing] Failed to open external browser:", err);
-            alert("Failed to open browser. Please try again.");
+            if (isMobile()) {
+              alert("Failed to open browser. Please try again.");
+            } else {
+              // Fallback to window.open on desktop
+              window.open(url, "_blank");
+            }
           });
 
         // Add a small delay to ensure the browser has time to open
@@ -202,7 +207,7 @@ export function AccountMenu() {
         return;
       }
 
-      // Default browser opening for non-mobile platforms
+      // Default browser opening for web platforms
       window.open(url, "_blank");
     } catch (error) {
       console.error("Error fetching portal URL:", error);

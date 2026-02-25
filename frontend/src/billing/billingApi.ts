@@ -1,4 +1,4 @@
-import { isMobile } from "@/utils/platform";
+import { isMobile, isTauri } from "@/utils/platform";
 
 // API Credit Purchase Constants
 export const MIN_PURCHASE_CREDITS = 10000;
@@ -203,24 +203,29 @@ export async function createCheckoutSession(
   const { checkout_url } = await response.json();
   console.log("Redirecting to checkout:", checkout_url);
 
-  // For mobile platforms, force external browser for payment (App Store restrictions)
-  if (isMobile()) {
+  // For all Tauri platforms (mobile and desktop), use opener plugin to launch external browser
+  if (isTauri()) {
     console.log(
-      "[Billing] Mobile platform detected, using opener plugin to launch external browser"
+      "[Billing] Tauri platform detected, using opener plugin to launch external browser"
     );
 
     const { invoke } = await import("@tauri-apps/api/core");
 
-    // Use the opener plugin directly - required for mobile payments
+    // Use the opener plugin directly - required for Tauri platforms
     await invoke("plugin:opener|open_url", { url: checkout_url })
       .then(() => {
         console.log("[Billing] Successfully opened URL in external browser");
       })
       .catch((error: Error) => {
         console.error("[Billing] Failed to open external browser:", error);
-        throw new Error(
-          "Failed to open payment page in external browser. This is required for mobile payments."
-        );
+        if (isMobile()) {
+          throw new Error(
+            "Failed to open payment page in external browser. This is required for mobile payments."
+          );
+        } else {
+          // Fallback to regular navigation on desktop
+          window.location.href = checkout_url;
+        }
       });
 
     // Add a small delay to ensure the browser has time to open
@@ -228,7 +233,7 @@ export async function createCheckoutSession(
     return;
   }
 
-  // Fall back to regular navigation if not on Tauri or if Tauri opener fails
+  // Fall back to regular navigation for web platforms
   window.location.href = checkout_url;
 }
 
@@ -269,24 +274,29 @@ export async function createZapriteCheckoutSession(
   const { checkout_url } = await response.json();
   console.log("Redirecting to Zaprite checkout:", checkout_url);
 
-  // For mobile platforms, force external browser for crypto payments
-  if (isMobile()) {
+  // For all Tauri platforms (mobile and desktop), use opener plugin to launch external browser
+  if (isTauri()) {
     console.log(
-      "[Billing] Mobile platform detected, using opener plugin to launch external browser"
+      "[Billing] Tauri platform detected, using opener plugin to launch external browser"
     );
 
     const { invoke } = await import("@tauri-apps/api/core");
 
-    // Use the opener plugin directly - required for mobile payments
+    // Use the opener plugin directly - required for Tauri platforms
     await invoke("plugin:opener|open_url", { url: checkout_url })
       .then(() => {
         console.log("[Billing] Successfully opened URL in external browser");
       })
       .catch((error: Error) => {
         console.error("[Billing] Failed to open external browser:", error);
-        throw new Error(
-          "Failed to open payment page in external browser. This is required for mobile payments."
-        );
+        if (isMobile()) {
+          throw new Error(
+            "Failed to open payment page in external browser. This is required for mobile payments."
+          );
+        } else {
+          // Fallback to regular navigation on desktop
+          window.location.href = checkout_url;
+        }
       });
 
     // Add a small delay to ensure the browser has time to open
@@ -294,7 +304,7 @@ export async function createZapriteCheckoutSession(
     return;
   }
 
-  // Fall back to regular navigation if not on mobile
+  // Fall back to regular navigation for web platforms
   window.location.href = checkout_url;
 }
 

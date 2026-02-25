@@ -15,7 +15,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Loader2, AlertCircle, UserPlus, Info, CreditCard } from "lucide-react";
 import { getBillingService } from "@/billing/billingService";
 import { useLocalState } from "@/state/useLocalState";
-import { isMobile } from "@/utils/platform";
+import { isTauri } from "@/utils/platform";
 import type { TeamStatus } from "@/types/team";
 
 interface TeamInviteDialogProps {
@@ -44,8 +44,8 @@ export function TeamInviteDialog({ open, onOpenChange, teamStatus }: TeamInviteD
       const billingService = getBillingService();
       const url = await billingService.getPortalUrl();
 
-      // Use external browser for mobile platforms (iOS and Android)
-      if (isMobile()) {
+      // Use external browser for all Tauri platforms (mobile and desktop)
+      if (isTauri()) {
         try {
           // Dynamic import to avoid issues in web environments
           const { invoke } = await import("@tauri-apps/api/core");
@@ -67,7 +67,7 @@ export function TeamInviteDialog({ open, onOpenChange, teamStatus }: TeamInviteD
         }
       }
 
-      // Web or desktop flow
+      // Web flow
       window.open(url, "_blank", "noopener,noreferrer");
     } catch (error) {
       console.error("Failed to open billing portal:", error);
