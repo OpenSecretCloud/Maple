@@ -10,6 +10,8 @@ frontend/node_modules/
 .env
 .env.local
 .env.*.local
+.envrc
+.direnv/
 *.key
 
 # IDE files
