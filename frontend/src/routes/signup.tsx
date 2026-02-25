@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { AlertDestructive } from "@/components/AlertDestructive";
-import { Loader2, Github, Mail, ClipboardPaste } from "lucide-react";
+import { Loader2, Github, Mail } from "lucide-react";
 import { Google } from "@/components/icons/Google";
 import { Apple } from "@/components/icons/Apple";
 import { AuthMain } from "@/components/AuthMain";
@@ -481,16 +481,6 @@ function SignupPage() {
           <UserCircle className="mr-2 h-4 w-4" />
           Sign up as Anonymous
         </Button>
-        {isTauriEnv && (
-          <Button
-            onClick={() => setSignUpMethod("paste-code")}
-            variant="outline"
-            className="w-full"
-          >
-            <ClipboardPaste className="mr-2 h-4 w-4" />
-            Paste Login Code
-          </Button>
-        )}
         <div className="text-center text-sm">
           Already have an account?{" "}
           <Link
