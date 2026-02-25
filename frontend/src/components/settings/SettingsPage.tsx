@@ -125,14 +125,6 @@ export function SettingsPage({ initialTab, creditsSuccess }: SettingsPageProps) 
     }
   }, [initialTab]);
 
-  // Ensure activeTab is always a visible tab (prevent showing hidden tab content)
-  useEffect(() => {
-    const isTabVisible = visibleTabs.some((tab) => tab.id === activeTab);
-    if (!isTabVisible && visibleTabs.length > 0) {
-      setActiveTab(visibleTabs[0].id);
-    }
-  }, [activeTab, visibleTabs]);
-
   const handleTabChange = useCallback(
     (tab: SettingsTab) => {
       setActiveTab(tab);
@@ -175,6 +167,14 @@ export function SettingsPage({ initialTab, creditsSuccess }: SettingsPageProps) 
     if (tab.requiresApiAccess && !showApiManagement) return false;
     return true;
   });
+
+  // Ensure activeTab is always a visible tab (prevent showing hidden tab content)
+  useEffect(() => {
+    const isTabVisible = visibleTabs.some((tab) => tab.id === activeTab);
+    if (!isTabVisible && visibleTabs.length > 0) {
+      setActiveTab(visibleTabs[0].id);
+    }
+  }, [activeTab, visibleTabs]);
 
   return (
     <div className="grid h-dvh w-full grid-cols-1 md:grid-cols-[280px_1fr]">
