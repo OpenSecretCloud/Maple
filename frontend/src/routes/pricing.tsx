@@ -419,8 +419,26 @@ function PricingPage() {
               quantity
             );
           }
+        } else if (isTauri()) {
+          // For Tauri desktop, use trymaple.ai since tauri://localhost won't work in external browser
+          if (useBitcoin) {
+            await billingService.createZapriteCheckoutSession(
+              email,
+              productId,
+              `https://trymaple.ai/pricing?success=true`,
+              quantity
+            );
+          } else {
+            await billingService.createCheckoutSession(
+              email,
+              productId,
+              `https://trymaple.ai/pricing?success=true`,
+              `https://trymaple.ai/pricing?canceled=true`,
+              quantity
+            );
+          }
         } else {
-          // For web or desktop, use regular URLs
+          // For web, use regular URLs
           if (useBitcoin) {
             await billingService.createZapriteCheckoutSession(
               email,

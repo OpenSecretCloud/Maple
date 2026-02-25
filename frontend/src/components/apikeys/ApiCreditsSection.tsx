@@ -105,8 +105,12 @@ export function ApiCreditsSection({ showSuccessMessage = false }: ApiCreditsSect
         successUrl = `https://trymaple.ai/payment-success-credits?source=${method}`;
         cancelUrl =
           method === "stripe" ? `https://trymaple.ai/payment-canceled?source=stripe` : undefined;
+      } else if (isTauri()) {
+        // For Tauri desktop, use trymaple.ai since tauri://localhost won't work in external browser
+        successUrl = `https://trymaple.ai/?credits_success=true`;
+        cancelUrl = method === "stripe" ? `https://trymaple.ai/` : undefined;
       } else {
-        // For web or desktop, use regular URLs with query params
+        // For web, use regular URLs with query params
         const baseUrl = window.location.origin;
         successUrl = `${baseUrl}/?credits_success=true`;
         cancelUrl = method === "stripe" ? `${baseUrl}/` : undefined;

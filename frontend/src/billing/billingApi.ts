@@ -129,9 +129,9 @@ export async function fetchProducts(version?: string): Promise<BillingProduct[]>
 export async function fetchPortalUrl(thirdPartyToken: string): Promise<string> {
   let returnUrl = window.location.origin;
 
-  // For mobile platforms, use the actual website origin instead of tauri://localhost
-  if (isMobile()) {
-    console.log("[Billing] Mobile platform detected, using trymaple.ai as return URL");
+  // For all Tauri platforms, use the actual website origin instead of tauri://localhost
+  if (isTauri()) {
+    console.log("[Billing] Tauri platform detected, using trymaple.ai as return URL");
     returnUrl = "https://trymaple.ai";
   }
 
