@@ -557,7 +557,7 @@ function SignupPage() {
                   Verifying...
                 </>
               ) : (
-                "Complete Login"
+                "Complete Sign Up"
               )}
             </Button>
           </>
