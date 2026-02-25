@@ -101,6 +101,15 @@ jobs:
           [target.aarch64-apple-ios-sim.onnxruntime]
           rustc-link-search = ["${WORKSPACE}/frontend/src-tauri/onnxruntime-ios/onnxruntime.xcframework/ios-arm64-simulator"]
           rustc-link-lib = ["static=onnxruntime"]
+          
+          # ONNX Runtime is a C++ library; when overriding ort-sys link metadata via
+          # cargo config, the build script's cargo:rustc-link-lib=c++ is suppressed,
+          # so we must link libc++ explicitly.
+          [target.aarch64-apple-ios]
+          rustc-link-lib = ["c++"]
+          
+          [target.aarch64-apple-ios-sim]
+          rustc-link-lib = ["c++"]
           EOF
           
           echo "Generated cargo config:"
