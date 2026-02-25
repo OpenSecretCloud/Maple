@@ -223,7 +223,7 @@ function OAuthCallback() {
                 </Button>
               </div>
               <p className="text-xs text-muted-foreground mt-2">
-                In the Maple app, tap &quot;Paste Login Code&quot; on the login screen.
+                Switch to the Maple app and paste the code into the login code input.
               </p>
             </div>
           )}
