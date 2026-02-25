@@ -50,10 +50,24 @@ function SignupPage() {
   const [guestUuid, setGuestUuid] = useState<string | null>(null);
 
   const [pasteCodeValue, setPasteCodeValue] = useState("");
+  const [oauthProvider, setOauthProvider] = useState<string | null>(null);
+  const [showPasteInput, setShowPasteInput] = useState(false);
 
   // Use platform detection functions
   const isIOSPlatform = isIOS();
   const isTauriEnv = isTauri();
+
+  // Show paste code input after a delay when auto-navigated from OAuth
+  useEffect(() => {
+    if (signUpMethod === "paste-code" && oauthProvider) {
+      setShowPasteInput(false);
+      const timer = setTimeout(() => setShowPasteInput(true), 3000);
+      return () => clearTimeout(timer);
+    }
+    if (signUpMethod === "paste-code" && !oauthProvider) {
+      setShowPasteInput(true);
+    }
+  }, [signUpMethod, oauthProvider]);
 
   // Redirect if already logged in (but not if we're showing guest credentials)
   useEffect(() => {
@@ -186,6 +200,10 @@ function SignupPage() {
           console.error("[OAuth] Failed to open external browser:", error);
           setError("Failed to open authentication page in browser");
         });
+
+        // Navigate to paste-code screen so user sees it while browser is open
+        setOauthProvider("GitHub");
+        setSignUpMethod("paste-code");
       } else {
         // Web flow remains unchanged
         const { auth_url } = await os.initiateGitHubAuth("");
@@ -228,6 +246,10 @@ function SignupPage() {
           console.error("[OAuth] Failed to open external browser:", error);
           setError("Failed to open authentication page in browser");
         });
+
+        // Navigate to paste-code screen so user sees it while browser is open
+        setOauthProvider("Google");
+        setSignUpMethod("paste-code");
       } else {
         // Web flow remains unchanged
         const { auth_url } = await os.initiateGoogleAuth("");
@@ -397,6 +419,10 @@ function SignupPage() {
           console.error("[OAuth] Failed to open external browser:", error);
           setError("Failed to open authentication page in browser");
         });
+
+        // Navigate to paste-code screen so user sees it while browser is open
+        setOauthProvider("Apple");
+        setSignUpMethod("paste-code");
       } else {
         // Web flow - use AppleAuthProvider component which will initiate the flow
         console.log("[OAuth] Using web flow for Apple Sign In (Web only)");
@@ -484,46 +510,66 @@ function SignupPage() {
   if (signUpMethod === "paste-code") {
     return (
       <AuthMain
-        title="Paste Login Code"
-        description="Paste the code from your browser to complete authentication."
+        title={oauthProvider ? `Signing up with ${oauthProvider}` : "Paste Login Code"}
+        description={
+          oauthProvider
+            ? `Complete your ${oauthProvider} sign-up in the browser that just opened.`
+            : "Paste the code from your browser to complete authentication."
+        }
       >
+        {oauthProvider && !showPasteInput && (
+          <div className="flex justify-center py-4">
+            <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+          </div>
+        )}
         {error && <AlertDestructive title="Error" description={error} />}
-        <div className="grid gap-2">
-          <Label htmlFor="auth-code">Login Code</Label>
-          <Input
-            id="auth-code"
-            type="text"
-            placeholder="Paste your login code here"
-            value={pasteCodeValue}
-            onChange={(e) => setPasteCodeValue(e.target.value)}
-            className="font-mono text-xs"
-            autoFocus
-          />
-          <p className="text-xs text-muted-foreground">
-            After signing in with your browser, copy the code shown on the success page and paste it
-            here.
-          </p>
-        </div>
-        <Button
-          onClick={handlePasteCode}
-          className="w-full"
-          disabled={isLoading || !pasteCodeValue.trim()}
-        >
-          {isLoading ? (
-            <>
-              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              Verifying...
-            </>
-          ) : (
-            "Complete Login"
-          )}
-        </Button>
+        {showPasteInput && (
+          <>
+            {oauthProvider && (
+              <p className="text-sm text-muted-foreground text-center">
+                Having trouble? Paste the login code from the browser below.
+              </p>
+            )}
+            <div className="grid gap-2">
+              <Label htmlFor="auth-code">Login Code</Label>
+              <Input
+                id="auth-code"
+                type="text"
+                placeholder="Paste your login code here"
+                value={pasteCodeValue}
+                onChange={(e) => setPasteCodeValue(e.target.value)}
+                className="font-mono text-xs"
+                autoFocus
+              />
+              <p className="text-xs text-muted-foreground">
+                After signing in with your browser, copy the code shown on the success page and
+                paste it here.
+              </p>
+            </div>
+            <Button
+              onClick={handlePasteCode}
+              className="w-full"
+              disabled={isLoading || !pasteCodeValue.trim()}
+            >
+              {isLoading ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Verifying...
+                </>
+              ) : (
+                "Complete Login"
+              )}
+            </Button>
+          </>
+        )}
         <Button
           type="button"
           variant="outline"
           onClick={() => {
             setSignUpMethod(null);
+            setOauthProvider(null);
             setPasteCodeValue("");
+            setShowPasteInput(false);
             setError(null);
           }}
           className="w-full"

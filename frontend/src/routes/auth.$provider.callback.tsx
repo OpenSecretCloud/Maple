@@ -199,7 +199,7 @@ function OAuthCallback() {
             <div className="border-t pt-4 mt-2">
               <p className="text-sm text-muted-foreground mb-3">
                 <ExternalLink className="inline h-4 w-4 mr-1" />
-                Not redirecting to the app? Copy the code below and paste it in the Maple app.
+                Trouble opening the app? Copy the code below and paste it in the Maple app.
               </p>
               <div className="flex gap-2">
                 <input
