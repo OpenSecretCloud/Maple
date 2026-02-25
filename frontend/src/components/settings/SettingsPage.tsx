@@ -17,7 +17,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Sidebar, SidebarToggle } from "@/components/Sidebar";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { cn } from "@/utils/utils";
+import { cn, useIsMobile } from "@/utils/utils";
 import { useLocalState } from "@/state/useLocalState";
 import { getBillingService } from "@/billing/billingService";
 import { isIOS } from "@/utils/platform";
@@ -56,7 +56,8 @@ export function SettingsPage({ initialTab, creditsSuccess }: SettingsPageProps) 
   const [activeTab, setActiveTab] = useState<SettingsTab>(
     isValidTab(initialTab) ? initialTab : "profile"
   );
-  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const isMobile = useIsMobile();
+  const [isSidebarOpen, setIsSidebarOpen] = useState(!isMobile);
   const navigate = useNavigate();
   const router = useRouter();
   const os = useOpenSecret();
