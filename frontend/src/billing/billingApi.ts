@@ -223,8 +223,8 @@ export async function createCheckoutSession(
             "Failed to open payment page in external browser. This is required for mobile payments."
           );
         } else {
-          // Fallback to regular navigation on desktop
-          window.location.href = checkout_url;
+          // Fallback to window.open on desktop (less disruptive than navigating away)
+          window.open(checkout_url, "_blank");
         }
       });
 
@@ -294,8 +294,8 @@ export async function createZapriteCheckoutSession(
             "Failed to open payment page in external browser. This is required for mobile payments."
           );
         } else {
-          // Fallback to regular navigation on desktop
-          window.location.href = checkout_url;
+          // Fallback to window.open on desktop (less disruptive than navigating away)
+          window.open(checkout_url, "_blank");
         }
       });
 
