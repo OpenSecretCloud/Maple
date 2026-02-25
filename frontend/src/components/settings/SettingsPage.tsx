@@ -183,7 +183,7 @@ export function SettingsPage({ initialTab, creditsSuccess }: SettingsPageProps) 
         {/* Header */}
         <div className="h-14 flex items-center px-4 border-b border-input gap-3">
           {!isSidebarOpen && (
-            <div className="md:hidden">
+            <div className="fixed top-[9.5px] left-4 z-20">
               <SidebarToggle onToggle={toggleSidebar} />
             </div>
           )}
