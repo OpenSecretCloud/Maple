@@ -202,6 +202,7 @@ function SignupPage() {
         });
 
         // Navigate to paste-code screen so user sees it while browser is open
+        setError(null);
         setOauthProvider("GitHub");
         setSignUpMethod("paste-code");
       } else {
@@ -248,6 +249,7 @@ function SignupPage() {
         });
 
         // Navigate to paste-code screen so user sees it while browser is open
+        setError(null);
         setOauthProvider("Google");
         setSignUpMethod("paste-code");
       } else {
@@ -421,6 +423,7 @@ function SignupPage() {
         });
 
         // Navigate to paste-code screen so user sees it while browser is open
+        setError(null);
         setOauthProvider("Apple");
         setSignUpMethod("paste-code");
       } else {

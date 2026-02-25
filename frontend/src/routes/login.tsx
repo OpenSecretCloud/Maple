@@ -191,6 +191,7 @@ function LoginPage() {
         });
 
         // Navigate to paste-code screen so user sees it while browser is open
+        setError(null);
         setOauthProvider("GitHub");
         setLoginMethod("paste-code");
       } else {
@@ -237,6 +238,7 @@ function LoginPage() {
         });
 
         // Navigate to paste-code screen so user sees it while browser is open
+        setError(null);
         setOauthProvider("Google");
         setLoginMethod("paste-code");
       } else {
@@ -405,6 +407,7 @@ function LoginPage() {
         });
 
         // Navigate to paste-code screen so user sees it while browser is open
+        setError(null);
         setOauthProvider("Apple");
         setLoginMethod("paste-code");
       } else {
