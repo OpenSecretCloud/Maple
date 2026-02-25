@@ -7,7 +7,7 @@ import { Loader2, CreditCard, Bitcoin, Coins, CheckCircle, Edit } from "lucide-r
 import { useQuery } from "@tanstack/react-query";
 import { getBillingService } from "@/billing/billingService";
 import { useOpenSecret } from "@opensecret/react";
-import { isMobile } from "@/utils/platform";
+import { isMobile, isTauri } from "@/utils/platform";
 import {
   MIN_PURCHASE_CREDITS,
   MIN_PURCHASE_AMOUNT,
@@ -105,8 +105,12 @@ export function ApiCreditsSection({ showSuccessMessage = false }: ApiCreditsSect
         successUrl = `https://trymaple.ai/payment-success-credits?source=${method}`;
         cancelUrl =
           method === "stripe" ? `https://trymaple.ai/payment-canceled?source=stripe` : undefined;
+      } else if (isTauri()) {
+        // For Tauri desktop, use trymaple.ai since tauri://localhost won't work in external browser
+        successUrl = `https://trymaple.ai/?credits_success=true`;
+        cancelUrl = method === "stripe" ? `https://trymaple.ai/` : undefined;
       } else {
-        // For web or desktop, use regular URLs with query params
+        // For web, use regular URLs with query params
         const baseUrl = window.location.origin;
         successUrl = `${baseUrl}/?credits_success=true`;
         cancelUrl = method === "stripe" ? `${baseUrl}/` : undefined;
@@ -120,10 +124,22 @@ export function ApiCreditsSection({ showSuccessMessage = false }: ApiCreditsSect
           cancel_url: cancelUrl || successUrl
         });
 
-        // Redirect to Stripe checkout
-        // Note: This feature is only exposed on desktop/web (not mobile), where window.location.href works correctly.
-        // For mobile platforms, we would need special handling with invoke("plugin:opener|open_url"), but that's not needed here.
-        window.location.href = response.checkout_url;
+        // For Tauri platforms (desktop and mobile), use opener plugin to open in external browser
+        if (isTauri()) {
+          const { invoke } = await import("@tauri-apps/api/core");
+          await invoke("plugin:opener|open_url", { url: response.checkout_url }).catch(
+            (err: Error) => {
+              console.error("[Credits] Failed to open checkout with Tauri opener:", err);
+              if (isMobile()) {
+                throw new Error("Failed to open payment page in external browser.");
+              } else {
+                window.open(response.checkout_url, "_blank");
+              }
+            }
+          );
+        } else {
+          window.location.href = response.checkout_url;
+        }
       } else {
         // For Zaprite, guest users pass empty string (backend infers from JWT)
         const response = await billingService.purchaseApiCreditsZaprite({
@@ -132,10 +148,22 @@ export function ApiCreditsSection({ showSuccessMessage = false }: ApiCreditsSect
           success_url: successUrl
         });
 
-        // Redirect to Zaprite checkout
-        // Note: This feature is only exposed on desktop/web (not mobile), where window.location.href works correctly.
-        // For mobile platforms, we would need special handling with invoke("plugin:opener|open_url"), but that's not needed here.
-        window.location.href = response.checkout_url;
+        // For Tauri platforms (desktop and mobile), use opener plugin to open in external browser
+        if (isTauri()) {
+          const { invoke } = await import("@tauri-apps/api/core");
+          await invoke("plugin:opener|open_url", { url: response.checkout_url }).catch(
+            (err: Error) => {
+              console.error("[Credits] Failed to open checkout with Tauri opener:", err);
+              if (isMobile()) {
+                throw new Error("Failed to open payment page in external browser.");
+              } else {
+                window.open(response.checkout_url, "_blank");
+              }
+            }
+          );
+        } else {
+          window.location.href = response.checkout_url;
+        }
       }
     } catch (error) {
       console.error("Failed to create checkout session:", error);

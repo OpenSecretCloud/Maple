@@ -419,8 +419,26 @@ function PricingPage() {
               quantity
             );
           }
+        } else if (isTauri()) {
+          // For Tauri desktop, use trymaple.ai since tauri://localhost won't work in external browser
+          if (useBitcoin) {
+            await billingService.createZapriteCheckoutSession(
+              email,
+              productId,
+              `https://trymaple.ai/pricing?success=true`,
+              quantity
+            );
+          } else {
+            await billingService.createCheckoutSession(
+              email,
+              productId,
+              `https://trymaple.ai/pricing?success=true`,
+              `https://trymaple.ai/pricing?canceled=true`,
+              quantity
+            );
+          }
         } else {
-          // For web or desktop, use regular URLs
+          // For web, use regular URLs
           if (useBitcoin) {
             await billingService.createZapriteCheckoutSession(
               email,
@@ -564,13 +582,13 @@ function PricingPage() {
       // For all other cases (upgrades/downgrades between paid plans, or downgrades to free),
       // use portal URL if it exists
       if (portalUrl) {
-        // Open in external browser for mobile platforms (iOS and Android)
-        if (isMobilePlatform) {
+        // Open in external browser for all Tauri platforms (mobile and desktop)
+        if (isTauri()) {
           console.log(
-            "[Billing] Mobile platform detected, using opener plugin to launch external browser for portal"
+            "[Billing] Tauri platform detected, using opener plugin to launch external browser for portal"
           );
 
-          // Use the Tauri opener plugin for mobile platforms
+          // Use the Tauri opener plugin for all Tauri platforms
           import("@tauri-apps/api/core")
             .then((coreModule) => {
               return coreModule.invoke("plugin:opener|open_url", { url: portalUrl });
@@ -580,10 +598,15 @@ function PricingPage() {
             })
             .catch((err) => {
               console.error("[Billing] Failed to open external browser:", err);
-              alert("Failed to open browser. Please try again.");
+              if (isMobilePlatform) {
+                alert("Failed to open browser. Please try again.");
+              } else {
+                // Fallback to window.open on desktop
+                window.open(portalUrl, "_blank");
+              }
             });
         } else {
-          // Default browser opening for desktop and web platforms
+          // Default browser opening for web platforms
           window.open(portalUrl, "_blank");
         }
         return;
