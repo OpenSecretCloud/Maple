@@ -177,7 +177,7 @@ export function SettingsPage({ initialTab, creditsSuccess }: SettingsPageProps) 
   }, [activeTab, visibleTabs]);
 
   return (
-    <div className="grid h-dvh w-full grid-cols-1 md:grid-cols-[280px_1fr]">
+    <div className={`grid h-dvh w-full grid-cols-1 ${isSidebarOpen ? "md:grid-cols-[280px_1fr]" : ""}`}>
       <Sidebar isOpen={isSidebarOpen} onToggle={toggleSidebar} />
       <main className="flex h-dvh flex-col bg-card/90 backdrop-blur-lg overflow-hidden">
         {/* Header */}
