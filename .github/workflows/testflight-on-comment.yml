@@ -64,7 +64,7 @@ jobs:
   deploy-testflight:
     needs: check-comment
     if: needs.check-comment.outputs.should-deploy == 'true'
-    runs-on: macos-latest-xlarge
+    runs-on: macos-26-xlarge
     steps:
       - uses: actions/checkout@v4
         with:
@@ -93,10 +93,10 @@ jobs:
       - name: Cache Xcode DerivedData and SourcePackages
         uses: irgaly/xcode-cache@v1
         with:
-          key: xcode-cache-testflight-${{ github.workflow }}-${{ hashFiles('**/Cargo.lock') }}
+          key: xcode-cache-testflight-xcode26.2-${{ github.workflow }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            xcode-cache-testflight-${{ github.workflow }}-
-            xcode-cache-testflight-
+            xcode-cache-testflight-xcode26.2-${{ github.workflow }}-
+            xcode-cache-testflight-xcode26.2-
 
       - name: Cache Cargo bin (Tauri CLI)
         uses: actions/cache@v4
@@ -118,9 +118,9 @@ jobs:
           path: |
             frontend/src-tauri/onnxruntime-ios
             frontend/src-tauri/onnxruntime-build
-          key: onnxruntime-ios-built-1.22.2-v1
+          key: onnxruntime-ios-built-1.22.2-xcode26.2-v1
           restore-keys: |
-            onnxruntime-ios-built-1.22.2-
+            onnxruntime-ios-built-1.22.2-xcode26.2-
 
       - name: Build ONNX Runtime for iOS from source
         if: steps.cache-onnxruntime.outputs.cache-hit != 'true'
@@ -154,11 +154,13 @@ jobs:
           
           [target.aarch64-apple-ios.onnxruntime]
           rustc-link-search = ["${WORKSPACE}/frontend/src-tauri/onnxruntime-ios/onnxruntime.xcframework/ios-arm64"]
-          rustc-link-lib = ["static=onnxruntime"]
+          # Also link libc++ since ONNX Runtime is C++; overriding ort-sys link metadata
+          # suppresses the build script's cargo:rustc-link-lib=c++
+          rustc-link-lib = ["static=onnxruntime", "c++"]
           
           [target.aarch64-apple-ios-sim.onnxruntime]
           rustc-link-search = ["${WORKSPACE}/frontend/src-tauri/onnxruntime-ios/onnxruntime.xcframework/ios-arm64-simulator"]
-          rustc-link-lib = ["static=onnxruntime"]
+          rustc-link-lib = ["static=onnxruntime", "c++"]
           EOF
           
           echo "Generated cargo config:"
@@ -167,7 +169,7 @@ jobs:
       - name: Setup Xcode
         uses: maxim-lobanov/setup-xcode@v1
         with:
-          xcode-version: '16.4'
+          xcode-version: '26.2'
 
       - name: Install Tauri CLI
         run: |
@@ -202,6 +204,9 @@ jobs:
           VITE_CLIENT_ID: ba5a14b5-d915-47b1-b7b1-afda52bc5fc6
           # ONNX Runtime location for ort-sys crate
           ORT_LIB_LOCATION: ${{ github.workspace }}/frontend/src-tauri/onnxruntime-ios/onnxruntime.xcframework/ios-arm64
+          # Ensure Swift bridge code is compiled with iOS 16+ deployment target
+          # to avoid references to removed swiftCompatibility back-deployment libraries
+          IPHONEOS_DEPLOYMENT_TARGET: '16.0'
 
       - name: Submit to TestFlight
         run: |

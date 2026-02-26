@@ -85,7 +85,8 @@
       "entitlements": "./Entitlements.plist"
     },
     "iOS": {
-      "developmentTeam": "X773Y823TN"
+      "developmentTeam": "X773Y823TN",
+      "minimumSystemVersion": "16.0"
     },
     "android": {
       "versionCode": 2000018000

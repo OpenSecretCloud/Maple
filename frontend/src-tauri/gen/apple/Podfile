@@ -1,7 +1,7 @@
 # Uncomment the next line to define a global platform for your project
 
 target 'maple_iOS' do
-platform :ios, '13.0'
+platform :ios, '16.0'
   # Pods for maple_iOS
 end
 
