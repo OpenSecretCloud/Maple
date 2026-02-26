@@ -31,6 +31,7 @@ function OAuthCallback() {
   const [showCopyFallback, setShowCopyFallback] = useState(false);
   const [copied, setCopied] = useState(false);
   const [authCode, setAuthCode] = useState<string | null>(null);
+  const [nativeRedirectUrl, setNativeRedirectUrl] = useState<string | null>(null);
   const navigate = useNavigate();
   const { handleGitHubCallback, handleGoogleCallback, handleAppleCallback } = useOpenSecret();
   const processedRef = useRef(false);
@@ -76,7 +77,10 @@ function OAuthCallback() {
         deepLinkUrl += `&refresh_token=${encodeURIComponent(refreshToken)}`;
       }
 
-      // Attempt the deep link redirect
+      // Store the URL in state so we can show a manual open button as fallback
+      setNativeRedirectUrl(deepLinkUrl);
+
+      // Try auto-redirect (may be blocked by iOS Safari without user gesture)
       setTimeout(() => {
         window.location.href = deepLinkUrl;
       }, 1000);
@@ -183,17 +187,19 @@ function OAuthCallback() {
     processCallback();
   }, [handleGitHubCallback, handleGoogleCallback, handleAppleCallback, navigate, provider]);
 
-  // If this is a Tauri app auth flow (desktop or mobile), show a different UI
-  if (localStorage.getItem("redirect-to-native") === "true" || authCode) {
+  // After auth completes for a native app flow, show a button to open the app
+  if (nativeRedirectUrl) {
     return (
       <Card className="max-w-md mx-auto mt-20">
         <CardHeader>
           <CardTitle>{formattedProvider} Authentication Successful</CardTitle>
         </CardHeader>
         <CardContent>
-          <p className="mb-4">Authentication successful! Redirecting you back to the app...</p>
+          <p className="mb-4">
+            Authentication successful! Tap the button below to return to Maple.
+          </p>
           <div className="flex justify-center mb-4">
-            <Loader2 className="h-8 w-8 animate-spin" />
+            <Button onClick={() => (window.location.href = nativeRedirectUrl)}>Open Maple</Button>
           </div>
           {showCopyFallback && authCode && (
             <div className="border-t pt-4 mt-2">
@@ -227,6 +233,23 @@ function OAuthCallback() {
               </p>
             </div>
           )}
+        </CardContent>
+      </Card>
+    );
+  }
+
+  // If this is a Tauri app auth flow (desktop or mobile), show processing UI
+  if (localStorage.getItem("redirect-to-native") === "true") {
+    return (
+      <Card className="max-w-md mx-auto mt-20">
+        <CardHeader>
+          <CardTitle>Processing {formattedProvider} Login</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <p className="mb-4">Completing authentication...</p>
+          <div className="flex justify-center">
+            <Loader2 className="h-8 w-8 animate-spin" />
+          </div>
         </CardContent>
       </Card>
     );
