@@ -52,6 +52,10 @@ targets:
           - UIInterfaceOrientationPortraitUpsideDown
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
+        CFBundleURLTypes:
+          - CFBundleURLSchemes:
+              - cloud.opensecret.maple
+            CFBundleURLName: cloud.opensecret.maple
         CFBundleShortVersionString: 2.0.18
         CFBundleVersion: 2.0.18
     entitlements:
