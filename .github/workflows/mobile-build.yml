@@ -47,7 +47,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cargo/bin/
-          key: ${{ runner.os }}-cargo-bin-tauri-cli-2.9.2
+          key: ${{ runner.os }}-cargo-bin-tauri-cli-2.10.0
           restore-keys: |
             ${{ runner.os }}-cargo-bin-tauri-cli-
             ${{ runner.os }}-cargo-bin-
@@ -119,7 +119,7 @@ jobs:
       - name: Install Tauri CLI
         run: |
           if ! command -v cargo-tauri &> /dev/null; then
-            cargo install tauri-cli --version "2.9.2" --locked
+            cargo install tauri-cli --version "2.10.0" --locked
           else
             echo "Tauri CLI already installed"
           fi

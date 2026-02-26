@@ -84,7 +84,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cargo/bin/
-          key: ${{ runner.os }}-cargo-bin-tauri-cli-2.9.2
+          key: ${{ runner.os }}-cargo-bin-tauri-cli-2.10.0
           restore-keys: |
             ${{ runner.os }}-cargo-bin-tauri-cli-
             ${{ runner.os }}-cargo-bin-
@@ -101,7 +101,7 @@ jobs:
       - name: Install Tauri CLI
         run: |
           if ! command -v cargo-tauri &> /dev/null; then
-            cargo install tauri-cli --version "2.9.2" --locked
+            cargo install tauri-cli --version "2.10.0" --locked
           else
             echo "Tauri CLI already installed"
           fi
@@ -120,10 +120,10 @@ jobs:
           echo "password=$ANDROID_KEY_PASSWORD" >> keystore.properties
           echo "storeFile=$RUNNER_TEMP/keystore.jks" >> keystore.properties
 
-      - name: Generate tauri.properties (Workaround for Tauri 2.9.x bug)
+      - name: Generate tauri.properties (Workaround for Tauri bug #14413)
         run: |
-          # Workaround for Tauri 2.9.x not generating tauri.properties correctly
-          # See: https://github.com/tauri-apps/tauri/issues/YOUR_ISSUE_NUMBER
+          # Workaround for Tauri not generating tauri.properties correctly in CI
+          # See: https://github.com/tauri-apps/tauri/issues/14413 (still open as of 2.10.x)
           VERSION=$(jq -r '.version' frontend/src-tauri/tauri.conf.json)
           VERSION_CODE=$(jq -r '.bundle.android.versionCode' frontend/src-tauri/tauri.conf.json)
           
