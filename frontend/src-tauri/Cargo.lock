@@ -2732,6 +2732,7 @@ dependencies = [
  "openssl",
  "ort",
  "pdf-extract",
+ "plist",
  "rand 0.8.5",
  "rand_distr",
  "regex",
