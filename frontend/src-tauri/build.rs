@@ -1,10 +1,14 @@
 fn main() {
+    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    if target_os == "ios" {
+        println!("cargo:rustc-link-lib=c++");
+    }
+
     tauri_build::build();
 
     // The deep-link plugin's build.rs overwrites CFBundleURLTypes in Info.plist
     // based on the mobile config, stripping our custom URL scheme.
     // Re-add it after all plugin build scripts have run.
-    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     if target_os == "ios" {
         ensure_ios_custom_url_scheme();
     }
