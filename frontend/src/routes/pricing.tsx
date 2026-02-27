@@ -478,6 +478,7 @@ function PricingPage() {
 
   const handleButtonClick = useCallback(
     (product: Product) => {
+      setPortalError(null);
       const targetPlanName = product.name.toLowerCase();
       const isFreeplan = targetPlanName.includes("free");
       const isTeamPlan = targetPlanName.includes("team");
