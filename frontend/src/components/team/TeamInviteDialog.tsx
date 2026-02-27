@@ -17,6 +17,7 @@ import { getBillingService } from "@/billing/billingService";
 import { useLocalState } from "@/state/useLocalState";
 import { isTauri } from "@/utils/platform";
 import type { TeamStatus } from "@/types/team";
+import { useNotification } from "@/contexts/NotificationContext";
 
 interface TeamInviteDialogProps {
   open: boolean;
@@ -32,6 +33,7 @@ export function TeamInviteDialog({ open, onOpenChange, teamStatus }: TeamInviteD
   const [isPortalLoading, setIsPortalLoading] = useState(false);
   const queryClient = useQueryClient();
   const { billingStatus } = useLocalState();
+  const { showNotification } = useNotification();
 
   const seatsAvailable = teamStatus?.seats_available || 0;
   const hasStripeAccount = billingStatus?.stripe_customer_id !== null;
@@ -71,9 +73,12 @@ export function TeamInviteDialog({ open, onOpenChange, teamStatus }: TeamInviteD
       window.open(url, "_blank", "noopener,noreferrer");
     } catch (error) {
       console.error("Failed to open billing portal:", error);
-      alert(
-        "Unable to open subscription management. Please try again or contact support@opensecret.cloud."
-      );
+      showNotification({
+        type: "error",
+        title: "Unable to open subscription management",
+        message: "Please try again or contact support@opensecret.cloud.",
+        duration: 0
+      });
     } finally {
       setIsPortalLoading(false);
     }
