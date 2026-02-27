@@ -10,6 +10,7 @@ import { Loader2, Check, AlertTriangle, Bitcoin, Tag } from "lucide-react";
 import type { DiscountResponse } from "@/billing/billingApi";
 import { Badge } from "@/components/ui/badge";
 import { useLocalState } from "@/state/useLocalState";
+import { useNotification } from "@/contexts/NotificationContext";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { PRICING_PLANS } from "@/config/pricingConfig";
@@ -205,6 +206,7 @@ function PricingPage() {
   const navigate = useNavigate();
   const os = useOpenSecret();
   const { setBillingStatus } = useLocalState();
+  const { showNotification } = useNotification();
   const isLoggedIn = !!os.auth.user;
   const isGuestUser = os.auth.user?.user.login_method?.toLowerCase() === "guest";
   const { selected_plan } = Route.useSearch();
@@ -615,9 +617,12 @@ function PricingPage() {
       // If the user is already on a paid plan (including team) and portal URL failed to load,
       // show an error instead of silently falling through to checkout
       if (isCurrentPlan) {
-        alert(
-          "Unable to open subscription management. Please try again or contact support@opensecret.cloud."
-        );
+        showNotification({
+          type: "error",
+          title: "Unable to open subscription management",
+          message: "Please try again or contact support@opensecret.cloud.",
+          duration: 0
+        });
         return;
       }
 
@@ -637,6 +642,7 @@ function PricingPage() {
       navigate,
       portalUrl,
       newHandleSubscribe,
+      showNotification,
       isIOSPlatform,
       isMobilePlatform
     ]
