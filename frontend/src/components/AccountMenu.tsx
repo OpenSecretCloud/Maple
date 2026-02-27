@@ -211,6 +211,9 @@ export function AccountMenu() {
       window.open(url, "_blank");
     } catch (error) {
       console.error("Error fetching portal URL:", error);
+      alert(
+        "Unable to open subscription management. Please try again or contact support@opensecret.cloud."
+      );
     } finally {
       setIsPortalLoading(false);
     }

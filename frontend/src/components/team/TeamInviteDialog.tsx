@@ -71,6 +71,9 @@ export function TeamInviteDialog({ open, onOpenChange, teamStatus }: TeamInviteD
       window.open(url, "_blank", "noopener,noreferrer");
     } catch (error) {
       console.error("Failed to open billing portal:", error);
+      alert(
+        "Unable to open subscription management. Please try again or contact support@opensecret.cloud."
+      );
     } finally {
       setIsPortalLoading(false);
     }

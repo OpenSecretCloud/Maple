@@ -612,6 +612,15 @@ function PricingPage() {
         return;
       }
 
+      // If the user is already on a paid plan (including team) and portal URL failed to load,
+      // show an error instead of silently falling through to checkout
+      if (isCurrentPlan) {
+        alert(
+          "Unable to open subscription management. Please try again or contact support@opensecret.cloud."
+        );
+        return;
+      }
+
       // If no portal URL exists and it's not a free plan user upgrading,
       // create checkout session
       // For team plans, show seat selection dialog first
