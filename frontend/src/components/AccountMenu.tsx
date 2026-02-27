@@ -49,7 +49,6 @@ import { Link } from "@tanstack/react-router";
 import { getBillingService } from "@/billing/billingService";
 import { useState } from "react";
 import type { TeamStatus } from "@/types/team";
-import { useNotification } from "@/contexts/NotificationContext";
 import { TeamManagementDialog } from "@/components/team/TeamManagementDialog";
 import { ApiKeyManagementDialog } from "@/components/apikeys/ApiKeyManagementDialog";
 import packageJson from "../../package.json";
@@ -111,7 +110,6 @@ export function AccountMenu() {
   const [isTeamDialogOpen, setIsTeamDialogOpen] = useState(false);
   const [isApiKeyDialogOpen, setIsApiKeyDialogOpen] = useState(false);
   const [showAboutMenu, setShowAboutMenu] = useState(false);
-  const { showNotification } = useNotification();
 
   const hasStripeAccount = billingStatus?.stripe_customer_id !== null;
   const productName = billingStatus?.product_name || "";
@@ -213,12 +211,9 @@ export function AccountMenu() {
       window.open(url, "_blank");
     } catch (error) {
       console.error("Error fetching portal URL:", error);
-      showNotification({
-        type: "error",
-        title: "Unable to open subscription management",
-        message: "Please try again or contact support@opensecret.cloud.",
-        duration: 0
-      });
+      alert(
+        "Unable to open subscription management. Please try again or contact support@opensecret.cloud."
+      );
     } finally {
       setIsPortalLoading(false);
     }
