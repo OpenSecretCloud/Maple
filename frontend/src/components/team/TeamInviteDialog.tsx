@@ -39,6 +39,7 @@ export function TeamInviteDialog({ open, onOpenChange, teamStatus }: TeamInviteD
     if (!hasStripeAccount) return;
 
     try {
+      setError(null);
       setIsPortalLoading(true);
       const billingService = getBillingService();
       const url = await billingService.getPortalUrl();
