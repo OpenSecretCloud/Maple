@@ -32,7 +32,6 @@ export function TeamInviteDialog({ open, onOpenChange, teamStatus }: TeamInviteD
   const [isPortalLoading, setIsPortalLoading] = useState(false);
   const queryClient = useQueryClient();
   const { billingStatus } = useLocalState();
-
   const seatsAvailable = teamStatus?.seats_available || 0;
   const hasStripeAccount = billingStatus?.stripe_customer_id !== null;
 
@@ -40,6 +39,7 @@ export function TeamInviteDialog({ open, onOpenChange, teamStatus }: TeamInviteD
     if (!hasStripeAccount) return;
 
     try {
+      setError(null);
       setIsPortalLoading(true);
       const billingService = getBillingService();
       const url = await billingService.getPortalUrl();
@@ -71,6 +71,9 @@ export function TeamInviteDialog({ open, onOpenChange, teamStatus }: TeamInviteD
       window.open(url, "_blank", "noopener,noreferrer");
     } catch (error) {
       console.error("Failed to open billing portal:", error);
+      setError(
+        "Unable to open subscription management. Please try again or contact support@opensecret.cloud."
+      );
     } finally {
       setIsPortalLoading(false);
     }
