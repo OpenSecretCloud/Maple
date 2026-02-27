@@ -6,7 +6,8 @@ import { FullPageMain } from "@/components/FullPageMain";
 import { getBillingService } from "@/billing/billingService";
 import { useQuery } from "@tanstack/react-query";
 import { MarketingHeader } from "@/components/MarketingHeader";
-import { Loader2, Check, AlertTriangle, Bitcoin, Tag } from "lucide-react";
+import { Loader2, Check, AlertTriangle, AlertCircle, Bitcoin, Tag } from "lucide-react";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import type { DiscountResponse } from "@/billing/billingApi";
 import { Badge } from "@/components/ui/badge";
 import { useLocalState } from "@/state/useLocalState";
@@ -198,6 +199,7 @@ function PricingFAQ() {
 
 function PricingPage() {
   const [checkoutError, setCheckoutError] = useState<string>("");
+  const [portalError, setPortalError] = useState<string | null>(null);
   const [loadingProductId, setLoadingProductId] = useState<string | null>(null);
   const [useBitcoin, setUseBitcoin] = useState(false);
   const [showTeamSeatDialog, setShowTeamSeatDialog] = useState(false);
@@ -615,7 +617,7 @@ function PricingPage() {
       // If the user is already on a paid plan (including team) and portal URL failed to load,
       // show an error instead of silently falling through to checkout
       if (isCurrentPlan) {
-        setCheckoutError(
+        setPortalError(
           "Unable to open subscription management. Please try again or contact support@opensecret.cloud."
         );
         return;
@@ -791,6 +793,16 @@ function PricingPage() {
               </div>
               <p>Payment canceled. Your subscription remains unchanged.</p>
             </div>
+          </div>
+        )}
+
+        {/* Portal Error Message */}
+        {portalError && (
+          <div className="w-full max-w-7xl mx-auto mt-4 px-4 sm:px-6 lg:px-8">
+            <Alert variant="destructive">
+              <AlertCircle className="h-4 w-4" />
+              <AlertDescription>{portalError}</AlertDescription>
+            </Alert>
           </div>
         )}
 
