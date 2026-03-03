@@ -1,5 +1,5 @@
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
-use pdf_extract::extract_text_from_mem;
+use pdf_inspector::{process_pdf_mem, PdfType};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -27,9 +27,40 @@ pub async fn extract_document_content(
 
     let text_content = match file_type.as_str() {
         "pdf" | "application/pdf" => {
-            // Extract text from PDF
-            extract_text_from_mem(&file_bytes)
-                .map_err(|e| format!("Failed to extract text from PDF: {e}"))?
+            // Use pdf-inspector for full PDF processing (detect + extract + markdown)
+            let result = process_pdf_mem(&file_bytes)
+                .map_err(|e| format!("Failed to extract text from PDF: {e}"))?;
+
+            // For scanned or image-based PDFs, pdf-inspector detects the type
+            // but cannot extract text (needs OCR which is outside scope)
+            if matches!(result.pdf_type, PdfType::Scanned | PdfType::ImageBased) {
+                return Err(
+                    "This PDF appears to be scanned or image-based. Text extraction is not available for this type of PDF.".to_string()
+                );
+            }
+
+            // If encoding issues were detected, warn but still return what we have
+            let markdown = result.markdown.unwrap_or_default();
+
+            if markdown.trim().is_empty() {
+                return Err("No text content could be extracted from this PDF.".to_string());
+            }
+
+            if result.has_encoding_issues {
+                log::warn!(
+                    "PDF '{filename}' has encoding issues - extracted text may be incomplete or garbled"
+                );
+            }
+
+            log::info!(
+                "PDF '{filename}': type={:?}, pages={}, confidence={:.2}, time={}ms",
+                result.pdf_type,
+                result.page_count,
+                result.confidence,
+                result.processing_time_ms
+            );
+
+            markdown
         }
         "txt" | "text/plain" | "md" | "text/markdown" => {
             // For text files, just convert bytes to string
