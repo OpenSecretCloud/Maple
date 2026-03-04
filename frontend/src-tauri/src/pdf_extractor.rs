@@ -198,4 +198,32 @@ mod tests {
             "expected author name in extracted text"
         );
     }
+
+    #[tokio::test]
+    async fn extract_scanned_pdf_is_rejected() {
+        // Read a real scanned PDF (a scanned letter) from the test fixtures directory
+        let pdf_path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("test_fixtures/scanned_letter.pdf");
+        let pdf_bytes = std::fs::read(&pdf_path).unwrap_or_else(|e| {
+            panic!(
+                "failed to read test fixture at {}: {e}",
+                pdf_path.display()
+            )
+        });
+
+        let file_base64 = BASE64.encode(&pdf_bytes);
+
+        let err = extract_document_content(
+            file_base64,
+            "scanned_letter.pdf".to_string(),
+            "pdf".to_string(),
+        )
+        .await
+        .expect_err("expected scanned PDF to be rejected");
+
+        assert!(
+            err.contains("scanned or image-based"),
+            "expected scanned/image-based rejection error, got: {err}"
+        );
+    }
 }
