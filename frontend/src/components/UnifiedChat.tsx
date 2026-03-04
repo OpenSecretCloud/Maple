@@ -1745,15 +1745,17 @@ export function UnifiedChat() {
           });
 
           if (result.document?.page_images?.length) {
-            // Scanned/image-based PDF — store page images for vision-model OCR
+            // Scanned/image-based PDF — store placeholder only (no base64 image data).
+            // page_images are intentionally excluded from documentText to avoid
+            // sending multi-MB base64 blobs as plain text to the AI model.
+            // Vision-model OCR integration will use a separate code path.
             const scannedData = {
               document: {
                 filename: result.document.filename,
                 text_content:
                   "[Scanned PDF: " +
                   result.document.page_images.length +
-                  " page image(s) extracted for OCR]",
-                page_images: result.document.page_images
+                  " page image(s) extracted. OCR via vision model is not yet supported.]"
               }
             };
             setDocumentText(JSON.stringify(scannedData));
