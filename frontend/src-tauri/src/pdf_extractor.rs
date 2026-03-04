@@ -31,20 +31,15 @@ pub async fn extract_document_content(
             let result = process_pdf_mem(&file_bytes)
                 .map_err(|e| format!("Failed to extract text from PDF: {e}"))?;
 
-            // For scanned or image-based PDFs, pdf-inspector detects the type
-            // but cannot extract text (needs OCR which is outside scope)
-            if matches!(result.pdf_type, PdfType::Scanned | PdfType::ImageBased) {
-                return Err(
-                    "This PDF appears to be scanned or image-based. Text extraction is not available for this type of PDF.".to_string()
-                );
-            }
-
-            // If encoding issues were detected, warn but still return what we have
-            let markdown = result.markdown.unwrap_or_default();
-
-            if markdown.trim().is_empty() {
-                return Err("No text content could be extracted from this PDF.".to_string());
-            }
+            // Log PDF classification info for debugging
+            log::info!(
+                "PDF '{filename}': type={:?}, pages={}, confidence={:.2}, has_encoding_issues={}, time={}ms",
+                result.pdf_type,
+                result.page_count,
+                result.confidence,
+                result.has_encoding_issues,
+                result.processing_time_ms
+            );
 
             if result.has_encoding_issues {
                 log::warn!(
@@ -52,13 +47,19 @@ pub async fn extract_document_content(
                 );
             }
 
-            log::info!(
-                "PDF '{filename}': type={:?}, pages={}, confidence={:.2}, time={}ms",
-                result.pdf_type,
-                result.page_count,
-                result.confidence,
-                result.processing_time_ms
-            );
+            // pdf-inspector extracts what it can from all PDF types.
+            // For scanned/image-based PDFs it may return limited or no text.
+            let markdown = result.markdown.unwrap_or_default();
+
+            if markdown.trim().is_empty() {
+                // Provide a more helpful error for scanned/image-based PDFs
+                if matches!(result.pdf_type, PdfType::Scanned | PdfType::ImageBased) {
+                    return Err(
+                        "This PDF appears to be scanned or image-based. No text could be extracted.".to_string()
+                    );
+                }
+                return Err("No text content could be extracted from this PDF.".to_string());
+            }
 
             markdown
         }
@@ -200,8 +201,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn extract_scanned_pdf_is_rejected() {
-        // Read a real scanned PDF (a scanned letter) from the test fixtures directory
+    async fn extract_scanned_pdf_processes_without_early_rejection() {
+        // Read a real scanned PDF (a scanned letter) from the test fixtures directory.
+        // pdf-inspector should attempt extraction on all PDF types rather than
+        // rejecting scanned PDFs outright — it may still extract useful content.
         let pdf_path =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("test_fixtures/scanned_letter.pdf");
         let pdf_bytes = std::fs::read(&pdf_path).unwrap_or_else(|e| {
@@ -213,17 +216,34 @@ mod tests {
 
         let file_base64 = BASE64.encode(&pdf_bytes);
 
-        let err = extract_document_content(
+        let result = extract_document_content(
             file_base64,
             "scanned_letter.pdf".to_string(),
             "pdf".to_string(),
         )
-        .await
-        .expect_err("expected scanned PDF to be rejected");
+        .await;
 
-        assert!(
-            err.contains("scanned or image-based"),
-            "expected scanned/image-based rejection error, got: {err}"
-        );
+        // The scanned PDF should be processed (not rejected early).
+        // It may succeed with extracted content or fail with "No text" / "scanned or image-based"
+        // error — but it should NOT be rejected before even attempting extraction.
+        match result {
+            Ok(resp) => {
+                assert_eq!(resp.status, "completed");
+                assert_eq!(resp.document.filename, "scanned_letter.pdf");
+                // If content was extracted, verify it's non-empty
+                assert!(
+                    !resp.document.text_content.trim().is_empty(),
+                    "expected non-empty content from scanned PDF"
+                );
+            }
+            Err(err) => {
+                // If extraction failed, it should be because no text was found
+                // (not because we refused to try)
+                assert!(
+                    err.contains("No text content") || err.contains("scanned or image-based"),
+                    "unexpected error: {err}"
+                );
+            }
+        }
     }
 }
