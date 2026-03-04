@@ -46,6 +46,10 @@
             # (e.g., VMs, CI, containers). Provides libEGL_mesa.so and swrast DRI
             # drivers needed by WebKitGTK to initialize EGL.
             pkgs.mesa
+            # glib-networking provides the GIO TLS backend (libgiognutls.so) that
+            # WebKitGTK needs for HTTPS requests. Without it, all fetch() calls to
+            # HTTPS URLs fail with "Load failed" (e.g., attestation document fetch).
+            pkgs.glib-networking
           ] else []) ++ (if pkgs.stdenv.isDarwin then [
             # macOS-specific dependencies
             pkgs.darwin.apple_sdk.frameworks.WebKit
@@ -65,6 +69,7 @@
             export LIBGL_ALWAYS_SOFTWARE=1
             export WEBKIT_DISABLE_COMPOSITING_MODE=1
             export WEBKIT_DISABLE_DMABUF_RENDERER=1
+            export GIO_MODULE_DIR=${pkgs.glib-networking}/lib/gio/modules
           '';
         };
       }
