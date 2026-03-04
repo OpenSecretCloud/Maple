@@ -149,4 +149,53 @@ mod tests {
             "unexpected error: {err}"
         );
     }
+
+    #[tokio::test]
+    async fn extract_bitcoin_whitepaper_pdf() {
+        // Read the Bitcoin whitepaper PDF from the test fixtures directory (not embedded in binary)
+        let pdf_path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("test_fixtures/bitcoin_whitepaper.pdf");
+        let pdf_bytes = std::fs::read(&pdf_path).unwrap_or_else(|e| {
+            panic!(
+                "failed to read test fixture at {}: {e}",
+                pdf_path.display()
+            )
+        });
+
+        let file_base64 = BASE64.encode(&pdf_bytes);
+
+        let resp = extract_document_content(
+            file_base64,
+            "bitcoin.pdf".to_string(),
+            "pdf".to_string(),
+        )
+        .await
+        .expect("expected Bitcoin PDF extraction to succeed");
+
+        assert_eq!(resp.status, "completed");
+        assert_eq!(resp.document.filename, "bitcoin.pdf");
+
+        let content = &resp.document.text_content;
+
+        // Verify meaningful content was extracted (whitepaper is ~9 pages)
+        assert!(
+            content.len() > 1000,
+            "expected substantial content from Bitcoin whitepaper, got {} chars",
+            content.len()
+        );
+
+        // Verify key content from the Bitcoin whitepaper is present
+        assert!(
+            content.contains("Bitcoin") || content.contains("bitcoin"),
+            "expected 'Bitcoin' in extracted text"
+        );
+        assert!(
+            content.contains("peer-to-peer") || content.contains("peer to peer"),
+            "expected 'peer-to-peer' in extracted text"
+        );
+        assert!(
+            content.contains("Satoshi") || content.contains("Nakamoto"),
+            "expected author name in extracted text"
+        );
+    }
 }
