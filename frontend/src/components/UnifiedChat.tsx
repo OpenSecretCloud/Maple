@@ -1733,6 +1733,7 @@ export function UnifiedChat() {
             document: {
               filename: string;
               text_content: string;
+              page_images?: string[];
             };
             status: string;
           }
@@ -1743,7 +1744,21 @@ export function UnifiedChat() {
             fileType: "pdf"
           });
 
-          if (result.document?.text_content) {
+          if (result.document?.page_images?.length) {
+            // Scanned/image-based PDF — store page images for vision-model OCR
+            const scannedData = {
+              document: {
+                filename: result.document.filename,
+                text_content:
+                  "[Scanned PDF: " +
+                  result.document.page_images.length +
+                  " page image(s) extracted for OCR]",
+                page_images: result.document.page_images
+              }
+            };
+            setDocumentText(JSON.stringify(scannedData));
+            setDocumentName(file.name);
+          } else if (result.document?.text_content) {
             // Create a cleaned version with image references removed
             const cleanedParsed = {
               document: {

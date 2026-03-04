@@ -175,11 +175,23 @@ fn extract_page_images(pdf_bytes: &[u8]) -> Result<Vec<String>, String> {
                 continue;
             }
 
-            // Determine the filter (compression) type
-            let filter_name = stream
+            // Determine the filter (compression) type.
+            // Per PDF spec §7.3.4.2, Filter can be a single Name or an Array of Names.
+            // In an array, the last filter describes the final data format (e.g.
+            // [/ASCII85Decode /DCTDecode] means the underlying data is JPEG).
+            let filter_name: Vec<u8> = stream
                 .dict
                 .get(b"Filter")
-                .and_then(|f| f.as_name().map(|n| n.to_vec()))
+                .ok()
+                .and_then(|f| {
+                    f.as_name().map(|n| n.to_vec()).ok().or_else(|| {
+                        f.as_array()
+                            .ok()
+                            .and_then(|arr| arr.last())
+                            .and_then(|last| last.as_name().ok())
+                            .map(|n| n.to_vec())
+                    })
+                })
                 .unwrap_or_default();
 
             let data_url = match filter_name.as_slice() {
