@@ -83,8 +83,8 @@ export function VerificationModal() {
 
       // Check for a pending redirect (e.g. team invite page) after email verification
       const pendingRedirect = sessionStorage.getItem("post_auth_redirect");
-      if (pendingRedirect) {
-        sessionStorage.removeItem("post_auth_redirect");
+      sessionStorage.removeItem("post_auth_redirect");
+      if (pendingRedirect && pendingRedirect.startsWith("/") && !pendingRedirect.startsWith("//")) {
         navigate({ to: pendingRedirect });
       }
     } catch (err) {

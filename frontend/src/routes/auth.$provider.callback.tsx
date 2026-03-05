@@ -64,6 +64,10 @@ function OAuthCallback() {
 
     const postAuthRedirect = sessionStorage.getItem("post_auth_redirect");
     sessionStorage.removeItem("post_auth_redirect");
+    const safePostAuthRedirect =
+      postAuthRedirect && postAuthRedirect.startsWith("/") && !postAuthRedirect.startsWith("//")
+        ? postAuthRedirect
+        : null;
 
     setTimeout(() => {
       if (selectedPlan) {
@@ -71,8 +75,8 @@ function OAuthCallback() {
           to: "/pricing",
           search: { selected_plan: selectedPlan }
         });
-      } else if (postAuthRedirect) {
-        navigate({ to: postAuthRedirect });
+      } else if (safePostAuthRedirect) {
+        navigate({ to: safePostAuthRedirect });
       } else {
         navigate({ to: "/" });
       }
