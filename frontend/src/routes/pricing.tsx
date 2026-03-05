@@ -6,7 +6,8 @@ import { FullPageMain } from "@/components/FullPageMain";
 import { getBillingService } from "@/billing/billingService";
 import { useQuery } from "@tanstack/react-query";
 import { MarketingHeader } from "@/components/MarketingHeader";
-import { Loader2, Check, AlertTriangle, Bitcoin, Tag } from "lucide-react";
+import { Loader2, Check, AlertTriangle, AlertCircle, Bitcoin, Tag } from "lucide-react";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import type { DiscountResponse } from "@/billing/billingApi";
 import { Badge } from "@/components/ui/badge";
 import { useLocalState } from "@/state/useLocalState";
@@ -158,6 +159,23 @@ function PricingFAQ() {
 
         <details className="group">
           <summary className="cursor-pointer text-lg font-medium hover:text-foreground/80">
+            Can I use my subscription for API access?
+          </summary>
+          <div className="mt-4 text-[hsl(var(--marketing-text-muted))] space-y-2">
+            <p>
+              Yes! Pro, Max, and Team plans include API access. Your subscription credits work
+              seamlessly with the API.
+            </p>
+            <ul className="list-disc list-inside space-y-1 ml-4">
+              <li>Use your plan credits via the API</li>
+              <li>When plan credits run out, extra credits kick in automatically</li>
+              <li>Purchase extra credits to extend your usage anytime</li>
+            </ul>
+          </div>
+        </details>
+
+        <details className="group">
+          <summary className="cursor-pointer text-lg font-medium hover:text-foreground/80">
             How did you build this?
           </summary>
           <p className="mt-4 text-[hsl(var(--marketing-text-muted))]">
@@ -181,6 +199,7 @@ function PricingFAQ() {
 
 function PricingPage() {
   const [checkoutError, setCheckoutError] = useState<string>("");
+  const [portalError, setPortalError] = useState<string | null>(null);
   const [loadingProductId, setLoadingProductId] = useState<string | null>(null);
   const [useBitcoin, setUseBitcoin] = useState(false);
   const [showTeamSeatDialog, setShowTeamSeatDialog] = useState(false);
@@ -402,8 +421,26 @@ function PricingPage() {
               quantity
             );
           }
+        } else if (isTauri()) {
+          // For Tauri desktop, use trymaple.ai since tauri://localhost won't work in external browser
+          if (useBitcoin) {
+            await billingService.createZapriteCheckoutSession(
+              email,
+              productId,
+              `https://trymaple.ai/pricing?success=true`,
+              quantity
+            );
+          } else {
+            await billingService.createCheckoutSession(
+              email,
+              productId,
+              `https://trymaple.ai/pricing?success=true`,
+              `https://trymaple.ai/pricing?canceled=true`,
+              quantity
+            );
+          }
         } else {
-          // For web or desktop, use regular URLs
+          // For web, use regular URLs
           if (useBitcoin) {
             await billingService.createZapriteCheckoutSession(
               email,
@@ -441,6 +478,7 @@ function PricingPage() {
 
   const handleButtonClick = useCallback(
     (product: Product) => {
+      setPortalError(null);
       const targetPlanName = product.name.toLowerCase();
       const isFreeplan = targetPlanName.includes("free");
       const isTeamPlan = targetPlanName.includes("team");
@@ -547,13 +585,13 @@ function PricingPage() {
       // For all other cases (upgrades/downgrades between paid plans, or downgrades to free),
       // use portal URL if it exists
       if (portalUrl) {
-        // Open in external browser for mobile platforms (iOS and Android)
-        if (isMobilePlatform) {
+        // Open in external browser for all Tauri platforms (mobile and desktop)
+        if (isTauri()) {
           console.log(
-            "[Billing] Mobile platform detected, using opener plugin to launch external browser for portal"
+            "[Billing] Tauri platform detected, using opener plugin to launch external browser for portal"
           );
 
-          // Use the Tauri opener plugin for mobile platforms
+          // Use the Tauri opener plugin for all Tauri platforms
           import("@tauri-apps/api/core")
             .then((coreModule) => {
               return coreModule.invoke("plugin:opener|open_url", { url: portalUrl });
@@ -563,12 +601,26 @@ function PricingPage() {
             })
             .catch((err) => {
               console.error("[Billing] Failed to open external browser:", err);
-              alert("Failed to open browser. Please try again.");
+              if (isMobilePlatform) {
+                alert("Failed to open browser. Please try again.");
+              } else {
+                // Fallback to window.open on desktop
+                window.open(portalUrl, "_blank");
+              }
             });
         } else {
-          // Default browser opening for desktop and web platforms
+          // Default browser opening for web platforms
           window.open(portalUrl, "_blank");
         }
+        return;
+      }
+
+      // If the user is already on a paid plan (including team) and portal URL failed to load,
+      // show an error instead of silently falling through to checkout
+      if (isCurrentPlan) {
+        setPortalError(
+          "Unable to open subscription management. Please try again or contact support@opensecret.cloud."
+        );
         return;
       }
 
@@ -742,6 +794,16 @@ function PricingPage() {
               </div>
               <p>Payment canceled. Your subscription remains unchanged.</p>
             </div>
+          </div>
+        )}
+
+        {/* Portal Error Message */}
+        {portalError && (
+          <div className="w-full max-w-7xl mx-auto mt-4 px-4 sm:px-6 lg:px-8">
+            <Alert variant="destructive">
+              <AlertCircle className="h-4 w-4" />
+              <AlertDescription>{portalError}</AlertDescription>
+            </Alert>
           </div>
         )}
 

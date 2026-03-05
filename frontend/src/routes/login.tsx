@@ -139,6 +139,9 @@ function LoginPage() {
         if (code) {
           sessionStorage.setItem("redeem_code", code);
         }
+        if (next && next.startsWith("/") && !next.startsWith("//")) {
+          sessionStorage.setItem("post_auth_redirect", next);
+        }
         window.location.href = auth_url;
       }
     } catch (error) {
@@ -180,6 +183,9 @@ function LoginPage() {
         }
         if (code) {
           sessionStorage.setItem("redeem_code", code);
+        }
+        if (next && next.startsWith("/") && !next.startsWith("//")) {
+          sessionStorage.setItem("post_auth_redirect", next);
         }
         window.location.href = auth_url;
       }

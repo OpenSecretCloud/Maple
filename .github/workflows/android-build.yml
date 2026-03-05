@@ -1,5 +1,8 @@
 name: Android App CI
 
+permissions:
+  contents: read
+
 on:
   push:
     branches: [ master ]
@@ -8,7 +11,7 @@ on:
 
 jobs:
   build-android:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest-8-cores
     steps:
       - uses: actions/checkout@v4
 
@@ -42,11 +45,12 @@ jobs:
           targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android,i686-linux-android
 
       - name: Setup Android NDK
-        uses: nttld/setup-ndk@v1
+        uses: nttld/setup-ndk@v1.5.0
         id: setup-ndk
         with:
           ndk-version: r27c
           add-to-path: true
+          local-cache: true
 
       - name: Cache Gradle
         uses: actions/cache@v4
@@ -54,9 +58,6 @@ jobs:
           path: |
             ~/.gradle/caches
             ~/.gradle/wrapper
-            frontend/src-tauri/gen/android/.gradle
-            frontend/src-tauri/gen/android/build
-            frontend/src-tauri/gen/android/app/build
           key: ${{ runner.os }}-gradle-${{ hashFiles('frontend/src-tauri/gen/android/**/*.gradle*', 'frontend/src-tauri/gen/android/gradle-wrapper.properties') }}
           restore-keys: |
             ${{ runner.os }}-gradle-
@@ -137,9 +138,30 @@ jobs:
 
       - name: Configure sccache
         run: |
-          echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
-          echo "SCCACHE_DIR=$HOME/.cache/sccache" >> $GITHUB_ENV
-          echo "SCCACHE_CACHE_SIZE=2G" >> $GITHUB_ENV
+          {
+            echo "RUSTC_WRAPPER=sccache"
+            echo "SCCACHE_DIR=$HOME/.cache/sccache"
+            echo "SCCACHE_CACHE_SIZE=2G"
+          } >> "$GITHUB_ENV"
+
+      - name: Create cargo config for 16KB page size support
+        run: |
+          # Android 15+ requires 16KB page size alignment for native libraries
+          # https://developer.android.com/guide/practices/page-sizes
+          mkdir -p frontend/src-tauri/.cargo
+          cat > frontend/src-tauri/.cargo/config.toml << 'EOF'
+          [target.aarch64-linux-android]
+          rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
+
+          [target.armv7-linux-androideabi]
+          rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
+
+          [target.i686-linux-android]
+          rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
+
+          [target.x86_64-linux-android]
+          rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
+          EOF
 
       - name: Build Tauri Android App (Signed Release)
         working-directory: ./frontend

@@ -2,7 +2,7 @@ name: maple
 options:
   bundleIdPrefix: cloud.opensecret.maple
   deploymentTarget:
-    iOS: 13.0
+    iOS: 16.0
 fileGroups: [../../src]
 configs:
   debug: debug
@@ -52,8 +52,8 @@ targets:
           - UIInterfaceOrientationPortraitUpsideDown
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
-        CFBundleShortVersionString: 2.0.12
-        CFBundleVersion: 2.0.12
+        CFBundleShortVersionString: 2.0.19
+        CFBundleVersion: 2.0.19
     entitlements:
       path: maple_iOS/maple_iOS.entitlements
     scheme:

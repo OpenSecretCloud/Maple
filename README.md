@@ -222,4 +222,3 @@ git update-index --assume-unchanged frontend/src-tauri/gen/apple/maple.xcodeproj
 # When you need to commit changes to this file, use:
 git update-index --no-assume-unchanged frontend/src-tauri/gen/apple/maple.xcodeproj/project.pbxproj
 ```
-

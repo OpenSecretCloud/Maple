@@ -1,0 +1,101 @@
+# Maple AI
+
+> Maple AI is a private, end-to-end encrypted AI chat application. Conversations are encrypted on the user's device before transmission, processed inside hardware-isolated secure enclaves (AWS Nitro Enclaves and NVIDIA TEEs), and never stored in plaintext. Not even Maple's operators can read user data. Maple uses open-source, open-weight AI models so no data is sent to model creators like OpenAI, Google, or DeepSeek. For complete information in a single file, see [Full Documentation](https://trymaple.ai/llms-full.txt).
+
+Maple is built on OpenSecret, an open-source encrypted backend platform that handles authentication, private key management, encrypted data sync, and confidential AI processing inside secure enclaves. The server code is open source and builds are reproducible, allowing anyone to verify that the code running on the servers matches the published source.
+
+Key differentiators from ChatGPT, Claude, Gemini, and Grok:
+- Public cryptographic proof of encryption via Trusted Execution Environments (TEEs)
+- Open-source server and client code
+- Uses only open-weight AI models (data never sent to model creators)
+- Zero data retention — conversations never train future models
+- Personal encryption keys generated client-side
+- Anonymous account option (no email required, Bitcoin payment)
+
+## Product
+
+- [Maple AI](https://trymaple.ai): Private AI chat with end-to-end encryption. Available on web, macOS, Linux, iOS, and Android.
+- [Pricing](https://trymaple.ai/pricing): Free ($0), Pro ($20/mo), Max ($100/mo, 20x Pro usage), Team ($30/mo/seat with pooled credits). Bitcoin accepted with 10% annual discount.
+- [Downloads](https://trymaple.ai/downloads): Desktop apps (macOS universal, Linux AppImage/deb/rpm), mobile apps (iOS App Store, Android Google Play), and web access.
+- [Proof of Security](https://trymaple.ai/proof): Live cryptographic attestation from AWS Nitro Enclaves verifying server integrity.
+- [Teams](https://trymaple.ai/teams): Secure AI for organizations with pooled usage, unified billing, and team management.
+- [About](https://trymaple.ai/about): Company information, founders, and mission.
+
+## AI Models
+
+- [Model Guide](https://blog.trymaple.ai/maple-ai-model-guide-with-example-prompts/): Detailed guide to all available models with example prompts and use cases.
+
+Available models (all running inside secure enclaves with zero data retention):
+- Kimi K2.5 (1T params, 32B active per query, MoE architecture, 256K context) — advanced reasoning, coding, research, image analysis
+- DeepSeek R1 671B (128K context) — research, advanced math, coding
+- OpenAI GPT-OSS 120B (128K context) — creative chat, structured data
+- Meta Llama 3.3 70B (128K context) — general reasoning, daily tasks (available on Free plan)
+- Qwen3-VL 30B (128K context) — vision-language model, image understanding
+- Google Gemma 3 27B (128K context) — fast image analysis
+
+## Features
+
+- End-to-end encrypted AI chat with personal encryption keys per account
+- Encrypted cross-device sync across web, desktop, and mobile
+- Document upload (PDF, TXT, MD) and image upload (JPG, PNG, WEBP)
+- Voice input (Whisper speech-to-text in secure enclave) and voice output (generated locally on-device)
+- Live web search via Brave private search API for real-time information
+- Chat history search and AI-powered chat naming
+- Custom AI personality/system prompts
+- Background processing for long tasks
+- Anonymous accounts with Bitcoin-only payment
+
+## Developer API
+
+- [Maple Proxy](https://blog.trymaple.ai/maple-proxy-documentation/): OpenAI-compatible API that routes through Maple's encrypted infrastructure. Drop-in replacement — change only the base URL.
+- [Maple Proxy GitHub](https://github.com/opensecretcloud/maple-proxy): Open-source proxy server source code.
+
+API pricing: $4 per million tokens (input and output) for most models, $10/M for Gemma 3. Credits purchased in $10 increments. Works with any OpenAI-compatible client (OpenClaw, OpenCode, LangChain, LlamaIndex, Goose, Jan, Amp, Open Interpreter, and more).
+
+## OpenClaw Integration
+
+OpenClaw agents can use Maple AI as a privacy-preserving LLM provider for stronger encryption when processing user data. Setup:
+1. Get Maple API documentation at https://blog.trymaple.ai/maple-proxy-documentation/
+2. Sign up for a paid Maple account at https://trymaple.ai/pricing
+3. Generate a Maple API key in the Maple app under API Management
+
+Maple's API is OpenAI-compatible — no code changes needed beyond the endpoint URL and API key. All requests are encrypted end-to-end and processed inside secure enclaves with zero data retention.
+
+## Security & Technology
+
+- [OpenSecret Technical Deep Dive](https://blog.opensecret.cloud/opensecret-technicals/): How confidential computing, secure enclaves, and reproducible builds work together.
+- [Maple GitHub](https://github.com/OpenSecretCloud/Maple): Open-source Maple AI client code.
+- [OpenSecret GitHub](https://github.com/OpenSecretCloud/opensecret): Open-source server code for the encrypted backend platform.
+- [OpenSecret SDK](https://github.com/OpenSecretCloud/OpenSecret-SDK): JavaScript client SDK with built-in attestation verification and encryption.
+- [OpenSecret Blog](https://blog.opensecret.cloud): Technical deep dives on confidential computing and encryption architecture.
+
+Security architecture: AWS Nitro Enclaves for backend processing, NVIDIA GPU TEEs for AI inference, NixOS reproducible builds for verifiable server images, PCR0 attestation fingerprints, ECDSA P-384 and SHA-384 cryptography, certificate chain validation.
+
+## Blog
+
+- [One Year of Private AI](https://blog.trymaple.ai/one-year-of-private-ai-how-maple-ai-made-encryption-easy/): Retrospective on Maple's first year — 5x user growth, 90%+ paying customer retention, and the mission ahead.
+- [Maple 2.0 - Now with Live Data](https://blog.trymaple.ai/maple-2-0-now-with-live-data/): Live web search, anonymous accounts, custom AI personality, and background processing.
+- [Kimi K2.5 in Maple AI](https://blog.trymaple.ai/kimi-k2-in-maple-ai-open-reasoning-that-competes-with-chatgpt-and-claude/): Open reasoning model that competes with GPT-5 and Claude Sonnet 4.5.
+- [Encrypted Voice in Maple](https://blog.trymaple.ai/speak-freely-encrypted-voice-arrives-in-maple/): Voice input and output with end-to-end encryption.
+- [Document and Image Upload](https://blog.trymaple.ai/introducing-confidential-document-and-image-upload-in-maple-ai/): Confidential document and image analysis.
+- [Introducing Maple Proxy](https://blog.trymaple.ai/introducing-maple-proxy-the-maple-ai-api-that-brings-encrypted-llms-to-your-openai-apps/): OpenAI-compatible encrypted API for developers.
+- [Using AI Safely in Therapy](https://blog.trymaple.ai/using-ai-safely-in-your-therapy-practice/): Guide for therapists on using encrypted AI with client data.
+- [Getting Started with Teams](https://blog.trymaple.ai/manage-your-team-on-maple/): Team setup and management guide.
+
+## Company
+
+- **Company**: Maple AI, based in Austin, TX. Legal entity is Mutiny Wallet Inc.
+- **Founders**: Mark Suman (CEO, ex-Apple AI/Privacy engineer) and Anthony Ronning (CTO, defense/security/bitcoin infrastructure)
+- **Programs**: NVIDIA Inception Program, Google Cloud for Startups
+- **Contact**: team@trymaple.ai, support@trymaple.ai
+- **Community**: [Discord](https://discord.gg/ch2gjZAMGy)
+- **Social**: [X/Twitter](https://twitter.com/TryMapleAI)
+- **Blog**: [blog.trymaple.ai](https://blog.trymaple.ai)
+- **Status**: [status.trymaple.ai](https://status.trymaple.ai)
+
+## Optional
+
+- [OpenSecret Cloud](https://opensecret.cloud): The encrypted backend platform Maple is built on — available for other developers building privacy-preserving apps.
+- [Maple iOS on App Store](https://apps.apple.com/us/app/id6743764835): Download Maple AI for iPhone and iPad.
+- [Maple on Google Play](https://play.google.com/store/apps/details?id=cloud.opensecret.maple): Download Maple AI for Android.
+- [Maple TestFlight Beta](https://testflight.apple.com/join/zjgtyAeD): Join the iOS beta program.

@@ -101,7 +101,7 @@ pub async fn start_proxy(
     // Try to bind to the address first to check if port is available
     let addr = proxy_config
         .socket_addr()
-        .map_err(|e| format!("Invalid address: {}", e))?;
+        .map_err(|e| format!("Invalid address: {e}"))?;
 
     let listener = match TcpListener::bind(&addr).await {
         Ok(listener) => listener,
@@ -118,9 +118,9 @@ pub async fn start_proxy(
 
     // Spawn the proxy server
     let handle = tokio::spawn(async move {
-        log::info!("Maple proxy server running on http://{}", addr);
+        log::info!("Maple proxy server running on http://{addr}");
         if let Err(e) = axum::serve(listener, app).await {
-            log::error!("Proxy server error: {}", e);
+            log::error!("Proxy server error: {e}");
         }
     });
 
@@ -133,7 +133,7 @@ pub async fn start_proxy(
 
     // Save config to disk
     if let Err(e) = save_proxy_config(&config).await {
-        log::error!("Failed to save proxy config: {}", e);
+        log::error!("Failed to save proxy config: {e}");
     }
 
     Ok(ProxyStatus {
@@ -188,27 +188,27 @@ pub async fn get_proxy_status(state: State<'_, ProxyState>) -> Result<ProxyStatu
 pub async fn load_proxy_config() -> Result<ProxyConfig, String> {
     load_saved_proxy_config()
         .await
-        .map_err(|e| format!("Failed to load proxy config: {}", e))
+        .map_err(|e| format!("Failed to load proxy config: {e}"))
 }
 
 #[tauri::command]
 pub async fn save_proxy_settings(config: ProxyConfig) -> Result<(), String> {
     save_proxy_config(&config)
         .await
-        .map_err(|e| format!("Failed to save proxy config: {}", e))
+        .map_err(|e| format!("Failed to save proxy config: {e}"))
 }
 
 #[tauri::command]
 pub async fn test_proxy_port(host: String, port: u16) -> Result<bool, String> {
     // Try to bind to the address to check if it's available
-    let addr = format!("{}:{}", host, port);
+    let addr = format!("{host}:{port}");
     match TcpListener::bind(&addr).await {
         Ok(_) => Ok(true), // Port is available
         Err(e) => {
             if e.kind() == std::io::ErrorKind::AddrInUse {
                 Ok(false) // Port is in use
             } else {
-                Err(format!("Failed to test port: {}", e))
+                Err(format!("Failed to test port: {e}"))
             }
         }
     }
@@ -289,7 +289,7 @@ pub async fn init_proxy_on_startup_simple(app_handle: AppHandle) -> Result<()> {
                 let _ = app_handle.emit("proxy-autostarted", &config);
             }
             Err(e) => {
-                log::error!("Failed to auto-start proxy: {}", e);
+                log::error!("Failed to auto-start proxy: {e}");
                 // Emit an event to notify the frontend of the failure
                 let _ = app_handle.emit("proxy-autostart-failed", e);
             }

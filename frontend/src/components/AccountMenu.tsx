@@ -13,7 +13,7 @@ import {
   FileText,
   ChevronLeft
 } from "lucide-react";
-import { isMobile, isTauri } from "@/utils/platform";
+import { isMobile, isTauri, isIOS } from "@/utils/platform";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -49,8 +49,10 @@ import { Link } from "@tanstack/react-router";
 import { getBillingService } from "@/billing/billingService";
 import { useState } from "react";
 import type { TeamStatus } from "@/types/team";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { TeamManagementDialog } from "@/components/team/TeamManagementDialog";
 import { ApiKeyManagementDialog } from "@/components/apikeys/ApiKeyManagementDialog";
+import packageJson from "../../package.json";
 
 function ConfirmDeleteDialog() {
   const { clearHistory } = useLocalState();
@@ -109,6 +111,7 @@ export function AccountMenu() {
   const [isTeamDialogOpen, setIsTeamDialogOpen] = useState(false);
   const [isApiKeyDialogOpen, setIsApiKeyDialogOpen] = useState(false);
   const [showAboutMenu, setShowAboutMenu] = useState(false);
+  const [portalError, setPortalError] = useState<string | null>(null);
 
   const hasStripeAccount = billingStatus?.stripe_customer_id !== null;
   const productName = billingStatus?.product_name || "";
@@ -129,34 +132,77 @@ export function AccountMenu() {
     enabled: isTeamPlan && !!os.auth.user && !!billingStatus
   });
 
+  // Fetch products with version check for iOS to determine API Management availability
+  const isIOSPlatform = isIOS();
+  const { data: products } = useQuery({
+    queryKey: ["products-version-check", isIOSPlatform],
+    queryFn: async () => {
+      try {
+        const billingService = getBillingService();
+        // Send version for iOS builds (App Store restrictions)
+        if (isIOSPlatform) {
+          const version = `v${packageJson.version}`;
+          return await billingService.getProducts(version);
+        }
+        return await billingService.getProducts();
+      } catch (error) {
+        console.error("Error fetching products for version check:", error);
+        return null;
+      }
+    },
+    enabled: isIOSPlatform
+  });
+
   // Show alert badge if user has team plan but hasn't created team yet
   const showTeamSetupAlert =
     isTeamPlan && teamStatus?.has_team_subscription && !teamStatus?.team_created;
+
+  // Determine if API Management should be shown
+  // On desktop/web/Android: always show
+  // On iOS only: only show if version is approved (at least one product is available)
+  const showApiManagement = (() => {
+    if (!isIOSPlatform) {
+      return true; // Always show on desktop/web/Android
+    }
+    // On iOS, check if version is approved
+    // If products is null/undefined, default to false (hide until we know)
+    if (!products) {
+      return false;
+    }
+    // Show if at least one product is available (meaning version is approved)
+    return products.some((product) => product.is_available !== false);
+  })();
 
   const handleManageSubscription = async () => {
     if (!hasStripeAccount) return;
 
     try {
       setIsPortalLoading(true);
+      setPortalError(null);
       const billingService = getBillingService();
       const url = await billingService.getPortalUrl();
 
-      // Check if we're on a mobile platform
-      if (isMobile()) {
+      // Check if we're on any Tauri platform (mobile or desktop)
+      if (isTauri()) {
         console.log(
-          "[Billing] Mobile platform detected, using opener plugin to launch external browser for portal"
+          "[Billing] Tauri platform detected, using opener plugin to launch external browser for portal"
         );
 
         const { invoke } = await import("@tauri-apps/api/core");
 
-        // Use the opener plugin directly - with NO fallback for mobile platforms
+        // Use the opener plugin directly for all Tauri platforms
         await invoke("plugin:opener|open_url", { url })
           .then(() => {
             console.log("[Billing] Successfully opened portal URL in external browser");
           })
           .catch((err: Error) => {
             console.error("[Billing] Failed to open external browser:", err);
-            alert("Failed to open browser. Please try again.");
+            if (isMobile()) {
+              alert("Failed to open browser. Please try again.");
+            } else {
+              // Fallback to window.open on desktop
+              window.open(url, "_blank");
+            }
           });
 
         // Add a small delay to ensure the browser has time to open
@@ -164,10 +210,13 @@ export function AccountMenu() {
         return;
       }
 
-      // Default browser opening for non-mobile platforms
+      // Default browser opening for web platforms
       window.open(url, "_blank");
     } catch (error) {
       console.error("Error fetching portal URL:", error);
+      setPortalError(
+        "Unable to open subscription management. Please try again or contact support@opensecret.cloud."
+      );
     } finally {
       setIsPortalLoading(false);
     }
@@ -213,6 +262,14 @@ export function AccountMenu() {
         console.error("Error clearing billing token:", error);
         // Fallback to direct session storage removal if billing service fails
         sessionStorage.removeItem("maple_billing_token");
+      }
+
+      // Stop proxy and reset config so it doesn't auto-start on next launch
+      try {
+        const { proxyService } = await import("@/services/proxyService");
+        await proxyService.stopAndResetProxy();
+      } catch (error) {
+        console.error("Error clearing proxy config:", error);
       }
 
       // Sign out from OpenSecret
@@ -300,7 +357,7 @@ export function AccountMenu() {
                       </div>
                     </DropdownMenuItem>
                   )}
-                  {!isMobile() && (
+                  {showApiManagement && (
                     <DropdownMenuItem onClick={() => setIsApiKeyDialogOpen(true)}>
                       <Key className="mr-2 h-4 w-4" />
                       <span>API Management</span>
@@ -405,6 +462,12 @@ export function AccountMenu() {
           </DropdownMenuContent>
           <AccountDialog />
           <ConfirmDeleteDialog />
+          {portalError && (
+            <Alert variant="destructive" className="mt-2">
+              <AlertCircle className="h-4 w-4" />
+              <AlertDescription>{portalError}</AlertDescription>
+            </Alert>
+          )}
           <TeamManagementDialog
             open={isTeamDialogOpen}
             onOpenChange={setIsTeamDialogOpen}

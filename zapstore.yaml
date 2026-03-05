@@ -1,0 +1,24 @@
+repository: https://github.com/OpenSecretCloud/Maple
+
+release_source: ./app-universal-release.apk
+
+name: Maple
+summary: Private AI Chat
+description: |
+  Maple is a private AI chat app by OpenSecret.
+
+  Learn more at https://trymaple.ai
+
+website: https://trymaple.ai
+license: MIT
+
+tags:
+  - ai
+  - chat
+  - privacy
+
+icon: ./frontend/src-tauri/icons/icon.png
+
+metadata_sources:
+  - github
+  - playstore

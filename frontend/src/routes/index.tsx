@@ -20,6 +20,7 @@ type IndexSearchOptions = {
   next?: string;
   team_setup?: boolean;
   credits_success?: boolean;
+  api_settings?: boolean;
 };
 
 function validateSearch(search: Record<string, unknown>): IndexSearchOptions {
@@ -28,7 +29,9 @@ function validateSearch(search: Record<string, unknown>): IndexSearchOptions {
     next: search.next ? (search.next as string) : undefined,
     team_setup: search?.team_setup === true || search?.team_setup === "true" ? true : undefined,
     credits_success:
-      search?.credits_success === true || search?.credits_success === "true" ? true : undefined
+      search?.credits_success === true || search?.credits_success === "true" ? true : undefined,
+    api_settings:
+      search?.api_settings === true || search?.api_settings === "true" ? true : undefined
   };
 }
 
@@ -43,7 +46,7 @@ function Index() {
   const queryClient = useQueryClient();
   const { setBillingStatus, billingStatus } = useLocalState();
 
-  const { login, next, team_setup, credits_success } = Route.useSearch();
+  const { login, next, team_setup, credits_success, api_settings } = Route.useSearch();
 
   // Modal states
   const [teamDialogOpen, setTeamDialogOpen] = useState(false);
@@ -118,6 +121,15 @@ function Index() {
       return () => clearTimeout(timer);
     }
   }, [credits_success, os.auth.user, navigate, queryClient]);
+
+  // Handle api_settings - open API key dialog directly
+  useEffect(() => {
+    if (api_settings && os.auth.user) {
+      setApiKeyDialogOpen(true);
+      // Clear the query param to prevent re-opening on refresh
+      navigate({ to: "/", replace: true });
+    }
+  }, [api_settings, os.auth.user, navigate]);
 
   // Check if guest user needs to pay
   const isGuestUser = os.auth.user?.user.login_method?.toLowerCase() === "guest";

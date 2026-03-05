@@ -1,5 +1,8 @@
 name: Desktop App CI
 
+permissions:
+  contents: read
+
 on:
   push:
     branches: [ master ]
@@ -8,7 +11,7 @@ on:
 
 jobs:
   build-macos:
-    runs-on: macos-latest
+    runs-on: macos-latest-xlarge
     strategy:
       matrix:
         target: [universal-apple-darwin]
@@ -57,8 +60,10 @@ jobs:
 
       - name: Configure sccache
         run: |
-          echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
-          echo "SCCACHE_CACHE_SIZE=2G" >> $GITHUB_ENV
+          {
+            echo "RUSTC_WRAPPER=sccache"
+            echo "SCCACHE_CACHE_SIZE=2G"
+          } >> "$GITHUB_ENV"
 
       - name: Import Apple Developer Certificate
         env:
@@ -79,7 +84,7 @@ jobs:
         run: |
           CERT_INFO=$(security find-identity -v -p codesigning build.keychain | grep "Developer ID Application")
           CERT_ID=$(echo "$CERT_INFO" | awk -F'"' '{print $2}')
-          echo "CERT_ID=$CERT_ID" >> $GITHUB_ENV
+          echo "CERT_ID=$CERT_ID" >> "$GITHUB_ENV"
           echo "Certificate imported."
 
       - name: Build Tauri App (macOS)
@@ -114,7 +119,7 @@ jobs:
           retention-days: 5
 
   build-linux:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest-8-cores
     steps:
       - uses: actions/checkout@v4
 
@@ -178,9 +183,11 @@ jobs:
 
       - name: Configure sccache
         run: |
-          echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
-          echo "SCCACHE_DIR=$HOME/.cache/sccache" >> $GITHUB_ENV
-          echo "SCCACHE_CACHE_SIZE=2G" >> $GITHUB_ENV
+          {
+            echo "RUSTC_WRAPPER=sccache"
+            echo "SCCACHE_DIR=$HOME/.cache/sccache"
+            echo "SCCACHE_CACHE_SIZE=2G"
+          } >> "$GITHUB_ENV"
 
       - name: Build Tauri App (Linux)
         working-directory: ./frontend

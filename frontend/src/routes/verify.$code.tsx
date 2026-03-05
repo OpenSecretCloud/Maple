@@ -24,7 +24,19 @@ function VerifyEmail() {
         // Do both refetch and navigation after a delay
         setTimeout(async () => {
           await refetchUser();
-          navigate({ to: "/" });
+
+          // Check for a pending redirect (e.g. team invite page)
+          const pendingRedirect = sessionStorage.getItem("post_auth_redirect");
+          sessionStorage.removeItem("post_auth_redirect");
+          if (
+            pendingRedirect &&
+            pendingRedirect.startsWith("/") &&
+            !pendingRedirect.startsWith("//")
+          ) {
+            navigate({ to: pendingRedirect });
+          } else {
+            navigate({ to: "/" });
+          }
         }, 2000);
       } catch (err) {
         if (err instanceof Error) {

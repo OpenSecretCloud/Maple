@@ -3,6 +3,9 @@ use tauri_plugin_deep_link::DeepLinkExt;
 
 mod pdf_extractor;
 mod proxy;
+// TTS is available on desktop and iOS (not Android)
+#[cfg(any(desktop, target_os = "ios"))]
+mod tts;
 
 #[cfg(desktop)]
 #[tauri::command]
@@ -13,11 +16,11 @@ fn restart_for_update(app_handle: tauri::AppHandle) {
 
 // This handles incoming deep links
 fn handle_deep_link_event(url: &str, app: &tauri::AppHandle) {
-    log::info!("[Deep Link] Received: {}", url);
+    log::info!("[Deep Link] Received: {url}");
     // Forward the URL to the frontend
     match app.emit_to("main", "deep-link-received", url.to_string()) {
         Ok(_) => log::info!("[Deep Link] Event emitted successfully"),
-        Err(e) => log::error!("[Deep Link] Failed to emit event: {}", e),
+        Err(e) => log::error!("[Deep Link] Failed to emit event: {e}"),
     }
 }
 
@@ -34,6 +37,7 @@ pub fn run() {
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_fs::init())
         .manage(proxy::ProxyState::new())
+        .manage(tts::TTSState::new())
         .invoke_handler(tauri::generate_handler![
             proxy::start_proxy,
             proxy::stop_proxy,
@@ -43,6 +47,12 @@ pub fn run() {
             proxy::test_proxy_port,
             pdf_extractor::extract_document_content,
             restart_for_update,
+            tts::tts_get_status,
+            tts::tts_download_models,
+            tts::tts_load_models,
+            tts::tts_synthesize,
+            tts::tts_unload_models,
+            tts::tts_delete_models,
         ])
         .setup(|app| {
             // Initialize proxy auto-start
@@ -54,7 +64,7 @@ pub fn run() {
 
                     // Create a new State wrapper for the async context
                     if let Err(e) = proxy::init_proxy_on_startup_simple(app_handle_proxy).await {
-                        log::error!("Failed to initialize proxy: {}", e);
+                        log::error!("Failed to initialize proxy: {e}");
                     }
                 });
             }
@@ -72,7 +82,7 @@ pub fn run() {
             // Optionally register the scheme at runtime
             #[cfg(desktop)]
             if let Err(e) = app.deep_link().register("cloud.opensecret.maple") {
-                log::error!("[Deep Link] Failed to register scheme: {}", e);
+                log::error!("[Deep Link] Failed to register scheme: {e}");
             }
             // Create the application menu with update options
             #[cfg(desktop)]
@@ -207,7 +217,7 @@ pub fn run() {
                             {
                                 match CURRENT_VERSION.lock() {
                                     Ok(mut version) => version.clear(),
-                                    Err(e) => log::error!("Failed to lock CURRENT_VERSION mutex when clearing: {}", e)
+                                    Err(e) => log::error!("Failed to lock CURRENT_VERSION mutex when clearing: {e}")
                                 }
                             }
                             log::info!("Dismissal flags cleared - user will be prompted for any available updates");
@@ -219,7 +229,7 @@ pub fn run() {
                             tauri::async_runtime::spawn(async move {
                                 match check_for_updates(app_handle_clone).await {
                                     Ok(_) => log::info!("Update check completed successfully"),
-                                    Err(e) => log::error!("Update check failed: {}", e),
+                                    Err(e) => log::error!("Update check failed: {e}"),
                                 }
                             });
                         }
@@ -231,6 +241,7 @@ pub fn run() {
         })
         .plugin(tauri_plugin_updater::Builder::new().build());
 
+    // Mobile (iOS and Android) configuration
     #[cfg(not(desktop))]
     let mut builder = tauri::Builder::default()
         .plugin(
@@ -249,10 +260,45 @@ pub fn run() {
         builder = builder.plugin(tauri_plugin_sign_in_with_apple::init());
     }
 
-    #[cfg(not(desktop))]
+    // Add TTS state management for iOS
+    #[cfg(all(not(desktop), target_os = "ios"))]
+    {
+        builder = builder.manage(tts::TTSState::new());
+    }
+
+    // Android-specific configuration (no TTS)
+    #[cfg(all(not(desktop), target_os = "android"))]
     let app = builder
         .invoke_handler(tauri::generate_handler![
             pdf_extractor::extract_document_content,
+        ])
+        .setup(|app| {
+            // Set up the deep link handler for mobile
+            let app_handle = app.handle().clone();
+
+            // Register deep link handler - note that iOS does not support runtime registration
+            // but the handler for incoming URLs still works
+            app.deep_link().on_open_url(move |event| {
+                if let Some(url) = event.urls().first() {
+                    handle_deep_link_event(url.as_ref(), &app_handle);
+                }
+            });
+
+            Ok(())
+        })
+        .plugin(tauri_plugin_updater::Builder::new().build());
+
+    // iOS-specific configuration (with TTS)
+    #[cfg(all(not(desktop), target_os = "ios"))]
+    let app = builder
+        .invoke_handler(tauri::generate_handler![
+            pdf_extractor::extract_document_content,
+            tts::tts_get_status,
+            tts::tts_download_models,
+            tts::tts_load_models,
+            tts::tts_synthesize,
+            tts::tts_unload_models,
+            tts::tts_delete_models,
         ])
         .setup(|app| {
             // Set up the deep link handler for mobile
@@ -298,8 +344,8 @@ async fn check_for_updates(app_handle: tauri::AppHandle) -> Result<(), String> {
     let updater = match app_handle.updater() {
         Ok(u) => u,
         Err(e) => {
-            log::error!("Failed to get updater: {}", e);
-            return Err(format!("Failed to get updater: {}", e));
+            log::error!("Failed to get updater: {e}");
+            return Err(format!("Failed to get updater: {e}"));
         }
     };
 
@@ -310,7 +356,7 @@ async fn check_for_updates(app_handle: tauri::AppHandle) -> Result<(), String> {
             let current_downloaded_version = match CURRENT_VERSION.lock() {
                 Ok(guard) => guard.clone(),
                 Err(e) => {
-                    log::error!("Failed to lock CURRENT_VERSION mutex: {}", e);
+                    log::error!("Failed to lock CURRENT_VERSION mutex: {e}");
                     String::new() // Use empty string if lock fails
                 }
             };
@@ -330,9 +376,9 @@ async fn check_for_updates(app_handle: tauri::AppHandle) -> Result<(), String> {
             // Download the update
             let progress_fn = |downloaded: usize, total: Option<u64>| {
                 if let Some(total) = total {
-                    log::info!("Download progress: {}/{} bytes", downloaded, total);
+                    log::info!("Download progress: {downloaded}/{total} bytes");
                 } else {
-                    log::info!("Download progress: {} bytes", downloaded);
+                    log::info!("Download progress: {downloaded} bytes");
                 }
             };
 
@@ -355,7 +401,7 @@ async fn check_for_updates(app_handle: tauri::AppHandle) -> Result<(), String> {
                             {
                                 match CURRENT_VERSION.lock() {
                                     Ok(mut version) => *version = update.version.clone(),
-                                    Err(e) => log::error!("Failed to lock CURRENT_VERSION mutex when updating version: {}", e)
+                                    Err(e) => log::error!("Failed to lock CURRENT_VERSION mutex when updating version: {e}")
                                 }
                             }
 
@@ -382,7 +428,7 @@ async fn check_for_updates(app_handle: tauri::AppHandle) -> Result<(), String> {
                                     version: update.version.clone(),
                                 },
                             ) {
-                                log::error!("Failed to emit update-ready event: {}", e);
+                                log::error!("Failed to emit update-ready event: {e}");
                             } else {
                                 log::info!(
                                     "Emitted update-ready event for version {}",
@@ -391,15 +437,15 @@ async fn check_for_updates(app_handle: tauri::AppHandle) -> Result<(), String> {
                             }
                         }
                         Err(e) => {
-                            log::error!("Failed to install update: {}", e);
+                            log::error!("Failed to install update: {e}");
                         }
                     }
 
                     Ok(())
                 }
                 Err(e) => {
-                    log::error!("Failed to download update: {}", e);
-                    Err(format!("Failed to download update: {}", e))
+                    log::error!("Failed to download update: {e}");
+                    Err(format!("Failed to download update: {e}"))
                 }
             }
         }
@@ -408,8 +454,8 @@ async fn check_for_updates(app_handle: tauri::AppHandle) -> Result<(), String> {
             Ok(())
         }
         Err(e) => {
-            log::error!("Failed to check for updates: {}", e);
-            Err(format!("Failed to check for updates: {}", e))
+            log::error!("Failed to check for updates: {e}");
+            Err(format!("Failed to check for updates: {e}"))
         }
     }
 }

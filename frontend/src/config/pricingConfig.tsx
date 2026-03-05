@@ -139,7 +139,7 @@ export const PRICING_PLANS: PricingPlan[] = [
         icon: <Check className="w-4 h-4 text-green-500" />
       },
       {
-        text: "API Access",
+        text: "API Access (use plan credits via API)",
         included: true,
         icon: <Check className="w-4 h-4 text-green-500" />
       }
@@ -189,7 +189,7 @@ export const PRICING_PLANS: PricingPlan[] = [
         icon: <Check className="w-4 h-4 text-green-500" />
       },
       {
-        text: "API Access",
+        text: "API Access (use plan credits via API)",
         included: true,
         icon: <Check className="w-4 h-4 text-green-500" />
       }
@@ -248,7 +248,7 @@ export const PRICING_PLANS: PricingPlan[] = [
         icon: <Check className="w-4 h-4 text-green-500" />
       },
       {
-        text: "API Access",
+        text: "API Access (use plan credits via API)",
         included: true,
         icon: <Check className="w-4 h-4 text-green-500" />
       }

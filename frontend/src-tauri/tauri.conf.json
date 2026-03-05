@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Maple",
-  "version": "2.0.12",
+  "version": "2.0.19",
   "identifier": "cloud.opensecret.maple",
   "build": {
     "frontendDist": "../dist",
@@ -24,13 +24,21 @@
       },
       "mobile": [
         {
-          "scheme": ["cloud.opensecret.maple"],
-          "appLink": false
+          "scheme": ["https"],
+          "host": "trymaple.ai",
+          "pathPrefix": ["/payment-success"],
+          "appLink": true
         },
         {
           "scheme": ["https"],
           "host": "trymaple.ai",
-          "pathPrefix": ["/payment-success", "/payment-canceled", "/pricing"],
+          "pathPrefix": ["/payment-canceled"],
+          "appLink": true
+        },
+        {
+          "scheme": ["https"],
+          "host": "trymaple.ai",
+          "pathPrefix": ["/pricing"],
           "appLink": true
         }
       ]
@@ -64,6 +72,11 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
+    "linux": {
+      "appimage": {
+        "bundleMediaFramework": true
+      }
+    },
     "macOS": {
       "frameworks": [],
       "minimumSystemVersion": "10.13",
@@ -72,10 +85,11 @@
       "entitlements": "./Entitlements.plist"
     },
     "iOS": {
-      "developmentTeam": "X773Y823TN"
+      "developmentTeam": "X773Y823TN",
+      "minimumSystemVersion": "16.0"
     },
     "android": {
-      "versionCode": 2000012000
+      "versionCode": 2000019000
     },
     "windows": {
       "certificateThumbprint": null,

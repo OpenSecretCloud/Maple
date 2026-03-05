@@ -14,6 +14,7 @@ import { DeepLinkHandler } from "./components/DeepLinkHandler";
 import { NotificationProvider } from "./contexts/NotificationContext";
 import { ProxyEventListener } from "./components/ProxyEventListener";
 import { UpdateEventListener } from "./components/UpdateEventListener";
+import { TTSProvider } from "./services/tts/TTSContext";
 
 // Create a new router instance
 const router = createRouter({
@@ -98,12 +99,14 @@ export default function App() {
           <OpenAIProvider>
             <QueryClientProvider client={queryClient}>
               <TooltipProvider>
-                <BillingServiceProvider>
-                  <ProxyEventListener />
-                  <UpdateEventListener />
-                  <DeepLinkHandler />
-                  <InnerApp />
-                </BillingServiceProvider>
+                <TTSProvider>
+                  <BillingServiceProvider>
+                    <ProxyEventListener />
+                    <UpdateEventListener />
+                    <DeepLinkHandler />
+                    <InnerApp />
+                  </BillingServiceProvider>
+                </TTSProvider>
               </TooltipProvider>
             </QueryClientProvider>
           </OpenAIProvider>

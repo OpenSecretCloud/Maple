@@ -36,9 +36,10 @@ import {
   Search,
   Loader2,
   Globe,
-  Brain,
   Maximize2,
-  Minimize2
+  Minimize2,
+  Volume2,
+  Square
 } from "lucide-react";
 import RecordRTC from "recordrtc";
 import { useQueryClient } from "@tanstack/react-query";
@@ -48,10 +49,11 @@ import { Textarea } from "@/components/ui/textarea";
 import { Sidebar, SidebarToggle } from "@/components/Sidebar";
 import { useIsMobile } from "@/utils/utils";
 import { fileToDataURL } from "@/utils/file";
+import { truncateMarkdownPreservingLinks } from "@/utils/markdown";
 import { useOpenAI } from "@/ai/useOpenAi";
 import { DEFAULT_MODEL_ID } from "@/state/LocalStateContext";
 import { Markdown, ThinkingBlock } from "@/components/markdown";
-import { ModelSelector, CATEGORY_MODELS } from "@/components/ModelSelector";
+import { ModelSelector } from "@/components/ModelSelector";
 import { useLocalState } from "@/state/useLocalState";
 import { useOpenSecret } from "@opensecret/react";
 import { UpgradePromptDialog } from "@/components/UpgradePromptDialog";
@@ -59,6 +61,8 @@ import { DocumentPlatformDialog } from "@/components/DocumentPlatformDialog";
 import { ContextLimitDialog } from "@/components/ContextLimitDialog";
 import { RecordingOverlay } from "@/components/RecordingOverlay";
 import { WebSearchInfoDialog } from "@/components/WebSearchInfoDialog";
+import { TTSDownloadDialog } from "@/components/TTSDownloadDialog";
+import { useTTS } from "@/services/tts/TTSContext";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { AlertCircle } from "lucide-react";
 import {
@@ -185,6 +189,94 @@ function CopyButton({ text }: { text: string }) {
   );
 }
 
+// TTS play button component
+function TTSButton({
+  text,
+  messageId,
+  onNeedsSetup,
+  onManage
+}: {
+  text: string;
+  messageId: string;
+  onNeedsSetup: () => void;
+  onManage: () => void;
+}) {
+  const { status, isPlaying, currentPlayingId, speak, stop, isTauriEnv } = useTTS();
+  const isThisPlaying = isPlaying && currentPlayingId === messageId;
+  const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Cleanup timer on unmount
+  useEffect(() => {
+    return () => {
+      if (longPressTimer.current) {
+        clearTimeout(longPressTimer.current);
+      }
+    };
+  }, []);
+
+  // Don't render the button at all if not in Tauri environment
+  if (!isTauriEnv) {
+    return null;
+  }
+
+  const handleClick = async () => {
+    if (status === "not_downloaded" || status === "error") {
+      onNeedsSetup();
+      return;
+    }
+
+    if (status === "ready") {
+      if (isThisPlaying) {
+        stop();
+      } else {
+        await speak(text, messageId);
+      }
+    }
+  };
+
+  const handlePointerDown = () => {
+    longPressTimer.current = setTimeout(() => {
+      onManage();
+    }, 500);
+  };
+
+  const handlePointerUp = () => {
+    if (longPressTimer.current) {
+      clearTimeout(longPressTimer.current);
+      longPressTimer.current = null;
+    }
+  };
+
+  const isDisabled =
+    status === "checking" ||
+    status === "downloading" ||
+    status === "loading" ||
+    status === "deleting";
+  const showSpinner = isDisabled;
+
+  return (
+    <Button
+      variant="ghost"
+      size="sm"
+      className="h-7 w-7 p-0 text-muted-foreground hover:text-foreground"
+      onClick={handleClick}
+      onPointerDown={handlePointerDown}
+      onPointerUp={handlePointerUp}
+      onPointerLeave={handlePointerUp}
+      disabled={isDisabled}
+      aria-label={isThisPlaying ? "Stop speaking" : "Read aloud"}
+    >
+      {showSpinner ? (
+        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+      ) : isThisPlaying ? (
+        <Square className="h-3.5 w-3.5" />
+      ) : (
+        <Volume2 className="h-3.5 w-3.5" />
+      )}
+    </Button>
+  );
+}
+
 interface Conversation {
   id: string;
   object: "conversation";
@@ -245,7 +337,7 @@ function ToolCallRenderer({
     // If we have a toolOutput, render them grouped together
     if (toolOutput) {
       const output = toolOutput.output || "";
-      const preview = output.length > 150 ? output.substring(0, 150) + "..." : output;
+      const preview = truncateMarkdownPreservingLinks(output, 150);
       const hasMore = output.length > 150;
       const isWebSearch = functionCall.name === "web_search";
 
@@ -334,7 +426,7 @@ function ToolCallRenderer({
     const output = toolOutput.output || "";
 
     // Show preview (first 150 chars to match grouped rendering)
-    const preview = output.length > 150 ? output.substring(0, 150) + "..." : output;
+    const preview = truncateMarkdownPreservingLinks(output, 150);
     const hasMore = output.length > 150;
 
     return (
@@ -373,13 +465,17 @@ const MessageList = memo(
     isGenerating,
     chatId,
     firstMessageRef,
-    isLoadingOlderMessages
+    isLoadingOlderMessages,
+    onTTSSetupOpen,
+    onTTSManage
   }: {
     messages: Message[];
     isGenerating: boolean;
     chatId?: string;
     firstMessageRef?: React.RefObject<HTMLDivElement>;
     isLoadingOlderMessages?: boolean;
+    onTTSSetupOpen: () => void;
+    onTTSManage: () => void;
   }) => {
     // Build Maps for O(1) lookup of tool calls and outputs by call_id
     const { callMap, outputMap } = useMemo(() => {
@@ -397,6 +493,22 @@ const MessageList = memo(
       return { callMap: calls, outputMap: outputs };
     }, [messages]);
 
+    // Sort priority for assistant items: reasoning first, then tool-related, then messages last.
+    // This prevents a race condition where SSE events arrive out of order (e.g., assistant message
+    // "added" event before reasoning "added" event), which would cause thinking blocks to render
+    // below the "..." loading dots or streamed text.
+    const assistantItemSortOrder = (item: Message): number => {
+      if (item.type === "reasoning") return 0;
+      if (
+        item.type === "web_search_call" ||
+        item.type === "function_call" ||
+        item.type === "function_call_output"
+      )
+        return 1;
+      // "message" items (assistant content / streaming text) come last
+      return 2;
+    };
+
     // Group messages into user turns and assistant turns
     // Assistant turns include: reasoning, tool calls, tool outputs, web search, and assistant messages
     const groupedMessages = useMemo(() => {
@@ -410,7 +522,9 @@ const MessageList = memo(
           if (currentAssistantItems.length > 0) {
             groups.push({
               type: "assistant",
-              items: currentAssistantItems,
+              items: [...currentAssistantItems].sort(
+                (a, b) => assistantItemSortOrder(a) - assistantItemSortOrder(b)
+              ),
               id: `assistant-${currentAssistantItems[0].id}`
             });
             currentAssistantItems = [];
@@ -430,7 +544,9 @@ const MessageList = memo(
       if (currentAssistantItems.length > 0) {
         groups.push({
           type: "assistant",
-          items: currentAssistantItems,
+          items: [...currentAssistantItems].sort(
+            (a, b) => assistantItemSortOrder(a) - assistantItemSortOrder(b)
+          ),
           id: `assistant-${currentAssistantItems[0].id}`
         });
       }
@@ -691,10 +807,16 @@ const MessageList = memo(
                     <div className="space-y-2">
                       <div className="font-semibold text-sm">Maple</div>
                       {group.items.map((item) => renderAssistantItem(item))}
-                      {/* Copy button for the assistant's text content */}
+                      {/* Copy and TTS buttons for the assistant's text content */}
                       {textContent && (
-                        <div className="flex gap-1 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
+                        <div className="flex gap-1">
                           <CopyButton text={textContent} />
+                          <TTSButton
+                            text={textContent}
+                            messageId={group.id}
+                            onNeedsSetup={onTTSSetupOpen}
+                            onManage={onTTSManage}
+                          />
                         </div>
                       )}
                     </div>
@@ -772,6 +894,7 @@ export function UnifiedChat() {
   const os = useOpenSecret();
   const isTauriEnv = isTauri();
   const queryClient = useQueryClient();
+  const { playbackError, clearPlaybackError } = useTTS();
 
   // Track chatId from URL - use state so we can update it
   const [chatId, setChatId] = useState<string | undefined>(() => {
@@ -810,6 +933,7 @@ export function UnifiedChat() {
   const [documentPlatformDialogOpen, setDocumentPlatformDialogOpen] = useState(false);
   const [contextLimitDialogOpen, setContextLimitDialogOpen] = useState(false);
   const [webSearchInfoDialogOpen, setWebSearchInfoDialogOpen] = useState(false);
+  const [ttsSetupDialogOpen, setTtsSetupDialogOpen] = useState(false);
 
   // Audio recording states
   const [isRecording, setIsRecording] = useState(false);
@@ -860,6 +984,7 @@ export function UnifiedChat() {
   const assistantStreamingRef = useRef(false);
 
   const abortControllerRef = useRef<AbortController | null>(null);
+  const billingRefreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const documentInputRef = useRef<HTMLInputElement>(null);
 
@@ -888,6 +1013,15 @@ export function UnifiedChat() {
       textareaRef.current.style.height = `${Math.min(scrollHeight, 200)}px`;
     }
   }, [input]);
+
+  // Cleanup billing refresh timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (billingRefreshTimeoutRef.current) {
+        clearTimeout(billingRefreshTimeoutRef.current);
+      }
+    };
+  }, []);
 
   // Auto-focus textbox on desktop (not mobile to avoid keyboard popup interrupting reading)
   // Focus when: app launches, new chat, conversation loads, or assistant finishes streaming
@@ -2262,6 +2396,12 @@ export function UnifiedChat() {
           // Re-enable polling after streaming completes
           assistantStreamingRef.current = false;
           setCurrentResponseId(undefined);
+
+          // Invalidate billing status after a delay to allow backend processing
+          billingRefreshTimeoutRef.current = setTimeout(() => {
+            queryClient.invalidateQueries({ queryKey: ["billingStatus"] });
+            billingRefreshTimeoutRef.current = null;
+          }, 3000);
         }
       } catch (error) {
         console.error("Failed to send message:", error);
@@ -2544,6 +2684,27 @@ export function UnifiedChat() {
           </div>
         )}
 
+        {/* TTS playback error - shows when audio context is unavailable (e.g., Lockdown Mode) */}
+        {playbackError && (
+          <div className="fixed top-16 left-1/2 -translate-x-1/2 z-50 w-full max-w-2xl px-4 md:left-[calc(50%+140px)]">
+            <Alert variant="destructive" className="bg-background">
+              <AlertCircle className="h-4 w-4" />
+              <AlertDescription className="flex items-center justify-between">
+                <span>{playbackError}</span>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 px-2 ml-2"
+                  onClick={clearPlaybackError}
+                  aria-label="Dismiss TTS error"
+                >
+                  <X className="h-4 w-4" />
+                </Button>
+              </AlertDescription>
+            </Alert>
+          </div>
+        )}
+
         {/* Sidebar toggle - visible when sidebar is closed */}
         {!isSidebarOpen && (
           <div className="fixed top-[9.5px] left-4 z-20">
@@ -2615,6 +2776,8 @@ export function UnifiedChat() {
                   chatId={chatId}
                   firstMessageRef={firstMessageRef}
                   isLoadingOlderMessages={isLoadingOlderMessages}
+                  onTTSSetupOpen={() => setTtsSetupDialogOpen(true)}
+                  onTTSManage={() => setTtsSetupDialogOpen(true)}
                 />
               </div>
 
@@ -2774,40 +2937,6 @@ export function UnifiedChat() {
                               )
                             }
                           />
-
-                          {/* Thinking toggle button - visible when reasoning model is selected */}
-                          {(localState.model === CATEGORY_MODELS.reasoning_on ||
-                            localState.model === CATEGORY_MODELS.reasoning_off) && (
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="sm"
-                              className="h-8 w-8 p-0"
-                              onClick={() => {
-                                const newThinkingEnabled = !localState.thinkingEnabled;
-                                localState.setThinkingEnabled(newThinkingEnabled);
-                                // Switch between Kimi K2 (with thinking) and DeepSeek R1 (without)
-                                localState.setModel(
-                                  newThinkingEnabled
-                                    ? CATEGORY_MODELS.reasoning_on
-                                    : CATEGORY_MODELS.reasoning_off
-                                );
-                              }}
-                              aria-label={
-                                localState.thinkingEnabled
-                                  ? "Disable thinking mode"
-                                  : "Enable thinking mode"
-                              }
-                            >
-                              <Brain
-                                className={`h-4 w-4 ${
-                                  localState.thinkingEnabled
-                                    ? "text-purple-500"
-                                    : "text-muted-foreground"
-                                }`}
-                              />
-                            </Button>
-                          )}
 
                           {/* Web search toggle button - always visible */}
                           <Button
@@ -3052,40 +3181,6 @@ export function UnifiedChat() {
                           }
                         />
 
-                        {/* Thinking toggle button - visible when reasoning model is selected */}
-                        {(localState.model === CATEGORY_MODELS.reasoning_on ||
-                          localState.model === CATEGORY_MODELS.reasoning_off) && (
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="sm"
-                            className="h-8 w-8 p-0"
-                            onClick={() => {
-                              const newThinkingEnabled = !localState.thinkingEnabled;
-                              localState.setThinkingEnabled(newThinkingEnabled);
-                              // Switch between Kimi K2 (with thinking) and DeepSeek R1 (without)
-                              localState.setModel(
-                                newThinkingEnabled
-                                  ? CATEGORY_MODELS.reasoning_on
-                                  : CATEGORY_MODELS.reasoning_off
-                              );
-                            }}
-                            aria-label={
-                              localState.thinkingEnabled
-                                ? "Disable thinking mode"
-                                : "Enable thinking mode"
-                            }
-                          >
-                            <Brain
-                              className={`h-4 w-4 ${
-                                localState.thinkingEnabled
-                                  ? "text-purple-500"
-                                  : "text-muted-foreground"
-                              }`}
-                            />
-                          </Button>
-                        )}
-
                         {/* Web search toggle button - always visible */}
                         <Button
                           type="button"
@@ -3273,6 +3368,9 @@ export function UnifiedChat() {
             setWebSearchInfoDialogOpen(false);
           }}
         />
+
+        {/* TTS setup dialog */}
+        <TTSDownloadDialog open={ttsSetupDialogOpen} onOpenChange={setTtsSetupDialogOpen} />
 
         {/* Hidden file inputs - must be outside conditional rendering to work in both views */}
         <input
