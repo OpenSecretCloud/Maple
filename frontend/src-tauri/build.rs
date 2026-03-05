@@ -4,7 +4,31 @@ fn main() {
         println!("cargo:rustc-link-lib=c++");
     }
 
-    tauri_build::build();
+    if target_os == "windows" {
+        let mut windows = tauri_build::WindowsAttributes::new();
+        windows = windows.app_manifest(r#"
+            <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+                <application xmlns="urn:schemas-microsoft-com:asm.v3">
+                    <windowsSettings>
+                        <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true/pm</dpiAware>
+                        <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2, PerMonitor</dpiAwareness>
+                    </windowsSettings>
+                </application>
+                <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+                    <security>
+                        <requestedPrivileges>
+                            <requestedExecutionLevel level="asInvoker" uiAccess="false" />
+                        </requestedPrivileges>
+                    </security>
+                </trustInfo>
+            </assembly>
+        "#);
+
+        let attrs = tauri_build::Attributes::new().windows_attributes(windows);
+        tauri_build::try_build(attrs).expect("failed to run Tauri build script");
+    } else {
+        tauri_build::build();
+    }
 
     // The deep-link plugin's build.rs overwrites CFBundleURLTypes in Info.plist
     // based on the mobile config, stripping our custom URL scheme.
