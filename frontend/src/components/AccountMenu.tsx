@@ -264,6 +264,14 @@ export function AccountMenu() {
         sessionStorage.removeItem("maple_billing_token");
       }
 
+      // Stop proxy and reset config so it doesn't auto-start on next launch
+      try {
+        const { proxyService } = await import("@/services/proxyService");
+        await proxyService.stopAndResetProxy();
+      } catch (error) {
+        console.error("Error clearing proxy config:", error);
+      }
+
       // Sign out from OpenSecret
       await os.signOut();
 
