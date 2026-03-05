@@ -493,6 +493,22 @@ const MessageList = memo(
       return { callMap: calls, outputMap: outputs };
     }, [messages]);
 
+    // Sort priority for assistant items: reasoning first, then tool-related, then messages last.
+    // This prevents a race condition where SSE events arrive out of order (e.g., assistant message
+    // "added" event before reasoning "added" event), which would cause thinking blocks to render
+    // below the "..." loading dots or streamed text.
+    const assistantItemSortOrder = (item: Message): number => {
+      if (item.type === "reasoning") return 0;
+      if (
+        item.type === "web_search_call" ||
+        item.type === "function_call" ||
+        item.type === "function_call_output"
+      )
+        return 1;
+      // "message" items (assistant content / streaming text) come last
+      return 2;
+    };
+
     // Group messages into user turns and assistant turns
     // Assistant turns include: reasoning, tool calls, tool outputs, web search, and assistant messages
     const groupedMessages = useMemo(() => {
@@ -506,7 +522,9 @@ const MessageList = memo(
           if (currentAssistantItems.length > 0) {
             groups.push({
               type: "assistant",
-              items: currentAssistantItems,
+              items: [...currentAssistantItems].sort(
+                (a, b) => assistantItemSortOrder(a) - assistantItemSortOrder(b)
+              ),
               id: `assistant-${currentAssistantItems[0].id}`
             });
             currentAssistantItems = [];
@@ -526,7 +544,9 @@ const MessageList = memo(
       if (currentAssistantItems.length > 0) {
         groups.push({
           type: "assistant",
-          items: currentAssistantItems,
+          items: [...currentAssistantItems].sort(
+            (a, b) => assistantItemSortOrder(a) - assistantItemSortOrder(b)
+          ),
           id: `assistant-${currentAssistantItems[0].id}`
         });
       }
