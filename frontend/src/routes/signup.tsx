@@ -150,6 +150,9 @@ function SignupPage() {
         if (code) {
           sessionStorage.setItem("redeem_code", code);
         }
+        if (next) {
+          sessionStorage.setItem("post_auth_redirect", next);
+        }
         window.location.href = auth_url;
       }
     } catch (error) {
@@ -191,6 +194,9 @@ function SignupPage() {
         }
         if (code) {
           sessionStorage.setItem("redeem_code", code);
+        }
+        if (next) {
+          sessionStorage.setItem("post_auth_redirect", next);
         }
         window.location.href = auth_url;
       }

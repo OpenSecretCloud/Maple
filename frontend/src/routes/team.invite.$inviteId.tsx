@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Loader2, UserPlus, AlertCircle, CheckCircle, XCircle } from "lucide-react";
 import type { CheckInviteResponse } from "@/types/team";
+import { VerificationModal } from "@/components/VerificationModal";
 
 export const Route = createFileRoute("/team/invite/$inviteId")({
   component: TeamInviteAcceptance
@@ -44,6 +45,8 @@ function TeamInviteAcceptance() {
   // Redirect to signup if not authenticated
   useEffect(() => {
     if (!isLoggedIn && !checkingInvite) {
+      // Store the invite URL so it survives OAuth redirects and email verification
+      sessionStorage.setItem("post_auth_redirect", `/team/invite/${inviteId}`);
       navigate({
         to: "/signup",
         search: {
@@ -168,6 +171,7 @@ function TeamInviteAcceptance() {
   return (
     <>
       <TopNav />
+      <VerificationModal />
       <FullPageMain>
         <div className="flex items-center justify-center min-h-[60vh]">
           <Card className="w-full max-w-md">

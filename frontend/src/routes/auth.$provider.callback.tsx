@@ -62,12 +62,17 @@ function OAuthCallback() {
     const selectedPlan = sessionStorage.getItem("selected_plan");
     sessionStorage.removeItem("selected_plan");
 
+    const postAuthRedirect = sessionStorage.getItem("post_auth_redirect");
+    sessionStorage.removeItem("post_auth_redirect");
+
     setTimeout(() => {
       if (selectedPlan) {
         navigate({
           to: "/pricing",
           search: { selected_plan: selectedPlan }
         });
+      } else if (postAuthRedirect) {
+        navigate({ to: postAuthRedirect });
       } else {
         navigate({ to: "/" });
       }
