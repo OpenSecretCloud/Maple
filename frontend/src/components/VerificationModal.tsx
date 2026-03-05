@@ -7,6 +7,7 @@ import {
   DialogTitle
 } from "@/components/ui/dialog";
 import { useOpenSecret } from "@opensecret/react";
+import { useNavigate } from "@tanstack/react-router";
 import { useState, useEffect } from "react";
 import { Loader2, CheckCircle, LogOut } from "lucide-react";
 import { Input } from "./ui/input";
@@ -15,6 +16,7 @@ import { AlertDestructive } from "./AlertDestructive";
 
 export function VerificationModal() {
   const os = useOpenSecret();
+  const navigate = useNavigate();
   const [isOpen, setIsOpen] = useState(() => {
     if (!os.auth.user) return false;
     // Skip email verification for guest users and in local development
@@ -78,6 +80,13 @@ export function VerificationModal() {
       setIsVerifying(true);
       await os.verifyEmail(verificationCode);
       await os.refetchUser();
+
+      // Check for a pending redirect (e.g. team invite page) after email verification
+      const pendingRedirect = sessionStorage.getItem("post_auth_redirect");
+      sessionStorage.removeItem("post_auth_redirect");
+      if (pendingRedirect && pendingRedirect.startsWith("/") && !pendingRedirect.startsWith("//")) {
+        navigate({ to: pendingRedirect });
+      }
     } catch (err) {
       if (err instanceof Error) {
         setError(err.message);
