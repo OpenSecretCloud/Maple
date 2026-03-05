@@ -96,6 +96,18 @@ export function VerificationModal() {
     }
   };
 
+  const handleSignOut = async () => {
+    // Stop proxy and reset config so it doesn't auto-start on next launch
+    try {
+      const { proxyService } = await import("@/services/proxyService");
+      await proxyService.stopAndResetProxy();
+    } catch (error) {
+      console.error("Error clearing proxy config:", error);
+    }
+
+    await os.signOut();
+  };
+
   return (
     <Dialog open={isOpen} onOpenChange={handleOpenChange}>
       <DialogContent className="max-w-[calc(100vw-2rem)] sm:max-w-[425px] [&>button]:hidden">
@@ -148,7 +160,7 @@ export function VerificationModal() {
                 )}
               </Button>
             )}
-            <Button variant="outline" onClick={() => os.signOut()} className="gap-2">
+            <Button variant="outline" onClick={handleSignOut} className="gap-2">
               <LogOut className="w-4 h-4" />
               Log Out
             </Button>

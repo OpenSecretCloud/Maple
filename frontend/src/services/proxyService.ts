@@ -86,6 +86,33 @@ class ProxyService {
     }
   }
 
+  // Stop proxy if running and reset saved config (used on logout)
+  async stopAndResetProxy(): Promise<void> {
+    try {
+      // Check if proxy is running and stop it
+      const status = await this.getProxyStatus();
+      if (status.running) {
+        await this.stopProxy();
+      }
+    } catch {
+      // Proxy may not be running, that's fine
+    }
+
+    try {
+      // Save default config to clear auto_start and API key
+      await this.saveProxySettings({
+        host: "127.0.0.1",
+        port: 8080,
+        api_key: "",
+        enabled: false,
+        enable_cors: true,
+        auto_start: false
+      });
+    } catch (error) {
+      console.error("Failed to reset proxy config:", error);
+    }
+  }
+
   // Helper to check if we're in Tauri desktop environment
   async isTauriDesktop(): Promise<boolean> {
     try {
