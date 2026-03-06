@@ -2904,7 +2904,7 @@ export function UnifiedChat() {
                 if (!voiceModeRef.current) return;
                 setVoiceState("recording");
                 playAudioCue("mic-on");
-                startRecording();
+                startRecordingRef.current();
               }, 500);
             })
             .catch(() => {
@@ -2916,13 +2916,13 @@ export function UnifiedChat() {
           // No text to speak, just go back to recording
           setVoiceState("recording");
           playAudioCue("mic-on");
-          startRecording();
+          startRecordingRef.current();
         }
       } else {
         // No assistant message found, go back to recording
         setVoiceState("recording");
         playAudioCue("mic-on");
-        startRecording();
+        startRecordingRef.current();
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -3377,7 +3377,7 @@ export function UnifiedChat() {
                           className="absolute inset-0 rounded-xl"
                           voiceState={voiceState || undefined}
                           errorMessage={voiceErrorMessage || undefined}
-                          savedDuration={recordingDuration || undefined}
+                          savedDuration={recordingDuration ?? undefined}
                           onRetry={handleVoiceRetry}
                           onDiscard={handleVoiceDiscard}
                         />
@@ -3636,7 +3636,7 @@ export function UnifiedChat() {
                         className="absolute inset-0 rounded-xl"
                         voiceState={voiceState || undefined}
                         errorMessage={voiceErrorMessage || undefined}
-                        savedDuration={recordingDuration || undefined}
+                        savedDuration={recordingDuration ?? undefined}
                         onRetry={handleVoiceRetry}
                         onDiscard={handleVoiceDiscard}
                       />
