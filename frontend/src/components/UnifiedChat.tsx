@@ -3327,7 +3327,6 @@ export function UnifiedChat() {
                       </div>
                     )}
 
-
                     {/* Main input container with purple focus border */}
                     <div
                       className={`relative rounded-xl border-2 border-border focus-within:border-purple-500 bg-background overflow-hidden ${
