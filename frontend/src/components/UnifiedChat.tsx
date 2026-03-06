@@ -3387,6 +3387,8 @@ export function UnifiedChat() {
                               setVoiceState(null);
                               setRecordingBlob(null);
                               setVoiceErrorMessage(null);
+                              setVoiceRetryCount(0);
+                              setRecordingDuration(0);
                             } else {
                               stopRecording(false);
                               if (voiceModeRef.current) exitVoiceMode();
@@ -3646,6 +3648,8 @@ export function UnifiedChat() {
                             setVoiceState(null);
                             setRecordingBlob(null);
                             setVoiceErrorMessage(null);
+                            setVoiceRetryCount(0);
+                            setRecordingDuration(0);
                           } else {
                             stopRecording(false);
                             if (voiceModeRef.current) exitVoiceMode();
