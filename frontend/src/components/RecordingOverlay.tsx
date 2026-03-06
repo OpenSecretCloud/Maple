@@ -290,23 +290,23 @@ export function RecordingOverlay({
         </div>
 
         <div className="flex flex-col items-center gap-6 max-w-md w-full">
-          {/* Waveform visualization - show for recording, generating, and playing states */}
-          {!isCompact &&
-            (effectiveState === "recording" ||
-              effectiveState === "generating" ||
-              effectiveState === "playing") && (
-              <div className="flex items-center justify-center h-12 w-full gap-0.5 px-4">
-                {renderWaveformBars()}
-              </div>
-            )}
+          {/* Waveform visualization - show for recording (non-compact), generating, and playing (always) */}
+          {((!isCompact && effectiveState === "recording") ||
+            effectiveState === "generating" ||
+            effectiveState === "playing") && (
+            <div className="flex items-center justify-center h-12 w-full gap-0.5 px-4">
+              {renderWaveformBars()}
+            </div>
+          )}
 
           {/* Timer - show during recording */}
           {(effectiveState === "recording" || effectiveState === "processing") && (
             <div className="text-2xl font-mono text-muted-foreground">{formatTime(duration)}</div>
           )}
 
-          {/* Status indicator - only show when not compact */}
-          {!isCompact && (
+          {/* Status indicator - show in all modes for voice states, only non-compact for recording */}
+          {(!isCompact ||
+            (effectiveState !== "recording" && effectiveState !== "processing")) && (
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
               {renderStatusContent()}
             </div>

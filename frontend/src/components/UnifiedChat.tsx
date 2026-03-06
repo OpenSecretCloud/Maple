@@ -1854,14 +1854,29 @@ export function UnifiedChat() {
 
   // --- Voice mode helpers ---
 
-  /** Play an audio cue file from /audio/ directory */
+  /** Play an audio cue file from /audio/ directory using Web Audio API for iOS compatibility */
   const playAudioCue = useCallback((file: "mic-on" | "mic-off") => {
     try {
-      const audio = new Audio(`/audio/${file}.wav`);
-      audio.volume = 0.5;
-      audio.play().catch(() => {
-        // Ignore autoplay failures silently
-      });
+      // Use Web Audio API instead of new Audio() for better iOS WebView compatibility
+      const ctx = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
+      fetch(`/audio/${file}.wav`)
+        .then((res) => res.arrayBuffer())
+        .then((buf) => ctx.decodeAudioData(buf))
+        .then((decoded) => {
+          const source = ctx.createBufferSource();
+          const gain = ctx.createGain();
+          gain.gain.value = 0.5;
+          source.buffer = decoded;
+          source.connect(gain);
+          gain.connect(ctx.destination);
+          source.onended = () => {
+            void ctx.close().catch(() => {});
+          };
+          source.start(0);
+        })
+        .catch(() => {
+          void ctx.close().catch(() => {});
+        });
     } catch {
       // Ignore audio cue errors
     }
@@ -2114,7 +2129,9 @@ export function UnifiedChat() {
           setIsRecording(false);
           if (voiceModeRef.current) {
             setVoiceState("recording");
-            startRecordingRef.current();
+            // Defer to allow React batch (setIsRecording(false)) to commit
+            // before startRecording checks the isRecording guard.
+            setTimeout(() => startRecordingRef.current(), 0);
           }
           return;
         }
@@ -2953,6 +2970,62 @@ export function UnifiedChat() {
       setVoiceState("playing");
     }
   }, [ttsIsGenerating, ttsIsPlaying, voiceState]);
+
+  // TTS became ready while voice mode is active: speak the last assistant message.
+  // This handles the case where the user downloads a TTS model mid-voice-loop —
+  // the continuation effect already ran and moved back to recording without TTS,
+  // so we retroactively speak the latest response once the model is available.
+  const prevTtsStatusRef = useRef(ttsStatus);
+  useEffect(() => {
+    const prev = prevTtsStatusRef.current;
+    prevTtsStatusRef.current = ttsStatus;
+
+    if (
+      prev !== "ready" &&
+      ttsStatus === "ready" &&
+      voiceModeRef.current &&
+      !isGenerating &&
+      !ttsIsPlaying &&
+      !ttsIsGenerating
+    ) {
+      // Find the last assistant message and speak it
+      const lastAssistantMsg = [...messages]
+        .reverse()
+        .find(
+          (m): m is ExtendedMessage => "role" in m && m.role === "assistant" && m.type === "message"
+        );
+
+      if (lastAssistantMsg) {
+        const msgContent = lastAssistantMsg.content;
+        const textParts = msgContent?.filter(
+          (p: ConversationContent) => p.type === "output_text" || p.type === "text"
+        );
+        const fullText = textParts
+          ?.map((p: ConversationContent) => (p as OutputTextContent | TextContent).text)
+          .join("\n");
+
+        if (fullText && voiceModeRef.current) {
+          setVoiceState("generating");
+          speakAndWait(fullText, lastAssistantMsg.id)
+            .then(() => {
+              if (!voiceModeRef.current) return;
+              setTimeout(() => {
+                if (!voiceModeRef.current) return;
+                setVoiceState("recording");
+                playAudioCue("mic-on");
+                startRecordingRef.current();
+              }, 500);
+            })
+            .catch(() => {
+              if (voiceModeRef.current) {
+                exitVoiceMode();
+              }
+            });
+        }
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ttsStatus]);
 
   // TTS discovery prompt: show once when user sends first voice message without TTS installed
   const handleTTSDiscovery = useCallback(() => {
