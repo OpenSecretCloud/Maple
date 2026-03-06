@@ -239,8 +239,10 @@ export function TTSProvider({ children }: { children: ReactNode }) {
     // Bump the sequence so the in-flight tts_synthesize result is discarded
     generationSeqRef.current++;
     setIsGenerating(false);
-    setCurrentPlayingId(null);
-  }, []);
+    // Also stop playback to close the AudioContext — this prevents audio from
+    // playing if cancelGeneration is called during the async decoding window.
+    stopPlayback();
+  }, [stopPlayback]);
 
   const deleteModels = useCallback(async () => {
     if (!isTauriEnv) return;
