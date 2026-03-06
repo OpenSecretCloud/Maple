@@ -276,9 +276,7 @@ export function RecordingOverlay({
               disabled={effectiveState === "processing"}
             >
               {effectiveState === "processing" ? (
-                <Loader2
-                  className={cn(isCompact ? "h-4 w-4" : "h-3.5 w-3.5", "animate-spin")}
-                />
+                <Loader2 className={cn(isCompact ? "h-4 w-4" : "h-3.5 w-3.5", "animate-spin")} />
               ) : isCompact ? (
                 <CornerRightUp className="h-4 w-4" />
               ) : (

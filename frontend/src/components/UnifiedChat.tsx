@@ -279,11 +279,7 @@ function TTSButton({
       onPointerLeave={handlePointerUp}
       disabled={isDisabled}
       aria-label={
-        isThisGenerating
-          ? "Cancel generation"
-          : isThisPlaying
-            ? "Stop speaking"
-            : "Read aloud"
+        isThisGenerating ? "Cancel generation" : isThisPlaying ? "Stop speaking" : "Read aloud"
       }
     >
       {showSpinner ? (
@@ -1250,7 +1246,7 @@ export function UnifiedChat() {
       );
       window.removeEventListener("popstate", handlePopState);
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatId, clearAllAttachments]);
 
   // Cancel the current response
@@ -2046,8 +2042,7 @@ export function UnifiedChat() {
 
         let errMsg = "Failed to transcribe audio. Please try again.";
         if (newRetryCount >= 3) {
-          errMsg +=
-            " If this keeps failing, check your internet connection and try again later.";
+          errMsg += " If this keeps failing, check your internet connection and try again later.";
         }
 
         // Transition to error state (works for both voice mode and single recording)
@@ -2063,13 +2058,7 @@ export function UnifiedChat() {
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [
-      os,
-      input,
-      playAudioCue,
-      clearAllAttachments,
-      voiceRetryCount
-    ]
+    [os, input, playAudioCue, clearAllAttachments, voiceRetryCount]
   );
 
   const stopRecording = (shouldSend: boolean = false) => {
@@ -2882,8 +2871,8 @@ export function UnifiedChat() {
       // Get the latest assistant message text
       const lastAssistantMsg = [...messages]
         .reverse()
-        .find((m): m is ExtendedMessage =>
-          "role" in m && m.role === "assistant" && m.type === "message"
+        .find(
+          (m): m is ExtendedMessage => "role" in m && m.role === "assistant" && m.type === "message"
         );
 
       if (lastAssistantMsg) {
@@ -2930,7 +2919,7 @@ export function UnifiedChat() {
         startRecording();
       }
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isGenerating]);
 
   // Track TTS generating/playing state to update voice overlay
@@ -3713,8 +3702,7 @@ export function UnifiedChat() {
               <div className="flex-1">
                 <p className="text-sm font-medium">Enable voice responses?</p>
                 <p className="text-xs text-muted-foreground mt-0.5">
-                  Download a text-to-speech model (~264 MB) to hear Maple read responses
-                  aloud.
+                  Download a text-to-speech model (~264 MB) to hear Maple read responses aloud.
                 </p>
               </div>
               <div className="flex items-center gap-2 flex-shrink-0">
