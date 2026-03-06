@@ -227,7 +227,7 @@ export function ModelSelector({ hasImages = false }: { hasImages?: boolean }) {
     if (model === PRIMARY_MODELS.quick) return "Quick";
     if (model === PRIMARY_MODELS.powerful) return "Powerful";
     const config = MODEL_CONFIG[model];
-    return config?.displayName || model;
+    return config?.shortName || config?.displayName || model;
   };
 
   // Check if user has access to a model based on their plan
