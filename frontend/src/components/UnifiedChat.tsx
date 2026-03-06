@@ -1860,9 +1860,9 @@ export function UnifiedChat() {
     }
   }, []);
 
-  /** Check whether TTS is available on this platform (desktop or iOS) */
+  /** Check whether TTS is available on this platform (desktop or iOS in Tauri) */
   const isTTSPlatform = useMemo(() => {
-    return isTauriDesktop() || isIOS();
+    return isTauriDesktop() || (isTauri() && isIOS());
   }, []);
 
   /** Exit voice mode and clean up all in-flight work */
@@ -2108,6 +2108,7 @@ export function UnifiedChat() {
           setIsRecording(false);
           if (voiceModeRef.current) {
             setVoiceState("recording");
+            startRecordingRef.current();
           }
           return;
         }
