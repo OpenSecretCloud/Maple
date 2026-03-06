@@ -1020,7 +1020,9 @@ export function UnifiedChat() {
   const streamRef = useRef<MediaStream | null>(null);
   const recordingStartTimeRef = useRef<number>(0);
   const startRecordingRef = useRef<() => void>(() => {});
-  const handleSendMessageRef = useRef<(e?: React.FormEvent, overrideInput?: string) => Promise<void>>(async () => {});
+  const handleSendMessageRef = useRef<
+    (e?: React.FormEvent, overrideInput?: string) => Promise<void>
+  >(async () => {});
   const handleTTSDiscoveryRef = useRef<() => void>(() => {});
   const assistantStreamingRef = useRef(false);
 
