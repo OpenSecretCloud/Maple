@@ -1879,16 +1879,13 @@ export function UnifiedChat() {
         // iOS AudioContext starts in "suspended" state — must resume before playing
         const ready = ctx.state === "suspended" ? ctx.resume() : Promise.resolve();
         ready
-          .then(() => fetch(`/audio/${file}.wav`))
+          .then(() => fetch(`/audio/${file}.wav?v=2`))
           .then((res) => res.arrayBuffer())
           .then((buf) => ctx.decodeAudioData(buf))
           .then((decoded) => {
             const source = ctx.createBufferSource();
-            const gain = ctx.createGain();
-            gain.gain.value = 0.5;
             source.buffer = decoded;
-            source.connect(gain);
-            gain.connect(ctx.destination);
+            source.connect(ctx.destination);
             source.onended = () => {
               void ctx.close().catch(() => {});
               resolve();
