@@ -2937,7 +2937,6 @@ export function UnifiedChat() {
               setTimeout(() => {
                 if (!voiceModeRef.current) return;
                 setVoiceState("recording");
-                playAudioCue("mic-on");
                 startRecordingRef.current();
               }, 500);
             })
@@ -2949,13 +2948,11 @@ export function UnifiedChat() {
         } else {
           // No text to speak, just go back to recording
           setVoiceState("recording");
-          playAudioCue("mic-on");
           startRecordingRef.current();
         }
       } else {
         // No assistant message found, go back to recording
         setVoiceState("recording");
-        playAudioCue("mic-on");
         startRecordingRef.current();
       }
     }
@@ -3013,7 +3010,6 @@ export function UnifiedChat() {
               setTimeout(() => {
                 if (!voiceModeRef.current) return;
                 setVoiceState("recording");
-                playAudioCue("mic-on");
                 startRecordingRef.current();
               }, 500);
             })

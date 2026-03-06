@@ -59,6 +59,7 @@ export function RecordingOverlay({
 
   useEffect(() => {
     if (effectiveState === "recording") {
+      setDuration(0);
       startTimeRef.current = Date.now();
 
       const updateTimer = () => {
