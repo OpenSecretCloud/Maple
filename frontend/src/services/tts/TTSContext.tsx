@@ -275,7 +275,9 @@ export function TTSProvider({ children }: { children: ReactNode }) {
       // Preprocess text to remove think blocks and other non-speakable content
       const processedText = preprocessTextForTTS(text);
       if (!processedText) {
-        return;
+        // Signal to callers that there was nothing to play (not a real error).
+        // Voice loop catches this to restart recording instead of exiting.
+        throw new Error("no_speakable_text");
       }
 
       // Capture a sequence ID for this generation so we can detect staleness
@@ -356,6 +358,10 @@ export function TTSProvider({ children }: { children: ReactNode }) {
 
         const audioContext = new AudioContextClass() as AudioContext;
 
+        // Store context ref immediately so stopPlayback() can clean it up
+        // if any operation below throws (prevents AudioContext resource leak)
+        audioContextRef.current = audioContext;
+
         // iOS requires user interaction to start audio - resume if suspended
         if (audioContext.state === "suspended") {
           await audioContext.resume();
@@ -364,6 +370,7 @@ export function TTSProvider({ children }: { children: ReactNode }) {
         // Re-check staleness after async work
         if (generationSeqRef.current !== mySeq) {
           void audioContext.close().catch(() => {});
+          audioContextRef.current = null;
           URL.revokeObjectURL(audioUrl);
           return;
         }
@@ -375,8 +382,6 @@ export function TTSProvider({ children }: { children: ReactNode }) {
         source.buffer = audioBuffer;
         source.connect(audioContext.destination);
 
-        // Store context and source for stop functionality
-        audioContextRef.current = audioContext;
         sourceNodeRef.current = source;
 
         setIsPlaying(true);

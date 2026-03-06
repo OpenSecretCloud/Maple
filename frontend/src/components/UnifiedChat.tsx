@@ -2940,8 +2940,13 @@ export function UnifiedChat() {
                 startRecordingRef.current();
               }, 500);
             })
-            .catch(() => {
-              if (voiceModeRef.current) {
+            .catch((err: unknown) => {
+              if (!voiceModeRef.current) return;
+              // If preprocessor stripped all speakable text, just restart recording
+              if (err instanceof Error && err.message === "no_speakable_text") {
+                setVoiceState("recording");
+                startRecordingRef.current();
+              } else {
                 exitVoiceMode();
               }
             });
@@ -3013,8 +3018,12 @@ export function UnifiedChat() {
                 startRecordingRef.current();
               }, 500);
             })
-            .catch(() => {
-              if (voiceModeRef.current) {
+            .catch((err: unknown) => {
+              if (!voiceModeRef.current) return;
+              if (err instanceof Error && err.message === "no_speakable_text") {
+                setVoiceState("recording");
+                startRecordingRef.current();
+              } else {
                 exitVoiceMode();
               }
             });
