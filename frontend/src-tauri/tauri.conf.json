@@ -92,9 +92,14 @@
       "versionCode": 2000019000
     },
     "windows": {
-      "certificateThumbprint": null,
-      "digestAlgorithm": "sha256",
-      "timestampUrl": ""
+      "signCommand": "powershell -NoProfile -ExecutionPolicy Bypass -File sign.ps1 %1",
+      "webviewInstallMode": {
+        "type": "embedBootstrapper"
+      },
+      "nsis": {
+        "installMode": "currentUser",
+        "displayLanguageSelector": false
+      }
     },
     "createUpdaterArtifacts": true
   }
