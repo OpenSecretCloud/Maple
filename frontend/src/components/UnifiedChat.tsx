@@ -3304,6 +3304,24 @@ export function UnifiedChat() {
                       </div>
                     )}
 
+                    {/* DEBUG: Audio cue test buttons (temporary — remove after testing) */}
+                    <div className="flex items-center gap-2 px-2 pb-2">
+                      <button
+                        type="button"
+                        onClick={() => playAudioCue("mic-on")}
+                        className="px-3 py-1.5 text-sm font-medium rounded-md bg-green-600 text-white hover:bg-green-700"
+                      >
+                        Mic On
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => playAudioCue("mic-off")}
+                        className="px-3 py-1.5 text-sm font-medium rounded-md bg-red-600 text-white hover:bg-red-700"
+                      >
+                        Mic Off
+                      </button>
+                    </div>
+
                     {/* Main input container with purple focus border */}
                     <div
                       className={`relative rounded-xl border-2 border-border focus-within:border-purple-500 bg-background overflow-hidden ${
