@@ -1018,6 +1018,8 @@ export function UnifiedChat() {
   const [hasNewPolledMessages, setHasNewPolledMessages] = useState(false);
   const recorderRef = useRef<RecordRTC | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const recordingStartTimeRef = useRef<number>(0);
+  const startRecordingRef = useRef<() => void>(() => {});
   const assistantStreamingRef = useRef(false);
 
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -1940,6 +1942,7 @@ export function UnifiedChat() {
 
       recorderRef.current = recorder;
       recorder.startRecording();
+      recordingStartTimeRef.current = Date.now();
       setIsRecording(true);
       setAudioError(null);
 
@@ -1974,6 +1977,9 @@ export function UnifiedChat() {
       setTimeout(() => setAudioError(null), 5000);
     }
   };
+
+  // Keep startRecordingRef in sync so callbacks with stale closures can call it
+  startRecordingRef.current = startRecording;
 
   /** Transcribe a blob and handle error recovery (used by both normal and voice mode) */
   const transcribeAndSend = useCallback(
@@ -2079,9 +2085,9 @@ export function UnifiedChat() {
       }
 
       // Capture duration before stopping
-      const recStartTime =
-        (recorderRef.current as unknown as { startTime?: number }).startTime ?? Date.now();
-      const capturedDuration = Math.floor((Date.now() - recStartTime) / 1000);
+      const capturedDuration = Math.floor(
+        (Date.now() - (recordingStartTimeRef.current || Date.now())) / 1000
+      );
 
       recorderRef.current.stopRecording(async () => {
         const blob = recorderRef.current?.getBlob();
@@ -2140,7 +2146,7 @@ export function UnifiedChat() {
     if (voiceModeRef.current) {
       // In voice mode, go back to recording
       setVoiceState("recording");
-      startRecording();
+      startRecordingRef.current();
     } else {
       // Outside voice mode, just dismiss the overlay
       setVoiceState(null);
