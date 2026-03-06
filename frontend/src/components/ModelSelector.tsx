@@ -353,8 +353,8 @@ export function ModelSelector({ hasImages = false }: { hasImages?: boolean }) {
 
   // Show current category or model name in the collapsed view
   const modelDisplay = (
-    <div className="flex items-center gap-1 overflow-hidden">
-      <div className="text-sm font-medium truncate">{getDropdownLabel()}</div>
+    <div className="flex items-center gap-1">
+      <div className="text-sm font-medium">{getDropdownLabel()}</div>
     </div>
   );
 
@@ -367,7 +367,7 @@ export function ModelSelector({ hasImages = false }: { hasImages?: boolean }) {
           <Button
             variant="ghost"
             size="sm"
-            className="h-8 gap-1 px-2 max-w-[120px] shrink-0"
+            className="h-8 gap-1 px-2"
             data-testid="model-selector-button"
             aria-label={`Current model: ${MODEL_CONFIG[model]?.displayName || model}. Click to change model.`}
           >
