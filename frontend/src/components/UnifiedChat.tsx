@@ -1020,6 +1020,8 @@ export function UnifiedChat() {
   const streamRef = useRef<MediaStream | null>(null);
   const recordingStartTimeRef = useRef<number>(0);
   const startRecordingRef = useRef<() => void>(() => {});
+  const handleSendMessageRef = useRef<(e?: React.FormEvent, overrideInput?: string) => Promise<void>>(async () => {});
+  const handleTTSDiscoveryRef = useRef<() => void>(() => {});
   const assistantStreamingRef = useRef(false);
 
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -1883,8 +1885,8 @@ export function UnifiedChat() {
       stopTTS();
     }
 
-    // Stop recording if active
-    if (recorderRef.current && isRecording) {
+    // Stop recording if active (use ref instead of isRecording to avoid stale closure)
+    if (recorderRef.current) {
       recorderRef.current.stopRecording(() => {
         if (streamRef.current) {
           streamRef.current.getTracks().forEach((track) => track.stop());
@@ -1896,7 +1898,7 @@ export function UnifiedChat() {
       setIsTranscribing(false);
       setIsProcessingSend(false);
     }
-  }, [ttsIsGenerating, ttsIsPlaying, cancelTTSGeneration, stopTTS, isRecording]);
+  }, [ttsIsGenerating, ttsIsPlaying, cancelTTSGeneration, stopTTS]);
 
   // Audio recording functions
   const startRecording = async () => {
@@ -2011,8 +2013,8 @@ export function UnifiedChat() {
           setRecordingBlob(null);
           setVoiceRetryCount(0);
 
-          // Send the message directly with the transcribed text
-          await handleSendMessage(undefined, newValue);
+          // Send the message directly with the transcribed text (use ref for latest closure)
+          await handleSendMessageRef.current(undefined, newValue);
 
           // Voice mode: after message sent, wait for response then TTS
           if (voiceModeRef.current) {
@@ -2020,7 +2022,7 @@ export function UnifiedChat() {
             // isGenerating (chat generation) transitions
           } else {
             // Not in voice mode: check if we should show TTS discovery prompt
-            handleTTSDiscovery();
+            handleTTSDiscoveryRef.current();
           }
 
           return true; // success
@@ -2866,6 +2868,9 @@ export function UnifiedChat() {
     ]
   );
 
+  // Keep handleSendMessageRef in sync so transcribeAndSend always uses latest closure
+  handleSendMessageRef.current = handleSendMessage;
+
   // Voice mode continuation effect: when chat generation finishes (isGenerating goes false),
   // and we're in voice mode waiting state, proceed to TTS generation → playback → recording loop
   const prevIsGeneratingRef = useRef(false);
@@ -2947,6 +2952,9 @@ export function UnifiedChat() {
     if (hasSeen) return;
     setShowTTSDiscovery(true);
   }, [isTTSPlatform, ttsStatus]);
+
+  // Keep handleTTSDiscoveryRef in sync so transcribeAndSend always uses latest closure
+  handleTTSDiscoveryRef.current = handleTTSDiscovery;
 
   const dismissTTSDiscovery = useCallback(() => {
     localStorage.setItem("hasSeenTTSDiscoveryPrompt", "true");
