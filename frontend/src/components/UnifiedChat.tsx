@@ -1879,13 +1879,10 @@ export function UnifiedChat() {
     setVoiceRetryCount(0);
     setVoiceErrorMessage(null);
 
-    // Stop any in-progress TTS
-    if (ttsIsGenerating) {
-      cancelTTSGeneration();
-    }
-    if (ttsIsPlaying) {
-      stopTTS();
-    }
+    // Stop any in-progress TTS (call unconditionally — these are idempotent
+    // and guarding on booleans risks stale closures)
+    cancelTTSGeneration();
+    stopTTS();
 
     // Stop recording if active (use ref instead of isRecording to avoid stale closure)
     if (recorderRef.current) {
@@ -1900,7 +1897,7 @@ export function UnifiedChat() {
       setIsTranscribing(false);
       setIsProcessingSend(false);
     }
-  }, [ttsIsGenerating, ttsIsPlaying, cancelTTSGeneration, stopTTS]);
+  }, [cancelTTSGeneration, stopTTS]);
 
   // Audio recording functions
   const startRecording = async () => {
