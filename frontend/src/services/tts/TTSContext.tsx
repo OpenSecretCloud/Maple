@@ -453,7 +453,12 @@ export function TTSProvider({ children }: { children: ReactNode }) {
 
   const speak = useCallback(
     async (text: string, messageId: string) => {
-      await speakInternal(text, messageId, false);
+      try {
+        await speakInternal(text, messageId, false);
+      } catch {
+        // Error already handled by speakInternal (playbackError state set).
+        // Only speakAndWait needs to propagate for voice mode loop.
+      }
     },
     [speakInternal]
   );
