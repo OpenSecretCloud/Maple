@@ -1858,34 +1858,20 @@ export function UnifiedChat() {
    *  Returns a Promise that resolves when the sound finishes playing (or immediately on error). */
   const playAudioCue = useCallback((file: "mic-on" | "mic-off"): Promise<void> => {
     return new Promise((resolve) => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const nav = navigator as any;
-      let prevSessionType: string | null = null;
-
       try {
-        // Set audio session to 'playback' to bypass iOS silent switch (Safari 17+).
-        // Save the previous type so we can restore it after playback — 'playback'
-        // mode is incompatible with getUserMedia (mic capture).
+        // Use 'play-and-record' audio session (Safari 17+) to bypass the iOS silent
+        // switch while remaining compatible with getUserMedia / mic capture. Unlike
+        // 'playback', this type does NOT cause an InvalidStateError when getUserMedia
+        // is called afterward, so no save/restore dance is needed.
         try {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const nav = navigator as any;
           if (nav.audioSession && typeof nav.audioSession.type === "string") {
-            prevSessionType = nav.audioSession.type;
-            nav.audioSession.type = "playback";
+            nav.audioSession.type = "play-and-record";
           }
         } catch {
           // audioSession API not available — ignore
         }
-
-        /** Restore audio session to its previous type (e.g. 'auto') so
-         *  getUserMedia / mic capture works after the cue finishes. */
-        const restoreSession = () => {
-          try {
-            if (prevSessionType !== null && nav.audioSession) {
-              nav.audioSession.type = prevSessionType;
-            }
-          } catch {
-            // ignore
-          }
-        };
 
         // Use Web Audio API instead of new Audio() for better iOS WebView compatibility
         const ctx = new (window.AudioContext ||
@@ -1905,25 +1891,15 @@ export function UnifiedChat() {
             gain.connect(ctx.destination);
             source.onended = () => {
               void ctx.close().catch(() => {});
-              restoreSession();
               resolve();
             };
             source.start(0);
           })
           .catch(() => {
             void ctx.close().catch(() => {});
-            restoreSession();
             resolve();
           });
       } catch {
-        // Restore session even on synchronous error
-        try {
-          if (prevSessionType !== null && nav.audioSession) {
-            nav.audioSession.type = prevSessionType;
-          }
-        } catch {
-          // ignore
-        }
         resolve();
       }
     });
