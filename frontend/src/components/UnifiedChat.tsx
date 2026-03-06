@@ -936,6 +936,9 @@ export function UnifiedChat() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(!isMobile);
   const [error, setError] = useState<string | null>(null);
+  const errorRef = useRef<string | null>(null);
+  // Keep errorRef in sync so voice continuation effect can check for errors without stale closures
+  errorRef.current = error;
   const [lastSeenItemId, setLastSeenItemId] = useState<string | undefined>();
   const [isNewConversationJustCreated, setIsNewConversationJustCreated] = useState(false);
   const [currentResponseId, setCurrentResponseId] = useState<string | undefined>();
@@ -1995,9 +1998,11 @@ export function UnifiedChat() {
           // Play mic-off cue on successful send
           playAudioCue("mic-off");
 
-          // In voice mode, transition to waiting state
+          // In voice mode, transition to waiting state; otherwise clear overlay
           if (voiceModeRef.current) {
             setVoiceState("waiting");
+          } else {
+            setVoiceState(null);
           }
 
           // Combine with existing input if any
@@ -2879,6 +2884,12 @@ export function UnifiedChat() {
 
     // Detect transition: isGenerating went from true → false
     if (wasGenerating && !isGenerating && voiceModeRef.current && voiceState === "waiting") {
+      // If there was an error during generation, exit voice mode instead of speaking stale message
+      if (errorRef.current) {
+        exitVoiceMode();
+        return;
+      }
+
       // Get the latest assistant message text
       const lastAssistantMsg = [...messages]
         .reverse()
