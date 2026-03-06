@@ -305,8 +305,7 @@ export function RecordingOverlay({
           )}
 
           {/* Status indicator - show in all modes for voice states, only non-compact for recording */}
-          {(!isCompact ||
-            (effectiveState !== "recording" && effectiveState !== "processing")) && (
+          {(!isCompact || (effectiveState !== "recording" && effectiveState !== "processing")) && (
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
               {renderStatusContent()}
             </div>

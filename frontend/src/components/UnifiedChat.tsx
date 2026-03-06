@@ -1858,7 +1858,8 @@ export function UnifiedChat() {
   const playAudioCue = useCallback((file: "mic-on" | "mic-off") => {
     try {
       // Use Web Audio API instead of new Audio() for better iOS WebView compatibility
-      const ctx = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
+      const ctx = new (window.AudioContext ||
+        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
       fetch(`/audio/${file}.wav`)
         .then((res) => res.arrayBuffer())
         .then((buf) => ctx.decodeAudioData(buf))
