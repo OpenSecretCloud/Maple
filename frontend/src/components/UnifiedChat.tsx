@@ -1854,36 +1854,52 @@ export function UnifiedChat() {
 
   // --- Voice mode helpers ---
 
-  /** Play an audio cue file from /audio/ directory using Web Audio API for iOS compatibility */
-  const playAudioCue = useCallback((file: "mic-on" | "mic-off") => {
-    try {
-      // Use Web Audio API instead of new Audio() for better iOS WebView compatibility
-      const ctx = new (window.AudioContext ||
-        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
-      // iOS AudioContext starts in "suspended" state — must resume before playing
-      const ready = ctx.state === "suspended" ? ctx.resume() : Promise.resolve();
-      ready
-        .then(() => fetch(`/audio/${file}.wav`))
-        .then((res) => res.arrayBuffer())
-        .then((buf) => ctx.decodeAudioData(buf))
-        .then((decoded) => {
-          const source = ctx.createBufferSource();
-          const gain = ctx.createGain();
-          gain.gain.value = 0.5;
-          source.buffer = decoded;
-          source.connect(gain);
-          gain.connect(ctx.destination);
-          source.onended = () => {
+  /** Play an audio cue file from /audio/ directory using Web Audio API for iOS compatibility.
+   *  Returns a Promise that resolves when the sound finishes playing (or immediately on error). */
+  const playAudioCue = useCallback((file: "mic-on" | "mic-off"): Promise<void> => {
+    return new Promise((resolve) => {
+      try {
+        // Set audio session to 'playback' to bypass iOS silent switch (Safari 17+)
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const nav = navigator as any;
+          if (nav.audioSession && typeof nav.audioSession.type === "string") {
+            nav.audioSession.type = "playback";
+          }
+        } catch {
+          // audioSession API not available — ignore
+        }
+
+        // Use Web Audio API instead of new Audio() for better iOS WebView compatibility
+        const ctx = new (window.AudioContext ||
+          (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
+        // iOS AudioContext starts in "suspended" state — must resume before playing
+        const ready = ctx.state === "suspended" ? ctx.resume() : Promise.resolve();
+        ready
+          .then(() => fetch(`/audio/${file}.wav`))
+          .then((res) => res.arrayBuffer())
+          .then((buf) => ctx.decodeAudioData(buf))
+          .then((decoded) => {
+            const source = ctx.createBufferSource();
+            const gain = ctx.createGain();
+            gain.gain.value = 0.5;
+            source.buffer = decoded;
+            source.connect(gain);
+            gain.connect(ctx.destination);
+            source.onended = () => {
+              void ctx.close().catch(() => {});
+              resolve();
+            };
+            source.start(0);
+          })
+          .catch(() => {
             void ctx.close().catch(() => {});
-          };
-          source.start(0);
-        })
-        .catch(() => {
-          void ctx.close().catch(() => {});
-        });
-    } catch {
-      // Ignore audio cue errors
-    }
+            resolve();
+          });
+      } catch {
+        resolve();
+      }
+    });
   }, []);
 
   /** Check whether TTS is available on this platform (desktop or iOS in Tauri) */
@@ -1943,6 +1959,11 @@ export function UnifiedChat() {
         return;
       }
 
+      // Play mic-on audio cue BEFORE activating microphone.
+      // On iOS, getUserMedia switches the audio session to 'play-and-record'
+      // which can mute/interrupt any in-progress Web Audio playback.
+      await playAudioCue("mic-on");
+
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           echoCancellation: false,
@@ -1968,9 +1989,6 @@ export function UnifiedChat() {
       recordingStartTimeRef.current = Date.now();
       setIsRecording(true);
       setAudioError(null);
-
-      // Play mic-on audio cue when recording starts
-      playAudioCue("mic-on");
 
       // If TTS is available, activate voice mode (continuous loop)
       if (isTTSPlatform && ttsStatus === "ready") {
@@ -2146,17 +2164,19 @@ export function UnifiedChat() {
           return;
         }
 
-        if (shouldSend) {
-          setIsTranscribing(true);
-          await transcribeAndSend(blob, capturedDuration);
-        }
-
-        // Clean up resources
+        // Stop microphone stream BEFORE playing mic-off cue or transcribing.
+        // On iOS, the active mic session can mute/interrupt Web Audio playback,
+        // so we must release the mic first.
         if (streamRef.current) {
           streamRef.current.getTracks().forEach((track) => track.stop());
           streamRef.current = null;
         }
         recorderRef.current = null;
+
+        if (shouldSend) {
+          setIsTranscribing(true);
+          await transcribeAndSend(blob, capturedDuration);
+        }
       });
     }
   };
