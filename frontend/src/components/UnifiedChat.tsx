@@ -1885,7 +1885,7 @@ export function UnifiedChat() {
           .then((decoded) => {
             const source = ctx.createBufferSource();
             const gain = ctx.createGain();
-            gain.gain.value = 3.0;
+            gain.gain.value = 7.0;
             source.buffer = decoded;
             source.connect(gain);
             gain.connect(ctx.destination);
@@ -3102,6 +3102,35 @@ export function UnifiedChat() {
     localStorage.setItem("hasSeenTTSDiscoveryPrompt", "true");
     setShowTTSDiscovery(false);
   }, []);
+
+  // Handle app backgrounding / foregrounding (iOS kills mic & AudioContext in background).
+  // When the app goes to background during voice mode, exit cleanly to avoid a corrupted
+  // audio state. On foreground return, reset any stuck recording flags so the user can
+  // start fresh.
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "hidden") {
+        // App went to background — if voice mode is active, exit cleanly.
+        // iOS will kill the mic stream and AudioContext anyway, so this
+        // prevents the app from getting stuck in an inconsistent state.
+        if (voiceModeRef.current) {
+          exitVoiceMode();
+        }
+      } else if (document.visibilityState === "visible") {
+        // App came back to foreground — if recording flags are stuck
+        // (e.g. iOS killed the stream while backgrounded), reset them
+        // so the user can start a new recording.
+        if (!recorderRef.current && !streamRef.current) {
+          setIsRecording(false);
+          setIsTranscribing(false);
+          setIsProcessingSend(false);
+        }
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
+  }, [exitVoiceMode]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // On desktop: Enter submits, Shift+Enter for new line
