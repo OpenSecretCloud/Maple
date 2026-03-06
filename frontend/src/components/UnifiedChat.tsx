@@ -1925,14 +1925,19 @@ export function UnifiedChat() {
     cancelTTSGeneration();
     stopTTS();
 
-    // Stop recording if active (use ref instead of isRecording to avoid stale closure)
+    // Stop recording if active (use ref instead of isRecording to avoid stale closure).
+    // Capture and clear refs synchronously so an async stopRecording callback
+    // cannot clobber a newly-started recording's refs.
     if (recorderRef.current) {
-      recorderRef.current.stopRecording(() => {
-        if (streamRef.current) {
-          streamRef.current.getTracks().forEach((track) => track.stop());
-          streamRef.current = null;
-        }
-        recorderRef.current = null;
+      const recorderToCleanup = recorderRef.current;
+      const streamToCleanup = streamRef.current;
+      recorderRef.current = null;
+      streamRef.current = null;
+      if (streamToCleanup) {
+        streamToCleanup.getTracks().forEach((track) => track.stop());
+      }
+      recorderToCleanup.stopRecording(() => {
+        // Resources already cleaned up synchronously above.
       });
       setIsRecording(false);
       setIsTranscribing(false);
@@ -3043,12 +3048,15 @@ export function UnifiedChat() {
           // The voice loop may have already cycled back to recording —
           // stop the active mic so we can play TTS without overlap.
           if (recorderRef.current) {
-            recorderRef.current.stopRecording(() => {
-              if (streamRef.current) {
-                streamRef.current.getTracks().forEach((track) => track.stop());
-                streamRef.current = null;
-              }
-              recorderRef.current = null;
+            const recorderToCleanup = recorderRef.current;
+            const streamToCleanup = streamRef.current;
+            recorderRef.current = null;
+            streamRef.current = null;
+            if (streamToCleanup) {
+              streamToCleanup.getTracks().forEach((track) => track.stop());
+            }
+            recorderToCleanup.stopRecording(() => {
+              // Resources already cleaned up synchronously above.
             });
             setIsRecording(false);
           }
