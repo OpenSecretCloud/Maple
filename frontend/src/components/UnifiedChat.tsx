@@ -1995,6 +1995,12 @@ export function UnifiedChat() {
       }
 
       setTimeout(() => setAudioError(null), 5000);
+
+      // If voice mode is active, exit cleanly so the UI doesn't show
+      // a "Recording" overlay when no recording is actually happening
+      if (voiceModeRef.current) {
+        exitVoiceMode();
+      }
     }
   };
 

@@ -370,7 +370,9 @@ export function TTSProvider({ children }: { children: ReactNode }) {
         // Re-check staleness after async work
         if (generationSeqRef.current !== mySeq) {
           void audioContext.close().catch(() => {});
-          audioContextRef.current = null;
+          if (audioContextRef.current === audioContext) {
+            audioContextRef.current = null;
+          }
           URL.revokeObjectURL(audioUrl);
           return;
         }
