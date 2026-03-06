@@ -39,7 +39,8 @@ import {
   Maximize2,
   Minimize2,
   Volume2,
-  Square
+  Square,
+  Download
 } from "lucide-react";
 import RecordRTC from "recordrtc";
 import { useQueryClient } from "@tanstack/react-query";
@@ -59,7 +60,7 @@ import { useOpenSecret } from "@opensecret/react";
 import { UpgradePromptDialog } from "@/components/UpgradePromptDialog";
 import { DocumentPlatformDialog } from "@/components/DocumentPlatformDialog";
 import { ContextLimitDialog } from "@/components/ContextLimitDialog";
-import { RecordingOverlay } from "@/components/RecordingOverlay";
+import { RecordingOverlay, type VoiceOverlayState } from "@/components/RecordingOverlay";
 import { WebSearchInfoDialog } from "@/components/WebSearchInfoDialog";
 import { TTSDownloadDialog } from "@/components/TTSDownloadDialog";
 import { useTTS } from "@/services/tts/TTSContext";
@@ -71,7 +72,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger
 } from "@/components/ui/dropdown-menu";
-import { isTauri } from "@/utils/platform";
+import { isTauri, isTauriDesktop, isIOS } from "@/utils/platform";
 import type {
   InputTextContent,
   OutputTextContent,
@@ -201,8 +202,18 @@ function TTSButton({
   onNeedsSetup: () => void;
   onManage: () => void;
 }) {
-  const { status, isPlaying, currentPlayingId, speak, stop, isTauriEnv } = useTTS();
+  const {
+    status,
+    isPlaying,
+    isGenerating,
+    currentPlayingId,
+    speak,
+    stop,
+    cancelGeneration,
+    isTauriEnv
+  } = useTTS();
   const isThisPlaying = isPlaying && currentPlayingId === messageId;
+  const isThisGenerating = isGenerating && currentPlayingId === messageId;
   const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Cleanup timer on unmount
@@ -226,7 +237,10 @@ function TTSButton({
     }
 
     if (status === "ready") {
-      if (isThisPlaying) {
+      if (isThisGenerating) {
+        // Tap during generation cancels it
+        cancelGeneration();
+      } else if (isThisPlaying) {
         stop();
       } else {
         await speak(text, messageId);
@@ -258,18 +272,26 @@ function TTSButton({
     <Button
       variant="ghost"
       size="sm"
-      className="h-7 w-7 p-0 text-muted-foreground hover:text-foreground"
+      className="h-7 w-7 p-0 text-muted-foreground hover:text-foreground relative"
       onClick={handleClick}
       onPointerDown={handlePointerDown}
       onPointerUp={handlePointerUp}
       onPointerLeave={handlePointerUp}
       disabled={isDisabled}
-      aria-label={isThisPlaying ? "Stop speaking" : "Read aloud"}
+      aria-label={
+        isThisGenerating
+          ? "Cancel generation"
+          : isThisPlaying
+            ? "Stop speaking"
+            : "Read aloud"
+      }
     >
       {showSpinner ? (
         <Loader2 className="h-3.5 w-3.5 animate-spin" />
       ) : isThisPlaying ? (
         <Square className="h-3.5 w-3.5" />
+      ) : isThisGenerating ? (
+        <Volume2 className="h-3.5 w-3.5 animate-pulse text-primary" />
       ) : (
         <Volume2 className="h-3.5 w-3.5" />
       )}
@@ -894,7 +916,16 @@ export function UnifiedChat() {
   const os = useOpenSecret();
   const isTauriEnv = isTauri();
   const queryClient = useQueryClient();
-  const { playbackError, clearPlaybackError } = useTTS();
+  const {
+    playbackError,
+    clearPlaybackError,
+    status: ttsStatus,
+    speakAndWait,
+    cancelGeneration: cancelTTSGeneration,
+    stop: stopTTS,
+    isPlaying: ttsIsPlaying,
+    isGenerating: ttsIsGenerating
+  } = useTTS();
 
   // Track chatId from URL - use state so we can update it
   const [chatId, setChatId] = useState<string | undefined>(() => {
@@ -940,6 +971,16 @@ export function UnifiedChat() {
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [isProcessingSend, setIsProcessingSend] = useState(false);
   const [audioError, setAudioError] = useState<string | null>(null);
+
+  // Voice mode states
+  const [voiceMode, setVoiceMode] = useState(false);
+  const [voiceState, setVoiceState] = useState<VoiceOverlayState | null>(null);
+  const [recordingBlob, setRecordingBlob] = useState<Blob | null>(null);
+  const [recordingDuration, setRecordingDuration] = useState(0);
+  const [voiceRetryCount, setVoiceRetryCount] = useState(0);
+  const [voiceErrorMessage, setVoiceErrorMessage] = useState<string | null>(null);
+  const [showTTSDiscovery, setShowTTSDiscovery] = useState(false);
+  const voiceModeRef = useRef(false);
 
   // Web search toggle state - persisted in localStorage
   const [isWebSearchEnabled, setIsWebSearchEnabled] = useState(() => {
@@ -1164,6 +1205,10 @@ export function UnifiedChat() {
       clearAllAttachments();
       // Reset scroll tracking
       prevMessageCountRef.current = 0;
+      // Exit voice mode on new chat
+      if (voiceModeRef.current) {
+        exitVoiceMode();
+      }
     };
 
     // Handle conversation selection from sidebar
@@ -1175,6 +1220,10 @@ export function UnifiedChat() {
         // Update our local chatId state to trigger load
         setChatId(conversationId);
         setError(null);
+        // Exit voice mode on conversation switch
+        if (voiceModeRef.current) {
+          exitVoiceMode();
+        }
       }
     };
 
@@ -1201,6 +1250,7 @@ export function UnifiedChat() {
       );
       window.removeEventListener("popstate", handlePopState);
     };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatId, clearAllAttachments]);
 
   // Cancel the current response
@@ -1797,6 +1847,59 @@ export function UnifiedChat() {
     setDocumentName("");
   }, []);
 
+  // --- Voice mode helpers ---
+
+  /** Play an audio cue file from /audio/ directory */
+  const playAudioCue = useCallback((file: "mic-on" | "mic-off") => {
+    try {
+      const audio = new Audio(`/audio/${file}.wav`);
+      audio.volume = 0.5;
+      audio.play().catch(() => {
+        // Ignore autoplay failures silently
+      });
+    } catch {
+      // Ignore audio cue errors
+    }
+  }, []);
+
+  /** Check whether TTS is available on this platform (desktop or iOS) */
+  const isTTSPlatform = useMemo(() => {
+    return isTauriDesktop() || isIOS();
+  }, []);
+
+  /** Exit voice mode and clean up all in-flight work */
+  const exitVoiceMode = useCallback(() => {
+    setVoiceMode(false);
+    voiceModeRef.current = false;
+    setVoiceState(null);
+    setRecordingBlob(null);
+    setRecordingDuration(0);
+    setVoiceRetryCount(0);
+    setVoiceErrorMessage(null);
+
+    // Stop any in-progress TTS
+    if (ttsIsGenerating) {
+      cancelTTSGeneration();
+    }
+    if (ttsIsPlaying) {
+      stopTTS();
+    }
+
+    // Stop recording if active
+    if (recorderRef.current && isRecording) {
+      recorderRef.current.stopRecording(() => {
+        if (streamRef.current) {
+          streamRef.current.getTracks().forEach((track) => track.stop());
+          streamRef.current = null;
+        }
+        recorderRef.current = null;
+      });
+      setIsRecording(false);
+      setIsTranscribing(false);
+      setIsProcessingSend(false);
+    }
+  }, [ttsIsGenerating, ttsIsPlaying, cancelTTSGeneration, stopTTS, isRecording]);
+
   // Audio recording functions
   const startRecording = async () => {
     // Prevent duplicate starts
@@ -1843,6 +1946,16 @@ export function UnifiedChat() {
       recorder.startRecording();
       setIsRecording(true);
       setAudioError(null);
+
+      // Play mic-on audio cue when recording starts
+      playAudioCue("mic-on");
+
+      // If TTS is available, activate voice mode (continuous loop)
+      if (isTTSPlatform && ttsStatus === "ready") {
+        setVoiceMode(true);
+        voiceModeRef.current = true;
+        setVoiceState("recording");
+      }
     } catch (error) {
       console.error("Failed to start recording:", error);
       const err = error as Error & { name?: string };
@@ -1866,14 +1979,120 @@ export function UnifiedChat() {
     }
   };
 
+  /** Transcribe a blob and handle error recovery (used by both normal and voice mode) */
+  const transcribeAndSend = useCallback(
+    async (blob: Blob, currentDuration: number) => {
+      const audioFile = new File([blob], "recording.wav", { type: "audio/wav" });
+
+      try {
+        const result = await os.transcribeAudio(audioFile, "whisper-large-v3");
+        const transcribedText = result.text.trim();
+
+        if (transcribedText) {
+          // Play mic-off cue on successful send
+          playAudioCue("mic-off");
+
+          // In voice mode, transition to waiting state
+          if (voiceModeRef.current) {
+            setVoiceState("waiting");
+          }
+
+          // Combine with existing input if any
+          const newValue = input ? `${input} ${transcribedText}` : transcribedText;
+
+          // Clear states before sending
+          setInput("");
+          clearAllAttachments();
+          setIsRecording(false);
+          setIsTranscribing(false);
+          setIsProcessingSend(false);
+          setRecordingBlob(null);
+          setVoiceRetryCount(0);
+
+          // Send the message directly with the transcribed text
+          await handleSendMessage(undefined, newValue);
+
+          // Voice mode: after message sent, wait for response then TTS
+          if (voiceModeRef.current) {
+            // The voice mode continuation is handled by the effect that watches
+            // isGenerating (chat generation) transitions
+          } else {
+            // Not in voice mode: check if we should show TTS discovery prompt
+            handleTTSDiscovery();
+          }
+
+          return true; // success
+        } else {
+          // No speech detected - treat as error with retry option
+          const errMsg = "No speech detected. Please try again.";
+          if (voiceModeRef.current) {
+            setVoiceState("error");
+            setVoiceErrorMessage(errMsg);
+            setRecordingDuration(currentDuration);
+            setRecordingBlob(blob);
+          } else {
+            // Error recovery for non-voice mode too
+            setVoiceState("error");
+            setVoiceErrorMessage(errMsg);
+            setRecordingDuration(currentDuration);
+            setRecordingBlob(blob);
+          }
+          return false;
+        }
+      } catch (error) {
+        console.error("Transcription failed:", error);
+        const newRetryCount = voiceRetryCount + 1;
+        setVoiceRetryCount(newRetryCount);
+
+        let errMsg = "Failed to transcribe audio. Please try again.";
+        if (newRetryCount >= 3) {
+          errMsg +=
+            " If this keeps failing, check your internet connection and try again later.";
+        }
+
+        // Transition to error state (works for both voice mode and single recording)
+        setVoiceState("error");
+        setVoiceErrorMessage(errMsg);
+        setRecordingDuration(currentDuration);
+        setRecordingBlob(blob);
+        return false;
+      } finally {
+        setIsTranscribing(false);
+        setIsProcessingSend(false);
+        setIsRecording(false);
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [
+      os,
+      input,
+      playAudioCue,
+      clearAllAttachments,
+      voiceRetryCount
+    ]
+  );
+
   const stopRecording = (shouldSend: boolean = false) => {
     if (recorderRef.current && isRecording) {
       // Only hide immediately if canceling, keep visible if sending
       if (!shouldSend) {
+        // If in voice mode and canceling, exit voice mode entirely
+        if (voiceModeRef.current) {
+          exitVoiceMode();
+          return;
+        }
         setIsRecording(false);
       } else {
         setIsProcessingSend(true);
+        if (voiceModeRef.current) {
+          setVoiceState("processing");
+        }
       }
+
+      // Capture duration before stopping
+      const recStartTime =
+        (recorderRef.current as unknown as { startTime?: number }).startTime ?? Date.now();
+      const capturedDuration = Math.floor((Date.now() - recStartTime) / 1000);
 
       recorderRef.current.stopRecording(async () => {
         const blob = recorderRef.current?.getBlob();
@@ -1892,46 +2111,15 @@ export function UnifiedChat() {
           recorderRef.current = null;
           setIsProcessingSend(false);
           setIsRecording(false);
+          if (voiceModeRef.current) {
+            setVoiceState("recording");
+          }
           return;
         }
 
-        // Create a proper WAV file
-        const audioFile = new File([blob], "recording.wav", {
-          type: "audio/wav"
-        });
-
         if (shouldSend) {
           setIsTranscribing(true);
-          try {
-            const result = await os.transcribeAudio(audioFile, "whisper-large-v3");
-            const transcribedText = result.text.trim();
-
-            if (transcribedText) {
-              // Combine with existing input if any
-              const newValue = input ? `${input} ${transcribedText}` : transcribedText;
-
-              // Clear states before sending
-              setInput("");
-              clearAllAttachments();
-              setIsRecording(false);
-              setIsTranscribing(false);
-              setIsProcessingSend(false);
-
-              // Send the message directly with the transcribed text
-              await handleSendMessage(undefined, newValue);
-            } else {
-              setAudioError("No speech detected. Please try again.");
-              setTimeout(() => setAudioError(null), 5000);
-            }
-          } catch (error) {
-            console.error("Transcription failed:", error);
-            setAudioError("Failed to transcribe audio. Please try again.");
-            setTimeout(() => setAudioError(null), 5000);
-          } finally {
-            setIsTranscribing(false);
-            setIsProcessingSend(false);
-            setIsRecording(false);
-          }
+          await transcribeAndSend(blob, capturedDuration);
         }
 
         // Clean up resources
@@ -1943,6 +2131,32 @@ export function UnifiedChat() {
       });
     }
   };
+
+  /** Retry transcription with the saved blob */
+  const handleVoiceRetry = useCallback(() => {
+    if (!recordingBlob) return;
+    setVoiceState("processing");
+    setVoiceErrorMessage(null);
+    setIsTranscribing(true);
+    setIsProcessingSend(true);
+    transcribeAndSend(recordingBlob, recordingDuration);
+  }, [recordingBlob, recordingDuration, transcribeAndSend]);
+
+  /** Discard the saved blob and return to normal */
+  const handleVoiceDiscard = useCallback(() => {
+    setRecordingBlob(null);
+    setVoiceRetryCount(0);
+    setVoiceErrorMessage(null);
+    setRecordingDuration(0);
+    if (voiceModeRef.current) {
+      // In voice mode, go back to recording
+      setVoiceState("recording");
+      startRecording();
+    } else {
+      // Outside voice mode, just dismiss the overlay
+      setVoiceState(null);
+    }
+  }, []);
 
   // Helper function to process streaming response - used by both initial request and retry
   const processStreamingResponse = useCallback(async (stream: AsyncIterable<unknown>) => {
@@ -2656,6 +2870,93 @@ export function UnifiedChat() {
     ]
   );
 
+  // Voice mode continuation effect: when chat generation finishes (isGenerating goes false),
+  // and we're in voice mode waiting state, proceed to TTS generation → playback → recording loop
+  const prevIsGeneratingRef = useRef(false);
+  useEffect(() => {
+    const wasGenerating = prevIsGeneratingRef.current;
+    prevIsGeneratingRef.current = isGenerating;
+
+    // Detect transition: isGenerating went from true → false
+    if (wasGenerating && !isGenerating && voiceModeRef.current && voiceState === "waiting") {
+      // Get the latest assistant message text
+      const lastAssistantMsg = [...messages]
+        .reverse()
+        .find((m): m is ExtendedMessage =>
+          "role" in m && m.role === "assistant" && m.type === "message"
+        );
+
+      if (lastAssistantMsg) {
+        const msgContent = lastAssistantMsg.content;
+        const textParts = msgContent?.filter(
+          (p: ConversationContent) => p.type === "output_text" || p.type === "text"
+        );
+        const fullText = textParts
+          ?.map((p: ConversationContent) => (p as OutputTextContent | TextContent).text)
+          .join("\n");
+
+        if (fullText && voiceModeRef.current) {
+          // Transition to generating state
+          setVoiceState("generating");
+
+          // Use speakAndWait to generate TTS and wait for playback to complete
+          speakAndWait(fullText, lastAssistantMsg.id)
+            .then(() => {
+              if (!voiceModeRef.current) return; // exited during playback
+
+              // Playback finished → short pause → start recording again
+              setTimeout(() => {
+                if (!voiceModeRef.current) return;
+                setVoiceState("recording");
+                playAudioCue("mic-on");
+                startRecording();
+              }, 500);
+            })
+            .catch(() => {
+              if (voiceModeRef.current) {
+                exitVoiceMode();
+              }
+            });
+        } else {
+          // No text to speak, just go back to recording
+          setVoiceState("recording");
+          playAudioCue("mic-on");
+          startRecording();
+        }
+      } else {
+        // No assistant message found, go back to recording
+        setVoiceState("recording");
+        playAudioCue("mic-on");
+        startRecording();
+      }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isGenerating]);
+
+  // Track TTS generating/playing state to update voice overlay
+  useEffect(() => {
+    if (!voiceModeRef.current) return;
+    if (ttsIsGenerating && voiceState === "generating") {
+      // Already in generating state, keep it
+    } else if (ttsIsPlaying && (voiceState === "generating" || voiceState === "playing")) {
+      setVoiceState("playing");
+    }
+  }, [ttsIsGenerating, ttsIsPlaying, voiceState]);
+
+  // TTS discovery prompt: show once when user sends first voice message without TTS installed
+  const handleTTSDiscovery = useCallback(() => {
+    if (!isTTSPlatform) return;
+    if (ttsStatus === "ready") return; // Already installed
+    const hasSeen = localStorage.getItem("hasSeenTTSDiscoveryPrompt") === "true";
+    if (hasSeen) return;
+    setShowTTSDiscovery(true);
+  }, [isTTSPlatform, ttsStatus]);
+
+  const dismissTTSDiscovery = useCallback(() => {
+    localStorage.setItem("hasSeenTTSDiscoveryPrompt", "true");
+    setShowTTSDiscovery(false);
+  }, []);
+
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // On desktop: Enter submits, Shift+Enter for new line
     // On mobile: Enter for new line, no keyboard shortcut to submit (use button)
@@ -3026,11 +3327,13 @@ export function UnifiedChat() {
                           {/* Mic button */}
                           <Button
                             type="button"
-                            onClick={startRecording}
-                            disabled={isGenerating || isRecording || !canUseVoice}
+                            onClick={voiceMode ? () => exitVoiceMode() : startRecording}
+                            disabled={isGenerating || (isRecording && !voiceMode) || !canUseVoice}
                             size="icon"
                             variant="ghost"
-                            className="h-9 w-9 rounded-lg hover:bg-muted"
+                            className={`h-9 w-9 rounded-lg hover:bg-muted ${
+                              voiceMode ? "text-primary" : ""
+                            }`}
                           >
                             <Mic className="h-4 w-4" />
                           </Button>
@@ -3059,14 +3362,29 @@ export function UnifiedChat() {
                       </div>
 
                       {/* Recording overlay for centered input */}
-                      {isRecording && (
+                      {(isRecording || voiceState) && (
                         <RecordingOverlay
                           isRecording={isRecording}
                           isProcessing={isProcessingSend || isTranscribing}
                           onSend={() => stopRecording(true)}
-                          onCancel={() => stopRecording(false)}
+                          onCancel={() => {
+                            if (voiceState === "error" && !voiceModeRef.current) {
+                              // Dismiss error overlay in non-voice mode
+                              setVoiceState(null);
+                              setRecordingBlob(null);
+                              setVoiceErrorMessage(null);
+                            } else {
+                              stopRecording(false);
+                              if (voiceModeRef.current) exitVoiceMode();
+                            }
+                          }}
                           isCompact={false}
                           className="absolute inset-0 rounded-xl"
+                          voiceState={voiceState || undefined}
+                          errorMessage={voiceErrorMessage || undefined}
+                          savedDuration={recordingDuration || undefined}
+                          onRetry={handleVoiceRetry}
+                          onDiscard={handleVoiceDiscard}
                         />
                       )}
                     </div>
@@ -3269,11 +3587,13 @@ export function UnifiedChat() {
                         {/* Mic button */}
                         <Button
                           type="button"
-                          onClick={startRecording}
-                          disabled={isGenerating || isRecording || !canUseVoice}
+                          onClick={voiceMode ? () => exitVoiceMode() : startRecording}
+                          disabled={isGenerating || (isRecording && !voiceMode) || !canUseVoice}
                           size="icon"
                           variant="ghost"
-                          className="h-8 w-8 rounded-lg hover:bg-muted"
+                          className={`h-8 w-8 rounded-lg hover:bg-muted ${
+                            voiceMode ? "text-primary" : ""
+                          }`}
                         >
                           <Mic className="h-4 w-4" />
                         </Button>
@@ -3302,14 +3622,28 @@ export function UnifiedChat() {
                     </div>
 
                     {/* Recording overlay for bottom input */}
-                    {isRecording && (
+                    {(isRecording || voiceState) && (
                       <RecordingOverlay
                         isRecording={isRecording}
                         isProcessing={isProcessingSend || isTranscribing}
                         onSend={() => stopRecording(true)}
-                        onCancel={() => stopRecording(false)}
+                        onCancel={() => {
+                          if (voiceState === "error" && !voiceModeRef.current) {
+                            setVoiceState(null);
+                            setRecordingBlob(null);
+                            setVoiceErrorMessage(null);
+                          } else {
+                            stopRecording(false);
+                            if (voiceModeRef.current) exitVoiceMode();
+                          }
+                        }}
                         isCompact={true}
                         className="absolute inset-0 rounded-xl"
+                        voiceState={voiceState || undefined}
+                        errorMessage={voiceErrorMessage || undefined}
+                        savedDuration={recordingDuration || undefined}
+                        onRetry={handleVoiceRetry}
+                        onDiscard={handleVoiceDiscard}
                       />
                     )}
                   </div>
@@ -3371,6 +3705,43 @@ export function UnifiedChat() {
 
         {/* TTS setup dialog */}
         <TTSDownloadDialog open={ttsSetupDialogOpen} onOpenChange={setTtsSetupDialogOpen} />
+
+        {/* TTS discovery prompt - shown once after first voice message on supported platforms */}
+        {showTTSDiscovery && (
+          <div className="fixed bottom-24 left-1/2 -translate-x-1/2 z-50 w-full max-w-md px-4">
+            <div className="bg-background border rounded-xl shadow-lg p-4 flex items-center gap-3">
+              <div className="flex-1">
+                <p className="text-sm font-medium">Enable voice responses?</p>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  Download a text-to-speech model (~264 MB) to hear Maple read responses
+                  aloud.
+                </p>
+              </div>
+              <div className="flex items-center gap-2 flex-shrink-0">
+                <Button
+                  variant="default"
+                  size="sm"
+                  className="gap-1.5"
+                  onClick={() => {
+                    dismissTTSDiscovery();
+                    setTtsSetupDialogOpen(true);
+                  }}
+                >
+                  <Download className="h-3.5 w-3.5" />
+                  Download
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8"
+                  onClick={dismissTTSDiscovery}
+                >
+                  <X className="h-4 w-4" />
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Hidden file inputs - must be outside conditional rendering to work in both views */}
         <input
