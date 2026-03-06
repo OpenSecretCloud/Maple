@@ -57,9 +57,20 @@ export function RecordingOverlay({
   const startTimeRef = useRef<number>(0);
   const animationFrameRef = useRef<number>();
 
+  // Reset duration immediately when effectiveState changes away from recording
+  // so the next time recording starts, it doesn't flash the old value
+  const prevEffectiveStateRef = useRef(effectiveState);
+  if (prevEffectiveStateRef.current !== effectiveState) {
+    prevEffectiveStateRef.current = effectiveState;
+    if (effectiveState === "recording") {
+      // Synchronous state reset — avoids the one-frame flash of stale duration
+      // that happens when setDuration(0) is called only inside useEffect
+      setDuration(0);
+    }
+  }
+
   useEffect(() => {
     if (effectiveState === "recording") {
-      setDuration(0);
       startTimeRef.current = Date.now();
 
       const updateTimer = () => {
@@ -290,7 +301,12 @@ export function RecordingOverlay({
           )}
         </div>
 
-        <div className="flex flex-col items-center gap-6 max-w-md w-full">
+        <div
+          className={cn(
+            "flex flex-col items-center max-w-md w-full",
+            isCompact ? "gap-2" : "gap-6"
+          )}
+        >
           {/* Waveform visualization - show for recording (non-compact), generating, and playing (always) */}
           {((!isCompact && effectiveState === "recording") ||
             effectiveState === "generating" ||

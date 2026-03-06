@@ -1860,7 +1860,10 @@ export function UnifiedChat() {
       // Use Web Audio API instead of new Audio() for better iOS WebView compatibility
       const ctx = new (window.AudioContext ||
         (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
-      fetch(`/audio/${file}.wav`)
+      // iOS AudioContext starts in "suspended" state — must resume before playing
+      const ready = ctx.state === "suspended" ? ctx.resume() : Promise.resolve();
+      ready
+        .then(() => fetch(`/audio/${file}.wav`))
         .then((res) => res.arrayBuffer())
         .then((buf) => ctx.decodeAudioData(buf))
         .then((decoded) => {
@@ -3014,6 +3017,19 @@ export function UnifiedChat() {
           .join("\n");
 
         if (fullText && voiceModeRef.current) {
+          // The voice loop may have already cycled back to recording —
+          // stop the active mic so we can play TTS without overlap.
+          if (recorderRef.current) {
+            recorderRef.current.stopRecording(() => {
+              if (streamRef.current) {
+                streamRef.current.getTracks().forEach((track) => track.stop());
+                streamRef.current = null;
+              }
+              recorderRef.current = null;
+            });
+            setIsRecording(false);
+          }
+
           setVoiceState("generating");
           speakAndWait(fullText, lastAssistantMsg.id)
             .then(() => {
