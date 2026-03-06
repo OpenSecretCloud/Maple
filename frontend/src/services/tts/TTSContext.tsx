@@ -444,6 +444,8 @@ export function TTSProvider({ children }: { children: ReactNode }) {
         setIsGenerating(false);
         setPlaybackError(err instanceof Error ? err.message : "TTS playback failed");
         stopPlayback();
+        // Re-throw so speakAndWait callers (e.g. voice mode loop) can catch and exit
+        throw err;
       }
     },
     [isTauriEnv, status, stop, stopPlayback]
