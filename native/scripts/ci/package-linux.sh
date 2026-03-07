@@ -56,7 +56,10 @@ ln -sf /opt/Maple/Maple "$deb_root/usr/bin/maple"
 cp "$deb_desktop_file" "$deb_root/usr/share/applications/cloud.opensecret.maple.desktop"
 cp "$icon_source" "$deb_root/usr/share/icons/hicolor/1024x1024/apps/maple.png"
 
-deb_dependencies="$(dpkg-shlibdeps -O "$deb_root/opt/Maple/Maple" 2>/dev/null | sed -n 's/^shlibs:Depends=//p')"
+deb_dependencies=""
+if ! deb_dependencies="$(dpkg-shlibdeps -O "$deb_root/opt/Maple/Maple" 2>/dev/null | sed -n 's/^shlibs:Depends=//p')"; then
+  deb_dependencies=""
+fi
 if [[ -z "$deb_dependencies" ]]; then
   deb_dependencies="libasound2, libdbus-1-3, libfontconfig1, libfreetype6, libgl1, libwayland-client0, libx11-6, libxkbcommon0"
 fi

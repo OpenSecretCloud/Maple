@@ -41,6 +41,13 @@ impl Hash for AppManager {
     }
 }
 
+fn configured_api_url() -> String {
+    std::env::var("OPEN_SECRET_API_URL")
+        .ok()
+        .or_else(|| option_env!("OPEN_SECRET_API_URL").map(str::to_owned))
+        .unwrap_or_else(maple_core::default_api_url)
+}
+
 impl AppManager {
     fn new() -> Result<Self, String> {
         let data_dir = dirs_next::data_dir()
@@ -51,8 +58,7 @@ impl AppManager {
         let _ = std::fs::create_dir_all(&data_dir);
 
         let _ = dotenvy::dotenv();
-        let api_url =
-            std::env::var("OPEN_SECRET_API_URL").unwrap_or_else(|_| maple_core::default_api_url());
+        let api_url = configured_api_url();
         let client_id = std::env::var("CLIENT_ID")
             .unwrap_or_else(|_| "ba5a14b5-d915-47b1-b7b1-afda52bc5fc6".to_string());
 

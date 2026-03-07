@@ -37,7 +37,10 @@ EOF
 
 export OPEN_SECRET_API_URL="$open_secret_api_url"
 
-cargo run --manifest-path "$native_root/rmp-cli/Cargo.toml" -- bindings swift
+(
+  cd "$native_root"
+  cargo run --manifest-path "$native_root/rmp-cli/Cargo.toml" -- bindings swift
+)
 
 (
   cd "$native_root/ios"

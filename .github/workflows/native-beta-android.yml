@@ -45,10 +45,12 @@ jobs:
             native/rmp-cli -> target
 
       - name: Setup Android NDK
-        uses: nttld/setup-ndk@v1
+        uses: nttld/setup-ndk@v1.5.0
         id: setup-ndk
         with:
-          ndk-version: 28.2.13676358
+          ndk-version: r28c
+          add-to-path: true
+          local-cache: true
 
       - name: Install native Android build tools
         run: |

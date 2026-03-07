@@ -30,7 +30,10 @@ export OPEN_SECRET_API_URL="$open_secret_api_url"
 export MAPLE_ANDROID_VERSION_NAME="$android_version_name"
 export MAPLE_ANDROID_VERSION_CODE="$android_version_code"
 
-cargo run --manifest-path "$native_root/rmp-cli/Cargo.toml" -- bindings kotlin
+(
+  cd "$native_root"
+  cargo run --manifest-path "$native_root/rmp-cli/Cargo.toml" -- bindings kotlin
+)
 
 (
   cd "$native_root/android"
