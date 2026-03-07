@@ -1,0 +1,71 @@
+set shell := ["bash", "-c"]
+
+# ┌─────────────────────────────────────────────────────────────────────┐
+# │  Maple justfile                                                     │
+# │                                                                     │
+# │  From macOS:     just <recipe>                                      │
+# │  From OrbStack:  mac just -f /Users/tony/Dev/OpenSecret/maple/native/justfile <recipe> │
+# └─────────────────────────────────────────────────────────────────────┘
+
+default:
+  @just --list
+
+# ── Helpers ──────────────────────────────────────────────────────────────────
+
+nix_run := "nix develop --command bash -c"
+ossl := 'PKG_CONFIG_PATH="$(brew --prefix openssl@3)/lib/pkgconfig" OPENSSL_DIR="$(brew --prefix openssl@3)"'
+
+# ── Diagnostics ──────────────────────────────────────────────────────────────
+
+# run rmp doctor
+doctor:
+  {{nix_run}} "rmp doctor"
+
+# ── FFI Bindings ─────────────────────────────────────────────────────────────
+
+# regenerate Swift FFI bindings
+bindings-swift:
+  {{nix_run}} "unset CC CXX AR RANLIB && rmp bindings swift"
+
+# regenerate Kotlin FFI bindings
+bindings-kotlin:
+  {{nix_run}} "unset CC CXX AR RANLIB && rmp bindings kotlin"
+
+# regenerate all FFI bindings (Swift + Kotlin)
+bindings:
+  {{nix_run}} "unset CC CXX AR RANLIB && rmp bindings all"
+
+# ── Desktop (iced) ───────────────────────────────────────────────────────────
+
+# build desktop app only
+build-desktop:
+  {{ossl}} cargo build -p maple_desktop_iced
+
+# build and run desktop app
+run-desktop:
+  {{ossl}} cargo run -p maple_desktop_iced
+
+# ── iOS ──────────────────────────────────────────────────────────────────────
+
+# build and launch iOS on simulator
+run-ios:
+  {{nix_run}} "unset CC CXX AR RANLIB && rmp run ios"
+
+# ── Android ──────────────────────────────────────────────────────────────────
+
+# build and launch Android on emulator (pass serial=<id> to override)
+run-android serial="emulator-5554":
+  {{nix_run}} "unset CC CXX AR RANLIB && export PATH=\$HOME/.cargo/bin:\$PATH && rmp run android --serial {{serial}}"
+
+# build Android APK only (no deploy)
+build-android:
+  cd android && ./gradlew assembleDebug
+
+# ── Convenience ──────────────────────────────────────────────────────────────
+
+# build all platforms (no launch)
+build-all: build-desktop build-android
+  @echo "Desktop and Android built. iOS is build+run only via rmp."
+
+# rebuild FFI bindings, then launch all platforms
+run-all: bindings run-ios run-android run-desktop

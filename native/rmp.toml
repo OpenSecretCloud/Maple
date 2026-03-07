@@ -1,0 +1,19 @@
+[project]
+name = "maple"
+org = "cloud.opensecret"
+
+[core]
+crate = "maple_core"
+bindings = "uniffi"
+
+[ios]
+bundle_id = "cloud.opensecret.maple"
+
+[android]
+app_id = "cloud.opensecret.maple"
+
+[desktop]
+targets = ["iced"]
+
+[desktop.iced]
+package = "maple_desktop_iced"

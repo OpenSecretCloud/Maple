@@ -1,0 +1,94 @@
+plugins {
+    id("com.android.application")
+    id("org.jetbrains.kotlin.android")
+}
+
+android {
+    namespace = "cloud.opensecret.maple"
+    compileSdk = 35
+    ndkVersion = "28.2.13676358"
+
+    defaultConfig {
+        applicationId = "cloud.opensecret.maple"
+        minSdk = 26
+        targetSdk = 35
+        versionCode = 3000000000
+        versionName = "3.0.0"
+    }
+
+    buildTypes {
+        debug {
+            applicationIdSuffix = ".dev"
+            versionNameSuffix = "-dev"
+        }
+        release {
+            isMinifyEnabled = false
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+            )
+        }
+    }
+
+    buildFeatures {
+        compose = true
+    }
+
+    composeOptions {
+        kotlinCompilerExtensionVersion = "1.5.14"
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    kotlinOptions {
+        jvmTarget = "17"
+    }
+
+    packaging {
+        resources.excludes.addAll(
+            listOf("/META-INF/{AL2.0,LGPL2.1}", "META-INF/DEPENDENCIES"),
+        )
+    }
+
+    sourceSets {
+        getByName("main") {
+            jniLibs.srcDirs("src/main/jniLibs")
+        }
+    }
+}
+
+tasks.register("ensureUniffiGenerated") {
+    doLast {
+        val out = file("src/main/java/cloud/opensecret/maple/rust/maple_core.kt")
+        if (!out.exists()) {
+            throw GradleException("Missing UniFFI Kotlin bindings. Run `rmp bindings kotlin` first.")
+        }
+    }
+}
+
+tasks.named("preBuild") {
+    dependsOn("ensureUniffiGenerated")
+}
+
+dependencies {
+    val composeBom = platform("androidx.compose:compose-bom:2024.06.00")
+    implementation(composeBom)
+
+    implementation("androidx.core:core-ktx:1.13.1")
+    implementation("androidx.activity:activity-compose:1.9.0")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.3")
+
+    implementation("androidx.compose.ui:ui")
+    implementation("androidx.compose.ui:ui-tooling-preview")
+    implementation("androidx.compose.material3:material3")
+
+    debugImplementation("androidx.compose.ui:ui-tooling")
+
+    // UniFFI JNA
+    implementation("net.java.dev.jna:jna:5.14.0@aar")
+
+    // Secure credential storage
+    implementation("androidx.security:security-crypto:1.1.0-alpha06")
+}

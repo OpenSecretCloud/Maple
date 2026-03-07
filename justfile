@@ -207,3 +207,53 @@ release version:
     git commit -m "chore: bump version to {{version}}"
     git tag -a "v{{version}}" -m "Release v{{version}}"
     echo "Release v{{version}} created! Don't forget to push tags: git push && git push --tags"
+
+# ┌─────────────────────────────────────────────────────────────────────┐
+# │  Maple 3.0 (native/) - Native Rust/SwiftUI/Compose/iced            │
+# └─────────────────────────────────────────────────────────────────────┘
+
+native_nix := "cd native && nix develop --command bash -c"
+native_ossl := 'PKG_CONFIG_PATH="$(brew --prefix openssl@3)/lib/pkgconfig" OPENSSL_DIR="$(brew --prefix openssl@3)"'
+
+# Run native rmp doctor
+native-doctor:
+    {{native_nix}} "rmp doctor"
+
+# Regenerate native FFI bindings (Swift + Kotlin)
+native-bindings:
+    {{native_nix}} "unset CC CXX AR RANLIB && rmp bindings all"
+
+# Regenerate native Swift FFI bindings
+native-bindings-swift:
+    {{native_nix}} "unset CC CXX AR RANLIB && rmp bindings swift"
+
+# Regenerate native Kotlin FFI bindings
+native-bindings-kotlin:
+    {{native_nix}} "unset CC CXX AR RANLIB && rmp bindings kotlin"
+
+# Build native desktop (iced)
+native-build-desktop:
+    cd native && {{native_ossl}} cargo build -p maple_desktop_iced
+
+# Run native desktop (iced)
+native-run-desktop:
+    cd native && {{native_ossl}} cargo run -p maple_desktop_iced
+
+# Run native iOS on simulator
+native-run-ios:
+    {{native_nix}} "unset CC CXX AR RANLIB && rmp run ios"
+
+# Run native Android on emulator
+native-run-android serial="emulator-5554":
+    {{native_nix}} "unset CC CXX AR RANLIB && export PATH=\$HOME/.cargo/bin:\$PATH && rmp run android --serial {{serial}}"
+
+# Build native Android APK
+native-build-android:
+    cd native/android && ./gradlew assembleDebug
+
+# Build all native platforms
+native-build-all: native-build-desktop native-build-android
+    @echo "Native desktop and Android built. iOS is build+run only via rmp."
+
+# Run all native platforms
+native-run-all: native-bindings native-run-ios native-run-android native-run-desktop
