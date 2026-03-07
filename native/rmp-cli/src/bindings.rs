@@ -5,7 +5,7 @@ use walkdir::WalkDir;
 
 use crate::cli::{human_log, json_print, CliError, JsonOk};
 use crate::config::{load_rmp_toml, RmpToml};
-use crate::util::{discover_xcode_dev_dir, run_capture, which};
+use crate::util::{apply_cargo_features, discover_xcode_dev_dir, run_capture, which};
 
 const BINDGEN_HASH_FILE_PREFIX: &str = "target/.rmp-bindgen-hash";
 
@@ -201,6 +201,7 @@ fn cargo_build_host(
     if let Some(flag) = profile.cargo_release_arg() {
         cmd.arg(flag);
     }
+    apply_cargo_features(&mut cmd);
     let status = cmd
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
@@ -683,6 +684,7 @@ fn build_ios_staticlibs(
         if let Some(flag) = profile.cargo_release_arg() {
             cmd.arg(flag);
         }
+        apply_cargo_features(&mut cmd);
 
         // Clean out Nix/toolchain vars that break iOS builds.
         for k in [
@@ -794,6 +796,7 @@ fn build_android_so(
     if let Some(flag) = profile.cargo_release_arg() {
         cmd.arg(flag);
     }
+    apply_cargo_features(&mut cmd);
     let status = cmd
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())

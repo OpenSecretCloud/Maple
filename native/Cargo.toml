@@ -5,3 +5,6 @@ members = [
   "uniffi-bindgen",
   "desktop/iced",
 ]
+exclude = [
+  "rmp-cli",
+]

@@ -76,4 +76,12 @@ fn developer_dir_supports_iphoneos(dev_dir: &PathBuf) -> bool {
     matches!(out, Ok(status) if status.success())
 }
 
-// (reserved) write_file_atomic: will be useful once `rmp init` lands.
+/// Append `--features <value>` to a cargo command if the `RMP_FEATURES` env var is set.
+pub fn apply_cargo_features(cmd: &mut Command) {
+    if let Ok(features) = std::env::var("RMP_FEATURES") {
+        let features = features.trim().to_string();
+        if !features.is_empty() {
+            cmd.arg("--features").arg(features);
+        }
+    }
+}

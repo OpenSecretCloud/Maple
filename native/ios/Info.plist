@@ -18,6 +18,8 @@
 	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>OPEN_SECRET_API_URL</key>
+	<string>$(OPEN_SECRET_API_URL)</string>
 	<key>UILaunchScreen</key>
 	<dict/>
 	<key>UIAppFonts</key>

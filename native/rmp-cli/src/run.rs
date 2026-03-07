@@ -7,7 +7,7 @@ use crate::bindings;
 use crate::bindings::BuildProfile;
 use crate::cli::{human_log, json_print, CliError, JsonOk};
 use crate::config::load_rmp_toml;
-use crate::util::{discover_xcode_dev_dir, run_capture};
+use crate::util::{apply_cargo_features, discover_xcode_dev_dir, run_capture};
 
 pub fn run(
     root: &Path,
@@ -90,6 +90,13 @@ fn run_ios(
         .arg("ONLY_ACTIVE_ARCH=YES")
         .arg("CODE_SIGNING_ALLOWED=NO")
         .arg(format!("PRODUCT_BUNDLE_IDENTIFIER={bundle_id}"));
+
+    if let Ok(api_url) = std::env::var("OPEN_SECRET_API_URL") {
+        let api_url = api_url.trim();
+        if !api_url.is_empty() {
+            cmd.arg(format!("OPEN_SECRET_API_URL={api_url}"));
+        }
+    }
 
     let status = cmd
         .stdout(Stdio::inherit())
@@ -501,6 +508,7 @@ fn run_iced(root: &Path, json: bool, verbose: bool, release: bool) -> Result<(),
     if release {
         cmd.arg("--release");
     }
+    apply_cargo_features(&mut cmd);
     let status = cmd
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())

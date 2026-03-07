@@ -8,6 +8,13 @@ use opensecret::types::{ConversationContent, ConversationItem};
 
 uniffi::setup_scaffolding!();
 
+const DEFAULT_API_URL: &str = "http://0.0.0.0:3000";
+
+#[uniffi::export]
+pub fn default_api_url() -> String {
+    DEFAULT_API_URL.to_string()
+}
+
 const PAGE_SIZE: i64 = 20;
 
 fn format_relative_time(epoch_secs: i64) -> String {
@@ -61,14 +68,24 @@ fn format_relative_time(epoch_secs: i64) -> String {
 
 fn parse_conversation_item(item: &ConversationItem) -> Option<ChatMessage> {
     match item {
-        ConversationItem::Message { id, role, content, created_at, .. } => {
+        ConversationItem::Message {
+            id,
+            role,
+            content,
+            created_at,
+            ..
+        } => {
             let is_user = role == "user";
-            let text: String = content.iter().filter_map(|c| match c {
-                ConversationContent::Text { text }
-                | ConversationContent::InputText { text }
-                | ConversationContent::OutputText { text } => Some(text.as_str()),
-                _ => None,
-            }).collect::<Vec<_>>().join("\n");
+            let text: String = content
+                .iter()
+                .filter_map(|c| match c {
+                    ConversationContent::Text { text }
+                    | ConversationContent::InputText { text }
+                    | ConversationContent::OutputText { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
 
             if text.is_empty() {
                 return None;
@@ -138,7 +155,11 @@ fn recompute_display_flags(messages: &mut [ChatMessage]) {
         };
 
         // Show timestamp on the LAST message before a sender change or time gap
-        let next = if i + 1 < len { Some(&messages[i + 1]) } else { None };
+        let next = if i + 1 < len {
+            Some(&messages[i + 1])
+        } else {
+            None
+        };
         messages[i].show_timestamp = match next {
             Some(n) => {
                 messages[i].is_user != n.is_user
@@ -207,16 +228,36 @@ impl AppState {
 #[derive(uniffi::Enum, Clone, Debug)]
 pub enum AppAction {
     // Auth
-    LoginWithEmail { email: String, password: String },
-    SignUpWithEmail { email: String, password: String, name: String },
-    InitiateOAuth { provider: OAuthProvider, invite_code: Option<String> },
-    HandleOAuthCallback { provider: OAuthProvider, code: String, state: String, invite_code: String },
-    RestoreSession { access_token: String, refresh_token: String },
+    LoginWithEmail {
+        email: String,
+        password: String,
+    },
+    SignUpWithEmail {
+        email: String,
+        password: String,
+        name: String,
+    },
+    InitiateOAuth {
+        provider: OAuthProvider,
+        invite_code: Option<String>,
+    },
+    HandleOAuthCallback {
+        provider: OAuthProvider,
+        code: String,
+        state: String,
+        invite_code: String,
+    },
+    RestoreSession {
+        access_token: String,
+        refresh_token: String,
+    },
     ClearPendingAuthUrl,
     Logout,
 
     // Chat
-    SendMessage { content: String },
+    SendMessage {
+        content: String,
+    },
     LoadOlderMessages,
     RefreshTimestamps,
     ClearToast,
@@ -264,7 +305,9 @@ enum InternalEvent {
     },
     SessionRestoreFailed,
     AuthFailed(String),
-    OAuthUrlReady { url: String },
+    OAuthUrlReady {
+        url: String,
+    },
     // History loading
     HistoryLoaded {
         messages: Vec<ChatMessage>,
@@ -273,7 +316,10 @@ enum InternalEvent {
     },
     HistoryLoadFailed(String),
     // Agent streaming events
-    AgentMessageChunk { messages: Vec<String>, step: usize },
+    AgentMessageChunk {
+        messages: Vec<String>,
+        step: usize,
+    },
     AgentDone,
     AgentError(String),
     // Settings
@@ -316,8 +362,7 @@ impl FfiApp {
                 .build()
                 .expect("Failed to create tokio runtime");
 
-            let client_uuid =
-                uuid::Uuid::parse_str(&client_id).expect("Invalid client_id UUID");
+            let client_uuid = uuid::Uuid::parse_str(&client_id).expect("Invalid client_id UUID");
 
             let os_client = Arc::new(
                 opensecret::OpenSecretClient::new(&api_url)
@@ -370,7 +415,9 @@ impl FfiApp {
                         };
                         let event = match os.list_main_agent_items(Some(params)).await {
                             Ok(resp) => {
-                                let mut msgs: Vec<ChatMessage> = resp.data.iter()
+                                let mut msgs: Vec<ChatMessage> = resp
+                                    .data
+                                    .iter()
                                     .filter_map(|item| parse_conversation_item(item))
                                     .collect();
                                 // API returns desc order; reverse to chronological
@@ -470,7 +517,11 @@ impl FfiApp {
                         InternalEvent::OAuthUrlReady { url } => {
                             state.pending_auth_url = Some(url);
                         }
-                        InternalEvent::HistoryLoaded { messages, has_more, is_initial } => {
+                        InternalEvent::HistoryLoaded {
+                            messages,
+                            has_more,
+                            is_initial,
+                        } => {
                             state.is_loading_history = false;
                             state.has_older_messages = has_more;
 
@@ -498,7 +549,8 @@ impl FfiApp {
                             eprintln!("[agent] step={step} messages={messages:?}");
 
                             // Finalize previous streaming message
-                            if let Some(msg) = state.messages.last_mut().filter(|m| m.is_streaming) {
+                            if let Some(msg) = state.messages.last_mut().filter(|m| m.is_streaming)
+                            {
                                 msg.is_streaming = false;
                             }
 
@@ -522,14 +574,16 @@ impl FfiApp {
                         }
                         InternalEvent::AgentDone => {
                             // Finalize any streaming message
-                            if let Some(msg) = state.messages.last_mut().filter(|m| m.is_streaming) {
+                            if let Some(msg) = state.messages.last_mut().filter(|m| m.is_streaming)
+                            {
                                 msg.is_streaming = false;
                             }
                             state.is_agent_typing = false;
                         }
                         InternalEvent::AgentError(error) => {
                             // Finalize any streaming message
-                            if let Some(msg) = state.messages.last_mut().filter(|m| m.is_streaming) {
+                            if let Some(msg) = state.messages.last_mut().filter(|m| m.is_streaming)
+                            {
                                 msg.is_streaming = false;
                             }
                             state.is_agent_typing = false;
@@ -682,10 +736,7 @@ impl FfiApp {
                         } => {
                             let os = os_client.clone();
                             let tx = core_tx_async.clone();
-                            if let Err(e) = os.set_tokens(
-                                access_token,
-                                Some(refresh_token),
-                            ) {
+                            if let Err(e) = os.set_tokens(access_token, Some(refresh_token)) {
                                 let _ = tx.send(CoreMsg::Internal(Box::new(
                                     InternalEvent::SessionRestoreFailed,
                                 )));
@@ -793,33 +844,35 @@ impl FfiApp {
                                     Ok(mut stream) => {
                                         while let Some(event) = stream.next().await {
                                             let internal = match event {
-                                                Ok(opensecret::types::AgentSseEvent::Message(msg)) => {
-                                                    InternalEvent::AgentMessageChunk {
-                                                        messages: msg.messages,
-                                                        step: msg.step,
-                                                    }
-                                                }
+                                                Ok(opensecret::types::AgentSseEvent::Message(
+                                                    msg,
+                                                )) => InternalEvent::AgentMessageChunk {
+                                                    messages: msg.messages,
+                                                    step: msg.step,
+                                                },
                                                 Ok(opensecret::types::AgentSseEvent::Typing(_)) => {
                                                     continue;
                                                 }
                                                 Ok(opensecret::types::AgentSseEvent::Done(_)) => {
                                                     InternalEvent::AgentDone
                                                 }
-                                                Ok(opensecret::types::AgentSseEvent::Error(err)) => {
-                                                    InternalEvent::AgentError(err.error)
-                                                }
-                                                Err(e) => {
-                                                    InternalEvent::AgentError(e.to_string())
-                                                }
+                                                Ok(opensecret::types::AgentSseEvent::Error(
+                                                    err,
+                                                )) => InternalEvent::AgentError(err.error),
+                                                Err(e) => InternalEvent::AgentError(e.to_string()),
                                             };
                                             let _ = tx.send(CoreMsg::Internal(Box::new(internal)));
                                         }
                                         // If stream ends without a Done event, finalize
-                                        let _ = tx.send(CoreMsg::Internal(Box::new(InternalEvent::AgentDone)));
+                                        let _ = tx.send(CoreMsg::Internal(Box::new(
+                                            InternalEvent::AgentDone,
+                                        )));
                                     }
                                     Err(e) => {
                                         let _ = tx.send(CoreMsg::Internal(Box::new(
-                                            InternalEvent::AgentError(format!("Failed to start agent chat: {e}")),
+                                            InternalEvent::AgentError(format!(
+                                                "Failed to start agent chat: {e}"
+                                            )),
                                         )));
                                     }
                                 }
@@ -852,8 +905,16 @@ impl FfiApp {
                             let tx = core_tx_async.clone();
                             rt.spawn(async move {
                                 match os.delete_main_agent().await {
-                                    Ok(_) => { let _ = tx.send(CoreMsg::Internal(Box::new(InternalEvent::AgentDeleted))); }
-                                    Err(e) => { let _ = tx.send(CoreMsg::Internal(Box::new(InternalEvent::AgentDeleteFailed(e.to_string())))); }
+                                    Ok(_) => {
+                                        let _ = tx.send(CoreMsg::Internal(Box::new(
+                                            InternalEvent::AgentDeleted,
+                                        )));
+                                    }
+                                    Err(e) => {
+                                        let _ = tx.send(CoreMsg::Internal(Box::new(
+                                            InternalEvent::AgentDeleteFailed(e.to_string()),
+                                        )));
+                                    }
                                 }
                             });
                         }

@@ -16,6 +16,7 @@ import cloud.opensecret.maple.rust.AuthState
 import cloud.opensecret.maple.rust.FfiApp
 import cloud.opensecret.maple.rust.Router
 import cloud.opensecret.maple.rust.Screen
+import cloud.opensecret.maple.rust.defaultApiUrl
 
 class AppManager private constructor(context: Context) : AppReconciler {
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -54,10 +55,17 @@ class AppManager private constructor(context: Context) : AppReconciler {
     )
         private set
 
+    private fun configuredApiUrl(): String {
+        val configured = BuildConfig.OPEN_SECRET_API_URL.trim()
+        val apiUrl = if (configured.isNotEmpty()) configured else defaultApiUrl()
+
+        return if (apiUrl == "http://0.0.0.0:3000") "http://10.0.2.2:3000" else apiUrl
+    }
+
     init {
         val dataDir = context.filesDir.absolutePath
 
-        val apiUrl = "http://10.0.2.2:3000"
+        val apiUrl = configuredApiUrl()
         val clientId = "ba5a14b5-d915-47b1-b7b1-afda52bc5fc6"
 
         rust = FfiApp(apiUrl = apiUrl, clientId = clientId, dataDir = dataDir)

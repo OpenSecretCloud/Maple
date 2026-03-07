@@ -3,6 +3,13 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+fun String.toKotlinStringLiteral(): String =
+    "\"${replace("\\", "\\\\").replace("\"", "\\\"")}\""
+
+val openSecretApiUrl = providers.gradleProperty("openSecretApiUrl")
+    .orElse(providers.environmentVariable("OPEN_SECRET_API_URL"))
+    .getOrElse("")
+
 android {
     namespace = "cloud.opensecret.maple"
     compileSdk = 35
@@ -14,6 +21,7 @@ android {
         targetSdk = 35
         versionCode = 3000000000
         versionName = "3.0.0"
+        buildConfigField("String", "OPEN_SECRET_API_URL", openSecretApiUrl.toKotlinStringLiteral())
     }
 
     buildTypes {
@@ -31,6 +39,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     composeOptions {

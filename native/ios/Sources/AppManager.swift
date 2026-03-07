@@ -55,13 +55,30 @@ final class AppManager: AppReconciler {
     var state: AppState
     private var lastRevApplied: UInt64
 
+    private static func configuredApiUrl() -> String {
+        if let apiUrl = ProcessInfo.processInfo.environment["OPEN_SECRET_API_URL"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !apiUrl.isEmpty {
+            return apiUrl
+        }
+
+        if let apiUrl = (Bundle.main.object(forInfoDictionaryKey: "OPEN_SECRET_API_URL") as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !apiUrl.isEmpty,
+           !apiUrl.contains("$(") {
+            return apiUrl
+        }
+
+        return defaultApiUrl()
+    }
+
     init() {
         let fm = FileManager.default
         let dataDirUrl = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         let dataDir = dataDirUrl.path
         try? fm.createDirectory(at: dataDirUrl, withIntermediateDirectories: true)
 
-        let apiUrl = "http://0.0.0.0:3000"
+        let apiUrl = Self.configuredApiUrl()
         let clientId = "ba5a14b5-d915-47b1-b7b1-afda52bc5fc6"
 
         let rust = FfiApp(apiUrl: apiUrl, clientId: clientId, dataDir: dataDir)
