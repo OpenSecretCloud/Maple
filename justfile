@@ -25,15 +25,15 @@ lint:
 
 # Run Tauri iOS development build (default simulator)
 ios-dev:
-    cd frontend && bun run tauri ios dev
+    cd frontend && ORT_LIB_LOCATION="$(pwd)/src-tauri/onnxruntime-ios/onnxruntime.xcframework/ios-arm64" bun run tauri ios dev
 
 # Run Tauri iOS development build on specific simulator (e.g., "iPhone 16 Pro iOS 26")
 ios-dev-sim simulator:
-    cd frontend && bun run tauri ios dev '{{simulator}}'
+    cd frontend && ORT_LIB_LOCATION="$(pwd)/src-tauri/onnxruntime-ios/onnxruntime.xcframework/ios-arm64" bun run tauri ios dev '{{simulator}}'
 
 # Run Tauri iOS development build on physical device (e.g., "Your iPhone")
 ios-dev-device device:
-    cd frontend && bun run tauri ios dev --device '{{device}}'
+    cd frontend && ORT_LIB_LOCATION="$(pwd)/src-tauri/onnxruntime-ios/onnxruntime.xcframework/ios-arm64" bun run tauri ios dev --device '{{device}}'
 
 # Build ONNX Runtime for iOS (device + simulator) - required for TTS
 ios-build-onnxruntime:
@@ -59,21 +59,13 @@ ios-fix-arch:
 android-build:
     cd frontend && bun run tauri android build
 
-# Build Tauri desktop release
+# Build Tauri desktop release (unsets Android NDK env vars that break macOS builds)
 desktop-build:
-    cd frontend && bun tauri build
+    cd frontend && unset CC AR RANLIB && bun tauri build
 
-# Build Tauri desktop debug
+# Build Tauri desktop debug (unsets Android NDK env vars that break macOS builds)
 desktop-build-debug:
-    cd frontend && bun tauri build --debug
-
-# Build Tauri desktop release (with CC unset for compatibility)
-desktop-build-no-cc:
-    cd frontend && unset CC && bun tauri build
-
-# Build Tauri desktop debug (with CC unset for compatibility)
-desktop-build-debug-no-cc:
-    cd frontend && unset CC && bun tauri build --debug
+    cd frontend && unset CC AR RANLIB && bun tauri build --debug
 
 # Format Rust code
 rust-fmt:
