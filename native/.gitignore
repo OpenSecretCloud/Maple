@@ -12,9 +12,6 @@ ios/.build/
 ios/*.xcodeproj
 android/app/src/main/jniLibs/
 android/.gradle/
-android/gradle/
-android/gradlew
-android/gradlew.bat
 android/build/
 android/app/build/
 android/local.properties

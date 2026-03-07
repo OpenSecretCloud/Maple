@@ -85,6 +85,10 @@ if [[ -z "$ipa_path" ]]; then
   exit 1
 fi
 
+private_keys_dir="$HOME/.private_keys"
+mkdir -p "$private_keys_dir"
+install -m 600 "$APPLE_API_KEY_PATH" "$private_keys_dir/AuthKey_${APPLE_API_KEY}.p8"
+
 xcrun altool --upload-app --type ios \
   --file "$ipa_path" \
   --apiKey "$APPLE_API_KEY" \

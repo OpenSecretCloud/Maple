@@ -5,10 +5,12 @@ source "$(cd "$(dirname "$0")" && pwd)/common.sh"
 
 require_command cargo
 
-if [[ ! -x "$native_root/android/gradlew" ]]; then
+if [[ ! -f "$native_root/android/gradlew" ]]; then
   echo "Missing executable Gradle wrapper at $native_root/android/gradlew" >&2
   exit 1
 fi
+
+chmod +x "$native_root/android/gradlew"
 
 android_build_root="$ci_build_root/android"
 android_version_name="${MAPLE_ANDROID_VERSION_NAME:-${maple_version_value}-beta.${maple_build_number}}"
