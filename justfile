@@ -257,3 +257,35 @@ native-build-all: native-build-desktop native-build-android
 
 # Run all native platforms
 native-run-all: native-bindings native-run-ios native-run-android native-run-desktop
+
+# ┌─────────────────────────────────────────────────────────────────────┐
+# │  OrbStack → macOS wrappers (run from Linux container)               │
+# │  Usage: just mac-native-run-ios                                     │
+# └─────────────────────────────────────────────────────────────────────┘
+
+mac-native-run-ios:
+    mac just -f {{justfile_directory()}}/native/justfile run-ios
+
+mac-native-run-android serial="emulator-5554":
+    mac just -f {{justfile_directory()}}/native/justfile run-android serial={{serial}}
+
+mac-native-run-desktop:
+    mac just -f {{justfile_directory()}}/native/justfile run-desktop
+
+mac-native-build-desktop:
+    mac just -f {{justfile_directory()}}/native/justfile build-desktop
+
+mac-native-build-android:
+    mac just -f {{justfile_directory()}}/native/justfile build-android
+
+mac-native-bindings:
+    mac just -f {{justfile_directory()}}/native/justfile bindings
+
+mac-native-bindings-swift:
+    mac just -f {{justfile_directory()}}/native/justfile bindings-swift
+
+mac-native-bindings-kotlin:
+    mac just -f {{justfile_directory()}}/native/justfile bindings-kotlin
+
+mac-native-doctor:
+    mac just -f {{justfile_directory()}}/native/justfile doctor
