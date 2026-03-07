@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -6,9 +8,27 @@ plugins {
 fun String.toKotlinStringLiteral(): String =
     "\"${replace("\\", "\\\\").replace("\"", "\\\"")}\""
 
+val keystoreProperties = Properties()
+val keystorePropertiesFile = rootProject.file("keystore.properties")
+
+if (keystorePropertiesFile.exists()) {
+    keystorePropertiesFile.inputStream().use(keystoreProperties::load)
+}
+
 val openSecretApiUrl = providers.gradleProperty("openSecretApiUrl")
     .orElse(providers.environmentVariable("OPEN_SECRET_API_URL"))
     .getOrElse("")
+
+val mapleVersionName = providers.gradleProperty("mapleVersionName")
+    .orElse(providers.environmentVariable("MAPLE_ANDROID_VERSION_NAME"))
+    .orNull
+    ?: "3.0.0"
+
+val mapleVersionCode = providers.gradleProperty("mapleVersionCode")
+    .orElse(providers.environmentVariable("MAPLE_ANDROID_VERSION_CODE"))
+    .orNull
+    ?.toInt()
+    ?: 300000000
 
 android {
     namespace = "cloud.opensecret.maple"
@@ -19,9 +39,20 @@ android {
         applicationId = "cloud.opensecret.maple"
         minSdk = 26
         targetSdk = 35
-        versionCode = 3000000000
-        versionName = "3.0.0"
+        versionCode = mapleVersionCode
+        versionName = mapleVersionName
         buildConfigField("String", "OPEN_SECRET_API_URL", openSecretApiUrl.toKotlinStringLiteral())
+    }
+
+    signingConfigs {
+        if (keystorePropertiesFile.exists()) {
+            create("release") {
+                storeFile = file(keystoreProperties.getProperty("storeFile"))
+                storePassword = keystoreProperties.getProperty("password")
+                keyAlias = keystoreProperties.getProperty("keyAlias")
+                keyPassword = keystoreProperties.getProperty("password")
+            }
+        }
     }
 
     buildTypes {
@@ -31,6 +62,7 @@ android {
         }
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.findByName("release")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
             )
