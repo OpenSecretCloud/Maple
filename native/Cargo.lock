@@ -2387,7 +2387,7 @@ dependencies = [
 
 [[package]]
 name = "maple_core"
-version = "0.1.0"
+version = "3.0.0"
 dependencies = [
  "chrono",
  "flume",
@@ -2400,7 +2400,7 @@ dependencies = [
 
 [[package]]
 name = "maple_desktop_iced"
-version = "0.1.0"
+version = "3.0.0"
 dependencies = [
  "dirs-next",
  "dotenvy",
@@ -3011,7 +3011,9 @@ checksum = "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381"
 
 [[package]]
 name = "opensecret"
-version = "0.2.9"
+version = "3.0.0-alpha.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbacacf2d939e25ce433c6a926630c2cc650af4e1431cc1e407f14a53f65e5ca"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3340,7 +3342,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]

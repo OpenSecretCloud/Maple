@@ -84,7 +84,10 @@ pub const RADIUS_XL: f32 = 24.0;
 pub const RADIUS_CARD: f32 = 44.0;
 pub const RADIUS_FULL: f32 = 999.0;
 
-pub fn primary_button_style(_theme: &iced::Theme, status: iced::widget::button::Status) -> iced::widget::button::Style {
+pub fn primary_button_style(
+    _theme: &iced::Theme,
+    status: iced::widget::button::Status,
+) -> iced::widget::button::Style {
     let (bg, opacity) = match status {
         iced::widget::button::Status::Active => (MAPLE_500, 1.0),
         iced::widget::button::Status::Hovered => (MAPLE_600, 1.0),
@@ -94,27 +97,78 @@ pub fn primary_button_style(_theme: &iced::Theme, status: iced::widget::button::
     iced::widget::button::Style {
         background: Some(iced::Background::Color(Color { a: opacity, ..bg })),
         text_color: WHITE,
-        border: Border { radius: RADIUS_FULL.into(), ..Default::default() },
+        border: Border {
+            radius: RADIUS_FULL.into(),
+            ..Default::default()
+        },
         ..Default::default()
     }
 }
 
-pub fn secondary_button_style(_theme: &iced::Theme, status: iced::widget::button::Status) -> iced::widget::button::Style {
+pub fn secondary_button_style(
+    _theme: &iced::Theme,
+    status: iced::widget::button::Status,
+) -> iced::widget::button::Style {
     let (bg_alpha, border_color, text_color, opacity) = match status {
-        iced::widget::button::Status::Active => (0.12, Color { a: 0.2, ..PEBBLE_300 }, PEBBLE_700, 1.0),
-        iced::widget::button::Status::Hovered => (0.18, Color { a: 0.3, ..PEBBLE_400 }, PEBBLE_800, 1.0),
-        iced::widget::button::Status::Pressed => (0.22, Color { a: 0.35, ..PEBBLE_500 }, PEBBLE_900, 1.0),
-        iced::widget::button::Status::Disabled => (0.06, Color { a: 0.1, ..NEUTRAL_200 }, PEBBLE_400, 0.5),
+        iced::widget::button::Status::Active => (
+            0.12,
+            Color {
+                a: 0.2,
+                ..PEBBLE_300
+            },
+            PEBBLE_700,
+            1.0,
+        ),
+        iced::widget::button::Status::Hovered => (
+            0.18,
+            Color {
+                a: 0.3,
+                ..PEBBLE_400
+            },
+            PEBBLE_800,
+            1.0,
+        ),
+        iced::widget::button::Status::Pressed => (
+            0.22,
+            Color {
+                a: 0.35,
+                ..PEBBLE_500
+            },
+            PEBBLE_900,
+            1.0,
+        ),
+        iced::widget::button::Status::Disabled => (
+            0.06,
+            Color {
+                a: 0.1,
+                ..NEUTRAL_200
+            },
+            PEBBLE_400,
+            0.5,
+        ),
     };
     iced::widget::button::Style {
-        background: Some(iced::Background::Color(Color { a: bg_alpha, ..PEBBLE_100 })),
-        text_color: Color { a: opacity, ..text_color },
-        border: Border { radius: RADIUS_FULL.into(), width: 1.0, color: border_color },
+        background: Some(iced::Background::Color(Color {
+            a: bg_alpha,
+            ..PEBBLE_100
+        })),
+        text_color: Color {
+            a: opacity,
+            ..text_color
+        },
+        border: Border {
+            radius: RADIUS_FULL.into(),
+            width: 1.0,
+            color: border_color,
+        },
         ..Default::default()
     }
 }
 
-pub fn ghost_button_style(_theme: &iced::Theme, status: iced::widget::button::Status) -> iced::widget::button::Style {
+pub fn ghost_button_style(
+    _theme: &iced::Theme,
+    status: iced::widget::button::Status,
+) -> iced::widget::button::Style {
     let text_color = match status {
         iced::widget::button::Status::Active => PEBBLE_500,
         iced::widget::button::Status::Hovered => PEBBLE_700,
@@ -129,7 +183,10 @@ pub fn ghost_button_style(_theme: &iced::Theme, status: iced::widget::button::St
     }
 }
 
-pub fn text_input_style(_theme: &iced::Theme, status: iced::widget::text_input::Status) -> iced::widget::text_input::Style {
+pub fn text_input_style(
+    _theme: &iced::Theme,
+    status: iced::widget::text_input::Status,
+) -> iced::widget::text_input::Style {
     let border_color = match status {
         iced::widget::text_input::Status::Active => NEUTRAL_300,
         iced::widget::text_input::Status::Hovered => PEBBLE_400,
@@ -138,11 +195,18 @@ pub fn text_input_style(_theme: &iced::Theme, status: iced::widget::text_input::
     };
     iced::widget::text_input::Style {
         background: iced::Background::Color(NEUTRAL_0),
-        border: Border { radius: RADIUS_MD.into(), width: 1.0, color: border_color },
+        border: Border {
+            radius: RADIUS_MD.into(),
+            width: 1.0,
+            color: border_color,
+        },
         icon: NEUTRAL_600,
         placeholder: NEUTRAL_400,
         value: NEUTRAL_900,
-        selection: Color { a: 0.2, ..MAPLE_500 },
+        selection: Color {
+            a: 0.2,
+            ..MAPLE_500
+        },
     }
 }
 
@@ -196,10 +260,16 @@ pub fn header_style(_theme: &iced::Theme) -> iced::widget::container::Style {
 
 pub fn branded_header_style(_theme: &iced::Theme) -> iced::widget::container::Style {
     iced::widget::container::Style {
-        background: Some(iced::Background::Color(Color { a: 0.88, ..PEBBLE_800 })),
+        background: Some(iced::Background::Color(Color {
+            a: 0.88,
+            ..PEBBLE_800
+        })),
         border: Border {
             width: 0.0,
-            color: Color { a: 0.1, ..PEBBLE_600 },
+            color: Color {
+                a: 0.1,
+                ..PEBBLE_600
+            },
             ..Default::default()
         },
         ..Default::default()

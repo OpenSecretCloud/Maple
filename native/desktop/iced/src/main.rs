@@ -1,7 +1,7 @@
 mod theme;
 
-use iced::widget::{button, canvas, center, column, container, row, scrollable, text, text_input};
 use iced::widget::operation;
+use iced::widget::{button, canvas, center, column, container, row, scrollable, text, text_input};
 use iced::{keyboard, Border, Color, Element, Fill, Font, Point, Subscription, Task, Theme};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -51,8 +51,8 @@ impl AppManager {
         let _ = std::fs::create_dir_all(&data_dir);
 
         let _ = dotenvy::dotenv();
-        let api_url = std::env::var("OPEN_SECRET_API_URL")
-            .unwrap_or_else(|_| "http://0.0.0.0:3000".to_string());
+        let api_url =
+            std::env::var("OPEN_SECRET_API_URL").unwrap_or_else(|_| maple_core::default_api_url());
         let client_id = std::env::var("CLIENT_ID")
             .unwrap_or_else(|_| "ba5a14b5-d915-47b1-b7b1-afda52bc5fc6".to_string());
 
@@ -98,8 +98,10 @@ fn manager_update_stream(manager: &AppManager) -> impl iced::futures::Stream<Ite
 
 fn save_tokens_to_keyring(access_token: &str, refresh_token: &str) {
     if access_token.is_empty() {
-        let _ = keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCESS).and_then(|e| e.delete_credential());
-        let _ = keyring::Entry::new(KEYRING_SERVICE, KEYRING_REFRESH).and_then(|e| e.delete_credential());
+        let _ = keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCESS)
+            .and_then(|e| e.delete_credential());
+        let _ = keyring::Entry::new(KEYRING_SERVICE, KEYRING_REFRESH)
+            .and_then(|e| e.delete_credential());
     } else {
         if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCESS) {
             let _ = entry.set_password(access_token);
@@ -125,7 +127,9 @@ fn load_tokens_from_keyring() -> Option<(String, String)> {
 // ── App ─────────────────────────────────────────────────────────────────────
 
 enum App {
-    BootError { error: String },
+    BootError {
+        error: String,
+    },
     Loaded {
         manager: AppManager,
         state: AppState,
@@ -192,7 +196,13 @@ impl App {
             Ok(manager) => {
                 let state = manager.state();
                 let screen = screen_from_state(&state);
-                Self::Loaded { manager, state, screen, show_splash: true, splash_min_passed: false }
+                Self::Loaded {
+                    manager,
+                    state,
+                    screen,
+                    show_splash: true,
+                    splash_min_passed: false,
+                }
             }
             Err(error) => Self::BootError { error },
         };
@@ -216,7 +226,11 @@ impl App {
     fn subscription(&self) -> Subscription<Message> {
         match self {
             App::BootError { .. } => Subscription::none(),
-            App::Loaded { manager, show_splash, .. } => {
+            App::Loaded {
+                manager,
+                show_splash,
+                ..
+            } => {
                 let core_sub = Subscription::run_with(manager.clone(), manager_update_stream)
                     .map(Message::CoreUpdated);
 
@@ -254,7 +268,14 @@ impl App {
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
-        let App::Loaded { manager, state, screen, show_splash, splash_min_passed } = self else {
+        let App::Loaded {
+            manager,
+            state,
+            screen,
+            show_splash,
+            splash_min_passed,
+        } = self
+        else {
             return Task::none();
         };
 
@@ -270,12 +291,20 @@ impl App {
 
             Message::TryRestoreSession => {
                 if let Some((access_token, refresh_token)) = load_tokens_from_keyring() {
-                    manager.dispatch(AppAction::RestoreSession { access_token, refresh_token });
+                    manager.dispatch(AppAction::RestoreSession {
+                        access_token,
+                        refresh_token,
+                    });
                 }
             }
 
             Message::CoreUpdated(ref update) => {
-                if let AppUpdate::SessionTokens { access_token, refresh_token, .. } = update {
+                if let AppUpdate::SessionTokens {
+                    access_token,
+                    refresh_token,
+                    ..
+                } = update
+                {
                     save_tokens_to_keyring(access_token, refresh_token);
                 }
 
@@ -292,7 +321,9 @@ impl App {
                             });
                         }
                         (ScreenState::Chat { compose }, ScreenState::Chat { .. }) => {
-                            *screen = ScreenState::Chat { compose: compose.clone() };
+                            *screen = ScreenState::Chat {
+                                compose: compose.clone(),
+                            };
                         }
                         _ => *screen = new_screen,
                     }
@@ -314,16 +345,24 @@ impl App {
             }
 
             Message::LoginEmailChanged(v) => {
-                if let ScreenState::Login(s) = screen { s.email = v; }
+                if let ScreenState::Login(s) = screen {
+                    s.email = v;
+                }
             }
             Message::LoginPasswordChanged(v) => {
-                if let ScreenState::Login(s) = screen { s.password = v; }
+                if let ScreenState::Login(s) = screen {
+                    s.password = v;
+                }
             }
             Message::LoginNameChanged(v) => {
-                if let ScreenState::Login(s) = screen { s.name = v; }
+                if let ScreenState::Login(s) = screen {
+                    s.name = v;
+                }
             }
             Message::ToggleSignUp => {
-                if let ScreenState::Login(s) = screen { s.is_sign_up = !s.is_sign_up; }
+                if let ScreenState::Login(s) = screen {
+                    s.is_sign_up = !s.is_sign_up;
+                }
             }
             Message::FocusEmail => {
                 return operation::focus(iced::widget::Id::new("login_email"));
@@ -348,16 +387,23 @@ impl App {
                 }
             }
             Message::InitiateOAuth(provider) => {
-                manager.dispatch(AppAction::InitiateOAuth { provider, invite_code: None });
+                manager.dispatch(AppAction::InitiateOAuth {
+                    provider,
+                    invite_code: None,
+                });
             }
 
             Message::ComposeChanged(v) => {
-                if let ScreenState::Chat { compose } = screen { *compose = v; }
+                if let ScreenState::Chat { compose } = screen {
+                    *compose = v;
+                }
             }
             Message::SendMessage => {
                 if let ScreenState::Chat { compose } = screen {
                     if !compose.trim().is_empty() {
-                        manager.dispatch(AppAction::SendMessage { content: compose.clone() });
+                        manager.dispatch(AppAction::SendMessage {
+                            content: compose.clone(),
+                        });
                         *compose = String::new();
                     }
                 }
@@ -411,7 +457,12 @@ impl App {
                 .spacing(SPACE_SM),
             )
             .into(),
-            App::Loaded { state, screen, show_splash, .. } => {
+            App::Loaded {
+                state,
+                screen,
+                show_splash,
+                ..
+            } => {
                 if *show_splash {
                     return view_splash();
                 }
@@ -420,7 +471,7 @@ impl App {
                     ScreenState::Login(login) => view_login(login, state),
                     ScreenState::Chat { compose } => view_chat(state, compose),
                 }
-            },
+            }
         }
     }
 }
@@ -429,7 +480,9 @@ fn screen_from_state(state: &AppState) -> ScreenState {
     match state.router.default_screen {
         maple_core::Screen::Loading => ScreenState::Loading,
         maple_core::Screen::Login => ScreenState::Login(LoginState::new()),
-        maple_core::Screen::Chat => ScreenState::Chat { compose: String::new() },
+        maple_core::Screen::Chat => ScreenState::Chat {
+            compose: String::new(),
+        },
     }
 }
 
@@ -448,9 +501,17 @@ fn wordmark_paths(s: f32) -> Vec<canvas::Path> {
             b.bezier_curve_to(p(0.0, 0.652098), p(5.77774, -1.72459), p(10.1942, 1.4443));
             b.line_to(p(26.9158, 15.561));
             b.line_to(p(43.6375, 1.4443));
-            b.bezier_curve_to(p(48.0567, -1.72459), p(53.8317, 0.652098), p(53.8317, 6.06562));
+            b.bezier_curve_to(
+                p(48.0567, -1.72459),
+                p(53.8317, 0.652098),
+                p(53.8317, 6.06562),
+            );
             b.line_to(p(53.8317, 41.2408));
-            b.bezier_curve_to(p(53.8317, 44.9716), p(50.7962, 47.9972), p(47.0534, 47.9972));
+            b.bezier_curve_to(
+                p(53.8317, 44.9716),
+                p(50.7962, 47.9972),
+                p(47.0534, 47.9972),
+            );
             b.line_to(p(6.17796, 47.9972));
             b.bezier_curve_to(p(2.16172, 47.9972), p(0.0, 45.6318), p(0.0, 41.2408));
             b.close();
@@ -459,7 +520,11 @@ fn wordmark_paths(s: f32) -> Vec<canvas::Path> {
         canvas::Path::new(|b| {
             b.move_to(p(58.7892, 39.8362));
             b.line_to(p(79.685, 3.36589));
-            b.bezier_curve_to(p(82.2553, -1.11494), p(86.5647, -1.12899), p(89.1435, 3.36589));
+            b.bezier_curve_to(
+                p(82.2553, -1.11494),
+                p(86.5647, -1.12899),
+                p(89.1435, 3.36589),
+            );
             b.line_to(p(110.031, 39.8362));
             b.bezier_curve_to(p(112.77, 44.6148), p(111.082, 48.0), p(105.555, 48.0));
             b.line_to(p(63.2649, 48.0));
@@ -470,14 +535,34 @@ fn wordmark_paths(s: f32) -> Vec<canvas::Path> {
         canvas::Path::new(|b| {
             b.move_to(p(137.257, 39.4064));
             b.line_to(p(137.257, 41.2408));
-            b.bezier_curve_to(p(137.257, 44.9716), p(134.221, 47.9972), p(130.478, 47.9972));
+            b.bezier_curve_to(
+                p(137.257, 44.9716),
+                p(134.221, 47.9972),
+                p(130.478, 47.9972),
+            );
             b.line_to(p(121.49, 47.9972));
-            b.bezier_curve_to(p(117.745, 47.9972), p(114.712, 44.9716), p(114.712, 41.2408));
+            b.bezier_curve_to(
+                p(117.745, 47.9972),
+                p(114.712, 44.9716),
+                p(114.712, 41.2408),
+            );
             b.line_to(p(114.712, 7.56014));
-            b.bezier_curve_to(p(114.712, 3.82658), p(117.748, 0.800986), p(121.493, 0.800986));
+            b.bezier_curve_to(
+                p(114.712, 3.82658),
+                p(117.748, 0.800986),
+                p(121.493, 0.800986),
+            );
             b.line_to(p(136.831, 0.800986));
-            b.bezier_curve_to(p(154.652, 0.800986), p(160.965, 8.65577), p(160.965, 20.1318));
-            b.bezier_curve_to(p(160.965, 31.6077), p(154.753, 39.2827), p(137.259, 39.4064));
+            b.bezier_curve_to(
+                p(154.652, 0.800986),
+                p(160.965, 8.65577),
+                p(160.965, 20.1318),
+            );
+            b.bezier_curve_to(
+                p(160.965, 31.6077),
+                p(154.753, 39.2827),
+                p(137.259, 39.4064),
+            );
             b.line_to(p(137.257, 39.4064));
             b.close();
         }),
@@ -485,14 +570,30 @@ fn wordmark_paths(s: f32) -> Vec<canvas::Path> {
         canvas::Path::new(|b| {
             b.move_to(p(164.191, 41.2408));
             b.line_to(p(164.191, 7.56014));
-            b.bezier_curve_to(p(164.191, 3.82658), p(167.227, 0.800986), p(170.972, 0.800986));
+            b.bezier_curve_to(
+                p(164.191, 3.82658),
+                p(167.227, 0.800986),
+                p(170.972, 0.800986),
+            );
             b.line_to(p(179.96, 0.800986));
-            b.bezier_curve_to(p(183.706, 0.800986), p(186.739, 3.82658), p(186.739, 7.55733));
+            b.bezier_curve_to(
+                p(183.706, 0.800986),
+                p(186.739, 3.82658),
+                p(186.739, 7.55733),
+            );
             b.line_to(p(186.739, 16.5331));
             b.line_to(p(195.743, 16.5331));
-            b.bezier_curve_to(p(199.489, 16.5331), p(202.522, 19.5587), p(202.522, 23.2894));
+            b.bezier_curve_to(
+                p(199.489, 16.5331),
+                p(202.522, 19.5587),
+                p(202.522, 23.2894),
+            );
             b.line_to(p(202.522, 41.238));
-            b.bezier_curve_to(p(202.522, 44.9688), p(199.486, 47.9944), p(195.743, 47.9944));
+            b.bezier_curve_to(
+                p(202.522, 44.9688),
+                p(199.486, 47.9944),
+                p(195.743, 47.9944),
+            );
             b.line_to(p(170.972, 47.9944));
             b.bezier_curve_to(p(167.227, 47.9944), p(164.194, 44.9688), p(164.194, 41.238));
             b.line_to(p(164.191, 41.2408));
@@ -502,20 +603,44 @@ fn wordmark_paths(s: f32) -> Vec<canvas::Path> {
         canvas::Path::new(|b| {
             b.move_to(p(240.304, 16.5331));
             b.line_to(p(230.6, 16.5331));
-            b.bezier_curve_to(p(233.943, 17.4854), p(236.386, 20.5532), p(236.386, 24.1884));
+            b.bezier_curve_to(
+                p(233.943, 17.4854),
+                p(236.386, 20.5532),
+                p(236.386, 24.1884),
+            );
             b.bezier_curve_to(p(236.386, 28.0259), p(233.669, 31.2257), p(230.05, 31.9842));
             b.line_to(p(240.321, 31.9842));
-            b.bezier_curve_to(p(244.712, 31.9842), p(247.082, 34.3412), p(247.082, 38.7237));
+            b.bezier_curve_to(
+                p(244.712, 31.9842),
+                p(247.082, 34.3412),
+                p(247.082, 38.7237),
+            );
             b.line_to(p(247.082, 41.2549));
-            b.bezier_curve_to(p(247.082, 45.6346), p(244.712, 47.9972), p(240.315, 47.9972));
+            b.bezier_curve_to(
+                p(247.082, 45.6346),
+                p(244.712, 47.9972),
+                p(240.315, 47.9972),
+            );
             b.line_to(p(212.982, 47.9972));
-            b.bezier_curve_to(p(208.582, 47.9972), p(206.215, 45.6346), p(206.215, 41.2549));
+            b.bezier_curve_to(
+                p(208.582, 47.9972),
+                p(206.215, 45.6346),
+                p(206.215, 41.2549),
+            );
             b.line_to(p(206.215, 7.5433));
-            b.bezier_curve_to(p(206.215, 3.1608), p(208.582, 0.800986), p(212.982, 0.800986));
+            b.bezier_curve_to(
+                p(206.215, 3.1608),
+                p(208.582, 0.800986),
+                p(212.982, 0.800986),
+            );
             b.line_to(p(240.315, 0.800986));
             b.bezier_curve_to(p(244.712, 0.800986), p(247.082, 3.1608), p(247.082, 7.5433));
             b.line_to(p(247.082, 9.77668));
-            b.bezier_curve_to(p(247.082, 13.5074), p(244.047, 16.5302), p(240.306, 16.5302));
+            b.bezier_curve_to(
+                p(247.082, 13.5074),
+                p(244.047, 16.5302),
+                p(240.306, 16.5302),
+            );
             b.line_to(p(240.304, 16.5331));
             b.close();
         }),
@@ -566,7 +691,10 @@ fn view_splash<'a>() -> Element<'a, Message> {
             text("Privacy-first intelligence")
                 .size(16)
                 .font(ARRAY_BOLD)
-                .color(Color { a: 0.8, ..PEBBLE_100 }),
+                .color(Color {
+                    a: 0.8,
+                    ..PEBBLE_100
+                }),
         ]
         .spacing(SPACE_LG)
         .align_x(iced::Alignment::Center),
@@ -621,9 +749,15 @@ fn view_login<'a>(login: &'a LoginState, state: &'a AppState) -> Element<'a, Mes
             .style(text_input_style),
     );
 
-    let submit_label = if login.is_sign_up { "Sign Up" } else { "Sign In" };
+    let submit_label = if login.is_sign_up {
+        "Sign Up"
+    } else {
+        "Sign In"
+    };
     let mut submit_btn = button(
-        container(text(submit_label).size(14).color(WHITE)).center_x(Fill).padding([10, 0]),
+        container(text(submit_label).size(14).color(WHITE))
+            .center_x(Fill)
+            .padding([10, 0]),
     )
     .width(Fill)
     .style(primary_button_style);
@@ -633,18 +767,36 @@ fn view_login<'a>(login: &'a LoginState, state: &'a AppState) -> Element<'a, Mes
     }
 
     let divider = row![
-        container(column![]).width(Fill).height(1).style(divider_style),
+        container(column![])
+            .width(Fill)
+            .height(1)
+            .style(divider_style),
         text("or").size(12).color(PEBBLE_400),
-        container(column![]).width(Fill).height(1).style(divider_style),
+        container(column![])
+            .width(Fill)
+            .height(1)
+            .style(divider_style),
     ]
     .spacing(SPACE_SM)
     .align_y(iced::Alignment::Center)
     .width(320);
 
     let oauth_buttons = column![
-        oauth_button("Continue with GitHub", Message::InitiateOAuth(OAuthProvider::Github), is_loading),
-        oauth_button("Continue with Google", Message::InitiateOAuth(OAuthProvider::Google), is_loading),
-        oauth_button("Continue with Apple", Message::InitiateOAuth(OAuthProvider::Apple), is_loading),
+        oauth_button(
+            "Continue with GitHub",
+            Message::InitiateOAuth(OAuthProvider::Github),
+            is_loading
+        ),
+        oauth_button(
+            "Continue with Google",
+            Message::InitiateOAuth(OAuthProvider::Google),
+            is_loading
+        ),
+        oauth_button(
+            "Continue with Apple",
+            Message::InitiateOAuth(OAuthProvider::Apple),
+            is_loading
+        ),
     ]
     .spacing(6)
     .width(320);
@@ -658,9 +810,16 @@ fn view_login<'a>(login: &'a LoginState, state: &'a AppState) -> Element<'a, Mes
         .on_press(Message::ToggleSignUp)
         .style(ghost_button_style);
 
-    let mut content = column![title, fields, submit_btn, divider, oauth_buttons, toggle_btn]
-        .spacing(SPACE_MD)
-        .align_x(iced::Alignment::Center);
+    let mut content = column![
+        title,
+        fields,
+        submit_btn,
+        divider,
+        oauth_buttons,
+        toggle_btn
+    ]
+    .spacing(SPACE_MD)
+    .align_x(iced::Alignment::Center);
 
     if let Some(ref toast) = state.toast {
         content = content.push(text(toast).size(12).color(MAPLE_ERROR));
@@ -676,11 +835,15 @@ fn view_login<'a>(login: &'a LoginState, state: &'a AppState) -> Element<'a, Mes
 
 fn oauth_button(label: &str, msg: Message, disabled: bool) -> Element<'_, Message> {
     let mut btn = button(
-        container(text(label).size(13).color(PEBBLE_700)).center_x(Fill).padding([8, 0]),
+        container(text(label).size(13).color(PEBBLE_700))
+            .center_x(Fill)
+            .padding([8, 0]),
     )
     .width(Fill)
     .style(secondary_button_style);
-    if !disabled { btn = btn.on_press(msg); }
+    if !disabled {
+        btn = btn.on_press(msg);
+    }
     btn.into()
 }
 
@@ -691,14 +854,23 @@ fn view_chat<'a>(state: &'a AppState, compose: &'a str) -> Element<'a, Message> 
     let wordmark_pill = container(view_wordmark(20.0, PEBBLE_700))
         .padding([SPACE_XS as u16, SPACE_MD as u16])
         .style(|_: &Theme| container::Style {
-            background: Some(iced::Background::Color(Color { a: 0.72, ..NEUTRAL_0 })),
+            background: Some(iced::Background::Color(Color {
+                a: 0.72,
+                ..NEUTRAL_0
+            })),
             border: Border {
                 radius: RADIUS_FULL.into(),
                 width: 0.5,
-                color: Color { a: 0.25, ..PEBBLE_300 },
+                color: Color {
+                    a: 0.25,
+                    ..PEBBLE_300
+                },
             },
             shadow: iced::Shadow {
-                color: Color { a: 0.08, ..Color::BLACK },
+                color: Color {
+                    a: 0.08,
+                    ..Color::BLACK
+                },
                 offset: iced::Vector::new(0.0, 2.0),
                 blur_radius: 8.0,
             },
@@ -712,14 +884,23 @@ fn view_chat<'a>(state: &'a AppState, compose: &'a str) -> Element<'a, Message> 
     )
     .padding([4, 6])
     .style(|_: &Theme| container::Style {
-        background: Some(iced::Background::Color(Color { a: 0.72, ..NEUTRAL_0 })),
+        background: Some(iced::Background::Color(Color {
+            a: 0.72,
+            ..NEUTRAL_0
+        })),
         border: Border {
             radius: RADIUS_FULL.into(),
             width: 0.5,
-            color: Color { a: 0.25, ..PEBBLE_300 },
+            color: Color {
+                a: 0.25,
+                ..PEBBLE_300
+            },
         },
         shadow: iced::Shadow {
-            color: Color { a: 0.08, ..Color::BLACK },
+            color: Color {
+                a: 0.08,
+                ..Color::BLACK
+            },
             offset: iced::Vector::new(0.0, 2.0),
             blur_radius: 8.0,
         },
@@ -746,7 +927,9 @@ fn view_chat<'a>(state: &'a AppState, compose: &'a str) -> Element<'a, Message> 
         .padding([SPACE_SM as u16, 0]);
 
     // Message list with padding for floating elements
-    let mut msg_col = column![].spacing(SPACE_XS).padding([SPACE_XS as u16, SPACE_MD as u16]);
+    let mut msg_col = column![]
+        .spacing(SPACE_XS)
+        .padding([SPACE_XS as u16, SPACE_MD as u16]);
 
     // Top spacer so messages don't start behind the header
     msg_col = msg_col.push(iced::widget::Space::new().height(36));
@@ -765,9 +948,7 @@ fn view_chat<'a>(state: &'a AppState, compose: &'a str) -> Element<'a, Message> 
     }
 
     if state.is_agent_typing {
-        msg_col = msg_col.push(
-            text("Maple is typing...").size(12).color(PEBBLE_400),
-        );
+        msg_col = msg_col.push(text("Maple is typing...").size(12).color(PEBBLE_400));
     }
 
     // Bottom spacer so messages + timestamps don't end behind compose bar
@@ -781,7 +962,8 @@ fn view_chat<'a>(state: &'a AppState, compose: &'a str) -> Element<'a, Message> 
     // Floating glass compose bar pill
     let mut send_btn = button(
         container(text("Send").size(14).color(WHITE)).padding([SPACE_XS as u16, SPACE_MD as u16]),
-    ).style(primary_button_style);
+    )
+    .style(primary_button_style);
     if !compose.trim().is_empty() && !state.is_agent_typing {
         send_btn = send_btn.on_press(Message::SendMessage);
     }
@@ -800,14 +982,23 @@ fn view_chat<'a>(state: &'a AppState, compose: &'a str) -> Element<'a, Message> 
     )
     .padding([SPACE_XS as u16, SPACE_SM as u16])
     .style(|_: &Theme| container::Style {
-        background: Some(iced::Background::Color(Color { a: 0.72, ..NEUTRAL_0 })),
+        background: Some(iced::Background::Color(Color {
+            a: 0.72,
+            ..NEUTRAL_0
+        })),
         border: Border {
             radius: RADIUS_FULL.into(),
             width: 0.5,
-            color: Color { a: 0.25, ..PEBBLE_300 },
+            color: Color {
+                a: 0.25,
+                ..PEBBLE_300
+            },
         },
         shadow: iced::Shadow {
-            color: Color { a: 0.08, ..Color::BLACK },
+            color: Color {
+                a: 0.08,
+                ..Color::BLACK
+            },
             offset: iced::Vector::new(0.0, 2.0),
             blur_radius: 8.0,
         },
@@ -829,10 +1020,13 @@ fn view_chat<'a>(state: &'a AppState, compose: &'a str) -> Element<'a, Message> 
     ));
 
     let mut content = iced::widget::stack![
-        container(message_list).width(Fill).height(Fill).style(move |_: &Theme| container::Style {
-            background: Some(chat_bg),
-            ..Default::default()
-        }),
+        container(message_list)
+            .width(Fill)
+            .height(Fill)
+            .style(move |_: &Theme| container::Style {
+                background: Some(chat_bg),
+                ..Default::default()
+            }),
         column![
             floating_header,
             iced::widget::Space::new().height(Fill),
@@ -847,8 +1041,14 @@ fn view_chat<'a>(state: &'a AppState, compose: &'a str) -> Element<'a, Message> 
             container(text(toast).size(12).color(MAPLE_ERROR))
                 .padding([4, SPACE_MD as u16])
                 .style(|_: &Theme| container::Style {
-                    background: Some(iced::Background::Color(Color { a: 0.1, ..MAPLE_ERROR })),
-                    border: Border { radius: RADIUS_SM.into(), ..Default::default() },
+                    background: Some(iced::Background::Color(Color {
+                        a: 0.1,
+                        ..MAPLE_ERROR
+                    })),
+                    border: Border {
+                        radius: RADIUS_SM.into(),
+                        ..Default::default()
+                    },
                     ..Default::default()
                 }),
         );
@@ -859,20 +1059,19 @@ fn view_chat<'a>(state: &'a AppState, compose: &'a str) -> Element<'a, Message> 
         let settings_menu = container(
             column![
                 button(
-                    row![
-                        text("Delete Agent").size(13).color(MAPLE_ERROR),
-                    ]
-                    .align_y(iced::Alignment::Center)
+                    row![text("Delete Agent").size(13).color(MAPLE_ERROR),]
+                        .align_y(iced::Alignment::Center)
                 )
                 .on_press(Message::RequestDeleteAgent)
                 .style(ghost_button_style)
                 .width(Fill),
-                container(column![]).width(Fill).height(1).style(divider_style),
+                container(column![])
+                    .width(Fill)
+                    .height(1)
+                    .style(divider_style),
                 button(
-                    row![
-                        text("Sign Out").size(13).color(NEUTRAL_800),
-                    ]
-                    .align_y(iced::Alignment::Center)
+                    row![text("Sign Out").size(13).color(NEUTRAL_800),]
+                        .align_y(iced::Alignment::Center)
                 )
                 .on_press(Message::Logout)
                 .style(ghost_button_style)
@@ -883,14 +1082,23 @@ fn view_chat<'a>(state: &'a AppState, compose: &'a str) -> Element<'a, Message> 
         )
         .padding(SPACE_XS as u16)
         .style(|_: &Theme| container::Style {
-            background: Some(iced::Background::Color(Color { a: 0.92, ..NEUTRAL_0 })),
+            background: Some(iced::Background::Color(Color {
+                a: 0.92,
+                ..NEUTRAL_0
+            })),
             border: Border {
                 radius: RADIUS_MD.into(),
                 width: 1.0,
-                color: Color { a: 0.2, ..PEBBLE_300 },
+                color: Color {
+                    a: 0.2,
+                    ..PEBBLE_300
+                },
             },
             shadow: iced::Shadow {
-                color: Color { a: 0.12, ..Color::BLACK },
+                color: Color {
+                    a: 0.12,
+                    ..Color::BLACK
+                },
                 offset: iced::Vector::new(0.0, 4.0),
                 blur_radius: 12.0,
             },
@@ -959,10 +1167,16 @@ fn view_chat<'a>(state: &'a AppState, compose: &'a str) -> Element<'a, Message> 
 
         let overlay = iced::widget::stack![
             content,
-            container(column![]).width(Fill).height(Fill).style(|_: &Theme| container::Style {
-                background: Some(iced::Background::Color(Color { a: 0.3, ..Color::BLACK })),
-                ..Default::default()
-            }),
+            container(column![])
+                .width(Fill)
+                .height(Fill)
+                .style(|_: &Theme| container::Style {
+                    background: Some(iced::Background::Color(Color {
+                        a: 0.3,
+                        ..Color::BLACK
+                    })),
+                    ..Default::default()
+                }),
             center(dialog),
         ];
 
@@ -977,32 +1191,49 @@ fn view_message(msg: &ChatMessage) -> Element<'_, Message> {
 
     let mut bubble_content = column![].spacing(4);
     if !is_user && msg.show_sender {
-        bubble_content = bubble_content.push(
-            text("Maple").size(11).color(PEBBLE_400),
-        );
+        bubble_content = bubble_content.push(text("Maple").size(11).color(PEBBLE_400));
     }
 
-    bubble_content = bubble_content.push(
-        text(&msg.content).size(14).color(if is_user { WHITE } else { NEUTRAL_800 }),
-    );
+    bubble_content = bubble_content.push(text(&msg.content).size(14).color(if is_user {
+        WHITE
+    } else {
+        NEUTRAL_800
+    }));
 
     let bubble = container(bubble_content)
         .padding([SPACE_XS as u16, SPACE_SM as u16])
         .max_width(500)
-        .style(if is_user { user_bubble_style } else { agent_bubble_style });
+        .style(if is_user {
+            user_bubble_style
+        } else {
+            agent_bubble_style
+        });
 
-    let align = if is_user { iced::Alignment::End } else { iced::Alignment::Start };
+    let align = if is_user {
+        iced::Alignment::End
+    } else {
+        iced::Alignment::Start
+    };
 
     let bubble_row: Element<'_, Message> = if is_user {
-        row![iced::widget::Space::new().width(Fill), bubble].width(Fill).into()
+        row![iced::widget::Space::new().width(Fill), bubble]
+            .width(Fill)
+            .into()
     } else {
-        row![bubble, iced::widget::Space::new().width(Fill)].width(Fill).into()
+        row![bubble, iced::widget::Space::new().width(Fill)]
+            .width(Fill)
+            .into()
     };
 
     let mut col = column![bubble_row].spacing(2);
     if msg.show_timestamp {
         let timestamp = text(&msg.timestamp_display).size(10).color(PEBBLE_400);
-        col = col.push(container(timestamp).width(Fill).align_x(align).padding([0, SPACE_SM as u16]));
+        col = col.push(
+            container(timestamp)
+                .width(Fill)
+                .align_x(align)
+                .padding([0, SPACE_SM as u16]),
+        );
     }
     col.into()
 }
