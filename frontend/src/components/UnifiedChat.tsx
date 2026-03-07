@@ -1753,6 +1753,7 @@ export function UnifiedChat() {
             document: {
               filename: string;
               text_content: string;
+              page_images?: string[];
             };
             status: string;
           }
@@ -1763,7 +1764,23 @@ export function UnifiedChat() {
             fileType: "pdf"
           });
 
-          if (result.document?.text_content) {
+          if (result.document?.page_images?.length) {
+            // Scanned/image-based PDF — store placeholder only (no base64 image data).
+            // page_images are intentionally excluded from documentText to avoid
+            // sending multi-MB base64 blobs as plain text to the AI model.
+            // Vision-model OCR integration will use a separate code path.
+            const scannedData = {
+              document: {
+                filename: result.document.filename,
+                text_content:
+                  "[Scanned PDF: " +
+                  result.document.page_images.length +
+                  " page image(s) extracted. OCR via vision model is not yet supported.]"
+              }
+            };
+            setDocumentText(JSON.stringify(scannedData));
+            setDocumentName(file.name);
+          } else if (result.document?.text_content) {
             // Create a cleaned version with image references removed
             const cleanedParsed = {
               document: {
