@@ -1,13 +1,12 @@
 import { useState, useMemo, useCallback, useEffect, useRef, useContext } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  MoreHorizontal,
-  Trash,
-  Pencil,
   ChevronDown,
   ChevronRight,
-  CheckSquare,
-  RefreshCw
+  MoreHorizontal,
+  Pencil,
+  RefreshCw,
+  Trash
 } from "lucide-react";
 import {
   DropdownMenu,
@@ -15,6 +14,8 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger
 } from "@/components/ui/dropdown-menu";
+import { ChatContextMenu } from "@/components/ChatContextMenu";
+import { useProjects } from "@/state/useProjects";
 import { Checkbox } from "@/components/ui/checkbox";
 import { RenameChatDialog } from "@/components/RenameChatDialog";
 import { DeleteChatDialog } from "@/components/DeleteChatDialog";
@@ -33,6 +34,8 @@ interface ChatHistoryListProps {
   selectedIds: Set<string>;
   onSelectionChange: (ids: Set<string>) => void;
   containerRef?: React.RefObject<HTMLElement>;
+  excludeChatIds?: Set<string>;
+  onConversationsLoaded?: (conversations: Conversation[]) => void;
 }
 
 interface Conversation {
@@ -60,7 +63,9 @@ export function ChatHistoryList({
   onExitSelectionMode,
   selectedIds,
   onSelectionChange,
-  containerRef
+  containerRef,
+  excludeChatIds,
+  onConversationsLoaded
 }: ChatHistoryListProps) {
   const openai = useOpenAI();
   const opensecret = useOpenSecret();
@@ -73,7 +78,32 @@ export function ChatHistoryList({
   const [isBulkDeleting, setIsBulkDeleting] = useState(false);
   const [selectedChat, setSelectedChat] = useState<{ id: string; title: string } | null>(null);
   const [isArchivedExpanded, setIsArchivedExpanded] = useState(false);
+  const [isRecentsExpanded, setIsRecentsExpanded] = useState(() => {
+    try {
+      const stored = localStorage.getItem("maple_recents_expanded");
+      if (stored !== null) return stored === "true";
+      return true;
+    } catch {
+      return true;
+    }
+  });
+
+  const toggleRecentsExpanded = useCallback(() => {
+    setIsRecentsExpanded((prev) => {
+      const next = !prev;
+      localStorage.setItem("maple_recents_expanded", String(next));
+      return next;
+    });
+  }, []);
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Projects integration
+  const {
+    projects,
+    getProjectForChat,
+    assignChatToProject,
+    removeChatFromProject
+  } = useProjects();
 
   // Pagination states
   const [oldestConversationId, setOldestConversationId] = useState<string | undefined>();
@@ -483,16 +513,28 @@ export function ChatHistoryList({
   });
 
   // Filter conversations based on search query
+  // Notify parent of conversations for ProjectsList to use
+  useEffect(() => {
+    if (onConversationsLoaded && conversations.length > 0) {
+      onConversationsLoaded(conversations);
+    }
+  }, [conversations, onConversationsLoaded]);
+
   const filteredConversations = useMemo(() => {
     if (!conversations) return [];
-    if (!searchQuery.trim()) return conversations;
+    // Filter out chats assigned to projects
+    let convs = conversations;
+    if (excludeChatIds && excludeChatIds.size > 0) {
+      convs = convs.filter((c) => !excludeChatIds.has(c.id));
+    }
+    if (!searchQuery.trim()) return convs;
 
     const normalizedQuery = searchQuery.trim().toLowerCase();
-    return conversations.filter((conv: Conversation) => {
+    return convs.filter((conv: Conversation) => {
       const title = conv.metadata?.title || "Untitled Chat";
       return title.toLowerCase().includes(normalizedQuery);
     });
-  }, [conversations, searchQuery]);
+  }, [conversations, searchQuery, excludeChatIds]);
 
   // Filter archived chats based on search query
   const filteredArchivedChats = useMemo(() => {
@@ -824,7 +866,29 @@ export function ChatHistoryList({
       </div>
 
       <div ref={pullContentRef} className="flex flex-col gap-2" style={{ willChange: "transform" }}>
-        {filteredConversations.map((conv: Conversation, index: number) => {
+        {/* Recents header */}
+        {filteredConversations.length > 0 && (
+          <button
+            onClick={toggleRecentsExpanded}
+            className="group/header flex items-center gap-1 w-full text-sm text-muted-foreground hover:text-foreground transition-colors py-1 mt-3"
+          >
+            <span className="font-medium">Recents</span>
+            <span
+              className={
+                !(isRecentsExpanded || (searchQuery.trim() && filteredConversations.length > 0)) || isMobile
+                  ? ""
+                  : "opacity-0 group-hover/header:opacity-100 transition-opacity"
+              }
+            >
+              {isRecentsExpanded || (searchQuery.trim() && filteredConversations.length > 0) ? (
+                <ChevronDown className="h-3.5 w-3.5" />
+              ) : (
+                <ChevronRight className="h-3.5 w-3.5" />
+              )}
+            </span>
+          </button>
+        )}
+        {(isRecentsExpanded || (searchQuery.trim() && filteredConversations.length > 0)) && filteredConversations.map((conv: Conversation, index: number) => {
           const title = conv.metadata?.title || "Untitled Chat";
           const isActive = conv.id === currentChatId;
           const isSelected = selectedIds.has(conv.id);
@@ -880,35 +944,18 @@ export function ChatHistoryList({
                 </div>
               </div>
               {!isSelectionMode && (
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <button
-                      className={`z-50 bg-background/80 absolute right-2 top-1/2 transform -translate-y-1/2 text-primary transition-opacity p-2 ${
-                        isMobile ? "opacity-100" : "opacity-0 group-hover:opacity-100"
-                      }`}
-                      onClick={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                      }}
-                    >
-                      <MoreHorizontal size={16} />
-                    </button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent>
-                    <DropdownMenuItem onClick={() => onSelectionChange(new Set([conv.id]))}>
-                      <CheckSquare className="mr-2 h-4 w-4" />
-                      <span>Select</span>
-                    </DropdownMenuItem>
-                    <DropdownMenuItem onClick={() => handleOpenRenameDialog(conv)}>
-                      <Pencil className="mr-2 h-4 w-4" />
-                      <span>Rename Chat</span>
-                    </DropdownMenuItem>
-                    <DropdownMenuItem onClick={() => handleOpenDeleteDialog(conv)}>
-                      <Trash className="mr-2 h-4 w-4" />
-                      <span>Delete Chat</span>
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
+                <ChatContextMenu
+                  chatId={conv.id}
+                  isMobile={isMobile}
+                  projects={projects}
+                  currentProjectName={getProjectForChat(conv.id)?.name}
+                  currentProjectId={getProjectForChat(conv.id)?.id}
+                  onSelect={() => onSelectionChange(new Set([conv.id]))}
+                  onRename={() => handleOpenRenameDialog(conv)}
+                  onDelete={() => handleOpenDeleteDialog(conv)}
+                  onMoveToProject={(projectId) => assignChatToProject(conv.id, projectId)}
+                  onRemoveFromProject={() => removeChatFromProject(conv.id)}
+                />
               )}
               {!isSelectionMode && (
                 <div className="absolute inset-y-0 right-0 w-[3rem] bg-gradient-to-l from-background to-transparent pointer-events-none"></div>
@@ -918,7 +965,7 @@ export function ChatHistoryList({
         })}
 
         {/* Loading indicator for pagination */}
-        {isLoadingMore && (
+        {(isRecentsExpanded || (searchQuery.trim() && filteredConversations.length > 0)) && isLoadingMore && (
           <div className="flex items-center justify-center py-4">
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
               <div className="w-2 h-2 bg-foreground/60 rounded-full animate-pulse" />
@@ -1027,3 +1074,5 @@ export function ChatHistoryList({
     </>
   );
 }
+
+export type { Conversation };

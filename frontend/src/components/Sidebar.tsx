@@ -10,11 +10,16 @@ import {
 import { Button } from "./ui/button";
 import { useLocation, useRouter } from "@tanstack/react-router";
 import { ChatHistoryList } from "./ChatHistoryList";
+import type { Conversation } from "./ChatHistoryList";
 import { AccountMenu } from "./AccountMenu";
 import { useRef, useEffect, KeyboardEvent, useCallback, useLayoutEffect, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { cn, useClickOutside, useIsMobile } from "@/utils/utils";
 import { Input } from "./ui/input";
 import { useLocalState } from "@/state/useLocalState";
+import { useProjects } from "@/state/useProjects";
+import { ProjectsList } from "./projects/ProjectsList";
+import { CreateProjectDialog } from "./projects/CreateProjectDialog";
 
 export function Sidebar({
   chatId,
@@ -28,7 +33,42 @@ export function Sidebar({
   const router = useRouter();
   const location = useLocation();
   const { searchQuery, setSearchQuery, isSearchVisible, setIsSearchVisible } = useLocalState();
+  const { getAllAssignedChatIds, getDeletedChatIds, createProject, assignChatToProject } = useProjects();
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const queryClient = useQueryClient();
+
+  // Conversations from ChatHistoryList (shared with ProjectsList)
+  // Seed from query cache to prevent flash of empty state on route changes
+  const [conversations, setConversations] = useState<Conversation[]>(() => {
+    const cached = queryClient.getQueryData<Conversation[]>(["conversations"]);
+    return cached || [];
+  });
+  const assignedIds = getAllAssignedChatIds();
+  const deletedIds = getDeletedChatIds();
+  const excludeChatIds = new Set([...assignedIds, ...deletedIds]);
+
+  // Create project for chat (triggered from context menu "New project")
+  const [createProjectForChatId, setCreateProjectForChatId] = useState<string | null>(null);
+
+  // Listen for createprojectforchat events from context menu
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const { chatId } = (e as CustomEvent).detail;
+      if (chatId) setCreateProjectForChatId(chatId);
+    };
+    window.addEventListener("createprojectforchat", handler);
+    return () => window.removeEventListener("createprojectforchat", handler);
+  }, []);
+
+  const handleCreateProjectForChat = useCallback(
+    (name: string) => {
+      if (!createProjectForChatId) return;
+      const projectId = createProject(name);
+      assignChatToProject(createProjectForChatId, projectId);
+      setCreateProjectForChatId(null);
+    },
+    [createProjectForChatId, createProject, assignChatToProject]
+  );
 
   // Multi-select state
   const [isSelectionMode, setIsSelectionMode] = useState(false);
@@ -66,14 +106,18 @@ export function Sidebar({
       window.dispatchEvent(new Event("newchat"));
       document.getElementById("message")?.focus();
     } else if (location.pathname === "/") {
-      // Already on home with no conversation_id, just focus
+      // Already on home with no conversation_id — reset state (clears project selector etc.)
+      window.dispatchEvent(new Event("newchat"));
       document.getElementById("message")?.focus();
     } else {
       try {
         // Navigate to home without any query params
         await router.navigate({ to: `/` });
-        // Ensure element is available after navigation
-        setTimeout(() => document.getElementById("message")?.focus(), 0);
+        // Reset state after navigation
+        setTimeout(() => {
+          window.dispatchEvent(new Event("newchat"));
+          document.getElementById("message")?.focus();
+        }, 0);
       } catch (error) {
         console.error("Navigation failed:", error);
       }
@@ -217,8 +261,7 @@ export function Sidebar({
               </Button>
             </>
           ) : (
-            <>
-              <h2 className="font-semibold">History</h2>
+            <div className="flex justify-end w-full">
               <Button
                 variant="outline"
                 size="icon"
@@ -228,7 +271,7 @@ export function Sidebar({
               >
                 <Search className="h-4 w-4" />
               </Button>
-            </>
+            </div>
           )}
         </div>
         {isSearchVisible && (
@@ -255,6 +298,12 @@ export function Sidebar({
           </div>
         )}
         <nav ref={historyContainerRef} className="relative flex-1 overflow-y-auto px-4">
+          <ProjectsList
+            conversations={conversations}
+            currentChatId={chatId}
+            searchQuery={searchQuery}
+            isMobile={isMobile}
+          />
           <ChatHistoryList
             currentChatId={chatId}
             searchQuery={searchQuery}
@@ -264,12 +313,21 @@ export function Sidebar({
             selectedIds={selectedIds}
             onSelectionChange={setSelectedIds}
             containerRef={historyContainerRef}
+            excludeChatIds={excludeChatIds}
+            onConversationsLoaded={setConversations}
           />
         </nav>
         <div className="px-4 pb-4">
           <AccountMenu />
         </div>
       </div>
+
+      {/* Create project dialog triggered from chat context menu "New project" */}
+      <CreateProjectDialog
+        open={!!createProjectForChatId}
+        onOpenChange={(open) => !open && setCreateProjectForChatId(null)}
+        onSubmit={handleCreateProjectForChat}
+      />
     </div>
   );
 }
