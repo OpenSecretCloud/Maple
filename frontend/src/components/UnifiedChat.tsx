@@ -3103,18 +3103,31 @@ export function UnifiedChat() {
     setShowTTSDiscovery(false);
   }, []);
 
-  // Handle app backgrounding / foregrounding (iOS kills mic & AudioContext in background).
-  // When the app goes to background during voice mode, exit cleanly to avoid a corrupted
-  // audio state. On foreground return, reset any stuck recording flags so the user can
-  // start fresh.
+  // Handle app backgrounding / foregrounding.
+  // iOS kills mic streams when the app is backgrounded, but TTS (native Tauri audio)
+  // continues playing via the system media controller. So when going to background:
+  //   - Stop the mic recording if active (it will be killed by iOS anyway)
+  //   - Do NOT stop TTS playback — let it continue in the background
+  // On foreground return, reset any stuck recording flags so the user can start fresh.
   useEffect(() => {
     const handleVisibilityChange = () => {
       if (document.visibilityState === "hidden") {
-        // App went to background — if voice mode is active, exit cleanly.
-        // iOS will kill the mic stream and AudioContext anyway, so this
-        // prevents the app from getting stuck in an inconsistent state.
-        if (voiceModeRef.current) {
-          exitVoiceMode();
+        // App went to background — if actively recording, stop the mic cleanly.
+        // iOS will kill the stream anyway; this prevents corrupted state.
+        // Do NOT call exitVoiceMode() — that would also stop TTS playback
+        // which should continue in the background via the system media controller.
+        if (recorderRef.current) {
+          const recorderToCleanup = recorderRef.current;
+          const streamToCleanup = streamRef.current;
+          recorderRef.current = null;
+          streamRef.current = null;
+          if (streamToCleanup) {
+            streamToCleanup.getTracks().forEach((track) => track.stop());
+          }
+          recorderToCleanup.stopRecording(() => {
+            // Resources already cleaned up synchronously above.
+          });
+          setIsRecording(false);
         }
       } else if (document.visibilityState === "visible") {
         // App came back to foreground — if recording flags are stuck
@@ -3130,7 +3143,7 @@ export function UnifiedChat() {
 
     document.addEventListener("visibilitychange", handleVisibilityChange);
     return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
-  }, [exitVoiceMode]);
+  }, []);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // On desktop: Enter submits, Shift+Enter for new line
