@@ -9,7 +9,7 @@ linux_build_root="$ci_build_root/desktop-linux"
 artifact_version="${maple_version_value}-beta.${maple_build_number}"
 deb_version="${maple_version_value}~beta.${maple_build_number}"
 binary_path="$native_root/target/release/maple_desktop_iced"
-icon_source="$native_root/ios/Sources/Assets.xcassets/AppIcon.appiconset/icon_1024.png"
+icon_source="$native_root/desktop/iced/icon_512.png"
 deb_desktop_file="$linux_build_root/Maple-deb.desktop"
 appimage_desktop_file="$linux_build_root/Maple-appimage.desktop"
 deb_root="$linux_build_root/deb-root"
@@ -49,12 +49,12 @@ Categories=Network;Utility;
 StartupWMClass=Maple
 EOF
 
-mkdir -p "$deb_root/DEBIAN" "$deb_root/opt/Maple" "$deb_root/usr/bin" "$deb_root/usr/share/applications" "$deb_root/usr/share/icons/hicolor/1024x1024/apps"
+mkdir -p "$deb_root/DEBIAN" "$deb_root/opt/Maple" "$deb_root/usr/bin" "$deb_root/usr/share/applications" "$deb_root/usr/share/icons/hicolor/512x512/apps"
 cp "$binary_path" "$deb_root/opt/Maple/Maple"
 chmod 755 "$deb_root/opt/Maple/Maple"
 ln -sf /opt/Maple/Maple "$deb_root/usr/bin/maple"
 cp "$deb_desktop_file" "$deb_root/usr/share/applications/cloud.opensecret.maple.desktop"
-cp "$icon_source" "$deb_root/usr/share/icons/hicolor/1024x1024/apps/maple.png"
+cp "$icon_source" "$deb_root/usr/share/icons/hicolor/512x512/apps/maple.png"
 
 deb_dependencies=""
 if ! deb_dependencies="$(dpkg-shlibdeps -O "$deb_root/opt/Maple/Maple" 2>/dev/null | sed -n 's/^shlibs:Depends=//p')"; then
@@ -78,11 +78,11 @@ EOF
 
 dpkg-deb --build --root-owner-group "$deb_root" "$deb_output"
 
-mkdir -p "$appdir/usr/bin" "$appdir/usr/share/applications" "$appdir/usr/share/icons/hicolor/1024x1024/apps"
+mkdir -p "$appdir/usr/bin" "$appdir/usr/share/applications" "$appdir/usr/share/icons/hicolor/512x512/apps"
 cp "$binary_path" "$appdir/usr/bin/Maple"
 chmod 755 "$appdir/usr/bin/Maple"
 cp "$appimage_desktop_file" "$appdir/usr/share/applications/cloud.opensecret.maple.desktop"
-cp "$icon_source" "$appdir/usr/share/icons/hicolor/1024x1024/apps/maple.png"
+cp "$icon_source" "$appdir/usr/share/icons/hicolor/512x512/apps/maple.png"
 
 curl -fsSL "https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage" -o "$linuxdeploy_path"
 chmod +x "$linuxdeploy_path"
