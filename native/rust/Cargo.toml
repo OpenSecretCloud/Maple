@@ -1,0 +1,16 @@
+[package]
+name = "maple_core"
+version = "3.0.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[dependencies]
+flume = "0.11"
+uniffi = "0.31.0"
+opensecret = "3.0.0-alpha.0"
+tokio = { version = "1.41", features = ["rt-multi-thread"] }
+uuid = { version = "1.11", features = ["v4"] }
+futures = "0.3"
+chrono = "0.4"
