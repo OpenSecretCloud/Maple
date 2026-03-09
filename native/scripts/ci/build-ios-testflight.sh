@@ -89,9 +89,28 @@ private_keys_dir="$HOME/.private_keys"
 mkdir -p "$private_keys_dir"
 install -m 600 "$APPLE_API_KEY_PATH" "$private_keys_dir/AuthKey_${APPLE_API_KEY}.p8"
 
+upload_log="$(mktemp)"
+set +e
 xcrun altool --upload-app --type ios \
   --file "$ipa_path" \
   --apiKey "$APPLE_API_KEY" \
-  --apiIssuer "$APPLE_API_ISSUER"
+  --apiIssuer "$APPLE_API_ISSUER" 2>&1 | tee "$upload_log"
+upload_status=${PIPESTATUS[0]}
+set -e
+
+if (( upload_status != 0 )) || grep -Eq 'UPLOAD FAILED|Validation failed|Failed to upload package' "$upload_log"; then
+  cat "$upload_log" >&2
+  rm -f "$upload_log"
+  exit 1
+fi
+
+if ! grep -q 'No errors uploading archive' "$upload_log"; then
+  cat "$upload_log" >&2
+  rm -f "$upload_log"
+  echo "Could not confirm successful TestFlight upload" >&2
+  exit 1
+fi
+
+rm -f "$upload_log"
 
 printf 'IPA exported to %s\n' "$ipa_path"
