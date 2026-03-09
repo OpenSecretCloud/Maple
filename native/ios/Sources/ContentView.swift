@@ -74,6 +74,7 @@ struct SplashView: View {
 
 struct LoginView: View {
     @Bindable var manager: AppManager
+    @Environment(\.colorScheme) private var colorScheme
     @State private var email = ""
     @State private var password = ""
     @State private var name = ""
@@ -82,6 +83,27 @@ struct LoginView: View {
 
     private enum LoginField {
         case name, email, password
+    }
+
+    private struct LoginPalette {
+        let backgroundBase: Color
+        let backgroundGlow: [Color]
+        let cardBackground: Color
+        let cardHighlight: Color
+        let cardBorder: Color
+        let cardShadow: Color
+        let wordmark: Color
+        let supportingText: Color
+        let tertiaryText: Color
+        let divider: Color
+        let fieldBackground: Color
+        let fieldBorder: Color
+        let fieldText: Color
+        let fieldPlaceholder: Color
+        let secondaryButtonBackground: Color
+        let secondaryButtonBorder: Color
+        let secondaryButtonForeground: Color
+        let secondaryButtonShadow: Color
     }
 
     private var isLoading: Bool {
@@ -93,12 +115,76 @@ struct LoginView: View {
         }
     }
 
+    private var loginPalette: LoginPalette {
+        if colorScheme == .dark {
+            LoginPalette(
+                backgroundBase: Color(hex: 0x1A110E),
+                backgroundGlow: [
+                    Color(hex: 0x72351E, opacity: 0.55),
+                    Color.maple500.opacity(0.16),
+                    Color.pebble800.opacity(0.16),
+                    .clear,
+                ],
+                cardBackground: Color(hex: 0x271D1A, opacity: 0.9),
+                cardHighlight: Color(hex: 0x72351E, opacity: 0.18),
+                cardBorder: Color(hex: 0x53433E),
+                cardShadow: Color.black.opacity(0.4),
+                wordmark: .pebble50,
+                supportingText: Color(hex: 0xD8C2BB),
+                tertiaryText: Color(hex: 0xD8C2BB, opacity: 0.8),
+                divider: Color(hex: 0x53433E),
+                fieldBackground: Color(hex: 0x231A16, opacity: 0.96),
+                fieldBorder: Color(hex: 0xA08D86, opacity: 0.45),
+                fieldText: Color(hex: 0xF1DFD9),
+                fieldPlaceholder: Color(hex: 0xD8C2BB, opacity: 0.75),
+                secondaryButtonBackground: Color(hex: 0x322824, opacity: 0.96),
+                secondaryButtonBorder: Color(hex: 0x53433E),
+                secondaryButtonForeground: Color(hex: 0xF1DFD9),
+                secondaryButtonShadow: Color.black.opacity(0.14)
+            )
+        } else {
+            LoginPalette(
+                backgroundBase: Color(hex: 0xFBF8F6),
+                backgroundGlow: [
+                    Color.maple500.opacity(0.18),
+                    Color.bark300.opacity(0.1),
+                    Color.pebble300.opacity(0.1),
+                    .clear,
+                ],
+                cardBackground: Color.white.opacity(0.74),
+                cardHighlight: Color.white.opacity(0.42),
+                cardBorder: Color.white.opacity(0.72),
+                cardShadow: Color.pebble900.opacity(0.08),
+                wordmark: .pebble800,
+                supportingText: .pebble600,
+                tertiaryText: .pebble400,
+                divider: .neutral200,
+                fieldBackground: Color.white.opacity(0.84),
+                fieldBorder: Color.neutral200.opacity(0.95),
+                fieldText: .pebble800,
+                fieldPlaceholder: .pebble400,
+                secondaryButtonBackground: Color.white.opacity(0.56),
+                secondaryButtonBorder: Color.white.opacity(0.68),
+                secondaryButtonForeground: .pebble700,
+                secondaryButtonShadow: Color.pebble900.opacity(0.05)
+            )
+        }
+    }
+
+    private var loginCardShape: RoundedRectangle {
+        RoundedRectangle(cornerRadius: MapleRadius.xl, style: .continuous)
+    }
+
+    private var loginFieldShape: RoundedRectangle {
+        RoundedRectangle(cornerRadius: MapleRadius.md, style: .continuous)
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             Spacer()
 
             VStack(spacing: 24) {
-                MapleWordmark(color: .pebble800, height: 28)
+                MapleWordmark(color: loginPalette.wordmark, height: 28)
 
                 VStack(spacing: MapleSpacing.sm) {
                     if isSignUp {
@@ -119,16 +205,11 @@ struct LoginView: View {
                         .submitLabel(.next)
                         .onSubmit { focusedField = .password }
 
-                    SecureField("Password", text: $password)
-                        .textFieldStyle(.roundedBorder)
+                    mapleSecureField("Password", text: $password)
                         .textContentType(isSignUp ? .newPassword : .password)
                         .focused($focusedField, equals: .password)
                         .submitLabel(.go)
                         .onSubmit(submit)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: MapleRadius.md)
-                                .stroke(Color.neutral200, lineWidth: 1)
-                        )
                 }
 
                 Button(action: submit) {
@@ -158,15 +239,32 @@ struct LoginView: View {
                     }
                 }
                 .disabled(isLoading)
+                .opacity(isLoading ? 0.6 : 1.0)
 
                 Button(isSignUp ? "Already have an account? Sign In" : "Don't have an account? Sign Up") {
                     isSignUp.toggle()
                 }
                 .font(MapleFont.body)
-                .foregroundStyle(Color.pebble500)
+                .foregroundStyle(loginPalette.supportingText)
             }
             .padding(24)
-            .glassEffect(.regular, in: .rect(cornerRadius: MapleRadius.xl))
+            .background {
+                ZStack {
+                    loginCardShape.fill(loginPalette.cardBackground)
+
+                    loginCardShape.fill(
+                        LinearGradient(
+                            colors: [loginPalette.cardHighlight, Color.white.opacity(0.02)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                }
+            }
+            .overlay {
+                loginCardShape.stroke(loginPalette.cardBorder, lineWidth: 1)
+            }
+            .shadow(color: loginPalette.cardShadow, radius: 28, y: 20)
             .padding(.horizontal, MapleSpacing.md)
 
             Spacer()
@@ -182,19 +280,19 @@ struct LoginView: View {
             }
         }
         .background(
-            RadialGradient(
-                colors: [
-                    Color.maple500.opacity(0.15),
-                    Color.bark300.opacity(0.1),
-                    Color.pebble400.opacity(0.08),
-                    Color.neutral50,
-                ],
-                center: .bottom,
-                startRadius: 0,
-                endRadius: 500
-            )
+            ZStack {
+                loginPalette.backgroundBase
+
+                RadialGradient(
+                    colors: loginPalette.backgroundGlow,
+                    center: .bottom,
+                    startRadius: 0,
+                    endRadius: 500
+                )
+            }
             .ignoresSafeArea()
         )
+        .tint(Color.maple500)
     }
 
     private func submit() {
@@ -206,40 +304,140 @@ struct LoginView: View {
     }
 
     private func mapleTextField(_ placeholder: String, text: Binding<String>) -> some View {
-        TextField(placeholder, text: text)
-            .textFieldStyle(.roundedBorder)
-            .overlay(
-                RoundedRectangle(cornerRadius: MapleRadius.md)
-                    .stroke(Color.neutral200, lineWidth: 1)
-            )
+        TextField(
+            "",
+            text: text,
+            prompt: Text(placeholder).foregroundStyle(loginPalette.fieldPlaceholder)
+        )
+        .font(MapleFont.bodyLarge)
+        .foregroundStyle(loginPalette.fieldText)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+        .background(loginPalette.fieldBackground, in: loginFieldShape)
+        .overlay {
+            loginFieldShape.stroke(loginPalette.fieldBorder, lineWidth: 1)
+        }
+    }
+
+    private func mapleSecureField(_ placeholder: String, text: Binding<String>) -> some View {
+        SecureField(
+            "",
+            text: text,
+            prompt: Text(placeholder).foregroundStyle(loginPalette.fieldPlaceholder)
+        )
+        .font(MapleFont.bodyLarge)
+        .foregroundStyle(loginPalette.fieldText)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+        .background(loginPalette.fieldBackground, in: loginFieldShape)
+        .overlay {
+            loginFieldShape.stroke(loginPalette.fieldBorder, lineWidth: 1)
+        }
     }
 
     private func dividerWithText(_ text: String) -> some View {
         HStack {
-            Rectangle().frame(height: 1).foregroundStyle(Color.neutral200)
-            Text(text).font(MapleFont.caption).foregroundStyle(Color.pebble400)
-            Rectangle().frame(height: 1).foregroundStyle(Color.neutral200)
+            Rectangle().frame(height: 1).foregroundStyle(loginPalette.divider)
+            Text(text).font(MapleFont.caption).foregroundStyle(loginPalette.tertiaryText)
+            Rectangle().frame(height: 1).foregroundStyle(loginPalette.divider)
         }
     }
 
     private func oauthButton(label: String, icon: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            HStack {
+            HStack(spacing: MapleSpacing.sm) {
                 Image(systemName: icon)
+                    .font(.system(size: 16, weight: .medium))
                 Text(label)
             }
+            .font(MapleFont.medium(16))
+            .foregroundStyle(loginPalette.secondaryButtonForeground)
             .frame(maxWidth: .infinity)
+            .padding(.horizontal, 24)
+            .padding(.vertical, 12)
+            .background(loginPalette.secondaryButtonBackground, in: Capsule())
+            .overlay {
+                Capsule().stroke(loginPalette.secondaryButtonBorder, lineWidth: 1)
+            }
+            .shadow(color: loginPalette.secondaryButtonShadow, radius: 10, y: 6)
         }
-        .buttonStyle(MapleSecondaryButtonStyle())
+        .buttonStyle(.plain)
     }
 }
 
 // MARK: - Agent Chat
 
+struct ChatPalette {
+    let backgroundBase: Color
+    let backgroundMesh: [Color]
+    let backgroundGlow: [Color]
+    let composeText: Color
+    let composePlaceholder: Color
+    let metadataText: Color
+    let assistantBubbleColors: [Color]
+    let assistantBubbleBorder: Color
+    let assistantText: Color
+    let settingsSecondaryText: Color
+
+    static func forColorScheme(_ colorScheme: ColorScheme) -> ChatPalette {
+        if colorScheme == .dark {
+            return ChatPalette(
+                backgroundBase: Color(hex: 0x1A110E),
+                backgroundMesh: [
+                    Color(hex: 0x271D1A), Color(hex: 0x322824), Color(hex: 0x231A16),
+                    Color(hex: 0x322824), Color(hex: 0x72351E), Color(hex: 0x271D1A),
+                    Color(hex: 0x140C09), Color(hex: 0x3D2821), Color(hex: 0x1A110E),
+                ],
+                backgroundGlow: [
+                    Color.maple500.opacity(0.18),
+                    Color(hex: 0x72351E, opacity: 0.2),
+                    .clear,
+                ],
+                composeText: Color(hex: 0xF1DFD9),
+                composePlaceholder: Color(hex: 0xD8C2BB, opacity: 0.78),
+                metadataText: Color(hex: 0xD8C2BB, opacity: 0.82),
+                assistantBubbleColors: [
+                    Color(hex: 0x322824, opacity: 0.96),
+                    Color(hex: 0x271D1A, opacity: 0.98),
+                ],
+                assistantBubbleBorder: Color(hex: 0x53433E),
+                assistantText: Color(hex: 0xF1DFD9),
+                settingsSecondaryText: Color(hex: 0xD8C2BB)
+            )
+        }
+
+        return ChatPalette(
+            backgroundBase: .neutral0,
+            backgroundMesh: [
+                .pebble100, .maple50, .bark50,
+                .maple50, .neutral0, .pebble50,
+                .bark50, .maple50, .pebble100,
+            ],
+            backgroundGlow: [
+                Color.maple500.opacity(0.12),
+                Color.bark300.opacity(0.08),
+                .clear,
+            ],
+            composeText: .neutral800,
+            composePlaceholder: .pebble400,
+            metadataText: .pebble400,
+            assistantBubbleColors: [.pebble50, .pebble50],
+            assistantBubbleBorder: Color.clear,
+            assistantText: .neutral800,
+            settingsSecondaryText: .pebble500
+        )
+    }
+}
+
 struct AgentChatView: View {
     @Bindable var manager: AppManager
+    @Environment(\.colorScheme) private var colorScheme
     @State private var composeText = ""
     let timestampTimer = Timer.publish(every: 30, on: .main, in: .common).autoconnect()
+
+    private var palette: ChatPalette {
+        ChatPalette.forColorScheme(colorScheme)
+    }
 
     var body: some View {
         messageList
@@ -272,15 +470,22 @@ struct AgentChatView: View {
                 composeBar
             }
             .background(
-                MeshGradient(width: 3, height: 3, points: [
-                    [0.0, 0.0], [0.5, 0.0], [1.0, 0.0],
-                    [0.0, 0.5], [0.5, 0.5], [1.0, 0.5],
-                    [0.0, 1.0], [0.5, 1.0], [1.0, 1.0],
-                ], colors: [
-                    .pebble100, .maple50,   .bark50,
-                    .maple50,   .neutral0,  .pebble50,
-                    .bark50,    .maple50,   .pebble100,
-                ])
+                ZStack {
+                    palette.backgroundBase
+
+                    MeshGradient(width: 3, height: 3, points: [
+                        [0.0, 0.0], [0.5, 0.0], [1.0, 0.0],
+                        [0.0, 0.5], [0.5, 0.5], [1.0, 0.5],
+                        [0.0, 1.0], [0.5, 1.0], [1.0, 1.0],
+                    ], colors: palette.backgroundMesh)
+
+                    RadialGradient(
+                        colors: palette.backgroundGlow,
+                        center: .bottom,
+                        startRadius: 0,
+                        endRadius: 560
+                    )
+                }
                 .ignoresSafeArea()
             )
         .overlay(alignment: .bottom) {
@@ -294,6 +499,7 @@ struct AgentChatView: View {
                     .onTapGesture { manager.dispatch(.clearToast) }
             }
         }
+        .tint(Color.maple500)
         .onReceive(timestampTimer) { _ in
             manager.dispatch(.refreshTimestamps)
         }
@@ -339,7 +545,7 @@ struct AgentChatView: View {
                     }
 
                     ForEach(Array(manager.state.messages.enumerated()), id: \.element.id) { index, message in
-                        MessageBubble(message: message)
+                        MessageBubble(message: message, palette: palette)
                             .id(message.id)
                             .onAppear {
                                 // Prefetch when within 3 messages of top
@@ -353,7 +559,7 @@ struct AgentChatView: View {
                         HStack {
                             Text("Maple is typing...")
                                 .font(MapleFont.caption)
-                                .foregroundStyle(Color.pebble400)
+                                .foregroundStyle(palette.metadataText)
                             Spacer()
                         }
                         .padding(.horizontal)
@@ -389,8 +595,13 @@ struct AgentChatView: View {
     private var composeBar: some View {
         GlassEffectContainer {
             HStack(spacing: MapleSpacing.xs) {
-                TextField("Message Maple...", text: $composeText)
+                TextField(
+                    "",
+                    text: $composeText,
+                    prompt: Text("Message Maple...").foregroundStyle(palette.composePlaceholder)
+                )
                     .font(MapleFont.body)
+                    .foregroundStyle(palette.composeText)
                     .padding(.horizontal, MapleSpacing.sm)
                     .padding(.vertical, MapleSpacing.xs)
                     .onSubmit(sendMessage)
@@ -426,6 +637,16 @@ struct AgentChatView: View {
 
 struct MessageBubble: View {
     let message: ChatMessage
+    let palette: ChatPalette
+
+    private var bubbleShape: UnevenRoundedRectangle {
+        UnevenRoundedRectangle(
+            topLeadingRadius: MapleRadius.lg,
+            bottomLeadingRadius: message.isUser ? MapleRadius.lg : 4,
+            bottomTrailingRadius: message.isUser ? 4 : MapleRadius.lg,
+            topTrailingRadius: MapleRadius.lg
+        )
+    }
 
     var body: some View {
         HStack {
@@ -435,7 +656,7 @@ struct MessageBubble: View {
                 if !message.isUser && message.showSender {
                     Text("Maple")
                         .font(MapleFont.caption)
-                        .foregroundStyle(Color.pebble400)
+                        .foregroundStyle(palette.metadataText)
                 }
                 Text(message.content)
                 .font(MapleFont.body)
@@ -451,27 +672,25 @@ struct MessageBubble: View {
                             )
                         } else {
                             LinearGradient(
-                                colors: [.pebble50, .pebble50],
-                                startPoint: .top,
-                                endPoint: .bottom
+                                colors: palette.assistantBubbleColors,
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
                             )
                         }
                     }
                 )
-                .clipShape(
-                    UnevenRoundedRectangle(
-                        topLeadingRadius: MapleRadius.lg,
-                        bottomLeadingRadius: message.isUser ? MapleRadius.lg : 4,
-                        bottomTrailingRadius: message.isUser ? 4 : MapleRadius.lg,
-                        topTrailingRadius: MapleRadius.lg
-                    )
-                )
-                .foregroundStyle(message.isUser ? Color.white : Color.neutral800)
+                .clipShape(bubbleShape)
+                .overlay {
+                    if !message.isUser {
+                        bubbleShape.stroke(palette.assistantBubbleBorder, lineWidth: 1)
+                    }
+                }
+                .foregroundStyle(message.isUser ? Color.white : palette.assistantText)
 
                 if message.showTimestamp {
                     Text(message.timestampDisplay)
                         .font(MapleFont.captionSmall)
-                        .foregroundStyle(Color.pebble400)
+                        .foregroundStyle(palette.metadataText)
                 }
             }
 
@@ -483,7 +702,12 @@ struct MessageBubble: View {
 // MARK: - Settings Sheet
 
 struct SettingsSheet: View {
+    @Environment(\.colorScheme) private var colorScheme
     let manager: AppManager
+
+    private var palette: ChatPalette {
+        ChatPalette.forColorScheme(colorScheme)
+    }
 
     var body: some View {
         NavigationStack {
@@ -512,9 +736,9 @@ struct SettingsSheet: View {
                     } label: {
                         HStack {
                             Image(systemName: "rectangle.portrait.and.arrow.right")
-                                .foregroundStyle(Color.pebble500)
+                                .foregroundStyle(palette.settingsSecondaryText)
                             Text("Sign Out")
-                                .foregroundStyle(Color.neutral800)
+                                .foregroundStyle(.primary)
                         }
                     }
                 }
