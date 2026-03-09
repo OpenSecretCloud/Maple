@@ -5,8 +5,11 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.lazy.LazyColumn
@@ -23,6 +26,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
@@ -30,9 +34,15 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
@@ -44,6 +54,7 @@ import cloud.opensecret.maple.rust.ChatMessage
 import cloud.opensecret.maple.rust.OAuthProvider
 import cloud.opensecret.maple.rust.Screen
 import cloud.opensecret.maple.ui.theme.*
+import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -128,9 +139,177 @@ fun SplashScreen() {
 
 // -- Login --
 
+private data class LoginPalette(
+    val backgroundBase: Color,
+    val backgroundGlow: List<Color>,
+    val cardBackground: Color,
+    val cardHighlight: Color,
+    val cardBorder: Color,
+    val cardShadow: Color,
+    val wordmark: Color,
+    val supportingText: Color,
+    val tertiaryText: Color,
+    val divider: Color,
+    val fieldBackground: Color,
+    val fieldBorder: Color,
+    val fieldText: Color,
+    val fieldPlaceholder: Color,
+    val secondaryButtonBackground: Color,
+    val secondaryButtonBorder: Color,
+    val secondaryButtonForeground: Color,
+    val secondaryButtonShadow: Color,
+)
+
+private fun loginPalette(isDarkTheme: Boolean): LoginPalette =
+    if (isDarkTheme) {
+        LoginPalette(
+            backgroundBase = Color(0xFF1A110E),
+            backgroundGlow = listOf(
+                Maple500.copy(alpha = 0.07f),
+                Color(0xFF5D4036).copy(alpha = 0.11f),
+                Pebble800.copy(alpha = 0.12f),
+                Color.Transparent,
+            ),
+            cardBackground = Color(0xFF271D1A).copy(alpha = 0.9f),
+            cardHighlight = Color.White.copy(alpha = 0.04f),
+            cardBorder = Color(0xFF53433E),
+            cardShadow = Color.Black.copy(alpha = 0.4f),
+            wordmark = Pebble50,
+            supportingText = Color(0xFFD8C2BB),
+            tertiaryText = Color(0xFFD8C2BB).copy(alpha = 0.8f),
+            divider = Color(0xFF53433E),
+            fieldBackground = Color(0xFF231A16).copy(alpha = 0.96f),
+            fieldBorder = Color(0xFFA08D86).copy(alpha = 0.45f),
+            fieldText = Color(0xFFF1DFD9),
+            fieldPlaceholder = Color(0xFFD8C2BB).copy(alpha = 0.75f),
+            secondaryButtonBackground = Color(0xFF322824).copy(alpha = 0.96f),
+            secondaryButtonBorder = Color(0xFF53433E),
+            secondaryButtonForeground = Color(0xFFF1DFD9),
+            secondaryButtonShadow = Color.Black.copy(alpha = 0.14f),
+        )
+    } else {
+        LoginPalette(
+            backgroundBase = Color(0xFFFBF8F6),
+            backgroundGlow = listOf(
+                Maple500.copy(alpha = 0.18f),
+                Bark300.copy(alpha = 0.1f),
+                Pebble300.copy(alpha = 0.1f),
+                Color.Transparent,
+            ),
+            cardBackground = Color.White.copy(alpha = 0.74f),
+            cardHighlight = Color.White.copy(alpha = 0.42f),
+            cardBorder = Color.White.copy(alpha = 0.72f),
+            cardShadow = Pebble900.copy(alpha = 0.08f),
+            wordmark = Pebble800,
+            supportingText = Pebble600,
+            tertiaryText = Pebble400,
+            divider = Neutral200,
+            fieldBackground = Color.White.copy(alpha = 0.84f),
+            fieldBorder = Neutral200.copy(alpha = 0.95f),
+            fieldText = Pebble800,
+            fieldPlaceholder = Pebble400,
+            secondaryButtonBackground = Color.White.copy(alpha = 0.56f),
+            secondaryButtonBorder = Color.White.copy(alpha = 0.68f),
+            secondaryButtonForeground = Pebble700,
+            secondaryButtonShadow = Pebble900.copy(alpha = 0.05f),
+        )
+    }
+
+private data class ChatPalette(
+    val backgroundBase: Color,
+    val backgroundGlow: List<Color>,
+    val chromeBackground: Color,
+    val chromeBorder: Color,
+    val headerWordmark: Color,
+    val secondaryIcon: Color,
+    val composeText: Color,
+    val composePlaceholder: Color,
+    val metadataText: Color,
+    val assistantBubbleBackground: Color,
+    val assistantBubbleBorder: Color,
+    val assistantText: Color,
+    val surfaceText: Color,
+    val sheetBackground: Color,
+    val sheetDivider: Color,
+    val sheetSecondaryText: Color,
+    val disabledIcon: Color,
+)
+
+private fun chatPalette(isDarkTheme: Boolean): ChatPalette =
+    if (isDarkTheme) {
+        ChatPalette(
+            backgroundBase = Color(0xFF1A110E),
+            backgroundGlow = listOf(
+                Maple500.copy(alpha = 0.07f),
+                Color(0xFF5D4036).copy(alpha = 0.1f),
+                Pebble800.copy(alpha = 0.12f),
+                Color.Transparent,
+            ),
+            chromeBackground = Color(0xFF271D1A).copy(alpha = 0.78f),
+            chromeBorder = Color(0xFF53433E),
+            headerWordmark = Pebble50,
+            secondaryIcon = Color(0xFFD8C2BB),
+            composeText = Color(0xFFF1DFD9),
+            composePlaceholder = Color(0xFFD8C2BB).copy(alpha = 0.78f),
+            metadataText = Color(0xFFD8C2BB).copy(alpha = 0.82f),
+            assistantBubbleBackground = Color(0xFF322824).copy(alpha = 0.96f),
+            assistantBubbleBorder = Color(0xFF53433E),
+            assistantText = Color(0xFFF1DFD9),
+            surfaceText = Color(0xFFF1DFD9),
+            sheetBackground = Color(0xFF271D1A),
+            sheetDivider = Color(0xFF53433E),
+            sheetSecondaryText = Color(0xFFD8C2BB),
+            disabledIcon = Color(0xFFA08D86).copy(alpha = 0.45f),
+        )
+    } else {
+        ChatPalette(
+            backgroundBase = Neutral0,
+            backgroundGlow = listOf(
+                Pebble100.copy(alpha = 0.65f),
+                Maple50.copy(alpha = 0.7f),
+                Bark50.copy(alpha = 0.55f),
+                Color.Transparent,
+            ),
+            chromeBackground = Neutral0.copy(alpha = 0.72f),
+            chromeBorder = Pebble200.copy(alpha = 0.3f),
+            headerWordmark = Pebble700,
+            secondaryIcon = Pebble500,
+            composeText = Neutral800,
+            composePlaceholder = Pebble400,
+            metadataText = Pebble400,
+            assistantBubbleBackground = Pebble50,
+            assistantBubbleBorder = Color.Transparent,
+            assistantText = Neutral800,
+            surfaceText = Neutral800,
+            sheetBackground = Color.White.copy(alpha = 0.96f),
+            sheetDivider = Neutral200,
+            sheetSecondaryText = Pebble500,
+            disabledIcon = Neutral300,
+        )
+    }
+
+@Composable
+private fun composeFieldColors(palette: ChatPalette) = OutlinedTextFieldDefaults.colors(
+    focusedContainerColor = Color.Transparent,
+    unfocusedContainerColor = Color.Transparent,
+    disabledContainerColor = Color.Transparent,
+    focusedTextColor = palette.composeText,
+    unfocusedTextColor = palette.composeText,
+    disabledTextColor = palette.composeText.copy(alpha = 0.5f),
+    cursorColor = Maple500,
+    focusedBorderColor = Color.Transparent,
+    unfocusedBorderColor = Color.Transparent,
+    disabledBorderColor = Color.Transparent,
+    focusedPlaceholderColor = palette.composePlaceholder,
+    unfocusedPlaceholderColor = palette.composePlaceholder,
+    disabledPlaceholderColor = palette.composePlaceholder.copy(alpha = 0.5f),
+)
+
 @Composable
 fun LoginScreen(manager: AppManager) {
     val state = manager.state
+    val isDarkTheme = isSystemInDarkTheme()
+    val palette = loginPalette(isDarkTheme)
     var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var name by remember { mutableStateOf("") }
@@ -150,6 +329,8 @@ fun LoginScreen(manager: AppManager) {
         }
     }
 
+    val canSubmit = email.isNotEmpty() && password.isNotEmpty() && !isLoading
+
     BoxWithConstraints(
         modifier = Modifier.fillMaxSize(),
         contentAlignment = Alignment.Center,
@@ -159,149 +340,257 @@ fun LoginScreen(manager: AppManager) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
+                .background(palette.backgroundBase),
+        )
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
                 .background(
                     brush = Brush.radialGradient(
-                        colors = listOf(
-                            Maple500.copy(alpha = 0.08f),
-                            Bark300.copy(alpha = 0.06f),
-                            Pebble400.copy(alpha = 0.04f),
-                            Neutral50,
-                        ),
-                        center = androidx.compose.ui.geometry.Offset(w / 2f, h * 0.6f),
-                        radius = h * 0.8f,
+                        colors = palette.backgroundGlow,
+                        center = androidx.compose.ui.geometry.Offset(w / 2f, h),
+                        radius = h,
                     ),
                 ),
         )
         Column(
             modifier = Modifier
-                .widthIn(max = 360.dp)
-                .padding(horizontal = 32.dp),
+                .fillMaxSize()
+                .padding(horizontal = 20.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            Icon(
-                painter = androidx.compose.ui.res.painterResource(id = cloud.opensecret.maple.R.drawable.maple_wordmark),
-                contentDescription = "Maple",
-                modifier = Modifier.height(28.dp),
-                tint = Neutral900,
-            )
+            Spacer(modifier = Modifier.weight(1f))
 
-            if (isSignUp) {
-                OutlinedTextField(
-                    value = name,
-                    onValueChange = { name = it },
-                    label = { Text("Name") },
-                    modifier = Modifier.fillMaxWidth().focusRequester(nameFocus),
-                    singleLine = true,
-                    shape = RoundedCornerShape(12.dp),
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
-                    keyboardActions = KeyboardActions(onNext = { emailFocus.requestFocus() }),
-                )
-            }
-
-            OutlinedTextField(
-                value = email,
-                onValueChange = { email = it },
-                label = { Text("Email") },
-                modifier = Modifier.fillMaxWidth().focusRequester(emailFocus),
-                singleLine = true,
-                shape = RoundedCornerShape(12.dp),
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
-                keyboardActions = KeyboardActions(onNext = { passwordFocus.requestFocus() }),
-            )
-
-            OutlinedTextField(
-                value = password,
-                onValueChange = { password = it },
-                label = { Text("Password") },
-                modifier = Modifier.fillMaxWidth().focusRequester(passwordFocus),
-                singleLine = true,
-                shape = RoundedCornerShape(12.dp),
-                visualTransformation = PasswordVisualTransformation(),
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
-                keyboardActions = KeyboardActions(onGo = { submitForm() }),
-            )
-
-            val primaryInteractionSource = remember { MutableInteractionSource() }
-            val primaryPressed by primaryInteractionSource.collectIsPressedAsState()
-            val primaryScale by animateFloatAsState(
-                targetValue = if (primaryPressed) 0.95f else 1f,
-                animationSpec = tween(durationMillis = 200),
-            )
-
-            Button(
-                onClick = { submitForm() },
-                modifier = Modifier.fillMaxWidth().height(48.dp).scale(primaryScale),
-                enabled = email.isNotEmpty() && password.isNotEmpty() && !isLoading,
-                interactionSource = primaryInteractionSource,
-                shape = RoundedCornerShape(999.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = Maple500,
-                    contentColor = androidx.compose.ui.graphics.Color.White,
-                    disabledContainerColor = Maple200,
-                    disabledContentColor = androidx.compose.ui.graphics.Color.White,
-                ),
-            ) {
-                if (isLoading) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(20.dp),
-                        strokeWidth = 2.dp,
-                        color = androidx.compose.ui.graphics.Color.White,
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .widthIn(max = 360.dp)
+                    .shadow(
+                        elevation = if (isDarkTheme) 28.dp else 20.dp,
+                        shape = RoundedCornerShape(24.dp),
+                        ambientColor = palette.cardShadow,
+                        spotColor = palette.cardShadow,
                     )
-                } else {
+                    .clip(RoundedCornerShape(24.dp))
+                    .background(
+                        brush = Brush.linearGradient(
+                            colors = listOf(palette.cardHighlight, palette.cardBackground),
+                        ),
+                    )
+                    .border(1.dp, palette.cardBorder, RoundedCornerShape(24.dp))
+                    .padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(24.dp),
+            ) {
+                Icon(
+                    painter = androidx.compose.ui.res.painterResource(id = cloud.opensecret.maple.R.drawable.maple_wordmark),
+                    contentDescription = "Maple",
+                    modifier = Modifier.height(28.dp),
+                    tint = palette.wordmark,
+                )
+
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    if (isSignUp) {
+                        MapleLoginTextField(
+                            value = name,
+                            onValueChange = { name = it },
+                            placeholder = "Name",
+                            palette = palette,
+                            modifier = Modifier.focusRequester(nameFocus),
+                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+                            keyboardActions = KeyboardActions(onNext = { emailFocus.requestFocus() }),
+                        )
+                    }
+
+                    MapleLoginTextField(
+                        value = email,
+                        onValueChange = { email = it },
+                        placeholder = "Email",
+                        palette = palette,
+                        modifier = Modifier.focusRequester(emailFocus),
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+                        keyboardActions = KeyboardActions(onNext = { passwordFocus.requestFocus() }),
+                    )
+
+                    MapleLoginTextField(
+                        value = password,
+                        onValueChange = { password = it },
+                        placeholder = "Password",
+                        palette = palette,
+                        modifier = Modifier.focusRequester(passwordFocus),
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
+                        keyboardActions = KeyboardActions(onGo = { submitForm() }),
+                    )
+                }
+
+                val primaryInteractionSource = remember { MutableInteractionSource() }
+                val primaryPressed by primaryInteractionSource.collectIsPressedAsState()
+                val primaryScale by animateFloatAsState(
+                    targetValue = if (primaryPressed) 0.95f else 1f,
+                    animationSpec = tween(durationMillis = 200),
+                )
+
+                Button(
+                    onClick = { submitForm() },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp)
+                        .scale(primaryScale),
+                    enabled = canSubmit,
+                    interactionSource = primaryInteractionSource,
+                    shape = RoundedCornerShape(999.dp),
+                    contentPadding = PaddingValues(0.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color.Transparent,
+                        contentColor = Color.White,
+                        disabledContainerColor = Color.Transparent,
+                        disabledContentColor = Color.White,
+                    ),
+                    elevation = ButtonDefaults.buttonElevation(
+                        defaultElevation = 0.dp,
+                        pressedElevation = 0.dp,
+                        disabledElevation = 0.dp,
+                    ),
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .clip(RoundedCornerShape(999.dp))
+                            .background(
+                                brush = Brush.verticalGradient(
+                                    colors = listOf(Maple400, Maple600),
+                                ),
+                            )
+                            .alpha(if (canSubmit || isLoading) 1f else 0.5f),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        if (isLoading) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(20.dp),
+                                strokeWidth = 2.dp,
+                                color = Color.White,
+                            )
+                        } else {
+                            Text(
+                                if (isSignUp) "Sign Up" else "Sign In",
+                                color = Color.White,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                        }
+                    }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    HorizontalDivider(modifier = Modifier.weight(1f), color = palette.divider)
+                    Text("or", style = MaterialTheme.typography.labelSmall, color = palette.tertiaryText)
+                    HorizontalDivider(modifier = Modifier.weight(1f), color = palette.divider)
+                }
+
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    GlassyOutlinedButton(
+                        text = "Continue with GitHub",
+                        onClick = { manager.dispatch(AppAction.InitiateOAuth(provider = OAuthProvider.GITHUB, inviteCode = null)) },
+                        palette = palette,
+                        enabled = !isLoading,
+                    )
+                    GlassyOutlinedButton(
+                        text = "Continue with Google",
+                        onClick = { manager.dispatch(AppAction.InitiateOAuth(provider = OAuthProvider.GOOGLE, inviteCode = null)) },
+                        palette = palette,
+                        enabled = !isLoading,
+                    )
+                    GlassyOutlinedButton(
+                        text = "Continue with Apple",
+                        onClick = { manager.dispatch(AppAction.InitiateOAuth(provider = OAuthProvider.APPLE, inviteCode = null)) },
+                        palette = palette,
+                        enabled = !isLoading,
+                    )
+                }
+
+                TextButton(onClick = { isSignUp = !isSignUp }) {
                     Text(
-                        if (isSignUp) "Sign Up" else "Sign In",
-                        fontWeight = FontWeight.SemiBold,
+                        if (isSignUp) "Already have an account? Sign In" else "Don't have an account? Sign Up",
+                        color = palette.supportingText,
                     )
                 }
             }
 
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                HorizontalDivider(modifier = Modifier.weight(1f), color = Neutral200)
-                Text("or", style = MaterialTheme.typography.labelSmall, color = Pebble400)
-                HorizontalDivider(modifier = Modifier.weight(1f), color = Neutral200)
-            }
-
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                GlassyOutlinedButton(
-                    text = "Continue with GitHub",
-                    onClick = { manager.dispatch(AppAction.InitiateOAuth(provider = OAuthProvider.GITHUB, inviteCode = null)) },
-                    enabled = !isLoading,
-                )
-                GlassyOutlinedButton(
-                    text = "Continue with Google",
-                    onClick = { manager.dispatch(AppAction.InitiateOAuth(provider = OAuthProvider.GOOGLE, inviteCode = null)) },
-                    enabled = !isLoading,
-                )
-                GlassyOutlinedButton(
-                    text = "Continue with Apple",
-                    onClick = { manager.dispatch(AppAction.InitiateOAuth(provider = OAuthProvider.APPLE, inviteCode = null)) },
-                    enabled = !isLoading,
-                )
-            }
-
-            TextButton(onClick = { isSignUp = !isSignUp }) {
-                Text(
-                    if (isSignUp) "Already have an account? Sign In" else "Don't have an account? Sign Up",
-                    color = Pebble500,
-                )
-            }
+            Spacer(modifier = Modifier.weight(1f))
 
             state.toast?.let { toast ->
-                Text(toast, color = MapleError, style = MaterialTheme.typography.bodySmall)
+                Text(
+                    text = toast,
+                    color = MapleError,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .widthIn(max = 360.dp)
+                        .padding(bottom = 24.dp),
+                )
             }
         }
     }
 }
 
 @Composable
+private fun MapleLoginTextField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    placeholder: String,
+    palette: LoginPalette,
+    modifier: Modifier = Modifier,
+    keyboardOptions: KeyboardOptions = KeyboardOptions.Default,
+    keyboardActions: KeyboardActions = KeyboardActions.Default,
+    visualTransformation: VisualTransformation = VisualTransformation.None,
+) {
+    val shape = RoundedCornerShape(12.dp)
+
+    BasicTextField(
+        value = value,
+        onValueChange = onValueChange,
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .background(palette.fieldBackground, shape)
+            .border(1.dp, palette.fieldBorder, shape)
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+        textStyle = MaterialTheme.typography.bodyLarge.copy(color = palette.fieldText),
+        singleLine = true,
+        keyboardOptions = keyboardOptions,
+        keyboardActions = keyboardActions,
+        visualTransformation = visualTransformation,
+        cursorBrush = SolidColor(Maple500),
+        decorationBox = { innerTextField ->
+            Box(modifier = Modifier.fillMaxWidth()) {
+                if (value.isEmpty()) {
+                    Text(
+                        placeholder,
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = palette.fieldPlaceholder,
+                    )
+                }
+                innerTextField()
+            }
+        },
+    )
+}
+
+@Composable
 private fun GlassyOutlinedButton(
     text: String,
     onClick: () -> Unit,
+    palette: LoginPalette,
     enabled: Boolean = true,
 ) {
     val interactionSource = remember { MutableInteractionSource() }
@@ -313,21 +602,36 @@ private fun GlassyOutlinedButton(
 
     Button(
         onClick = onClick,
-        modifier = Modifier.fillMaxWidth().height(44.dp).scale(scale),
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(44.dp)
+            .scale(scale)
+            .shadow(
+                elevation = 10.dp,
+                shape = RoundedCornerShape(999.dp),
+                ambientColor = palette.secondaryButtonShadow,
+                spotColor = palette.secondaryButtonShadow,
+            ),
         enabled = enabled,
         interactionSource = interactionSource,
         shape = RoundedCornerShape(999.dp),
+        border = BorderStroke(
+            1.dp,
+            if (enabled) palette.secondaryButtonBorder else palette.secondaryButtonBorder.copy(alpha = 0.5f),
+        ),
         colors = ButtonDefaults.buttonColors(
-            containerColor = Pebble100.copy(alpha = 0.4f),
-            contentColor = Pebble700,
-            disabledContainerColor = Pebble100.copy(alpha = 0.2f),
-            disabledContentColor = Pebble400,
+            containerColor = palette.secondaryButtonBackground,
+            contentColor = palette.secondaryButtonForeground,
+            disabledContainerColor = palette.secondaryButtonBackground.copy(alpha = 0.5f),
+            disabledContentColor = palette.secondaryButtonForeground.copy(alpha = 0.5f),
         ),
         elevation = ButtonDefaults.buttonElevation(
             defaultElevation = 0.dp,
             pressedElevation = 0.dp,
         ),
-    ) { Text(text) }
+    ) {
+        Text(text, fontWeight = FontWeight.Medium)
+    }
 }
 
 // -- Agent Chat --
@@ -336,8 +640,14 @@ private fun GlassyOutlinedButton(
 @Composable
 fun AgentChatScreen(manager: AppManager) {
     val state = manager.state
+    val isDarkTheme = isSystemInDarkTheme()
+    val palette = chatPalette(isDarkTheme)
+    val composeColors = composeFieldColors(palette)
+    val density = LocalDensity.current
     var composeText by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
+    var headerBottomPx by remember { mutableIntStateOf(0) }
+    var composeBarTopPx by remember { mutableIntStateOf(0) }
 
     // Refresh relative timestamps every 30s
     LaunchedEffect(Unit) {
@@ -369,21 +679,31 @@ fun AgentChatScreen(manager: AppManager) {
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         val w = constraints.maxWidth.toFloat()
         val h = constraints.maxHeight.toFloat()
+        val topContentPadding = with(density) {
+            if (headerBottomPx == 0) 108.dp else headerBottomPx.toDp() + 16.dp
+        }
+        val bottomContentPadding = with(density) {
+            if (composeBarTopPx == 0) {
+                116.dp
+            } else {
+                (constraints.maxHeight - composeBarTopPx).coerceAtLeast(0).toDp() + 16.dp
+            }
+        }
 
         // Background mesh gradient
         Box(
             modifier = Modifier
                 .fillMaxSize()
+                .background(palette.backgroundBase),
+        )
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
                 .background(
                     brush = Brush.radialGradient(
-                        colors = listOf(
-                            Pebble100,
-                            Maple50,
-                            Bark50,
-                            Neutral0,
-                        ),
-                        center = androidx.compose.ui.geometry.Offset(w * 0.3f, h * 0.4f),
-                        radius = h * 0.9f,
+                        colors = palette.backgroundGlow,
+                        center = androidx.compose.ui.geometry.Offset(w * 0.45f, h * 0.72f),
+                        radius = h,
                     ),
                 ),
         )
@@ -394,7 +714,8 @@ fun AgentChatScreen(manager: AppManager) {
             state = listState,
             contentPadding = PaddingValues(
                 start = 16.dp, end = 16.dp,
-                top = 64.dp, bottom = 104.dp,
+                top = topContentPadding,
+                bottom = bottomContentPadding,
             ),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
@@ -415,7 +736,7 @@ fun AgentChatScreen(manager: AppManager) {
             }
 
             items(state.messages, key = { it.id }) { message ->
-                MessageBubble(message)
+                MessageBubble(message, palette)
             }
 
             if (state.isAgentTyping) {
@@ -423,7 +744,7 @@ fun AgentChatScreen(manager: AppManager) {
                     Text(
                         "Maple is typing...",
                         style = MaterialTheme.typography.bodySmall,
-                        color = Pebble400,
+                        color = palette.metadataText,
                         modifier = Modifier.padding(start = 8.dp),
                     )
                 }
@@ -438,7 +759,7 @@ fun AgentChatScreen(manager: AppManager) {
                 style = MaterialTheme.typography.bodySmall,
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .padding(bottom = 80.dp, start = 16.dp, end = 16.dp),
+                    .padding(bottom = bottomContentPadding - 24.dp, start = 16.dp, end = 16.dp),
             )
         }
 
@@ -448,22 +769,26 @@ fun AgentChatScreen(manager: AppManager) {
                 .fillMaxWidth()
                 .statusBarsPadding()
                 .padding(horizontal = 16.dp, vertical = 8.dp)
+                .onGloballyPositioned { coordinates ->
+                    headerBottomPx =
+                        (coordinates.positionInRoot().y + coordinates.size.height).roundToInt()
+                }
                 .align(Alignment.TopCenter),
         ) {
             // Wordmark pill (centered)
             Box(
                 modifier = Modifier
                     .align(Alignment.Center)
-                    .shadow(2.dp, RoundedCornerShape(999.dp))
-                    .background(Neutral0.copy(alpha = 0.7f), RoundedCornerShape(999.dp))
-                    .border(0.5.dp, Pebble200.copy(alpha = 0.3f), RoundedCornerShape(999.dp))
+                    .shadow(if (isDarkTheme) 6.dp else 2.dp, RoundedCornerShape(999.dp))
+                    .background(palette.chromeBackground, RoundedCornerShape(999.dp))
+                    .border(0.5.dp, palette.chromeBorder, RoundedCornerShape(999.dp))
                     .padding(horizontal = 20.dp, vertical = 10.dp),
             ) {
                 Icon(
                     painter = androidx.compose.ui.res.painterResource(id = cloud.opensecret.maple.R.drawable.maple_wordmark),
                     contentDescription = "Maple",
                     modifier = Modifier.height(20.dp),
-                    tint = Pebble700,
+                    tint = palette.headerWordmark,
                 )
             }
 
@@ -472,9 +797,9 @@ fun AgentChatScreen(manager: AppManager) {
                 modifier = Modifier
                     .align(Alignment.CenterEnd)
                     .size(40.dp)
-                    .shadow(2.dp, RoundedCornerShape(999.dp))
-                    .background(Neutral0.copy(alpha = 0.7f), RoundedCornerShape(999.dp))
-                    .border(0.5.dp, Pebble200.copy(alpha = 0.3f), RoundedCornerShape(999.dp)),
+                    .shadow(if (isDarkTheme) 6.dp else 2.dp, RoundedCornerShape(999.dp))
+                    .background(palette.chromeBackground, RoundedCornerShape(999.dp))
+                    .border(0.5.dp, palette.chromeBorder, RoundedCornerShape(999.dp)),
                 contentAlignment = Alignment.Center,
             ) {
                 IconButton(
@@ -484,7 +809,7 @@ fun AgentChatScreen(manager: AppManager) {
                     Icon(
                         imageVector = Icons.Filled.Settings,
                         contentDescription = "Settings",
-                        tint = Pebble500,
+                        tint = palette.secondaryIcon,
                     )
                 }
             }
@@ -497,9 +822,12 @@ fun AgentChatScreen(manager: AppManager) {
                 .fillMaxWidth()
                 .navigationBarsPadding()
                 .padding(horizontal = 16.dp, vertical = 8.dp)
-                .shadow(2.dp, RoundedCornerShape(999.dp))
-                .background(Neutral0.copy(alpha = 0.7f), RoundedCornerShape(999.dp))
-                .border(0.5.dp, Pebble200.copy(alpha = 0.3f), RoundedCornerShape(999.dp))
+                .onGloballyPositioned { coordinates ->
+                    composeBarTopPx = coordinates.positionInRoot().y.roundToInt()
+                }
+                .shadow(if (isDarkTheme) 6.dp else 2.dp, RoundedCornerShape(999.dp))
+                .background(palette.chromeBackground, RoundedCornerShape(999.dp))
+                .border(0.5.dp, palette.chromeBorder, RoundedCornerShape(999.dp))
                 .padding(horizontal = 12.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -514,6 +842,7 @@ fun AgentChatScreen(manager: AppManager) {
                 singleLine = true,
                 shape = RoundedCornerShape(999.dp),
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                colors = composeColors,
                 keyboardActions = KeyboardActions(onSend = {
                     val text = composeText.trim()
                     if (text.isNotEmpty() && !state.isAgentTyping) {
@@ -534,7 +863,7 @@ fun AgentChatScreen(manager: AppManager) {
                 enabled = composeText.trim().isNotEmpty() && !state.isAgentTyping,
                 colors = IconButtonDefaults.iconButtonColors(
                     contentColor = Maple500,
-                    disabledContentColor = Neutral300,
+                    disabledContentColor = palette.disabledIcon,
                 ),
             ) {
                 Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send")
@@ -543,12 +872,15 @@ fun AgentChatScreen(manager: AppManager) {
     }
 
     if (state.showSettings) {
-        SettingsSheet(manager = manager)
+        SettingsSheet(manager = manager, palette = palette)
     }
 
     if (state.confirmDeleteAgent) {
         AlertDialog(
             onDismissRequest = { manager.dispatch(AppAction.CancelDeleteAgent) },
+            containerColor = palette.sheetBackground,
+            titleContentColor = palette.surfaceText,
+            textContentColor = palette.metadataText,
             title = { Text("Delete Agent?") },
             text = { Text("This will permanently delete your agent conversation history. This cannot be undone.") },
             confirmButton = {
@@ -558,7 +890,7 @@ fun AgentChatScreen(manager: AppManager) {
             },
             dismissButton = {
                 TextButton(onClick = { manager.dispatch(AppAction.CancelDeleteAgent) }) {
-                    Text("Cancel")
+                    Text("Cancel", color = palette.surfaceText)
                 }
             },
         )
@@ -567,17 +899,20 @@ fun AgentChatScreen(manager: AppManager) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SettingsSheet(manager: AppManager) {
+private fun SettingsSheet(manager: AppManager, palette: ChatPalette) {
     val sheetState = rememberModalBottomSheetState()
 
     ModalBottomSheet(
         onDismissRequest = { manager.dispatch(AppAction.ToggleSettings) },
         sheetState = sheetState,
+        containerColor = palette.sheetBackground,
+        contentColor = palette.surfaceText,
     ) {
         Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
             Text(
                 "Settings",
                 style = MaterialTheme.typography.titleMedium,
+                color = palette.surfaceText,
                 modifier = Modifier.padding(bottom = 16.dp),
             )
             TextButton(
@@ -593,7 +928,7 @@ fun SettingsSheet(manager: AppManager) {
                 )
                 Text("Delete Agent", color = MapleError)
             }
-            HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+            HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp), color = palette.sheetDivider)
             TextButton(
                 onClick = {
                     manager.dispatch(AppAction.ToggleSettings)
@@ -604,10 +939,10 @@ fun SettingsSheet(manager: AppManager) {
                 Icon(
                     imageVector = Icons.AutoMirrored.Filled.ExitToApp,
                     contentDescription = null,
-                    tint = Pebble500,
+                    tint = palette.sheetSecondaryText,
                     modifier = Modifier.padding(end = 8.dp),
                 )
-                Text("Sign Out", color = Neutral800)
+                Text("Sign Out", color = palette.surfaceText)
             }
             Spacer(modifier = Modifier.height(32.dp))
         }
@@ -615,9 +950,15 @@ fun SettingsSheet(manager: AppManager) {
 }
 
 @Composable
-fun MessageBubble(message: ChatMessage) {
+private fun MessageBubble(message: ChatMessage, palette: ChatPalette) {
     val isUser = message.isUser
     val alignment = if (isUser) Alignment.End else Alignment.Start
+    val bubbleShape = RoundedCornerShape(
+        topStart = 16.dp,
+        topEnd = 16.dp,
+        bottomStart = if (isUser) 16.dp else 4.dp,
+        bottomEnd = if (isUser) 4.dp else 16.dp,
+    )
 
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -627,7 +968,7 @@ fun MessageBubble(message: ChatMessage) {
             Text(
                 "Maple",
                 style = MaterialTheme.typography.labelSmall,
-                color = Pebble400,
+                color = palette.metadataText,
                 modifier = Modifier.padding(start = 8.dp, bottom = 2.dp),
             )
         }
@@ -640,30 +981,25 @@ fun MessageBubble(message: ChatMessage) {
                             brush = Brush.verticalGradient(
                                 colors = listOf(Maple400, Maple600),
                             ),
-                            shape = RoundedCornerShape(
-                                topStart = 16.dp,
-                                topEnd = 16.dp,
-                                bottomStart = 16.dp,
-                                bottomEnd = 4.dp,
-                            ),
+                            shape = bubbleShape,
                         )
                     } else {
-                        Modifier.background(
-                            Pebble50,
-                            RoundedCornerShape(
-                                topStart = 16.dp,
-                                topEnd = 16.dp,
-                                bottomStart = 4.dp,
-                                bottomEnd = 16.dp,
-                            ),
-                        )
+                        Modifier
+                            .background(palette.assistantBubbleBackground, bubbleShape)
+                            .then(
+                                if (palette.assistantBubbleBorder != Color.Transparent) {
+                                    Modifier.border(1.dp, palette.assistantBubbleBorder, bubbleShape)
+                                } else {
+                                    Modifier
+                                },
+                            )
                     }
                 )
                 .padding(horizontal = 12.dp, vertical = 8.dp),
         ) {
             Text(
                 text = message.content,
-                color = if (isUser) androidx.compose.ui.graphics.Color.White else Neutral800,
+                color = if (isUser) Color.White else palette.assistantText,
                 style = MaterialTheme.typography.bodyMedium,
             )
         }
@@ -671,7 +1007,7 @@ fun MessageBubble(message: ChatMessage) {
             Text(
                 text = message.timestampDisplay,
                 style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
-                color = Pebble400,
+                color = palette.metadataText,
                 modifier = Modifier.padding(start = 8.dp, end = 8.dp).padding(top = 2.dp),
             )
         }

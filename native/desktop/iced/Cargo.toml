@@ -10,4 +10,5 @@ iced = { version = "0.14", features = ["tokio", "canvas"] }
 flume = "0.11"
 dirs-next = "2"
 dotenvy = "0.15"
+dark-light = "1"
 keyring = { version = "3", features = ["apple-native", "windows-native", "linux-native"] }

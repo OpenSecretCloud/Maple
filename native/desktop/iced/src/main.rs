@@ -23,6 +23,10 @@ fn main() -> iced::Result {
         .run()
 }
 
+fn detect_dark_mode() -> bool {
+    matches!(dark_light::detect(), dark_light::Mode::Dark)
+}
+
 // ── AppManager ──────────────────────────────────────────────────────────────
 
 const KEYRING_SERVICE: &str = "cloud.opensecret.maple.desktop";
@@ -142,6 +146,7 @@ enum App {
         screen: ScreenState,
         show_splash: bool,
         splash_min_passed: bool,
+        dark_mode: bool,
     },
 }
 
@@ -208,6 +213,7 @@ impl App {
                     screen,
                     show_splash: true,
                     splash_min_passed: false,
+                    dark_mode: detect_dark_mode(),
                 }
             }
             Err(error) => Self::BootError { error },
@@ -216,11 +222,30 @@ impl App {
     }
 
     fn theme(&self) -> Theme {
+        let dark_mode = matches!(
+            self,
+            App::Loaded {
+                dark_mode: true,
+                ..
+            }
+        );
         Theme::custom(
-            "Maple".to_string(),
+            if dark_mode {
+                "Maple Dark".to_string()
+            } else {
+                "Maple".to_string()
+            },
             iced::theme::Palette {
-                background: NEUTRAL_50,
-                text: NEUTRAL_900,
+                background: if dark_mode {
+                    DARK_BACKGROUND
+                } else {
+                    NEUTRAL_50
+                },
+                text: if dark_mode {
+                    DARK_ON_SURFACE
+                } else {
+                    NEUTRAL_900
+                },
                 primary: MAPLE_500,
                 success: MAPLE_SUCCESS,
                 danger: MAPLE_ERROR,
@@ -280,6 +305,7 @@ impl App {
             screen,
             show_splash,
             splash_min_passed,
+            ..
         } = self
         else {
             return Task::none();
@@ -467,6 +493,7 @@ impl App {
                 state,
                 screen,
                 show_splash,
+                dark_mode,
                 ..
             } => {
                 if *show_splash {
@@ -474,8 +501,8 @@ impl App {
                 }
                 match screen {
                     ScreenState::Loading => view_splash(),
-                    ScreenState::Login(login) => view_login(login, state),
-                    ScreenState::Chat { compose } => view_chat(state, compose),
+                    ScreenState::Login(login) => view_login(login, state, *dark_mode),
+                    ScreenState::Chat { compose } => view_chat(state, compose, *dark_mode),
                 }
             }
         }
@@ -717,12 +744,159 @@ fn view_splash<'a>() -> Element<'a, Message> {
     .into()
 }
 
+#[derive(Clone, Copy)]
+struct LoginPalette {
+    screen_start: Color,
+    screen_mid: Color,
+    screen_end: Color,
+    card_highlight: Color,
+    card_background: Color,
+    card_border: Color,
+    wordmark: Color,
+    supporting_text: Color,
+    tertiary_text: Color,
+    divider: Color,
+}
+
+fn login_palette(dark_mode: bool) -> LoginPalette {
+    if dark_mode {
+        LoginPalette {
+            screen_start: DARK_BACKGROUND,
+            screen_mid: DARK_SURFACE_HIGHEST,
+            screen_end: BARK_900,
+            card_highlight: Color { a: 0.04, ..WHITE },
+            card_background: Color {
+                a: 0.9,
+                ..DARK_SURFACE
+            },
+            card_border: DARK_OUTLINE,
+            wordmark: PEBBLE_50,
+            supporting_text: DARK_ON_SURFACE_VARIANT,
+            tertiary_text: Color {
+                a: 0.8,
+                ..DARK_ON_SURFACE_VARIANT
+            },
+            divider: DARK_OUTLINE,
+        }
+    } else {
+        LoginPalette {
+            screen_start: PEBBLE_100,
+            screen_mid: MAPLE_50,
+            screen_end: NEUTRAL_50,
+            card_highlight: Color { a: 0.42, ..WHITE },
+            card_background: Color { a: 0.74, ..WHITE },
+            card_border: Color { a: 0.72, ..WHITE },
+            wordmark: NEUTRAL_900,
+            supporting_text: PEBBLE_600,
+            tertiary_text: PEBBLE_400,
+            divider: NEUTRAL_200,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ChatPalette {
+    background_stops: [Color; 5],
+    chrome_background: Color,
+    chrome_border: Color,
+    wordmark: Color,
+    secondary_icon: Color,
+    metadata_text: Color,
+    surface_text: Color,
+    menu_background: Color,
+    menu_border: Color,
+    dialog_background: Color,
+    dialog_border: Color,
+    scrim: Color,
+}
+
+fn chat_palette(dark_mode: bool) -> ChatPalette {
+    if dark_mode {
+        ChatPalette {
+            background_stops: [
+                DARK_BACKGROUND,
+                DARK_SURFACE_LOW,
+                DARK_SURFACE_HIGHEST,
+                BARK_900,
+                DARK_BACKGROUND,
+            ],
+            chrome_background: Color {
+                a: 0.78,
+                ..DARK_SURFACE
+            },
+            chrome_border: DARK_OUTLINE,
+            wordmark: PEBBLE_50,
+            secondary_icon: DARK_ON_SURFACE_VARIANT,
+            metadata_text: Color {
+                a: 0.82,
+                ..DARK_ON_SURFACE_VARIANT
+            },
+            surface_text: DARK_ON_SURFACE,
+            menu_background: Color {
+                a: 0.92,
+                ..DARK_SURFACE
+            },
+            menu_border: DARK_OUTLINE,
+            dialog_background: Color {
+                a: 0.95,
+                ..DARK_SURFACE
+            },
+            dialog_border: DARK_OUTLINE,
+            scrim: Color {
+                a: 0.55,
+                ..Color::BLACK
+            },
+        }
+    } else {
+        ChatPalette {
+            background_stops: [PEBBLE_100, MAPLE_50, NEUTRAL_0, BARK_50, PEBBLE_100],
+            chrome_background: Color {
+                a: 0.72,
+                ..NEUTRAL_0
+            },
+            chrome_border: Color {
+                a: 0.25,
+                ..PEBBLE_300
+            },
+            wordmark: PEBBLE_700,
+            secondary_icon: PEBBLE_500,
+            metadata_text: PEBBLE_400,
+            surface_text: NEUTRAL_900,
+            menu_background: Color {
+                a: 0.92,
+                ..NEUTRAL_0
+            },
+            menu_border: Color {
+                a: 0.2,
+                ..PEBBLE_300
+            },
+            dialog_background: Color {
+                a: 0.95,
+                ..NEUTRAL_0
+            },
+            dialog_border: Color {
+                a: 0.2,
+                ..PEBBLE_300
+            },
+            scrim: Color {
+                a: 0.3,
+                ..Color::BLACK
+            },
+        }
+    }
+}
+
 // ── Login View ──────────────────────────────────────────────────────────────
 
-fn view_login<'a>(login: &'a LoginState, state: &'a AppState) -> Element<'a, Message> {
+fn view_login<'a>(
+    login: &'a LoginState,
+    state: &'a AppState,
+    dark_mode: bool,
+) -> Element<'a, Message> {
     let is_loading = matches!(state.auth, AuthState::LoggingIn | AuthState::SigningUp);
+    let palette = login_palette(dark_mode);
 
-    let title = view_wordmark(28.0, NEUTRAL_900);
+    let title = view_wordmark(28.0, palette.wordmark);
     let mut fields = column![].spacing(SPACE_XS).width(320);
 
     if login.is_sign_up {
@@ -732,7 +906,7 @@ fn view_login<'a>(login: &'a LoginState, state: &'a AppState) -> Element<'a, Mes
                 .on_input(Message::LoginNameChanged)
                 .on_submit(Message::FocusEmail)
                 .padding(10)
-                .style(text_input_style),
+                .style(move |theme, status| text_input_style(theme, status, dark_mode)),
         );
     }
 
@@ -742,7 +916,7 @@ fn view_login<'a>(login: &'a LoginState, state: &'a AppState) -> Element<'a, Mes
             .on_input(Message::LoginEmailChanged)
             .on_submit(Message::FocusPassword)
             .padding(10)
-            .style(text_input_style),
+            .style(move |theme, status| text_input_style(theme, status, dark_mode)),
     );
 
     fields = fields.push(
@@ -752,7 +926,7 @@ fn view_login<'a>(login: &'a LoginState, state: &'a AppState) -> Element<'a, Mes
             .on_submit(Message::SubmitAuth)
             .secure(true)
             .padding(10)
-            .style(text_input_style),
+            .style(move |theme, status| text_input_style(theme, status, dark_mode)),
     );
 
     let submit_label = if login.is_sign_up {
@@ -776,12 +950,18 @@ fn view_login<'a>(login: &'a LoginState, state: &'a AppState) -> Element<'a, Mes
         container(column![])
             .width(Fill)
             .height(1)
-            .style(divider_style),
-        text("or").size(12).color(PEBBLE_400),
+            .style(move |_: &Theme| container::Style {
+                background: Some(iced::Background::Color(palette.divider)),
+                ..Default::default()
+            }),
+        text("or").size(12).color(palette.tertiary_text),
         container(column![])
             .width(Fill)
             .height(1)
-            .style(divider_style),
+            .style(move |_: &Theme| container::Style {
+                background: Some(iced::Background::Color(palette.divider)),
+                ..Default::default()
+            }),
     ]
     .spacing(SPACE_SM)
     .align_y(iced::Alignment::Center)
@@ -791,17 +971,20 @@ fn view_login<'a>(login: &'a LoginState, state: &'a AppState) -> Element<'a, Mes
         oauth_button(
             "Continue with GitHub",
             Message::InitiateOAuth(OAuthProvider::Github),
-            is_loading
+            is_loading,
+            dark_mode,
         ),
         oauth_button(
             "Continue with Google",
             Message::InitiateOAuth(OAuthProvider::Google),
-            is_loading
+            is_loading,
+            dark_mode,
         ),
         oauth_button(
             "Continue with Apple",
             Message::InitiateOAuth(OAuthProvider::Apple),
-            is_loading
+            is_loading,
+            dark_mode,
         ),
     ]
     .spacing(6)
@@ -812,9 +995,9 @@ fn view_login<'a>(login: &'a LoginState, state: &'a AppState) -> Element<'a, Mes
     } else {
         "Don't have an account? Sign Up"
     };
-    let toggle_btn = button(text(toggle_label).size(12).color(PEBBLE_500))
+    let toggle_btn = button(text(toggle_label).size(12).color(palette.supporting_text))
         .on_press(Message::ToggleSignUp)
-        .style(ghost_button_style);
+        .style(move |theme, status| ghost_button_style(theme, status, dark_mode));
 
     let mut content = column![
         title,
@@ -831,22 +1014,60 @@ fn view_login<'a>(login: &'a LoginState, state: &'a AppState) -> Element<'a, Mes
         content = content.push(text(toast).size(12).color(MAPLE_ERROR));
     }
 
-    center(content)
-        .style(|_: &Theme| container::Style {
-            background: Some(iced::Background::Color(NEUTRAL_50)),
+    let card = container(content)
+        .padding(SPACE_LG as u16)
+        .style(move |_: &Theme| container::Style {
+            background: Some(iced::Background::Gradient(iced::Gradient::Linear(
+                iced::gradient::Linear::new(2.3561945)
+                    .add_stop(0.0, palette.card_highlight)
+                    .add_stop(1.0, palette.card_background),
+            ))),
+            border: Border {
+                radius: RADIUS_XL.into(),
+                width: 1.0,
+                color: palette.card_border,
+            },
+            shadow: iced::Shadow {
+                color: Color {
+                    a: if dark_mode { 0.28 } else { 0.08 },
+                    ..Color::BLACK
+                },
+                offset: iced::Vector::new(0.0, if dark_mode { 10.0 } else { 6.0 }),
+                blur_radius: if dark_mode { 28.0 } else { 16.0 },
+            },
+            ..Default::default()
+        });
+
+    center(card)
+        .style(move |_: &Theme| container::Style {
+            background: Some(iced::Background::Gradient(iced::Gradient::Linear(
+                iced::gradient::Linear::new(std::f32::consts::PI)
+                    .add_stop(0.0, palette.screen_start)
+                    .add_stop(0.5, palette.screen_mid)
+                    .add_stop(1.0, palette.screen_end),
+            ))),
             ..Default::default()
         })
         .into()
 }
 
-fn oauth_button(label: &str, msg: Message, disabled: bool) -> Element<'_, Message> {
+fn oauth_button(
+    label: &str,
+    msg: Message,
+    disabled: bool,
+    dark_mode: bool,
+) -> Element<'_, Message> {
     let mut btn = button(
-        container(text(label).size(13).color(PEBBLE_700))
-            .center_x(Fill)
-            .padding([8, 0]),
+        container(text(label).size(13).color(if dark_mode {
+            DARK_ON_SURFACE
+        } else {
+            PEBBLE_700
+        }))
+        .center_x(Fill)
+        .padding([8, 0]),
     )
     .width(Fill)
-    .style(secondary_button_style);
+    .style(move |theme, status| secondary_button_style(theme, status, dark_mode));
     if !disabled {
         btn = btn.on_press(msg);
     }
@@ -855,60 +1076,50 @@ fn oauth_button(label: &str, msg: Message, disabled: bool) -> Element<'_, Messag
 
 // ── Chat View ───────────────────────────────────────────────────────────────
 
-fn view_chat<'a>(state: &'a AppState, compose: &'a str) -> Element<'a, Message> {
+fn view_chat<'a>(state: &'a AppState, compose: &'a str, dark_mode: bool) -> Element<'a, Message> {
+    let palette = chat_palette(dark_mode);
+
     // Floating glass header: centered wordmark pill + gear pill
-    let wordmark_pill = container(view_wordmark(20.0, PEBBLE_700))
+    let wordmark_pill = container(view_wordmark(20.0, palette.wordmark))
         .padding([SPACE_XS as u16, SPACE_MD as u16])
-        .style(|_: &Theme| container::Style {
-            background: Some(iced::Background::Color(Color {
-                a: 0.72,
-                ..NEUTRAL_0
-            })),
+        .style(move |_: &Theme| container::Style {
+            background: Some(iced::Background::Color(palette.chrome_background)),
             border: Border {
                 radius: RADIUS_FULL.into(),
                 width: 0.5,
-                color: Color {
-                    a: 0.25,
-                    ..PEBBLE_300
-                },
+                color: palette.chrome_border,
             },
             shadow: iced::Shadow {
                 color: Color {
-                    a: 0.08,
+                    a: if dark_mode { 0.16 } else { 0.08 },
                     ..Color::BLACK
                 },
                 offset: iced::Vector::new(0.0, 2.0),
-                blur_radius: 8.0,
+                blur_radius: if dark_mode { 12.0 } else { 8.0 },
             },
             ..Default::default()
         });
 
     let gear_pill = container(
-        button(text("\u{2699}").size(16).color(PEBBLE_600))
+        button(text("\u{2699}").size(16).color(palette.secondary_icon))
             .on_press(Message::ToggleSettings)
-            .style(ghost_button_style),
+            .style(move |theme, status| ghost_button_style(theme, status, dark_mode)),
     )
     .padding([4, 6])
-    .style(|_: &Theme| container::Style {
-        background: Some(iced::Background::Color(Color {
-            a: 0.72,
-            ..NEUTRAL_0
-        })),
+    .style(move |_: &Theme| container::Style {
+        background: Some(iced::Background::Color(palette.chrome_background)),
         border: Border {
             radius: RADIUS_FULL.into(),
             width: 0.5,
-            color: Color {
-                a: 0.25,
-                ..PEBBLE_300
-            },
+            color: palette.chrome_border,
         },
         shadow: iced::Shadow {
             color: Color {
-                a: 0.08,
+                a: if dark_mode { 0.16 } else { 0.08 },
                 ..Color::BLACK
             },
             offset: iced::Vector::new(0.0, 2.0),
-            blur_radius: 8.0,
+            blur_radius: if dark_mode { 12.0 } else { 8.0 },
         },
         ..Default::default()
     });
@@ -950,11 +1161,15 @@ fn view_chat<'a>(state: &'a AppState, compose: &'a str) -> Element<'a, Message> 
     }
 
     for msg in &state.messages {
-        msg_col = msg_col.push(view_message(msg));
+        msg_col = msg_col.push(view_message(msg, dark_mode));
     }
 
     if state.is_agent_typing {
-        msg_col = msg_col.push(text("Maple is typing...").size(12).color(PEBBLE_400));
+        msg_col = msg_col.push(
+            text("Maple is typing...")
+                .size(12)
+                .color(palette.metadata_text),
+        );
     }
 
     // Bottom spacer so messages + timestamps don't end behind compose bar
@@ -980,33 +1195,27 @@ fn view_chat<'a>(state: &'a AppState, compose: &'a str) -> Element<'a, Message> 
                 .on_input(Message::ComposeChanged)
                 .on_submit(Message::SendMessage)
                 .width(Fill)
-                .style(text_input_style),
+                .style(move |theme, status| text_input_style(theme, status, dark_mode)),
             send_btn,
         ]
         .spacing(SPACE_XS)
         .align_y(iced::Alignment::Center),
     )
     .padding([SPACE_XS as u16, SPACE_SM as u16])
-    .style(|_: &Theme| container::Style {
-        background: Some(iced::Background::Color(Color {
-            a: 0.72,
-            ..NEUTRAL_0
-        })),
+    .style(move |_: &Theme| container::Style {
+        background: Some(iced::Background::Color(palette.chrome_background)),
         border: Border {
             radius: RADIUS_FULL.into(),
             width: 0.5,
-            color: Color {
-                a: 0.25,
-                ..PEBBLE_300
-            },
+            color: palette.chrome_border,
         },
         shadow: iced::Shadow {
             color: Color {
-                a: 0.08,
+                a: if dark_mode { 0.16 } else { 0.08 },
                 ..Color::BLACK
             },
             offset: iced::Vector::new(0.0, 2.0),
-            blur_radius: 8.0,
+            blur_radius: if dark_mode { 12.0 } else { 8.0 },
         },
         ..Default::default()
     });
@@ -1018,11 +1227,11 @@ fn view_chat<'a>(state: &'a AppState, compose: &'a str) -> Element<'a, Message> 
     // Stack: gradient bg + messages, then floating header/compose on top
     let chat_bg = iced::Background::Gradient(iced::Gradient::Linear(
         iced::gradient::Linear::new(std::f32::consts::PI)
-            .add_stop(0.0, PEBBLE_100)
-            .add_stop(0.3, MAPLE_50)
-            .add_stop(0.55, NEUTRAL_0)
-            .add_stop(0.8, BARK_50)
-            .add_stop(1.0, PEBBLE_100),
+            .add_stop(0.0, palette.background_stops[0])
+            .add_stop(0.3, palette.background_stops[1])
+            .add_stop(0.55, palette.background_stops[2])
+            .add_stop(0.8, palette.background_stops[3])
+            .add_stop(1.0, palette.background_stops[4]),
     ));
 
     let mut content = iced::widget::stack![
@@ -1046,9 +1255,9 @@ fn view_chat<'a>(state: &'a AppState, compose: &'a str) -> Element<'a, Message> 
         content = content.push(
             container(text(toast).size(12).color(MAPLE_ERROR))
                 .padding([4, SPACE_MD as u16])
-                .style(|_: &Theme| container::Style {
+                .style(move |_: &Theme| container::Style {
                     background: Some(iced::Background::Color(Color {
-                        a: 0.1,
+                        a: if dark_mode { 0.16 } else { 0.1 },
                         ..MAPLE_ERROR
                     })),
                     border: Border {
@@ -1069,40 +1278,37 @@ fn view_chat<'a>(state: &'a AppState, compose: &'a str) -> Element<'a, Message> 
                         .align_y(iced::Alignment::Center)
                 )
                 .on_press(Message::RequestDeleteAgent)
-                .style(ghost_button_style)
+                .style(move |theme, status| ghost_button_style(theme, status, dark_mode))
                 .width(Fill),
                 container(column![])
                     .width(Fill)
                     .height(1)
-                    .style(divider_style),
+                    .style(move |_: &Theme| container::Style {
+                        background: Some(iced::Background::Color(palette.menu_border)),
+                        ..Default::default()
+                    }),
                 button(
-                    row![text("Sign Out").size(13).color(NEUTRAL_800),]
+                    row![text("Sign Out").size(13).color(palette.surface_text),]
                         .align_y(iced::Alignment::Center)
                 )
                 .on_press(Message::Logout)
-                .style(ghost_button_style)
+                .style(move |theme, status| ghost_button_style(theme, status, dark_mode))
                 .width(Fill),
             ]
             .spacing(2)
             .width(180),
         )
         .padding(SPACE_XS as u16)
-        .style(|_: &Theme| container::Style {
-            background: Some(iced::Background::Color(Color {
-                a: 0.92,
-                ..NEUTRAL_0
-            })),
+        .style(move |_: &Theme| container::Style {
+            background: Some(iced::Background::Color(palette.menu_background)),
             border: Border {
                 radius: RADIUS_MD.into(),
                 width: 1.0,
-                color: Color {
-                    a: 0.2,
-                    ..PEBBLE_300
-                },
+                color: palette.menu_border,
             },
             shadow: iced::Shadow {
                 color: Color {
-                    a: 0.12,
+                    a: if dark_mode { 0.2 } else { 0.12 },
                     ..Color::BLACK
                 },
                 offset: iced::Vector::new(0.0, 4.0),
@@ -1130,16 +1336,16 @@ fn view_chat<'a>(state: &'a AppState, compose: &'a str) -> Element<'a, Message> 
     if state.confirm_delete_agent {
         let dialog = container(
             column![
-                text("Delete Agent?").size(18).color(NEUTRAL_900),
+                text("Delete Agent?").size(18).color(palette.surface_text),
                 text("This will permanently delete your agent conversation history. This cannot be undone.")
                     .size(13)
-                    .color(PEBBLE_500),
+                    .color(palette.metadata_text),
                 row![
                     button(
-                        container(text("Cancel").size(13).color(NEUTRAL_800)).padding([SPACE_XS as u16, SPACE_MD as u16]),
+                        container(text("Cancel").size(13).color(palette.surface_text)).padding([SPACE_XS as u16, SPACE_MD as u16]),
                     )
                     .on_press(Message::CancelDeleteAgent)
-                    .style(secondary_button_style),
+                    .style(move |theme, status| secondary_button_style(theme, status, dark_mode)),
                     button(
                         container(text("Delete").size(13).color(WHITE)).padding([SPACE_XS as u16, SPACE_MD as u16]),
                     )
@@ -1156,15 +1362,18 @@ fn view_chat<'a>(state: &'a AppState, compose: &'a str) -> Element<'a, Message> 
             .width(320),
         )
         .padding(SPACE_LG as u16)
-        .style(|_: &Theme| container::Style {
-            background: Some(iced::Background::Color(Color { a: 0.95, ..NEUTRAL_0 })),
+        .style(move |_: &Theme| container::Style {
+            background: Some(iced::Background::Color(palette.dialog_background)),
             border: Border {
                 radius: RADIUS_LG.into(),
                 width: 1.0,
-                color: Color { a: 0.2, ..PEBBLE_300 },
+                color: palette.dialog_border,
             },
             shadow: iced::Shadow {
-                color: Color { a: 0.15, ..Color::BLACK },
+                color: Color {
+                    a: if dark_mode { 0.24 } else { 0.15 },
+                    ..Color::BLACK
+                },
                 offset: iced::Vector::new(0.0, 4.0),
                 blur_radius: 16.0,
             },
@@ -1176,11 +1385,8 @@ fn view_chat<'a>(state: &'a AppState, compose: &'a str) -> Element<'a, Message> 
             container(column![])
                 .width(Fill)
                 .height(Fill)
-                .style(|_: &Theme| container::Style {
-                    background: Some(iced::Background::Color(Color {
-                        a: 0.3,
-                        ..Color::BLACK
-                    })),
+                .style(move |_: &Theme| container::Style {
+                    background: Some(iced::Background::Color(palette.scrim)),
                     ..Default::default()
                 }),
             center(dialog),
@@ -1192,27 +1398,30 @@ fn view_chat<'a>(state: &'a AppState, compose: &'a str) -> Element<'a, Message> 
     content.into()
 }
 
-fn view_message(msg: &ChatMessage) -> Element<'_, Message> {
+fn view_message(msg: &ChatMessage, dark_mode: bool) -> Element<'_, Message> {
     let is_user = msg.is_user;
+    let palette = chat_palette(dark_mode);
 
     let mut bubble_content = column![].spacing(4);
     if !is_user && msg.show_sender {
-        bubble_content = bubble_content.push(text("Maple").size(11).color(PEBBLE_400));
+        bubble_content = bubble_content.push(text("Maple").size(11).color(palette.metadata_text));
     }
 
     bubble_content = bubble_content.push(text(&msg.content).size(14).color(if is_user {
         WHITE
     } else {
-        NEUTRAL_800
+        palette.surface_text
     }));
 
     let bubble = container(bubble_content)
         .padding([SPACE_XS as u16, SPACE_SM as u16])
         .max_width(500)
-        .style(if is_user {
-            user_bubble_style
-        } else {
-            agent_bubble_style
+        .style(move |theme| {
+            if is_user {
+                user_bubble_style(theme)
+            } else {
+                agent_bubble_style(theme, dark_mode)
+            }
         });
 
     let align = if is_user {
@@ -1233,7 +1442,9 @@ fn view_message(msg: &ChatMessage) -> Element<'_, Message> {
 
     let mut col = column![bubble_row].spacing(2);
     if msg.show_timestamp {
-        let timestamp = text(&msg.timestamp_display).size(10).color(PEBBLE_400);
+        let timestamp = text(&msg.timestamp_display)
+            .size(10)
+            .color(palette.metadata_text);
         col = col.push(
             container(timestamp)
                 .width(Fill)

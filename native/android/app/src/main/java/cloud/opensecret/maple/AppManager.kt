@@ -16,7 +16,6 @@ import cloud.opensecret.maple.rust.AuthState
 import cloud.opensecret.maple.rust.FfiApp
 import cloud.opensecret.maple.rust.Router
 import cloud.opensecret.maple.rust.Screen
-import cloud.opensecret.maple.rust.defaultApiUrl
 
 class AppManager private constructor(context: Context) : AppReconciler {
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -57,7 +56,7 @@ class AppManager private constructor(context: Context) : AppReconciler {
 
     private fun configuredApiUrl(): String {
         val configured = BuildConfig.OPEN_SECRET_API_URL.trim()
-        val apiUrl = if (configured.isNotEmpty()) configured else defaultApiUrl()
+        val apiUrl = if (configured.isNotEmpty()) configured else "http://0.0.0.0:3000"
 
         return if (apiUrl == "http://0.0.0.0:3000") "http://10.0.2.2:3000" else apiUrl
     }

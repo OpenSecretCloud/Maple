@@ -62,6 +62,15 @@ pub const NEUTRAL_800: Color = color!(0x171717);
 pub const NEUTRAL_900: Color = color!(0x0A0A0A);
 pub const WHITE: Color = color!(0xFFFFFF);
 
+pub const DARK_BACKGROUND: Color = color!(0x1A110E);
+pub const DARK_SURFACE_LOW: Color = color!(0x231A16);
+pub const DARK_SURFACE: Color = color!(0x271D1A);
+pub const DARK_SURFACE_HIGH: Color = color!(0x322824);
+pub const DARK_SURFACE_HIGHEST: Color = color!(0x3D322F);
+pub const DARK_OUTLINE: Color = color!(0x53433E);
+pub const DARK_ON_SURFACE: Color = color!(0xF1DFD9);
+pub const DARK_ON_SURFACE_VARIANT: Color = color!(0xD8C2BB);
+
 // Semantic States
 pub const MAPLE_SUCCESS: Color = color!(0x7B8F4A);
 pub const MAPLE_WARNING: Color = color!(0xD4A35A);
@@ -108,7 +117,57 @@ pub fn primary_button_style(
 pub fn secondary_button_style(
     _theme: &iced::Theme,
     status: iced::widget::button::Status,
+    dark_mode: bool,
 ) -> iced::widget::button::Style {
+    if dark_mode {
+        let (bg_alpha, border_color, text_color, opacity) = match status {
+            iced::widget::button::Status::Active => (0.96, DARK_OUTLINE, DARK_ON_SURFACE, 1.0),
+            iced::widget::button::Status::Hovered => (
+                0.98,
+                Color {
+                    a: 0.9,
+                    ..DARK_ON_SURFACE_VARIANT
+                },
+                WHITE,
+                1.0,
+            ),
+            iced::widget::button::Status::Pressed => (
+                1.0,
+                Color {
+                    a: 0.95,
+                    ..DARK_ON_SURFACE_VARIANT
+                },
+                WHITE,
+                1.0,
+            ),
+            iced::widget::button::Status::Disabled => (
+                0.72,
+                Color {
+                    a: 0.5,
+                    ..DARK_OUTLINE
+                },
+                DARK_ON_SURFACE_VARIANT,
+                0.5,
+            ),
+        };
+        return iced::widget::button::Style {
+            background: Some(iced::Background::Color(Color {
+                a: bg_alpha,
+                ..DARK_SURFACE_HIGH
+            })),
+            text_color: Color {
+                a: opacity,
+                ..text_color
+            },
+            border: Border {
+                radius: RADIUS_FULL.into(),
+                width: 1.0,
+                color: border_color,
+            },
+            ..Default::default()
+        };
+    }
+
     let (bg_alpha, border_color, text_color, opacity) = match status {
         iced::widget::button::Status::Active => (
             0.12,
@@ -168,12 +227,20 @@ pub fn secondary_button_style(
 pub fn ghost_button_style(
     _theme: &iced::Theme,
     status: iced::widget::button::Status,
+    dark_mode: bool,
 ) -> iced::widget::button::Style {
-    let text_color = match status {
-        iced::widget::button::Status::Active => PEBBLE_500,
-        iced::widget::button::Status::Hovered => PEBBLE_700,
-        iced::widget::button::Status::Pressed => PEBBLE_800,
-        iced::widget::button::Status::Disabled => NEUTRAL_400,
+    let text_color = match (dark_mode, status) {
+        (true, iced::widget::button::Status::Active) => DARK_ON_SURFACE_VARIANT,
+        (true, iced::widget::button::Status::Hovered) => DARK_ON_SURFACE,
+        (true, iced::widget::button::Status::Pressed) => WHITE,
+        (true, iced::widget::button::Status::Disabled) => Color {
+            a: 0.45,
+            ..DARK_ON_SURFACE_VARIANT
+        },
+        (false, iced::widget::button::Status::Active) => PEBBLE_500,
+        (false, iced::widget::button::Status::Hovered) => PEBBLE_700,
+        (false, iced::widget::button::Status::Pressed) => PEBBLE_800,
+        (false, iced::widget::button::Status::Disabled) => NEUTRAL_400,
     };
     iced::widget::button::Style {
         background: None,
@@ -186,7 +253,47 @@ pub fn ghost_button_style(
 pub fn text_input_style(
     _theme: &iced::Theme,
     status: iced::widget::text_input::Status,
+    dark_mode: bool,
 ) -> iced::widget::text_input::Style {
+    if dark_mode {
+        let border_color = match status {
+            iced::widget::text_input::Status::Active => Color {
+                a: 0.45,
+                ..DARK_ON_SURFACE_VARIANT
+            },
+            iced::widget::text_input::Status::Hovered => Color {
+                a: 0.7,
+                ..DARK_ON_SURFACE_VARIANT
+            },
+            iced::widget::text_input::Status::Focused { is_hovered: _ } => MAPLE_500,
+            iced::widget::text_input::Status::Disabled => Color {
+                a: 0.3,
+                ..DARK_OUTLINE
+            },
+        };
+        return iced::widget::text_input::Style {
+            background: iced::Background::Color(Color {
+                a: 0.96,
+                ..DARK_SURFACE_LOW
+            }),
+            border: Border {
+                radius: RADIUS_MD.into(),
+                width: 1.0,
+                color: border_color,
+            },
+            icon: DARK_ON_SURFACE_VARIANT,
+            placeholder: Color {
+                a: 0.75,
+                ..DARK_ON_SURFACE_VARIANT
+            },
+            value: DARK_ON_SURFACE,
+            selection: Color {
+                a: 0.2,
+                ..MAPLE_500
+            },
+        };
+    }
+
     let border_color = match status {
         iced::widget::text_input::Status::Active => NEUTRAL_300,
         iced::widget::text_input::Status::Hovered => PEBBLE_400,
@@ -230,7 +337,27 @@ pub fn user_bubble_style(_theme: &iced::Theme) -> iced::widget::container::Style
     }
 }
 
-pub fn agent_bubble_style(_theme: &iced::Theme) -> iced::widget::container::Style {
+pub fn agent_bubble_style(_theme: &iced::Theme, dark_mode: bool) -> iced::widget::container::Style {
+    if dark_mode {
+        return iced::widget::container::Style {
+            background: Some(iced::Background::Color(Color {
+                a: 0.96,
+                ..DARK_SURFACE_HIGH
+            })),
+            border: Border {
+                radius: iced::border::Radius {
+                    top_left: RADIUS_LG,
+                    top_right: RADIUS_LG,
+                    bottom_left: 4.0,
+                    bottom_right: RADIUS_LG,
+                },
+                width: 1.0,
+                color: DARK_OUTLINE,
+            },
+            ..Default::default()
+        };
+    }
+
     iced::widget::container::Style {
         background: Some(iced::Background::Color(PEBBLE_50)),
         border: Border {

@@ -3,7 +3,9 @@ package cloud.opensecret.maple.ui.theme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Shapes
 import androidx.compose.material3.Typography
+import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.graphics.Color
@@ -15,7 +17,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import cloud.opensecret.maple.R
 
-private val MapleColorScheme = lightColorScheme(
+private val MapleLightColorScheme = lightColorScheme(
     primary = Maple500,
     onPrimary = Color.White,
     primaryContainer = Maple100,
@@ -40,6 +42,33 @@ private val MapleColorScheme = lightColorScheme(
     onError = Color.White,
     errorContainer = Maple50,
     onErrorContainer = Maple900,
+)
+
+private val MapleDarkColorScheme = darkColorScheme(
+    primary = Color(0xFFFFB59B),
+    onPrimary = Color(0xFF55200A),
+    primaryContainer = Color(0xFF72351E),
+    onPrimaryContainer = Color(0xFFFFDBCF),
+    secondary = Color(0xFFE7BDB0),
+    onSecondary = Color(0xFF442A21),
+    secondaryContainer = Color(0xFF5D4036),
+    onSecondaryContainer = Color(0xFFFFDBCF),
+    tertiary = Color(0xFFD5C68E),
+    onTertiary = Color(0xFF393005),
+    tertiaryContainer = Color(0xFF50461A),
+    onTertiaryContainer = Color(0xFFF2E2A7),
+    background = Color(0xFF1A110E),
+    onBackground = Color(0xFFF1DFD9),
+    surface = Color(0xFF1A110E),
+    onSurface = Color(0xFFF1DFD9),
+    surfaceVariant = Color(0xFF53433E),
+    onSurfaceVariant = Color(0xFFD8C2BB),
+    outline = Color(0xFFA08D86),
+    outlineVariant = Color(0xFF53433E),
+    error = Color(0xFFFFB4AB),
+    onError = Color(0xFF690005),
+    errorContainer = Color(0xFF93000A),
+    onErrorContainer = Color(0xFFFFDAD6),
 )
 
 private val MapleShapes = Shapes(
@@ -112,9 +141,12 @@ private val MapleTypography = Typography(
 )
 
 @Composable
-fun AppTheme(content: @Composable () -> Unit) {
+fun AppTheme(
+    darkTheme: Boolean = isSystemInDarkTheme(),
+    content: @Composable () -> Unit,
+) {
     MaterialTheme(
-        colorScheme = MapleColorScheme,
+        colorScheme = if (darkTheme) MapleDarkColorScheme else MapleLightColorScheme,
         shapes = MapleShapes,
         typography = MapleTypography,
         content = content,
