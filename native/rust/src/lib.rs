@@ -108,6 +108,60 @@ fn parse_conversation_item(item: &ConversationItem) -> Option<ChatMessage> {
     }
 }
 
+enum ErrorContext {
+    Auth,
+    History,
+    Agent,
+    Delete,
+}
+
+fn is_recoverable_secure_session_error(error: &opensecret::Error) -> bool {
+    matches!(
+        error,
+        opensecret::Error::Session(_)
+            | opensecret::Error::Encryption(_)
+            | opensecret::Error::Decryption(_)
+            | opensecret::Error::Api { status: 400, .. }
+    )
+}
+
+fn is_recoverable_secure_session_error_text(error: &str) -> bool {
+    let normalized = error.to_ascii_lowercase();
+
+    normalized.contains("session error")
+        || normalized.contains("encryption error")
+        || normalized.contains("decryption error")
+        || normalized.contains("failed to decrypt session key")
+        || normalized.contains("aead::error")
+        || normalized.contains("no active session")
+}
+
+fn user_visible_error(context: ErrorContext, error: &str) -> String {
+    if !is_recoverable_secure_session_error_text(error) {
+        return error.to_string();
+    }
+
+    match context {
+        ErrorContext::Auth => "Couldn't complete the secure sign-in. Please try again.".into(),
+        ErrorContext::History => "Couldn't refresh the conversation. Please try again.".into(),
+        ErrorContext::Agent => "Secure connection interrupted. Please send that again.".into(),
+        ErrorContext::Delete => "Couldn't complete that securely. Please try again.".into(),
+    }
+}
+
+async fn perform_attestation_handshake_with_retry(
+    os: &opensecret::OpenSecretClient,
+) -> Result<(), opensecret::Error> {
+    match os.perform_attestation_handshake().await {
+        Ok(()) => Ok(()),
+        Err(error) if is_recoverable_secure_session_error(&error) => {
+            eprintln!("Retrying transient attestation failure: {error}");
+            os.perform_attestation_handshake().await
+        }
+        Err(error) => Err(error),
+    }
+}
+
 // ── State ───────────────────────────────────────────────────────────────────
 
 #[derive(uniffi::Enum, Clone, Debug)]
@@ -204,10 +258,10 @@ impl AppState {
     fn initial() -> Self {
         Self {
             rev: 0,
-            auth: AuthState::Initializing,
+            auth: AuthState::Ready,
             pending_auth_url: None,
             router: Router {
-                default_screen: Screen::Loading,
+                default_screen: Screen::Login,
                 screen_stack: vec![],
             },
             messages: vec![],
@@ -289,8 +343,6 @@ pub trait AppReconciler: Send + Sync + 'static {
 // ── Internal events (async results, not FFI-visible) ────────────────────────
 
 enum InternalEvent {
-    AttestationComplete,
-    AttestationFailed(String),
     LoginSuccess {
         user_id: String,
         email: Option<String>,
@@ -369,19 +421,6 @@ impl FfiApp {
                     .expect("Failed to create OpenSecret client"),
             );
 
-            // Start attestation handshake
-            {
-                let os = os_client.clone();
-                let tx = core_tx_async.clone();
-                rt.spawn(async move {
-                    let event = match os.perform_attestation_handshake().await {
-                        Ok(()) => InternalEvent::AttestationComplete,
-                        Err(e) => InternalEvent::AttestationFailed(e.to_string()),
-                    };
-                    let _ = tx.send(CoreMsg::Internal(Box::new(event)));
-                });
-            }
-
             let mut state = AppState::initial();
             let mut rev: u64 = 0;
             let mut next_msg_id: u64 = 0;
@@ -438,21 +477,6 @@ impl FfiApp {
             while let Ok(msg) = core_rx.recv() {
                 match msg {
                     CoreMsg::Internal(event) => match *event {
-                        InternalEvent::AttestationComplete => {
-                            state.auth = AuthState::Ready;
-                            state.router = Router {
-                                default_screen: Screen::Login,
-                                screen_stack: vec![],
-                            };
-                        }
-                        InternalEvent::AttestationFailed(error) => {
-                            state.toast = Some(format!("Connection failed: {error}"));
-                            state.auth = AuthState::Ready;
-                            state.router = Router {
-                                default_screen: Screen::Login,
-                                screen_stack: vec![],
-                            };
-                        }
                         InternalEvent::LoginSuccess {
                             user_id,
                             email,
@@ -511,7 +535,7 @@ impl FfiApp {
                         }
                         InternalEvent::AuthFailed(error) => {
                             state.auth = AuthState::Ready;
-                            state.toast = Some(error);
+                            state.toast = Some(user_visible_error(ErrorContext::Auth, &error));
                             state.pending_auth_url = None;
                         }
                         InternalEvent::OAuthUrlReady { url } => {
@@ -540,7 +564,7 @@ impl FfiApp {
                         }
                         InternalEvent::HistoryLoadFailed(error) => {
                             state.is_loading_history = false;
-                            state.toast = Some(format!("Failed to load history: {error}"));
+                            state.toast = Some(user_visible_error(ErrorContext::History, &error));
                         }
                         InternalEvent::AgentMessageChunk { messages, step } => {
                             // Each event carries new messages for this step.
@@ -587,7 +611,7 @@ impl FfiApp {
                                 msg.is_streaming = false;
                             }
                             state.is_agent_typing = false;
-                            state.toast = Some(format!("Agent error: {error}"));
+                            state.toast = Some(user_visible_error(ErrorContext::Agent, &error));
                         }
                         InternalEvent::AgentDeleted => {
                             state.is_deleting_agent = false;
@@ -600,7 +624,7 @@ impl FfiApp {
                         }
                         InternalEvent::AgentDeleteFailed(error) => {
                             state.is_deleting_agent = false;
-                            state.toast = Some(format!("Delete failed: {error}"));
+                            state.toast = Some(user_visible_error(ErrorContext::Delete, &error));
                         }
                     },
 
@@ -743,13 +767,6 @@ impl FfiApp {
                                 eprintln!("Failed to set tokens: {e}");
                             } else {
                                 rt.spawn(async move {
-                                    if let Err(e) = os.perform_attestation_handshake().await {
-                                        eprintln!("Re-attestation failed during restore: {e}");
-                                        let _ = tx.send(CoreMsg::Internal(Box::new(
-                                            InternalEvent::SessionRestoreFailed,
-                                        )));
-                                        return;
-                                    }
                                     match os.get_user().await {
                                         Ok(resp) => {
                                             let _ = tx.send(CoreMsg::Internal(Box::new(
@@ -840,40 +857,140 @@ impl FfiApp {
                             let tx = core_tx_async.clone();
                             rt.spawn(async move {
                                 use futures::StreamExt;
-                                match os.agent_chat(&content).await {
-                                    Ok(mut stream) => {
-                                        while let Some(event) = stream.next().await {
-                                            let internal = match event {
-                                                Ok(opensecret::types::AgentSseEvent::Message(
-                                                    msg,
-                                                )) => InternalEvent::AgentMessageChunk {
-                                                    messages: msg.messages,
-                                                    step: msg.step,
-                                                },
-                                                Ok(opensecret::types::AgentSseEvent::Typing(_)) => {
-                                                    continue;
+                                let mut retried_session = false;
+
+                                'agent_stream: loop {
+                                    match os.agent_chat(&content).await {
+                                        Ok(mut stream) => {
+                                            let mut received_message = false;
+
+                                            while let Some(event) = stream.next().await {
+                                                match event {
+                                                    Ok(opensecret::types::AgentSseEvent::Message(
+                                                        msg,
+                                                    )) => {
+                                                        received_message = true;
+                                                        let _ = tx.send(CoreMsg::Internal(Box::new(
+                                                            InternalEvent::AgentMessageChunk {
+                                                                messages: msg.messages,
+                                                                step: msg.step,
+                                                            },
+                                                        )));
+                                                    }
+                                                    Ok(opensecret::types::AgentSseEvent::Typing(_)) => {
+                                                        continue;
+                                                    }
+                                                    Ok(opensecret::types::AgentSseEvent::Done(_)) => {
+                                                        let _ = tx.send(CoreMsg::Internal(Box::new(
+                                                            InternalEvent::AgentDone,
+                                                        )));
+                                                        return;
+                                                    }
+                                                    Ok(opensecret::types::AgentSseEvent::Error(
+                                                        err,
+                                                    )) => {
+                                                        if !received_message
+                                                            && !retried_session
+                                                            && is_recoverable_secure_session_error_text(
+                                                                &err.error,
+                                                            )
+                                                        {
+                                                            retried_session = true;
+                                                            match perform_attestation_handshake_with_retry(
+                                                                os.as_ref(),
+                                                            )
+                                                            .await
+                                                            {
+                                                                Ok(()) => continue 'agent_stream,
+                                                                Err(handshake_error) => {
+                                                                    let _ = tx.send(CoreMsg::Internal(
+                                                                        Box::new(
+                                                                            InternalEvent::AgentError(
+                                                                                handshake_error
+                                                                                    .to_string(),
+                                                                            ),
+                                                                        ),
+                                                                    ));
+                                                                    return;
+                                                                }
+                                                            }
+                                                        }
+
+                                                        let _ = tx.send(CoreMsg::Internal(Box::new(
+                                                            InternalEvent::AgentError(err.error),
+                                                        )));
+                                                        return;
+                                                    }
+                                                    Err(error) => {
+                                                        if !received_message
+                                                            && !retried_session
+                                                            && is_recoverable_secure_session_error(
+                                                                &error,
+                                                            )
+                                                        {
+                                                            retried_session = true;
+                                                            match perform_attestation_handshake_with_retry(
+                                                                os.as_ref(),
+                                                            )
+                                                            .await
+                                                            {
+                                                                Ok(()) => continue 'agent_stream,
+                                                                Err(handshake_error) => {
+                                                                    let _ = tx.send(CoreMsg::Internal(
+                                                                        Box::new(
+                                                                            InternalEvent::AgentError(
+                                                                                handshake_error
+                                                                                    .to_string(),
+                                                                            ),
+                                                                        ),
+                                                                    ));
+                                                                    return;
+                                                                }
+                                                            }
+                                                        }
+
+                                                        let _ = tx.send(CoreMsg::Internal(Box::new(
+                                                            InternalEvent::AgentError(
+                                                                error.to_string(),
+                                                            ),
+                                                        )));
+                                                        return;
+                                                    }
                                                 }
-                                                Ok(opensecret::types::AgentSseEvent::Done(_)) => {
-                                                    InternalEvent::AgentDone
-                                                }
-                                                Ok(opensecret::types::AgentSseEvent::Error(
-                                                    err,
-                                                )) => InternalEvent::AgentError(err.error),
-                                                Err(e) => InternalEvent::AgentError(e.to_string()),
-                                            };
-                                            let _ = tx.send(CoreMsg::Internal(Box::new(internal)));
+                                            }
+
+                                            let _ = tx.send(CoreMsg::Internal(Box::new(
+                                                InternalEvent::AgentDone,
+                                            )));
+                                            return;
                                         }
-                                        // If stream ends without a Done event, finalize
-                                        let _ = tx.send(CoreMsg::Internal(Box::new(
-                                            InternalEvent::AgentDone,
-                                        )));
-                                    }
-                                    Err(e) => {
-                                        let _ = tx.send(CoreMsg::Internal(Box::new(
-                                            InternalEvent::AgentError(format!(
-                                                "Failed to start agent chat: {e}"
-                                            )),
-                                        )));
+                                        Err(error)
+                                            if !retried_session
+                                                && is_recoverable_secure_session_error(&error) =>
+                                        {
+                                            retried_session = true;
+                                            match perform_attestation_handshake_with_retry(
+                                                os.as_ref(),
+                                            )
+                                            .await
+                                            {
+                                                Ok(()) => continue,
+                                                Err(handshake_error) => {
+                                                    let _ = tx.send(CoreMsg::Internal(Box::new(
+                                                        InternalEvent::AgentError(
+                                                            handshake_error.to_string(),
+                                                        ),
+                                                    )));
+                                                    return;
+                                                }
+                                            }
+                                        }
+                                        Err(error) => {
+                                            let _ = tx.send(CoreMsg::Internal(Box::new(
+                                                InternalEvent::AgentError(error.to_string()),
+                                            )));
+                                            return;
+                                        }
                                     }
                                 }
                             });

@@ -4,6 +4,7 @@ struct ContentView: View {
     @Bindable var manager: AppManager
     @State private var showSplash = true
     @State private var splashMinTimePassed = false
+    @State private var toastDismissTask: Task<Void, Never>?
 
     var body: some View {
         ZStack {
@@ -22,6 +23,13 @@ struct ContentView: View {
                     .zIndex(1)
             }
         }
+        .overlay(alignment: .bottom) {
+            MapleToastOverlay(
+                message: manager.state.toast,
+                screen: manager.state.router.defaultScreen,
+                onDismiss: { manager.dispatch(.clearToast) }
+            )
+        }
         .onAppear {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
                 splashMinTimePassed = true
@@ -31,6 +39,19 @@ struct ContentView: View {
         .onChange(of: manager.state.router.defaultScreen) { _, _ in
             dismissSplashIfReady()
         }
+        .onChange(of: manager.state.toast) { _, newToast in
+            toastDismissTask?.cancel()
+            guard let newToast else { return }
+
+            toastDismissTask = Task {
+                try? await Task.sleep(for: .seconds(4))
+                guard !Task.isCancelled, manager.state.toast == newToast else { return }
+                manager.dispatch(.clearToast)
+            }
+        }
+        .onDisappear {
+            toastDismissTask?.cancel()
+        }
     }
 
     private func dismissSplashIfReady() {
@@ -38,6 +59,45 @@ struct ContentView: View {
         guard manager.state.router.defaultScreen != .loading else { return }
         withAnimation(.easeOut(duration: 0.4)) {
             showSplash = false
+        }
+    }
+}
+
+private struct MapleToastOverlay: View {
+    @Environment(\.colorScheme) private var colorScheme
+
+    let message: String?
+    let screen: Screen
+    let onDismiss: () -> Void
+
+    private var bottomPadding: CGFloat {
+        screen == .chat ? 96 : 28
+    }
+
+    private var textColor: Color {
+        colorScheme == .dark ? .pebble50 : .neutral800
+    }
+
+    private var borderColor: Color {
+        Color.mapleError.opacity(colorScheme == .dark ? 0.35 : 0.18)
+    }
+
+    var body: some View {
+        if let message {
+            Text(message)
+                .font(MapleFont.caption)
+                .foregroundStyle(textColor)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, MapleSpacing.md)
+                .padding(.vertical, MapleSpacing.sm)
+                .background(.ultraThinMaterial, in: Capsule())
+                .overlay {
+                    Capsule().stroke(borderColor, lineWidth: 1)
+                }
+                .padding(.horizontal, MapleSpacing.md)
+                .padding(.bottom, bottomPadding)
+                .onTapGesture(perform: onDismiss)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
         }
     }
 }
@@ -268,16 +328,6 @@ struct LoginView: View {
             .padding(.horizontal, MapleSpacing.md)
 
             Spacer()
-
-            if let toast = manager.state.toast {
-                Text(toast)
-                    .font(MapleFont.caption)
-                    .foregroundStyle(Color.mapleError)
-                    .padding()
-                    .onTapGesture {
-                        manager.dispatch(.clearToast)
-                    }
-            }
         }
         .background(
             ZStack {
@@ -488,17 +538,6 @@ struct AgentChatView: View {
                 }
                 .ignoresSafeArea()
             )
-        .overlay(alignment: .bottom) {
-            if let toast = manager.state.toast {
-                Text(toast)
-                    .font(MapleFont.caption)
-                    .foregroundStyle(Color.mapleError)
-                    .padding(MapleSpacing.xs)
-                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: MapleRadius.sm))
-                    .padding(.bottom, 80)
-                    .onTapGesture { manager.dispatch(.clearToast) }
-            }
-        }
         .tint(Color.maple500)
         .onReceive(timestampTimer) { _ in
             manager.dispatch(.refreshTimestamps)

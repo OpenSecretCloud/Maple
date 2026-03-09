@@ -1,11 +1,17 @@
 package cloud.opensecret.maple.ui
 
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
@@ -63,6 +69,7 @@ fun MainApp(manager: AppManager) {
     var showSplash by remember { mutableStateOf(true) }
     var minTimePassed by remember { mutableStateOf(false) }
     val currentScreen = state.router.defaultScreen
+    val toastMessage = state.toast
 
     LaunchedEffect(Unit) {
         kotlinx.coroutines.delay(1000)
@@ -72,6 +79,14 @@ fun MainApp(manager: AppManager) {
     LaunchedEffect(minTimePassed, currentScreen) {
         if (minTimePassed && currentScreen != Screen.LOADING) {
             showSplash = false
+        }
+    }
+
+    LaunchedEffect(toastMessage) {
+        if (toastMessage == null) return@LaunchedEffect
+        kotlinx.coroutines.delay(4000)
+        if (manager.state.toast == toastMessage) {
+            manager.dispatch(AppAction.ClearToast)
         }
     }
 
@@ -89,6 +104,61 @@ fun MainApp(manager: AppManager) {
             ),
         ) {
             SplashScreen()
+        }
+
+        MapleToastHost(
+            message = toastMessage,
+            isChatScreen = currentScreen == Screen.CHAT,
+            onDismiss = { manager.dispatch(AppAction.ClearToast) },
+        )
+    }
+}
+
+@Composable
+private fun MapleToastHost(
+    message: String?,
+    isChatScreen: Boolean,
+    onDismiss: () -> Unit,
+) {
+    val isDarkTheme = isSystemInDarkTheme()
+
+    AnimatedVisibility(
+        visible = message != null,
+        modifier = Modifier.fillMaxSize(),
+        enter = fadeIn(animationSpec = tween(durationMillis = 180)) +
+            slideInVertically(animationSpec = tween(durationMillis = 220)) { it / 2 },
+        exit = fadeOut(animationSpec = tween(durationMillis = 160)) +
+            slideOutVertically(animationSpec = tween(durationMillis = 200)) { it / 2 },
+    ) {
+        Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.BottomCenter,
+        ) {
+            Surface(
+                modifier = Modifier
+                    .padding(horizontal = 16.dp)
+                    .padding(bottom = if (isChatScreen) 112.dp else 24.dp)
+                    .clickable(onClick = onDismiss),
+                shape = RoundedCornerShape(999.dp),
+                color = if (isDarkTheme) {
+                    Color(0xFF271D1A).copy(alpha = 0.92f)
+                } else {
+                    Color.White.copy(alpha = 0.94f)
+                },
+                tonalElevation = 0.dp,
+                shadowElevation = if (isDarkTheme) 8.dp else 4.dp,
+                border = BorderStroke(
+                    1.dp,
+                    MapleError.copy(alpha = if (isDarkTheme) 0.35f else 0.18f),
+                ),
+            ) {
+                Text(
+                    text = message.orEmpty(),
+                    color = if (isDarkTheme) Pebble50 else Neutral800,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                )
+            }
         }
     }
 }
@@ -527,18 +597,6 @@ fun LoginScreen(manager: AppManager) {
             }
 
             Spacer(modifier = Modifier.weight(1f))
-
-            state.toast?.let { toast ->
-                Text(
-                    text = toast,
-                    color = MapleError,
-                    style = MaterialTheme.typography.bodySmall,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .widthIn(max = 360.dp)
-                        .padding(bottom = 24.dp),
-                )
-            }
         }
     }
 }
@@ -749,18 +807,6 @@ fun AgentChatScreen(manager: AppManager) {
                     )
                 }
             }
-        }
-
-        // Toast (above compose bar)
-        state.toast?.let { toast ->
-            Text(
-                toast,
-                color = MapleError,
-                style = MaterialTheme.typography.bodySmall,
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(bottom = bottomContentPadding - 24.dp, start = 16.dp, end = 16.dp),
-            )
         }
 
         // Floating header islands

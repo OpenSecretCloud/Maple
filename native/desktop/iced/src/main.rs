@@ -178,6 +178,7 @@ impl LoginState {
 enum Message {
     CoreUpdated(AppUpdate),
     TryRestoreSession,
+    DismissToast { rev: u64, toast: String },
     TabPressed,
     ShiftTabPressed,
     LoginEmailChanged(String),
@@ -342,6 +343,21 @@ impl App {
 
                 let latest = manager.state();
                 if latest.rev > state.rev {
+                    let toast_task = if latest.toast != state.toast {
+                        latest.toast.clone().map(|toast| {
+                            let rev = latest.rev;
+                            Task::perform(
+                                async move {
+                                    std::thread::sleep(std::time::Duration::from_secs(4));
+                                    (rev, toast)
+                                },
+                                |(rev, toast)| Message::DismissToast { rev, toast },
+                            )
+                        })
+                    } else {
+                        None
+                    };
+
                     let new_screen = screen_from_state(&latest);
                     match (&screen, &new_screen) {
                         (ScreenState::Login(old), ScreenState::Login(_)) => {
@@ -373,6 +389,16 @@ impl App {
                     }
 
                     *state = latest;
+
+                    if let Some(task) = toast_task {
+                        return task;
+                    }
+                }
+            }
+
+            Message::DismissToast { rev, toast } => {
+                if state.rev == rev && state.toast.as_deref() == Some(toast.as_str()) {
+                    manager.dispatch(AppAction::ClearToast);
                 }
             }
 
@@ -499,11 +525,14 @@ impl App {
                 if *show_splash {
                     return view_splash();
                 }
-                match screen {
+                let is_chat = matches!(screen, ScreenState::Chat { .. });
+                let base = match screen {
                     ScreenState::Loading => view_splash(),
                     ScreenState::Login(login) => view_login(login, state, *dark_mode),
                     ScreenState::Chat { compose } => view_chat(state, compose, *dark_mode),
-                }
+                };
+
+                with_toast_overlay(base, state.toast.as_deref(), *dark_mode, is_chat)
             }
         }
     }
@@ -517,6 +546,36 @@ fn screen_from_state(state: &AppState) -> ScreenState {
             compose: String::new(),
         },
     }
+}
+
+fn with_toast_overlay<'a>(
+    content: Element<'a, Message>,
+    toast: Option<&'a str>,
+    dark_mode: bool,
+    is_chat: bool,
+) -> Element<'a, Message> {
+    let Some(toast) = toast else {
+        return content;
+    };
+
+    let toast_banner = container(text(toast).size(12).color(if dark_mode {
+        DARK_ON_SURFACE
+    } else {
+        NEUTRAL_800
+    }))
+    .padding([10, SPACE_MD as u16])
+    .style(move |theme: &Theme| toast_container_style(theme, dark_mode));
+
+    iced::widget::stack![
+        content,
+        column![
+            iced::widget::Space::new().height(Fill),
+            container(toast_banner).width(Fill).center_x(Fill),
+            iced::widget::Space::new().height(if is_chat { 96u32 } else { 28u32 }),
+        ]
+        .width(Fill)
+    ]
+    .into()
 }
 
 // ── Wordmark ────────────────────────────────────────────────────────────────
@@ -999,7 +1058,7 @@ fn view_login<'a>(
         .on_press(Message::ToggleSignUp)
         .style(move |theme, status| ghost_button_style(theme, status, dark_mode));
 
-    let mut content = column![
+    let content = column![
         title,
         fields,
         submit_btn,
@@ -1009,10 +1068,6 @@ fn view_login<'a>(
     ]
     .spacing(SPACE_MD)
     .align_x(iced::Alignment::Center);
-
-    if let Some(ref toast) = state.toast {
-        content = content.push(text(toast).size(12).color(MAPLE_ERROR));
-    }
 
     let card = container(content)
         .padding(SPACE_LG as u16)
@@ -1234,7 +1289,7 @@ fn view_chat<'a>(state: &'a AppState, compose: &'a str, dark_mode: bool) -> Elem
             .add_stop(1.0, palette.background_stops[4]),
     ));
 
-    let mut content = iced::widget::stack![
+    let content = iced::widget::stack![
         container(message_list)
             .width(Fill)
             .height(Fill)
@@ -1250,24 +1305,6 @@ fn view_chat<'a>(state: &'a AppState, compose: &'a str, dark_mode: bool) -> Elem
     ]
     .width(Fill)
     .height(Fill);
-
-    if let Some(ref toast) = state.toast {
-        content = content.push(
-            container(text(toast).size(12).color(MAPLE_ERROR))
-                .padding([4, SPACE_MD as u16])
-                .style(move |_: &Theme| container::Style {
-                    background: Some(iced::Background::Color(Color {
-                        a: if dark_mode { 0.16 } else { 0.1 },
-                        ..MAPLE_ERROR
-                    })),
-                    border: Border {
-                        radius: RADIUS_SM.into(),
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                }),
-        );
-    }
 
     // Settings dropdown overlay
     if state.show_settings && !state.confirm_delete_agent {

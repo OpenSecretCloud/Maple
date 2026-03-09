@@ -409,3 +409,38 @@ pub fn divider_style(_theme: &iced::Theme) -> iced::widget::container::Style {
         ..Default::default()
     }
 }
+
+pub fn toast_container_style(
+    _theme: &iced::Theme,
+    dark_mode: bool,
+) -> iced::widget::container::Style {
+    let background = if dark_mode {
+        Color {
+            a: 0.92,
+            ..DARK_SURFACE
+        }
+    } else {
+        Color { a: 0.94, ..WHITE }
+    };
+
+    iced::widget::container::Style {
+        background: Some(iced::Background::Color(background)),
+        border: Border {
+            radius: RADIUS_FULL.into(),
+            width: 1.0,
+            color: Color {
+                a: if dark_mode { 0.35 } else { 0.18 },
+                ..MAPLE_ERROR
+            },
+        },
+        shadow: iced::Shadow {
+            color: Color {
+                a: if dark_mode { 0.18 } else { 0.08 },
+                ..Color::BLACK
+            },
+            offset: iced::Vector::new(0.0, 4.0),
+            blur_radius: if dark_mode { 16.0 } else { 10.0 },
+        },
+        ..Default::default()
+    }
+}
