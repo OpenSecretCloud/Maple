@@ -120,13 +120,13 @@ struct LoginView: View {
             LoginPalette(
                 backgroundBase: Color(hex: 0x1A110E),
                 backgroundGlow: [
-                    Color(hex: 0x72351E, opacity: 0.55),
-                    Color.maple500.opacity(0.16),
-                    Color.pebble800.opacity(0.16),
+                    Color.maple500.opacity(0.07),
+                    Color(hex: 0x5D4036, opacity: 0.11),
+                    Color.pebble800.opacity(0.12),
                     .clear,
                 ],
                 cardBackground: Color(hex: 0x271D1A, opacity: 0.9),
-                cardHighlight: Color(hex: 0x72351E, opacity: 0.18),
+                cardHighlight: Color.white.opacity(0.04),
                 cardBorder: Color(hex: 0x53433E),
                 cardShadow: Color.black.opacity(0.4),
                 wordmark: .pebble50,
@@ -384,13 +384,13 @@ struct ChatPalette {
             return ChatPalette(
                 backgroundBase: Color(hex: 0x1A110E),
                 backgroundMesh: [
-                    Color(hex: 0x271D1A), Color(hex: 0x322824), Color(hex: 0x231A16),
-                    Color(hex: 0x322824), Color(hex: 0x72351E), Color(hex: 0x271D1A),
-                    Color(hex: 0x140C09), Color(hex: 0x3D2821), Color(hex: 0x1A110E),
+                    Color(hex: 0x231A16), Color(hex: 0x2A211E), Color(hex: 0x201816),
+                    Color(hex: 0x271D1A), Color(hex: 0x3D322F), Color(hex: 0x241C19),
+                    Color(hex: 0x140C09), Color(hex: 0x221815), Color(hex: 0x1A110E),
                 ],
                 backgroundGlow: [
-                    Color.maple500.opacity(0.18),
-                    Color(hex: 0x72351E, opacity: 0.2),
+                    Color.maple500.opacity(0.07),
+                    Color(hex: 0x5D4036, opacity: 0.1),
                     .clear,
                 ],
                 composeText: Color(hex: 0xF1DFD9),
