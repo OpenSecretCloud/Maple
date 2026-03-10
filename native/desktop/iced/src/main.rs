@@ -919,6 +919,47 @@ fn view_search_icon<Message: 'static>(size: f32, color: Color) -> Element<'stati
         .into()
 }
 
+struct HamburgerIconProgram {
+    color: Color,
+}
+
+impl<Message> canvas::Program<Message> for HamburgerIconProgram {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &Self::State,
+        renderer: &iced::Renderer,
+        _theme: &Theme,
+        bounds: iced::Rectangle,
+        _cursor: iced::mouse::Cursor,
+    ) -> Vec<canvas::Geometry> {
+        let mut frame = canvas::Frame::new(renderer, bounds.size());
+        let s = bounds.width;
+        let stroke = canvas::Stroke {
+            style: canvas::Style::Solid(self.color),
+            width: s * 0.1,
+            line_cap: canvas::LineCap::Round,
+            ..Default::default()
+        };
+        let x0 = s * 0.2;
+        let x1 = s * 0.8;
+        for &y_frac in &[0.3, 0.5, 0.7] {
+            let y = s * y_frac;
+            let line = canvas::path::Path::line(Point::new(x0, y), Point::new(x1, y));
+            frame.stroke(&line, stroke.clone());
+        }
+        vec![frame.into_geometry()]
+    }
+}
+
+fn view_hamburger_icon<Message: 'static>(size: f32, color: Color) -> Element<'static, Message> {
+    canvas(HamburgerIconProgram { color })
+        .width(size)
+        .height(size)
+        .into()
+}
+
 // ── Splash View ─────────────────────────────────────────────────────────────
 
 fn view_splash<'a>() -> Element<'a, Message> {
@@ -1053,19 +1094,19 @@ fn chat_palette(dark_mode: bool) -> ChatPalette {
         }
     } else {
         ChatPalette {
-            background_stops: [PEBBLE_100, MAPLE_50, NEUTRAL_0, BARK_50, PEBBLE_100],
+            background_stops: [MAPLE_500, Color::from_rgb8(0xEC, 0xB8, 0xA5), Color::from_rgb8(0xDA, 0xDA, 0xDA), WHITE, WHITE],
             chrome_background: Color {
-                a: 0.72,
-                ..NEUTRAL_0
+                a: 0.4,
+                ..WHITE
             },
             chrome_border: Color {
-                a: 0.25,
-                ..PEBBLE_300
+                a: 0.0,
+                ..WHITE
             },
-            wordmark: PEBBLE_700,
-            secondary_icon: PEBBLE_500,
+            wordmark: PEBBLE_800,
+            secondary_icon: PEBBLE_800,
             metadata_text: PEBBLE_400,
-            surface_text: NEUTRAL_900,
+            surface_text: PEBBLE_800,
             menu_background: Color {
                 a: 0.92,
                 ..NEUTRAL_0
@@ -1300,31 +1341,62 @@ fn view_chat<'a>(state: &'a AppState, compose: &'a str, dark_mode: bool) -> Elem
     // MPL wordmark pill with chevron (centered)
     let wordmark_pill = container(
         row![
-            view_wordmark_abbr(18.0, palette.wordmark),
-            text("\u{25BE}").size(10).color(palette.secondary_icon),
+            view_wordmark_abbr(16.0, palette.wordmark),
+            text("\u{2304}").size(12).color(PEBBLE_400),
         ]
-        .spacing(4)
+        .spacing(8)
         .align_y(iced::Alignment::Center),
     )
-    .padding([SPACE_XS as u16, SPACE_MD as u16])
-    .style(chrome_pill_style);
+    .padding([12, 12])
+    .style(move |_: &Theme| container::Style {
+        background: Some(iced::Background::Color(palette.chrome_background)),
+        border: Border {
+            radius: 99.0.into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    });
 
     // Hamburger menu pill (left)
-    let menu_pill = container(
-        button(text("\u{2261}").size(18).color(palette.secondary_icon))
-            .on_press(Message::ToggleSettings)
-            .style(move |theme, status| ghost_button_style(theme, status, dark_mode)),
+    let menu_pill = button(
+        container(view_hamburger_icon(18.0, palette.secondary_icon))
+            .center_x(18)
+            .center_y(18),
     )
-    .padding([4, 6])
-    .style(chrome_pill_style);
+    .padding(12)
+    .on_press(Message::ToggleSettings)
+    .style(move |_: &Theme, status| {
+        let bg_alpha = match status {
+            iced::widget::button::Status::Hovered => if dark_mode { 0.85 } else { 0.5 },
+            iced::widget::button::Status::Pressed => if dark_mode { 0.9 } else { 0.6 },
+            _ => if dark_mode { 0.78 } else { 0.4 },
+        };
+        iced::widget::button::Style {
+            background: Some(iced::Background::Color(Color { a: bg_alpha, ..if dark_mode { DARK_SURFACE } else { WHITE } })),
+            border: Border { radius: 99.0.into(), ..Default::default() },
+            ..Default::default()
+        }
+    });
 
     // Search pill (right)
-    let search_pill = container(
-        button(view_search_icon(14.0, palette.secondary_icon))
-            .style(move |theme, status| ghost_button_style(theme, status, dark_mode)),
+    let search_pill = button(
+        container(view_search_icon(18.0, palette.secondary_icon))
+            .center_x(18)
+            .center_y(18),
     )
-    .padding([4, 6])
-    .style(chrome_pill_style);
+    .padding(12)
+    .style(move |_: &Theme, status| {
+        let bg_alpha = match status {
+            iced::widget::button::Status::Hovered => if dark_mode { 0.85 } else { 0.5 },
+            iced::widget::button::Status::Pressed => if dark_mode { 0.9 } else { 0.6 },
+            _ => if dark_mode { 0.78 } else { 0.4 },
+        };
+        iced::widget::button::Style {
+            background: Some(iced::Background::Color(Color { a: bg_alpha, ..if dark_mode { DARK_SURFACE } else { WHITE } })),
+            border: Border { radius: 99.0.into(), ..Default::default() },
+            ..Default::default()
+        }
+    });
 
     let header = row![
         iced::widget::Space::new().width(Fill),
@@ -1384,61 +1456,81 @@ fn view_chat<'a>(state: &'a AppState, compose: &'a str, dark_mode: bool) -> Elem
         .anchor_bottom()
         .on_scroll(Message::Scrolled);
 
-    // Floating glass compose bar
-    let mut send_btn = button(
-        container(text("\u{2191}").size(14).color(WHITE)).padding([SPACE_XS as u16, SPACE_MD as u16]),
-    )
-    .style(primary_button_style);
-    if !compose.trim().is_empty() && !state.is_agent_typing {
-        send_btn = send_btn.on_press(Message::SendMessage);
-    }
+    // Floating compose bar
+    let can_send = !compose.trim().is_empty() && !state.is_agent_typing;
 
-    let plus_btn = container(text("+").size(14).color(palette.secondary_icon))
-        .padding([4, 8])
-        .style(move |_: &Theme| container::Style {
-            background: Some(iced::Background::Color(if dark_mode {
-                Color { a: 0.08, ..WHITE }
-            } else {
-                Color { a: 0.06, ..Color::BLACK }
-            })),
+    let mut send_btn = button(
+        container(text("\u{2191}").size(16).color(Color {
+            a: if can_send { 1.0 } else { 0.1 },
+            ..WHITE
+        }))
+        .padding([6, 24]),
+    )
+    .style(|_: &Theme, status| {
+        let (alpha_top, alpha_bot) = match status {
+            iced::widget::button::Status::Hovered => (0.7, 0.7),
+            iced::widget::button::Status::Pressed => (0.8, 0.8),
+            _ => (0.5, 0.5),
+        };
+        iced::widget::button::Style {
+            background: Some(iced::Background::Gradient(iced::Gradient::Linear(
+                iced::gradient::Linear::new(std::f32::consts::PI)
+                    .add_stop(0.0, Color { a: alpha_top, ..MAPLE_500 })
+                    .add_stop(1.0, Color { a: alpha_bot, ..MAPLE_700 }),
+            ))),
+            text_color: WHITE,
             border: Border {
-                radius: RADIUS_FULL.into(),
+                radius: 99.0.into(),
                 ..Default::default()
             },
             ..Default::default()
-        });
+        }
+    });
+    if can_send {
+        send_btn = send_btn.on_press(Message::SendMessage);
+    }
+
+    let plus_btn = container(
+        text("+").size(12).color(MAPLE_500),
+    )
+    .padding([4, 7])
+    .style(move |_: &Theme| container::Style {
+        background: Some(iced::Background::Color(Color { a: 0.15, ..MAPLE_500 })),
+        border: Border {
+            radius: RADIUS_FULL.into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    });
 
     let compose_bar = container(
-        column![
-            text_input("Write...", compose)
-                .on_input(Message::ComposeChanged)
-                .on_submit(Message::SendMessage)
-                .width(Fill)
-                .style(move |theme, status| text_input_style(theme, status, dark_mode)),
-            row![
+        row![
+            column![
+                text_input("Write...", compose)
+                    .on_input(Message::ComposeChanged)
+                    .on_submit(Message::SendMessage)
+                    .width(Fill)
+                    .size(15)
+                    .style(move |theme, status| compose_text_input_style(theme, status, dark_mode)),
                 plus_btn,
-                iced::widget::Space::new().width(Fill),
-                send_btn,
             ]
-            .align_y(iced::Alignment::Center),
+            .spacing(4)
+            .width(Fill),
+            send_btn,
         ]
-        .spacing(4),
+        .spacing(8)
+        .align_y(iced::Alignment::Center),
     )
-    .padding([SPACE_SM as u16, SPACE_SM as u16])
+    .padding([12, 16])
     .style(move |_: &Theme| container::Style {
-        background: Some(iced::Background::Color(palette.chrome_background)),
+        background: Some(iced::Background::Color(if dark_mode {
+            palette.chrome_background
+        } else {
+            Color { a: 0.64, ..WHITE }
+        })),
         border: Border {
-            radius: RADIUS_XL.into(),
-            width: 0.5,
-            color: palette.chrome_border,
-        },
-        shadow: iced::Shadow {
-            color: Color {
-                a: if dark_mode { 0.16 } else { 0.08 },
-                ..Color::BLACK
-            },
-            offset: iced::Vector::new(0.0, 2.0),
-            blur_radius: if dark_mode { 12.0 } else { 8.0 },
+            radius: 24.0.into(),
+            ..Default::default()
         },
         ..Default::default()
     });
@@ -1607,14 +1699,10 @@ fn view_message(msg: &ChatMessage, dark_mode: bool) -> Element<'_, Message> {
     let is_user = msg.is_user;
     let palette = chat_palette(dark_mode);
 
-    let text_color = if is_user {
-        if dark_mode {
-            DARK_ON_SURFACE
-        } else {
-            NEUTRAL_800
-        }
+    let text_color = if dark_mode {
+        if is_user { DARK_ON_SURFACE } else { DARK_ON_SURFACE }
     } else {
-        palette.surface_text
+        PEBBLE_800
     };
 
     let align = if is_user {

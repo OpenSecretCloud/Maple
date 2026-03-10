@@ -491,14 +491,15 @@ struct AgentChatView: View {
             .safeAreaInset(edge: .top) {
                 ZStack {
                     GlassEffectContainer {
-                        HStack(spacing: 4) {
-                            MapleWordmarkAbbr(color: .primary, height: 18)
-                            Image(systemName: "chevron.down")
-                                .font(.system(size: 10, weight: .semibold))
-                                .foregroundStyle(.secondary)
+                        HStack(spacing: 8) {
+                            MapleWordmarkAbbr(color: .pebble800, height: 16)
+                            Text("\u{2304}")
+                                .font(.system(size: 12, weight: .heavy))
+                                .foregroundStyle(Color.pebble400)
                         }
-                        .padding(.horizontal, MapleSpacing.md)
-                        .padding(.vertical, MapleSpacing.sm)
+                        .padding(.leading, 16)
+                        .padding(.trailing, 12)
+                        .padding(.vertical, 12)
                         .glassEffect(in: .capsule)
                     }
 
@@ -508,8 +509,9 @@ struct AgentChatView: View {
                                 manager.dispatch(.toggleSettings)
                             } label: {
                                 Image(systemName: "line.3.horizontal")
-                                    .font(.system(size: 16, weight: .medium))
-                                    .frame(width: 36, height: 36)
+                                    .font(.system(size: 18, weight: .bold))
+                                    .foregroundStyle(Color.pebble800)
+                                    .frame(width: 43, height: 43)
                             }
                             .buttonStyle(.glass)
                         }
@@ -518,8 +520,9 @@ struct AgentChatView: View {
                             Button {
                             } label: {
                                 Image(systemName: "magnifyingglass")
-                                    .font(.system(size: 16, weight: .medium))
-                                    .frame(width: 36, height: 36)
+                                    .font(.system(size: 18, weight: .bold))
+                                    .foregroundStyle(Color.pebble800)
+                                    .frame(width: 43, height: 43)
                             }
                             .buttonStyle(.glass)
                         }
@@ -532,20 +535,27 @@ struct AgentChatView: View {
             }
             .background(
                 ZStack {
-                    palette.backgroundBase
-
-                    MeshGradient(width: 3, height: 3, points: [
-                        [0.0, 0.0], [0.5, 0.0], [1.0, 0.0],
-                        [0.0, 0.5], [0.5, 0.5], [1.0, 0.5],
-                        [0.0, 1.0], [0.5, 1.0], [1.0, 1.0],
-                    ], colors: palette.backgroundMesh)
-
-                    RadialGradient(
-                        colors: palette.backgroundGlow,
-                        center: .bottom,
-                        startRadius: 0,
-                        endRadius: 560
-                    )
+                    if colorScheme == .dark {
+                        palette.backgroundBase
+                        MeshGradient(width: 3, height: 3, points: [
+                            [0.0, 0.0], [0.5, 0.0], [1.0, 0.0],
+                            [0.0, 0.5], [0.5, 0.5], [1.0, 0.5],
+                            [0.0, 1.0], [0.5, 1.0], [1.0, 1.0],
+                        ], colors: palette.backgroundMesh)
+                    } else {
+                        Color.white
+                        RadialGradient(
+                            colors: [
+                                Color(hex: 0xFF9771, opacity: 0.35),
+                                Color(hex: 0xECB8A5, opacity: 0.2),
+                                Color(hex: 0xDADADA, opacity: 0.1),
+                                Color.white.opacity(0),
+                            ],
+                            center: .top,
+                            startRadius: 0,
+                            endRadius: 500
+                        )
+                    }
                 }
                 .ignoresSafeArea()
             )
@@ -642,50 +652,58 @@ struct AgentChatView: View {
         }
     }
 
+    private var canSend: Bool {
+        !composeText.trimmingCharacters(in: .whitespaces).isEmpty && !manager.state.isAgentTyping
+    }
+
     private var composeBar: some View {
         GlassEffectContainer {
-            VStack(alignment: .leading, spacing: 4) {
-                TextField(
-                    "",
-                    text: $composeText,
-                    prompt: Text("Write...").foregroundStyle(palette.composePlaceholder)
-                )
-                    .font(MapleFont.body)
-                    .foregroundStyle(palette.composeText)
-                    .onSubmit(sendMessage)
+            HStack(alignment: .center, spacing: 8) {
+                VStack(alignment: .leading, spacing: 4) {
+                    TextField(
+                        "",
+                        text: $composeText,
+                        prompt: Text("Write...").foregroundStyle(Color(hex: 0x878787))
+                    )
+                        .font(MapleFont.medium(15))
+                        .foregroundStyle(palette.composeText)
+                        .onSubmit(sendMessage)
 
-                HStack {
                     Button(action: {}) {
                         Image(systemName: "plus")
-                            .font(.system(size: 14, weight: .semibold))
-                            .foregroundStyle(.secondary)
-                            .frame(width: 32, height: 32)
-                            .background(.regularMaterial, in: Circle())
-                    }
-
-                    Spacer()
-
-                    Button(action: sendMessage) {
-                        Image(systemName: "arrow.up")
                             .font(.system(size: 14, weight: .bold))
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 18)
-                            .padding(.vertical, 10)
-                            .background(
-                                composeText.trimmingCharacters(in: .whitespaces).isEmpty || manager.state.isAgentTyping
-                                    ? Color.neutral300
-                                    : Color.maple500,
-                                in: Capsule()
-                            )
+                            .foregroundStyle(Color.maple500)
+                            .frame(width: 24, height: 24)
+                            .background(Color.maple500.opacity(0.15), in: Circle())
                     }
-                    .disabled(composeText.trimmingCharacters(in: .whitespaces).isEmpty || manager.state.isAgentTyping)
                 }
+
+                Button(action: sendMessage) {
+                    Image(systemName: "arrow.up")
+                        .font(.system(size: 20, weight: .heavy))
+                        .foregroundStyle(.white.opacity(canSend ? 1.0 : 0.1))
+                        .frame(width: 71)
+                        .padding(.vertical, 8)
+                        .background(
+                            LinearGradient(
+                                colors: [
+                                    Color.maple500.opacity(canSend ? 1.0 : 0.5),
+                                    Color.maple700.opacity(canSend ? 1.0 : 0.5),
+                                ],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            ),
+                            in: Capsule()
+                        )
+                }
+                .disabled(!canSend)
             }
-            .padding(.horizontal, MapleSpacing.sm)
-            .padding(.vertical, MapleSpacing.sm)
+            .padding(.horizontal, 16)
+            .padding(.top, 12)
+            .padding(.bottom, 14)
             .glassEffect(in: RoundedRectangle(cornerRadius: MapleRadius.xl, style: .continuous))
         }
-        .padding(.horizontal, MapleSpacing.sm)
+        .padding(.horizontal, 16)
         .padding(.bottom, MapleSpacing.xs)
     }
 
@@ -710,15 +728,17 @@ struct MessageBubble: View {
             VStack(alignment: message.isUser ? .trailing : .leading, spacing: 4) {
                 if message.isUser {
                     Text(message.content)
-                        .font(MapleFont.bodyLarge)
+                        .font(MapleFont.medium(16))
+                        .lineSpacing(10)
                         .foregroundStyle(palette.userText)
                         .padding(.horizontal, MapleSpacing.sm)
                         .padding(.vertical, MapleSpacing.xs)
                         .background(palette.userBubbleColor, in: RoundedRectangle(cornerRadius: MapleRadius.lg, style: .continuous))
                 } else {
                     Text(message.content)
-                        .font(MapleFont.bodyLarge)
-                        .foregroundStyle(palette.assistantText)
+                        .font(MapleFont.medium(16))
+                        .lineSpacing(10)
+                        .foregroundStyle(Color.pebble800)
                 }
 
                 if message.showTimestamp {

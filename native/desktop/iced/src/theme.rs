@@ -317,6 +317,29 @@ pub fn text_input_style(
     }
 }
 
+pub fn compose_text_input_style(
+    _theme: &iced::Theme,
+    _status: iced::widget::text_input::Status,
+    dark_mode: bool,
+) -> iced::widget::text_input::Style {
+    iced::widget::text_input::Style {
+        background: iced::Background::Color(Color::TRANSPARENT),
+        border: Border {
+            radius: 0.0.into(),
+            width: 0.0,
+            color: Color::TRANSPARENT,
+        },
+        icon: if dark_mode { DARK_ON_SURFACE_VARIANT } else { PEBBLE_800 },
+        placeholder: if dark_mode {
+            Color { a: 0.75, ..DARK_ON_SURFACE_VARIANT }
+        } else {
+            Color::from_rgb8(0x87, 0x87, 0x87)
+        },
+        value: if dark_mode { DARK_ON_SURFACE } else { PEBBLE_800 },
+        selection: Color { a: 0.2, ..MAPLE_500 },
+    }
+}
+
 pub fn user_bubble_style(_theme: &iced::Theme, dark_mode: bool) -> iced::widget::container::Style {
     let bg = if dark_mode {
         Color {
