@@ -338,10 +338,10 @@ private fun chatPalette(isDarkTheme: Boolean): ChatPalette =
         ChatPalette(
             backgroundBase = Color.White,
             backgroundGlow = listOf(
-                Color(0xFFFF9771),
-                Color(0xFFECB8A5),
-                Color(0xFFDADADA),
-                Color.White,
+                Color(0xFFFF9771).copy(alpha = 0.35f),
+                Color(0xFFECB8A5).copy(alpha = 0.2f),
+                Color(0xFFDADADA).copy(alpha = 0.1f),
+                Color.Transparent,
             ),
             chromeBackground = Color.White.copy(alpha = 0.4f),
             chromeBorder = Color.Transparent,
@@ -738,7 +738,7 @@ fun AgentChatScreen(manager: AppManager) {
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         val w = constraints.maxWidth.toFloat()
-        val h = constraints.maxHeight.toFloat()
+        val backgroundGlowRadius = with(density) { 500.dp.toPx() }
         val topContentPadding = with(density) {
             if (headerBottomPx == 0) 108.dp else headerBottomPx.toDp() + 16.dp
         }
@@ -763,7 +763,7 @@ fun AgentChatScreen(manager: AppManager) {
                     brush = Brush.radialGradient(
                         colors = palette.backgroundGlow,
                         center = androidx.compose.ui.geometry.Offset(w / 2f, 0f),
-                        radius = h,
+                        radius = backgroundGlowRadius,
                     ),
                 ),
         )
