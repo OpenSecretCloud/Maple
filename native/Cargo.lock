@@ -2474,10 +2474,14 @@ dependencies = [
 name = "maple_core"
 version = "3.0.0"
 dependencies = [
+ "base64",
  "chrono",
  "flume",
  "futures",
  "opensecret",
+ "reqwest",
+ "serde_cbor",
+ "serde_json",
  "tokio",
  "uniffi",
  "uuid",

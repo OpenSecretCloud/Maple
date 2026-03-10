@@ -2,9 +2,22 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::thread;
 
+use base64::{
+    engine::general_purpose::{STANDARD as BASE64, URL_SAFE, URL_SAFE_NO_PAD},
+    Engine,
+};
 use chrono::{DateTime, Local, Utc};
 use flume::{Receiver, Sender};
-use opensecret::types::{ConversationContent, ConversationItem};
+use opensecret::attestation::{AttestationDocument, AttestationVerifier};
+use opensecret::crypto::{self, PublicKey};
+use opensecret::types::{
+    AttestationResponse, ConversationContent, ConversationItem, EncryptedRequest,
+    EncryptedResponse, KeyExchangeRequest, KeyExchangeResponse, RefreshRequest, RefreshResponse,
+    UserResponse,
+};
+use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
+use serde_cbor::Value as CborValue;
+use serde_json::Value as JsonValue;
 
 uniffi::setup_scaffolding!();
 
@@ -19,7 +32,7 @@ const PAGE_SIZE: i64 = 20;
 
 fn format_relative_time(epoch_secs: i64) -> String {
     let msg_time = DateTime::from_timestamp(epoch_secs, 0)
-        .unwrap_or_else(|| Utc::now())
+        .unwrap_or_else(Utc::now)
         .with_timezone(&Local);
     let now = Local::now();
     let diff = now.signed_duration_since(msg_time);
@@ -162,6 +175,382 @@ async fn perform_attestation_handshake_with_retry(
     }
 }
 
+fn api_uses_mock_attestation(api_url: &str) -> bool {
+    api_url.contains("localhost")
+        || api_url.contains("127.0.0.1")
+        || api_url.contains("0.0.0.0")
+        || api_url.contains("10.0.2.2")
+}
+
+fn jwt_payload(token: &str) -> Option<JsonValue> {
+    let payload = token.split('.').nth(1)?;
+    let decoded = URL_SAFE_NO_PAD.decode(payload).or_else(|_| {
+        let mut padded = payload.to_string();
+        while padded.len() % 4 != 0 {
+            padded.push('=');
+        }
+        URL_SAFE.decode(padded)
+    });
+
+    serde_json::from_slice(&decoded.ok()?).ok()
+}
+
+fn token_fingerprint(token: &str) -> String {
+    let checksum = token.bytes().fold(0u64, |acc, byte| {
+        acc.wrapping_mul(131).wrapping_add(byte as u64)
+    });
+    format!("{checksum:016x}")
+}
+
+fn token_debug_summary(label: &str, token: &str) -> String {
+    let mut pieces = vec![
+        format!("len={}", token.len()),
+        format!("fp={}", token_fingerprint(token)),
+        format!("segments={}", token.split('.').count()),
+    ];
+
+    if let Some(payload) = jwt_payload(token) {
+        if let Some(exp) = payload.get("exp").and_then(|value| value.as_i64()) {
+            pieces.push(format!("exp_delta={}s", exp - Utc::now().timestamp()));
+        }
+
+        if let Some(token_type) = payload
+            .get("type")
+            .or_else(|| payload.get("token_type"))
+            .or_else(|| payload.get("typ"))
+            .and_then(|value| value.as_str())
+        {
+            pieces.push(format!("type={token_type}"));
+        }
+    } else {
+        pieces.push("jwt=unparsed".to_string());
+    }
+
+    format!("{label}{{{}}}", pieces.join(", "))
+}
+
+fn session_token_debug_summary(access_token: &str, refresh_token: &str) -> String {
+    format!(
+        "{} {} same={}",
+        token_debug_summary("access", access_token),
+        token_debug_summary("refresh", refresh_token),
+        access_token == refresh_token,
+    )
+}
+
+fn parse_attestation_document_for_refresh(
+    api_url: &str,
+    document_b64: &str,
+    expected_nonce: &str,
+) -> Result<AttestationDocument, opensecret::Error> {
+    if !api_uses_mock_attestation(api_url) {
+        return AttestationVerifier::new()
+            .verify_attestation_document(document_b64, expected_nonce);
+    }
+
+    let document_bytes = BASE64.decode(document_b64)?;
+    let cbor_value: CborValue = serde_cbor::from_slice(&document_bytes)?;
+
+    let cose_sign1 = match &cbor_value {
+        CborValue::Array(arr) if arr.len() == 4 => arr,
+        _ => {
+            return Err(opensecret::Error::AttestationVerificationFailed(
+                "Invalid COSE_Sign1 structure".to_string(),
+            ));
+        }
+    };
+
+    let payload = match &cose_sign1[2] {
+        CborValue::Bytes(bytes) => bytes,
+        _ => {
+            return Err(opensecret::Error::AttestationVerificationFailed(
+                "Invalid payload".to_string(),
+            ));
+        }
+    };
+
+    let doc_cbor: CborValue = serde_cbor::from_slice(payload)?;
+    let map = match &doc_cbor {
+        CborValue::Map(entries) => entries,
+        _ => {
+            return Err(opensecret::Error::AttestationVerificationFailed(
+                "Invalid attestation document format".to_string(),
+            ));
+        }
+    };
+
+    let mut public_key = None;
+    let mut nonce = None;
+
+    for (key, value) in map {
+        if let CborValue::Text(key_str) = key {
+            match key_str.as_str() {
+                "public_key" => {
+                    public_key = match value {
+                        CborValue::Bytes(bytes) => Some(bytes.clone()),
+                        _ => None,
+                    };
+                }
+                "nonce" => {
+                    nonce = match value {
+                        CborValue::Bytes(bytes) => Some(bytes.clone()),
+                        _ => None,
+                    };
+                }
+                _ => {}
+            }
+        }
+    }
+
+    match nonce.as_deref() {
+        Some(raw_nonce) if raw_nonce == expected_nonce.as_bytes() => {}
+        Some(_) => {
+            return Err(opensecret::Error::AttestationVerificationFailed(
+                "Nonce mismatch".to_string(),
+            ));
+        }
+        None => {
+            return Err(opensecret::Error::AttestationVerificationFailed(
+                "Missing nonce in attestation document".to_string(),
+            ));
+        }
+    }
+
+    Ok(AttestationDocument {
+        module_id: "mock-module".to_string(),
+        timestamp: 0,
+        digest: "SHA384".to_string(),
+        pcrs: std::collections::HashMap::new(),
+        certificate: vec![],
+        cabundle: vec![],
+        public_key,
+        user_data: None,
+        nonce,
+    })
+}
+
+async fn response_to_api_error(response: reqwest::Response) -> opensecret::Error {
+    let status = response.status().as_u16();
+    let message = response
+        .text()
+        .await
+        .unwrap_or_else(|_| "Unknown error".to_string());
+
+    opensecret::Error::Api { status, message }
+}
+
+async fn refresh_session_tokens_without_auth(
+    api_url: &str,
+    refresh_token: String,
+) -> Result<SessionTokenPair, opensecret::Error> {
+    let client = reqwest::Client::new();
+    let base_url = api_url.trim_end_matches('/');
+    let nonce = uuid::Uuid::new_v4().to_string();
+
+    let attestation_response = client
+        .get(format!("{base_url}/attestation/{nonce}"))
+        .send()
+        .await?;
+    if !attestation_response.status().is_success() {
+        eprintln!(
+            "Session restore refresh path: attestation failed with status {}",
+            attestation_response.status()
+        );
+        return Err(response_to_api_error(attestation_response).await);
+    }
+
+    let attestation_doc: AttestationResponse = attestation_response.json().await?;
+    let doc = parse_attestation_document_for_refresh(
+        api_url,
+        &attestation_doc.attestation_document,
+        &nonce,
+    )?;
+    let server_public_key_bytes = doc.public_key.ok_or_else(|| {
+        opensecret::Error::AttestationVerificationFailed(
+            "No public key in attestation document".to_string(),
+        )
+    })?;
+
+    let (secret, public_key) = crypto::generate_static_keypair();
+    let key_exchange_request = KeyExchangeRequest {
+        client_public_key: BASE64.encode(public_key.as_bytes()),
+        nonce,
+    };
+
+    let key_exchange_response = client
+        .post(format!("{base_url}/key_exchange"))
+        .header(CONTENT_TYPE, "application/json")
+        .json(&key_exchange_request)
+        .send()
+        .await?;
+    if !key_exchange_response.status().is_success() {
+        eprintln!(
+            "Session restore refresh path: key_exchange failed with status {}",
+            key_exchange_response.status()
+        );
+        return Err(response_to_api_error(key_exchange_response).await);
+    }
+
+    let key_exchange: KeyExchangeResponse = key_exchange_response.json().await?;
+    let server_public_key = PublicKey::from(
+        <[u8; 32]>::try_from(server_public_key_bytes.as_slice()).map_err(|_| {
+            opensecret::Error::KeyExchange("Invalid server public key length".to_string())
+        })?,
+    );
+    let shared_secret = crypto::perform_static_key_exchange(&secret, &server_public_key);
+    let session_key =
+        crypto::decrypt_session_key(&shared_secret, &key_exchange.encrypted_session_key)?;
+    let session_id = uuid::Uuid::parse_str(&key_exchange.session_id).map_err(|error| {
+        opensecret::Error::Session(format!("Invalid session ID format: {error}"))
+    })?;
+
+    let encrypted_request = EncryptedRequest {
+        encrypted: BASE64.encode(crypto::encrypt_data(
+            &session_key,
+            serde_json::to_string(&RefreshRequest { refresh_token })?.as_bytes(),
+        )?),
+    };
+
+    let mut headers = HeaderMap::new();
+    headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    headers.insert(
+        "x-session-id",
+        HeaderValue::from_str(&session_id.to_string())
+            .map_err(|error| opensecret::Error::Session(format!("Invalid session ID: {error}")))?,
+    );
+
+    let refresh_response = client
+        .post(format!("{base_url}/refresh"))
+        .headers(headers)
+        .json(&encrypted_request)
+        .send()
+        .await?;
+    if !refresh_response.status().is_success() {
+        eprintln!(
+            "Session restore refresh path: /refresh failed with status {}",
+            refresh_response.status()
+        );
+        return Err(response_to_api_error(refresh_response).await);
+    }
+
+    let encrypted_response: EncryptedResponse<RefreshResponse> = refresh_response.json().await?;
+    let decrypted =
+        crypto::decrypt_data(&session_key, &BASE64.decode(&encrypted_response.encrypted)?)?;
+    let refreshed: RefreshResponse = serde_json::from_slice(&decrypted)?;
+
+    eprintln!(
+        "Session restore refresh path: refresh succeeded with {}",
+        session_token_debug_summary(&refreshed.access_token, &refreshed.refresh_token)
+    );
+
+    Ok((refreshed.access_token, refreshed.refresh_token))
+}
+
+async fn restore_user_session(
+    os: &opensecret::OpenSecretClient,
+    api_url: &str,
+) -> Result<UserResponse, opensecret::Error> {
+    match os.get_user().await {
+        Ok(response) => Ok(response),
+        Err(opensecret::Error::Api {
+            status: 401,
+            message,
+        }) => {
+            let refresh_token = match os.get_refresh_token()? {
+                Some(token) if !token.trim().is_empty() => token,
+                _ => {
+                    return Err(opensecret::Error::Api {
+                        status: 401,
+                        message,
+                    });
+                }
+            };
+
+            eprintln!(
+                "Session restore got 401 from /protected/user; attempting token refresh: {message}"
+            );
+
+            let (access_token, refresh_token) =
+                refresh_session_tokens_without_auth(api_url, refresh_token).await?;
+            eprintln!("Session restore refreshed tokens successfully; retrying /protected/user");
+
+            os.set_tokens(access_token, Some(refresh_token))?;
+            os.get_user().await
+        }
+        Err(error) => Err(error),
+    }
+}
+
+type SessionTokenPair = (String, String);
+
+fn current_session_tokens(os: &opensecret::OpenSecretClient) -> Option<SessionTokenPair> {
+    let access_token = os
+        .get_access_token()
+        .ok()
+        .flatten()
+        .map(|token| token.trim().to_string())?;
+    let refresh_token = os
+        .get_refresh_token()
+        .ok()
+        .flatten()
+        .map(|token| token.trim().to_string())?;
+
+    if access_token.is_empty() || refresh_token.is_empty() {
+        return None;
+    }
+
+    Some((access_token, refresh_token))
+}
+
+fn emit_session_tokens_if_changed(
+    update_tx: &Sender<AppUpdate>,
+    rev: &mut u64,
+    last_synced_session_tokens: &mut Option<SessionTokenPair>,
+    tokens: Option<SessionTokenPair>,
+) {
+    if *last_synced_session_tokens == tokens {
+        return;
+    }
+
+    match tokens.as_ref() {
+        Some((access_token, refresh_token)) => {
+            eprintln!(
+                "Session tokens updated: {}",
+                session_token_debug_summary(access_token, refresh_token)
+            );
+        }
+        None => eprintln!("Session tokens cleared"),
+    }
+
+    *rev += 1;
+    let emitted_rev = *rev;
+    let (access_token, refresh_token) = tokens
+        .clone()
+        .unwrap_or_else(|| (String::new(), String::new()));
+
+    *last_synced_session_tokens = tokens;
+
+    let _ = update_tx.send(AppUpdate::SessionTokens {
+        rev: emitted_rev,
+        access_token,
+        refresh_token,
+    });
+}
+
+fn sync_session_tokens_from_client(
+    os: &opensecret::OpenSecretClient,
+    update_tx: &Sender<AppUpdate>,
+    rev: &mut u64,
+    last_synced_session_tokens: &mut Option<SessionTokenPair>,
+) {
+    emit_session_tokens_if_changed(
+        update_tx,
+        rev,
+        last_synced_session_tokens,
+        current_session_tokens(os),
+    );
+}
+
 // ── State ───────────────────────────────────────────────────────────────────
 
 #[derive(uniffi::Enum, Clone, Debug)]
@@ -258,10 +647,10 @@ impl AppState {
     fn initial() -> Self {
         Self {
             rev: 0,
-            auth: AuthState::Ready,
+            auth: AuthState::Initializing,
             pending_auth_url: None,
             router: Router {
-                default_screen: Screen::Login,
+                default_screen: Screen::Loading,
                 screen_stack: vec![],
             },
             messages: vec![],
@@ -305,6 +694,7 @@ pub enum AppAction {
         access_token: String,
         refresh_token: String,
     },
+    CompleteStartup,
     ClearPendingAuthUrl,
     Logout,
 
@@ -355,7 +745,7 @@ enum InternalEvent {
         email: Option<String>,
         name: Option<String>,
     },
-    SessionRestoreFailed,
+    SessionRestoreFailed(String),
     AuthFailed(String),
     OAuthUrlReady {
         url: String,
@@ -425,6 +815,7 @@ impl FfiApp {
             let mut rev: u64 = 0;
             let mut next_msg_id: u64 = 0;
             let mut oldest_cursor: Option<String> = None;
+            let mut last_synced_session_tokens: Option<SessionTokenPair> = None;
 
             let emit =
                 |state: &AppState, shared: &Arc<RwLock<AppState>>, tx: &Sender<AppUpdate>| {
@@ -475,6 +866,8 @@ impl FfiApp {
             }
 
             while let Ok(msg) = core_rx.recv() {
+                let mut should_sync_session_tokens = true;
+
                 match msg {
                     CoreMsg::Internal(event) => match *event {
                         InternalEvent::LoginSuccess {
@@ -498,13 +891,13 @@ impl FfiApp {
                             state.is_loading_history = true;
                             oldest_cursor = None;
 
-                            rev += 1;
-                            state.rev = rev;
-                            let _ = update_tx.send(AppUpdate::SessionTokens {
-                                rev,
-                                access_token,
-                                refresh_token,
-                            });
+                            emit_session_tokens_if_changed(
+                                &update_tx,
+                                &mut rev,
+                                &mut last_synced_session_tokens,
+                                Some((access_token, refresh_token)),
+                            );
+                            should_sync_session_tokens = false;
 
                             spawn_history_fetch!(None::<String>, true);
                         }
@@ -522,16 +915,20 @@ impl FfiApp {
                                 default_screen: Screen::Chat,
                                 screen_stack: vec![],
                             };
+                            state.pending_auth_url = None;
+                            state.messages.clear();
                             state.is_loading_history = true;
                             oldest_cursor = None;
                             spawn_history_fetch!(None::<String>, true);
                         }
-                        InternalEvent::SessionRestoreFailed => {
+                        InternalEvent::SessionRestoreFailed(error) => {
+                            eprintln!("Session restore failed: {error}");
                             state.auth = AuthState::Ready;
                             state.router = Router {
                                 default_screen: Screen::Login,
                                 screen_stack: vec![],
                             };
+                            state.toast = Some(user_visible_error(ErrorContext::Auth, &error));
                         }
                         InternalEvent::AuthFailed(error) => {
                             state.auth = AuthState::Ready;
@@ -758,16 +1155,29 @@ impl FfiApp {
                             access_token,
                             refresh_token,
                         } => {
+                            eprintln!(
+                                "Attempting session restore with {}",
+                                session_token_debug_summary(&access_token, &refresh_token)
+                            );
+                            state.auth = AuthState::Initializing;
+                            state.router = Router {
+                                default_screen: Screen::Loading,
+                                screen_stack: vec![],
+                            };
+                            state.pending_auth_url = None;
                             let os = os_client.clone();
                             let tx = core_tx_async.clone();
                             if let Err(e) = os.set_tokens(access_token, Some(refresh_token)) {
                                 let _ = tx.send(CoreMsg::Internal(Box::new(
-                                    InternalEvent::SessionRestoreFailed,
+                                    InternalEvent::SessionRestoreFailed(format!(
+                                        "Failed to set tokens: {e}"
+                                    )),
                                 )));
-                                eprintln!("Failed to set tokens: {e}");
                             } else {
+                                let restore_api_url = api_url.clone();
                                 rt.spawn(async move {
-                                    match os.get_user().await {
+                                    match restore_user_session(os.as_ref(), &restore_api_url).await
+                                    {
                                         Ok(resp) => {
                                             let _ = tx.send(CoreMsg::Internal(Box::new(
                                                 InternalEvent::SessionRestored {
@@ -778,13 +1188,23 @@ impl FfiApp {
                                             )));
                                         }
                                         Err(e) => {
-                                            eprintln!("Session restore failed: {e}");
                                             let _ = tx.send(CoreMsg::Internal(Box::new(
-                                                InternalEvent::SessionRestoreFailed,
+                                                InternalEvent::SessionRestoreFailed(e.to_string()),
                                             )));
                                         }
                                     }
                                 });
+                            }
+                        }
+
+                        AppAction::CompleteStartup => {
+                            if matches!(state.auth, AuthState::Initializing) {
+                                state.auth = AuthState::Ready;
+                                state.router = Router {
+                                    default_screen: Screen::Login,
+                                    screen_stack: vec![],
+                                };
+                                state.pending_auth_url = None;
                             }
                         }
 
@@ -812,13 +1232,13 @@ impl FfiApp {
                             state.is_deleting_agent = false;
                             oldest_cursor = None;
 
-                            rev += 1;
-                            state.rev = rev;
-                            let _ = update_tx.send(AppUpdate::SessionTokens {
-                                rev,
-                                access_token: String::new(),
-                                refresh_token: String::new(),
-                            });
+                            emit_session_tokens_if_changed(
+                                &update_tx,
+                                &mut rev,
+                                &mut last_synced_session_tokens,
+                                None,
+                            );
+                            should_sync_session_tokens = false;
                         }
 
                         // ── Chat ─────────────────────────────────────────
@@ -1036,6 +1456,15 @@ impl FfiApp {
                             });
                         }
                     },
+                }
+
+                if should_sync_session_tokens {
+                    sync_session_tokens_from_client(
+                        os_client.as_ref(),
+                        &update_tx,
+                        &mut rev,
+                        &mut last_synced_session_tokens,
+                    );
                 }
 
                 rev += 1;

@@ -19,6 +19,7 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
@@ -64,6 +65,65 @@ import cloud.opensecret.maple.rust.OAuthProvider
 import cloud.opensecret.maple.rust.Screen
 import cloud.opensecret.maple.ui.theme.*
 import kotlin.math.roundToInt
+
+private const val HISTORY_PREFETCH_THRESHOLD = 3
+private const val BOTTOM_FOLLOW_THRESHOLD_PX = 96
+private const val TYPING_INDICATOR_KEY = "typing-indicator"
+
+private sealed interface HistoryLoadScrollStrategy {
+    data object PreserveBottom : HistoryLoadScrollStrategy
+    data class PreserveAnchor(
+        val messageId: String,
+        val scrollOffset: Int,
+    ) : HistoryLoadScrollStrategy
+}
+
+private fun didPrependMessages(
+    previousIds: List<String>,
+    currentIds: List<String>,
+): Boolean {
+    return previousIds.isNotEmpty() &&
+        currentIds.size > previousIds.size &&
+        currentIds.takeLast(previousIds.size) == previousIds
+}
+
+private fun didAppendMessages(
+    previousIds: List<String>,
+    currentIds: List<String>,
+): Boolean {
+    return previousIds.isNotEmpty() &&
+        currentIds.size > previousIds.size &&
+        currentIds.take(previousIds.size) == previousIds
+}
+
+private fun LazyListState.isNearBottom(): Boolean {
+    val info = layoutInfo
+    if (info.totalItemsCount == 0) return true
+
+    val lastVisible = info.visibleItemsInfo.lastOrNull() ?: return true
+    val viewportEnd = info.viewportEndOffset - info.afterContentPadding
+    val distanceFromBottom = (lastVisible.offset + lastVisible.size) - viewportEnd
+
+    return lastVisible.index >= info.totalItemsCount - 2 &&
+        distanceFromBottom <= BOTTOM_FOLLOW_THRESHOLD_PX
+}
+
+private fun LazyListState.historyAnchor(
+    messageIds: List<String>,
+): HistoryLoadScrollStrategy.PreserveAnchor? {
+    val firstVisibleMessage = layoutInfo.visibleItemsInfo.firstOrNull { visibleItem ->
+        val key = visibleItem.key as? String
+        key != null && key != TYPING_INDICATOR_KEY
+    } ?: return null
+
+    val messageId = firstVisibleMessage.key as? String ?: return null
+    if (messageId !in messageIds) return null
+
+    return HistoryLoadScrollStrategy.PreserveAnchor(
+        messageId = messageId,
+        scrollOffset = firstVisibleItemScrollOffset,
+    )
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -291,10 +351,16 @@ private fun loginPalette(isDarkTheme: Boolean): LoginPalette =
 private data class ChatPalette(
     val backgroundBase: Color,
     val backgroundGlow: List<Color>,
+    val chromeHighlight: Color,
     val chromeBackground: Color,
     val chromeBorder: Color,
+    val chromeShadow: Color,
     val headerWordmark: Color,
     val secondaryIcon: Color,
+    val composeHighlight: Color,
+    val composeBackground: Color,
+    val composeBorder: Color,
+    val composeShadow: Color,
     val composeText: Color,
     val composePlaceholder: Color,
     val metadataText: Color,
@@ -318,10 +384,16 @@ private fun chatPalette(isDarkTheme: Boolean): ChatPalette =
                 Pebble800.copy(alpha = 0.12f),
                 Color.Transparent,
             ),
+            chromeHighlight = Color(0xFF271D1A).copy(alpha = 0.78f),
             chromeBackground = Color(0xFF271D1A).copy(alpha = 0.78f),
             chromeBorder = Color(0xFF53433E),
+            chromeShadow = Color.Black.copy(alpha = 0.14f),
             headerWordmark = Pebble50,
             secondaryIcon = Color(0xFFD8C2BB),
+            composeHighlight = Color(0xFF271D1A).copy(alpha = 0.78f),
+            composeBackground = Color(0xFF271D1A).copy(alpha = 0.78f),
+            composeBorder = Color(0xFF53433E),
+            composeShadow = Color.Black.copy(alpha = 0.14f),
             composeText = Color(0xFFF1DFD9),
             composePlaceholder = Color(0xFFD8C2BB).copy(alpha = 0.78f),
             metadataText = Color(0xFFD8C2BB).copy(alpha = 0.82f),
@@ -343,10 +415,16 @@ private fun chatPalette(isDarkTheme: Boolean): ChatPalette =
                 Color(0xFFDADADA).copy(alpha = 0.1f),
                 Color.Transparent,
             ),
-            chromeBackground = Color.White.copy(alpha = 0.4f),
-            chromeBorder = Color.Transparent,
+            chromeHighlight = Color.White.copy(alpha = 0.98f),
+            chromeBackground = Color(0xFFFFF1EC).copy(alpha = 0.84f),
+            chromeBorder = Color.White.copy(alpha = 0.92f),
+            chromeShadow = Pebble900.copy(alpha = 0.08f),
             headerWordmark = Pebble800,
             secondaryIcon = Pebble800,
+            composeHighlight = Color.White.copy(alpha = 0.99f),
+            composeBackground = Color(0xFFFCEAE4).copy(alpha = 0.9f),
+            composeBorder = Color.White.copy(alpha = 0.94f),
+            composeShadow = Pebble900.copy(alpha = 0.12f),
             composeText = Neutral800,
             composePlaceholder = Color(0xFF878787),
             metadataText = Pebble400,
@@ -703,11 +781,24 @@ fun AgentChatScreen(manager: AppManager) {
     val state = manager.state
     val isDarkTheme = isSystemInDarkTheme()
     val palette = chatPalette(isDarkTheme)
+    val headerChromeShape = RoundedCornerShape(99.dp)
+    val composeChromeShape = RoundedCornerShape(24.dp)
     val density = LocalDensity.current
     var composeText by remember { mutableStateOf("") }
+    val messageIds = remember(state.messages) { state.messages.map(ChatMessage::id) }
     val listState = rememberLazyListState()
     var headerBottomPx by remember { mutableIntStateOf(0) }
     var composeBarTopPx by remember { mutableIntStateOf(0) }
+    var hasSettledInitialScroll by remember { mutableStateOf(false) }
+    var pendingHistoryScrollStrategy by remember {
+        mutableStateOf<HistoryLoadScrollStrategy?>(null)
+    }
+    var previousMessageIds by remember { mutableStateOf(messageIds) }
+    var previousLastMessageContent by remember {
+        mutableStateOf(state.messages.lastOrNull()?.content)
+    }
+    var previousIsAgentTyping by remember { mutableStateOf(state.isAgentTyping) }
+    var wasNearBottom by remember { mutableStateOf(true) }
 
     // Refresh relative timestamps every 30s
     LaunchedEffect(Unit) {
@@ -717,23 +808,134 @@ fun AgentChatScreen(manager: AppManager) {
         }
     }
 
-    // Prefetch older messages when scrolled near top
-    val firstVisibleIndex by remember { derivedStateOf { listState.firstVisibleItemIndex } }
-    LaunchedEffect(firstVisibleIndex) {
-        // Account for load-more item at index 0; messages start at index 1 when it's visible
-        if (firstVisibleIndex <= 3 && state.hasOlderMessages && !state.isLoadingHistory) {
-            manager.dispatch(AppAction.LoadOlderMessages)
+    suspend fun scrollToBottom(animated: Boolean) {
+        val bottomIndex = when {
+            state.isAgentTyping -> state.messages.size
+            state.messages.isNotEmpty() -> state.messages.lastIndex
+            else -> -1
+        }
+
+        if (bottomIndex < 0) return
+
+        if (animated) {
+            listState.animateScrollToItem(bottomIndex)
+        } else {
+            listState.scrollToItem(bottomIndex)
         }
     }
 
-    // Auto-scroll to bottom (including typing indicator) when new content arrives
-    var prevMessageCount by remember { mutableIntStateOf(state.messages.size) }
-    LaunchedEffect(state.messages.size, state.messages.lastOrNull()?.content, state.isAgentTyping) {
-        val totalItems = listState.layoutInfo.totalItemsCount
-        if (totalItems > 0 && state.messages.size >= prevMessageCount) {
-            listState.animateScrollToItem(totalItems - 1)
+    val canScrollBackward by remember { derivedStateOf { listState.canScrollBackward } }
+    val firstVisibleIndex by remember { derivedStateOf { listState.firstVisibleItemIndex } }
+    val isNearBottom by remember { derivedStateOf { listState.isNearBottom() } }
+
+    fun requestOlderMessages() {
+        if (
+            !hasSettledInitialScroll ||
+            pendingHistoryScrollStrategy != null ||
+            state.isLoadingHistory ||
+            !state.hasOlderMessages
+        ) {
+            return
         }
-        prevMessageCount = state.messages.size
+
+        pendingHistoryScrollStrategy = if (!canScrollBackward && isNearBottom) {
+            HistoryLoadScrollStrategy.PreserveBottom
+        } else {
+            listState.historyAnchor(messageIds) ?: HistoryLoadScrollStrategy.PreserveBottom
+        }
+
+        manager.dispatch(AppAction.LoadOlderMessages)
+    }
+
+    LaunchedEffect(isNearBottom) {
+        wasNearBottom = isNearBottom
+    }
+
+    // Prefetch older messages when scrolled near top
+    LaunchedEffect(
+        firstVisibleIndex,
+        canScrollBackward,
+        state.hasOlderMessages,
+        state.isLoadingHistory,
+        hasSettledInitialScroll,
+        pendingHistoryScrollStrategy,
+    ) {
+        val shouldPrefetchOlder =
+            hasSettledInitialScroll &&
+                state.hasOlderMessages &&
+                !state.isLoadingHistory &&
+                pendingHistoryScrollStrategy == null &&
+                (firstVisibleIndex <= HISTORY_PREFETCH_THRESHOLD || !canScrollBackward)
+
+        if (shouldPrefetchOlder) {
+            requestOlderMessages()
+        }
+    }
+
+    LaunchedEffect(messageIds) {
+        when {
+            messageIds.isEmpty() -> {
+                hasSettledInitialScroll = false
+                pendingHistoryScrollStrategy = null
+            }
+
+            !hasSettledInitialScroll -> {
+                scrollToBottom(animated = false)
+                hasSettledInitialScroll = true
+            }
+
+            didPrependMessages(previousMessageIds, messageIds) -> {
+                when (val strategy = pendingHistoryScrollStrategy) {
+                    HistoryLoadScrollStrategy.PreserveBottom -> scrollToBottom(animated = false)
+                    is HistoryLoadScrollStrategy.PreserveAnchor -> {
+                        val restoredIndex = messageIds.indexOf(strategy.messageId)
+                        if (restoredIndex >= 0) {
+                            listState.scrollToItem(restoredIndex, strategy.scrollOffset)
+                        }
+                    }
+
+                    null -> Unit
+                }
+                pendingHistoryScrollStrategy = null
+            }
+
+            didAppendMessages(previousMessageIds, messageIds) && wasNearBottom -> {
+                scrollToBottom(animated = false)
+            }
+
+            else -> {
+                pendingHistoryScrollStrategy = null
+            }
+        }
+
+        previousMessageIds = messageIds
+    }
+
+    LaunchedEffect(state.isLoadingHistory) {
+        if (
+            !state.isLoadingHistory &&
+            pendingHistoryScrollStrategy != null &&
+            messageIds == previousMessageIds
+        ) {
+            pendingHistoryScrollStrategy = null
+        }
+    }
+
+    LaunchedEffect(state.messages.lastOrNull()?.content, state.isAgentTyping) {
+        val contentChanged = state.messages.lastOrNull()?.content != previousLastMessageContent
+        val typingChanged = state.isAgentTyping != previousIsAgentTyping
+
+        if (
+            hasSettledInitialScroll &&
+            pendingHistoryScrollStrategy == null &&
+            wasNearBottom &&
+            (contentChanged || typingChanged)
+        ) {
+            scrollToBottom(animated = false)
+        }
+
+        previousLastMessageContent = state.messages.lastOrNull()?.content
+        previousIsAgentTyping = state.isAgentTyping
     }
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
@@ -770,7 +972,9 @@ fun AgentChatScreen(manager: AppManager) {
 
         // Messages list (full size, scrolls behind header and compose bar)
         LazyColumn(
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier
+                .fillMaxSize()
+                .alpha(if (hasSettledInitialScroll || messageIds.isEmpty()) 1f else 0f),
             state = listState,
             contentPadding = PaddingValues(
                 start = 16.dp, end = 16.dp,
@@ -779,28 +983,12 @@ fun AgentChatScreen(manager: AppManager) {
             ),
             verticalArrangement = Arrangement.spacedBy(20.dp),
         ) {
-            if (state.isLoadingHistory) {
-                item(key = "loading-history") {
-                    Box(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), contentAlignment = Alignment.Center) {
-                        CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-                    }
-                }
-            } else if (state.hasOlderMessages) {
-                item(key = "load-more") {
-                    Box(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), contentAlignment = Alignment.Center) {
-                        TextButton(onClick = { manager.dispatch(AppAction.LoadOlderMessages) }) {
-                            Text("Load older messages", color = Maple500, style = MaterialTheme.typography.bodySmall)
-                        }
-                    }
-                }
-            }
-
             items(state.messages, key = { it.id }) { message ->
                 MessageBubble(message, palette)
             }
 
             if (state.isAgentTyping) {
-                item {
+                item(key = TYPING_INDICATOR_KEY) {
                     Text(
                         "Maple is typing...",
                         style = MaterialTheme.typography.bodySmall,
@@ -808,6 +996,27 @@ fun AgentChatScreen(manager: AppManager) {
                         modifier = Modifier.padding(start = 8.dp),
                     )
                 }
+            }
+        }
+
+        if (state.isLoadingHistory && state.messages.isNotEmpty()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = topContentPadding + 8.dp)
+                    .align(Alignment.TopCenter),
+                contentAlignment = Alignment.Center,
+            ) {
+                CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+            }
+        }
+
+        if ((state.isLoadingHistory && state.messages.isEmpty()) || (!hasSettledInitialScroll && messageIds.isNotEmpty())) {
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center,
+            ) {
+                CircularProgressIndicator()
             }
         }
 
@@ -827,13 +1036,23 @@ fun AgentChatScreen(manager: AppManager) {
             Box(
                 modifier = Modifier
                     .align(Alignment.Center)
-                    .then(
-                        if (isDarkTheme) Modifier
-                            .shadow(6.dp, RoundedCornerShape(99.dp))
-                            .border(0.5.dp, palette.chromeBorder, RoundedCornerShape(99.dp))
-                        else Modifier
+                    .shadow(
+                        elevation = if (isDarkTheme) 6.dp else 8.dp,
+                        shape = headerChromeShape,
+                        ambientColor = palette.chromeShadow,
+                        spotColor = palette.chromeShadow,
                     )
-                    .background(palette.chromeBackground, RoundedCornerShape(99.dp))
+                    .background(
+                        brush = Brush.linearGradient(
+                            colors = listOf(palette.chromeHighlight, palette.chromeBackground),
+                        ),
+                        shape = headerChromeShape,
+                    )
+                    .border(
+                        width = if (isDarkTheme) 0.5.dp else 1.dp,
+                        color = palette.chromeBorder,
+                        shape = headerChromeShape,
+                    )
                     .padding(start = 16.dp, end = 12.dp, top = 12.dp, bottom = 12.dp),
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -852,13 +1071,23 @@ fun AgentChatScreen(manager: AppManager) {
                 modifier = Modifier
                     .align(Alignment.CenterStart)
                     .size(43.dp)
-                    .then(
-                        if (isDarkTheme) Modifier
-                            .shadow(6.dp, RoundedCornerShape(99.dp))
-                            .border(0.5.dp, palette.chromeBorder, RoundedCornerShape(99.dp))
-                        else Modifier
+                    .shadow(
+                        elevation = if (isDarkTheme) 6.dp else 8.dp,
+                        shape = headerChromeShape,
+                        ambientColor = palette.chromeShadow,
+                        spotColor = palette.chromeShadow,
                     )
-                    .background(palette.chromeBackground, RoundedCornerShape(99.dp)),
+                    .background(
+                        brush = Brush.linearGradient(
+                            colors = listOf(palette.chromeHighlight, palette.chromeBackground),
+                        ),
+                        shape = headerChromeShape,
+                    )
+                    .border(
+                        width = if (isDarkTheme) 0.5.dp else 1.dp,
+                        color = palette.chromeBorder,
+                        shape = headerChromeShape,
+                    ),
                 contentAlignment = Alignment.Center,
             ) {
                 IconButton(
@@ -879,13 +1108,23 @@ fun AgentChatScreen(manager: AppManager) {
                 modifier = Modifier
                     .align(Alignment.CenterEnd)
                     .size(43.dp)
-                    .then(
-                        if (isDarkTheme) Modifier
-                            .shadow(6.dp, RoundedCornerShape(99.dp))
-                            .border(0.5.dp, palette.chromeBorder, RoundedCornerShape(99.dp))
-                        else Modifier
+                    .shadow(
+                        elevation = if (isDarkTheme) 6.dp else 8.dp,
+                        shape = headerChromeShape,
+                        ambientColor = palette.chromeShadow,
+                        spotColor = palette.chromeShadow,
                     )
-                    .background(palette.chromeBackground, RoundedCornerShape(99.dp)),
+                    .background(
+                        brush = Brush.linearGradient(
+                            colors = listOf(palette.chromeHighlight, palette.chromeBackground),
+                        ),
+                        shape = headerChromeShape,
+                    )
+                    .border(
+                        width = if (isDarkTheme) 0.5.dp else 1.dp,
+                        color = palette.chromeBorder,
+                        shape = headerChromeShape,
+                    ),
                 contentAlignment = Alignment.Center,
             ) {
                 IconButton(
@@ -912,12 +1151,22 @@ fun AgentChatScreen(manager: AppManager) {
                 .onGloballyPositioned { coordinates ->
                     composeBarTopPx = coordinates.positionInRoot().y.roundToInt()
                 }
-                .background(
-                    if (isDarkTheme) palette.chromeBackground else Color.White.copy(alpha = 0.64f),
-                    RoundedCornerShape(24.dp),
+                .shadow(
+                    elevation = if (isDarkTheme) 0.dp else 12.dp,
+                    shape = composeChromeShape,
+                    ambientColor = palette.composeShadow,
+                    spotColor = palette.composeShadow,
                 )
-                .then(
-                    if (isDarkTheme) Modifier.border(0.5.dp, palette.chromeBorder, RoundedCornerShape(24.dp)) else Modifier
+                .background(
+                    brush = Brush.linearGradient(
+                        colors = listOf(palette.composeHighlight, palette.composeBackground),
+                    ),
+                    shape = composeChromeShape,
+                )
+                .border(
+                    width = if (isDarkTheme) 0.5.dp else 1.dp,
+                    color = palette.composeBorder,
+                    shape = composeChromeShape,
                 )
                 .padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 14.dp),
             verticalAlignment = Alignment.CenterVertically,

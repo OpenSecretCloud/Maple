@@ -1689,15 +1689,18 @@ sealed class AppAction {
     }
     
     data class RestoreSession(
-        val `accessToken`: kotlin.String, 
+        val `accessToken`: kotlin.String,
         val `refreshToken`: kotlin.String) : AppAction()
-        
+
     {
         
 
         companion object
     }
     
+    object CompleteStartup : AppAction()
+
+
     object ClearPendingAuthUrl : AppAction()
     
     
@@ -1773,18 +1776,19 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 FfiConverterString.read(buf),
                 FfiConverterString.read(buf),
                 )
-            6 -> AppAction.ClearPendingAuthUrl
-            7 -> AppAction.Logout
-            8 -> AppAction.SendMessage(
+            6 -> AppAction.CompleteStartup
+            7 -> AppAction.ClearPendingAuthUrl
+            8 -> AppAction.Logout
+            9 -> AppAction.SendMessage(
                 FfiConverterString.read(buf),
                 )
-            9 -> AppAction.LoadOlderMessages
-            10 -> AppAction.RefreshTimestamps
-            11 -> AppAction.ClearToast
-            12 -> AppAction.ToggleSettings
-            13 -> AppAction.RequestDeleteAgent
-            14 -> AppAction.ConfirmDeleteAgent
-            15 -> AppAction.CancelDeleteAgent
+            10 -> AppAction.LoadOlderMessages
+            11 -> AppAction.RefreshTimestamps
+            12 -> AppAction.ClearToast
+            13 -> AppAction.ToggleSettings
+            14 -> AppAction.RequestDeleteAgent
+            15 -> AppAction.ConfirmDeleteAgent
+            16 -> AppAction.CancelDeleteAgent
             else -> throw RuntimeException("invalid enum value, something is very wrong!!")
         }
     }
@@ -1831,6 +1835,12 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 4UL
                 + FfiConverterString.allocationSize(value.`accessToken`)
                 + FfiConverterString.allocationSize(value.`refreshToken`)
+            )
+        }
+        is AppAction.CompleteStartup -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
             )
         }
         is AppAction.ClearPendingAuthUrl -> {
@@ -1931,45 +1941,49 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 FfiConverterString.write(value.`refreshToken`, buf)
                 Unit
             }
-            is AppAction.ClearPendingAuthUrl -> {
+            is AppAction.CompleteStartup -> {
                 buf.putInt(6)
                 Unit
             }
-            is AppAction.Logout -> {
+            is AppAction.ClearPendingAuthUrl -> {
                 buf.putInt(7)
                 Unit
             }
-            is AppAction.SendMessage -> {
+            is AppAction.Logout -> {
                 buf.putInt(8)
+                Unit
+            }
+            is AppAction.SendMessage -> {
+                buf.putInt(9)
                 FfiConverterString.write(value.`content`, buf)
                 Unit
             }
             is AppAction.LoadOlderMessages -> {
-                buf.putInt(9)
-                Unit
-            }
-            is AppAction.RefreshTimestamps -> {
                 buf.putInt(10)
                 Unit
             }
-            is AppAction.ClearToast -> {
+            is AppAction.RefreshTimestamps -> {
                 buf.putInt(11)
                 Unit
             }
-            is AppAction.ToggleSettings -> {
+            is AppAction.ClearToast -> {
                 buf.putInt(12)
                 Unit
             }
-            is AppAction.RequestDeleteAgent -> {
+            is AppAction.ToggleSettings -> {
                 buf.putInt(13)
                 Unit
             }
-            is AppAction.ConfirmDeleteAgent -> {
+            is AppAction.RequestDeleteAgent -> {
                 buf.putInt(14)
                 Unit
             }
-            is AppAction.CancelDeleteAgent -> {
+            is AppAction.ConfirmDeleteAgent -> {
                 buf.putInt(15)
+                Unit
+            }
+            is AppAction.CancelDeleteAgent -> {
+                buf.putInt(16)
                 Unit
             }
         }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }

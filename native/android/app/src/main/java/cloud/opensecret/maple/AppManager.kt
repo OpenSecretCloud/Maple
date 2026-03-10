@@ -78,6 +78,11 @@ class AppManager private constructor(context: Context) : AppReconciler {
         val refresh = securePrefs.getString("refresh_token", null)
         if (access != null && refresh != null) {
             rust.dispatch(AppAction.RestoreSession(accessToken = access, refreshToken = refresh))
+        } else {
+            if (access != null || refresh != null) {
+                securePrefs.edit().remove("access_token").remove("refresh_token").apply()
+            }
+            rust.dispatch(AppAction.CompleteStartup)
         }
     }
 

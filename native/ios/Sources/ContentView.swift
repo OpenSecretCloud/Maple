@@ -473,14 +473,307 @@ struct ChatPalette {
     }
 }
 
+private let typingIndicatorID = "typing-indicator"
+
+private enum HistoryLoadScrollStrategy: Equatable {
+    case preserveBottom
+    case preserveAnchor(String)
+}
+
+private struct MessageFramePreferenceKey: PreferenceKey {
+    static var defaultValue: [String: CGRect] = [:]
+
+    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
+    }
+}
+
+private struct ContentHeightPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
+private func didPrependMessages(oldIDs: [String], newIDs: [String]) -> Bool {
+    oldIDs.count > 0 &&
+        newIDs.count > oldIDs.count &&
+        Array(newIDs.suffix(oldIDs.count)) == oldIDs
+}
+
+private func didAppendMessages(oldIDs: [String], newIDs: [String]) -> Bool {
+    oldIDs.count > 0 &&
+        newIDs.count > oldIDs.count &&
+        Array(newIDs.prefix(oldIDs.count)) == oldIDs
+}
+
 struct AgentChatView: View {
     @Bindable var manager: AppManager
     @Environment(\.colorScheme) private var colorScheme
     @State private var composeText = ""
+    @State private var hasSettledInitialScroll = false
+    @State private var messageFrames: [String: CGRect] = [:]
+    @State private var scrollViewHeight: CGFloat = 0
+    @State private var contentHeight: CGFloat = 0
+    @State private var topVisibleMessageID: String?
+    @State private var isNearBottom = true
+    @State private var pendingHistoryScrollStrategy: HistoryLoadScrollStrategy?
+    @State private var lastMessageIDs: [String] = []
     let timestampTimer = Timer.publish(every: 30, on: .main, in: .common).autoconnect()
 
     private var palette: ChatPalette {
         ChatPalette.forColorScheme(colorScheme)
+    }
+
+    private var messageIDs: [String] {
+        manager.state.messages.map(\.id)
+    }
+
+    private var bottomTargetID: String? {
+        manager.state.isAgentTyping ? typingIndicatorID : manager.state.messages.last?.id
+    }
+
+    private func scrollToBottom(with proxy: ScrollViewProxy, animated: Bool) {
+        guard let bottomTargetID else { return }
+
+        if animated {
+            withAnimation {
+                proxy.scrollTo(bottomTargetID, anchor: .bottom)
+            }
+            return
+        }
+
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            proxy.scrollTo(bottomTargetID, anchor: .bottom)
+        }
+    }
+
+    private func restoreAfterHistoryLoad(with proxy: ScrollViewProxy) {
+        guard let pendingHistoryScrollStrategy else { return }
+
+        switch pendingHistoryScrollStrategy {
+        case .preserveBottom:
+            scrollToBottom(with: proxy, animated: false)
+        case .preserveAnchor(let anchorID):
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                proxy.scrollTo(anchorID, anchor: .top)
+            }
+        }
+
+        self.pendingHistoryScrollStrategy = nil
+    }
+
+    private func requestOlderMessages(triggerMessageID: String? = nil) {
+        guard hasSettledInitialScroll,
+              manager.state.hasOlderMessages,
+              !manager.state.isLoadingHistory,
+              pendingHistoryScrollStrategy == nil else { return }
+
+        if contentHeight <= scrollViewHeight + 1, isNearBottom {
+            pendingHistoryScrollStrategy = .preserveBottom
+        } else if let anchorID = topVisibleMessageID ?? triggerMessageID {
+            pendingHistoryScrollStrategy = .preserveAnchor(anchorID)
+        } else {
+            pendingHistoryScrollStrategy = .preserveBottom
+        }
+
+        manager.dispatch(.loadOlderMessages)
+    }
+
+    private func maybeRequestOlderMessagesForUnderfilledViewport() {
+        guard hasSettledInitialScroll,
+              manager.state.hasOlderMessages,
+              !manager.state.isLoadingHistory,
+              pendingHistoryScrollStrategy == nil,
+              scrollViewHeight > 0,
+              contentHeight > 0,
+              contentHeight <= scrollViewHeight + 1,
+              isNearBottom else { return }
+
+        requestOlderMessages()
+    }
+
+    private func settleInitialScrollIfNeeded(with proxy: ScrollViewProxy) {
+        guard !hasSettledInitialScroll,
+              !messageIDs.isEmpty,
+              scrollViewHeight > 0,
+              let bottomTargetID,
+              messageFrames[bottomTargetID] != nil else { return }
+
+        scrollToBottom(with: proxy, animated: false)
+        hasSettledInitialScroll = true
+    }
+
+    private func updateScrollTracking(with frames: [String: CGRect]) {
+        let visibleMessageFrames = frames
+            .filter { key, frame in
+                key != typingIndicatorID &&
+                    frame.maxY > 0 &&
+                    frame.minY < scrollViewHeight
+            }
+
+        topVisibleMessageID = visibleMessageFrames.min { lhs, rhs in
+            lhs.value.minY < rhs.value.minY
+        }?.key
+
+        guard let bottomTargetID,
+              let bottomFrame = frames[bottomTargetID] else {
+            isNearBottom = true
+            return
+        }
+
+        isNearBottom = bottomFrame.maxY <= scrollViewHeight + 80
+    }
+
+    @ViewBuilder
+    private func messageRow(index: Int, message: ChatMessage) -> some View {
+        MessageBubble(message: message, palette: palette)
+            .id(message.id)
+            .background {
+                GeometryReader { bubbleGeometry in
+                    Color.clear.preference(
+                        key: MessageFramePreferenceKey.self,
+                        value: [message.id: bubbleGeometry.frame(in: .named("chat-scroll"))]
+                    )
+                }
+            }
+            .onAppear {
+                if index < 3 {
+                    requestOlderMessages(triggerMessageID: message.id)
+                }
+            }
+    }
+
+    @ViewBuilder
+    private var typingIndicatorView: some View {
+        HStack {
+            Text("Maple is typing...")
+                .font(MapleFont.caption)
+                .foregroundStyle(palette.metadataText)
+            Spacer()
+        }
+        .padding(.horizontal)
+        .id(typingIndicatorID)
+        .background {
+            GeometryReader { bubbleGeometry in
+                Color.clear.preference(
+                    key: MessageFramePreferenceKey.self,
+                    value: [typingIndicatorID: bubbleGeometry.frame(in: .named("chat-scroll"))]
+                )
+            }
+        }
+    }
+
+    private func makeMessageList(
+        proxy: ScrollViewProxy,
+        geometry: GeometryProxy
+    ) -> some View {
+        let showHistorySpinner = manager.state.isLoadingHistory && !manager.state.messages.isEmpty
+        let showInitialSpinner =
+            (manager.state.isLoadingHistory && manager.state.messages.isEmpty) ||
+            (!hasSettledInitialScroll && !manager.state.messages.isEmpty)
+
+        return ScrollView {
+            LazyVStack(spacing: MapleSpacing.md) {
+                ForEach(Array(manager.state.messages.enumerated()), id: \.element.id) { index, message in
+                    messageRow(index: index, message: message)
+                }
+
+                if manager.state.isAgentTyping {
+                    typingIndicatorView
+                }
+            }
+            .padding()
+            .background {
+                GeometryReader { contentGeometry in
+                    Color.clear.preference(
+                        key: ContentHeightPreferenceKey.self,
+                        value: contentGeometry.size.height
+                    )
+                }
+            }
+        }
+        .defaultScrollAnchor(.bottom)
+        .coordinateSpace(name: "chat-scroll")
+        .opacity(hasSettledInitialScroll || manager.state.messages.isEmpty ? 1 : 0)
+        .overlay(alignment: .top) {
+            if showHistorySpinner {
+                ProgressView()
+                    .padding(.top, MapleSpacing.xs)
+            }
+        }
+        .overlay {
+            if showInitialSpinner {
+                ProgressView()
+            }
+        }
+        .onAppear {
+            scrollViewHeight = geometry.size.height
+            updateScrollTracking(with: messageFrames)
+        }
+        .onChange(of: geometry.size.height) { _, newHeight in
+            scrollViewHeight = newHeight
+            updateScrollTracking(with: messageFrames)
+            settleInitialScrollIfNeeded(with: proxy)
+        }
+        .onPreferenceChange(MessageFramePreferenceKey.self) { frames in
+            messageFrames = frames
+            updateScrollTracking(with: frames)
+            settleInitialScrollIfNeeded(with: proxy)
+        }
+        .onPreferenceChange(ContentHeightPreferenceKey.self) { newHeight in
+            contentHeight = newHeight
+            settleInitialScrollIfNeeded(with: proxy)
+            maybeRequestOlderMessagesForUnderfilledViewport()
+        }
+        .onChange(of: hasSettledInitialScroll) { _, _ in
+            maybeRequestOlderMessagesForUnderfilledViewport()
+        }
+        .onChange(of: messageIDs) { oldIDs, newIDs in
+            if newIDs.isEmpty {
+                hasSettledInitialScroll = false
+                pendingHistoryScrollStrategy = nil
+                messageFrames = [:]
+                topVisibleMessageID = nil
+                lastMessageIDs = []
+            } else if !hasSettledInitialScroll {
+                settleInitialScrollIfNeeded(with: proxy)
+            } else if didPrependMessages(oldIDs: oldIDs, newIDs: newIDs) {
+                restoreAfterHistoryLoad(with: proxy)
+            } else if didAppendMessages(oldIDs: oldIDs, newIDs: newIDs) && isNearBottom {
+                scrollToBottom(with: proxy, animated: false)
+            } else {
+                pendingHistoryScrollStrategy = nil
+            }
+
+            lastMessageIDs = newIDs
+        }
+        .onChange(of: manager.state.messages.last?.content) { _, _ in
+            guard hasSettledInitialScroll,
+                  pendingHistoryScrollStrategy == nil,
+                  isNearBottom else { return }
+
+            scrollToBottom(with: proxy, animated: false)
+        }
+        .onChange(of: manager.state.isAgentTyping) { _, _ in
+            guard hasSettledInitialScroll,
+                  pendingHistoryScrollStrategy == nil,
+                  isNearBottom else { return }
+
+            scrollToBottom(with: proxy, animated: false)
+        }
+        .onChange(of: manager.state.isLoadingHistory) { _, isLoading in
+            if !isLoading,
+               pendingHistoryScrollStrategy != nil,
+               messageIDs == lastMessageIDs {
+                pendingHistoryScrollStrategy = nil
+            }
+        }
     }
 
     var body: some View {
@@ -506,10 +799,11 @@ struct AgentChatView: View {
                                 manager.dispatch(.toggleSettings)
                             } label: {
                                 Image(systemName: "line.3.horizontal")
-                                    .font(.system(size: 18, weight: .bold))
+                                    .font(.system(size: 13, weight: .bold))
                                     .foregroundStyle(palette.secondaryIcon)
-                                    .frame(width: 43, height: 43)
+                                    .frame(width: 32, height: 32)
                             }
+                            .controlSize(.small)
                             .buttonStyle(.glass)
                         }
                         Spacer()
@@ -517,10 +811,11 @@ struct AgentChatView: View {
                             Button {
                             } label: {
                                 Image(systemName: "magnifyingglass")
-                                    .font(.system(size: 18, weight: .bold))
+                                    .font(.system(size: 13, weight: .bold))
                                     .foregroundStyle(palette.secondaryIcon)
-                                    .frame(width: 43, height: 43)
+                                    .frame(width: 32, height: 32)
                             }
+                            .controlSize(.small)
                             .buttonStyle(.glass)
                         }
                     }
@@ -569,68 +864,9 @@ struct AgentChatView: View {
     }
 
     private var messageList: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(spacing: MapleSpacing.md) {
-                    // Load-more indicator at top
-                    if manager.state.isLoadingHistory {
-                        ProgressView()
-                            .padding(.vertical, 8)
-                            .id("loading-history")
-                    } else if manager.state.hasOlderMessages {
-                        Button("Load older messages") {
-                            manager.dispatch(.loadOlderMessages)
-                        }
-                        .font(MapleFont.caption)
-                        .foregroundStyle(Color.maple500)
-                        .padding(.vertical, 8)
-                        .id("load-more")
-                    }
-
-                    ForEach(Array(manager.state.messages.enumerated()), id: \.element.id) { index, message in
-                        MessageBubble(message: message, palette: palette)
-                            .id(message.id)
-                            .onAppear {
-                                // Prefetch when within 3 messages of top
-                                if index < 3 && manager.state.hasOlderMessages && !manager.state.isLoadingHistory {
-                                    manager.dispatch(.loadOlderMessages)
-                                }
-                            }
-                    }
-
-                    if manager.state.isAgentTyping {
-                        HStack {
-                            Text("Maple is typing...")
-                                .font(MapleFont.caption)
-                                .foregroundStyle(palette.metadataText)
-                            Spacer()
-                        }
-                        .padding(.horizontal)
-                        .id("typing-indicator")
-                    }
-                }
-                .padding()
-            }
-            .onChange(of: manager.state.messages.count) { oldCount, newCount in
-                if newCount > oldCount {
-                    if manager.state.isAgentTyping {
-                        withAnimation { proxy.scrollTo("typing-indicator", anchor: .bottom) }
-                    } else if let last = manager.state.messages.last {
-                        withAnimation { proxy.scrollTo(last.id, anchor: .bottom) }
-                    }
-                }
-            }
-            .onChange(of: manager.state.messages.last?.content) { _, _ in
-                if manager.state.isAgentTyping {
-                    withAnimation { proxy.scrollTo("typing-indicator", anchor: .bottom) }
-                } else if let last = manager.state.messages.last {
-                    proxy.scrollTo(last.id, anchor: .bottom)
-                }
-            }
-            .onChange(of: manager.state.isAgentTyping) { _, isTyping in
-                if isTyping {
-                    withAnimation { proxy.scrollTo("typing-indicator", anchor: .bottom) }
-                }
+        GeometryReader { geometry in
+            ScrollViewReader { proxy in
+                makeMessageList(proxy: proxy, geometry: geometry)
             }
         }
     }

@@ -7,21 +7,30 @@ import Observation
 private enum KeychainHelper {
     private static let service = "cloud.opensecret.maple.ios"
 
-    static func save(key: String, value: String) {
-        guard let data = value.data(using: .utf8) else { return }
+    static func saveData(key: String, data: Data) {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: key,
         ]
-        SecItemDelete(query as CFDictionary)
+
+        let attributes: [String: Any] = [
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+        ]
+
         var item = query
-        item[kSecValueData as String] = data
-        item[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        SecItemAdd(item as CFDictionary, nil)
+        for (key, value) in attributes {
+            item[key] = value
+        }
+
+        let addStatus = SecItemAdd(item as CFDictionary, nil)
+        if addStatus == errSecDuplicateItem {
+            SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+        }
     }
 
-    static func load(key: String) -> String? {
+    static func loadData(key: String) -> Data? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -31,9 +40,13 @@ private enum KeychainHelper {
         ]
         var result: AnyObject?
         guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
-              let data = result as? Data,
-              let str = String(data: data, encoding: .utf8) else { return nil }
-        return str
+              let data = result as? Data else { return nil }
+        return data
+    }
+
+    static func loadString(key: String) -> String? {
+        guard let data = loadData(key: key) else { return nil }
+        return String(data: data, encoding: .utf8)
     }
 
     static func delete(key: String) {
@@ -43,6 +56,62 @@ private enum KeychainHelper {
             kSecAttrAccount as String: key,
         ]
         SecItemDelete(query as CFDictionary)
+    }
+}
+
+private struct StoredSessionTokens: Codable {
+    let accessToken: String
+    let refreshToken: String
+}
+
+private enum SessionTokenStore {
+    private static let combinedKey = "session_tokens"
+    private static let legacyAccessKey = "access_token"
+    private static let legacyRefreshKey = "refresh_token"
+
+    static func load() -> StoredSessionTokens? {
+        if let data = KeychainHelper.loadData(key: combinedKey) {
+            if let tokens = try? JSONDecoder().decode(StoredSessionTokens.self, from: data),
+               !tokens.accessToken.isEmpty,
+               !tokens.refreshToken.isEmpty {
+                return tokens
+            }
+
+            KeychainHelper.delete(key: combinedKey)
+        }
+
+        guard let accessToken = KeychainHelper.loadString(key: legacyAccessKey),
+              let refreshToken = KeychainHelper.loadString(key: legacyRefreshKey),
+              !accessToken.isEmpty,
+              !refreshToken.isEmpty else {
+            return nil
+        }
+
+        let tokens = StoredSessionTokens(accessToken: accessToken, refreshToken: refreshToken)
+        save(accessToken: accessToken, refreshToken: refreshToken)
+        KeychainHelper.delete(key: legacyAccessKey)
+        KeychainHelper.delete(key: legacyRefreshKey)
+        return tokens
+    }
+
+    static func save(accessToken: String, refreshToken: String) {
+        guard !accessToken.isEmpty, !refreshToken.isEmpty else {
+            clear()
+            return
+        }
+
+        let tokens = StoredSessionTokens(accessToken: accessToken, refreshToken: refreshToken)
+        guard let data = try? JSONEncoder().encode(tokens) else { return }
+
+        KeychainHelper.saveData(key: combinedKey, data: data)
+        KeychainHelper.delete(key: legacyAccessKey)
+        KeychainHelper.delete(key: legacyRefreshKey)
+    }
+
+    static func clear() {
+        KeychainHelper.delete(key: combinedKey)
+        KeychainHelper.delete(key: legacyAccessKey)
+        KeychainHelper.delete(key: legacyRefreshKey)
     }
 }
 
@@ -90,14 +159,24 @@ final class AppManager: AppReconciler {
 
         rust.listenForUpdates(reconciler: self)
 
-        // Attempt session restore from Keychain
-        if let access = KeychainHelper.load(key: "access_token"),
-           let refresh = KeychainHelper.load(key: "refresh_token") {
-            rust.dispatch(action: .restoreSession(accessToken: access, refreshToken: refresh))
+        if let tokens = SessionTokenStore.load() {
+            rust.dispatch(
+                action: .restoreSession(
+                    accessToken: tokens.accessToken,
+                    refreshToken: tokens.refreshToken
+                )
+            )
+        } else {
+            SessionTokenStore.clear()
+            rust.dispatch(action: .completeStartup)
         }
     }
 
     nonisolated func reconcile(update: AppUpdate) {
+        if case .sessionTokens(_, let accessToken, let refreshToken) = update {
+            SessionTokenStore.save(accessToken: accessToken, refreshToken: refreshToken)
+        }
+
         Task { @MainActor [weak self] in
             self?.apply(update: update)
         }
@@ -105,16 +184,7 @@ final class AppManager: AppReconciler {
 
     private func apply(update: AppUpdate) {
         switch update {
-        case .sessionTokens(let rev, let accessToken, let refreshToken):
-            // Persist side-effect BEFORE rev guard (per bible 6.6)
-            if accessToken.isEmpty {
-                KeychainHelper.delete(key: "access_token")
-                KeychainHelper.delete(key: "refresh_token")
-            } else {
-                KeychainHelper.save(key: "access_token", value: accessToken)
-                KeychainHelper.save(key: "refresh_token", value: refreshToken)
-            }
-            // Still update rev tracking
+        case .sessionTokens(let rev, _, _):
             if rev > lastRevApplied {
                 lastRevApplied = rev
             }

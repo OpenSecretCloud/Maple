@@ -88,7 +88,6 @@ fn run_ios(
         .arg("build")
         .arg(format!("ARCHS={xcode_arch}"))
         .arg("ONLY_ACTIVE_ARCH=YES")
-        .arg("CODE_SIGNING_ALLOWED=NO")
         .arg(format!("PRODUCT_BUNDLE_IDENTIFIER={bundle_id}"));
 
     if let Ok(api_url) = std::env::var("OPEN_SECRET_API_URL") {

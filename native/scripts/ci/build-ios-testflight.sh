@@ -47,8 +47,6 @@ export OPEN_SECRET_API_URL="$open_secret_api_url"
   xcodegen generate
 )
 
-# Match Maple 2.0/Tauri CI: exportArchive performs the App Store signing.
-# If native iOS gains entitlements, revisit this unsigned archive flow.
 env -u NIX_LDFLAGS -u LD -u CC -u CXX \
   xcrun xcodebuild \
     -project "$native_root/ios/App.xcodeproj" \
@@ -61,10 +59,6 @@ env -u NIX_LDFLAGS -u LD -u CC -u CXX \
     -authenticationKeyID "$APPLE_API_KEY" \
     -authenticationKeyIssuerID "$APPLE_API_ISSUER" \
     clean archive \
-    CODE_SIGNING_REQUIRED=NO \
-    CODE_SIGNING_ALLOWED=NO \
-    CODE_SIGN_IDENTITY="" \
-    CODE_SIGN_ENTITLEMENTS="" \
     DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
     PRODUCT_BUNDLE_IDENTIFIER=cloud.opensecret.maple \
     MARKETING_VERSION="$maple_version_value" \
