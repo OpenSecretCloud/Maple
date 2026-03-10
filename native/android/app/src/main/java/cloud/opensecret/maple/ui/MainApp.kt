@@ -1225,11 +1225,10 @@ fun AgentChatScreen(manager: AppManager) {
                     .clip(RoundedCornerShape(99.dp))
                     .background(
                         brush = Brush.verticalGradient(
-                            colors = if (canSend) {
-                                listOf(Maple500.copy(alpha = 0.5f), Color(0xFFE8633D).copy(alpha = 0.5f))
-                            } else {
-                                listOf(Maple500.copy(alpha = 0.5f), Color(0xFFE8633D).copy(alpha = 0.5f))
-                            },
+                            colors = listOf(
+                                Maple500.copy(alpha = if (canSend) 1f else 0.5f),
+                                Maple700.copy(alpha = if (canSend) 1f else 0.5f),
+                            ),
                         ),
                     )
                     .clickable(enabled = canSend) {

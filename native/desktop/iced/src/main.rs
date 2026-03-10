@@ -328,6 +328,8 @@ impl App {
                         access_token,
                         refresh_token,
                     });
+                } else {
+                    manager.dispatch(AppAction::CompleteStartup);
                 }
             }
 
@@ -789,7 +791,11 @@ fn wordmark_abbr_paths(s: f32) -> Vec<canvas::Path> {
             b.bezier_curve_to(p(0.0, 0.420626), p(3.85183, -1.16383), p(6.79613, 0.948761));
             b.line_to(p(17.9439, 10.3599));
             b.line_to(p(29.0916, 0.948761));
-            b.bezier_curve_to(p(32.0378, -1.16383), p(35.8878, 0.420626), p(35.8878, 4.02964));
+            b.bezier_curve_to(
+                p(32.0378, -1.16383),
+                p(35.8878, 0.420626),
+                p(35.8878, 4.02964),
+            );
             b.line_to(p(35.8878, 27.4798));
             b.bezier_curve_to(p(35.8878, 29.967), p(33.8642, 31.984), p(31.3689, 31.984));
             b.line_to(p(4.11864, 31.984));
@@ -800,11 +806,19 @@ fn wordmark_abbr_paths(s: f32) -> Vec<canvas::Path> {
         canvas::Path::new(|b| {
             b.move_to(p(55.3789, 26.0034));
             b.line_to(p(55.3789, 27.2264));
-            b.bezier_curve_to(p(55.3789, 29.7135), p(53.3553, 31.7306), p(50.8601, 31.7306));
+            b.bezier_curve_to(
+                p(55.3789, 29.7135),
+                p(53.3553, 31.7306),
+                p(50.8601, 31.7306),
+            );
             b.line_to(p(44.8681, 31.7306));
             b.bezier_curve_to(p(42.371, 31.7306), p(40.3493, 29.7135), p(40.3493, 27.2264));
             b.line_to(p(40.3493, 4.77258));
-            b.bezier_curve_to(p(40.3493, 2.28354), p(42.3729, 0.266478), p(44.87, 0.266478));
+            b.bezier_curve_to(
+                p(40.3493, 2.28354),
+                p(42.3729, 0.266478),
+                p(44.87, 0.266478),
+            );
             b.line_to(p(55.0952, 0.266478));
             b.bezier_curve_to(p(66.9758, 0.266478), p(71.1846, 5.503), p(71.1846, 13.1537));
             b.bezier_curve_to(p(71.1846, 20.8043), p(67.0434, 25.921), p(55.3808, 26.0034));
@@ -815,16 +829,36 @@ fn wordmark_abbr_paths(s: f32) -> Vec<canvas::Path> {
         canvas::Path::new(|b| {
             b.move_to(p(74.3353, 27.2264));
             b.line_to(p(74.3353, 4.77258));
-            b.bezier_curve_to(p(74.3353, 2.28354), p(76.3589, 0.266478), p(78.8561, 0.266478));
+            b.bezier_curve_to(
+                p(74.3353, 2.28354),
+                p(76.3589, 0.266478),
+                p(78.8561, 0.266478),
+            );
             b.line_to(p(84.848, 0.266478));
-            b.bezier_curve_to(p(87.3451, 0.266478), p(89.3669, 2.28354), p(89.3669, 4.77071));
+            b.bezier_curve_to(
+                p(87.3451, 0.266478),
+                p(89.3669, 2.28354),
+                p(89.3669, 4.77071),
+            );
             b.line_to(p(89.3669, 10.7545));
             b.line_to(p(95.3701, 10.7545));
-            b.bezier_curve_to(p(97.8672, 10.7545), p(99.8889, 12.7716), p(99.8889, 15.2588));
+            b.bezier_curve_to(
+                p(97.8672, 10.7545),
+                p(99.8889, 12.7716),
+                p(99.8889, 15.2588),
+            );
             b.line_to(p(99.8889, 27.2245));
-            b.bezier_curve_to(p(99.8889, 29.7117), p(97.8653, 31.7288), p(95.3701, 31.7288));
+            b.bezier_curve_to(
+                p(99.8889, 29.7117),
+                p(97.8653, 31.7288),
+                p(95.3701, 31.7288),
+            );
             b.line_to(p(78.8561, 31.7288));
-            b.bezier_curve_to(p(76.3589, 31.7288), p(74.3372, 29.7117), p(74.3372, 27.2245));
+            b.bezier_curve_to(
+                p(76.3589, 31.7288),
+                p(74.3372, 29.7117),
+                p(74.3372, 27.2245),
+            );
             b.line_to(p(74.3353, 27.2264));
             b.close();
         }),
@@ -1041,9 +1075,16 @@ fn login_palette(dark_mode: bool) -> LoginPalette {
 
 #[derive(Clone, Copy)]
 struct ChatPalette {
+    background_base: Color,
     background_stops: [Color; 5],
     chrome_background: Color,
     chrome_border: Color,
+    chrome_highlight: Color,
+    chrome_shadow: Color,
+    compose_background: Color,
+    compose_border: Color,
+    compose_highlight: Color,
+    compose_shadow: Color,
     wordmark: Color,
     secondary_icon: Color,
     metadata_text: Color,
@@ -1058,18 +1099,46 @@ struct ChatPalette {
 fn chat_palette(dark_mode: bool) -> ChatPalette {
     if dark_mode {
         ChatPalette {
+            background_base: DARK_BACKGROUND,
             background_stops: [
-                DARK_BACKGROUND,
-                DARK_SURFACE_LOW,
-                DARK_SURFACE_HIGHEST,
-                BARK_900,
-                DARK_BACKGROUND,
+                Color {
+                    a: 0.18,
+                    ..MAPLE_500
+                },
+                Color {
+                    a: 0.1,
+                    ..Color::from_rgb8(0x5D, 0x40, 0x36)
+                },
+                Color {
+                    a: 0.12,
+                    ..PEBBLE_800
+                },
+                Color {
+                    a: 0.03,
+                    ..DARK_SURFACE_LOW
+                },
+                Color::TRANSPARENT,
             ],
             chrome_background: Color {
-                a: 0.78,
+                a: 0.58,
                 ..DARK_SURFACE
             },
-            chrome_border: DARK_OUTLINE,
+            chrome_border: Color { a: 0.22, ..WHITE },
+            chrome_highlight: Color { a: 0.1, ..WHITE },
+            chrome_shadow: Color {
+                a: 0.2,
+                ..Color::BLACK
+            },
+            compose_background: Color {
+                a: 0.64,
+                ..DARK_SURFACE_LOW
+            },
+            compose_border: Color { a: 0.22, ..WHITE },
+            compose_highlight: Color { a: 0.12, ..WHITE },
+            compose_shadow: Color {
+                a: 0.22,
+                ..Color::BLACK
+            },
             wordmark: PEBBLE_50,
             secondary_icon: DARK_ON_SURFACE_VARIANT,
             metadata_text: Color {
@@ -1094,14 +1163,36 @@ fn chat_palette(dark_mode: bool) -> ChatPalette {
         }
     } else {
         ChatPalette {
-            background_stops: [MAPLE_500, Color::from_rgb8(0xEC, 0xB8, 0xA5), Color::from_rgb8(0xDA, 0xDA, 0xDA), WHITE, WHITE],
-            chrome_background: Color {
-                a: 0.4,
-                ..WHITE
+            background_base: WHITE,
+            background_stops: [
+                Color {
+                    a: 0.35,
+                    ..MAPLE_500
+                },
+                Color {
+                    a: 0.2,
+                    ..Color::from_rgb8(0xEC, 0xB8, 0xA5)
+                },
+                Color {
+                    a: 0.1,
+                    ..Color::from_rgb8(0xDA, 0xDA, 0xDA)
+                },
+                Color::TRANSPARENT,
+                Color::TRANSPARENT,
+            ],
+            chrome_background: Color { a: 0.4, ..WHITE },
+            chrome_border: Color { a: 0.68, ..WHITE },
+            chrome_highlight: Color { a: 0.72, ..WHITE },
+            chrome_shadow: Color {
+                a: 0.08,
+                ..Color::BLACK
             },
-            chrome_border: Color {
-                a: 0.0,
-                ..WHITE
+            compose_background: Color { a: 0.64, ..WHITE },
+            compose_border: Color { a: 0.72, ..WHITE },
+            compose_highlight: Color { a: 0.84, ..WHITE },
+            compose_shadow: Color {
+                a: 0.08,
+                ..Color::BLACK
             },
             wordmark: PEBBLE_800,
             secondary_icon: PEBBLE_800,
@@ -1321,19 +1412,24 @@ fn view_chat<'a>(state: &'a AppState, compose: &'a str, dark_mode: bool) -> Elem
     let palette = chat_palette(dark_mode);
 
     let chrome_pill_style = move |_: &Theme| container::Style {
-        background: Some(iced::Background::Color(palette.chrome_background)),
+        background: Some(iced::Background::Gradient(iced::Gradient::Linear(
+            iced::gradient::Linear::new(std::f32::consts::PI)
+                .add_stop(0.0, palette.chrome_highlight)
+                .add_stop(1.0, palette.chrome_background),
+        ))),
         border: Border {
             radius: RADIUS_FULL.into(),
-            width: 0.5,
+            width: if dark_mode { 1.0 } else { 0.5 },
             color: palette.chrome_border,
         },
-        shadow: iced::Shadow {
-            color: Color {
-                a: if dark_mode { 0.16 } else { 0.08 },
-                ..Color::BLACK
-            },
-            offset: iced::Vector::new(0.0, 2.0),
-            blur_radius: if dark_mode { 12.0 } else { 8.0 },
+        shadow: if dark_mode {
+            iced::Shadow::default()
+        } else {
+            iced::Shadow {
+                color: palette.chrome_shadow,
+                offset: iced::Vector::new(0.0, 2.0),
+                blur_radius: 8.0,
+            }
         },
         ..Default::default()
     };
@@ -1348,14 +1444,7 @@ fn view_chat<'a>(state: &'a AppState, compose: &'a str, dark_mode: bool) -> Elem
         .align_y(iced::Alignment::Center),
     )
     .padding([12, 12])
-    .style(move |_: &Theme| container::Style {
-        background: Some(iced::Background::Color(palette.chrome_background)),
-        border: Border {
-            radius: 99.0.into(),
-            ..Default::default()
-        },
-        ..Default::default()
-    });
+    .style(chrome_pill_style);
 
     // Hamburger menu pill (left)
     let menu_pill = button(
@@ -1366,14 +1455,44 @@ fn view_chat<'a>(state: &'a AppState, compose: &'a str, dark_mode: bool) -> Elem
     .padding(12)
     .on_press(Message::ToggleSettings)
     .style(move |_: &Theme, status| {
-        let bg_alpha = match status {
-            iced::widget::button::Status::Hovered => if dark_mode { 0.85 } else { 0.5 },
-            iced::widget::button::Status::Pressed => if dark_mode { 0.9 } else { 0.6 },
-            _ => if dark_mode { 0.78 } else { 0.4 },
+        let (bg_boost, highlight_boost, shadow_blur, shadow_offset) = match status {
+            iced::widget::button::Status::Hovered => (0.08, 0.04, 22.0, 6.0),
+            iced::widget::button::Status::Pressed => (0.12, 0.06, 16.0, 3.0),
+            _ => (
+                0.0,
+                0.0,
+                if dark_mode { 18.0 } else { 8.0 },
+                if dark_mode { 6.0 } else { 2.0 },
+            ),
+        };
+        let bg = Color {
+            a: (palette.chrome_background.a + bg_boost).min(1.0),
+            ..palette.chrome_background
+        };
+        let highlight = Color {
+            a: (palette.chrome_highlight.a + highlight_boost).min(1.0),
+            ..palette.chrome_highlight
         };
         iced::widget::button::Style {
-            background: Some(iced::Background::Color(Color { a: bg_alpha, ..if dark_mode { DARK_SURFACE } else { WHITE } })),
-            border: Border { radius: 99.0.into(), ..Default::default() },
+            background: Some(iced::Background::Gradient(iced::Gradient::Linear(
+                iced::gradient::Linear::new(std::f32::consts::PI)
+                    .add_stop(0.0, highlight)
+                    .add_stop(1.0, bg),
+            ))),
+            border: Border {
+                radius: 99.0.into(),
+                width: if dark_mode { 1.0 } else { 0.5 },
+                color: palette.chrome_border,
+            },
+            shadow: if dark_mode {
+                iced::Shadow::default()
+            } else {
+                iced::Shadow {
+                    color: palette.chrome_shadow,
+                    offset: iced::Vector::new(0.0, shadow_offset),
+                    blur_radius: shadow_blur,
+                }
+            },
             ..Default::default()
         }
     });
@@ -1386,14 +1505,44 @@ fn view_chat<'a>(state: &'a AppState, compose: &'a str, dark_mode: bool) -> Elem
     )
     .padding(12)
     .style(move |_: &Theme, status| {
-        let bg_alpha = match status {
-            iced::widget::button::Status::Hovered => if dark_mode { 0.85 } else { 0.5 },
-            iced::widget::button::Status::Pressed => if dark_mode { 0.9 } else { 0.6 },
-            _ => if dark_mode { 0.78 } else { 0.4 },
+        let (bg_boost, highlight_boost, shadow_blur, shadow_offset) = match status {
+            iced::widget::button::Status::Hovered => (0.08, 0.04, 22.0, 6.0),
+            iced::widget::button::Status::Pressed => (0.12, 0.06, 16.0, 3.0),
+            _ => (
+                0.0,
+                0.0,
+                if dark_mode { 18.0 } else { 8.0 },
+                if dark_mode { 6.0 } else { 2.0 },
+            ),
+        };
+        let bg = Color {
+            a: (palette.chrome_background.a + bg_boost).min(1.0),
+            ..palette.chrome_background
+        };
+        let highlight = Color {
+            a: (palette.chrome_highlight.a + highlight_boost).min(1.0),
+            ..palette.chrome_highlight
         };
         iced::widget::button::Style {
-            background: Some(iced::Background::Color(Color { a: bg_alpha, ..if dark_mode { DARK_SURFACE } else { WHITE } })),
-            border: Border { radius: 99.0.into(), ..Default::default() },
+            background: Some(iced::Background::Gradient(iced::Gradient::Linear(
+                iced::gradient::Linear::new(std::f32::consts::PI)
+                    .add_stop(0.0, highlight)
+                    .add_stop(1.0, bg),
+            ))),
+            border: Border {
+                radius: 99.0.into(),
+                width: if dark_mode { 1.0 } else { 0.5 },
+                color: palette.chrome_border,
+            },
+            shadow: if dark_mode {
+                iced::Shadow::default()
+            } else {
+                iced::Shadow {
+                    color: palette.chrome_shadow,
+                    offset: iced::Vector::new(0.0, shadow_offset),
+                    blur_radius: shadow_blur,
+                }
+            },
             ..Default::default()
         }
     });
@@ -1422,10 +1571,7 @@ fn view_chat<'a>(state: &'a AppState, compose: &'a str, dark_mode: bool) -> Elem
     // Message list with padding for floating elements
     let mut msg_col = column![]
         .spacing(SPACE_MD)
-        .padding([SPACE_XS as u16, SPACE_MD as u16]);
-
-    // Top spacer so messages don't start behind the header
-    msg_col = msg_col.push(iced::widget::Space::new().height(36));
+        .padding([SPACE_SM as u16, SPACE_MD as u16]);
 
     if state.is_loading_history {
         msg_col = msg_col.push(
@@ -1447,9 +1593,6 @@ fn view_chat<'a>(state: &'a AppState, compose: &'a str, dark_mode: bool) -> Elem
                 .color(palette.metadata_text),
         );
     }
-
-    // Bottom spacer so messages + timestamps don't end behind compose bar
-    msg_col = msg_col.push(iced::widget::Space::new().height(64));
 
     let message_list = scrollable(msg_col)
         .height(Fill)
@@ -1475,8 +1618,20 @@ fn view_chat<'a>(state: &'a AppState, compose: &'a str, dark_mode: bool) -> Elem
         iced::widget::button::Style {
             background: Some(iced::Background::Gradient(iced::Gradient::Linear(
                 iced::gradient::Linear::new(std::f32::consts::PI)
-                    .add_stop(0.0, Color { a: alpha_top, ..MAPLE_500 })
-                    .add_stop(1.0, Color { a: alpha_bot, ..MAPLE_700 }),
+                    .add_stop(
+                        0.0,
+                        Color {
+                            a: alpha_top,
+                            ..MAPLE_500
+                        },
+                    )
+                    .add_stop(
+                        1.0,
+                        Color {
+                            a: alpha_bot,
+                            ..MAPLE_700
+                        },
+                    ),
             ))),
             text_color: WHITE,
             border: Border {
@@ -1490,18 +1645,19 @@ fn view_chat<'a>(state: &'a AppState, compose: &'a str, dark_mode: bool) -> Elem
         send_btn = send_btn.on_press(Message::SendMessage);
     }
 
-    let plus_btn = container(
-        text("+").size(12).color(MAPLE_500),
-    )
-    .padding([4, 7])
-    .style(move |_: &Theme| container::Style {
-        background: Some(iced::Background::Color(Color { a: 0.15, ..MAPLE_500 })),
-        border: Border {
-            radius: RADIUS_FULL.into(),
+    let plus_btn = container(text("+").size(12).color(MAPLE_500))
+        .padding([4, 7])
+        .style(move |_: &Theme| container::Style {
+            background: Some(iced::Background::Color(Color {
+                a: 0.15,
+                ..MAPLE_500
+            })),
+            border: Border {
+                radius: RADIUS_FULL.into(),
+                ..Default::default()
+            },
             ..Default::default()
-        },
-        ..Default::default()
-    });
+        });
 
     let compose_bar = container(
         row![
@@ -1523,14 +1679,20 @@ fn view_chat<'a>(state: &'a AppState, compose: &'a str, dark_mode: bool) -> Elem
     )
     .padding([12, 16])
     .style(move |_: &Theme| container::Style {
-        background: Some(iced::Background::Color(if dark_mode {
-            palette.chrome_background
-        } else {
-            Color { a: 0.64, ..WHITE }
-        })),
+        background: Some(iced::Background::Gradient(iced::Gradient::Linear(
+            iced::gradient::Linear::new(std::f32::consts::PI)
+                .add_stop(0.0, palette.compose_highlight)
+                .add_stop(1.0, palette.compose_background),
+        ))),
         border: Border {
             radius: 24.0.into(),
-            ..Default::default()
+            width: if dark_mode { 1.0 } else { 0.5 },
+            color: palette.compose_border,
+        },
+        shadow: iced::Shadow {
+            color: palette.compose_shadow,
+            offset: iced::Vector::new(0.0, if dark_mode { 10.0 } else { 6.0 }),
+            blur_radius: if dark_mode { 26.0 } else { 12.0 },
         },
         ..Default::default()
     });
@@ -1543,23 +1705,44 @@ fn view_chat<'a>(state: &'a AppState, compose: &'a str, dark_mode: bool) -> Elem
     let chat_bg = iced::Background::Gradient(iced::Gradient::Linear(
         iced::gradient::Linear::new(std::f32::consts::PI)
             .add_stop(0.0, palette.background_stops[0])
-            .add_stop(0.3, palette.background_stops[1])
-            .add_stop(0.55, palette.background_stops[2])
-            .add_stop(0.8, palette.background_stops[3])
+            .add_stop(0.18, palette.background_stops[1])
+            .add_stop(0.36, palette.background_stops[2])
+            .add_stop(0.62, palette.background_stops[3])
             .add_stop(1.0, palette.background_stops[4]),
     ));
 
-    let content = iced::widget::stack![
-        container(message_list)
+    let background_base = container(iced::widget::Space::new().width(Fill).height(Fill))
+        .width(Fill)
+        .height(Fill)
+        .style(move |_: &Theme| container::Style {
+            background: Some(iced::Background::Color(palette.background_base)),
+            ..Default::default()
+        });
+
+    let background_wash: Element<'a, Message> = if dark_mode {
+        container(iced::widget::Space::new().width(Fill).height(Fill))
+            .width(Fill)
+            .height(Fill)
+            .into()
+    } else {
+        container(iced::widget::Space::new().width(Fill).height(Fill))
             .width(Fill)
             .height(Fill)
             .style(move |_: &Theme| container::Style {
                 background: Some(chat_bg),
                 ..Default::default()
-            }),
+            })
+            .into()
+    };
+
+    let header_section = container(floating_header).width(Fill).height(72);
+
+    let content = iced::widget::stack![
+        background_base,
+        background_wash,
         column![
-            floating_header,
-            iced::widget::Space::new().height(Fill),
+            header_section,
+            container(message_list).width(Fill).height(Fill),
             floating_compose,
         ],
     ]
@@ -1617,7 +1800,7 @@ fn view_chat<'a>(state: &'a AppState, compose: &'a str, dark_mode: bool) -> Elem
         let overlay = iced::widget::stack![
             content,
             column![
-                iced::widget::Space::new().height(52),
+                iced::widget::Space::new().height(72),
                 row![
                     iced::widget::Space::new().width(Fill),
                     settings_menu,
@@ -1700,7 +1883,11 @@ fn view_message(msg: &ChatMessage, dark_mode: bool) -> Element<'_, Message> {
     let palette = chat_palette(dark_mode);
 
     let text_color = if dark_mode {
-        if is_user { DARK_ON_SURFACE } else { DARK_ON_SURFACE }
+        if is_user {
+            DARK_ON_SURFACE
+        } else {
+            DARK_ON_SURFACE
+        }
     } else {
         PEBBLE_800
     };

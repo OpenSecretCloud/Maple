@@ -329,14 +329,28 @@ pub fn compose_text_input_style(
             width: 0.0,
             color: Color::TRANSPARENT,
         },
-        icon: if dark_mode { DARK_ON_SURFACE_VARIANT } else { PEBBLE_800 },
+        icon: if dark_mode {
+            DARK_ON_SURFACE_VARIANT
+        } else {
+            PEBBLE_800
+        },
         placeholder: if dark_mode {
-            Color { a: 0.75, ..DARK_ON_SURFACE_VARIANT }
+            Color {
+                a: 0.78,
+                ..DARK_ON_SURFACE_VARIANT
+            }
         } else {
             Color::from_rgb8(0x87, 0x87, 0x87)
         },
-        value: if dark_mode { DARK_ON_SURFACE } else { PEBBLE_800 },
-        selection: Color { a: 0.2, ..MAPLE_500 },
+        value: if dark_mode {
+            DARK_ON_SURFACE
+        } else {
+            PEBBLE_800
+        },
+        selection: Color {
+            a: 0.2,
+            ..MAPLE_500
+        },
     }
 }
 
