@@ -419,8 +419,9 @@ struct LoginView: View {
 
 struct ChatPalette {
     let backgroundBase: Color
-    let backgroundMesh: [Color]
     let backgroundGlow: [Color]
+    let headerWordmark: Color
+    let secondaryIcon: Color
     let composeText: Color
     let composePlaceholder: Color
     let metadataText: Color
@@ -433,16 +434,14 @@ struct ChatPalette {
         if colorScheme == .dark {
             return ChatPalette(
                 backgroundBase: Color(hex: 0x1A110E),
-                backgroundMesh: [
-                    Color(hex: 0x231A16), Color(hex: 0x2A211E), Color(hex: 0x201816),
-                    Color(hex: 0x271D1A), Color(hex: 0x3D322F), Color(hex: 0x241C19),
-                    Color(hex: 0x140C09), Color(hex: 0x221815), Color(hex: 0x1A110E),
-                ],
                 backgroundGlow: [
                     Color.maple500.opacity(0.07),
                     Color(hex: 0x5D4036, opacity: 0.1),
+                    Color.pebble800.opacity(0.12),
                     .clear,
                 ],
+                headerWordmark: .pebble50,
+                secondaryIcon: Color(hex: 0xD8C2BB),
                 composeText: Color(hex: 0xF1DFD9),
                 composePlaceholder: Color(hex: 0xD8C2BB, opacity: 0.78),
                 metadataText: Color(hex: 0xD8C2BB, opacity: 0.82),
@@ -454,19 +453,17 @@ struct ChatPalette {
         }
 
         return ChatPalette(
-            backgroundBase: .neutral0,
-            backgroundMesh: [
-                .pebble100, .maple50, .bark50,
-                .maple50, .neutral0, .pebble50,
-                .bark50, .maple50, .pebble100,
-            ],
+            backgroundBase: .white,
             backgroundGlow: [
-                Color.maple500.opacity(0.12),
-                Color.bark300.opacity(0.08),
-                .clear,
+                Color(hex: 0xFF9771, opacity: 0.35),
+                Color(hex: 0xECB8A5, opacity: 0.2),
+                Color(hex: 0xDADADA, opacity: 0.1),
+                Color.white.opacity(0),
             ],
+            headerWordmark: .pebble800,
+            secondaryIcon: .pebble800,
             composeText: .neutral800,
-            composePlaceholder: .pebble400,
+            composePlaceholder: Color(hex: 0x878787),
             metadataText: .pebble400,
             assistantText: .neutral800,
             userBubbleColor: .pebble100,
@@ -492,7 +489,7 @@ struct AgentChatView: View {
                 ZStack {
                     GlassEffectContainer {
                         HStack(spacing: 8) {
-                            MapleWordmarkAbbr(color: .pebble800, height: 16)
+                            MapleWordmarkAbbr(color: palette.headerWordmark, height: 16)
                             Text("\u{2304}")
                                 .font(.system(size: 12, weight: .heavy))
                                 .foregroundStyle(Color.pebble400)
@@ -510,7 +507,7 @@ struct AgentChatView: View {
                             } label: {
                                 Image(systemName: "line.3.horizontal")
                                     .font(.system(size: 18, weight: .bold))
-                                    .foregroundStyle(Color.pebble800)
+                                    .foregroundStyle(palette.secondaryIcon)
                                     .frame(width: 43, height: 43)
                             }
                             .buttonStyle(.glass)
@@ -521,7 +518,7 @@ struct AgentChatView: View {
                             } label: {
                                 Image(systemName: "magnifyingglass")
                                     .font(.system(size: 18, weight: .bold))
-                                    .foregroundStyle(Color.pebble800)
+                                    .foregroundStyle(palette.secondaryIcon)
                                     .frame(width: 43, height: 43)
                             }
                             .buttonStyle(.glass)
@@ -535,27 +532,13 @@ struct AgentChatView: View {
             }
             .background(
                 ZStack {
-                    if colorScheme == .dark {
-                        palette.backgroundBase
-                        MeshGradient(width: 3, height: 3, points: [
-                            [0.0, 0.0], [0.5, 0.0], [1.0, 0.0],
-                            [0.0, 0.5], [0.5, 0.5], [1.0, 0.5],
-                            [0.0, 1.0], [0.5, 1.0], [1.0, 1.0],
-                        ], colors: palette.backgroundMesh)
-                    } else {
-                        Color.white
-                        RadialGradient(
-                            colors: [
-                                Color(hex: 0xFF9771, opacity: 0.35),
-                                Color(hex: 0xECB8A5, opacity: 0.2),
-                                Color(hex: 0xDADADA, opacity: 0.1),
-                                Color.white.opacity(0),
-                            ],
-                            center: .top,
-                            startRadius: 0,
-                            endRadius: 500
-                        )
-                    }
+                    palette.backgroundBase
+                    RadialGradient(
+                        colors: palette.backgroundGlow,
+                        center: .top,
+                        startRadius: 0,
+                        endRadius: 500
+                    )
                 }
                 .ignoresSafeArea()
             )
@@ -663,7 +646,7 @@ struct AgentChatView: View {
                     TextField(
                         "",
                         text: $composeText,
-                        prompt: Text("Write...").foregroundStyle(Color(hex: 0x878787))
+                        prompt: Text("Write...").foregroundStyle(palette.composePlaceholder)
                     )
                         .font(MapleFont.medium(15))
                         .foregroundStyle(palette.composeText)
@@ -738,7 +721,7 @@ struct MessageBubble: View {
                     Text(message.content)
                         .font(MapleFont.medium(16))
                         .lineSpacing(10)
-                        .foregroundStyle(Color.pebble800)
+                        .foregroundStyle(palette.assistantText)
                 }
 
                 if message.showTimestamp {
