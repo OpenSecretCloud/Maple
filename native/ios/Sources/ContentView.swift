@@ -424,9 +424,9 @@ struct ChatPalette {
     let composeText: Color
     let composePlaceholder: Color
     let metadataText: Color
-    let assistantBubbleColors: [Color]
-    let assistantBubbleBorder: Color
     let assistantText: Color
+    let userBubbleColor: Color
+    let userText: Color
     let settingsSecondaryText: Color
 
     static func forColorScheme(_ colorScheme: ColorScheme) -> ChatPalette {
@@ -446,12 +446,9 @@ struct ChatPalette {
                 composeText: Color(hex: 0xF1DFD9),
                 composePlaceholder: Color(hex: 0xD8C2BB, opacity: 0.78),
                 metadataText: Color(hex: 0xD8C2BB, opacity: 0.82),
-                assistantBubbleColors: [
-                    Color(hex: 0x322824, opacity: 0.96),
-                    Color(hex: 0x271D1A, opacity: 0.98),
-                ],
-                assistantBubbleBorder: Color(hex: 0x53433E),
                 assistantText: Color(hex: 0xF1DFD9),
+                userBubbleColor: Color(hex: 0x322824, opacity: 0.96),
+                userText: Color(hex: 0xF1DFD9),
                 settingsSecondaryText: Color(hex: 0xD8C2BB)
             )
         }
@@ -471,9 +468,9 @@ struct ChatPalette {
             composeText: .neutral800,
             composePlaceholder: .pebble400,
             metadataText: .pebble400,
-            assistantBubbleColors: [.pebble50, .pebble50],
-            assistantBubbleBorder: Color.clear,
             assistantText: .neutral800,
+            userBubbleColor: .pebble100,
+            userText: .neutral800,
             settingsSecondaryText: .pebble500
         )
     }
@@ -494,19 +491,33 @@ struct AgentChatView: View {
             .safeAreaInset(edge: .top) {
                 ZStack {
                     GlassEffectContainer {
-                        MapleWordmark(color: .primary, height: 20)
-                            .padding(.horizontal, MapleSpacing.md)
-                            .padding(.vertical, MapleSpacing.sm)
-                            .glassEffect(in: .capsule)
+                        HStack(spacing: 4) {
+                            MapleWordmarkAbbr(color: .primary, height: 18)
+                            Image(systemName: "chevron.down")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.horizontal, MapleSpacing.md)
+                        .padding(.vertical, MapleSpacing.sm)
+                        .glassEffect(in: .capsule)
                     }
 
                     HStack {
-                        Spacer()
                         GlassEffectContainer {
                             Button {
                                 manager.dispatch(.toggleSettings)
                             } label: {
-                                Image(systemName: "gearshape")
+                                Image(systemName: "line.3.horizontal")
+                                    .font(.system(size: 16, weight: .medium))
+                                    .frame(width: 36, height: 36)
+                            }
+                            .buttonStyle(.glass)
+                        }
+                        Spacer()
+                        GlassEffectContainer {
+                            Button {
+                            } label: {
+                                Image(systemName: "magnifyingglass")
                                     .font(.system(size: 16, weight: .medium))
                                     .frame(width: 36, height: 36)
                             }
@@ -567,7 +578,7 @@ struct AgentChatView: View {
     private var messageList: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(spacing: MapleSpacing.xs) {
+                LazyVStack(spacing: MapleSpacing.md) {
                     // Load-more indicator at top
                     if manager.state.isLoadingHistory {
                         ProgressView()
@@ -633,32 +644,46 @@ struct AgentChatView: View {
 
     private var composeBar: some View {
         GlassEffectContainer {
-            HStack(spacing: MapleSpacing.xs) {
+            VStack(alignment: .leading, spacing: 4) {
                 TextField(
                     "",
                     text: $composeText,
-                    prompt: Text("Message Maple...").foregroundStyle(palette.composePlaceholder)
+                    prompt: Text("Write...").foregroundStyle(palette.composePlaceholder)
                 )
                     .font(MapleFont.body)
                     .foregroundStyle(palette.composeText)
-                    .padding(.horizontal, MapleSpacing.sm)
-                    .padding(.vertical, MapleSpacing.xs)
                     .onSubmit(sendMessage)
 
-                Button(action: sendMessage) {
-                    Image(systemName: "arrow.up.circle.fill")
-                        .font(.title2)
-                        .foregroundStyle(
-                            composeText.trimmingCharacters(in: .whitespaces).isEmpty || manager.state.isAgentTyping
-                                ? Color.neutral300
-                                : Color.maple500
-                        )
+                HStack {
+                    Button(action: {}) {
+                        Image(systemName: "plus")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 32, height: 32)
+                            .background(.regularMaterial, in: Circle())
+                    }
+
+                    Spacer()
+
+                    Button(action: sendMessage) {
+                        Image(systemName: "arrow.up")
+                            .font(.system(size: 14, weight: .bold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 18)
+                            .padding(.vertical, 10)
+                            .background(
+                                composeText.trimmingCharacters(in: .whitespaces).isEmpty || manager.state.isAgentTyping
+                                    ? Color.neutral300
+                                    : Color.maple500,
+                                in: Capsule()
+                            )
+                    }
+                    .disabled(composeText.trimmingCharacters(in: .whitespaces).isEmpty || manager.state.isAgentTyping)
                 }
-                .disabled(composeText.trimmingCharacters(in: .whitespaces).isEmpty || manager.state.isAgentTyping)
             }
             .padding(.horizontal, MapleSpacing.sm)
-            .padding(.vertical, MapleSpacing.xs)
-            .glassEffect(in: .capsule)
+            .padding(.vertical, MapleSpacing.sm)
+            .glassEffect(in: RoundedRectangle(cornerRadius: MapleRadius.xl, style: .continuous))
         }
         .padding(.horizontal, MapleSpacing.sm)
         .padding(.bottom, MapleSpacing.xs)
@@ -678,53 +703,23 @@ struct MessageBubble: View {
     let message: ChatMessage
     let palette: ChatPalette
 
-    private var bubbleShape: UnevenRoundedRectangle {
-        UnevenRoundedRectangle(
-            topLeadingRadius: MapleRadius.lg,
-            bottomLeadingRadius: message.isUser ? MapleRadius.lg : 4,
-            bottomTrailingRadius: message.isUser ? 4 : MapleRadius.lg,
-            topTrailingRadius: MapleRadius.lg
-        )
-    }
-
     var body: some View {
         HStack {
             if message.isUser { Spacer(minLength: 60) }
 
             VStack(alignment: message.isUser ? .trailing : .leading, spacing: 4) {
-                if !message.isUser && message.showSender {
-                    Text("Maple")
-                        .font(MapleFont.caption)
-                        .foregroundStyle(palette.metadataText)
+                if message.isUser {
+                    Text(message.content)
+                        .font(MapleFont.bodyLarge)
+                        .foregroundStyle(palette.userText)
+                        .padding(.horizontal, MapleSpacing.sm)
+                        .padding(.vertical, MapleSpacing.xs)
+                        .background(palette.userBubbleColor, in: RoundedRectangle(cornerRadius: MapleRadius.lg, style: .continuous))
+                } else {
+                    Text(message.content)
+                        .font(MapleFont.bodyLarge)
+                        .foregroundStyle(palette.assistantText)
                 }
-                Text(message.content)
-                .font(MapleFont.body)
-                .padding(.horizontal, MapleSpacing.sm)
-                .padding(.vertical, MapleSpacing.xs)
-                .background(
-                    Group {
-                        if message.isUser {
-                            LinearGradient(
-                                colors: [.maple400, .maple600],
-                                startPoint: .top,
-                                endPoint: .bottom
-                            )
-                        } else {
-                            LinearGradient(
-                                colors: palette.assistantBubbleColors,
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                        }
-                    }
-                )
-                .clipShape(bubbleShape)
-                .overlay {
-                    if !message.isUser {
-                        bubbleShape.stroke(palette.assistantBubbleBorder, lineWidth: 1)
-                    }
-                }
-                .foregroundStyle(message.isUser ? Color.white : palette.assistantText)
 
                 if message.showTimestamp {
                     Text(message.timestampDisplay)

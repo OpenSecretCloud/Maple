@@ -774,6 +774,151 @@ fn view_wordmark(height: f32, color: Color) -> Element<'static, Message> {
         .into()
 }
 
+// ── Abbreviated Wordmark (MPL) ──────────────────────────────────────────────
+
+const WORDMARK_ABBR_VB_W: f32 = 100.0;
+const WORDMARK_ABBR_VB_H: f32 = 32.0;
+
+fn wordmark_abbr_paths(s: f32) -> Vec<canvas::Path> {
+    let p = |x: f32, y: f32| Point::new(x * s, y * s);
+    vec![
+        // M
+        canvas::Path::new(|b| {
+            b.move_to(p(0.0, 27.4798));
+            b.line_to(p(0.0, 4.02964));
+            b.bezier_curve_to(p(0.0, 0.420626), p(3.85183, -1.16383), p(6.79613, 0.948761));
+            b.line_to(p(17.9439, 10.3599));
+            b.line_to(p(29.0916, 0.948761));
+            b.bezier_curve_to(p(32.0378, -1.16383), p(35.8878, 0.420626), p(35.8878, 4.02964));
+            b.line_to(p(35.8878, 27.4798));
+            b.bezier_curve_to(p(35.8878, 29.967), p(33.8642, 31.984), p(31.3689, 31.984));
+            b.line_to(p(4.11864, 31.984));
+            b.bezier_curve_to(p(1.44115, 31.984), p(0.0, 30.4071), p(0.0, 27.4798));
+            b.close();
+        }),
+        // P
+        canvas::Path::new(|b| {
+            b.move_to(p(55.3789, 26.0034));
+            b.line_to(p(55.3789, 27.2264));
+            b.bezier_curve_to(p(55.3789, 29.7135), p(53.3553, 31.7306), p(50.8601, 31.7306));
+            b.line_to(p(44.8681, 31.7306));
+            b.bezier_curve_to(p(42.371, 31.7306), p(40.3493, 29.7135), p(40.3493, 27.2264));
+            b.line_to(p(40.3493, 4.77258));
+            b.bezier_curve_to(p(40.3493, 2.28354), p(42.3729, 0.266478), p(44.87, 0.266478));
+            b.line_to(p(55.0952, 0.266478));
+            b.bezier_curve_to(p(66.9758, 0.266478), p(71.1846, 5.503), p(71.1846, 13.1537));
+            b.bezier_curve_to(p(71.1846, 20.8043), p(67.0434, 25.921), p(55.3808, 26.0034));
+            b.line_to(p(55.3789, 26.0034));
+            b.close();
+        }),
+        // L
+        canvas::Path::new(|b| {
+            b.move_to(p(74.3353, 27.2264));
+            b.line_to(p(74.3353, 4.77258));
+            b.bezier_curve_to(p(74.3353, 2.28354), p(76.3589, 0.266478), p(78.8561, 0.266478));
+            b.line_to(p(84.848, 0.266478));
+            b.bezier_curve_to(p(87.3451, 0.266478), p(89.3669, 2.28354), p(89.3669, 4.77071));
+            b.line_to(p(89.3669, 10.7545));
+            b.line_to(p(95.3701, 10.7545));
+            b.bezier_curve_to(p(97.8672, 10.7545), p(99.8889, 12.7716), p(99.8889, 15.2588));
+            b.line_to(p(99.8889, 27.2245));
+            b.bezier_curve_to(p(99.8889, 29.7117), p(97.8653, 31.7288), p(95.3701, 31.7288));
+            b.line_to(p(78.8561, 31.7288));
+            b.bezier_curve_to(p(76.3589, 31.7288), p(74.3372, 29.7117), p(74.3372, 27.2245));
+            b.line_to(p(74.3353, 27.2264));
+            b.close();
+        }),
+    ]
+}
+
+struct WordmarkAbbrProgram {
+    color: Color,
+    height: f32,
+}
+
+impl<Message> canvas::Program<Message> for WordmarkAbbrProgram {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &Self::State,
+        renderer: &iced::Renderer,
+        _theme: &Theme,
+        bounds: iced::Rectangle,
+        _cursor: iced::mouse::Cursor,
+    ) -> Vec<canvas::Geometry> {
+        let scale = self.height / WORDMARK_ABBR_VB_H;
+        let paths = wordmark_abbr_paths(scale);
+        let mut frame = canvas::Frame::new(renderer, bounds.size());
+        for path in &paths {
+            frame.fill(path, self.color);
+        }
+        vec![frame.into_geometry()]
+    }
+}
+
+fn view_wordmark_abbr(height: f32, color: Color) -> Element<'static, Message> {
+    let scale = height / WORDMARK_ABBR_VB_H;
+    let width = WORDMARK_ABBR_VB_W * scale;
+    canvas(WordmarkAbbrProgram { color, height })
+        .width(width)
+        .height(height)
+        .into()
+}
+
+struct SearchIconProgram {
+    color: Color,
+}
+
+impl<Message> canvas::Program<Message> for SearchIconProgram {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &Self::State,
+        renderer: &iced::Renderer,
+        _theme: &Theme,
+        bounds: iced::Rectangle,
+        _cursor: iced::mouse::Cursor,
+    ) -> Vec<canvas::Geometry> {
+        let mut frame = canvas::Frame::new(renderer, bounds.size());
+        let s = bounds.width;
+        let cx = s * 0.4;
+        let cy = s * 0.4;
+        let r = s * 0.26;
+        let circle = canvas::path::Path::circle(Point::new(cx, cy), r);
+        frame.stroke(
+            &circle,
+            canvas::Stroke {
+                style: canvas::Style::Solid(self.color),
+                width: s * 0.1,
+                ..Default::default()
+            },
+        );
+        let handle = canvas::path::Path::line(
+            Point::new(cx + r * 0.707, cy + r * 0.707),
+            Point::new(s * 0.82, s * 0.82),
+        );
+        frame.stroke(
+            &handle,
+            canvas::Stroke {
+                style: canvas::Style::Solid(self.color),
+                width: s * 0.1,
+                line_cap: canvas::LineCap::Round,
+                ..Default::default()
+            },
+        );
+        vec![frame.into_geometry()]
+    }
+}
+
+fn view_search_icon<Message: 'static>(size: f32, color: Color) -> Element<'static, Message> {
+    canvas(SearchIconProgram { color })
+        .width(size)
+        .height(size)
+        .into()
+}
+
 // ── Splash View ─────────────────────────────────────────────────────────────
 
 fn view_splash<'a>() -> Element<'a, Message> {
@@ -1134,34 +1279,7 @@ fn oauth_button(
 fn view_chat<'a>(state: &'a AppState, compose: &'a str, dark_mode: bool) -> Element<'a, Message> {
     let palette = chat_palette(dark_mode);
 
-    // Floating glass header: centered wordmark pill + gear pill
-    let wordmark_pill = container(view_wordmark(20.0, palette.wordmark))
-        .padding([SPACE_XS as u16, SPACE_MD as u16])
-        .style(move |_: &Theme| container::Style {
-            background: Some(iced::Background::Color(palette.chrome_background)),
-            border: Border {
-                radius: RADIUS_FULL.into(),
-                width: 0.5,
-                color: palette.chrome_border,
-            },
-            shadow: iced::Shadow {
-                color: Color {
-                    a: if dark_mode { 0.16 } else { 0.08 },
-                    ..Color::BLACK
-                },
-                offset: iced::Vector::new(0.0, 2.0),
-                blur_radius: if dark_mode { 12.0 } else { 8.0 },
-            },
-            ..Default::default()
-        });
-
-    let gear_pill = container(
-        button(text("\u{2699}").size(16).color(palette.secondary_icon))
-            .on_press(Message::ToggleSettings)
-            .style(move |theme, status| ghost_button_style(theme, status, dark_mode)),
-    )
-    .padding([4, 6])
-    .style(move |_: &Theme| container::Style {
+    let chrome_pill_style = move |_: &Theme| container::Style {
         background: Some(iced::Background::Color(palette.chrome_background)),
         border: Border {
             radius: RADIUS_FULL.into(),
@@ -1177,7 +1295,36 @@ fn view_chat<'a>(state: &'a AppState, compose: &'a str, dark_mode: bool) -> Elem
             blur_radius: if dark_mode { 12.0 } else { 8.0 },
         },
         ..Default::default()
-    });
+    };
+
+    // MPL wordmark pill with chevron (centered)
+    let wordmark_pill = container(
+        row![
+            view_wordmark_abbr(18.0, palette.wordmark),
+            text("\u{25BE}").size(10).color(palette.secondary_icon),
+        ]
+        .spacing(4)
+        .align_y(iced::Alignment::Center),
+    )
+    .padding([SPACE_XS as u16, SPACE_MD as u16])
+    .style(chrome_pill_style);
+
+    // Hamburger menu pill (left)
+    let menu_pill = container(
+        button(text("\u{2261}").size(18).color(palette.secondary_icon))
+            .on_press(Message::ToggleSettings)
+            .style(move |theme, status| ghost_button_style(theme, status, dark_mode)),
+    )
+    .padding([4, 6])
+    .style(chrome_pill_style);
+
+    // Search pill (right)
+    let search_pill = container(
+        button(view_search_icon(14.0, palette.secondary_icon))
+            .style(move |theme, status| ghost_button_style(theme, status, dark_mode)),
+    )
+    .padding([4, 6])
+    .style(chrome_pill_style);
 
     let header = row![
         iced::widget::Space::new().width(Fill),
@@ -1188,8 +1335,10 @@ fn view_chat<'a>(state: &'a AppState, compose: &'a str, dark_mode: bool) -> Elem
     let header_row = iced::widget::stack![
         container(header).width(Fill),
         column![row![
+            iced::widget::Space::new().width(SPACE_SM),
+            menu_pill,
             iced::widget::Space::new().width(Fill),
-            gear_pill,
+            search_pill,
             iced::widget::Space::new().width(SPACE_SM),
         ]],
     ];
@@ -1200,7 +1349,7 @@ fn view_chat<'a>(state: &'a AppState, compose: &'a str, dark_mode: bool) -> Elem
 
     // Message list with padding for floating elements
     let mut msg_col = column![]
-        .spacing(SPACE_XS)
+        .spacing(SPACE_MD)
         .padding([SPACE_XS as u16, SPACE_MD as u16]);
 
     // Top spacer so messages don't start behind the header
@@ -1235,32 +1384,51 @@ fn view_chat<'a>(state: &'a AppState, compose: &'a str, dark_mode: bool) -> Elem
         .anchor_bottom()
         .on_scroll(Message::Scrolled);
 
-    // Floating glass compose bar pill
+    // Floating glass compose bar
     let mut send_btn = button(
-        container(text("Send").size(14).color(WHITE)).padding([SPACE_XS as u16, SPACE_MD as u16]),
+        container(text("\u{2191}").size(14).color(WHITE)).padding([SPACE_XS as u16, SPACE_MD as u16]),
     )
     .style(primary_button_style);
     if !compose.trim().is_empty() && !state.is_agent_typing {
         send_btn = send_btn.on_press(Message::SendMessage);
     }
 
+    let plus_btn = container(text("+").size(14).color(palette.secondary_icon))
+        .padding([4, 8])
+        .style(move |_: &Theme| container::Style {
+            background: Some(iced::Background::Color(if dark_mode {
+                Color { a: 0.08, ..WHITE }
+            } else {
+                Color { a: 0.06, ..Color::BLACK }
+            })),
+            border: Border {
+                radius: RADIUS_FULL.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+
     let compose_bar = container(
-        row![
-            text_input("Message Maple...", compose)
+        column![
+            text_input("Write...", compose)
                 .on_input(Message::ComposeChanged)
                 .on_submit(Message::SendMessage)
                 .width(Fill)
                 .style(move |theme, status| text_input_style(theme, status, dark_mode)),
-            send_btn,
+            row![
+                plus_btn,
+                iced::widget::Space::new().width(Fill),
+                send_btn,
+            ]
+            .align_y(iced::Alignment::Center),
         ]
-        .spacing(SPACE_XS)
-        .align_y(iced::Alignment::Center),
+        .spacing(4),
     )
-    .padding([SPACE_XS as u16, SPACE_SM as u16])
+    .padding([SPACE_SM as u16, SPACE_SM as u16])
     .style(move |_: &Theme| container::Style {
         background: Some(iced::Background::Color(palette.chrome_background)),
         border: Border {
-            radius: RADIUS_FULL.into(),
+            radius: RADIUS_XL.into(),
             width: 0.5,
             color: palette.chrome_border,
         },
@@ -1439,27 +1607,15 @@ fn view_message(msg: &ChatMessage, dark_mode: bool) -> Element<'_, Message> {
     let is_user = msg.is_user;
     let palette = chat_palette(dark_mode);
 
-    let mut bubble_content = column![].spacing(4);
-    if !is_user && msg.show_sender {
-        bubble_content = bubble_content.push(text("Maple").size(11).color(palette.metadata_text));
-    }
-
-    bubble_content = bubble_content.push(text(&msg.content).size(14).color(if is_user {
-        WHITE
+    let text_color = if is_user {
+        if dark_mode {
+            DARK_ON_SURFACE
+        } else {
+            NEUTRAL_800
+        }
     } else {
         palette.surface_text
-    }));
-
-    let bubble = container(bubble_content)
-        .padding([SPACE_XS as u16, SPACE_SM as u16])
-        .max_width(500)
-        .style(move |theme| {
-            if is_user {
-                user_bubble_style(theme)
-            } else {
-                agent_bubble_style(theme, dark_mode)
-            }
-        });
+    };
 
     let align = if is_user {
         iced::Alignment::End
@@ -1467,27 +1623,35 @@ fn view_message(msg: &ChatMessage, dark_mode: bool) -> Element<'_, Message> {
         iced::Alignment::Start
     };
 
-    let bubble_row: Element<'_, Message> = if is_user {
+    let mut content_col = column![].spacing(4);
+
+    let message_element: Element<'_, Message> = if is_user {
+        let bubble = container(text(&msg.content).size(16).color(text_color))
+            .padding([SPACE_XS as u16, SPACE_SM as u16])
+            .max_width(500)
+            .style(move |theme| user_bubble_style(theme, dark_mode));
         row![iced::widget::Space::new().width(Fill), bubble]
             .width(Fill)
             .into()
     } else {
-        row![bubble, iced::widget::Space::new().width(Fill)]
+        let msg_text = container(text(&msg.content).size(16).color(text_color)).max_width(500);
+        row![msg_text, iced::widget::Space::new().width(Fill)]
             .width(Fill)
             .into()
     };
 
-    let mut col = column![bubble_row].spacing(2);
+    content_col = content_col.push(message_element);
+
     if msg.show_timestamp {
         let timestamp = text(&msg.timestamp_display)
             .size(10)
             .color(palette.metadata_text);
-        col = col.push(
+        content_col = content_col.push(
             container(timestamp)
                 .width(Fill)
                 .align_x(align)
                 .padding([0, SPACE_SM as u16]),
         );
     }
-    col.into()
+    content_col.into()
 }

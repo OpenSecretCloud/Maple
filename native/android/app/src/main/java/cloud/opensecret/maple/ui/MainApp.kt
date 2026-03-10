@@ -27,6 +27,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.automirrored.filled.ExitToApp
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -295,9 +297,9 @@ private data class ChatPalette(
     val composeText: Color,
     val composePlaceholder: Color,
     val metadataText: Color,
-    val assistantBubbleBackground: Color,
-    val assistantBubbleBorder: Color,
     val assistantText: Color,
+    val userBubbleColor: Color,
+    val userText: Color,
     val surfaceText: Color,
     val sheetBackground: Color,
     val sheetDivider: Color,
@@ -322,9 +324,9 @@ private fun chatPalette(isDarkTheme: Boolean): ChatPalette =
             composeText = Color(0xFFF1DFD9),
             composePlaceholder = Color(0xFFD8C2BB).copy(alpha = 0.78f),
             metadataText = Color(0xFFD8C2BB).copy(alpha = 0.82f),
-            assistantBubbleBackground = Color(0xFF322824).copy(alpha = 0.96f),
-            assistantBubbleBorder = Color(0xFF53433E),
             assistantText = Color(0xFFF1DFD9),
+            userBubbleColor = Color(0xFF322824).copy(alpha = 0.96f),
+            userText = Color(0xFFF1DFD9),
             surfaceText = Color(0xFFF1DFD9),
             sheetBackground = Color(0xFF271D1A),
             sheetDivider = Color(0xFF53433E),
@@ -347,9 +349,9 @@ private fun chatPalette(isDarkTheme: Boolean): ChatPalette =
             composeText = Neutral800,
             composePlaceholder = Pebble400,
             metadataText = Pebble400,
-            assistantBubbleBackground = Pebble50,
-            assistantBubbleBorder = Color.Transparent,
             assistantText = Neutral800,
+            userBubbleColor = Pebble100,
+            userText = Neutral800,
             surfaceText = Neutral800,
             sheetBackground = Color.White.copy(alpha = 0.96f),
             sheetDivider = Neutral200,
@@ -700,7 +702,6 @@ fun AgentChatScreen(manager: AppManager) {
     val state = manager.state
     val isDarkTheme = isSystemInDarkTheme()
     val palette = chatPalette(isDarkTheme)
-    val composeColors = composeFieldColors(palette)
     val density = LocalDensity.current
     var composeText by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
@@ -775,7 +776,7 @@ fun AgentChatScreen(manager: AppManager) {
                 top = topContentPadding,
                 bottom = bottomContentPadding,
             ),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(20.dp),
         ) {
             if (state.isLoadingHistory) {
                 item(key = "loading-history") {
@@ -821,7 +822,7 @@ fun AgentChatScreen(manager: AppManager) {
                 }
                 .align(Alignment.TopCenter),
         ) {
-            // Wordmark pill (centered)
+            // MPL wordmark pill with chevron (centered)
             Box(
                 modifier = Modifier
                     .align(Alignment.Center)
@@ -830,18 +831,21 @@ fun AgentChatScreen(manager: AppManager) {
                     .border(0.5.dp, palette.chromeBorder, RoundedCornerShape(999.dp))
                     .padding(horizontal = 20.dp, vertical = 10.dp),
             ) {
-                Icon(
-                    painter = androidx.compose.ui.res.painterResource(id = cloud.opensecret.maple.R.drawable.maple_wordmark),
-                    contentDescription = "Maple",
-                    modifier = Modifier.height(20.dp),
-                    tint = palette.headerWordmark,
-                )
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Icon(
+                        painter = androidx.compose.ui.res.painterResource(id = cloud.opensecret.maple.R.drawable.maple_wordmark_abbr),
+                        contentDescription = "Maple",
+                        modifier = Modifier.height(18.dp),
+                        tint = palette.headerWordmark,
+                    )
+                    Text("▾", fontSize = 10.sp, color = palette.secondaryIcon)
+                }
             }
 
-            // Gear pill (end aligned)
+            // Hamburger menu pill (start aligned)
             Box(
                 modifier = Modifier
-                    .align(Alignment.CenterEnd)
+                    .align(Alignment.CenterStart)
                     .size(40.dp)
                     .shadow(if (isDarkTheme) 6.dp else 2.dp, RoundedCornerShape(999.dp))
                     .background(palette.chromeBackground, RoundedCornerShape(999.dp))
@@ -853,8 +857,30 @@ fun AgentChatScreen(manager: AppManager) {
                     modifier = Modifier.size(40.dp),
                 ) {
                     Icon(
-                        imageVector = Icons.Filled.Settings,
-                        contentDescription = "Settings",
+                        imageVector = Icons.Filled.Menu,
+                        contentDescription = "Menu",
+                        tint = palette.secondaryIcon,
+                    )
+                }
+            }
+
+            // Search pill (end aligned)
+            Box(
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .size(40.dp)
+                    .shadow(if (isDarkTheme) 6.dp else 2.dp, RoundedCornerShape(999.dp))
+                    .background(palette.chromeBackground, RoundedCornerShape(999.dp))
+                    .border(0.5.dp, palette.chromeBorder, RoundedCornerShape(999.dp)),
+                contentAlignment = Alignment.Center,
+            ) {
+                IconButton(
+                    onClick = { },
+                    modifier = Modifier.size(40.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Search,
+                        contentDescription = "Search",
                         tint = palette.secondaryIcon,
                     )
                 }
@@ -862,7 +888,7 @@ fun AgentChatScreen(manager: AppManager) {
         }
 
         // Floating compose bar
-        Row(
+        Column(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
@@ -871,24 +897,21 @@ fun AgentChatScreen(manager: AppManager) {
                 .onGloballyPositioned { coordinates ->
                     composeBarTopPx = coordinates.positionInRoot().y.roundToInt()
                 }
-                .shadow(if (isDarkTheme) 6.dp else 2.dp, RoundedCornerShape(999.dp))
-                .background(palette.chromeBackground, RoundedCornerShape(999.dp))
-                .border(0.5.dp, palette.chromeBorder, RoundedCornerShape(999.dp))
-                .padding(horizontal = 12.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                .shadow(if (isDarkTheme) 6.dp else 2.dp, RoundedCornerShape(24.dp))
+                .background(palette.chromeBackground, RoundedCornerShape(24.dp))
+                .border(0.5.dp, palette.chromeBorder, RoundedCornerShape(24.dp))
+                .padding(horizontal = 12.dp, vertical = 10.dp),
         ) {
             val composeFocus = remember { FocusRequester() }
 
-            OutlinedTextField(
+            BasicTextField(
                 value = composeText,
                 onValueChange = { composeText = it },
-                placeholder = { Text("Message Maple...", color = Pebble400) },
-                modifier = Modifier.weight(1f).focusRequester(composeFocus),
+                modifier = Modifier.fillMaxWidth().focusRequester(composeFocus),
+                textStyle = MaterialTheme.typography.bodyMedium.copy(color = palette.composeText),
                 singleLine = true,
-                shape = RoundedCornerShape(999.dp),
+                cursorBrush = SolidColor(Maple500),
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                colors = composeColors,
                 keyboardActions = KeyboardActions(onSend = {
                     val text = composeText.trim()
                     if (text.isNotEmpty() && !state.isAgentTyping) {
@@ -896,23 +919,59 @@ fun AgentChatScreen(manager: AppManager) {
                         composeText = ""
                     }
                 }),
-            )
-
-            IconButton(
-                onClick = {
-                    val text = composeText.trim()
-                    if (text.isNotEmpty()) {
-                        manager.dispatch(AppAction.SendMessage(content = text))
-                        composeText = ""
+                decorationBox = { innerTextField ->
+                    Box(modifier = Modifier.fillMaxWidth()) {
+                        if (composeText.isEmpty()) {
+                            Text("Write...", color = palette.composePlaceholder, style = MaterialTheme.typography.bodyMedium)
+                        }
+                        innerTextField()
                     }
                 },
-                enabled = composeText.trim().isNotEmpty() && !state.isAgentTyping,
-                colors = IconButtonDefaults.iconButtonColors(
-                    contentColor = Maple500,
-                    disabledContentColor = palette.disabledIcon,
-                ),
+            )
+
+            Spacer(modifier = Modifier.height(6.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send")
+                Box(
+                    modifier = Modifier
+                        .size(32.dp)
+                        .background(
+                            if (isDarkTheme) Color.White.copy(alpha = 0.12f) else Color.Black.copy(alpha = 0.08f),
+                            CircleShape,
+                        ),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text("+", fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = palette.secondaryIcon)
+                }
+
+                Spacer(modifier = Modifier.weight(1f))
+
+                val canSend = composeText.trim().isNotEmpty() && !state.isAgentTyping
+
+                Button(
+                    onClick = {
+                        val text = composeText.trim()
+                        if (text.isNotEmpty()) {
+                            manager.dispatch(AppAction.SendMessage(content = text))
+                            composeText = ""
+                        }
+                    },
+                    enabled = canSend,
+                    shape = RoundedCornerShape(999.dp),
+                    contentPadding = PaddingValues(horizontal = 18.dp, vertical = 8.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Maple500,
+                        contentColor = Color.White,
+                        disabledContainerColor = Neutral300,
+                        disabledContentColor = Color.White,
+                    ),
+                    elevation = ButtonDefaults.buttonElevation(defaultElevation = 0.dp, pressedElevation = 0.dp),
+                ) {
+                    Text("↑", fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                }
             }
         }
     }
@@ -999,54 +1058,31 @@ private fun SettingsSheet(manager: AppManager, palette: ChatPalette) {
 private fun MessageBubble(message: ChatMessage, palette: ChatPalette) {
     val isUser = message.isUser
     val alignment = if (isUser) Alignment.End else Alignment.Start
-    val bubbleShape = RoundedCornerShape(
-        topStart = 16.dp,
-        topEnd = 16.dp,
-        bottomStart = if (isUser) 16.dp else 4.dp,
-        bottomEnd = if (isUser) 4.dp else 16.dp,
-    )
+    val bubbleShape = RoundedCornerShape(16.dp)
 
     Column(
         modifier = Modifier.fillMaxWidth(),
         horizontalAlignment = alignment,
     ) {
-        if (!isUser && message.showSender) {
-            Text(
-                "Maple",
-                style = MaterialTheme.typography.labelSmall,
-                color = palette.metadataText,
-                modifier = Modifier.padding(start = 8.dp, bottom = 2.dp),
-            )
-        }
-        Box(
-            modifier = Modifier
-                .widthIn(max = 300.dp)
-                .then(
-                    if (isUser) {
-                        Modifier.background(
-                            brush = Brush.verticalGradient(
-                                colors = listOf(Maple400, Maple600),
-                            ),
-                            shape = bubbleShape,
-                        )
-                    } else {
-                        Modifier
-                            .background(palette.assistantBubbleBackground, bubbleShape)
-                            .then(
-                                if (palette.assistantBubbleBorder != Color.Transparent) {
-                                    Modifier.border(1.dp, palette.assistantBubbleBorder, bubbleShape)
-                                } else {
-                                    Modifier
-                                },
-                            )
-                    }
+        if (isUser) {
+            Box(
+                modifier = Modifier
+                    .widthIn(max = 300.dp)
+                    .background(palette.userBubbleColor, bubbleShape)
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+            ) {
+                Text(
+                    text = message.content,
+                    color = palette.userText,
+                    style = MaterialTheme.typography.bodyLarge,
                 )
-                .padding(horizontal = 12.dp, vertical = 8.dp),
-        ) {
+            }
+        } else {
             Text(
                 text = message.content,
-                color = if (isUser) Color.White else palette.assistantText,
-                style = MaterialTheme.typography.bodyMedium,
+                color = palette.assistantText,
+                style = MaterialTheme.typography.bodyLarge,
+                modifier = Modifier.widthIn(max = 300.dp),
             )
         }
         if (message.showTimestamp) {

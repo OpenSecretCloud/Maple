@@ -317,56 +317,19 @@ pub fn text_input_style(
     }
 }
 
-pub fn user_bubble_style(_theme: &iced::Theme) -> iced::widget::container::Style {
+pub fn user_bubble_style(_theme: &iced::Theme, dark_mode: bool) -> iced::widget::container::Style {
+    let bg = if dark_mode {
+        Color {
+            a: 0.96,
+            ..DARK_SURFACE_HIGH
+        }
+    } else {
+        PEBBLE_100
+    };
     iced::widget::container::Style {
-        background: Some(iced::Background::Gradient(iced::Gradient::Linear(
-            iced::gradient::Linear::new(std::f32::consts::PI)
-                .add_stop(0.0, MAPLE_400)
-                .add_stop(1.0, MAPLE_600),
-        ))),
+        background: Some(iced::Background::Color(bg)),
         border: Border {
-            radius: iced::border::Radius {
-                top_left: RADIUS_LG,
-                top_right: RADIUS_LG,
-                bottom_left: RADIUS_LG,
-                bottom_right: 4.0,
-            },
-            ..Default::default()
-        },
-        ..Default::default()
-    }
-}
-
-pub fn agent_bubble_style(_theme: &iced::Theme, dark_mode: bool) -> iced::widget::container::Style {
-    if dark_mode {
-        return iced::widget::container::Style {
-            background: Some(iced::Background::Color(Color {
-                a: 0.96,
-                ..DARK_SURFACE_HIGH
-            })),
-            border: Border {
-                radius: iced::border::Radius {
-                    top_left: RADIUS_LG,
-                    top_right: RADIUS_LG,
-                    bottom_left: 4.0,
-                    bottom_right: RADIUS_LG,
-                },
-                width: 1.0,
-                color: DARK_OUTLINE,
-            },
-            ..Default::default()
-        };
-    }
-
-    iced::widget::container::Style {
-        background: Some(iced::Background::Color(PEBBLE_50)),
-        border: Border {
-            radius: iced::border::Radius {
-                top_left: RADIUS_LG,
-                top_right: RADIUS_LG,
-                bottom_left: 4.0,
-                bottom_right: RADIUS_LG,
-            },
+            radius: RADIUS_LG.into(),
             ..Default::default()
         },
         ..Default::default()

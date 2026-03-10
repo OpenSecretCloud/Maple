@@ -658,6 +658,8 @@ internal object IntegrityCheckingUniffiLib {
         uniffiCheckContractApiVersion(this)
         uniffiCheckApiChecksums(this)
     }
+    external fun uniffi_maple_core_checksum_func_default_api_url(
+    ): Short
     external fun uniffi_maple_core_checksum_method_ffiapp_dispatch(
     ): Short
     external fun uniffi_maple_core_checksum_method_ffiapp_listen_for_updates(
@@ -701,6 +703,8 @@ internal object UniffiLib {
     ): RustBuffer.ByValue
     external fun uniffi_maple_core_fn_init_callback_vtable_appreconciler(`vtable`: UniffiVTableCallbackInterfaceAppReconciler,
     ): Unit
+    external fun uniffi_maple_core_fn_func_default_api_url(uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
     external fun ffi_maple_core_rustbuffer_alloc(`size`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     external fun ffi_maple_core_rustbuffer_from_bytes(`bytes`: ForeignBytes.ByValue,uniffi_out_err: UniffiRustCallStatus, 
@@ -820,6 +824,9 @@ private fun uniffiCheckContractApiVersion(lib: IntegrityCheckingUniffiLib) {
 }
 @Suppress("UNUSED_PARAMETER")
 private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
+    if (lib.uniffi_maple_core_checksum_func_default_api_url() != 29239.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_maple_core_checksum_method_ffiapp_dispatch() != 27078.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
@@ -2401,5 +2408,15 @@ public object FfiConverterSequenceTypeScreen: FfiConverterRustBuffer<List<Screen
             FfiConverterTypeScreen.write(it, buf)
         }
     }
+} fun `defaultApiUrl`(): kotlin.String {
+            return FfiConverterString.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_maple_core_fn_func_default_api_url(
+    
+        _status)
 }
+    )
+    }
+    
+
 
