@@ -93,3 +93,5 @@ native/android/.gradle/
 native/ios/App.xcodeproj/
 native/ios/Frameworks/
 native/ios/Bindings/
+
+.factory/
