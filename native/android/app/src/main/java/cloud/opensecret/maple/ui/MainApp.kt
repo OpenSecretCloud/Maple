@@ -357,7 +357,6 @@ private data class ChatPalette(
     val chromeShadow: Color,
     val headerWordmark: Color,
     val secondaryIcon: Color,
-    val composeHighlight: Color,
     val composeBackground: Color,
     val composeBorder: Color,
     val composeShadow: Color,
@@ -390,7 +389,6 @@ private fun chatPalette(isDarkTheme: Boolean): ChatPalette =
             chromeShadow = Color.Black.copy(alpha = 0.14f),
             headerWordmark = Pebble50,
             secondaryIcon = Color(0xFFD8C2BB),
-            composeHighlight = Color(0xFF271D1A).copy(alpha = 0.78f),
             composeBackground = Color(0xFF271D1A).copy(alpha = 0.78f),
             composeBorder = Color(0xFF53433E),
             composeShadow = Color.Black.copy(alpha = 0.14f),
@@ -421,8 +419,7 @@ private fun chatPalette(isDarkTheme: Boolean): ChatPalette =
             chromeShadow = Pebble900.copy(alpha = 0.08f),
             headerWordmark = Pebble800,
             secondaryIcon = Pebble800,
-            composeHighlight = Color.White.copy(alpha = 0.99f),
-            composeBackground = Color(0xFFFCEAE4).copy(alpha = 0.9f),
+            composeBackground = Color.White.copy(alpha = 0.9f),
             composeBorder = Color.White.copy(alpha = 0.94f),
             composeShadow = Pebble900.copy(alpha = 0.12f),
             composeText = Neutral800,
@@ -1158,9 +1155,7 @@ fun AgentChatScreen(manager: AppManager) {
                     spotColor = palette.composeShadow,
                 )
                 .background(
-                    brush = Brush.linearGradient(
-                        colors = listOf(palette.composeHighlight, palette.composeBackground),
-                    ),
+                    color = palette.composeBackground,
                     shape = composeChromeShape,
                 )
                 .border(
