@@ -699,6 +699,7 @@ struct AgentChatView: View {
             }
         }
         .defaultScrollAnchor(.bottom)
+        .scrollDismissesKeyboard(.interactively)
         .coordinateSpace(name: "chat-scroll")
         .opacity(hasSettledInitialScroll || manager.state.messages.isEmpty ? 1 : 0)
         .overlay(alignment: .top) {
