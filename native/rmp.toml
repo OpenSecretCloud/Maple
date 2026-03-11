@@ -13,7 +13,7 @@ bundle_id = "cloud.opensecret.maple"
 app_id = "cloud.opensecret.maple"
 
 [desktop]
-targets = ["iced"]
+targets = ["gtk4"]
 
-[desktop.iced]
-package = "maple_desktop_iced"
+[desktop.gtk4]
+package = "maple_desktop_gtk"

@@ -92,9 +92,17 @@ pub fn doctor(root: &Path, json: bool, verbose: bool) -> Result<(), CliError> {
     let desktop_iced_enabled = desktop_targets
         .iter()
         .any(|t| t.eq_ignore_ascii_case("iced"));
+    let desktop_gtk4_enabled = desktop_targets
+        .iter()
+        .any(|t| t.eq_ignore_ascii_case("gtk4"));
     if desktop_iced_enabled && cfg!(target_os = "linux") && !json {
         eprintln!(
             "note: ICED on Linux may require Wayland/X11 runtime libs (for example libxkbcommon, libwayland-client, libX11)"
+        );
+    }
+    if desktop_gtk4_enabled && cfg!(target_os = "linux") && !json {
+        eprintln!(
+            "note: GTK4 on Linux requires GTK4 runtime/dev packages (for example gtk4, graphene, pango, cairo, wayland/X11 libs)"
         );
     }
 

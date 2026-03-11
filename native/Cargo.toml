@@ -3,7 +3,7 @@ resolver = "2"
 members = [
   "rust",
   "uniffi-bindgen",
-  "desktop/iced",
+  "desktop/gtk",
 ]
 exclude = [
   "rmp-cli",

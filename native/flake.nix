@@ -36,19 +36,23 @@
           ];
         };
 
-        androidSdk = android-nixpkgs.sdk.${system} (sdkPkgs: with sdkPkgs; [
-          cmdline-tools-latest
-          platform-tools
-          build-tools-34-0-0
-          build-tools-35-0-0
-          platforms-android-34
-          platforms-android-35
-          ndk-28-2-13676358
-          emulator
-          (if pkgs.stdenv.isDarwin
-           then system-images-android-35-google-apis-arm64-v8a
-           else system-images-android-35-google-apis-x86-64)
-        ]);
+        androidSdk =
+          if builtins.hasAttr system android-nixpkgs.sdk then
+            android-nixpkgs.sdk.${system} (sdkPkgs: with sdkPkgs; [
+              cmdline-tools-latest
+              platform-tools
+              build-tools-34-0-0
+              build-tools-35-0-0
+              platforms-android-34
+              platforms-android-35
+              ndk-28-2-13676358
+              emulator
+              (if pkgs.stdenv.isDarwin
+               then system-images-android-35-google-apis-arm64-v8a
+               else system-images-android-35-google-apis-x86-64)
+            ])
+          else
+            null;
 
         rmp = pkgs.writeShellScriptBin "rmp" ''
           set -euo pipefail
@@ -75,24 +79,51 @@
 
           packages = [
             rustToolchain
-            androidSdk
             pkgs.just
             pkgs.nodejs_22
             pkgs.python3
             pkgs.curl
+            pkgs.file
             pkgs.git
             pkgs.gradle
+            pkgs.patchelf
+            pkgs.pkg-config
+            pkgs.adwaita-icon-theme
+            pkgs.fontconfig
+            pkgs.dconf
+            pkgs.cairo
+            pkgs.gdk-pixbuf
+            pkgs.gdk-pixbuf.dev
+            pkgs.glib
+            pkgs.glib.dev
+            pkgs.glib-networking
+            pkgs.gsettings-desktop-schemas
+            pkgs.graphene
+            pkgs.gtk4
+            pkgs.hicolor-icon-theme
+            pkgs.isocodes
+            pkgs.libxkbcommon
+            pkgs.pango
+            pkgs.shared-mime-info
+            pkgs.wayland
+            pkgs.xkeyboard-config
+            pkgs.libx11
             rmp
+          ] ++ pkgs.lib.optionals (androidSdk != null) [
+            androidSdk
           ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
             pkgs.xcodegen
           ];
 
           shellHook = ''
             export IN_NIX_SHELL=1
-            export ANDROID_HOME=${androidSdk}/share/android-sdk
-            export ANDROID_SDK_ROOT=${androidSdk}/share/android-sdk
-            export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/28.2.13676358"
-            export PATH=$ANDROID_HOME/emulator:$ANDROID_HOME/platform-tools:$ANDROID_HOME/cmdline-tools/latest/bin:$PATH
+
+            if [ -n "${if androidSdk != null then "1" else ""}" ]; then
+              export ANDROID_HOME=${if androidSdk != null then "${androidSdk}/share/android-sdk" else ""}
+              export ANDROID_SDK_ROOT="$ANDROID_HOME"
+              export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/28.2.13676358"
+              export PATH=$ANDROID_HOME/emulator:$ANDROID_HOME/platform-tools:$ANDROID_HOME/cmdline-tools/latest/bin:$PATH
+            fi
 
             # Auto-detect rmp-cli in parent directory
             if [ -z "''${RMP_REPO:-}" ]; then
@@ -118,10 +149,12 @@
               fi
             fi
 
-            mkdir -p android
-            cat > android/local.properties <<EOF
-            sdk.dir=$ANDROID_HOME
+            if [ -n "''${ANDROID_HOME:-}" ]; then
+              mkdir -p android
+              cat > android/local.properties <<EOF
+              sdk.dir=$ANDROID_HOME
 EOF
+            fi
 
             echo ""
             echo "RMP app dev environment ready"

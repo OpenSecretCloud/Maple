@@ -64,11 +64,18 @@ pub struct RmpDesktop {
     #[serde(default)]
     pub targets: Vec<String>,
     pub iced: Option<RmpDesktopIced>,
+    pub gtk4: Option<RmpDesktopGtk4>,
 }
 
 #[allow(dead_code)]
 #[derive(serde::Deserialize, Debug, Clone)]
 pub struct RmpDesktopIced {
+    pub package: Option<String>,
+}
+
+#[allow(dead_code)]
+#[derive(serde::Deserialize, Debug, Clone)]
+pub struct RmpDesktopGtk4 {
     pub package: Option<String>,
 }
 

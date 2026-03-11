@@ -12,7 +12,7 @@ default:
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
-nix_run := "nix develop --command bash -c"
+nix_run := 'nix develop "{{justfile_directory()}}" --command bash -c'
 ossl := 'PKG_CONFIG_PATH="$(brew --prefix openssl@3)/lib/pkgconfig" OPENSSL_DIR="$(brew --prefix openssl@3)"'
 
 # ── Diagnostics ──────────────────────────────────────────────────────────────
@@ -20,7 +20,7 @@ ossl := 'PKG_CONFIG_PATH="$(brew --prefix openssl@3)/lib/pkgconfig" OPENSSL_DIR=
 # run rmp doctor
 doctor:
   if command -v nix >/dev/null 2>&1; then \
-    nix develop --command bash -c "if command -v rmp >/dev/null 2>&1; then rmp doctor; else cargo run --manifest-path rmp-cli/Cargo.toml -- doctor; fi"; \
+    nix develop "{{justfile_directory()}}" --command bash -c "if command -v rmp >/dev/null 2>&1; then rmp doctor; else cargo run --manifest-path rmp-cli/Cargo.toml -- doctor; fi"; \
   else \
     if command -v rmp >/dev/null 2>&1; then rmp doctor; else cargo run --manifest-path rmp-cli/Cargo.toml -- doctor; fi; \
   fi
@@ -30,7 +30,7 @@ doctor:
 # regenerate Swift FFI bindings (api_env: local|dev|prod)
 bindings-swift api_env="local":
   if command -v nix >/dev/null 2>&1; then \
-    nix develop --command bash -c "unset CC CXX AR RANLIB && if command -v rmp >/dev/null 2>&1; then rmp bindings swift; else cargo run --manifest-path rmp-cli/Cargo.toml -- bindings swift; fi"; \
+    nix develop "{{justfile_directory()}}" --command bash -c "unset CC CXX AR RANLIB && if command -v rmp >/dev/null 2>&1; then rmp bindings swift; else cargo run --manifest-path rmp-cli/Cargo.toml -- bindings swift; fi"; \
   else \
     unset CC CXX AR RANLIB && if command -v rmp >/dev/null 2>&1; then rmp bindings swift; else cargo run --manifest-path rmp-cli/Cargo.toml -- bindings swift; fi; \
   fi
@@ -38,7 +38,7 @@ bindings-swift api_env="local":
 # regenerate Kotlin FFI bindings (api_env: local|dev|prod)
 bindings-kotlin api_env="local":
   if command -v nix >/dev/null 2>&1; then \
-    nix develop --command bash -c "unset CC CXX AR RANLIB && if command -v rmp >/dev/null 2>&1; then rmp bindings kotlin; else cargo run --manifest-path rmp-cli/Cargo.toml -- bindings kotlin; fi"; \
+    nix develop "{{justfile_directory()}}" --command bash -c "unset CC CXX AR RANLIB && if command -v rmp >/dev/null 2>&1; then rmp bindings kotlin; else cargo run --manifest-path rmp-cli/Cargo.toml -- bindings kotlin; fi"; \
   else \
     unset CC CXX AR RANLIB && if command -v rmp >/dev/null 2>&1; then rmp bindings kotlin; else cargo run --manifest-path rmp-cli/Cargo.toml -- bindings kotlin; fi; \
   fi
@@ -46,26 +46,54 @@ bindings-kotlin api_env="local":
 # regenerate all FFI bindings (api_env: local|dev|prod)
 bindings api_env="local":
   if command -v nix >/dev/null 2>&1; then \
-    nix develop --command bash -c "unset CC CXX AR RANLIB && if command -v rmp >/dev/null 2>&1; then rmp bindings all; else cargo run --manifest-path rmp-cli/Cargo.toml -- bindings all; fi"; \
+    nix develop "{{justfile_directory()}}" --command bash -c "unset CC CXX AR RANLIB && if command -v rmp >/dev/null 2>&1; then rmp bindings all; else cargo run --manifest-path rmp-cli/Cargo.toml -- bindings all; fi"; \
   else \
     unset CC CXX AR RANLIB && if command -v rmp >/dev/null 2>&1; then rmp bindings all; else cargo run --manifest-path rmp-cli/Cargo.toml -- bindings all; fi; \
   fi
 
-# ── Desktop (iced) ───────────────────────────────────────────────────────────
+# ── Desktop (GTK4) ───────────────────────────────────────────────────────────
 
 # build desktop app only (api_env: local|dev|prod)
 build-desktop api_env="local":
   api_env="{{api_env}}"; while [[ "$api_env" == api_env=* ]]; do api_env="${api_env#api_env=}"; done; \
   api_url="http://0.0.0.0:3000"; \
   if [ "$api_env" = "dev" ]; then api_url="https://enclave.secretgpt.ai"; elif [ "$api_env" = "prod" ]; then api_url="https://enclave.trymaple.ai"; fi; \
-  {{ossl}} OPEN_SECRET_API_URL="$api_url" cargo build -p maple_desktop_iced
+  if command -v nix >/dev/null 2>&1 && [ "$(uname -s)" = "Linux" ]; then \
+    OPEN_SECRET_API_URL="$api_url" nix develop --no-write-lock-file "{{justfile_directory()}}" --command bash -c "cargo build -p maple_desktop_gtk"; \
+  elif [ "$(uname -s)" = "Darwin" ]; then \
+    {{ossl}} OPEN_SECRET_API_URL="$api_url" cargo build -p maple_desktop_gtk; \
+  else \
+    OPEN_SECRET_API_URL="$api_url" cargo build -p maple_desktop_gtk; \
+  fi
+
+# build relocatable Linux desktop bundle (profile: debug|release, api_env: local|dev|prod)
+bundle-desktop profile="debug" api_env="local":
+  if [ "$(uname -s)" != "Linux" ]; then \
+    echo "bundle-desktop is only supported on Linux" >&2; \
+    exit 1; \
+  fi; \
+  profile="{{profile}}"; while [[ "$profile" == profile=* ]]; do profile="${profile#profile=}"; done; \
+  api_env="{{api_env}}"; while [[ "$api_env" == api_env=* ]]; do api_env="${api_env#api_env=}"; done; \
+  api_url="http://0.0.0.0:3000"; \
+  cargo_args=""; \
+  binary_path="target/debug/maple_desktop_gtk"; \
+  bundle_path="target/maple-bundle-$(uname -m)"; \
+  if [ "$profile" = "release" ]; then cargo_args="--release"; binary_path="target/release/maple_desktop_gtk"; fi; \
+  if [ "$api_env" = "dev" ]; then api_url="https://enclave.secretgpt.ai"; elif [ "$api_env" = "prod" ]; then api_url="https://enclave.trymaple.ai"; fi; \
+  OPEN_SECRET_API_URL="$api_url" nix develop --no-write-lock-file "{{justfile_directory()}}" --command bash -c "set -euo pipefail; cd '{{justfile_directory()}}'; cargo build -p maple_desktop_gtk $cargo_args; ./scripts/bundle-gtk-linux.sh '$binary_path' '$bundle_path'"
 
 # build and run desktop app (api_env: local|dev|prod)
 run-desktop api_env="local":
   api_env="{{api_env}}"; while [[ "$api_env" == api_env=* ]]; do api_env="${api_env#api_env=}"; done; \
   api_url="http://0.0.0.0:3000"; \
   if [ "$api_env" = "dev" ]; then api_url="https://enclave.secretgpt.ai"; elif [ "$api_env" = "prod" ]; then api_url="https://enclave.trymaple.ai"; fi; \
-  {{ossl}} OPEN_SECRET_API_URL="$api_url" cargo run -p maple_desktop_iced
+  if command -v nix >/dev/null 2>&1 && [ "$(uname -s)" = "Linux" ]; then \
+    OPEN_SECRET_API_URL="$api_url" nix develop --no-write-lock-file "{{justfile_directory()}}" --command bash -c "cargo run -p maple_desktop_gtk"; \
+  elif [ "$(uname -s)" = "Darwin" ]; then \
+    {{ossl}} OPEN_SECRET_API_URL="$api_url" cargo run -p maple_desktop_gtk; \
+  else \
+    OPEN_SECRET_API_URL="$api_url" cargo run -p maple_desktop_gtk; \
+  fi
 
 # ── iOS ──────────────────────────────────────────────────────────────────────
 
@@ -75,7 +103,7 @@ run-ios api_env="local":
   api_url="http://0.0.0.0:3000"; \
   if [ "$api_env" = "dev" ]; then api_url="https://enclave.secretgpt.ai"; elif [ "$api_env" = "prod" ]; then api_url="https://enclave.trymaple.ai"; fi; \
   if command -v nix >/dev/null 2>&1; then \
-    OPEN_SECRET_API_URL="$api_url" nix develop --command bash -c "unset CC CXX AR RANLIB && if command -v rmp >/dev/null 2>&1; then rmp run ios; else cargo run --manifest-path rmp-cli/Cargo.toml -- run ios; fi"; \
+    OPEN_SECRET_API_URL="$api_url" nix develop "{{justfile_directory()}}" --command bash -c "unset CC CXX AR RANLIB && if command -v rmp >/dev/null 2>&1; then rmp run ios; else cargo run --manifest-path rmp-cli/Cargo.toml -- run ios; fi"; \
   else \
     unset CC CXX AR RANLIB && export OPEN_SECRET_API_URL="$api_url" && if command -v rmp >/dev/null 2>&1; then rmp run ios; else cargo run --manifest-path rmp-cli/Cargo.toml -- run ios; fi; \
   fi
@@ -88,7 +116,7 @@ run-android serial="emulator-5554" api_env="local":
   api_url="http://0.0.0.0:3000"; \
   if [ "$api_env" = "dev" ]; then api_url="https://enclave.secretgpt.ai"; elif [ "$api_env" = "prod" ]; then api_url="https://enclave.trymaple.ai"; fi; \
   if command -v nix >/dev/null 2>&1; then \
-    OPEN_SECRET_API_URL="$api_url" nix develop --command bash -c "unset CC CXX AR RANLIB && export PATH=\$HOME/.cargo/bin:\$PATH && if command -v rmp >/dev/null 2>&1; then rmp run android --serial {{serial}}; else cargo run --manifest-path rmp-cli/Cargo.toml -- run android --serial {{serial}}; fi"; \
+    OPEN_SECRET_API_URL="$api_url" nix develop "{{justfile_directory()}}" --command bash -c "unset CC CXX AR RANLIB && export PATH=\$HOME/.cargo/bin:\$PATH && if command -v rmp >/dev/null 2>&1; then rmp run android --serial {{serial}}; else cargo run --manifest-path rmp-cli/Cargo.toml -- run android --serial {{serial}}; fi"; \
   else \
     unset CC CXX AR RANLIB && export PATH=\$HOME/.cargo/bin:\$PATH && export OPEN_SECRET_API_URL="$api_url" && if command -v rmp >/dev/null 2>&1; then rmp run android --serial {{serial}}; else cargo run --manifest-path rmp-cli/Cargo.toml -- run android --serial {{serial}}; fi; \
   fi

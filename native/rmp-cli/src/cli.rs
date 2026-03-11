@@ -193,6 +193,7 @@ pub enum RunPlatform {
     Ios,
     Android,
     Iced,
+    Gtk4,
 }
 
 #[derive(clap::Args, Debug, Default)]
@@ -243,7 +244,7 @@ pub struct JsonErrInner {
 #[derive(Serialize, Clone, Debug)]
 pub struct JsonChoice {
     pub id: String,
-    pub platform: String, // "ios" | "android" | "iced"
+    pub platform: String, // "ios" | "android" | "iced" | "gtk4"
     pub kind: String,     // "device" | "simulator" | "emulator"
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
