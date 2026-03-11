@@ -29,6 +29,7 @@ pub fn default_api_url() -> String {
 }
 
 const PAGE_SIZE: i64 = 20;
+const AGENT_MESSAGE_STAGGER_MS: u64 = 1_500;
 
 fn format_relative_time(epoch_secs: i64) -> String {
     let msg_time = DateTime::from_timestamp(epoch_secs, 0)
@@ -1272,9 +1273,43 @@ impl FfiApp {
                             state.is_agent_typing = true;
                             state.compose_text.clear();
 
+                            let (stagger_tx, stagger_rx) = flume::unbounded::<InternalEvent>();
+                            let paced_core_tx = core_tx_async.clone();
+                            rt.spawn(async move {
+                                use std::time::Duration;
+                                use tokio::time::{sleep_until, Instant};
+
+                                let mut next_emit_at: Option<Instant> = None;
+
+                                while let Ok(event) = stagger_rx.recv_async().await {
+                                    let is_message =
+                                        matches!(&event, InternalEvent::AgentMessageChunk { .. });
+                                    let is_terminal = matches!(
+                                        &event,
+                                        InternalEvent::AgentDone | InternalEvent::AgentError(_)
+                                    );
+
+                                    if is_message {
+                                        if let Some(deadline) = next_emit_at {
+                                            sleep_until(deadline).await;
+                                        }
+                                        next_emit_at = Some(
+                                            Instant::now()
+                                                + Duration::from_millis(AGENT_MESSAGE_STAGGER_MS),
+                                        );
+                                    }
+
+                                    let _ = paced_core_tx.send(CoreMsg::Internal(Box::new(event)));
+
+                                    if is_terminal {
+                                        break;
+                                    }
+                                }
+                            });
+
                             // Spawn agent_chat streaming task
                             let os = os_client.clone();
-                            let tx = core_tx_async.clone();
+                            let tx = stagger_tx;
                             rt.spawn(async move {
                                 use futures::StreamExt;
                                 let mut retried_session = false;
@@ -1289,21 +1324,25 @@ impl FfiApp {
                                                     Ok(opensecret::types::AgentSseEvent::Message(
                                                         msg,
                                                     )) => {
-                                                        received_message = true;
-                                                        let _ = tx.send(CoreMsg::Internal(Box::new(
-                                                            InternalEvent::AgentMessageChunk {
-                                                                messages: msg.messages,
-                                                                step: msg.step,
-                                                            },
-                                                        )));
+                                                        if !msg.messages.is_empty() {
+                                                            received_message = true;
+                                                            let step = msg.step;
+
+                                                            for text in msg.messages {
+                                                                let _ = tx.send(
+                                                                    InternalEvent::AgentMessageChunk {
+                                                                        messages: vec![text],
+                                                                        step,
+                                                                    },
+                                                                );
+                                                            }
+                                                        }
                                                     }
                                                     Ok(opensecret::types::AgentSseEvent::Typing(_)) => {
                                                         continue;
                                                     }
                                                     Ok(opensecret::types::AgentSseEvent::Done(_)) => {
-                                                        let _ = tx.send(CoreMsg::Internal(Box::new(
-                                                            InternalEvent::AgentDone,
-                                                        )));
+                                                        let _ = tx.send(InternalEvent::AgentDone);
                                                         return;
                                                     }
                                                     Ok(opensecret::types::AgentSseEvent::Error(
@@ -1323,22 +1362,18 @@ impl FfiApp {
                                                             {
                                                                 Ok(()) => continue 'agent_stream,
                                                                 Err(handshake_error) => {
-                                                                    let _ = tx.send(CoreMsg::Internal(
-                                                                        Box::new(
-                                                                            InternalEvent::AgentError(
-                                                                                handshake_error
-                                                                                    .to_string(),
-                                                                            ),
+                                                                    let _ = tx.send(
+                                                                        InternalEvent::AgentError(
+                                                                            handshake_error
+                                                                                .to_string(),
                                                                         ),
-                                                                    ));
+                                                                    );
                                                                     return;
                                                                 }
                                                             }
                                                         }
 
-                                                        let _ = tx.send(CoreMsg::Internal(Box::new(
-                                                            InternalEvent::AgentError(err.error),
-                                                        )));
+                                                        let _ = tx.send(InternalEvent::AgentError(err.error));
                                                         return;
                                                     }
                                                     Err(error) => {
@@ -1356,32 +1391,27 @@ impl FfiApp {
                                                             {
                                                                 Ok(()) => continue 'agent_stream,
                                                                 Err(handshake_error) => {
-                                                                    let _ = tx.send(CoreMsg::Internal(
-                                                                        Box::new(
-                                                                            InternalEvent::AgentError(
-                                                                                handshake_error
-                                                                                    .to_string(),
-                                                                            ),
+                                                                    let _ = tx.send(
+                                                                        InternalEvent::AgentError(
+                                                                            handshake_error
+                                                                                .to_string(),
                                                                         ),
-                                                                    ));
+                                                                    );
                                                                     return;
                                                                 }
                                                             }
                                                         }
 
-                                                        let _ = tx.send(CoreMsg::Internal(Box::new(
-                                                            InternalEvent::AgentError(
+                                                        let _ =
+                                                            tx.send(InternalEvent::AgentError(
                                                                 error.to_string(),
-                                                            ),
-                                                        )));
+                                                            ));
                                                         return;
                                                     }
                                                 }
                                             }
 
-                                            let _ = tx.send(CoreMsg::Internal(Box::new(
-                                                InternalEvent::AgentDone,
-                                            )));
+                                            let _ = tx.send(InternalEvent::AgentDone);
                                             return;
                                         }
                                         Err(error)
@@ -1396,19 +1426,16 @@ impl FfiApp {
                                             {
                                                 Ok(()) => continue,
                                                 Err(handshake_error) => {
-                                                    let _ = tx.send(CoreMsg::Internal(Box::new(
-                                                        InternalEvent::AgentError(
-                                                            handshake_error.to_string(),
-                                                        ),
-                                                    )));
+                                                    let _ = tx.send(InternalEvent::AgentError(
+                                                        handshake_error.to_string(),
+                                                    ));
                                                     return;
                                                 }
                                             }
                                         }
                                         Err(error) => {
-                                            let _ = tx.send(CoreMsg::Internal(Box::new(
-                                                InternalEvent::AgentError(error.to_string()),
-                                            )));
+                                            let _ =
+                                                tx.send(InternalEvent::AgentError(error.to_string()));
                                             return;
                                         }
                                     }
