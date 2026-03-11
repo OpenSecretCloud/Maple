@@ -5,7 +5,9 @@ import Observation
 // MARK: - Keychain Helper
 
 private enum KeychainHelper {
-    private static let service = "cloud.opensecret.maple.ios"
+    private static var service: String {
+        Bundle.main.bundleIdentifier ?? "cloud.opensecret.maple.apple"
+    }
 
     static func saveData(key: String, data: Data) {
         let query: [String: Any] = [
@@ -14,10 +16,12 @@ private enum KeychainHelper {
             kSecAttrAccount as String: key,
         ]
 
-        let attributes: [String: Any] = [
+        var attributes: [String: Any] = [
             kSecValueData as String: data,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
         ]
+#if !os(macOS)
+        attributes[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+#endif
 
         var item = query
         for (key, value) in attributes {
@@ -124,6 +128,16 @@ final class AppManager: AppReconciler {
     var state: AppState
     private var lastRevApplied: UInt64
 
+    private static func dataDirectory(using fileManager: FileManager) -> URL {
+        let baseDirectory = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+#if os(macOS)
+        let directoryName = Bundle.main.bundleIdentifier ?? "cloud.opensecret.maple.desktop"
+        return baseDirectory.appendingPathComponent(directoryName, isDirectory: true)
+#else
+        return baseDirectory
+#endif
+    }
+
     private static func configuredApiUrl() -> String {
         if let apiUrl = ProcessInfo.processInfo.environment["OPEN_SECRET_API_URL"]?
             .trimmingCharacters(in: .whitespacesAndNewlines),
@@ -143,7 +157,7 @@ final class AppManager: AppReconciler {
 
     init() {
         let fm = FileManager.default
-        let dataDirUrl = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        let dataDirUrl = Self.dataDirectory(using: fm)
         let dataDir = dataDirUrl.path
         try? fm.createDirectory(at: dataDirUrl, withIntermediateDirectories: true)
 

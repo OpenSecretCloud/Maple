@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ContentView: View {
     @Bindable var manager: AppManager
+    @Environment(\.openURL) private var openURL
     @State private var showSplash = true
     @State private var splashMinTimePassed = false
     @State private var toastDismissTask: Task<Void, Never>?
@@ -35,9 +36,13 @@ struct ContentView: View {
                 splashMinTimePassed = true
                 dismissSplashIfReady()
             }
+            openPendingAuthUrl(manager.state.pendingAuthUrl)
         }
         .onChange(of: manager.state.router.defaultScreen) { _, _ in
             dismissSplashIfReady()
+        }
+        .onChange(of: manager.state.pendingAuthUrl) { _, newUrl in
+            openPendingAuthUrl(newUrl)
         }
         .onChange(of: manager.state.toast) { _, newToast in
             toastDismissTask?.cancel()
@@ -60,6 +65,14 @@ struct ContentView: View {
         withAnimation(.easeOut(duration: 0.4)) {
             showSplash = false
         }
+    }
+
+    private func openPendingAuthUrl(_ urlString: String?) {
+        guard let urlString,
+              let url = URL(string: urlString) else { return }
+
+        openURL(url)
+        manager.dispatch(.clearPendingAuthUrl)
     }
 }
 
@@ -239,6 +252,14 @@ struct LoginView: View {
         RoundedRectangle(cornerRadius: MapleRadius.md, style: .continuous)
     }
 
+    private var loginCardMaxWidth: CGFloat? {
+#if os(macOS)
+        393
+#else
+        nil
+#endif
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             Spacer()
@@ -258,9 +279,11 @@ struct LoginView: View {
 
                     mapleTextField("Email", text: $email)
                         .textContentType(.emailAddress)
-                        .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
+#if !os(macOS)
+                        .textInputAutocapitalization(.never)
                         .keyboardType(.emailAddress)
+#endif
                         .focused($focusedField, equals: .email)
                         .submitLabel(.next)
                         .onSubmit { focusedField = .password }
@@ -325,6 +348,7 @@ struct LoginView: View {
                 loginCardShape.stroke(loginPalette.cardBorder, lineWidth: 1)
             }
             .shadow(color: loginPalette.cardShadow, radius: 28, y: 20)
+            .frame(maxWidth: loginCardMaxWidth)
             .padding(.horizontal, MapleSpacing.md)
 
             Spacer()
@@ -402,7 +426,6 @@ struct LoginView: View {
             }
             .font(MapleFont.medium(16))
             .foregroundStyle(loginPalette.secondaryButtonForeground)
-            .frame(maxWidth: .infinity)
             .padding(.horizontal, 24)
             .padding(.vertical, 12)
             .background(loginPalette.secondaryButtonBackground, in: Capsule())
@@ -532,6 +555,63 @@ struct AgentChatView: View {
 
     private var bottomTargetID: String? {
         manager.state.isAgentTyping ? typingIndicatorID : manager.state.messages.last?.id
+    }
+
+    private var chatContentMaxWidth: CGFloat? {
+#if os(macOS)
+        393
+#else
+        nil
+#endif
+    }
+
+    private var topBarTopPadding: CGFloat {
+        0
+    }
+
+    private var topBarControlSize: CGFloat {
+        44
+    }
+
+    private var topBarContent: some View {
+        ZStack {
+            HStack(spacing: 8) {
+                MapleWordmarkAbbr(color: palette.headerWordmark, height: 16)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(Color.pebble400)
+            }
+            .padding(.leading, 22)
+            .padding(.trailing, 16)
+            .frame(minHeight: topBarControlSize)
+            .glassEffect(.regular.interactive(), in: .capsule)
+
+            HStack {
+                topBarButton(systemName: "line.3.horizontal") {
+                    manager.dispatch(.toggleSettings)
+                }
+                Spacer()
+                topBarButton(systemName: "magnifyingglass") {
+                }
+            }
+        }
+        .padding(.top, topBarTopPadding)
+        .padding(.horizontal, 16)
+        .padding(.bottom, MapleSpacing.xs)
+        .frame(maxWidth: chatContentMaxWidth)
+        .frame(maxWidth: .infinity)
+    }
+
+    private func topBarButton(systemName: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 14, weight: .bold))
+                .foregroundStyle(palette.secondaryIcon)
+                .frame(width: topBarControlSize, height: topBarControlSize)
+        }
+        .buttonStyle(.plain)
+        .contentShape(Circle())
+        .glassEffect(.regular.interactive(), in: .circle)
     }
 
     private func scrollToBottom(with proxy: ScrollViewProxy, animated: Bool) {
@@ -688,6 +768,8 @@ struct AgentChatView: View {
                     typingIndicatorView
                 }
             }
+            .frame(maxWidth: chatContentMaxWidth)
+            .frame(maxWidth: .infinity)
             .padding()
             .background {
                 GeometryReader { contentGeometry in
@@ -699,7 +781,9 @@ struct AgentChatView: View {
             }
         }
         .defaultScrollAnchor(.bottom)
+#if !os(macOS)
         .scrollDismissesKeyboard(.interactively)
+#endif
         .coordinateSpace(name: "chat-scroll")
         .opacity(hasSettledInitialScroll || manager.state.messages.isEmpty ? 1 : 0)
         .overlay(alignment: .top) {
@@ -779,52 +863,23 @@ struct AgentChatView: View {
 
     var body: some View {
         messageList
-            .safeAreaInset(edge: .top) {
-                ZStack {
-                    GlassEffectContainer {
-                        HStack(spacing: 8) {
-                            MapleWordmarkAbbr(color: palette.headerWordmark, height: 16)
-                            Text("\u{2304}")
-                                .font(.system(size: 12, weight: .heavy))
-                                .foregroundStyle(Color.pebble400)
-                        }
-                        .padding(.leading, 16)
-                        .padding(.trailing, 12)
-                        .padding(.vertical, 12)
-                        .glassEffect(in: .capsule)
-                    }
-
-                    HStack {
-                        GlassEffectContainer {
-                            Button {
-                                manager.dispatch(.toggleSettings)
-                            } label: {
-                                Image(systemName: "line.3.horizontal")
-                                    .font(.system(size: 13, weight: .bold))
-                                    .foregroundStyle(palette.secondaryIcon)
-                                    .frame(width: 32, height: 32)
-                            }
-                            .controlSize(.small)
-                            .buttonStyle(.glass)
-                        }
-                        Spacer()
-                        GlassEffectContainer {
-                            Button {
-                            } label: {
-                                Image(systemName: "magnifyingglass")
-                                    .font(.system(size: 13, weight: .bold))
-                                    .foregroundStyle(palette.secondaryIcon)
-                                    .frame(width: 32, height: 32)
-                            }
-                            .controlSize(.small)
-                            .buttonStyle(.glass)
-                        }
-                    }
-                    .padding(.horizontal, MapleSpacing.sm)
+#if os(macOS)
+            .safeAreaBar(edge: .top, spacing: 0) {
+                GlassEffectContainer(spacing: 20) {
+                    topBarContent
                 }
             }
-            .safeAreaInset(edge: .bottom) {
+#else
+            .safeAreaInset(edge: .top) {
+                GlassEffectContainer(spacing: 20) {
+                    topBarContent
+                }
+            }
+#endif
+            .safeAreaBar(edge: .bottom, spacing: 0) {
                 composeBar
+                    .frame(maxWidth: chatContentMaxWidth)
+                    .frame(maxWidth: .infinity)
             }
             .background(
                 ZStack {
@@ -846,8 +901,7 @@ struct AgentChatView: View {
             get: { manager.state.showSettings },
             set: { if !$0 { manager.dispatch(.toggleSettings) } }
         )) {
-            SettingsSheet(manager: manager)
-                .presentationDetents([.medium])
+            settingsSheetContent
         }
         .alert("Delete Agent?", isPresented: Binding(
             get: { manager.state.confirmDeleteAgent },
@@ -876,6 +930,16 @@ struct AgentChatView: View {
         !composeText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !manager.state.isAgentTyping
     }
 
+    @ViewBuilder
+    private var settingsSheetContent: some View {
+        SettingsSheet(manager: manager)
+#if os(macOS)
+            .frame(minWidth: 420, minHeight: 320)
+#else
+            .presentationDetents([.medium])
+#endif
+    }
+
     private var composeBar: some View {
         GlassEffectContainer {
             HStack(alignment: .center, spacing: 8) {
@@ -886,6 +950,7 @@ struct AgentChatView: View {
                         prompt: Text("Write...").foregroundStyle(palette.composePlaceholder),
                         axis: .vertical
                     )
+                        .textFieldStyle(.plain)
                         .font(MapleFont.medium(15))
                         .foregroundStyle(palette.composeText)
                         .lineLimit(1...4)
@@ -894,9 +959,9 @@ struct AgentChatView: View {
                         Image(systemName: "plus")
                             .font(.system(size: 14, weight: .bold))
                             .foregroundStyle(Color.maple500)
-                            .frame(width: 24, height: 24)
-                            .background(Color.maple500.opacity(0.15), in: Circle())
+                            .frame(width: 28, height: 28)
                     }
+                    .buttonStyle(.plain)
                 }
 
                 Button(action: sendMessage) {
@@ -917,6 +982,7 @@ struct AgentChatView: View {
                             in: Capsule()
                         )
                 }
+                .buttonStyle(.plain)
                 .disabled(!canSend)
             }
             .padding(.horizontal, 16)
@@ -1019,14 +1085,25 @@ struct SettingsSheet: View {
                 }
             }
             .navigationTitle("Settings")
+#if !os(macOS)
             .navigationBarTitleDisplayMode(.inline)
+#endif
             .toolbar {
+#if os(macOS)
+                ToolbarItem(placement: .automatic) {
+                    Button("Done") {
+                        manager.dispatch(.toggleSettings)
+                    }
+                    .font(MapleFont.medium(16))
+                }
+#else
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Done") {
                         manager.dispatch(.toggleSettings)
                     }
                     .font(MapleFont.medium(16))
                 }
+#endif
             }
         }
     }

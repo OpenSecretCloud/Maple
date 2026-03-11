@@ -52,7 +52,15 @@ pub fn build_swift_for_run(
     let core_pkg = cfg.core.crate_.clone();
     let core_lib = core_pkg.replace('-', "_");
     generate_ios_sources(root, &cfg, profile, true, verbose)?;
-    build_ios_xcframework(root, &core_lib, &core_pkg, &[rust_target], profile, verbose)
+    let macos_target = host_macos_target()?;
+    build_ios_xcframework(
+        root,
+        &core_lib,
+        &core_pkg,
+        &[rust_target, macos_target],
+        profile,
+        verbose,
+    )
 }
 
 pub fn build_kotlin_for_run(
@@ -73,6 +81,22 @@ pub fn build_kotlin_for_run(
 
 fn default_ios_targets() -> [&'static str; 2] {
     ["aarch64-apple-ios", "aarch64-apple-ios-sim"]
+}
+
+fn host_macos_target() -> Result<&'static str, CliError> {
+    match std::env::consts::ARCH {
+        "aarch64" => Ok("aarch64-apple-darwin"),
+        "x86_64" => Ok("x86_64-apple-darwin"),
+        arch => Err(CliError::operational(format!(
+            "unsupported host arch for macOS builds: {arch}"
+        ))),
+    }
+}
+
+fn default_apple_targets() -> Result<Vec<&'static str>, CliError> {
+    let mut targets = default_ios_targets().to_vec();
+    targets.push(host_macos_target()?);
+    Ok(targets)
 }
 
 fn default_android_abis() -> [&'static str; 3] {
@@ -96,6 +120,7 @@ pub fn bindings(
     match args.target {
         crate::cli::BindingsTarget::Swift => {
             let _ = ios.ok_or_else(|| CliError::user("rmp.toml missing [ios] section"))?;
+            let apple_targets = default_apple_targets()?;
             if args.clean {
                 clean_ios(root, verbose)?;
             }
@@ -104,14 +129,7 @@ pub fn bindings(
             } else {
                 generate_ios_sources(root, &cfg, profile, false, verbose)?;
             }
-            build_ios_xcframework(
-                root,
-                &core_lib,
-                &core_pkg,
-                &default_ios_targets(),
-                profile,
-                verbose,
-            )?;
+            build_ios_xcframework(root, &core_lib, &core_pkg, &apple_targets, profile, verbose)?;
         }
         crate::cli::BindingsTarget::Kotlin => {
             let _ = android.ok_or_else(|| CliError::user("rmp.toml missing [android] section"))?;
@@ -128,6 +146,7 @@ pub fn bindings(
         crate::cli::BindingsTarget::All => {
             let _ = ios.ok_or_else(|| CliError::user("rmp.toml missing [ios] section"))?;
             let _ = android.ok_or_else(|| CliError::user("rmp.toml missing [android] section"))?;
+            let apple_targets = default_apple_targets()?;
             if args.clean {
                 clean_ios(root, verbose)?;
                 clean_android(root, verbose)?;
@@ -139,14 +158,7 @@ pub fn bindings(
                 generate_ios_sources(root, &cfg, profile, false, verbose)?;
                 generate_android_sources(root, &cfg, profile, false, verbose)?;
             }
-            build_ios_xcframework(
-                root,
-                &core_lib,
-                &core_pkg,
-                &default_ios_targets(),
-                profile,
-                verbose,
-            )?;
+            build_ios_xcframework(root, &core_lib, &core_pkg, &apple_targets, profile, verbose)?;
             build_android_so(root, &core_pkg, &default_android_abis(), profile, verbose)?;
         }
     }
@@ -501,7 +513,7 @@ fn build_ios_xcframework(
     let dev_dir = discover_xcode_dev_dir()?;
 
     // Build Rust static libs for the selected iOS targets.
-    build_ios_staticlibs(root, &dev_dir, core_pkg, targets, profile, verbose)?;
+    build_apple_staticlibs(root, &dev_dir, core_pkg, targets, profile, verbose)?;
 
     // Ensure headers exist from UniFFI swift generation.
     let bindings_dir = root.join("ios/Bindings");
@@ -571,8 +583,40 @@ fn build_ios_xcframework(
         libraries.push(sim_a);
         selected.retain(|t| *t != "aarch64-apple-ios-sim" && *t != "x86_64-apple-ios");
     }
+    let has_macos_arm64 = selected.contains(&"aarch64-apple-darwin");
+    let has_macos_x86_64 = selected.contains(&"x86_64-apple-darwin");
+    if has_macos_arm64 && has_macos_x86_64 {
+        let macos_a = build_dir.join(format!("lib{core_lib}_macos.a"));
+        let status = Command::new("/usr/bin/xcrun")
+            .env("DEVELOPER_DIR", &dev_dir)
+            .arg("lipo")
+            .arg("-create")
+            .arg(macos_staticlib_path(
+                root,
+                "aarch64-apple-darwin",
+                core_lib,
+                profile,
+            ))
+            .arg(macos_staticlib_path(
+                root,
+                "x86_64-apple-darwin",
+                core_lib,
+                profile,
+            ))
+            .arg("-output")
+            .arg(&macos_a)
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .status()
+            .map_err(|e| CliError::operational(format!("failed to run lipo: {e}")))?;
+        if !status.success() {
+            return Err(CliError::operational("lipo failed"));
+        }
+        libraries.push(macos_a);
+        selected.retain(|t| *t != "aarch64-apple-darwin" && *t != "x86_64-apple-darwin");
+    }
     for target in selected {
-        libraries.push(ios_staticlib_path(root, target, core_lib, profile));
+        libraries.push(apple_staticlib_path(root, target, core_lib, profile));
     }
 
     let xcf_name = pascal_case(core_lib);
@@ -602,6 +646,37 @@ fn build_ios_xcframework(
     }
 
     Ok(())
+}
+
+fn build_apple_staticlibs(
+    root: &Path,
+    dev_dir: &Path,
+    core_pkg: &str,
+    targets: &[&str],
+    profile: BuildProfile,
+    verbose: bool,
+) -> Result<(), CliError> {
+    let (ios_targets, macos_targets): (Vec<&str>, Vec<&str>) = targets
+        .iter()
+        .copied()
+        .partition(|target| is_ios_target(target));
+
+    if !ios_targets.is_empty() {
+        build_ios_staticlibs(root, dev_dir, core_pkg, &ios_targets, profile, verbose)?;
+    }
+
+    if !macos_targets.is_empty() {
+        build_macos_staticlibs(root, dev_dir, core_pkg, &macos_targets, profile, verbose)?;
+    }
+
+    Ok(())
+}
+
+fn is_ios_target(target: &str) -> bool {
+    matches!(
+        target,
+        "aarch64-apple-ios" | "aarch64-apple-ios-sim" | "x86_64-apple-ios"
+    )
 }
 
 fn build_ios_staticlibs(
@@ -746,6 +821,119 @@ fn build_ios_staticlibs(
     Ok(())
 }
 
+fn build_macos_staticlibs(
+    root: &Path,
+    dev_dir: &Path,
+    core_pkg: &str,
+    targets: &[&str],
+    profile: BuildProfile,
+    verbose: bool,
+) -> Result<(), CliError> {
+    if which("cargo").is_none() {
+        return Err(CliError::operational("missing `cargo` on PATH"));
+    }
+    if targets.is_empty() {
+        return Err(CliError::user("no macOS Rust target selected"));
+    }
+
+    let toolchain_bin = dev_dir.join("Toolchains/XcodeDefault.xctoolchain/usr/bin");
+    let cc = toolchain_bin.join("clang");
+    let cxx = toolchain_bin.join("clang++");
+    let ar = toolchain_bin.join("ar");
+    let ranlib = toolchain_bin.join("ranlib");
+    let macos_min = "26.0";
+
+    let sdk_macos = {
+        let mut cmd = Command::new("/usr/bin/xcrun");
+        cmd.env("DEVELOPER_DIR", dev_dir)
+            .arg("--sdk")
+            .arg("macosx")
+            .arg("--show-sdk-path");
+        let out = run_capture(cmd)?;
+        if !out.status.success() {
+            return Err(CliError::operational(
+                "xcrun --sdk macosx --show-sdk-path failed",
+            ));
+        }
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+
+    human_log(
+        verbose,
+        format!(
+            "cargo build (macOS staticlib, profile={})",
+            profile.display()
+        ),
+    );
+    for target in targets {
+        let linker_env = match *target {
+            "aarch64-apple-darwin" => "CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER",
+            "x86_64-apple-darwin" => "CARGO_TARGET_X86_64_APPLE_DARWIN_LINKER",
+            _ => {
+                return Err(CliError::user(format!(
+                    "unsupported macOS Rust target: {target}"
+                )))
+            }
+        };
+
+        let mut cmd = Command::new("cargo");
+        cmd.current_dir(root)
+            .arg("build")
+            .arg("-p")
+            .arg(core_pkg)
+            .arg("--lib")
+            .arg("--target")
+            .arg(target);
+        if let Some(flag) = profile.cargo_release_arg() {
+            cmd.arg(flag);
+        }
+        apply_cargo_features(&mut cmd);
+
+        for k in [
+            "LIBRARY_PATH",
+            "SDKROOT",
+            "MACOSX_DEPLOYMENT_TARGET",
+            "CC",
+            "CXX",
+            "AR",
+            "RANLIB",
+            "LD",
+        ] {
+            cmd.env_remove(k);
+        }
+
+        cmd.env("DEVELOPER_DIR", dev_dir)
+            .env("CC", &cc)
+            .env("CXX", &cxx)
+            .env("AR", &ar)
+            .env("RANLIB", &ranlib)
+            .env("SDKROOT", &sdk_macos)
+            .env("MACOSX_DEPLOYMENT_TARGET", macos_min)
+            .env(linker_env, &cc)
+            .env(
+                "RUSTFLAGS",
+                format!(
+                    "-C linker={} -C link-arg=-mmacosx-version-min={}",
+                    cc.to_string_lossy(),
+                    macos_min
+                ),
+            );
+
+        let status = cmd
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .status()
+            .map_err(|e| CliError::operational(format!("failed to run cargo for {target}: {e}")))?;
+        if !status.success() {
+            return Err(CliError::operational(format!(
+                "cargo build failed for target {target}"
+            )));
+        }
+    }
+
+    Ok(())
+}
+
 fn build_android_so(
     root: &Path,
     core_pkg: &str,
@@ -815,6 +1003,32 @@ fn ios_staticlib_path(root: &Path, target: &str, core_lib: &str, profile: BuildP
         target,
         profile.cargo_dir()
     ))
+}
+
+fn macos_staticlib_path(
+    root: &Path,
+    target: &str,
+    core_lib: &str,
+    profile: BuildProfile,
+) -> PathBuf {
+    root.join(format!(
+        "target/{}/{}/lib{core_lib}.a",
+        target,
+        profile.cargo_dir()
+    ))
+}
+
+fn apple_staticlib_path(
+    root: &Path,
+    target: &str,
+    core_lib: &str,
+    profile: BuildProfile,
+) -> PathBuf {
+    if is_ios_target(target) {
+        ios_staticlib_path(root, target, core_lib, profile)
+    } else {
+        macos_staticlib_path(root, target, core_lib, profile)
+    }
 }
 
 fn swift_bindings_present(root: &Path) -> Result<bool, CliError> {
