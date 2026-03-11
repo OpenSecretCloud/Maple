@@ -1182,16 +1182,10 @@ fun AgentChatScreen(manager: AppManager) {
                         fontWeight = FontWeight.Medium,
                         fontSize = 15.sp,
                     ),
-                    singleLine = true,
+                    singleLine = false,
+                    minLines = 1,
+                    maxLines = 4,
                     cursorBrush = SolidColor(Maple500),
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                    keyboardActions = KeyboardActions(onSend = {
-                        val text = composeText.trim()
-                        if (text.isNotEmpty() && !state.isAgentTyping) {
-                            manager.dispatch(AppAction.SendMessage(content = text))
-                            composeText = ""
-                        }
-                    }),
                     decorationBox = { innerTextField ->
                         Box(modifier = Modifier.fillMaxWidth()) {
                             if (composeText.isEmpty()) {

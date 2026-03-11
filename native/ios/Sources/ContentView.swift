@@ -873,7 +873,7 @@ struct AgentChatView: View {
     }
 
     private var canSend: Bool {
-        !composeText.trimmingCharacters(in: .whitespaces).isEmpty && !manager.state.isAgentTyping
+        !composeText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !manager.state.isAgentTyping
     }
 
     private var composeBar: some View {
@@ -883,11 +883,12 @@ struct AgentChatView: View {
                     TextField(
                         "",
                         text: $composeText,
-                        prompt: Text("Write...").foregroundStyle(palette.composePlaceholder)
+                        prompt: Text("Write...").foregroundStyle(palette.composePlaceholder),
+                        axis: .vertical
                     )
                         .font(MapleFont.medium(15))
                         .foregroundStyle(palette.composeText)
-                        .onSubmit(sendMessage)
+                        .lineLimit(1...4)
 
                     Button(action: {}) {
                         Image(systemName: "plus")
@@ -928,7 +929,7 @@ struct AgentChatView: View {
     }
 
     private func sendMessage() {
-        let text = composeText.trimmingCharacters(in: .whitespaces)
+        let text = composeText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !manager.state.isAgentTyping else { return }
         manager.dispatch(.sendMessage(content: text))
         composeText = ""
