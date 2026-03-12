@@ -1,0 +1,57 @@
+name: Native 3.0 Linux Beta
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-3-linux-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-linux:
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.fork == false
+    runs-on: ubuntu-latest-8-cores
+    env:
+      MAPLE_API_ENV: dev
+      MAPLE_CI_BUILD_ROOT: ${{ github.workspace }}/native/target/maple-ci
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            native -> target
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+
+      - name: Install Linux desktop build tools
+        env:
+          CARGO_CFG_TARGET_OS: linux
+        run: cargo install tauri-cli --version 2.9.2 --locked
+
+      - name: Build Linux beta artifacts
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: bash native/scripts/ci/package-linux.sh
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-desktop-linux-beta
+          path: |
+            native/target/maple-ci/desktop-linux/*.AppImage
+            native/target/maple-ci/desktop-linux/*.deb
+            native/target/maple-ci/desktop-linux/*.sig
+          retention-days: 7

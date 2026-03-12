@@ -1,0 +1,173 @@
+set shell := ["bash", "-c"]
+
+# ┌─────────────────────────────────────────────────────────────────────┐
+# │  Maple justfile                                                     │
+# │                                                                     │
+# │  From macOS:     just <recipe>                                      │
+# │  From OrbStack:  mac just -f /Users/tony/Dev/OpenSecret/maple/native/justfile <recipe> │
+# └─────────────────────────────────────────────────────────────────────┘
+
+default:
+  @just --list
+
+# ── Helpers ──────────────────────────────────────────────────────────────────
+
+nix_run := 'nix develop "{{justfile_directory()}}" --command bash -c'
+
+# ── Diagnostics ──────────────────────────────────────────────────────────────
+
+# run rmp doctor
+doctor:
+  if command -v nix >/dev/null 2>&1; then \
+    nix develop "{{justfile_directory()}}" --command bash -c "if command -v rmp >/dev/null 2>&1; then rmp doctor; else cargo run --manifest-path rmp-cli/Cargo.toml -- doctor; fi"; \
+  else \
+    if command -v rmp >/dev/null 2>&1; then rmp doctor; else cargo run --manifest-path rmp-cli/Cargo.toml -- doctor; fi; \
+  fi
+
+# ── FFI Bindings ─────────────────────────────────────────────────────────────
+
+# regenerate Swift FFI bindings (api_env: local|dev|prod)
+bindings-swift api_env="local":
+  if command -v nix >/dev/null 2>&1; then \
+    nix develop "{{justfile_directory()}}" --command bash -c "unset CC CXX AR RANLIB && if command -v rmp >/dev/null 2>&1; then rmp bindings swift; else cargo run --manifest-path rmp-cli/Cargo.toml -- bindings swift; fi"; \
+  else \
+    unset CC CXX AR RANLIB && if command -v rmp >/dev/null 2>&1; then rmp bindings swift; else cargo run --manifest-path rmp-cli/Cargo.toml -- bindings swift; fi; \
+  fi
+
+# regenerate Kotlin FFI bindings (api_env: local|dev|prod)
+bindings-kotlin api_env="local":
+  if command -v nix >/dev/null 2>&1; then \
+    nix develop "{{justfile_directory()}}" --command bash -c "unset CC CXX AR RANLIB && if command -v rmp >/dev/null 2>&1; then rmp bindings kotlin; else cargo run --manifest-path rmp-cli/Cargo.toml -- bindings kotlin; fi"; \
+  else \
+    unset CC CXX AR RANLIB && if command -v rmp >/dev/null 2>&1; then rmp bindings kotlin; else cargo run --manifest-path rmp-cli/Cargo.toml -- bindings kotlin; fi; \
+  fi
+
+# regenerate all FFI bindings (api_env: local|dev|prod)
+bindings api_env="local":
+  if command -v nix >/dev/null 2>&1; then \
+    nix develop "{{justfile_directory()}}" --command bash -c "unset CC CXX AR RANLIB && if command -v rmp >/dev/null 2>&1; then rmp bindings all; else cargo run --manifest-path rmp-cli/Cargo.toml -- bindings all; fi"; \
+  else \
+    unset CC CXX AR RANLIB && if command -v rmp >/dev/null 2>&1; then rmp bindings all; else cargo run --manifest-path rmp-cli/Cargo.toml -- bindings all; fi; \
+  fi
+
+# ── Desktop (SwiftUI on macOS, GTK4 on Linux) ───────────────────────────────
+
+# build macOS desktop app only (configuration: Debug|Release, api_env: local|dev|prod)
+build-macos api_env="local" configuration="Debug":
+  if [ "$(uname -s)" != "Darwin" ]; then \
+    echo "build-macos is only supported on macOS" >&2; \
+    exit 1; \
+  fi; \
+  api_env="{{api_env}}"; while [[ "$api_env" == api_env=* ]]; do api_env="${api_env#api_env=}"; done; \
+  configuration="{{configuration}}"; while [[ "$configuration" == configuration=* ]]; do configuration="${configuration#configuration=}"; done; \
+  api_url="http://0.0.0.0:3000"; \
+  if [ "$api_env" = "dev" ]; then api_url="https://enclave.secretgpt.ai"; elif [ "$api_env" = "prod" ]; then api_url="https://enclave.trymaple.ai"; fi; \
+  build_root="{{justfile_directory()}}/ios/.build/AppMac"; \
+  rm -rf "$build_root"; \
+  cargo run --manifest-path "{{justfile_directory()}}/rmp-cli/Cargo.toml" -- bindings swift; \
+  (cd "{{justfile_directory()}}/ios" && xcodegen generate); \
+  env -u NIX_LDFLAGS -u LD -u CC -u CXX -u AR -u RANLIB \
+    xcrun xcodebuild \
+      -project "{{justfile_directory()}}/ios/App.xcodeproj" \
+      -scheme AppMac \
+      -configuration "$configuration" \
+      -derivedDataPath "$build_root" \
+      -destination generic/platform=macOS \
+      OPEN_SECRET_API_URL="$api_url" \
+      COMPILER_INDEX_STORE_ENABLE=NO \
+      clean build
+
+# run macOS desktop app (api_env: local|dev|prod)
+run-macos api_env="local":
+  just build-macos api_env="{{api_env}}" configuration=Debug; \
+  open "{{justfile_directory()}}/ios/.build/AppMac/Build/Products/Debug/Maple.app"
+
+# build desktop app for the current host platform (api_env: local|dev|prod)
+build-desktop api_env="local":
+  api_env="{{api_env}}"; while [[ "$api_env" == api_env=* ]]; do api_env="${api_env#api_env=}"; done; \
+  api_url="http://0.0.0.0:3000"; \
+  if [ "$api_env" = "dev" ]; then api_url="https://enclave.secretgpt.ai"; elif [ "$api_env" = "prod" ]; then api_url="https://enclave.trymaple.ai"; fi; \
+  if [ "$(uname -s)" = "Darwin" ]; then \
+    just build-macos api_env="$api_env" configuration=Debug; \
+  elif command -v nix >/dev/null 2>&1 && [ "$(uname -s)" = "Linux" ]; then \
+    OPEN_SECRET_API_URL="$api_url" nix develop --no-write-lock-file "{{justfile_directory()}}" --command bash -c "cargo build -p maple_desktop_gtk"; \
+  else \
+    OPEN_SECRET_API_URL="$api_url" cargo build -p maple_desktop_gtk; \
+  fi
+
+# build relocatable Linux desktop bundle (profile: debug|release, api_env: local|dev|prod)
+bundle-desktop profile="debug" api_env="local":
+  if [ "$(uname -s)" != "Linux" ]; then \
+    echo "bundle-desktop is only supported on Linux" >&2; \
+    exit 1; \
+  fi; \
+  profile="{{profile}}"; while [[ "$profile" == profile=* ]]; do profile="${profile#profile=}"; done; \
+  api_env="{{api_env}}"; while [[ "$api_env" == api_env=* ]]; do api_env="${api_env#api_env=}"; done; \
+  api_url="http://0.0.0.0:3000"; \
+  cargo_args=""; \
+  binary_path="target/debug/maple_desktop_gtk"; \
+  bundle_path="target/maple-bundle-$(uname -m)"; \
+  if [ "$profile" = "release" ]; then cargo_args="--release"; binary_path="target/release/maple_desktop_gtk"; fi; \
+  if [ "$api_env" = "dev" ]; then api_url="https://enclave.secretgpt.ai"; elif [ "$api_env" = "prod" ]; then api_url="https://enclave.trymaple.ai"; fi; \
+  OPEN_SECRET_API_URL="$api_url" nix develop --no-write-lock-file "{{justfile_directory()}}" --command bash -c "set -euo pipefail; cd '{{justfile_directory()}}'; cargo build -p maple_desktop_gtk $cargo_args; ./scripts/bundle-gtk-linux.sh '$binary_path' '$bundle_path'"
+
+# build and run desktop app for the current host platform (api_env: local|dev|prod)
+run-desktop api_env="local":
+  api_env="{{api_env}}"; while [[ "$api_env" == api_env=* ]]; do api_env="${api_env#api_env=}"; done; \
+  api_url="http://0.0.0.0:3000"; \
+  if [ "$api_env" = "dev" ]; then api_url="https://enclave.secretgpt.ai"; elif [ "$api_env" = "prod" ]; then api_url="https://enclave.trymaple.ai"; fi; \
+  if [ "$(uname -s)" = "Darwin" ]; then \
+    just run-macos api_env="$api_env"; \
+  elif command -v nix >/dev/null 2>&1 && [ "$(uname -s)" = "Linux" ]; then \
+    OPEN_SECRET_API_URL="$api_url" nix develop --no-write-lock-file "{{justfile_directory()}}" --command bash -c "cargo run -p maple_desktop_gtk"; \
+  else \
+    OPEN_SECRET_API_URL="$api_url" cargo run -p maple_desktop_gtk; \
+  fi
+
+# ── iOS ──────────────────────────────────────────────────────────────────────
+
+# build and launch iOS on simulator (api_env: local|dev|prod)
+run-ios api_env="local":
+  api_env="{{api_env}}"; while [[ "$api_env" == api_env=* ]]; do api_env="${api_env#api_env=}"; done; \
+  api_url="http://0.0.0.0:3000"; \
+  if [ "$api_env" = "dev" ]; then api_url="https://enclave.secretgpt.ai"; elif [ "$api_env" = "prod" ]; then api_url="https://enclave.trymaple.ai"; fi; \
+  if command -v nix >/dev/null 2>&1; then \
+    OPEN_SECRET_API_URL="$api_url" nix develop "{{justfile_directory()}}" --command bash -c "unset CC CXX AR RANLIB && if command -v rmp >/dev/null 2>&1; then rmp run ios; else cargo run --manifest-path rmp-cli/Cargo.toml -- run ios; fi"; \
+  else \
+    unset CC CXX AR RANLIB && export OPEN_SECRET_API_URL="$api_url" && if command -v rmp >/dev/null 2>&1; then rmp run ios; else cargo run --manifest-path rmp-cli/Cargo.toml -- run ios; fi; \
+  fi
+
+# ── Android ──────────────────────────────────────────────────────────────────
+
+# build and launch Android on emulator (api_env: local|dev|prod, pass serial=<id> to override)
+run-android serial="emulator-5554" api_env="local":
+  api_env="{{api_env}}"; while [[ "$api_env" == api_env=* ]]; do api_env="${api_env#api_env=}"; done; \
+  api_url="http://0.0.0.0:3000"; \
+  if [ "$api_env" = "dev" ]; then api_url="https://enclave.secretgpt.ai"; elif [ "$api_env" = "prod" ]; then api_url="https://enclave.trymaple.ai"; fi; \
+  if command -v nix >/dev/null 2>&1; then \
+    OPEN_SECRET_API_URL="$api_url" nix develop "{{justfile_directory()}}" --command bash -c "unset CC CXX AR RANLIB && export PATH=\$HOME/.cargo/bin:\$PATH && if command -v rmp >/dev/null 2>&1; then rmp run android --serial {{serial}}; else cargo run --manifest-path rmp-cli/Cargo.toml -- run android --serial {{serial}}; fi"; \
+  else \
+    unset CC CXX AR RANLIB && export PATH=\$HOME/.cargo/bin:\$PATH && export OPEN_SECRET_API_URL="$api_url" && if command -v rmp >/dev/null 2>&1; then rmp run android --serial {{serial}}; else cargo run --manifest-path rmp-cli/Cargo.toml -- run android --serial {{serial}}; fi; \
+  fi
+
+# build Android APK only (api_env: local|dev|prod)
+build-android api_env="local":
+  api_env="{{api_env}}"; while [[ "$api_env" == api_env=* ]]; do api_env="${api_env#api_env=}"; done; \
+  api_url="http://0.0.0.0:3000"; \
+  if [ "$api_env" = "dev" ]; then api_url="https://enclave.secretgpt.ai"; elif [ "$api_env" = "prod" ]; then api_url="https://enclave.trymaple.ai"; fi; \
+  cd android && OPEN_SECRET_API_URL="$api_url" ./gradlew assembleDebug
+
+# ── Convenience ──────────────────────────────────────────────────────────────
+
+# build all platforms (no launch)
+build-all api_env="local":
+  just build-desktop "{{api_env}}"
+  just build-android "{{api_env}}"
+  @echo "Desktop and Android built. iOS is build+run only via rmp."
+
+# rebuild FFI bindings, then launch all platforms
+run-all serial="emulator-5554" api_env="local":
+  just bindings "{{api_env}}"
+  just run-ios "{{api_env}}"
+  just run-android serial={{serial}} "{{api_env}}"
+  just run-desktop "{{api_env}}"

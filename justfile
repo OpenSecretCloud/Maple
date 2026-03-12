@@ -207,3 +207,90 @@ release version:
     git commit -m "chore: bump version to {{version}}"
     git tag -a "v{{version}}" -m "Release v{{version}}"
     echo "Release v{{version}} created! Don't forget to push tags: git push && git push --tags"
+
+# ┌─────────────────────────────────────────────────────────────────────┐
+# │  Maple 3.0 (native/) - Native Rust/SwiftUI/Compose/GTK4            │
+# └─────────────────────────────────────────────────────────────────────┘
+
+native_nix := "cd native && nix develop --command bash -c"
+
+# Run native rmp doctor
+native-doctor:
+    {{native_nix}} "rmp doctor"
+
+# Regenerate native FFI bindings (Swift + Kotlin) (api_env: local|dev|prod)
+native-bindings api_env="local":
+    {{native_nix}} "unset CC CXX AR RANLIB && rmp bindings all"
+
+# Regenerate native Swift FFI bindings (api_env: local|dev|prod)
+native-bindings-swift api_env="local":
+    {{native_nix}} "unset CC CXX AR RANLIB && rmp bindings swift"
+
+# Regenerate native Kotlin FFI bindings (api_env: local|dev|prod)
+native-bindings-kotlin api_env="local":
+    {{native_nix}} "unset CC CXX AR RANLIB && rmp bindings kotlin"
+
+# Build native desktop for the current host platform (api_env: local|dev|prod)
+native-build-desktop api_env="local":
+    just -f {{justfile_directory()}}/native/justfile build-desktop "{{api_env}}"
+
+# Run native desktop for the current host platform (api_env: local|dev|prod)
+native-run-desktop api_env="local":
+    just -f {{justfile_directory()}}/native/justfile run-desktop "{{api_env}}"
+
+# Run native iOS on simulator (api_env: local|dev|prod)
+native-run-ios api_env="local":
+    cd native && api_env="{{api_env}}"; while [[ "$api_env" == api_env=* ]]; do api_env="${api_env#api_env=}"; done; api_url="http://0.0.0.0:3000"; if [ "$api_env" = "dev" ]; then api_url="https://enclave.secretgpt.ai"; elif [ "$api_env" = "prod" ]; then api_url="https://enclave.trymaple.ai"; fi; OPEN_SECRET_API_URL="$api_url" nix develop --command bash -c "unset CC CXX AR RANLIB && rmp run ios"
+
+# Run native Android on emulator (api_env: local|dev|prod)
+native-run-android serial="emulator-5554" api_env="local":
+    cd native && api_env="{{api_env}}"; while [[ "$api_env" == api_env=* ]]; do api_env="${api_env#api_env=}"; done; api_url="http://0.0.0.0:3000"; if [ "$api_env" = "dev" ]; then api_url="https://enclave.secretgpt.ai"; elif [ "$api_env" = "prod" ]; then api_url="https://enclave.trymaple.ai"; fi; OPEN_SECRET_API_URL="$api_url" nix develop --command bash -c "unset CC CXX AR RANLIB && export PATH=\$HOME/.cargo/bin:\$PATH && rmp run android --serial {{serial}}"
+
+# Build native Android APK
+native-build-android api_env="local":
+    cd native/android && api_env="{{api_env}}"; while [[ "$api_env" == api_env=* ]]; do api_env="${api_env#api_env=}"; done; api_url="http://0.0.0.0:3000"; if [ "$api_env" = "dev" ]; then api_url="https://enclave.secretgpt.ai"; elif [ "$api_env" = "prod" ]; then api_url="https://enclave.trymaple.ai"; fi; OPEN_SECRET_API_URL="$api_url" ./gradlew assembleDebug
+
+# Build all native platforms
+native-build-all api_env="local":
+    just native-build-desktop "{{api_env}}"
+    just native-build-android "{{api_env}}"
+    @echo "Native desktop and Android built. iOS is build+run only via rmp."
+
+# Run all native platforms
+native-run-all serial="emulator-5554" api_env="local":
+    just native-bindings "{{api_env}}"
+    just native-run-ios "{{api_env}}"
+    just native-run-android serial={{serial}} "{{api_env}}"
+    just native-run-desktop "{{api_env}}"
+
+# ┌─────────────────────────────────────────────────────────────────────┐
+# │  OrbStack → macOS wrappers (run from Linux container)               │
+# │  Usage: just mac-native-run-ios                                     │
+# └─────────────────────────────────────────────────────────────────────┘
+
+mac-native-run-ios api_env="local":
+    mac just -f {{justfile_directory()}}/native/justfile run-ios "{{api_env}}"
+
+mac-native-run-android serial="emulator-5554" api_env="local":
+    mac just -f {{justfile_directory()}}/native/justfile run-android serial={{serial}} "{{api_env}}"
+
+mac-native-run-desktop api_env="local":
+    mac just -f {{justfile_directory()}}/native/justfile run-desktop "{{api_env}}"
+
+mac-native-build-desktop api_env="local":
+    mac just -f {{justfile_directory()}}/native/justfile build-desktop "{{api_env}}"
+
+mac-native-build-android api_env="local":
+    mac just -f {{justfile_directory()}}/native/justfile build-android "{{api_env}}"
+
+mac-native-bindings api_env="local":
+    mac just -f {{justfile_directory()}}/native/justfile bindings "{{api_env}}"
+
+mac-native-bindings-swift api_env="local":
+    mac just -f {{justfile_directory()}}/native/justfile bindings-swift "{{api_env}}"
+
+mac-native-bindings-kotlin api_env="local":
+    mac just -f {{justfile_directory()}}/native/justfile bindings-kotlin "{{api_env}}"
+
+mac-native-doctor:
+    mac just -f {{justfile_directory()}}/native/justfile doctor

@@ -1,0 +1,10 @@
+[workspace]
+resolver = "2"
+members = [
+  "rust",
+  "uniffi-bindgen",
+  "desktop/gtk",
+]
+exclude = [
+  "rmp-cli",
+]

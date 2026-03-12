@@ -84,3 +84,14 @@ frontend/*.local
 
 # iOS build backups
 frontend/src-tauri/gen/apple/maple.xcodeproj/project.pbxproj.backup
+
+# Native (3.0) build artifacts
+native/target/
+native/rmp-cli/target/
+native/android/app/build/
+native/android/.gradle/
+native/ios/App.xcodeproj/
+native/ios/Frameworks/
+native/ios/Bindings/
+
+.factory/

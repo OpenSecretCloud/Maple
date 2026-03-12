@@ -1,0 +1,80 @@
+name: App
+options:
+  bundleIdPrefix: cloud.opensecret.maple
+  deploymentTarget:
+    iOS: "26.0"
+    macOS: "26.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    PRODUCT_BUNDLE_IDENTIFIER: cloud.opensecret.maple
+    MARKETING_VERSION: 3.0.0
+    CURRENT_PROJECT_VERSION: 1
+    SWIFT_VERSION: 5.0
+    DEVELOPMENT_TEAM: X773Y823TN
+  configs:
+    Debug:
+      PRODUCT_BUNDLE_IDENTIFIER: cloud.opensecret.maple.dev
+
+targets:
+  App:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+      - path: Bindings
+        excludes:
+          - "*.h"
+          - "*.modulemap"
+    settings:
+      base:
+        PRODUCT_NAME: Maple
+        INFOPLIST_FILE: Info.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        CODE_SIGN_ENTITLEMENTS: App.entitlements
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGN_IDENTITY: Apple Development
+        PROVISIONING_PROFILE_SPECIFIER: ""
+    dependencies:
+      - framework: Frameworks/MapleCore.xcframework
+        embed: false
+      - sdk: SystemConfiguration.framework
+      - sdk: Security.framework
+
+  AppMac:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources
+      - path: Bindings
+        excludes:
+          - "*.h"
+          - "*.modulemap"
+    settings:
+      base:
+        PRODUCT_NAME: Maple
+        PRODUCT_BUNDLE_IDENTIFIER: cloud.opensecret.maple.desktop
+        INFOPLIST_FILE: Info-macOS.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGN_IDENTITY: Apple Development
+        PROVISIONING_PROFILE_SPECIFIER: ""
+      configs:
+        Debug:
+          PRODUCT_BUNDLE_IDENTIFIER: cloud.opensecret.maple.desktop.dev
+    dependencies:
+      - framework: Frameworks/MapleCore.xcframework
+        embed: false
+      - sdk: SystemConfiguration.framework
+      - sdk: Security.framework
+
+schemes:
+  App:
+    build:
+      targets:
+        App: all
+  AppMac:
+    build:
+      targets:
+        AppMac: all
