@@ -13,7 +13,6 @@ default:
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 nix_run := 'nix develop "{{justfile_directory()}}" --command bash -c'
-ossl := 'PKG_CONFIG_PATH="$(brew --prefix openssl@3)/lib/pkgconfig" OPENSSL_DIR="$(brew --prefix openssl@3)"'
 
 # ── Diagnostics ──────────────────────────────────────────────────────────────
 
@@ -51,17 +50,47 @@ bindings api_env="local":
     unset CC CXX AR RANLIB && if command -v rmp >/dev/null 2>&1; then rmp bindings all; else cargo run --manifest-path rmp-cli/Cargo.toml -- bindings all; fi; \
   fi
 
-# ── Desktop (GTK4) ───────────────────────────────────────────────────────────
+# ── Desktop (SwiftUI on macOS, GTK4 on Linux) ───────────────────────────────
 
-# build desktop app only (api_env: local|dev|prod)
+# build macOS desktop app only (configuration: Debug|Release, api_env: local|dev|prod)
+build-macos api_env="local" configuration="Debug":
+  if [ "$(uname -s)" != "Darwin" ]; then \
+    echo "build-macos is only supported on macOS" >&2; \
+    exit 1; \
+  fi; \
+  api_env="{{api_env}}"; while [[ "$api_env" == api_env=* ]]; do api_env="${api_env#api_env=}"; done; \
+  configuration="{{configuration}}"; while [[ "$configuration" == configuration=* ]]; do configuration="${configuration#configuration=}"; done; \
+  api_url="http://0.0.0.0:3000"; \
+  if [ "$api_env" = "dev" ]; then api_url="https://enclave.secretgpt.ai"; elif [ "$api_env" = "prod" ]; then api_url="https://enclave.trymaple.ai"; fi; \
+  build_root="{{justfile_directory()}}/ios/.build/AppMac"; \
+  rm -rf "$build_root"; \
+  cargo run --manifest-path "{{justfile_directory()}}/rmp-cli/Cargo.toml" -- bindings swift; \
+  (cd "{{justfile_directory()}}/ios" && xcodegen generate); \
+  env -u NIX_LDFLAGS -u LD -u CC -u CXX -u AR -u RANLIB \
+    xcrun xcodebuild \
+      -project "{{justfile_directory()}}/ios/App.xcodeproj" \
+      -scheme AppMac \
+      -configuration "$configuration" \
+      -derivedDataPath "$build_root" \
+      -destination generic/platform=macOS \
+      OPEN_SECRET_API_URL="$api_url" \
+      COMPILER_INDEX_STORE_ENABLE=NO \
+      clean build
+
+# run macOS desktop app (api_env: local|dev|prod)
+run-macos api_env="local":
+  just build-macos api_env="{{api_env}}" configuration=Debug; \
+  open "{{justfile_directory()}}/ios/.build/AppMac/Build/Products/Debug/Maple.app"
+
+# build desktop app for the current host platform (api_env: local|dev|prod)
 build-desktop api_env="local":
   api_env="{{api_env}}"; while [[ "$api_env" == api_env=* ]]; do api_env="${api_env#api_env=}"; done; \
   api_url="http://0.0.0.0:3000"; \
   if [ "$api_env" = "dev" ]; then api_url="https://enclave.secretgpt.ai"; elif [ "$api_env" = "prod" ]; then api_url="https://enclave.trymaple.ai"; fi; \
-  if command -v nix >/dev/null 2>&1 && [ "$(uname -s)" = "Linux" ]; then \
+  if [ "$(uname -s)" = "Darwin" ]; then \
+    just build-macos api_env="$api_env" configuration=Debug; \
+  elif command -v nix >/dev/null 2>&1 && [ "$(uname -s)" = "Linux" ]; then \
     OPEN_SECRET_API_URL="$api_url" nix develop --no-write-lock-file "{{justfile_directory()}}" --command bash -c "cargo build -p maple_desktop_gtk"; \
-  elif [ "$(uname -s)" = "Darwin" ]; then \
-    {{ossl}} OPEN_SECRET_API_URL="$api_url" cargo build -p maple_desktop_gtk; \
   else \
     OPEN_SECRET_API_URL="$api_url" cargo build -p maple_desktop_gtk; \
   fi
@@ -82,15 +111,15 @@ bundle-desktop profile="debug" api_env="local":
   if [ "$api_env" = "dev" ]; then api_url="https://enclave.secretgpt.ai"; elif [ "$api_env" = "prod" ]; then api_url="https://enclave.trymaple.ai"; fi; \
   OPEN_SECRET_API_URL="$api_url" nix develop --no-write-lock-file "{{justfile_directory()}}" --command bash -c "set -euo pipefail; cd '{{justfile_directory()}}'; cargo build -p maple_desktop_gtk $cargo_args; ./scripts/bundle-gtk-linux.sh '$binary_path' '$bundle_path'"
 
-# build and run desktop app (api_env: local|dev|prod)
+# build and run desktop app for the current host platform (api_env: local|dev|prod)
 run-desktop api_env="local":
   api_env="{{api_env}}"; while [[ "$api_env" == api_env=* ]]; do api_env="${api_env#api_env=}"; done; \
   api_url="http://0.0.0.0:3000"; \
   if [ "$api_env" = "dev" ]; then api_url="https://enclave.secretgpt.ai"; elif [ "$api_env" = "prod" ]; then api_url="https://enclave.trymaple.ai"; fi; \
-  if command -v nix >/dev/null 2>&1 && [ "$(uname -s)" = "Linux" ]; then \
+  if [ "$(uname -s)" = "Darwin" ]; then \
+    just run-macos api_env="$api_env"; \
+  elif command -v nix >/dev/null 2>&1 && [ "$(uname -s)" = "Linux" ]; then \
     OPEN_SECRET_API_URL="$api_url" nix develop --no-write-lock-file "{{justfile_directory()}}" --command bash -c "cargo run -p maple_desktop_gtk"; \
-  elif [ "$(uname -s)" = "Darwin" ]; then \
-    {{ossl}} OPEN_SECRET_API_URL="$api_url" cargo run -p maple_desktop_gtk; \
   else \
     OPEN_SECRET_API_URL="$api_url" cargo run -p maple_desktop_gtk; \
   fi

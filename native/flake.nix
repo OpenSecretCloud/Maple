@@ -33,6 +33,9 @@
             "aarch64-apple-ios"
             "aarch64-apple-ios-sim"
             "x86_64-apple-ios"
+          ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
+            "aarch64-apple-darwin"
+            "x86_64-apple-darwin"
           ];
         };
 
@@ -86,8 +89,11 @@
             pkgs.file
             pkgs.git
             pkgs.gradle
+            pkgs.imagemagick
             pkgs.patchelf
             pkgs.pkg-config
+            pkgs.desktop-file-utils
+            pkgs.dpkg
             pkgs.adwaita-icon-theme
             pkgs.fontconfig
             pkgs.dconf
@@ -105,6 +111,7 @@
             pkgs.libxkbcommon
             pkgs.pango
             pkgs.shared-mime-info
+            pkgs.squashfsTools
             pkgs.wayland
             pkgs.xkeyboard-config
             pkgs.libx11
@@ -117,6 +124,7 @@
 
           shellHook = ''
             export IN_NIX_SHELL=1
+            export MAPLE_NATIVE_NIX_SHELL=1
 
             if [ -n "${if androidSdk != null then "1" else ""}" ]; then
               export ANDROID_HOME=${if androidSdk != null then "${androidSdk}/share/android-sdk" else ""}

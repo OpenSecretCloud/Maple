@@ -93,9 +93,17 @@ fn host_macos_target() -> Result<&'static str, CliError> {
     }
 }
 
+fn default_macos_targets() -> Result<Vec<&'static str>, CliError> {
+    if std::env::var_os("RMP_SWIFT_UNIVERSAL_MACOS").is_some() {
+        return Ok(vec!["aarch64-apple-darwin", "x86_64-apple-darwin"]);
+    }
+
+    Ok(vec![host_macos_target()?])
+}
+
 fn default_apple_targets() -> Result<Vec<&'static str>, CliError> {
     let mut targets = default_ios_targets().to_vec();
-    targets.push(host_macos_target()?);
+    targets.extend(default_macos_targets()?);
     Ok(targets)
 }
 

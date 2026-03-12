@@ -312,9 +312,14 @@ bundle_runtime_data() {
 
 write_launcher() {
   local launcher_path="$bundle_dir/$launcher_name"
+  local binary_interpreter=""
+
+  if command -v patchelf >/dev/null 2>&1; then
+    binary_interpreter="$(patchelf --print-interpreter "$bundle_binary" 2>/dev/null || true)"
+  fi
 
   cat > "$launcher_path" <<EOF
-#!/usr/bin/env sh
+#!/bin/sh
 set -eu
 HERE=\$(CDPATH= cd -- "\$(dirname -- "\$0")" && pwd)
 LIB="\$HERE/lib"
@@ -333,12 +338,27 @@ export GDK_PIXBUF_MODULEDIR="\$LOADERS_DIR"
 export GDK_PIXBUF_MODULE_FILE="\$LOADERS_CACHE"
 export GDK_BACKEND="\${GDK_BACKEND:-wayland,x11}"
 export GSK_RENDERER="\${GSK_RENDERER:-cairo}"
+PRIMARY_INTERPRETER="${binary_interpreter}"
 
 if [ -d "\$GIO_MODULES_DIR" ]; then
   export GIO_EXTRA_MODULES="\${GIO_EXTRA_MODULES:-\$GIO_MODULES_DIR}"
 fi
 
-for ld in /lib/ld-linux-aarch64.so.1 /lib64/ld-linux-aarch64.so.1 /lib/ld-linux-x86-64.so.2 /lib64/ld-linux-x86-64.so.2; do
+candidate_interpreters=""
+if [ -n "\$PRIMARY_INTERPRETER" ]; then
+  candidate_interpreters="\$PRIMARY_INTERPRETER"
+fi
+
+case "\$(uname -m)" in
+  x86_64|amd64)
+    candidate_interpreters="\$candidate_interpreters /lib64/ld-linux-x86-64.so.2 /lib/ld-linux-x86-64.so.2"
+    ;;
+  aarch64|arm64)
+    candidate_interpreters="\$candidate_interpreters /lib/ld-linux-aarch64.so.1 /lib64/ld-linux-aarch64.so.1"
+    ;;
+esac
+
+for ld in \$candidate_interpreters; do
   if [ -x "\$ld" ]; then
     if [ -x "\$HERE/bin/gdk-pixbuf-query-loaders" ] && [ -d "\$LOADERS_DIR" ]; then
       if ls "\$LOADERS_DIR"/*.so >/dev/null 2>&1; then

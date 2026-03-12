@@ -209,11 +209,10 @@ release version:
     echo "Release v{{version}} created! Don't forget to push tags: git push && git push --tags"
 
 # ┌─────────────────────────────────────────────────────────────────────┐
-# │  Maple 3.0 (native/) - Native Rust/SwiftUI/Compose/iced            │
+# │  Maple 3.0 (native/) - Native Rust/SwiftUI/Compose/GTK4            │
 # └─────────────────────────────────────────────────────────────────────┘
 
 native_nix := "cd native && nix develop --command bash -c"
-native_ossl := 'PKG_CONFIG_PATH="$(brew --prefix openssl@3)/lib/pkgconfig" OPENSSL_DIR="$(brew --prefix openssl@3)"'
 
 # Run native rmp doctor
 native-doctor:
@@ -231,13 +230,13 @@ native-bindings-swift api_env="local":
 native-bindings-kotlin api_env="local":
     {{native_nix}} "unset CC CXX AR RANLIB && rmp bindings kotlin"
 
-# Build native desktop (iced) (api_env: local|dev|prod)
+# Build native desktop for the current host platform (api_env: local|dev|prod)
 native-build-desktop api_env="local":
-    cd native && api_env="{{api_env}}"; while [[ "$api_env" == api_env=* ]]; do api_env="${api_env#api_env=}"; done; api_url="http://0.0.0.0:3000"; if [ "$api_env" = "dev" ]; then api_url="https://enclave.secretgpt.ai"; elif [ "$api_env" = "prod" ]; then api_url="https://enclave.trymaple.ai"; fi; {{native_ossl}} OPEN_SECRET_API_URL="$api_url" cargo build -p maple_desktop_iced
+    just -f {{justfile_directory()}}/native/justfile build-desktop "{{api_env}}"
 
-# Run native desktop (iced) (api_env: local|dev|prod)
+# Run native desktop for the current host platform (api_env: local|dev|prod)
 native-run-desktop api_env="local":
-    cd native && api_env="{{api_env}}"; while [[ "$api_env" == api_env=* ]]; do api_env="${api_env#api_env=}"; done; api_url="http://0.0.0.0:3000"; if [ "$api_env" = "dev" ]; then api_url="https://enclave.secretgpt.ai"; elif [ "$api_env" = "prod" ]; then api_url="https://enclave.trymaple.ai"; fi; {{native_ossl}} OPEN_SECRET_API_URL="$api_url" cargo run -p maple_desktop_iced
+    just -f {{justfile_directory()}}/native/justfile run-desktop "{{api_env}}"
 
 # Run native iOS on simulator (api_env: local|dev|prod)
 native-run-ios api_env="local":

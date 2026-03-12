@@ -78,11 +78,32 @@ function tauri_sign_artifact() {
   fi
 }
 
+function maple_artifact_version() {
+  if [[ -n "$maple_prerelease_label" ]]; then
+    printf '%s-%s.%s' "$maple_version_value" "$maple_prerelease_label" "$maple_build_number"
+  else
+    printf '%s' "$maple_version_value"
+  fi
+}
+
+function maple_deb_version() {
+  if [[ -n "$maple_prerelease_label" ]]; then
+    printf '%s~%s.%s' "$maple_version_value" "$maple_prerelease_label" "$maple_build_number"
+  else
+    printf '%s' "$maple_version_value"
+  fi
+}
+
 run_number="${GITHUB_RUN_NUMBER:-1}"
 run_attempt="${GITHUB_RUN_ATTEMPT:-1}"
 
 maple_api_env="${MAPLE_API_ENV:-dev}"
 maple_version_value="${MAPLE_VERSION:-$(maple_version)}"
 maple_build_number="${MAPLE_BUILD_NUMBER:-$((run_number * 10 + run_attempt))}"
+if [[ "${MAPLE_PRERELEASE_LABEL+x}" == "x" ]]; then
+  maple_prerelease_label="$MAPLE_PRERELEASE_LABEL"
+else
+  maple_prerelease_label="beta"
+fi
 open_secret_api_url="${OPEN_SECRET_API_URL:-$(api_url_for_env "$maple_api_env")}"
 ci_build_root="${MAPLE_CI_BUILD_ROOT:-${RUNNER_TEMP:-$native_root/target}/maple-ci}"

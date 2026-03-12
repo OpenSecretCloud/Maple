@@ -1,4 +1,4 @@
-name: Native 3.0 Desktop Beta
+name: Native 3.0 macOS Beta
 
 on:
   pull_request:
@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: native-3-desktop-${{ github.event.pull_request.number || github.ref }}
+  group: native-3-macos-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -23,23 +23,30 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Setup Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: "26.2"
+
+      - name: Install xcodegen
+        run: brew install xcodegen
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
+          targets: aarch64-apple-darwin,x86_64-apple-darwin,aarch64-apple-ios,aarch64-apple-ios-sim
 
       - name: Cache Rust artifacts
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
             native -> target
+            native/rmp-cli -> target
 
       - name: Install desktop packaging tools
         env:
           CARGO_CFG_TARGET_OS: macos
-        run: |
-          brew install openssl@3
-          cargo install tauri-cli --version 2.9.2 --locked
+        run: cargo install tauri-cli --version 2.9.2 --locked
 
       - name: Import Apple Developer certificate
         env:
@@ -85,73 +92,4 @@ jobs:
             native/target/maple-ci/desktop-macos/*.dmg
             native/target/maple-ci/desktop-macos/*.zip
             native/target/maple-ci/desktop-macos/*.sig
-          retention-days: 7
-
-  build-linux:
-    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.fork == false
-    runs-on: ubuntu-latest-8-cores
-    env:
-      MAPLE_API_ENV: dev
-      MAPLE_CI_BUILD_ROOT: ${{ github.workspace }}/native/target/maple-ci
-      CARGO_TERM_COLOR: always
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache Rust artifacts
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            native -> target
-
-      - name: Install Linux desktop build tools
-        env:
-          CARGO_CFG_TARGET_OS: linux
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            desktop-file-utils \
-            dpkg-dev \
-            file \
-            libasound2-dev \
-            libdbus-1-dev \
-            libfontconfig1-dev \
-            libfreetype6-dev \
-            libgl1-mesa-dev \
-            libssl-dev \
-            libudev-dev \
-            libwayland-dev \
-            libx11-dev \
-            libx11-xcb-dev \
-            libxcb-render0-dev \
-            libxcb-shape0-dev \
-            libxcb-xfixes0-dev \
-            libxcb1-dev \
-            libxkbcommon-dev \
-            libxcursor-dev \
-            libxi-dev \
-            libxinerama-dev \
-            libxrandr-dev \
-            openssl \
-            patchelf \
-            pkg-config \
-            squashfs-tools
-          cargo install tauri-cli --version 2.9.2 --locked
-
-      - name: Build Linux beta artifacts
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: bash native/scripts/ci/package-linux.sh
-
-      - name: Upload Linux artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: native-desktop-linux-beta
-          path: |
-            native/target/maple-ci/desktop-linux/*.AppImage
-            native/target/maple-ci/desktop-linux/*.deb
-            native/target/maple-ci/desktop-linux/*.sig
           retention-days: 7
