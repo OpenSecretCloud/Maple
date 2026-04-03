@@ -72,6 +72,7 @@ import {
   DropdownMenuTrigger
 } from "@/components/ui/dropdown-menu";
 import { isTauri } from "@/utils/platform";
+import { ConversationProjectPicker } from "@/components/ConversationProjectPicker";
 import type {
   InputTextContent,
   OutputTextContent,
@@ -906,6 +907,7 @@ export function UnifiedChat() {
   const [conversation, setConversation] = useState<Conversation | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
+  const [draftProjectId, setDraftProjectId] = useState<string | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(!isMobile);
   const [error, setError] = useState<string | null>(null);
@@ -1154,6 +1156,7 @@ export function UnifiedChat() {
       setConversation(null);
       setMessages([]);
       setInput("");
+      setDraftProjectId(null);
       setError(null);
       setLastSeenItemId(undefined);
       // Clear pagination state
@@ -1461,6 +1464,7 @@ export function UnifiedChat() {
       // Clear if no conversation ID
       setConversation(null);
       setMessages([]);
+      setDraftProjectId(null);
       setLastSeenItemId(undefined);
       // Clear pagination state
       setOldestItemId(undefined);
@@ -2349,9 +2353,16 @@ export function UnifiedChat() {
         // Create conversation if we don't have one
         let conversationId = conversation?.id;
         if (!conversationId) {
-          const newConv = await openai.conversations.create({
-            metadata: {}
-          });
+          const newConv = draftProjectId
+            ? await os.createConversation(
+                {},
+                {
+                  project_id: draftProjectId
+                }
+              )
+            : await openai.conversations.create({
+                metadata: {}
+              });
           conversationId = newConv.id;
           setConversation(newConv as Conversation);
 
@@ -2646,7 +2657,9 @@ export function UnifiedChat() {
       input,
       isGenerating,
       openai,
+      os,
       conversation,
+      draftProjectId,
       localState.model,
       draftImages,
       documentText,
@@ -2936,6 +2949,12 @@ export function UnifiedChat() {
                                   )
                               )
                             }
+                          />
+
+                          <ConversationProjectPicker
+                            selectedProjectId={draftProjectId}
+                            onSelect={setDraftProjectId}
+                            disabled={isGenerating}
                           />
 
                           {/* Web search toggle button - always visible */}

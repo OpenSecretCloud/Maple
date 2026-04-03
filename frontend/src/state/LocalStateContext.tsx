@@ -67,6 +67,7 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
     billingStatus: null as BillingStatus | null,
     searchQuery: "",
     isSearchVisible: false,
+    selectedProjectId: null as string | null,
     draftMessages: new Map<string, string>()
   });
 
@@ -198,6 +199,10 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
 
   function setIsSearchVisible(visible: boolean) {
     setLocalState((prev) => ({ ...prev, isSearchVisible: visible }));
+  }
+
+  function setSelectedProjectId(projectId: string | null) {
+    setLocalState((prev) => ({ ...prev, selectedProjectId: projectId }));
   }
 
   async function addChat(title: string = "New Chat") {
@@ -397,6 +402,8 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
         setSearchQuery,
         isSearchVisible: localState.isSearchVisible,
         setIsSearchVisible,
+        selectedProjectId: localState.selectedProjectId,
+        setSelectedProjectId,
         setBillingStatus,
         setUserPrompt,
         setSystemPrompt,

@@ -5,7 +5,8 @@ import {
   PanelRightOpen,
   XCircle,
   Trash2,
-  X
+  X,
+  FolderInput
 } from "lucide-react";
 import { Button } from "./ui/button";
 import { useLocation, useRouter } from "@tanstack/react-router";
@@ -49,6 +50,12 @@ export function Sidebar({
   const handleDeleteSelected = useCallback(() => {
     if (selectedIds.size > 0) {
       window.dispatchEvent(new Event("openbulkdelete"));
+    }
+  }, [selectedIds.size]);
+
+  const handleMoveSelected = useCallback(() => {
+    if (selectedIds.size > 0) {
+      window.dispatchEvent(new Event("openbulkmove"));
     }
   }, [selectedIds.size]);
 
@@ -205,19 +212,31 @@ export function Sidebar({
                   {selectedIds.size >= 20 ? "max" : selectedIds.size} selected
                 </span>
               </div>
-              <Button
-                variant="destructive"
-                size="sm"
-                className="h-8"
-                onClick={handleDeleteSelected}
-                disabled={selectedIds.size === 0}
-              >
-                <Trash2 className="h-4 w-4 mr-1" />
-                Delete
-              </Button>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-8"
+                  onClick={handleMoveSelected}
+                  disabled={selectedIds.size === 0}
+                >
+                  <FolderInput className="mr-1 h-4 w-4" />
+                  Move
+                </Button>
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  className="h-8"
+                  onClick={handleDeleteSelected}
+                  disabled={selectedIds.size === 0}
+                >
+                  <Trash2 className="mr-1 h-4 w-4" />
+                  Delete
+                </Button>
+              </div>
             </>
           ) : (
-            <>
+            <div className="flex w-full items-center justify-between">
               <h2 className="font-semibold">History</h2>
               <Button
                 variant="outline"
@@ -228,7 +247,7 @@ export function Sidebar({
               >
                 <Search className="h-4 w-4" />
               </Button>
-            </>
+            </div>
           )}
         </div>
         {isSearchVisible && (
