@@ -13,6 +13,7 @@ import { useLocation, useRouter } from "@tanstack/react-router";
 import { ChatHistoryList } from "./ChatHistoryList";
 import { AccountMenu } from "./AccountMenu";
 import { useRef, useEffect, KeyboardEvent, useCallback, useLayoutEffect, useState } from "react";
+import { flushSync } from "react-dom";
 import { cn, useClickOutside, useIsMobile } from "@/utils/utils";
 import { Input } from "./ui/input";
 import { useLocalState } from "@/state/useLocalState";
@@ -28,7 +29,14 @@ export function Sidebar({
 }) {
   const router = useRouter();
   const location = useLocation();
-  const { searchQuery, setSearchQuery, isSearchVisible, setIsSearchVisible } = useLocalState();
+  const {
+    searchQuery,
+    setSearchQuery,
+    isSearchVisible,
+    setIsSearchVisible,
+    selectedProjectId,
+    setSelectedProjectId
+  } = useLocalState();
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   // Multi-select state
@@ -65,15 +73,26 @@ export function Sidebar({
       onToggle();
     }
 
+    flushSync(() => {
+      setSelectedProjectId(null);
+    });
+
     // Clear any conversation_id from URL to start fresh
-    if (location.pathname === "/" && window.location.search.includes("conversation_id")) {
+    if (
+      location.pathname === "/" &&
+      (window.location.search.includes("conversation_id") ||
+        window.location.search.includes("project_id"))
+    ) {
       // Just clear the query params without navigation
       window.history.replaceState(null, "", "/");
       // Clear messages by triggering a re-render
-      window.dispatchEvent(new Event("newchat"));
+      window.dispatchEvent(new CustomEvent("newchat", { detail: { projectId: null } }));
       document.getElementById("message")?.focus();
     } else if (location.pathname === "/") {
       // Already on home with no conversation_id, just focus
+      if (selectedProjectId) {
+        window.dispatchEvent(new CustomEvent("newchat", { detail: { projectId: null } }));
+      }
       document.getElementById("message")?.focus();
     } else {
       try {

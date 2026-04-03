@@ -1,5 +1,5 @@
 import { useOpenSecret } from "@opensecret/react";
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import { BillingStatus } from "@/billing/billingApi";
 import { LocalStateContext, Chat, HistoryItem, OpenSecretModel } from "./LocalStateContextDef";
 import { aliasModelName } from "@/utils/utils";
@@ -201,9 +201,9 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
     setLocalState((prev) => ({ ...prev, isSearchVisible: visible }));
   }
 
-  function setSelectedProjectId(projectId: string | null) {
+  const setSelectedProjectId = useCallback((projectId: string | null) => {
     setLocalState((prev) => ({ ...prev, selectedProjectId: projectId }));
-  }
+  }, []);
 
   async function addChat(title: string = "New Chat") {
     const newChat = {

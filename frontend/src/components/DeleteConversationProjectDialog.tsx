@@ -37,9 +37,7 @@ export function DeleteConversationProjectDialog({
           <AlertDialogTitle>Delete this project?</AlertDialogTitle>
           <AlertDialogDescription>
             {conversationCount > 0
-              ? `This will permanently delete "${projectName}" and its ${conversationCount} chat${
-                  conversationCount === 1 ? "" : "s"
-                }. This action cannot be undone.`
+              ? `This will permanently delete "${projectName}" and any chats in it. Move chats out first if you want to keep them. This action cannot be undone.`
               : `This will permanently delete "${projectName}". This action cannot be undone.`}
           </AlertDialogDescription>
         </AlertDialogHeader>

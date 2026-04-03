@@ -83,6 +83,7 @@ export function ChatHistoryList({
   const [isDeleteProjectDialogOpen, setIsDeleteProjectDialogOpen] = useState(false);
   const [selectedChat, setSelectedChat] = useState<{ id: string; title: string } | null>(null);
   const [selectedProject, setSelectedProject] = useState<ConversationProjectListItem | null>(null);
+  const [expandedProjectId, setExpandedProjectId] = useState<string | null>(selectedProjectId);
   const [isArchivedExpanded, setIsArchivedExpanded] = useState(false);
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -517,17 +518,17 @@ export function ChatHistoryList({
     enabled: !!opensecret?.auth.user
   });
 
-  const { data: selectedProjectConversations = [] } = useQuery({
-    queryKey: ["projectConversations", selectedProjectId],
+  const { data: expandedProjectConversations = [] } = useQuery({
+    queryKey: ["projectConversations", expandedProjectId],
     queryFn: async () => {
-      if (!selectedProjectId) return [];
+      if (!expandedProjectId) return [];
       const response = await opensecret.listConversations({
         limit: 50,
-        project_id: selectedProjectId
+        project_id: expandedProjectId
       });
       return response.data ?? [];
     },
-    enabled: !!selectedProjectId
+    enabled: !!expandedProjectId
   });
 
   const { data: pinnedConversations = [] } = useQuery({
@@ -552,6 +553,22 @@ export function ChatHistoryList({
     }
   }, [selectedProjectId, conversationProjects, setSelectedProjectId]);
 
+  useEffect(() => {
+    if (selectedProjectId) {
+      setExpandedProjectId(selectedProjectId);
+    }
+  }, [selectedProjectId]);
+
+  useEffect(() => {
+    if (
+      expandedProjectId &&
+      conversationProjects.length > 0 &&
+      !conversationProjects.some((project) => project.id === expandedProjectId)
+    ) {
+      setExpandedProjectId(null);
+    }
+  }, [expandedProjectId, conversationProjects]);
+
   const normalizedQuery = searchQuery.trim().toLowerCase();
 
   const filteredProjects = useMemo(() => {
@@ -562,29 +579,29 @@ export function ChatHistoryList({
         return true;
       }
 
-      if (project.id !== selectedProjectId) {
+      if (project.id !== expandedProjectId) {
         return false;
       }
 
-      return selectedProjectConversations.some((conversation) =>
+      return expandedProjectConversations.some((conversation) =>
         getConversationTitle(conversation).toLowerCase().includes(normalizedQuery)
       );
     });
   }, [
     conversationProjects,
+    expandedProjectConversations,
+    expandedProjectId,
     getConversationTitle,
-    normalizedQuery,
-    selectedProjectConversations,
-    selectedProjectId
+    normalizedQuery
   ]);
 
-  const filteredSelectedProjectConversations = useMemo(() => {
-    if (!normalizedQuery) return selectedProjectConversations;
+  const filteredExpandedProjectConversations = useMemo(() => {
+    if (!normalizedQuery) return expandedProjectConversations;
 
-    return selectedProjectConversations.filter((conversation) =>
+    return expandedProjectConversations.filter((conversation) =>
       getConversationTitle(conversation).toLowerCase().includes(normalizedQuery)
     );
-  }, [getConversationTitle, normalizedQuery, selectedProjectConversations]);
+  }, [expandedProjectConversations, getConversationTitle, normalizedQuery]);
 
   const filteredPinnedConversations = useMemo(() => {
     if (!normalizedQuery) return pinnedConversations;
@@ -900,30 +917,37 @@ export function ChatHistoryList({
     ]
   );
 
-  const handleSelectProject = useCallback(
+  const handleToggleProjectExpanded = useCallback((projectId: string) => {
+    setExpandedProjectId((currentProjectId) => (currentProjectId === projectId ? null : projectId));
+  }, []);
+
+  const handleViewProject = useCallback(
     async (projectId: string) => {
-      const shouldCloseProject = selectedProjectId === projectId;
-      setSelectedProjectId(shouldCloseProject ? null : projectId);
+      setSelectedProjectId(projectId);
+      setExpandedProjectId(projectId);
 
       if (window.location.pathname !== "/") {
         await router.navigate({ to: "/" });
       }
 
-      if (!shouldCloseProject || window.location.search.includes("conversation_id")) {
-        window.history.replaceState({}, "", "/");
-        window.dispatchEvent(new Event("newchat"));
-      }
+      const params = new URLSearchParams(window.location.search);
+      params.delete("conversation_id");
+      params.set("project_id", projectId);
+
+      window.history.replaceState({}, "", params.toString() ? `/?${params.toString()}` : "/");
+      window.dispatchEvent(new CustomEvent("newchat", { detail: { projectId } }));
+      window.dispatchEvent(new Event("projectselected"));
     },
-    [router, selectedProjectId, setSelectedProjectId]
+    [router, setSelectedProjectId]
   );
 
   const handleCreateProject = useCallback(
     async (name: string) => {
       const project = await opensecret.createConversationProject({ name });
       await invalidateConversationData();
-      await handleSelectProject(project.id);
+      await handleViewProject(project.id);
     },
-    [handleSelectProject, invalidateConversationData, opensecret]
+    [handleViewProject, invalidateConversationData, opensecret]
   );
 
   const handleRenameProject = useCallback(
@@ -942,18 +966,24 @@ export function ChatHistoryList({
       await opensecret.deleteConversationProject(selectedProject.id);
       await invalidateConversationData();
 
+      if (expandedProjectId === selectedProject.id) {
+        setExpandedProjectId(null);
+      }
+
       if (selectedProjectId === selectedProject.id) {
         setSelectedProjectId(null);
-        if (currentChatId) {
-          window.history.replaceState({}, "", "/");
-          window.dispatchEvent(new Event("newchat"));
-        }
+        const params = new URLSearchParams(window.location.search);
+        params.delete("conversation_id");
+        params.delete("project_id");
+        window.history.replaceState({}, "", params.toString() ? `/?${params.toString()}` : "/");
+        window.dispatchEvent(new CustomEvent("newchat", { detail: { projectId: null } }));
+        window.dispatchEvent(new Event("projectselected"));
       }
     } catch (error) {
       console.error("Error deleting project:", error);
     }
   }, [
-    currentChatId,
+    expandedProjectId,
     invalidateConversationData,
     opensecret,
     selectedProject,
@@ -1058,6 +1088,7 @@ export function ChatHistoryList({
       }
 
       const params = new URLSearchParams(window.location.search);
+      params.delete("project_id");
       params.set("conversation_id", conversation.id);
       window.history.pushState({}, "", `/?${params.toString()}`);
 
@@ -1094,7 +1125,7 @@ export function ChatHistoryList({
   if (
     trimmedQuery &&
     filteredProjects.length === 0 &&
-    filteredSelectedProjectConversations.length === 0 &&
+    filteredExpandedProjectConversations.length === 0 &&
     filteredPinnedConversations.length === 0 &&
     filteredRecentConversations.length === 0 &&
     filteredArchivedChats.length === 0
@@ -1258,21 +1289,28 @@ export function ChatHistoryList({
           </button>
 
           {filteredProjects.map((project) => {
-            const isProjectActive = selectedProjectId === project.id;
+            const isProjectExpanded = expandedProjectId === project.id;
+            const isProjectSelected = selectedProjectId === project.id;
             return (
               <div key={project.id} className="relative">
                 <div className="relative group">
-                  <div
-                    onClick={() => void handleSelectProject(project.id)}
-                    className={`cursor-pointer rounded-lg py-2 text-muted-foreground transition-colors hover:text-primary ${
-                      isProjectActive ? "text-foreground" : ""
+                  <button
+                    type="button"
+                    onClick={() => handleToggleProjectExpanded(project.id)}
+                    className={`w-full rounded-lg py-2 text-left text-muted-foreground transition-colors hover:text-primary ${
+                      isProjectExpanded || isProjectSelected ? "text-foreground" : ""
                     }`}
                   >
                     <div className="flex items-center gap-2 pr-10">
+                      {isProjectExpanded ? (
+                        <ChevronDown className="h-4 w-4 shrink-0" />
+                      ) : (
+                        <ChevronRight className="h-4 w-4 shrink-0" />
+                      )}
                       <Folder className="h-4 w-4" />
                       <span className="truncate">{project.name}</span>
                     </div>
-                  </div>
+                  </button>
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
                       <button
@@ -1288,6 +1326,11 @@ export function ChatHistoryList({
                       </button>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent>
+                      <DropdownMenuItem onClick={() => void handleViewProject(project.id)}>
+                        <Folder className="mr-2 h-4 w-4" />
+                        View Project
+                      </DropdownMenuItem>
+                      <DropdownMenuSeparator />
                       <DropdownMenuItem onClick={() => handleOpenRenameProjectDialog(project)}>
                         <Pencil className="mr-2 h-4 w-4" />
                         Rename Project
@@ -1300,9 +1343,9 @@ export function ChatHistoryList({
                   </DropdownMenu>
                 </div>
 
-                {isProjectActive && filteredSelectedProjectConversations.length > 0 ? (
+                {isProjectExpanded && filteredExpandedProjectConversations.length > 0 ? (
                   <div className="ml-4 border-l border-border pl-3">
-                    {filteredSelectedProjectConversations.map((conversation) =>
+                    {filteredExpandedProjectConversations.map((conversation) =>
                       renderConversationRow(conversation, { compact: true })
                     )}
                   </div>
@@ -1447,7 +1490,7 @@ export function ChatHistoryList({
         onOpenChange={setIsDeleteProjectDialogOpen}
         projectName={selectedProject?.name ?? "Project"}
         conversationCount={
-          selectedProject?.id === selectedProjectId ? selectedProjectConversations.length : 0
+          selectedProject?.id === expandedProjectId ? expandedProjectConversations.length : 0
         }
         onConfirm={handleDeleteProject}
       />

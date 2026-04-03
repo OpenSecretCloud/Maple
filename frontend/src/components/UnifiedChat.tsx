@@ -892,6 +892,7 @@ export function UnifiedChat() {
   const isMobile = useIsMobile();
   const openai = useOpenAI();
   const localState = useLocalState();
+  const { selectedProjectId } = localState;
   const os = useOpenSecret();
   const isTauriEnv = isTauri();
   const queryClient = useQueryClient();
@@ -907,7 +908,7 @@ export function UnifiedChat() {
   const [conversation, setConversation] = useState<Conversation | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
-  const [draftProjectId, setDraftProjectId] = useState<string | null>(null);
+  const [draftProjectId, setDraftProjectId] = useState<string | null>(() => selectedProjectId);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(!isMobile);
   const [error, setError] = useState<string | null>(null);
@@ -1151,12 +1152,17 @@ export function UnifiedChat() {
   // Unified event handling for conversation changes
   useEffect(() => {
     // Handle new chat event
-    const handleNewChat = () => {
+    const handleNewChat = (event?: Event) => {
+      const nextProjectId =
+        event instanceof CustomEvent && event.detail && "projectId" in event.detail
+          ? (event.detail.projectId ?? null)
+          : (selectedProjectId ?? null);
+
       setChatId(undefined);
       setConversation(null);
       setMessages([]);
       setInput("");
-      setDraftProjectId(null);
+      setDraftProjectId(nextProjectId);
       setError(null);
       setLastSeenItemId(undefined);
       // Clear pagination state
@@ -1204,7 +1210,7 @@ export function UnifiedChat() {
       );
       window.removeEventListener("popstate", handlePopState);
     };
-  }, [chatId, clearAllAttachments]);
+  }, [chatId, clearAllAttachments, selectedProjectId]);
 
   // Cancel the current response
   const handleCancelResponse = useCallback(async () => {
@@ -1464,7 +1470,7 @@ export function UnifiedChat() {
       // Clear if no conversation ID
       setConversation(null);
       setMessages([]);
-      setDraftProjectId(null);
+      setDraftProjectId(selectedProjectId ?? null);
       setLastSeenItemId(undefined);
       // Clear pagination state
       setOldestItemId(undefined);
@@ -1473,7 +1479,7 @@ export function UnifiedChat() {
       // Reset scroll tracking
       prevMessageCountRef.current = 0;
     }
-  }, [chatId, openai, loadConversation]);
+  }, [chatId, openai, loadConversation, selectedProjectId]);
 
   // Set up progressive polling interval
   useEffect(() => {

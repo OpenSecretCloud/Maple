@@ -1,192 +1,808 @@
-import { Folder, MessageSquare, MoreHorizontal, Pencil, Trash2, X } from "lucide-react";
-import type { Conversation, ConversationProject } from "@opensecret/react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  CheckSquare,
+  Folder,
+  FolderInput,
+  Loader2,
+  MessageSquare,
+  MoreHorizontal,
+  Pencil,
+  Pin,
+  PinOff,
+  SquarePen,
+  Trash2
+} from "lucide-react";
+import { useOpenSecret, type Conversation } from "@opensecret/react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Sidebar, SidebarToggle } from "@/components/Sidebar";
+import { useIsMobile } from "@/utils/utils";
+import { useLocalState } from "@/state/useLocalState";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle
+} from "@/components/ui/dialog";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger
 } from "@/components/ui/dropdown-menu";
+import { ConversationProjectDialog } from "@/components/ConversationProjectDialog";
+import { DeleteConversationProjectDialog } from "@/components/DeleteConversationProjectDialog";
+import { RenameChatDialog } from "@/components/RenameChatDialog";
+import { DeleteChatDialog } from "@/components/DeleteChatDialog";
+import { BulkDeleteDialog } from "@/components/BulkDeleteDialog";
+import { MoveChatsDialog } from "@/components/MoveChatsDialog";
+
+const PROJECT_PAGE_SIZE = 20;
 
 interface ProjectDetailViewProps {
-  project: ConversationProject | null;
-  conversations: Conversation[];
-  input: string;
-  onInputChange: (value: string) => void;
-  onSubmit: (event: React.FormEvent<HTMLFormElement>) => void;
-  onSelectConversation: (conversation: Conversation) => void;
-  onRenameProject: () => void;
-  onDeleteProject: () => void;
-  onClearProject: () => void;
-  instructionsDraft: string;
-  onInstructionsChange: (value: string) => void;
-  onSaveInstructions: () => void;
-  instructionsDirty: boolean;
-  isSavingInstructions: boolean;
-  isGenerating: boolean;
-  isLoading?: boolean;
+  projectId: string;
 }
 
-export function ProjectDetailView({
-  project,
-  conversations,
-  input,
-  onInputChange,
-  onSubmit,
-  onSelectConversation,
-  onRenameProject,
-  onDeleteProject,
-  onClearProject,
-  instructionsDraft,
-  onInstructionsChange,
-  onSaveInstructions,
-  instructionsDirty,
-  isSavingInstructions,
-  isGenerating,
-  isLoading = false
-}: ProjectDetailViewProps) {
-  if (isLoading && !project) {
-    return (
-      <div className="flex flex-1 items-center justify-center">
-        <p className="text-sm text-muted-foreground">Loading project...</p>
-      </div>
-    );
+function getConversationTitle(conversation: Conversation) {
+  const title = conversation.metadata?.title;
+  return typeof title === "string" && title.trim() ? title : "Untitled Chat";
+}
+
+function ProjectInstructionsDialog({
+  open,
+  onOpenChange,
+  projectName,
+  initialInstructions,
+  onSave
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  projectName: string;
+  initialInstructions: string | null;
+  onSave: (instructions: string | null) => Promise<void>;
+}) {
+  const [instructions, setInstructions] = useState(initialInstructions ?? "");
+  const [isSaving, setIsSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (open) {
+      setInstructions(initialInstructions ?? "");
+      setError(null);
+    }
+  }, [initialInstructions, open]);
+
+  async function handleSubmit(event: React.FormEvent) {
+    event.preventDefault();
+    setError(null);
+    setIsSaving(true);
+
+    try {
+      await onSave(instructions.trim() ? instructions : null);
+      onOpenChange(false);
+    } catch (saveError) {
+      console.error("Failed to save project instructions:", saveError);
+      setError("Failed to save project instructions. Please try again.");
+    } finally {
+      setIsSaving(false);
+    }
   }
 
-  if (!project) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-[525px]">
+        <DialogHeader>
+          <DialogTitle>Custom Instructions</DialogTitle>
+          <DialogDescription>These instructions apply to chats in {projectName}.</DialogDescription>
+        </DialogHeader>
+        <form onSubmit={handleSubmit} className="grid gap-4 py-4">
+          {error ? (
+            <Alert variant="destructive">
+              <AlertDescription>{error}</AlertDescription>
+            </Alert>
+          ) : null}
+          <div className="grid gap-2">
+            <Label htmlFor="project-instructions">Instructions</Label>
+            <Textarea
+              id="project-instructions"
+              value={instructions}
+              onChange={(event) => setInstructions(event.target.value)}
+              placeholder="e.g. Use concise bullet points. Focus on practical examples."
+              className="min-h-[220px] resize-y"
+              disabled={isSaving}
+            />
+            <p className="text-sm text-muted-foreground">
+              Leave this empty to clear the project's custom instructions.
+            </p>
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+              Cancel
+            </Button>
+            <Button type="submit" disabled={isSaving}>
+              {isSaving ? "Saving..." : "Save Instructions"}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+export function ProjectDetailView({ projectId }: ProjectDetailViewProps) {
+  const os = useOpenSecret();
+  const queryClient = useQueryClient();
+  const isMobile = useIsMobile();
+  const { setSelectedProjectId } = useLocalState();
+  const hasAuthUser = !!os.auth.user;
+
+  const [isSidebarOpen, setIsSidebarOpen] = useState(!isMobile);
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [hasMoreConversations, setHasMoreConversations] = useState(false);
+  const [lastConversationId, setLastConversationId] = useState<string | undefined>();
+  const [isLoadingConversations, setIsLoadingConversations] = useState(false);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [selectedChat, setSelectedChat] = useState<{ id: string; title: string } | null>(null);
+  const [isRenameDialogOpen, setIsRenameDialogOpen] = useState(false);
+  const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
+  const [isBulkDeleteDialogOpen, setIsBulkDeleteDialogOpen] = useState(false);
+  const [isMoveDialogOpen, setIsMoveDialogOpen] = useState(false);
+  const [isBulkDeleting, setIsBulkDeleting] = useState(false);
+  const [isBulkMoving, setIsBulkMoving] = useState(false);
+  const [isRenameProjectDialogOpen, setIsRenameProjectDialogOpen] = useState(false);
+  const [isDeleteProjectDialogOpen, setIsDeleteProjectDialogOpen] = useState(false);
+  const [isInstructionsDialogOpen, setIsInstructionsDialogOpen] = useState(false);
+
+  const toggleSidebar = useCallback(() => {
+    setIsSidebarOpen((prev) => !prev);
+  }, []);
+
+  useEffect(() => {
+    setSelectedProjectId(projectId);
+  }, [projectId, setSelectedProjectId]);
+
+  const { data: project, isPending: isProjectPending } = useQuery({
+    queryKey: ["conversationProject", projectId],
+    queryFn: () => os.getConversationProject(projectId),
+    enabled: !!projectId && hasAuthUser
+  });
+
+  const { data: conversationProjects = [] } = useQuery({
+    queryKey: ["conversationProjects"],
+    queryFn: async () => {
+      const response = await os.listConversationProjects({ limit: 20 });
+      return response.data ?? [];
+    },
+    enabled: hasAuthUser
+  });
+
+  const isSelectionMode = selectedIds.size > 0;
+
+  const loadConversations = useCallback(
+    async (cursor?: string, append = false) => {
+      if (!projectId || !hasAuthUser) return;
+
+      if (append) {
+        setIsLoadingMore(true);
+      } else {
+        setIsLoadingConversations(true);
+      }
+
+      setError(null);
+
+      try {
+        const response = await os.listConversations({
+          limit: PROJECT_PAGE_SIZE,
+          project_id: projectId,
+          after: cursor
+        });
+
+        const nextData = response.data ?? [];
+        setConversations((prev) => {
+          if (!append) {
+            return nextData;
+          }
+
+          const seen = new Set(prev.map((conversation) => conversation.id));
+          const merged = [...prev];
+
+          for (const conversation of nextData) {
+            if (seen.has(conversation.id)) continue;
+            seen.add(conversation.id);
+            merged.push(conversation);
+          }
+
+          return merged;
+        });
+        setHasMoreConversations(response.has_more);
+        setLastConversationId(response.last_id ?? nextData[nextData.length - 1]?.id);
+      } catch (loadError) {
+        console.error("Failed to load project conversations:", loadError);
+        setError("Failed to load chats for this project. Please try again.");
+      } finally {
+        setIsLoadingConversations(false);
+        setIsLoadingMore(false);
+      }
+    },
+    [hasAuthUser, os, projectId]
+  );
+
+  useEffect(() => {
+    if (!hasAuthUser) return;
+    setSelectedIds(new Set());
+    void loadConversations();
+  }, [hasAuthUser, loadConversations]);
+
+  const invalidateConversationData = useCallback(async () => {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["conversations"] }),
+      queryClient.invalidateQueries({ queryKey: ["pinnedConversations"] }),
+      queryClient.invalidateQueries({ queryKey: ["projectConversations"] }),
+      queryClient.invalidateQueries({ queryKey: ["conversationProjects"] }),
+      queryClient.invalidateQueries({ queryKey: ["conversationProject", projectId] })
+    ]);
+  }, [projectId, queryClient]);
+
+  const refreshProjectPage = useCallback(async () => {
+    await invalidateConversationData();
+    await loadConversations();
+  }, [invalidateConversationData, loadConversations]);
+
+  const handleStartNewChat = useCallback(() => {
+    setSelectedProjectId(projectId);
+    const params = new URLSearchParams(window.location.search);
+    params.delete("project_id");
+    params.delete("conversation_id");
+    window.history.replaceState(null, "", params.toString() ? `/?${params.toString()}` : "/");
+    window.dispatchEvent(new CustomEvent("newchat", { detail: { projectId } }));
+    setTimeout(() => document.getElementById("message")?.focus(), 0);
+  }, [projectId, setSelectedProjectId]);
+
+  const handleSelectConversation = useCallback(
+    (conversation: Conversation) => {
+      setSelectedProjectId(conversation.project_id ?? null);
+      const params = new URLSearchParams(window.location.search);
+      params.delete("project_id");
+      params.set("conversation_id", conversation.id);
+      window.history.pushState({}, "", `/?${params.toString()}`);
+      window.dispatchEvent(
+        new CustomEvent("conversationselected", {
+          detail: { conversationId: conversation.id }
+        })
+      );
+    },
+    [setSelectedProjectId]
+  );
+
+  const handleSaveProjectInstructions = useCallback(
+    async (instructions: string | null) => {
+      await os.updateConversationProject(projectId, { instructions });
+      await invalidateConversationData();
+    },
+    [invalidateConversationData, os, projectId]
+  );
+
+  const handleRenameProject = useCallback(
+    async (name: string) => {
+      await os.updateConversationProject(projectId, { name });
+      await invalidateConversationData();
+    },
+    [invalidateConversationData, os, projectId]
+  );
+
+  const handleDeleteProject = useCallback(async () => {
+    await os.deleteConversationProject(projectId);
+    await invalidateConversationData();
+    setSelectedProjectId(null);
+    window.history.replaceState({}, "", "/");
+    window.dispatchEvent(new CustomEvent("newchat", { detail: { projectId: null } }));
+    window.dispatchEvent(new Event("projectselected"));
+  }, [invalidateConversationData, os, projectId, setSelectedProjectId]);
+
+  const handleRenameConversation = useCallback(
+    async (conversationId: string, newTitle: string) => {
+      await os.updateConversation(conversationId, { title: newTitle });
+      await refreshProjectPage();
+    },
+    [os, refreshProjectPage]
+  );
+
+  const handleDeleteConversation = useCallback(
+    async (conversationId: string) => {
+      await os.deleteConversation(conversationId);
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        next.delete(conversationId);
+        return next;
+      });
+      await refreshProjectPage();
+    },
+    [os, refreshProjectPage]
+  );
+
+  const handleToggleConversationPin = useCallback(
+    async (conversation: Conversation) => {
+      await os.updateConversation(conversation.id, undefined, {
+        pinned: !conversation.pinned
+      });
+      await refreshProjectPage();
+    },
+    [os, refreshProjectPage]
+  );
+
+  const handleMoveConversationToProject = useCallback(
+    async (conversation: Conversation, targetProjectId: string | null) => {
+      await os.batchUpdateConversationProject([conversation.id], targetProjectId);
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        next.delete(conversation.id);
+        return next;
+      });
+      await refreshProjectPage();
+    },
+    [os, refreshProjectPage]
+  );
+
+  const handleBulkDelete = useCallback(async () => {
+    if (selectedIds.size === 0) return;
+
+    setIsBulkDeleting(true);
+    try {
+      await os.batchDeleteConversations(Array.from(selectedIds));
+      setSelectedIds(new Set());
+      setIsBulkDeleteDialogOpen(false);
+      await refreshProjectPage();
+    } finally {
+      setIsBulkDeleting(false);
+    }
+  }, [os, refreshProjectPage, selectedIds]);
+
+  const handleMoveSelectedConversations = useCallback(
+    async (targetProjectId: string | null) => {
+      if (selectedIds.size === 0) return;
+
+      setIsBulkMoving(true);
+      try {
+        await os.batchUpdateConversationProject(Array.from(selectedIds), targetProjectId);
+        setSelectedIds(new Set());
+        await refreshProjectPage();
+      } finally {
+        setIsBulkMoving(false);
+      }
+    },
+    [os, refreshProjectPage, selectedIds]
+  );
+
+  const toggleSelection = useCallback((conversationId: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(conversationId)) {
+        next.delete(conversationId);
+      } else {
+        next.add(conversationId);
+      }
+      return next;
+    });
+  }, []);
+
+  const currentInstructionsPreview = useMemo(() => {
+    if (!project?.instructions?.trim()) {
+      return "Set shared custom instructions that apply to chats in this project.";
+    }
+
+    return project.instructions;
+  }, [project?.instructions]);
+
+  if (isProjectPending && !project) {
     return (
-      <div className="flex flex-1 items-center justify-center">
-        <p className="text-sm text-muted-foreground">Project not found.</p>
+      <div
+        className={`grid h-dvh min-h-0 w-full grid-cols-1 overflow-hidden ${
+          isSidebarOpen ? "md:grid-cols-[280px_1fr]" : ""
+        }`}
+      >
+        <Sidebar isOpen={isSidebarOpen} onToggle={toggleSidebar} />
+        <div className="flex min-h-0 min-w-0 flex-1 items-center justify-center bg-background">
+          <p className="text-sm text-muted-foreground">Loading project...</p>
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="flex flex-1 min-h-0 overflow-y-auto">
-      <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-4 py-6 md:px-8">
-        <div className="flex items-start justify-between gap-4">
-          <div className="min-w-0">
-            <div className="flex items-center gap-3">
-              <div className="flex h-10 w-10 items-center justify-center rounded-lg border bg-muted/40">
-                <Folder className="h-5 w-5 text-muted-foreground" />
-              </div>
-              <div className="min-w-0">
-                <h1 className="truncate text-xl font-semibold">{project.name}</h1>
-                <p className="text-sm text-muted-foreground">
-                  Organize chats and keep project-specific instructions in one place.
-                </p>
-              </div>
-            </div>
-          </div>
+    <div
+      className={`grid h-dvh min-h-0 w-full grid-cols-1 overflow-hidden ${
+        isSidebarOpen ? "md:grid-cols-[280px_1fr]" : ""
+      }`}
+    >
+      <Sidebar isOpen={isSidebarOpen} onToggle={toggleSidebar} />
 
-          <div className="flex items-center gap-2">
-            <Button type="button" variant="ghost" size="icon" onClick={onClearProject}>
-              <X className="h-4 w-4" />
-            </Button>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button type="button" variant="outline" size="icon">
-                  <MoreHorizontal className="h-4 w-4" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <DropdownMenuItem onClick={onRenameProject}>
-                  <Pencil className="mr-2 h-4 w-4" />
-                  Rename Project
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={onDeleteProject}>
-                  <Trash2 className="mr-2 h-4 w-4" />
-                  Delete Project
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
+      <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background">
+        {!isSidebarOpen ? (
+          <div className="fixed left-4 top-[9.5px] z-20">
+            <SidebarToggle onToggle={toggleSidebar} />
+          </div>
+        ) : null}
+
+        <div className="h-14 flex items-center px-4">
+          <div className="relative flex flex-1 items-center justify-center">
+            <h1 className="max-w-[20rem] truncate text-base font-medium text-foreground">
+              {project?.name ?? "Project"}
+            </h1>
+            {project ? (
+              <div className="absolute right-0">
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="ghost" size="icon" className="h-9 w-9">
+                      <MoreHorizontal className="h-4 w-4" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem onClick={() => setIsRenameProjectDialogOpen(true)}>
+                      <Pencil className="mr-2 h-4 w-4" />
+                      Rename Project
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => setIsDeleteProjectDialogOpen(true)}>
+                      <Trash2 className="mr-2 h-4 w-4" />
+                      Delete Project
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </div>
+            ) : null}
           </div>
         </div>
 
-        <div className="grid min-h-0 gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
-          <div className="space-y-4">
-            <form onSubmit={onSubmit}>
-              <div className="flex flex-col gap-3 sm:flex-row">
-                <Input
-                  value={input}
-                  onChange={(event) => onInputChange(event.target.value)}
-                  placeholder={`New chat in ${project.name}`}
-                  className="h-11"
-                  disabled={isGenerating}
-                />
-                <Button
-                  type="submit"
-                  className="h-11 sm:px-6"
-                  disabled={!input.trim() || isGenerating}
-                >
-                  {isGenerating ? "Starting..." : "Start Chat"}
-                </Button>
-              </div>
-            </form>
+        <div className="flex-1 min-h-0 overflow-y-auto">
+          <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-4 py-6 md:px-8">
+            {error ? (
+              <Alert variant="destructive">
+                <AlertDescription>{error}</AlertDescription>
+              </Alert>
+            ) : null}
 
-            <div className="rounded-xl border bg-background/60">
-              <div className="border-b px-4 py-3">
-                <h2 className="font-medium">Chats</h2>
+            {!project && !isProjectPending ? (
+              <div className="rounded-xl border bg-background/60 p-6 text-sm text-muted-foreground">
+                Project not found.
               </div>
-              <div className="flex flex-col">
-                {conversations.length === 0 ? (
-                  <div className="px-4 py-8 text-sm text-muted-foreground">
-                    No chats in this project yet.
+            ) : project ? (
+              <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
+                <div className="contents lg:block lg:space-y-4">
+                  <button
+                    type="button"
+                    onClick={handleStartNewChat}
+                    className="order-1 flex h-11 w-full items-center gap-2 rounded-lg border bg-background px-3 text-left text-sm transition-colors hover:border-primary/40 hover:bg-accent/20 lg:order-none"
+                  >
+                    <SquarePen className="h-4 w-4 text-muted-foreground" />
+                    <span className="truncate text-muted-foreground">
+                      New chat in {project.name}
+                    </span>
+                  </button>
+
+                  <div className="order-3 rounded-xl border bg-background/60 lg:order-none">
+                    <div className="flex flex-wrap items-center justify-between gap-3 border-b px-4 py-3">
+                      <h2 className="font-medium">Chats</h2>
+                      {isSelectionMode ? (
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-sm text-muted-foreground">
+                            {selectedIds.size} selected
+                          </span>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => setIsMoveDialogOpen(true)}
+                          >
+                            <FolderInput className="mr-1 h-4 w-4" />
+                            Move
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="destructive"
+                            size="sm"
+                            onClick={() => setIsBulkDeleteDialogOpen(true)}
+                          >
+                            <Trash2 className="mr-1 h-4 w-4" />
+                            Delete
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => setSelectedIds(new Set())}
+                          >
+                            Cancel
+                          </Button>
+                        </div>
+                      ) : null}
+                    </div>
+
+                    {isLoadingConversations ? (
+                      <div className="flex items-center gap-2 px-4 py-8 text-sm text-muted-foreground">
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        Loading chats...
+                      </div>
+                    ) : conversations.length === 0 ? (
+                      <div className="px-4 py-8 text-sm text-muted-foreground">
+                        No chats in this project yet.
+                      </div>
+                    ) : (
+                      <div className="flex flex-col">
+                        {conversations.map((conversation) => {
+                          const isSelected = selectedIds.has(conversation.id);
+
+                          return (
+                            <div
+                              key={conversation.id}
+                              className={`relative border-b last:border-b-0 ${
+                                isSelected ? "bg-primary/5" : ""
+                              }`}
+                            >
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (isSelectionMode) {
+                                    toggleSelection(conversation.id);
+                                  } else {
+                                    handleSelectConversation(conversation);
+                                  }
+                                }}
+                                className="flex w-full items-start gap-3 px-4 py-3 text-left transition-colors hover:bg-accent/30"
+                              >
+                                {isSelectionMode ? (
+                                  <div
+                                    className={`mt-1 flex h-4 w-4 shrink-0 items-center justify-center rounded border ${
+                                      isSelected
+                                        ? "border-primary bg-primary text-primary-foreground"
+                                        : "border-border"
+                                    }`}
+                                  >
+                                    {isSelected ? <CheckSquare className="h-3 w-3" /> : null}
+                                  </div>
+                                ) : (
+                                  <div className="mt-0.5 flex h-8 w-8 items-center justify-center rounded-md bg-muted">
+                                    <MessageSquare className="h-4 w-4 text-muted-foreground" />
+                                  </div>
+                                )}
+
+                                <div className="min-w-0 flex-1 pr-10">
+                                  <div className="flex items-center gap-2">
+                                    <span className="truncate font-medium">
+                                      {getConversationTitle(conversation)}
+                                    </span>
+                                    {conversation.pinned ? (
+                                      <Pin className="h-3.5 w-3.5 text-muted-foreground" />
+                                    ) : null}
+                                  </div>
+                                  <div className="mt-1 text-xs text-muted-foreground">
+                                    {new Date(
+                                      conversation.last_activity_at * 1000
+                                    ).toLocaleDateString()}
+                                  </div>
+                                </div>
+                              </button>
+
+                              {!isSelectionMode ? (
+                                <DropdownMenu>
+                                  <DropdownMenuTrigger asChild>
+                                    <Button
+                                      type="button"
+                                      variant="ghost"
+                                      size="icon"
+                                      className="absolute right-2 top-2 h-8 w-8"
+                                      onClick={(event) => {
+                                        event.preventDefault();
+                                        event.stopPropagation();
+                                      }}
+                                    >
+                                      <MoreHorizontal className="h-4 w-4" />
+                                    </Button>
+                                  </DropdownMenuTrigger>
+                                  <DropdownMenuContent align="end">
+                                    <DropdownMenuItem
+                                      onClick={() => toggleSelection(conversation.id)}
+                                    >
+                                      <CheckSquare className="mr-2 h-4 w-4" />
+                                      Select
+                                    </DropdownMenuItem>
+                                    <DropdownMenuItem
+                                      onClick={() => void handleToggleConversationPin(conversation)}
+                                    >
+                                      {conversation.pinned ? (
+                                        <PinOff className="mr-2 h-4 w-4" />
+                                      ) : (
+                                        <Pin className="mr-2 h-4 w-4" />
+                                      )}
+                                      {conversation.pinned ? "Unpin Chat" : "Pin Chat"}
+                                    </DropdownMenuItem>
+                                    <DropdownMenuSub>
+                                      <DropdownMenuSubTrigger>
+                                        <FolderInput className="mr-2 h-4 w-4" />
+                                        Move to Project
+                                      </DropdownMenuSubTrigger>
+                                      <DropdownMenuSubContent>
+                                        <DropdownMenuItem
+                                          onClick={() =>
+                                            void handleMoveConversationToProject(conversation, null)
+                                          }
+                                        >
+                                          <Folder className="mr-2 h-4 w-4" />
+                                          No project
+                                        </DropdownMenuItem>
+                                        <DropdownMenuSeparator />
+                                        {conversationProjects.map((conversationProject) => (
+                                          <DropdownMenuItem
+                                            key={conversationProject.id}
+                                            onClick={() =>
+                                              void handleMoveConversationToProject(
+                                                conversation,
+                                                conversationProject.id
+                                              )
+                                            }
+                                          >
+                                            <Folder className="mr-2 h-4 w-4" />
+                                            {conversationProject.name}
+                                          </DropdownMenuItem>
+                                        ))}
+                                      </DropdownMenuSubContent>
+                                    </DropdownMenuSub>
+                                    <DropdownMenuItem
+                                      onClick={() => {
+                                        setSelectedChat({
+                                          id: conversation.id,
+                                          title: getConversationTitle(conversation)
+                                        });
+                                        setIsRenameDialogOpen(true);
+                                      }}
+                                    >
+                                      <Pencil className="mr-2 h-4 w-4" />
+                                      Rename Chat
+                                    </DropdownMenuItem>
+                                    <DropdownMenuItem
+                                      onClick={() => {
+                                        setSelectedChat({
+                                          id: conversation.id,
+                                          title: getConversationTitle(conversation)
+                                        });
+                                        setIsDeleteDialogOpen(true);
+                                      }}
+                                    >
+                                      <Trash2 className="mr-2 h-4 w-4" />
+                                      Delete Chat
+                                    </DropdownMenuItem>
+                                  </DropdownMenuContent>
+                                </DropdownMenu>
+                              ) : null}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+
+                    {hasMoreConversations ? (
+                      <div className="border-t px-4 py-3">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => void loadConversations(lastConversationId, true)}
+                          disabled={isLoadingMore || !lastConversationId}
+                        >
+                          {isLoadingMore ? "Loading..." : "Load more"}
+                        </Button>
+                      </div>
+                    ) : null}
                   </div>
-                ) : (
-                  conversations.map((conversation) => (
-                    <button
-                      key={conversation.id}
-                      type="button"
-                      onClick={() => onSelectConversation(conversation)}
-                      className="flex items-start gap-3 border-b px-4 py-3 text-left transition-colors hover:bg-accent/50 last:border-b-0"
-                    >
-                      <div className="mt-0.5 flex h-8 w-8 items-center justify-center rounded-md bg-muted">
-                        <MessageSquare className="h-4 w-4 text-muted-foreground" />
-                      </div>
-                      <div className="min-w-0">
-                        <div className="truncate font-medium">
-                          {(conversation.metadata?.title as string | undefined) || "Untitled Chat"}
-                        </div>
-                        <div className="text-xs text-muted-foreground">
-                          {new Date(conversation.last_activity_at * 1000).toLocaleDateString()}
-                        </div>
-                      </div>
-                    </button>
-                  ))
-                )}
-              </div>
-            </div>
-          </div>
+                </div>
 
-          <div className="rounded-xl border bg-background/60 p-4">
-            <div className="mb-4">
-              <h2 className="font-medium">Custom instructions</h2>
-              <p className="mt-1 text-sm text-muted-foreground">
-                These instructions apply to chats in this project.
-              </p>
-            </div>
-            <Textarea
-              value={instructionsDraft}
-              onChange={(event) => onInstructionsChange(event.target.value)}
-              placeholder="e.g. Write concise bullet points. Focus on practical examples."
-              className="min-h-[220px] resize-none"
-            />
-            <div className="mt-3 flex justify-end">
-              <Button
-                type="button"
-                variant="outline"
-                onClick={onSaveInstructions}
-                disabled={!instructionsDirty || isSavingInstructions}
-              >
-                {isSavingInstructions ? "Saving..." : "Save Instructions"}
-              </Button>
-            </div>
+                <div className="order-2 space-y-4 lg:order-none">
+                  <button
+                    type="button"
+                    onClick={() => setIsInstructionsDialogOpen(true)}
+                    className="w-full rounded-xl border bg-background/60 p-4 text-left transition-colors hover:border-primary/40 hover:bg-accent/20"
+                  >
+                    <div className="mb-3 flex items-center justify-between gap-3">
+                      <div>
+                        <h2 className="font-medium">Custom Instructions</h2>
+                        <p className="mt-1 text-sm text-muted-foreground">
+                          Shared instructions for chats in {project.name}
+                        </p>
+                      </div>
+                      <MoreHorizontal className="h-4 w-4 text-muted-foreground" />
+                    </div>
+                    <p className="whitespace-pre-wrap text-sm text-muted-foreground">
+                      {currentInstructionsPreview}
+                    </p>
+                  </button>
+                </div>
+              </div>
+            ) : null}
           </div>
         </div>
       </div>
+
+      {project ? (
+        <>
+          <ProjectInstructionsDialog
+            open={isInstructionsDialogOpen}
+            onOpenChange={setIsInstructionsDialogOpen}
+            projectName={project.name}
+            initialInstructions={project.instructions}
+            onSave={handleSaveProjectInstructions}
+          />
+
+          <ConversationProjectDialog
+            open={isRenameProjectDialogOpen}
+            onOpenChange={setIsRenameProjectDialogOpen}
+            mode="rename"
+            initialName={project.name}
+            onSubmit={handleRenameProject}
+          />
+
+          <DeleteConversationProjectDialog
+            open={isDeleteProjectDialogOpen}
+            onOpenChange={setIsDeleteProjectDialogOpen}
+            projectName={project.name}
+            conversationCount={conversations.length}
+            onConfirm={() => void handleDeleteProject()}
+          />
+        </>
+      ) : null}
+
+      {selectedChat ? (
+        <>
+          <RenameChatDialog
+            open={isRenameDialogOpen}
+            onOpenChange={(open) => {
+              setIsRenameDialogOpen(open);
+              if (!open) {
+                setSelectedChat(null);
+              }
+            }}
+            chatId={selectedChat.id}
+            currentTitle={selectedChat.title}
+            onRename={handleRenameConversation}
+          />
+          <DeleteChatDialog
+            open={isDeleteDialogOpen}
+            onOpenChange={(open) => {
+              setIsDeleteDialogOpen(open);
+              if (!open) {
+                setSelectedChat(null);
+              }
+            }}
+            chatTitle={selectedChat.title}
+            onConfirm={() => void handleDeleteConversation(selectedChat.id)}
+          />
+        </>
+      ) : null}
+
+      <BulkDeleteDialog
+        open={isBulkDeleteDialogOpen}
+        onOpenChange={setIsBulkDeleteDialogOpen}
+        onConfirm={() => void handleBulkDelete()}
+        count={selectedIds.size}
+        isDeleting={isBulkDeleting}
+      />
+
+      <MoveChatsDialog
+        open={isMoveDialogOpen}
+        onOpenChange={setIsMoveDialogOpen}
+        count={selectedIds.size}
+        projects={conversationProjects}
+        onConfirm={handleMoveSelectedConversations}
+        isMoving={isBulkMoving}
+      />
     </div>
   );
 }
