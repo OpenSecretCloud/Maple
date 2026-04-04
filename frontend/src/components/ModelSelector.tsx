@@ -36,26 +36,13 @@ export const MODEL_CONFIG: Record<string, ModelCfg> = {
     shortName: "Llama 3.3",
     tokenLimit: 70000
   },
-  "leon-se/gemma-3-27b-it-fp8-dynamic": {
-    displayName: "Gemma 3 27B",
-    shortName: "Gemma 3",
+  "gemma4-31b": {
+    displayName: "Gemma 4 31B",
+    shortName: "Gemma 4",
+    badges: ["New", "Reasoning"],
     requiresStarter: true,
     supportsVision: true,
-    tokenLimit: 20000
-  },
-  "gemma-3-27b": {
-    displayName: "Gemma 3 27B",
-    shortName: "Gemma 3",
-    requiresStarter: true,
-    supportsVision: true,
-    tokenLimit: 20000
-  },
-  "deepseek-r1-0528": {
-    displayName: "DeepSeek R1 671B",
-    shortName: "DeepSeek R1",
-    badges: ["Pro", "Reasoning"],
-    requiresPro: true,
-    tokenLimit: 130000
+    tokenLimit: 256000
   },
   "kimi-k2-5": {
     displayName: "Kimi K2.5",
@@ -68,6 +55,7 @@ export const MODEL_CONFIG: Record<string, ModelCfg> = {
   "gpt-oss-120b": {
     displayName: "OpenAI GPT-OSS 120B",
     shortName: "GPT-OSS",
+    badges: ["Reasoning"],
     tokenLimit: 128000
   },
   "qwen3-vl-30b": {
@@ -215,8 +203,8 @@ export function ModelSelector({ hasImages = false }: { hasImages?: boolean }) {
       // Pro/Max/Team: switch to Powerful (kimi-k2-5 has vision)
       setModel(PRIMARY_MODELS.powerful);
     } else if (isStarter) {
-      // Starter: switch to qwen3-vl-30b
-      setModel("qwen3-vl-30b");
+      // Starter: switch to Gemma 4
+      setModel("gemma4-31b");
     }
     // Free: no auto-switch (existing upgrade prompt handles it)
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -455,9 +443,6 @@ export function ModelSelector({ hasImages = false }: { hasImages?: boolean }) {
                     .filter((m) => MODEL_CONFIG[m.id] !== undefined)
                     // Deduplicate: prefer short names over long names
                     .filter((m) => {
-                      if (m.id === "leon-se/gemma-3-27b-it-fp8-dynamic") {
-                        return !availableModels.some((model) => model.id === "gemma-3-27b");
-                      }
                       if (m.id === "ibnzterrell/Meta-Llama-3.3-70B-Instruct-AWQ-INT4") {
                         return !availableModels.some((model) => model.id === "llama-3.3-70b");
                       }

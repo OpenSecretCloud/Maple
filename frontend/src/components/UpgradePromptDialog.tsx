@@ -96,7 +96,7 @@ export function UpgradePromptDialog({
         benefits: [
           "Images stay private with end-to-end encryption",
           "Upload JPEG, PNG, and WebP formats securely",
-          "Use advanced vision models like Gemma 3 and Qwen3-VL",
+          "Use Gemma 4 31B and Qwen3-VL on Starter, plus Kimi K2.5 on Pro and above",
           "Analyze diagrams, screenshots, and photos privately",
           "Extract text from images without exposing data"
         ]
@@ -152,7 +152,7 @@ export function UpgradePromptDialog({
           : isPro
             ? [
                 "10x more monthly messages with Max plan",
-                "Access to all premium models including DeepSeek R1",
+                "Access to all AI models including Kimi K2.5",
                 "Highest priority during peak times",
                 "Maximum rate limits for power users",
                 "Or purchase extra credits to keep chatting now"
@@ -186,7 +186,7 @@ export function UpgradePromptDialog({
         requiredPlan: "Pro",
         benefits: [
           "All models run in secure, encrypted environments",
-          "Access to DeepSeek R1 for advanced reasoning",
+          "Access to Kimi K2.5 and the full model lineup",
           "OpenAI GPT-OSS, Qwen, and other advanced models",
           "Higher token limits for longer conversations",
           "Priority access to new models as they launch"
@@ -229,9 +229,9 @@ export function UpgradePromptDialog({
             <div className="pt-2 border-t">
               <p className="text-sm text-muted-foreground">
                 {isFreeTier
-                  ? "Plus access to 7 powerful models, image & document processing, and more"
+                  ? "Plus access to powerful models, image & document processing, and more"
                   : isPro
-                    ? "Plus access to DeepSeek R1, 10x more usage, API access, and priority support"
+                    ? "Plus access to Kimi K2.5, 10x more usage, API access, and priority support"
                     : "Explore our pricing options for the best plan for your needs"}
               </p>
             </div>
