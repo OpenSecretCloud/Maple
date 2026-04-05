@@ -29,7 +29,7 @@ export function PromoDialog({ open, onOpenChange, discount }: PromoDialogProps) 
   const benefits = [
     {
       icon: <Cpu className="h-4 w-4" />,
-      text: "7 powerful AI models including DeepSeek R1"
+      text: "Powerful AI models including Gemma 4 31B and Kimi K2.5"
     },
     {
       icon: <Image className="h-4 w-4" />,

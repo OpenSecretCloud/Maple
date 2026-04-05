@@ -213,9 +213,9 @@ We keep it open so anyone can review and verify our security claims.
 ### Q: What AI models are available?
 
 **Answer:**
-- **Free tier:** Llama 3.3 70B
-- **Starter+ tier:** Gemma 3 27B (vision), Qwen3-VL 30B (vision)
-- **Pro+ tier:** DeepSeek R1 671B (reasoning), Kimi K2 (reasoning), GPT-OSS 120B, Qwen3 Coder 480B
+- **Free tier:** GPT-OSS 120B, Llama 3.3 70B
+- **Legacy Starter+ tier:** Gemma 4 31B (reasoning, vision), Qwen3-VL 30B (vision)
+- **Pro+ tier:** Kimi K2.5 (reasoning, vision)
 
 None of your data is transmitted to model providers - everything stays within secure enclaves.
 

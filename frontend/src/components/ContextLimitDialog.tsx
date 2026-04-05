@@ -16,14 +16,7 @@ interface ContextLimitDialogProps {
   hasDocument?: boolean;
 }
 
-export function ContextLimitDialog({
-  open,
-  onOpenChange,
-  currentModel,
-  hasDocument
-}: ContextLimitDialogProps) {
-  const isGemma = currentModel?.includes("gemma");
-
+export function ContextLimitDialog({ open, onOpenChange, hasDocument }: ContextLimitDialogProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-md">
@@ -55,15 +48,6 @@ export function ContextLimitDialog({
                   <span>
                     <strong>Use a smaller document</strong> - Try uploading a shorter document or
                     extracting only the relevant sections
-                  </span>
-                </li>
-              )}
-              {isGemma && (
-                <li className="flex items-start gap-2">
-                  <MessageCircle className="h-4 w-4 mt-0.5 shrink-0" />
-                  <span>
-                    <strong>Switch to a model with more context</strong> - Try DeepSeek R1 or other
-                    models that support 128k tokens
                   </span>
                 </li>
               )}

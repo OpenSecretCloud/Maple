@@ -52,8 +52,8 @@ Compared to ChatGPT, Claude, Gemini, Grok, and other AI services:
 
 All plans include end-to-end encrypted AI chat. Bitcoin payments accepted with a 10% annual discount.
 
-- **Free** ($0/month): end-to-end encryption, core AI features, search chat history, rename chats, Meta Llama 3.3 70B model
-- **Pro** ($20/month, most popular): All Free features plus generous usage, image upload, document upload (PDF/TXT/MD), voice recording (Whisper Large v3), 7+ powerful models including DeepSeek R1 and Kimi K2.5, live web search, API access
+- **Free** ($0/month): end-to-end encryption, core AI features, search chat history, rename chats, GPT-OSS 120B and Meta Llama 3.3 70B
+- **Pro** ($20/month, most popular): All Free features plus generous usage, image upload, document upload (PDF/TXT/MD), voice recording (Whisper Large v3), powerful models including Gemma 4 31B and Kimi K2.5, live web search, API access
 - **Max** ($100/month): All Pro features plus 20x more usage, priority support, early access to new features and models, API access
 - **Team** ($30/month per seat): All Pro features plus 2x more usage per member, pooled chat credits across the team, priority support, unified billing, early access, API access. Minimum 2 seats.
 
@@ -68,16 +68,16 @@ All models run inside secure enclaves with zero data retention. None of your dat
 - Can execute 200-300 sequential tool calls without human intervention
 - Availability: Pro, Max, Team
 
-**DeepSeek R1 671B**
-- 128K context window
-- Best for: Research, advanced math, complex analysis, coding
-- Default reasoning model in Maple
-- Availability: Pro, Max, Team
+**Gemma 4 31B** (by Google)
+- 256K context window
+- Best for: Reasoning, long-context work, image analysis, visual tasks
+- Supports image input
+- Availability: Paid plans
 
 **OpenAI GPT-OSS 120B**
 - 128K context window
 - Best for: Creative chat, structured data, ChatGPT-style interaction without data sharing
-- Availability: Pro, Max, Team
+- Availability: All plans
 
 
 **Meta Llama 3.3 70B**
@@ -89,13 +89,7 @@ All models run inside secure enclaves with zero data retention. None of your dat
 - 128K context window
 - Best for: Vision-language tasks, image understanding, visual question answering
 - Supports image input
-- Availability: Pro, Max, Team
-
-**Google Gemma 3 27B**
-- 128K context window
-- Best for: Blazing-fast image analysis, visual tasks
-- Supports image input
-- Availability: Pro and above
+- Availability: Paid plans
 
 
 ### Core Features
@@ -110,7 +104,7 @@ Chats sync automatically between web, desktop, and mobile devices using an encry
 Upload files for AI analysis, summarization, or explanation. Supported formats: PDF, TXT, MD. Max file size: 10MB. One file per reply. Files are encrypted before upload and processed inside secure enclaves.
 
 **Image Upload**
-Upload images (JPG, PNG, WEBP) for analysis, text extraction, translation, and visual understanding. Available with Gemma, Qwen, and Kimi.
+Upload images (JPG, PNG, WEBP) for analysis, text extraction, translation, and visual understanding. Available with Gemma 4, Qwen3-VL, and Kimi K2.5.
 
 **Voice Input and Output**
 Tap the microphone icon to speak naturally. Audio is encrypted before leaving your device. Speech-to-text uses Whisper (OpenAI's open-source model) running in a secure enclave. Maple responds with both text and natural speech. The natural speech is generated locally on-device. Zero audio retention.
@@ -169,10 +163,8 @@ All pricing is pay-as-you-go. Purchase credits in $10 increments.
 |---|---|
 | llama-3.3-70b | $4 input / $4 output |
 | gpt-oss-120b | $4 input / $4 output |
-| deepseek-r1-0528 | $4 input / $4 output |
-| kimi-k2.5 | $4 input / $4 output |
+| kimi-k2-5 | $4 input / $4 output |
 | qwen3-vl-30b | $4 input / $4 output |
-| gemma-3-27b-it-fp8-dynamic | $10 input / $10 output |
 
 ### Getting Started
 
@@ -200,7 +192,7 @@ Python:
 from openai import OpenAI
 client = OpenAI(base_url="http://localhost:8080/v1", api_key="your-maple-api-key")
 response = client.chat.completions.create(
-    model="deepseek-r1-0528",
+    model="gpt-oss-120b",
     messages=[{"role": "user", "content": "Hello, secure world!"}],
     stream=True
 )

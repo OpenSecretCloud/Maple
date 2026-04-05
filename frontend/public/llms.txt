@@ -1,6 +1,6 @@
 # Maple AI
 
-> Maple AI is a private, end-to-end encrypted AI chat application. Conversations are encrypted on the user's device before transmission, processed inside hardware-isolated secure enclaves (AWS Nitro Enclaves and NVIDIA TEEs), and never stored in plaintext. Not even Maple's operators can read user data. Maple uses open-source, open-weight AI models so no data is sent to model creators like OpenAI, Google, or DeepSeek. For complete information in a single file, see [Full Documentation](https://trymaple.ai/llms-full.txt).
+> Maple AI is a private, end-to-end encrypted AI chat application. Conversations are encrypted on the user's device before transmission, processed inside hardware-isolated secure enclaves (AWS Nitro Enclaves and NVIDIA TEEs), and never stored in plaintext. Not even Maple's operators can read user data. Maple uses open-source, open-weight AI models so no data is sent to model creators like OpenAI, Google, or Moonshot. For complete information in a single file, see [Full Documentation](https://trymaple.ai/llms-full.txt).
 
 Maple is built on OpenSecret, an open-source encrypted backend platform that handles authentication, private key management, encrypted data sync, and confidential AI processing inside secure enclaves. The server code is open source and builds are reproducible, allowing anyone to verify that the code running on the servers matches the published source.
 
@@ -27,11 +27,10 @@ Key differentiators from ChatGPT, Claude, Gemini, and Grok:
 
 Available models (all running inside secure enclaves with zero data retention):
 - Kimi K2.5 (1T params, 32B active per query, MoE architecture, 256K context) — advanced reasoning, coding, research, image analysis
-- DeepSeek R1 671B (128K context) — research, advanced math, coding
+- Gemma 4 31B (256K context) — reasoning, long-context work, image analysis
 - OpenAI GPT-OSS 120B (128K context) — creative chat, structured data
 - Meta Llama 3.3 70B (128K context) — general reasoning, daily tasks (available on Free plan)
 - Qwen3-VL 30B (128K context) — vision-language model, image understanding
-- Google Gemma 3 27B (128K context) — fast image analysis
 
 ## Features
 
@@ -50,7 +49,7 @@ Available models (all running inside secure enclaves with zero data retention):
 - [Maple Proxy](https://blog.trymaple.ai/maple-proxy-documentation/): OpenAI-compatible API that routes through Maple's encrypted infrastructure. Drop-in replacement — change only the base URL.
 - [Maple Proxy GitHub](https://github.com/opensecretcloud/maple-proxy): Open-source proxy server source code.
 
-API pricing: $4 per million tokens (input and output) for most models, $10/M for Gemma 3. Credits purchased in $10 increments. Works with any OpenAI-compatible client (OpenClaw, OpenCode, LangChain, LlamaIndex, Goose, Jan, Amp, Open Interpreter, and more).
+API pricing starts at $4 per million tokens (input and output). Credits are purchased in $10 increments. Works with any OpenAI-compatible client (OpenClaw, OpenCode, LangChain, LlamaIndex, Goose, Jan, Amp, Open Interpreter, and more).
 
 ## OpenClaw Integration
 

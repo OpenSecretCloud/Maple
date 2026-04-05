@@ -125,8 +125,8 @@ function TeamsPage() {
             {(() => {
               const models = [
                 { src: "/badge-openai-logo.png", alt: "OpenAI", label: "OpenAI GPT-OSS" },
-                { src: "/badge-google-logo.png", alt: "Google", label: "Google Gemma" },
-                { src: "/badge-deepseek-logo.png", alt: "DeepSeek", label: "DeepSeek R1" },
+                { src: "/badge-google-logo.png", alt: "Google", label: "Gemma 4" },
+                { src: "/badge-kimi-logo.png", alt: "Moonshot", label: "Kimi K2.5" },
                 { src: "/badge-meta-logo.png", alt: "Meta", label: "Meta Llama" }
               ];
               return (

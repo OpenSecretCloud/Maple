@@ -54,7 +54,7 @@ export const PRICING_PLANS: PricingPlan[] = [
         icon: <X className="w-4 h-4 text-red-500" />
       },
       {
-        text: "7 Powerful Models (including DeepSeek R1)",
+        text: "Paid AI models including Gemma 4 31B and Kimi K2.5",
         included: false,
         icon: <X className="w-4 h-4 text-red-500" />
       },
@@ -83,7 +83,7 @@ export const PRICING_PLANS: PricingPlan[] = [
         icon: <Check className="w-4 h-4 text-green-500" />
       },
       {
-        text: "Gemma 3 27B",
+        text: "Gemma 4 31B + Qwen3-VL 30B",
         included: true,
         icon: <Check className="w-4 h-4 text-green-500" />
       },
@@ -99,7 +99,7 @@ export const PRICING_PLANS: PricingPlan[] = [
         icon: <X className="w-4 h-4 text-red-500" />
       },
       {
-        text: "5 More Powerful Models",
+        text: "Kimi K2.5",
         included: false,
         icon: <X className="w-4 h-4 text-red-500" />
       },
@@ -134,7 +134,7 @@ export const PRICING_PLANS: PricingPlan[] = [
         icon: <Check className="w-4 h-4 text-green-500" />
       },
       {
-        text: "7 Powerful Models (including DeepSeek R1)",
+        text: "All AI models including Kimi K2.5",
         included: true,
         icon: <Check className="w-4 h-4 text-green-500" />
       },
@@ -184,7 +184,7 @@ export const PRICING_PLANS: PricingPlan[] = [
         icon: <Check className="w-4 h-4 text-green-500" />
       },
       {
-        text: "7 Powerful Models (including DeepSeek R1)",
+        text: "All AI models including Kimi K2.5",
         included: true,
         icon: <Check className="w-4 h-4 text-green-500" />
       },
@@ -243,7 +243,7 @@ export const PRICING_PLANS: PricingPlan[] = [
         icon: <Check className="w-4 h-4 text-green-500" />
       },
       {
-        text: "7 Powerful Models (including DeepSeek R1)",
+        text: "All AI models including Kimi K2.5",
         included: true,
         icon: <Check className="w-4 h-4 text-green-500" />
       },

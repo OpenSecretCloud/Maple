@@ -21,12 +21,7 @@ import { Badge } from "@/components/ui/badge";
 
 const AI_MODELS = [
   { src: "/badge-openai-logo.png", alt: "OpenAI", labels: ["OpenAI GPT-OSS"] },
-  { src: "/badge-google-logo.png", alt: "Google", labels: ["Google Gemma"] },
-  {
-    src: "/badge-deepseek-logo.png",
-    alt: "DeepSeek",
-    labels: ["DeepSeek R1"]
-  },
+  { src: "/badge-google-logo.png", alt: "Google", labels: ["Gemma 4"] },
   {
     src: "/badge-kimi-logo.png",
     alt: "Moonshot",

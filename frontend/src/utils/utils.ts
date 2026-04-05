@@ -93,6 +93,14 @@ export function aliasModelName(modelName: string | undefined): string {
     return "kimi-k2-5";
   }
 
+  if (modelName === "gemma-3-27b" || modelName === "leon-se/gemma-3-27b-it-fp8-dynamic") {
+    return "gemma4-31b";
+  }
+
+  if (modelName === "deepseek-r1-0528") {
+    return "kimi-k2-5";
+  }
+
   // Alias kimi-k2 (old thinking model) to kimi-k2-5
   if (modelName === "kimi-k2" || modelName === "kimi-k2-thinking") {
     return "kimi-k2-5";
