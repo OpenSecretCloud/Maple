@@ -114,6 +114,18 @@ export function Footer() {
             >
               About
             </Link>
+            <Link
+              to="/privacy"
+              className="text-[hsl(var(--marketing-text-muted))] hover:text-foreground transition-colors"
+            >
+              Privacy Policy
+            </Link>
+            <Link
+              to="/terms"
+              className="text-[hsl(var(--marketing-text-muted))] hover:text-foreground transition-colors"
+            >
+              Terms of Service
+            </Link>
           </div>
         </div>
 
@@ -132,15 +144,7 @@ export function Footer() {
               />
             )}
             <p className="text-[hsl(var(--marketing-text-muted))]/50 font-light">
-              © {new Date().getFullYear()} Maple AI. All rights reserved. Powered by{" "}
-              <a
-                href="https://opensecret.cloud"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-[hsl(var(--purple))] hover:text-[hsl(var(--purple))]/80 transition-colors"
-              >
-                OpenSecret
-              </a>
+              © {new Date().getFullYear()} Maple Privacy Labs Inc. All rights reserved.
             </p>
           </div>
         </div>
