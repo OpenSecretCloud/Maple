@@ -7,6 +7,7 @@ import { routeTree } from "./routeTree.gen";
 import { useOpenSecret, OpenSecretProvider } from "@opensecret/react";
 import { OpenAIProvider } from "./ai/OpenAIContext";
 import { LocalStateProvider } from "./state/LocalStateContext";
+import { ProjectsProvider } from "./state/ProjectsContext";
 import { ErrorFallback } from "./components/ErrorFallback";
 import { NotFoundFallback } from "./components/NotFoundFallback";
 import { BillingServiceProvider } from "./components/BillingServiceProvider";
@@ -96,6 +97,7 @@ export default function App() {
         }}
       >
         <LocalStateProvider>
+          <ProjectsProvider>
           <OpenAIProvider>
             <QueryClientProvider client={queryClient}>
               <TooltipProvider>
@@ -110,6 +112,7 @@ export default function App() {
               </TooltipProvider>
             </QueryClientProvider>
           </OpenAIProvider>
+          </ProjectsProvider>
         </LocalStateProvider>
       </OpenSecretProvider>
     </NotificationProvider>

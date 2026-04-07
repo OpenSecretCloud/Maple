@@ -29,6 +29,7 @@ import { Route as VerifyCodeImport } from './routes/verify.$code'
 import { Route as PasswordResetConfirmImport } from './routes/password-reset.confirm'
 import { Route as TeamInviteInviteIdImport } from './routes/team.invite.$inviteId'
 import { Route as AuthProviderCallbackImport } from './routes/auth.$provider.callback'
+import { Route as AuthProjectProjectIdImport } from './routes/_auth.project.$projectId'
 import { Route as AuthChatChatIdImport } from './routes/_auth.chat.$chatId'
 
 // Create/Update Routes
@@ -138,6 +139,12 @@ const AuthProviderCallbackRoute = AuthProviderCallbackImport.update({
   id: '/auth/$provider/callback',
   path: '/auth/$provider/callback',
   getParentRoute: () => rootRoute,
+} as any)
+
+const AuthProjectProjectIdRoute = AuthProjectProjectIdImport.update({
+  id: '/project/$projectId',
+  path: '/project/$projectId',
+  getParentRoute: () => AuthRoute,
 } as any)
 
 const AuthChatChatIdRoute = AuthChatChatIdImport.update({
@@ -269,6 +276,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthChatChatIdImport
       parentRoute: typeof AuthImport
     }
+    '/_auth/project/$projectId': {
+      id: '/_auth/project/$projectId'
+      path: '/project/$projectId'
+      fullPath: '/project/$projectId'
+      preLoaderRoute: typeof AuthProjectProjectIdImport
+      parentRoute: typeof AuthImport
+    }
     '/auth/$provider/callback': {
       id: '/auth/$provider/callback'
       path: '/auth/$provider/callback'
@@ -290,10 +304,12 @@ declare module '@tanstack/react-router' {
 
 interface AuthRouteChildren {
   AuthChatChatIdRoute: typeof AuthChatChatIdRoute
+  AuthProjectProjectIdRoute: typeof AuthProjectProjectIdRoute
 }
 
 const AuthRouteChildren: AuthRouteChildren = {
   AuthChatChatIdRoute: AuthChatChatIdRoute,
+  AuthProjectProjectIdRoute: AuthProjectProjectIdRoute,
 }
 
 const AuthRouteWithChildren = AuthRoute._addFileChildren(AuthRouteChildren)
@@ -328,6 +344,7 @@ export interface FileRoutesByFullPath {
   '/password-reset/confirm': typeof PasswordResetConfirmRoute
   '/verify/$code': typeof VerifyCodeRoute
   '/chat/$chatId': typeof AuthChatChatIdRoute
+  '/project/$projectId': typeof AuthProjectProjectIdRoute
   '/auth/$provider/callback': typeof AuthProviderCallbackRoute
   '/team/invite/$inviteId': typeof TeamInviteInviteIdRoute
 }
@@ -350,6 +367,7 @@ export interface FileRoutesByTo {
   '/password-reset/confirm': typeof PasswordResetConfirmRoute
   '/verify/$code': typeof VerifyCodeRoute
   '/chat/$chatId': typeof AuthChatChatIdRoute
+  '/project/$projectId': typeof AuthProjectProjectIdRoute
   '/auth/$provider/callback': typeof AuthProviderCallbackRoute
   '/team/invite/$inviteId': typeof TeamInviteInviteIdRoute
 }
@@ -373,6 +391,7 @@ export interface FileRoutesById {
   '/password-reset/confirm': typeof PasswordResetConfirmRoute
   '/verify/$code': typeof VerifyCodeRoute
   '/_auth/chat/$chatId': typeof AuthChatChatIdRoute
+  '/_auth/project/$projectId': typeof AuthProjectProjectIdRoute
   '/auth/$provider/callback': typeof AuthProviderCallbackRoute
   '/team/invite/$inviteId': typeof TeamInviteInviteIdRoute
 }
@@ -397,6 +416,7 @@ export interface FileRouteTypes {
     | '/password-reset/confirm'
     | '/verify/$code'
     | '/chat/$chatId'
+    | '/project/$projectId'
     | '/auth/$provider/callback'
     | '/team/invite/$inviteId'
   fileRoutesByTo: FileRoutesByTo
@@ -418,6 +438,7 @@ export interface FileRouteTypes {
     | '/password-reset/confirm'
     | '/verify/$code'
     | '/chat/$chatId'
+    | '/project/$projectId'
     | '/auth/$provider/callback'
     | '/team/invite/$inviteId'
   id:
@@ -439,6 +460,7 @@ export interface FileRouteTypes {
     | '/password-reset/confirm'
     | '/verify/$code'
     | '/_auth/chat/$chatId'
+    | '/_auth/project/$projectId'
     | '/auth/$provider/callback'
     | '/team/invite/$inviteId'
   fileRoutesById: FileRoutesById
@@ -519,7 +541,8 @@ export const routeTree = rootRoute
     "/_auth": {
       "filePath": "_auth.tsx",
       "children": [
-        "/_auth/chat/$chatId"
+        "/_auth/chat/$chatId",
+        "/_auth/project/$projectId"
       ]
     },
     "/about": {
@@ -570,6 +593,10 @@ export const routeTree = rootRoute
     },
     "/_auth/chat/$chatId": {
       "filePath": "_auth.chat.$chatId.tsx",
+      "parent": "/_auth"
+    },
+    "/_auth/project/$projectId": {
+      "filePath": "_auth.project.$projectId.tsx",
       "parent": "/_auth"
     },
     "/auth/$provider/callback": {
