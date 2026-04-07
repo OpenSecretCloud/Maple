@@ -12,7 +12,9 @@
 
 import { Route as rootRoute } from './routes/__root'
 import { Route as TeamsImport } from './routes/teams'
+import { Route as SolutionsImport } from './routes/solutions'
 import { Route as SignupImport } from './routes/signup'
+import { Route as ResearchImport } from './routes/research'
 import { Route as RedeemImport } from './routes/redeem'
 import { Route as ProofImport } from './routes/proof'
 import { Route as PricingImport } from './routes/pricing'
@@ -22,10 +24,17 @@ import { Route as PasswordResetImport } from './routes/password-reset'
 import { Route as LoginImport } from './routes/login'
 import { Route as DownloadsImport } from './routes/downloads'
 import { Route as DesktopAuthImport } from './routes/desktop-auth'
+import { Route as AgentImport } from './routes/agent'
 import { Route as AboutImport } from './routes/about'
 import { Route as AuthImport } from './routes/_auth'
 import { Route as IndexImport } from './routes/index'
 import { Route as VerifyCodeImport } from './routes/verify.$code'
+import { Route as SolutionsTherapyImport } from './routes/solutions.therapy'
+import { Route as SolutionsTeamsImport } from './routes/solutions.teams'
+import { Route as SolutionsLawyersImport } from './routes/solutions.lawyers'
+import { Route as SolutionsFinanceImport } from './routes/solutions.finance'
+import { Route as SolutionsDevelopersImport } from './routes/solutions.developers'
+import { Route as SolutionsAccountantsImport } from './routes/solutions.accountants'
 import { Route as PasswordResetConfirmImport } from './routes/password-reset.confirm'
 import { Route as TeamInviteInviteIdImport } from './routes/team.invite.$inviteId'
 import { Route as AuthProviderCallbackImport } from './routes/auth.$provider.callback'
@@ -39,9 +48,21 @@ const TeamsRoute = TeamsImport.update({
   getParentRoute: () => rootRoute,
 } as any)
 
+const SolutionsRoute = SolutionsImport.update({
+  id: '/solutions',
+  path: '/solutions',
+  getParentRoute: () => rootRoute,
+} as any)
+
 const SignupRoute = SignupImport.update({
   id: '/signup',
   path: '/signup',
+  getParentRoute: () => rootRoute,
+} as any)
+
+const ResearchRoute = ResearchImport.update({
+  id: '/research',
+  path: '/research',
   getParentRoute: () => rootRoute,
 } as any)
 
@@ -99,6 +120,12 @@ const DesktopAuthRoute = DesktopAuthImport.update({
   getParentRoute: () => rootRoute,
 } as any)
 
+const AgentRoute = AgentImport.update({
+  id: '/agent',
+  path: '/agent',
+  getParentRoute: () => rootRoute,
+} as any)
+
 const AboutRoute = AboutImport.update({
   id: '/about',
   path: '/about',
@@ -120,6 +147,42 @@ const VerifyCodeRoute = VerifyCodeImport.update({
   id: '/verify/$code',
   path: '/verify/$code',
   getParentRoute: () => rootRoute,
+} as any)
+
+const SolutionsTherapyRoute = SolutionsTherapyImport.update({
+  id: '/therapy',
+  path: '/therapy',
+  getParentRoute: () => SolutionsRoute,
+} as any)
+
+const SolutionsTeamsRoute = SolutionsTeamsImport.update({
+  id: '/teams',
+  path: '/teams',
+  getParentRoute: () => SolutionsRoute,
+} as any)
+
+const SolutionsLawyersRoute = SolutionsLawyersImport.update({
+  id: '/lawyers',
+  path: '/lawyers',
+  getParentRoute: () => SolutionsRoute,
+} as any)
+
+const SolutionsFinanceRoute = SolutionsFinanceImport.update({
+  id: '/finance',
+  path: '/finance',
+  getParentRoute: () => SolutionsRoute,
+} as any)
+
+const SolutionsDevelopersRoute = SolutionsDevelopersImport.update({
+  id: '/developers',
+  path: '/developers',
+  getParentRoute: () => SolutionsRoute,
+} as any)
+
+const SolutionsAccountantsRoute = SolutionsAccountantsImport.update({
+  id: '/accountants',
+  path: '/accountants',
+  getParentRoute: () => SolutionsRoute,
 } as any)
 
 const PasswordResetConfirmRoute = PasswordResetConfirmImport.update({
@@ -169,6 +232,13 @@ declare module '@tanstack/react-router' {
       path: '/about'
       fullPath: '/about'
       preLoaderRoute: typeof AboutImport
+      parentRoute: typeof rootRoute
+    }
+    '/agent': {
+      id: '/agent'
+      path: '/agent'
+      fullPath: '/agent'
+      preLoaderRoute: typeof AgentImport
       parentRoute: typeof rootRoute
     }
     '/desktop-auth': {
@@ -234,11 +304,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof RedeemImport
       parentRoute: typeof rootRoute
     }
+    '/research': {
+      id: '/research'
+      path: '/research'
+      fullPath: '/research'
+      preLoaderRoute: typeof ResearchImport
+      parentRoute: typeof rootRoute
+    }
     '/signup': {
       id: '/signup'
       path: '/signup'
       fullPath: '/signup'
       preLoaderRoute: typeof SignupImport
+      parentRoute: typeof rootRoute
+    }
+    '/solutions': {
+      id: '/solutions'
+      path: '/solutions'
+      fullPath: '/solutions'
+      preLoaderRoute: typeof SolutionsImport
       parentRoute: typeof rootRoute
     }
     '/teams': {
@@ -254,6 +338,48 @@ declare module '@tanstack/react-router' {
       fullPath: '/password-reset/confirm'
       preLoaderRoute: typeof PasswordResetConfirmImport
       parentRoute: typeof PasswordResetImport
+    }
+    '/solutions/accountants': {
+      id: '/solutions/accountants'
+      path: '/accountants'
+      fullPath: '/solutions/accountants'
+      preLoaderRoute: typeof SolutionsAccountantsImport
+      parentRoute: typeof SolutionsImport
+    }
+    '/solutions/developers': {
+      id: '/solutions/developers'
+      path: '/developers'
+      fullPath: '/solutions/developers'
+      preLoaderRoute: typeof SolutionsDevelopersImport
+      parentRoute: typeof SolutionsImport
+    }
+    '/solutions/finance': {
+      id: '/solutions/finance'
+      path: '/finance'
+      fullPath: '/solutions/finance'
+      preLoaderRoute: typeof SolutionsFinanceImport
+      parentRoute: typeof SolutionsImport
+    }
+    '/solutions/lawyers': {
+      id: '/solutions/lawyers'
+      path: '/lawyers'
+      fullPath: '/solutions/lawyers'
+      preLoaderRoute: typeof SolutionsLawyersImport
+      parentRoute: typeof SolutionsImport
+    }
+    '/solutions/teams': {
+      id: '/solutions/teams'
+      path: '/teams'
+      fullPath: '/solutions/teams'
+      preLoaderRoute: typeof SolutionsTeamsImport
+      parentRoute: typeof SolutionsImport
+    }
+    '/solutions/therapy': {
+      id: '/solutions/therapy'
+      path: '/therapy'
+      fullPath: '/solutions/therapy'
+      preLoaderRoute: typeof SolutionsTherapyImport
+      parentRoute: typeof SolutionsImport
     }
     '/verify/$code': {
       id: '/verify/$code'
@@ -310,10 +436,33 @@ const PasswordResetRouteWithChildren = PasswordResetRoute._addFileChildren(
   PasswordResetRouteChildren,
 )
 
+interface SolutionsRouteChildren {
+  SolutionsAccountantsRoute: typeof SolutionsAccountantsRoute
+  SolutionsDevelopersRoute: typeof SolutionsDevelopersRoute
+  SolutionsFinanceRoute: typeof SolutionsFinanceRoute
+  SolutionsLawyersRoute: typeof SolutionsLawyersRoute
+  SolutionsTeamsRoute: typeof SolutionsTeamsRoute
+  SolutionsTherapyRoute: typeof SolutionsTherapyRoute
+}
+
+const SolutionsRouteChildren: SolutionsRouteChildren = {
+  SolutionsAccountantsRoute: SolutionsAccountantsRoute,
+  SolutionsDevelopersRoute: SolutionsDevelopersRoute,
+  SolutionsFinanceRoute: SolutionsFinanceRoute,
+  SolutionsLawyersRoute: SolutionsLawyersRoute,
+  SolutionsTeamsRoute: SolutionsTeamsRoute,
+  SolutionsTherapyRoute: SolutionsTherapyRoute,
+}
+
+const SolutionsRouteWithChildren = SolutionsRoute._addFileChildren(
+  SolutionsRouteChildren,
+)
+
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '': typeof AuthRouteWithChildren
   '/about': typeof AboutRoute
+  '/agent': typeof AgentRoute
   '/desktop-auth': typeof DesktopAuthRoute
   '/downloads': typeof DownloadsRoute
   '/login': typeof LoginRoute
@@ -323,9 +472,17 @@ export interface FileRoutesByFullPath {
   '/pricing': typeof PricingRoute
   '/proof': typeof ProofRoute
   '/redeem': typeof RedeemRoute
+  '/research': typeof ResearchRoute
   '/signup': typeof SignupRoute
+  '/solutions': typeof SolutionsRouteWithChildren
   '/teams': typeof TeamsRoute
   '/password-reset/confirm': typeof PasswordResetConfirmRoute
+  '/solutions/accountants': typeof SolutionsAccountantsRoute
+  '/solutions/developers': typeof SolutionsDevelopersRoute
+  '/solutions/finance': typeof SolutionsFinanceRoute
+  '/solutions/lawyers': typeof SolutionsLawyersRoute
+  '/solutions/teams': typeof SolutionsTeamsRoute
+  '/solutions/therapy': typeof SolutionsTherapyRoute
   '/verify/$code': typeof VerifyCodeRoute
   '/chat/$chatId': typeof AuthChatChatIdRoute
   '/auth/$provider/callback': typeof AuthProviderCallbackRoute
@@ -336,6 +493,7 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '': typeof AuthRouteWithChildren
   '/about': typeof AboutRoute
+  '/agent': typeof AgentRoute
   '/desktop-auth': typeof DesktopAuthRoute
   '/downloads': typeof DownloadsRoute
   '/login': typeof LoginRoute
@@ -345,9 +503,17 @@ export interface FileRoutesByTo {
   '/pricing': typeof PricingRoute
   '/proof': typeof ProofRoute
   '/redeem': typeof RedeemRoute
+  '/research': typeof ResearchRoute
   '/signup': typeof SignupRoute
+  '/solutions': typeof SolutionsRouteWithChildren
   '/teams': typeof TeamsRoute
   '/password-reset/confirm': typeof PasswordResetConfirmRoute
+  '/solutions/accountants': typeof SolutionsAccountantsRoute
+  '/solutions/developers': typeof SolutionsDevelopersRoute
+  '/solutions/finance': typeof SolutionsFinanceRoute
+  '/solutions/lawyers': typeof SolutionsLawyersRoute
+  '/solutions/teams': typeof SolutionsTeamsRoute
+  '/solutions/therapy': typeof SolutionsTherapyRoute
   '/verify/$code': typeof VerifyCodeRoute
   '/chat/$chatId': typeof AuthChatChatIdRoute
   '/auth/$provider/callback': typeof AuthProviderCallbackRoute
@@ -359,6 +525,7 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/_auth': typeof AuthRouteWithChildren
   '/about': typeof AboutRoute
+  '/agent': typeof AgentRoute
   '/desktop-auth': typeof DesktopAuthRoute
   '/downloads': typeof DownloadsRoute
   '/login': typeof LoginRoute
@@ -368,9 +535,17 @@ export interface FileRoutesById {
   '/pricing': typeof PricingRoute
   '/proof': typeof ProofRoute
   '/redeem': typeof RedeemRoute
+  '/research': typeof ResearchRoute
   '/signup': typeof SignupRoute
+  '/solutions': typeof SolutionsRouteWithChildren
   '/teams': typeof TeamsRoute
   '/password-reset/confirm': typeof PasswordResetConfirmRoute
+  '/solutions/accountants': typeof SolutionsAccountantsRoute
+  '/solutions/developers': typeof SolutionsDevelopersRoute
+  '/solutions/finance': typeof SolutionsFinanceRoute
+  '/solutions/lawyers': typeof SolutionsLawyersRoute
+  '/solutions/teams': typeof SolutionsTeamsRoute
+  '/solutions/therapy': typeof SolutionsTherapyRoute
   '/verify/$code': typeof VerifyCodeRoute
   '/_auth/chat/$chatId': typeof AuthChatChatIdRoute
   '/auth/$provider/callback': typeof AuthProviderCallbackRoute
@@ -383,6 +558,7 @@ export interface FileRouteTypes {
     | '/'
     | ''
     | '/about'
+    | '/agent'
     | '/desktop-auth'
     | '/downloads'
     | '/login'
@@ -392,9 +568,17 @@ export interface FileRouteTypes {
     | '/pricing'
     | '/proof'
     | '/redeem'
+    | '/research'
     | '/signup'
+    | '/solutions'
     | '/teams'
     | '/password-reset/confirm'
+    | '/solutions/accountants'
+    | '/solutions/developers'
+    | '/solutions/finance'
+    | '/solutions/lawyers'
+    | '/solutions/teams'
+    | '/solutions/therapy'
     | '/verify/$code'
     | '/chat/$chatId'
     | '/auth/$provider/callback'
@@ -404,6 +588,7 @@ export interface FileRouteTypes {
     | '/'
     | ''
     | '/about'
+    | '/agent'
     | '/desktop-auth'
     | '/downloads'
     | '/login'
@@ -413,9 +598,17 @@ export interface FileRouteTypes {
     | '/pricing'
     | '/proof'
     | '/redeem'
+    | '/research'
     | '/signup'
+    | '/solutions'
     | '/teams'
     | '/password-reset/confirm'
+    | '/solutions/accountants'
+    | '/solutions/developers'
+    | '/solutions/finance'
+    | '/solutions/lawyers'
+    | '/solutions/teams'
+    | '/solutions/therapy'
     | '/verify/$code'
     | '/chat/$chatId'
     | '/auth/$provider/callback'
@@ -425,6 +618,7 @@ export interface FileRouteTypes {
     | '/'
     | '/_auth'
     | '/about'
+    | '/agent'
     | '/desktop-auth'
     | '/downloads'
     | '/login'
@@ -434,9 +628,17 @@ export interface FileRouteTypes {
     | '/pricing'
     | '/proof'
     | '/redeem'
+    | '/research'
     | '/signup'
+    | '/solutions'
     | '/teams'
     | '/password-reset/confirm'
+    | '/solutions/accountants'
+    | '/solutions/developers'
+    | '/solutions/finance'
+    | '/solutions/lawyers'
+    | '/solutions/teams'
+    | '/solutions/therapy'
     | '/verify/$code'
     | '/_auth/chat/$chatId'
     | '/auth/$provider/callback'
@@ -448,6 +650,7 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AuthRoute: typeof AuthRouteWithChildren
   AboutRoute: typeof AboutRoute
+  AgentRoute: typeof AgentRoute
   DesktopAuthRoute: typeof DesktopAuthRoute
   DownloadsRoute: typeof DownloadsRoute
   LoginRoute: typeof LoginRoute
@@ -457,7 +660,9 @@ export interface RootRouteChildren {
   PricingRoute: typeof PricingRoute
   ProofRoute: typeof ProofRoute
   RedeemRoute: typeof RedeemRoute
+  ResearchRoute: typeof ResearchRoute
   SignupRoute: typeof SignupRoute
+  SolutionsRoute: typeof SolutionsRouteWithChildren
   TeamsRoute: typeof TeamsRoute
   VerifyCodeRoute: typeof VerifyCodeRoute
   AuthProviderCallbackRoute: typeof AuthProviderCallbackRoute
@@ -468,6 +673,7 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AuthRoute: AuthRouteWithChildren,
   AboutRoute: AboutRoute,
+  AgentRoute: AgentRoute,
   DesktopAuthRoute: DesktopAuthRoute,
   DownloadsRoute: DownloadsRoute,
   LoginRoute: LoginRoute,
@@ -477,7 +683,9 @@ const rootRouteChildren: RootRouteChildren = {
   PricingRoute: PricingRoute,
   ProofRoute: ProofRoute,
   RedeemRoute: RedeemRoute,
+  ResearchRoute: ResearchRoute,
   SignupRoute: SignupRoute,
+  SolutionsRoute: SolutionsRouteWithChildren,
   TeamsRoute: TeamsRoute,
   VerifyCodeRoute: VerifyCodeRoute,
   AuthProviderCallbackRoute: AuthProviderCallbackRoute,
@@ -497,6 +705,7 @@ export const routeTree = rootRoute
         "/",
         "/_auth",
         "/about",
+        "/agent",
         "/desktop-auth",
         "/downloads",
         "/login",
@@ -506,7 +715,9 @@ export const routeTree = rootRoute
         "/pricing",
         "/proof",
         "/redeem",
+        "/research",
         "/signup",
+        "/solutions",
         "/teams",
         "/verify/$code",
         "/auth/$provider/callback",
@@ -524,6 +735,9 @@ export const routeTree = rootRoute
     },
     "/about": {
       "filePath": "about.tsx"
+    },
+    "/agent": {
+      "filePath": "agent.tsx"
     },
     "/desktop-auth": {
       "filePath": "desktop-auth.tsx"
@@ -555,8 +769,22 @@ export const routeTree = rootRoute
     "/redeem": {
       "filePath": "redeem.tsx"
     },
+    "/research": {
+      "filePath": "research.tsx"
+    },
     "/signup": {
       "filePath": "signup.tsx"
+    },
+    "/solutions": {
+      "filePath": "solutions.tsx",
+      "children": [
+        "/solutions/accountants",
+        "/solutions/developers",
+        "/solutions/finance",
+        "/solutions/lawyers",
+        "/solutions/teams",
+        "/solutions/therapy"
+      ]
     },
     "/teams": {
       "filePath": "teams.tsx"
@@ -564,6 +792,30 @@ export const routeTree = rootRoute
     "/password-reset/confirm": {
       "filePath": "password-reset.confirm.tsx",
       "parent": "/password-reset"
+    },
+    "/solutions/accountants": {
+      "filePath": "solutions.accountants.tsx",
+      "parent": "/solutions"
+    },
+    "/solutions/developers": {
+      "filePath": "solutions.developers.tsx",
+      "parent": "/solutions"
+    },
+    "/solutions/finance": {
+      "filePath": "solutions.finance.tsx",
+      "parent": "/solutions"
+    },
+    "/solutions/lawyers": {
+      "filePath": "solutions.lawyers.tsx",
+      "parent": "/solutions"
+    },
+    "/solutions/teams": {
+      "filePath": "solutions.teams.tsx",
+      "parent": "/solutions"
+    },
+    "/solutions/therapy": {
+      "filePath": "solutions.therapy.tsx",
+      "parent": "/solutions"
     },
     "/verify/$code": {
       "filePath": "verify.$code.tsx"

@@ -1,18 +1,11 @@
-import {
-  Search,
-  SquarePenIcon,
-  PanelRightClose,
-  PanelRightOpen,
-  XCircle,
-  Trash2,
-  X
-} from "lucide-react";
+import { Search, SquarePenIcon, ArrowLeftFromLine, Menu, XCircle, Trash2, X } from "lucide-react";
 import { Button } from "./ui/button";
 import { useLocation, useRouter } from "@tanstack/react-router";
 import { ChatHistoryList } from "./ChatHistoryList";
 import { AccountMenu } from "./AccountMenu";
 import { useRef, useEffect, KeyboardEvent, useCallback, useLayoutEffect, useState } from "react";
 import { cn, useClickOutside, useIsMobile } from "@/utils/utils";
+import { MapleWordmark } from "@/components/MapleWordmark";
 import { Input } from "./ui/input";
 import { useLocalState } from "@/state/useLocalState";
 
@@ -170,22 +163,38 @@ export function Sidebar({
         isOpen ? "block w-[280px]" : "hidden"
       ])}
     >
-      <div className="h-full border-r border-input dark:bg-background bg-[hsl(var(--footer-bg))] backdrop-blur-lg flex flex-col items-stretch w-[280px]">
-        {/* Header section matching UnifiedChat's h-14 */}
-        <div className="h-14 flex items-center px-4 md:py-2">
-          <div className="flex justify-between items-center gap-2 w-full">
-            <Button variant="outline" size="icon" className="h-9 w-9" onClick={onToggle}>
-              <PanelRightOpen className="h-4 w-4" />
-            </Button>
-            <Button
-              variant="outline"
-              size="icon"
-              className="flex-1 gap-2 h-9 md:h-10"
+      <div className="flex h-full w-[280px] flex-col items-stretch border-r border-border/20 bg-muted backdrop-blur-lg dark:bg-[hsl(var(--sidebar))]">
+        {/* Header section */}
+        <div className="flex flex-col gap-2 pt-3 pb-2">
+          <div className="flex items-center pl-4 pr-[8px]">
+            <div className="min-w-0 flex-1">
+              <MapleWordmark className="h-4 w-auto" />
+            </div>
+            <button
+              type="button"
+              className="flex h-9 w-9 shrink-0 items-center justify-center text-foreground transition-colors hover:text-foreground/70"
+              onClick={onToggle}
+              aria-label="Close sidebar"
+            >
+              <ArrowLeftFromLine className="h-4 w-4" />
+            </button>
+          </div>
+          <div className="flex flex-col gap-2 px-4">
+            <button
+              className="flex w-full items-center justify-start gap-2 py-1.5 pr-1 pl-0 text-sm text-foreground hover:text-foreground/70 transition-colors"
               onClick={addChat}
             >
               <SquarePenIcon className="h-4 w-4" />
-              <span className="hidden md:block">New Chat</span>
-            </Button>
+              New Chat
+            </button>
+            <button
+              className="flex w-full items-center justify-start gap-2 py-1.5 pr-1 pl-0 text-sm text-foreground hover:text-foreground/70 transition-colors"
+              onClick={toggleSearch}
+              aria-label={isSearchVisible ? "Hide search" : "Search chat history"}
+            >
+              <Search className="h-4 w-4" />
+              Search
+            </button>
           </div>
         </div>
         <div className={`flex justify-between items-center px-4 ${isSelectionMode ? "mb-2" : ""}`}>
@@ -216,20 +225,7 @@ export function Sidebar({
                 Delete
               </Button>
             </>
-          ) : (
-            <>
-              <h2 className="font-semibold">History</h2>
-              <Button
-                variant="outline"
-                size="icon"
-                className="h-9 w-9"
-                onClick={toggleSearch}
-                aria-label={isSearchVisible ? "Hide search" : "Search chat history"}
-              >
-                <Search className="h-4 w-4" />
-              </Button>
-            </>
-          )}
+          ) : null}
         </div>
         {isSearchVisible && (
           <div className="relative transition-all duration-200 ease-in-out px-4">
@@ -237,7 +233,7 @@ export function Sidebar({
               ref={searchInputRef}
               type="text"
               placeholder="Search chat titles..."
-              className="pl-2 pr-8 h-9"
+              className="pl-4 pr-8 h-9 rounded-full"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               onKeyDown={handleKeyDown}
@@ -254,7 +250,15 @@ export function Sidebar({
             )}
           </div>
         )}
-        <nav ref={historyContainerRef} className="relative flex-1 overflow-y-auto px-4">
+        <div className="px-4 pt-3 pb-1 max-md:pr-2">
+          <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+            History
+          </span>
+        </div>
+        <nav
+          ref={historyContainerRef}
+          className="relative flex-1 overflow-y-auto pl-4 pr-2 md:px-4"
+        >
           <ChatHistoryList
             currentChatId={chatId}
             searchQuery={searchQuery}
@@ -266,7 +270,7 @@ export function Sidebar({
             containerRef={historyContainerRef}
           />
         </nav>
-        <div className="px-4 pb-4">
+        <div className="w-full px-4 pb-4">
           <AccountMenu />
         </div>
       </div>
@@ -276,8 +280,11 @@ export function Sidebar({
 
 export function SidebarToggle({ onToggle }: { onToggle: () => void }) {
   return (
-    <Button variant="outline" size="icon" className="h-9 w-9" onClick={onToggle}>
-      <PanelRightClose className="h-4 w-4" />
-    </Button>
+    <button
+      className="h-9 w-9 flex items-center justify-center text-foreground hover:text-foreground/70 transition-colors"
+      onClick={onToggle}
+    >
+      <Menu className="h-4 w-4" />
+    </button>
   );
 }

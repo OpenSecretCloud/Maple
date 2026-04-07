@@ -119,7 +119,7 @@ export function RecordingOverlay({
         `}
       </style>
 
-      <div className="w-full h-full rounded-lg bg-background/95 backdrop-blur-sm border border-primary/20 relative overflow-hidden flex flex-col items-center justify-center p-4">
+      <div className="relative flex h-full w-full flex-col items-center justify-center overflow-hidden rounded-2xl border border-primary/20 bg-background/95 p-4 backdrop-blur-sm">
         {/* Top buttons - Cancel on left, Send on right */}
         <div className="absolute top-3 left-3 right-3 flex justify-between">
           <Button

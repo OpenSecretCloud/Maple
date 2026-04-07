@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { createFileRoute } from "@tanstack/react-router";
-import { Check, Copy, UserIcon, ChevronDown, Bot, SquarePenIcon, Archive } from "lucide-react";
+import { Check, Copy, ChevronDown, Bot, SquarePenIcon, Archive } from "lucide-react";
 import { useLocalState } from "@/state/useLocalState";
 import { Markdown } from "@/components/markdown";
 import { Sidebar, SidebarToggle } from "@/components/Sidebar";
@@ -51,12 +51,9 @@ function renderContent(content: ArchivedMessage["content"], chatId: string) {
 
 function UserMessage({ message, chatId }: { message: ArchivedMessage; chatId: string }) {
   return (
-    <div className="flex flex-col p-4 rounded-lg bg-muted">
-      <div className="rounded-lg flex flex-col md:flex-row gap-4">
-        <div>
-          <UserIcon />
-        </div>
-        <div className="flex flex-col gap-2 min-w-0 flex-1 overflow-hidden">
+    <div className="flex justify-end">
+      <div className="max-w-[min(100%,42rem)] rounded-2xl border border-border bg-muted px-4 py-3 backdrop-blur-lg dark:bg-card">
+        <div className="prose prose-sm dark:prose-invert max-w-none text-left min-w-0 overflow-hidden">
           {renderContent(message.content, chatId)}
         </div>
       </div>
@@ -69,11 +66,18 @@ function AssistantMessage({ text, chatId }: { text: string; chatId: string }) {
 
   return (
     <div className="group flex flex-col p-4">
-      <div className="rounded-lg flex flex-col md:flex-row gap-4">
-        <div>
-          <Bot />
+      <div className="flex flex-row gap-3">
+        <div className="shrink-0">
+          <img
+            src="/m-avatar.svg"
+            alt=""
+            width={32}
+            height={32}
+            draggable={false}
+            className="h-8 w-8 select-none"
+          />
         </div>
-        <div className="flex flex-col gap-2 min-w-0 flex-1 overflow-hidden">
+        <div className="flex min-w-0 flex-1 flex-col gap-2 overflow-hidden">
           <Markdown content={text} loading={false} chatId={chatId} />
           <div className="flex gap-2 items-center">
             <Button
@@ -255,7 +259,7 @@ function ChatComponent() {
               <Button
                 variant="outline"
                 size="icon"
-                className="absolute right-4"
+                className="absolute right-4 border-0"
                 onClick={handleMobileNewChat}
                 aria-label="New chat"
               >

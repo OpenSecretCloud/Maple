@@ -46,7 +46,7 @@ function CTAButton({
       {primary && (
         <div className="absolute inset-0 rounded-lg overflow-hidden">
           <div
-            className="absolute inset-0 bg-gradient-to-r from-[hsl(var(--purple))]/0 via-[hsl(var(--primary-foreground))]/20 to-[hsl(var(--purple))]/0 opacity-50 animate-shimmer"
+            className="absolute inset-0 bg-gradient-to-r from-[hsl(var(--maple-primary))]/0 via-[hsl(var(--primary-foreground))]/20 to-[hsl(var(--maple-primary))]/0 opacity-50 animate-shimmer"
             style={{ transform: "translateX(-100%)" }}
           ></div>
         </div>
@@ -59,7 +59,7 @@ function FeatureCard({
   icon: Icon,
   title,
   description,
-  gradient = "from-[hsl(var(--purple))]/10 to-[hsl(var(--blue))]/10"
+  gradient = "from-[hsl(var(--maple-primary))]/10 to-[hsl(var(--blue))]/10"
 }: {
   icon: React.ElementType;
   title: string;
@@ -68,8 +68,8 @@ function FeatureCard({
 }) {
   return (
     <div className={`feature-card ${gradient}`}>
-      <div className="p-3 rounded-full bg-[hsl(var(--marketing-card))]/50 border border-[hsl(var(--purple))]/30 w-fit">
-        <Icon className="w-6 h-6 text-[hsl(var(--purple))]" />
+      <div className="p-3 rounded-full bg-[hsl(var(--marketing-card))]/50 border border-[hsl(var(--maple-primary))]/30 w-fit">
+        <Icon className="w-6 h-6 text-[hsl(var(--maple-primary))]" />
       </div>
       <h3 className="text-2xl font-medium text-foreground">{title}</h3>
       <p className="text-lg font-light text-[hsl(var(--marketing-text-muted))]">{description}</p>
@@ -134,15 +134,15 @@ function PricingTier({
 
   return (
     <div
-      className={`flex flex-col p-8 rounded-xl relative ${popular ? "border-2 border-[hsl(var(--purple))] bg-gradient-to-b from-[hsl(var(--marketing-card))] to-[hsl(var(--marketing-card))]/80 shadow-[0_0_30px_rgba(148,105,248,0.2)]" : "border border-[hsl(var(--marketing-card-border))] bg-[hsl(var(--marketing-card))]/50"}`}
+      className={`flex flex-col p-8 rounded-xl relative ${popular ? "border-2 border-[hsl(var(--maple-primary))] bg-gradient-to-b from-[hsl(var(--marketing-card))] to-[hsl(var(--marketing-card))]/80 shadow-[0_0_30px_rgba(var(--purple-rgb),0.2)]" : "border border-[hsl(var(--marketing-card-border))] bg-[hsl(var(--marketing-card))]/50"}`}
     >
       {popular && (
-        <div className="absolute -top-4 left-1/2 transform -translate-x-1/2 bg-[hsl(var(--purple))] text-[hsl(var(--marketing-card))] px-4 py-1 rounded-full text-sm font-medium text-center min-w-[110px] whitespace-normal">
+        <div className="absolute -top-4 left-1/2 transform -translate-x-1/2 bg-[hsl(var(--maple-primary))] text-[hsl(var(--marketing-card))] px-4 py-1 rounded-full text-sm font-medium text-center min-w-[110px] whitespace-normal">
           Most Popular
         </div>
       )}
       {showDiscount && (
-        <Badge className="absolute -top-3 right-4 bg-gradient-to-r from-pink-500 to-orange-500 text-white">
+        <Badge className="absolute -top-3 right-4 bg-gradient-to-r from-[hsl(var(--maple-primary))] to-[hsl(var(--maple-primary-strong))] text-[hsl(var(--maple-on-primary))]">
           {discountPercent}% OFF
         </Badge>
       )}
@@ -173,7 +173,7 @@ function PricingTier({
             {feature.text !== "" &&
               (feature.icon ||
                 (feature.included ? (
-                  <Check className="w-5 h-5 text-green-500 mt-0.5 flex-shrink-0" />
+                  <Check className="mt-0.5 h-5 w-5 flex-shrink-0 text-maple-success" />
                 ) : null))}
             <span className={`${feature.included ? "text-foreground/80" : "text-foreground/50"}`}>
               {feature.text}
@@ -186,10 +186,10 @@ function PricingTier({
         <button
           disabled={true}
           className="mt-auto py-3 px-6 rounded-lg text-center font-medium transition-all duration-300 
-            dark:bg-white/90 dark:text-black dark:hover:bg-[hsl(var(--purple))]/80 dark:hover:text-[hsl(var(--foreground))] dark:active:bg-white/80
-            bg-background text-foreground hover:bg-[hsl(var(--purple))] hover:text-[hsl(var(--foreground))] active:bg-background/80 
-            border border-[hsl(var(--purple))]/30 hover:border-[hsl(var(--purple))]
-            shadow-[0_0_15px_rgba(var(--purple-rgb),0.2)] hover:shadow-[0_0_25px_rgba(var(--purple-rgb),0.3)]
+            dark:bg-[hsl(var(--marketing-cta-invert-bg)/0.9)] dark:text-[hsl(var(--marketing-cta-invert-fg))] dark:hover:bg-[hsl(var(--maple-primary))]/80 dark:hover:text-[hsl(var(--foreground))] dark:active:bg-[hsl(var(--marketing-cta-invert-bg)/0.8)]
+            bg-background text-foreground hover:bg-[hsl(var(--maple-primary))] hover:text-[hsl(var(--foreground))] active:bg-background/80 
+            border border-[hsl(var(--maple-primary))]/30 hover:border-[hsl(var(--maple-primary))]
+            shadow-[0_0_15px_rgba(var(--maple-primary-rgb),0.2)] hover:shadow-[0_0_25px_rgba(var(--maple-primary-rgb),0.3)]
             opacity-50 cursor-not-allowed"
         >
           Coming Soon
@@ -202,10 +202,10 @@ function PricingTier({
             window.location.href = `/signup?next=/pricing&selected_plan=${productId}`;
           }}
           className="mt-auto py-3 px-6 rounded-lg text-center font-medium transition-all duration-300 
-              dark:bg-white/90 dark:text-black dark:hover:bg-[hsl(var(--purple))]/80 dark:hover:text-[hsl(var(--foreground))] dark:active:bg-white/80
-              bg-background text-foreground hover:bg-[hsl(var(--purple))] hover:text-[hsl(var(--foreground))] active:bg-background/80 
-              border border-[hsl(var(--purple))]/30 hover:border-[hsl(var(--purple))]
-              shadow-[0_0_15px_rgba(var(--purple-rgb),0.2)] hover:shadow-[0_0_25px_rgba(var(--purple-rgb),0.3)]"
+              dark:bg-[hsl(var(--marketing-cta-invert-bg)/0.9)] dark:text-[hsl(var(--marketing-cta-invert-fg))] dark:hover:bg-[hsl(var(--maple-primary))]/80 dark:hover:text-[hsl(var(--foreground))] dark:active:bg-[hsl(var(--marketing-cta-invert-bg)/0.8)]
+              bg-background text-foreground hover:bg-[hsl(var(--maple-primary))] hover:text-[hsl(var(--foreground))] active:bg-background/80 
+              border border-[hsl(var(--maple-primary))]/30 hover:border-[hsl(var(--maple-primary))]
+              shadow-[0_0_15px_rgba(var(--maple-primary-rgb),0.2)] hover:shadow-[0_0_25px_rgba(var(--maple-primary-rgb),0.3)]"
         >
           {ctaText}
         </button>
@@ -214,10 +214,10 @@ function PricingTier({
         <Link
           to="/signup"
           className="mt-auto py-3 px-6 rounded-lg text-center font-medium transition-all duration-300 
-              dark:bg-white/90 dark:text-black dark:hover:bg-[hsl(var(--purple))]/80 dark:hover:text-[hsl(var(--foreground))] dark:active:bg-white/80
-              bg-background text-foreground hover:bg-[hsl(var(--purple))] hover:text-[hsl(var(--foreground))] active:bg-background/80 
-              border border-[hsl(var(--purple))]/30 hover:border-[hsl(var(--purple))]
-              shadow-[0_0_15px_rgba(var(--purple-rgb),0.2)] hover:shadow-[0_0_25px_rgba(var(--purple-rgb),0.3)]"
+              dark:bg-[hsl(var(--marketing-cta-invert-bg)/0.9)] dark:text-[hsl(var(--marketing-cta-invert-fg))] dark:hover:bg-[hsl(var(--maple-primary))]/80 dark:hover:text-[hsl(var(--foreground))] dark:active:bg-[hsl(var(--marketing-cta-invert-bg)/0.8)]
+              bg-background text-foreground hover:bg-[hsl(var(--maple-primary))] hover:text-[hsl(var(--foreground))] active:bg-background/80 
+              border border-[hsl(var(--maple-primary))]/30 hover:border-[hsl(var(--maple-primary))]
+              shadow-[0_0_15px_rgba(var(--maple-primary-rgb),0.2)] hover:shadow-[0_0_25px_rgba(var(--maple-primary-rgb),0.3)]"
         >
           {ctaText}
         </Link>
@@ -276,7 +276,7 @@ export function Marketing() {
               <h1 className="text-6xl font-light tracking-tight mb-4">
                 <span
                   className="dark:bg-gradient-to-r dark:from-foreground dark:to-[hsl(var(--blue))]
-                             bg-gradient-to-r from-foreground from-5% via-[hsl(var(--purple))]/90 via-50% to-[hsl(var(--purple))]
+                             bg-gradient-to-r from-foreground from-5% via-[hsl(var(--maple-primary))]/90 via-50% to-[hsl(var(--maple-primary))]
                              text-transparent bg-clip-text"
                 >
                   Private AI Chat
@@ -328,8 +328,8 @@ export function Marketing() {
             </div>
           </div>
           <div
-            className="relative dark:bg-gradient-to-br dark:from-[hsl(var(--purple))]/10 dark:to-[hsl(var(--blue))]/10 
-               bg-gradient-to-br from-[hsl(var(--purple))]/5 to-[hsl(var(--purple))]/20 rounded-2xl p-1"
+            className="relative dark:bg-gradient-to-br dark:from-[hsl(var(--maple-primary))]/10 dark:to-[hsl(var(--blue))]/10 
+               bg-gradient-to-br from-[hsl(var(--maple-primary))]/5 to-[hsl(var(--maple-primary))]/20 rounded-2xl p-1"
           >
             <div className="bg-[hsl(var(--marketing-card))]/80 backdrop-blur-sm rounded-xl overflow-hidden border border-[hsl(var(--marketing-card-border))]">
               <div className="bg-[hsl(var(--marketing-card))] p-3 border-b border-[hsl(var(--marketing-card-border))] flex items-center">
@@ -352,7 +352,7 @@ export function Marketing() {
                   </div>
                 </div>
                 <div className="flex gap-3 justify-end">
-                  <div className="bg-[hsl(var(--purple))]/20 p-3 rounded-xl rounded-tr-none text-foreground text-sm max-w-xs">
+                  <div className="bg-[hsl(var(--maple-primary))]/20 p-3 rounded-xl rounded-tr-none text-foreground text-sm max-w-xs">
                     I need to discuss some sensitive information. Is this really secure?
                   </div>
                   <div className="w-8 h-8 rounded-full bg-foreground/10 flex items-center justify-center text-background flex-shrink-0">
@@ -371,7 +371,7 @@ export function Marketing() {
                 </div>
               </div>
             </div>
-            <div className="absolute -bottom-3 -right-3 bg-[hsl(var(--purple))] text-[hsl(var(--marketing-card))] p-2 rounded-lg font-medium text-sm flex items-center gap-1.5">
+            <div className="absolute -bottom-3 -right-3 bg-[hsl(var(--maple-primary))] text-[hsl(var(--marketing-card))] p-2 rounded-lg font-medium text-sm flex items-center gap-1.5">
               <Lock className="w-4 h-4" /> End-to-End Encrypted
             </div>
           </div>
@@ -380,9 +380,8 @@ export function Marketing() {
         <div className="flex flex-col sm:flex-row justify-center items-center gap-4 mt-8">
           <Link
             to="/downloads"
-            className="inline-flex items-center gap-2 h-10 px-6 rounded-lg text-center font-medium transition-all duration-300
-              bg-black text-white hover:bg-black/90 active:bg-black/80
-              border border-[hsl(var(--marketing-text-muted))]"
+            className="inline-flex h-10 items-center gap-2 rounded-lg border border-[hsl(var(--marketing-text-muted))] px-6 text-center font-medium transition-all duration-300
+              bg-marketingNav-bg text-marketingNav-fg hover:bg-marketingNav-bg/90 active:bg-marketingNav-bg/80"
           >
             <Laptop className="h-5 w-5" />
             <span>Desktop</span>
@@ -422,7 +421,7 @@ export function Marketing() {
           <div className="text-center mb-12">
             <h2 className="text-4xl font-light mb-4">
               Powerful AI models.{" "}
-              <span className="text-[hsl(var(--purple))] font-medium">No data sharing.</span>
+              <span className="text-[hsl(var(--maple-primary))] font-medium">No data sharing.</span>
             </h2>
             <p className="text-xl text-[hsl(var(--marketing-text-muted))] max-w-2xl mx-auto">
               We use full-size open models from the biggest providers.
@@ -464,7 +463,8 @@ export function Marketing() {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="text-center mb-16">
             <h2 className="text-4xl font-light mb-4">
-              Privacy at <span className="text-[hsl(var(--purple))] font-medium">Every Layer</span>
+              Privacy at{" "}
+              <span className="text-[hsl(var(--maple-primary))] font-medium">Every Layer</span>
             </h2>
             <p className="text-xl text-[hsl(var(--marketing-text-muted))] max-w-2xl mx-auto">
               Your security is our primary concern. We've engineered Maple to ensure your data
@@ -477,19 +477,19 @@ export function Marketing() {
               icon={Shield}
               title="Your Device"
               description="All communications are encrypted locally on your device before being transmitted, ensuring your data is secured from the start."
-              gradient="from-[hsl(var(--purple))]/5 to-[hsl(var(--purple))]/10"
+              gradient="from-[hsl(var(--maple-primary))]/5 to-[hsl(var(--maple-primary))]/10"
             />
             <FeatureCard
               icon={Lock}
               title="Secure Server"
               description="Our servers can't read your data. We use secure enclaves in confidential computing environments to verify our infrastructure integrity."
-              gradient="dark:from-[hsl(var(--blue))]/10 dark:to-[hsl(var(--blue))]/5 from-[hsl(var(--purple))]/10 to-[hsl(var(--purple))]/20"
+              gradient="dark:from-[hsl(var(--blue))]/10 dark:to-[hsl(var(--blue))]/5 from-[hsl(var(--maple-primary))]/10 to-[hsl(var(--maple-primary))]/20"
             />
             <FeatureCard
               icon={Sparkles}
               title="AI Processing"
               description="Even during AI processing, your data remains encrypted. The entire pipeline through to the GPU is designed with privacy as the priority."
-              gradient="dark:from-foreground/10 dark:to-foreground/5 from-[hsl(var(--purple))]/20 to-[hsl(var(--purple))]/5"
+              gradient="dark:from-foreground/10 dark:to-foreground/5 from-[hsl(var(--maple-primary))]/20 to-[hsl(var(--maple-primary))]/5"
             />
           </div>
         </div>
@@ -502,7 +502,7 @@ export function Marketing() {
             <div>
               <h2 className="text-4xl font-light mb-6">
                 We{" "}
-                <span className="dark:text-[hsl(var(--blue))] text-[hsl(var(--purple))] font-medium">
+                <span className="dark:text-[hsl(var(--blue))] text-[hsl(var(--maple-primary))] font-medium">
                   Prove
                 </span>{" "}
                 Our Security
@@ -521,15 +521,15 @@ export function Marketing() {
               <Link
                 to="/proof"
                 className="dark:text-[hsl(var(--blue))] dark:hover:text-[hsl(var(--blue))]/80 
-                           text-[hsl(var(--purple))] hover:text-[hsl(var(--purple))]/80 
+                           text-[hsl(var(--maple-primary))] hover:text-[hsl(var(--maple-primary))]/80 
                            flex items-center gap-2 font-medium"
               >
                 Learn more about our verification system <ArrowRight className="h-4 w-4" />
               </Link>
             </div>
             <div
-              className="relative dark:bg-gradient-to-br dark:from-[hsl(var(--purple))]/10 dark:to-[hsl(var(--blue))]/10 
-                 bg-gradient-to-br from-[hsl(var(--purple))]/5 to-[hsl(var(--purple))]/20 rounded-2xl p-1"
+              className="relative dark:bg-gradient-to-br dark:from-[hsl(var(--maple-primary))]/10 dark:to-[hsl(var(--blue))]/10 
+                 bg-gradient-to-br from-[hsl(var(--maple-primary))]/5 to-[hsl(var(--maple-primary))]/20 rounded-2xl p-1"
             >
               <div className="bg-[hsl(var(--marketing-card))]/80 backdrop-blur-sm rounded-xl overflow-hidden border border-[hsl(var(--marketing-card-border))]">
                 {/* Header */}
@@ -546,22 +546,22 @@ export function Marketing() {
                     <div className="flex flex-col md:hidden items-center gap-8 w-full">
                       {/* Phone - Mobile */}
                       <div className="w-24 h-48 relative">
-                        <div className="absolute inset-0 bg-[hsl(var(--marketing-card-highlight))] border border-[hsl(var(--purple))]/30 rounded-2xl">
-                          <div className="m-2 bg-[hsl(var(--purple))]/10 rounded-lg border border-[hsl(var(--purple))]/30 h-[calc(100%-16px)]">
-                            <div className="h-2 w-8 bg-[hsl(var(--purple))]/20 rounded mx-auto mt-2"></div>
-                            <div className="h-2 w-12 bg-[hsl(var(--purple))]/20 rounded mx-auto mt-2"></div>
+                        <div className="absolute inset-0 bg-[hsl(var(--marketing-card-highlight))] border border-[hsl(var(--maple-primary))]/30 rounded-2xl">
+                          <div className="m-2 bg-[hsl(var(--maple-primary))]/10 rounded-lg border border-[hsl(var(--maple-primary))]/30 h-[calc(100%-16px)]">
+                            <div className="h-2 w-8 bg-[hsl(var(--maple-primary))]/20 rounded mx-auto mt-2"></div>
+                            <div className="h-2 w-12 bg-[hsl(var(--maple-primary))]/20 rounded mx-auto mt-2"></div>
                           </div>
                         </div>
-                        <div className="absolute -top-2 -right-2 dark:bg-[hsl(var(--blue))]/20 dark:border-[hsl(var(--blue))]/30 bg-[hsl(var(--purple))]/20 border-[hsl(var(--purple))]/30 p-2 rounded-lg border">
-                          <div className="w-4 h-3 border-2 dark:border-[hsl(var(--blue))] border-[hsl(var(--purple))] rounded-t-lg mx-auto"></div>
-                          <div className="w-6 h-5 dark:bg-[hsl(var(--blue))]/30 dark:border-[hsl(var(--blue))] bg-[hsl(var(--purple))]/30 border-2 border-[hsl(var(--purple))] rounded-lg -mt-0.5"></div>
+                        <div className="absolute -top-2 -right-2 dark:bg-[hsl(var(--blue))]/20 dark:border-[hsl(var(--blue))]/30 bg-[hsl(var(--maple-primary))]/20 border-[hsl(var(--maple-primary))]/30 p-2 rounded-lg border">
+                          <div className="w-4 h-3 border-2 dark:border-[hsl(var(--blue))] border-[hsl(var(--maple-primary))] rounded-t-lg mx-auto"></div>
+                          <div className="w-6 h-5 dark:bg-[hsl(var(--blue))]/30 dark:border-[hsl(var(--blue))] bg-[hsl(var(--maple-primary))]/30 border-2 border-[hsl(var(--maple-primary))] rounded-lg -mt-0.5"></div>
                         </div>
                       </div>
 
                       {/* Vertical Connection Line - Mobile */}
-                      <div className="h-16 w-px bg-[hsl(var(--purple))]/50 relative">
-                        <div className="absolute -top-1 left-1/2 -translate-x-1/2 w-2 h-2 border-t-2 border-l-2 border-[hsl(var(--purple))] transform rotate-45"></div>
-                        <div className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-2 h-2 border-b-2 border-r-2 border-[hsl(var(--purple))] transform rotate-45"></div>
+                      <div className="h-16 w-px bg-[hsl(var(--maple-primary))]/50 relative">
+                        <div className="absolute -top-1 left-1/2 -translate-x-1/2 w-2 h-2 border-t-2 border-l-2 border-[hsl(var(--maple-primary))] transform rotate-45"></div>
+                        <div className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-2 h-2 border-b-2 border-r-2 border-[hsl(var(--maple-primary))] transform rotate-45"></div>
                         <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 whitespace-nowrap text-xs text-foreground/40 ml-1">
                           Encrypted Connection
                         </div>
@@ -569,28 +569,28 @@ export function Marketing() {
 
                       {/* Server - Mobile */}
                       <div className="w-32 h-48 relative">
-                        <div className="absolute inset-0 bg-[hsl(var(--marketing-card-highlight))] border border-[hsl(var(--purple))]/30 rounded-lg">
-                          <div className="h-8 border-b border-[hsl(var(--purple))]/30 flex items-center justify-between px-3">
+                        <div className="absolute inset-0 bg-[hsl(var(--marketing-card-highlight))] border border-[hsl(var(--maple-primary))]/30 rounded-lg">
+                          <div className="h-8 border-b border-[hsl(var(--maple-primary))]/30 flex items-center justify-between px-3">
                             <div className="flex gap-1">
-                              <div className="w-2 h-2 rounded-full bg-[hsl(var(--purple))]/40"></div>
-                              <div className="w-2 h-2 rounded-full bg-[hsl(var(--purple))]/40"></div>
+                              <div className="w-2 h-2 rounded-full bg-[hsl(var(--maple-primary))]/40"></div>
+                              <div className="w-2 h-2 rounded-full bg-[hsl(var(--maple-primary))]/40"></div>
                             </div>
                           </div>
                           <div className="p-3 space-y-2">
-                            <div className="h-7 bg-[hsl(var(--purple))]/20 rounded border border-[hsl(var(--purple))]/30 flex items-center px-2">
-                              <div className="w-2 h-2 rounded-full bg-[hsl(var(--purple))]/40"></div>
+                            <div className="h-7 bg-[hsl(var(--maple-primary))]/20 rounded border border-[hsl(var(--maple-primary))]/30 flex items-center px-2">
+                              <div className="w-2 h-2 rounded-full bg-[hsl(var(--maple-primary))]/40"></div>
                             </div>
-                            <div className="h-7 bg-[hsl(var(--purple))]/20 rounded border border-[hsl(var(--purple))]/30 flex items-center px-2">
-                              <div className="w-2 h-2 rounded-full bg-[hsl(var(--purple))]/40"></div>
+                            <div className="h-7 bg-[hsl(var(--maple-primary))]/20 rounded border border-[hsl(var(--maple-primary))]/30 flex items-center px-2">
+                              <div className="w-2 h-2 rounded-full bg-[hsl(var(--maple-primary))]/40"></div>
                             </div>
-                            <div className="h-7 bg-[hsl(var(--purple))]/20 rounded border border-[hsl(var(--purple))]/30 flex items-center px-2">
-                              <div className="w-2 h-2 rounded-full bg-[hsl(var(--purple))]/40"></div>
+                            <div className="h-7 bg-[hsl(var(--maple-primary))]/20 rounded border border-[hsl(var(--maple-primary))]/30 flex items-center px-2">
+                              <div className="w-2 h-2 rounded-full bg-[hsl(var(--maple-primary))]/40"></div>
                             </div>
                           </div>
                         </div>
-                        <div className="absolute -top-2 -right-2 dark:bg-[hsl(var(--blue))]/20 dark:border-[hsl(var(--blue))]/30 bg-[hsl(var(--purple))]/20 border-[hsl(var(--purple))]/30 p-2 rounded-lg border">
-                          <div className="w-4 h-3 border-2 dark:border-[hsl(var(--blue))] border-[hsl(var(--purple))] rounded-t-lg mx-auto"></div>
-                          <div className="w-6 h-5 dark:bg-[hsl(var(--blue))]/30 dark:border-[hsl(var(--blue))] bg-[hsl(var(--purple))]/30 border-2 border-[hsl(var(--purple))] rounded-lg -mt-0.5"></div>
+                        <div className="absolute -top-2 -right-2 dark:bg-[hsl(var(--blue))]/20 dark:border-[hsl(var(--blue))]/30 bg-[hsl(var(--maple-primary))]/20 border-[hsl(var(--maple-primary))]/30 p-2 rounded-lg border">
+                          <div className="w-4 h-3 border-2 dark:border-[hsl(var(--blue))] border-[hsl(var(--maple-primary))] rounded-t-lg mx-auto"></div>
+                          <div className="w-6 h-5 dark:bg-[hsl(var(--blue))]/30 dark:border-[hsl(var(--blue))] bg-[hsl(var(--maple-primary))]/30 border-2 border-[hsl(var(--maple-primary))] rounded-lg -mt-0.5"></div>
                         </div>
                       </div>
                     </div>
@@ -600,23 +600,23 @@ export function Marketing() {
                       {/* Phone - Desktop */}
                       <div className="w-24 h-48 relative">
                         {/* Same phone content as mobile */}
-                        <div className="absolute inset-0 bg-[hsl(var(--marketing-card-highlight))] border border-[hsl(var(--purple))]/30 rounded-2xl">
-                          <div className="m-2 bg-[hsl(var(--purple))]/10 rounded-lg border border-[hsl(var(--purple))]/30 h-[calc(100%-16px)]">
-                            <div className="h-2 w-8 bg-[hsl(var(--purple))]/20 rounded mx-auto mt-2"></div>
-                            <div className="h-2 w-12 bg-[hsl(var(--purple))]/20 rounded mx-auto mt-2"></div>
+                        <div className="absolute inset-0 bg-[hsl(var(--marketing-card-highlight))] border border-[hsl(var(--maple-primary))]/30 rounded-2xl">
+                          <div className="m-2 bg-[hsl(var(--maple-primary))]/10 rounded-lg border border-[hsl(var(--maple-primary))]/30 h-[calc(100%-16px)]">
+                            <div className="h-2 w-8 bg-[hsl(var(--maple-primary))]/20 rounded mx-auto mt-2"></div>
+                            <div className="h-2 w-12 bg-[hsl(var(--maple-primary))]/20 rounded mx-auto mt-2"></div>
                           </div>
                         </div>
-                        <div className="absolute -top-2 -right-2 dark:bg-[hsl(var(--blue))]/20 dark:border-[hsl(var(--blue))]/30 bg-[hsl(var(--purple))]/20 border-[hsl(var(--purple))]/30 p-2 rounded-lg border">
-                          <div className="w-4 h-3 border-2 dark:border-[hsl(var(--blue))] border-[hsl(var(--purple))] rounded-t-lg mx-auto"></div>
-                          <div className="w-6 h-5 dark:bg-[hsl(var(--blue))]/30 dark:border-[hsl(var(--blue))] bg-[hsl(var(--purple))]/30 border-2 border-[hsl(var(--purple))] rounded-lg -mt-0.5"></div>
+                        <div className="absolute -top-2 -right-2 dark:bg-[hsl(var(--blue))]/20 dark:border-[hsl(var(--blue))]/30 bg-[hsl(var(--maple-primary))]/20 border-[hsl(var(--maple-primary))]/30 p-2 rounded-lg border">
+                          <div className="w-4 h-3 border-2 dark:border-[hsl(var(--blue))] border-[hsl(var(--maple-primary))] rounded-t-lg mx-auto"></div>
+                          <div className="w-6 h-5 dark:bg-[hsl(var(--blue))]/30 dark:border-[hsl(var(--blue))] bg-[hsl(var(--maple-primary))]/30 border-2 border-[hsl(var(--maple-primary))] rounded-lg -mt-0.5"></div>
                         </div>
                       </div>
 
                       {/* Horizontal Connection Line - Desktop */}
                       <div className="flex-1 mx-2 flex items-center justify-center">
-                        <div className="h-px w-4/5 bg-[hsl(var(--purple))]/50 relative">
-                          <div className="absolute left-0 top-1/2 -translate-y-1/2 w-2 h-2 border-t-2 border-l-2 border-[hsl(var(--purple))] transform -rotate-45"></div>
-                          <div className="absolute right-0 top-1/2 -translate-y-1/2 w-2 h-2 border-t-2 border-r-2 border-[hsl(var(--purple))] transform rotate-45"></div>
+                        <div className="h-px w-4/5 bg-[hsl(var(--maple-primary))]/50 relative">
+                          <div className="absolute left-0 top-1/2 -translate-y-1/2 w-2 h-2 border-t-2 border-l-2 border-[hsl(var(--maple-primary))] transform -rotate-45"></div>
+                          <div className="absolute right-0 top-1/2 -translate-y-1/2 w-2 h-2 border-t-2 border-r-2 border-[hsl(var(--maple-primary))] transform rotate-45"></div>
                           <div className="absolute -top-4 left-1/2 -translate-x-1/2 whitespace-nowrap text-xs text-foreground/40">
                             Encrypted Connection
                           </div>
@@ -626,28 +626,28 @@ export function Marketing() {
                       {/* Server - Desktop */}
                       <div className="w-32 h-48 relative">
                         {/* Same server content as mobile */}
-                        <div className="absolute inset-0 bg-[hsl(var(--marketing-card-highlight))] border border-[hsl(var(--purple))]/30 rounded-lg">
-                          <div className="h-8 border-b border-[hsl(var(--purple))]/30 flex items-center justify-between px-3">
+                        <div className="absolute inset-0 bg-[hsl(var(--marketing-card-highlight))] border border-[hsl(var(--maple-primary))]/30 rounded-lg">
+                          <div className="h-8 border-b border-[hsl(var(--maple-primary))]/30 flex items-center justify-between px-3">
                             <div className="flex gap-1">
-                              <div className="w-2 h-2 rounded-full bg-[hsl(var(--purple))]/40"></div>
-                              <div className="w-2 h-2 rounded-full bg-[hsl(var(--purple))]/40"></div>
+                              <div className="w-2 h-2 rounded-full bg-[hsl(var(--maple-primary))]/40"></div>
+                              <div className="w-2 h-2 rounded-full bg-[hsl(var(--maple-primary))]/40"></div>
                             </div>
                           </div>
                           <div className="p-3 space-y-2">
-                            <div className="h-7 bg-[hsl(var(--purple))]/20 rounded border border-[hsl(var(--purple))]/30 flex items-center px-2">
-                              <div className="w-2 h-2 rounded-full bg-[hsl(var(--purple))]/40"></div>
+                            <div className="h-7 bg-[hsl(var(--maple-primary))]/20 rounded border border-[hsl(var(--maple-primary))]/30 flex items-center px-2">
+                              <div className="w-2 h-2 rounded-full bg-[hsl(var(--maple-primary))]/40"></div>
                             </div>
-                            <div className="h-7 bg-[hsl(var(--purple))]/20 rounded border border-[hsl(var(--purple))]/30 flex items-center px-2">
-                              <div className="w-2 h-2 rounded-full bg-[hsl(var(--purple))]/40"></div>
+                            <div className="h-7 bg-[hsl(var(--maple-primary))]/20 rounded border border-[hsl(var(--maple-primary))]/30 flex items-center px-2">
+                              <div className="w-2 h-2 rounded-full bg-[hsl(var(--maple-primary))]/40"></div>
                             </div>
-                            <div className="h-7 bg-[hsl(var(--purple))]/20 rounded border border-[hsl(var(--purple))]/30 flex items-center px-2">
-                              <div className="w-2 h-2 rounded-full bg-[hsl(var(--purple))]/40"></div>
+                            <div className="h-7 bg-[hsl(var(--maple-primary))]/20 rounded border border-[hsl(var(--maple-primary))]/30 flex items-center px-2">
+                              <div className="w-2 h-2 rounded-full bg-[hsl(var(--maple-primary))]/40"></div>
                             </div>
                           </div>
                         </div>
-                        <div className="absolute -top-2 -right-2 dark:bg-[hsl(var(--blue))]/20 dark:border-[hsl(var(--blue))]/30 bg-[hsl(var(--purple))]/20 border-[hsl(var(--purple))]/30 p-2 rounded-lg border">
-                          <div className="w-4 h-3 border-2 dark:border-[hsl(var(--blue))] border-[hsl(var(--purple))] rounded-t-lg mx-auto"></div>
-                          <div className="w-6 h-5 dark:bg-[hsl(var(--blue))]/30 dark:border-[hsl(var(--blue))] bg-[hsl(var(--purple))]/30 border-2 border-[hsl(var(--purple))] rounded-lg -mt-0.5"></div>
+                        <div className="absolute -top-2 -right-2 dark:bg-[hsl(var(--blue))]/20 dark:border-[hsl(var(--blue))]/30 bg-[hsl(var(--maple-primary))]/20 border-[hsl(var(--maple-primary))]/30 p-2 rounded-lg border">
+                          <div className="w-4 h-3 border-2 dark:border-[hsl(var(--blue))] border-[hsl(var(--maple-primary))] rounded-t-lg mx-auto"></div>
+                          <div className="w-6 h-5 dark:bg-[hsl(var(--blue))]/30 dark:border-[hsl(var(--blue))] bg-[hsl(var(--maple-primary))]/30 border-2 border-[hsl(var(--maple-primary))] rounded-lg -mt-0.5"></div>
                         </div>
                       </div>
                     </div>
@@ -663,7 +663,7 @@ export function Marketing() {
               </div>
 
               {/* Status Indicator */}
-              <div className="absolute -bottom-3 -right-3 bg-[hsl(var(--purple))] text-[hsl(var(--marketing-card))] p-2 rounded-lg font-medium text-sm flex items-center gap-1.5">
+              <div className="absolute -bottom-3 -right-3 bg-[hsl(var(--maple-primary))] text-[hsl(var(--marketing-card))] p-2 rounded-lg font-medium text-sm flex items-center gap-1.5">
                 <Shield className="w-4 h-4" /> Secure Enclave Verified
               </div>
             </div>
@@ -719,7 +719,8 @@ export function Marketing() {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="text-center mb-16">
             <h2 className="text-4xl font-light mb-4">
-              Simple, <span className="text-[hsl(var(--purple))] font-medium">Transparent</span>{" "}
+              Simple,{" "}
+              <span className="text-[hsl(var(--maple-primary))] font-medium">Transparent</span>{" "}
               Pricing
             </h2>
             <p className="text-xl text-[hsl(var(--marketing-text-muted))] max-w-2xl mx-auto">
@@ -729,9 +730,9 @@ export function Marketing() {
 
           {/* Promotion Banner */}
           {discount?.active && (
-            <div className="mb-8 bg-gradient-to-r from-pink-500/10 to-orange-500/10 border border-pink-500/30 rounded-lg p-4 flex items-center gap-3">
-              <div className="rounded-full bg-gradient-to-r from-pink-500 to-orange-500 p-2">
-                <Tag className="w-5 h-5 text-white" />
+            <div className="mb-8 flex items-center gap-3 rounded-lg border border-[hsl(var(--maple-primary))/0.3] bg-gradient-to-r from-[hsl(var(--maple-primary))/0.1] to-[hsl(var(--maple-primary-strong))/0.1] p-4">
+              <div className="rounded-full bg-gradient-to-r from-[hsl(var(--maple-primary))] to-[hsl(var(--maple-primary-strong))] p-2">
+                <Tag className="h-5 w-5 text-[hsl(var(--maple-on-primary))]" />
               </div>
               <div className="flex-1">
                 <p className="font-medium text-foreground">{discount.name}</p>
@@ -739,7 +740,7 @@ export function Marketing() {
                   {discount.description}
                 </p>
               </div>
-              <Badge className="bg-gradient-to-r from-pink-500 to-orange-500 text-white text-lg px-3 py-1">
+              <Badge className="bg-gradient-to-r from-[hsl(var(--maple-primary))] to-[hsl(var(--maple-primary-strong))] px-3 py-1 text-lg text-[hsl(var(--maple-on-primary))]">
                 {discount.percent_off}% OFF
               </Badge>
             </div>
@@ -770,7 +771,7 @@ export function Marketing() {
       {/* CTA Section */}
       <section className="w-full py-20 dark:bg-gradient-to-r dark:from-[hsl(var(--background))] dark:via-[hsl(var(--section-alt))] dark:to-[hsl(var(--background))] bg-gradient-to-r from-[hsl(var(--section-alt))] via-[hsl(var(--marketing-card))] to-[hsl(var(--section-alt))]">
         <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="bg-gradient-to-br from-[hsl(var(--purple))]/20 to-foreground/20 p-1 rounded-2xl">
+          <div className="bg-gradient-to-br from-[hsl(var(--maple-primary))]/20 to-foreground/20 p-1 rounded-2xl">
             <div className="dark:bg-[hsl(var(--background))]/95 bg-[hsl(var(--marketing-card))]/95 rounded-2xl p-12 text-center">
               <h2 className="text-4xl font-light mb-4">
                 Ready to Chat <span className="text-foreground font-medium">Securely?</span>

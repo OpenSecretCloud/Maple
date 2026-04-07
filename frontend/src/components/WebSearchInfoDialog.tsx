@@ -21,7 +21,7 @@ export function WebSearchInfoDialog({ open, onOpenChange, onConfirm }: WebSearch
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <div className="flex items-center gap-3 mb-2">
-            <div className="p-2 rounded-lg bg-blue-500/10 text-blue-500">
+            <div className="rounded-lg bg-maple-info/10 p-2 text-maple-info">
               <Globe className="h-8 w-8" />
             </div>
             <DialogTitle>Live Web Search</DialogTitle>
@@ -37,23 +37,23 @@ export function WebSearchInfoDialog({ open, onOpenChange, onConfirm }: WebSearch
             <p className="text-sm font-medium">What you get:</p>
             <ul className="space-y-2">
               <li className="flex items-start gap-2 text-sm">
-                <Check className="h-4 w-4 text-blue-500 mt-0.5 shrink-0" />
+                <Check className="mt-0.5 h-4 w-4 shrink-0 text-maple-info" />
                 <span>Live web search powered by Brave</span>
               </li>
               <li className="flex items-start gap-2 text-sm">
-                <Check className="h-4 w-4 text-blue-500 mt-0.5 shrink-0" />
+                <Check className="mt-0.5 h-4 w-4 shrink-0 text-maple-info" />
                 <span>Get up-to-date information from the internet</span>
               </li>
               <li className="flex items-start gap-2 text-sm">
-                <Check className="h-4 w-4 text-blue-500 mt-0.5 shrink-0" />
+                <Check className="mt-0.5 h-4 w-4 shrink-0 text-maple-info" />
                 <span>Search queries are sent to Brave but not linked to your identity</span>
               </li>
               <li className="flex items-start gap-2 text-sm">
-                <Check className="h-4 w-4 text-blue-500 mt-0.5 shrink-0" />
+                <Check className="mt-0.5 h-4 w-4 shrink-0 text-maple-info" />
                 <span>Results are processed privately and securely</span>
               </li>
               <li className="flex items-start gap-2 text-sm">
-                <Check className="h-4 w-4 text-blue-500 mt-0.5 shrink-0" />
+                <Check className="mt-0.5 h-4 w-4 shrink-0 text-maple-info" />
                 <span>Perfect for current events, research, and fact-checking</span>
               </li>
             </ul>

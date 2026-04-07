@@ -8,7 +8,7 @@ import { MarketingHeader } from "@/components/MarketingHeader";
 
 function MatchIndicator({ isMatch, text = "It's a match!" }: { isMatch: boolean; text?: string }) {
   return (
-    <p className={`text-sm my-2 ${isMatch ? "text-green-500" : "text-red-500"}`}>
+    <p className={`my-2 text-sm ${isMatch ? "text-maple-success" : "text-maple-error"}`}>
       {isMatch ? "✓" : "✗"} {text}
     </p>
   );
@@ -27,7 +27,7 @@ function ProofDisplay({
 }) {
   return (
     <div className="flex flex-col gap-4 text-foreground pt-8">
-      <div className="flex flex-col gap-6 dark:border-white/10 border-[hsl(var(--marketing-card-border))] dark:bg-black/75 bg-[hsl(var(--marketing-card))]/80 dark:text-white p-8 border rounded-lg">
+      <div className="flex flex-col gap-6 rounded-lg border border-[hsl(var(--marketing-card-border))] bg-[hsl(var(--marketing-card))]/80 p-8 dark:border-[hsl(var(--marketing-hero-fg)/0.1)] dark:bg-[hsl(var(--marketing-hero-scrim)/0.75)] dark:text-[hsl(var(--marketing-hero-fg))]">
         <h3 className="text-2xl font-medium">Server PCR0 Fingerprint</h3>
 
         {parsedDocument.pcrs.map(
@@ -45,13 +45,13 @@ function ProofDisplay({
               </div>
             )
         )}
-        <p className="text-sm dark:text-white/70 text-foreground/70">
+        <p className="text-sm text-foreground/70 dark:text-[hsl(var(--marketing-hero-fg)/0.7)]">
           For technical details, check out the{" "}
           <a
             href="https://docs.aws.amazon.com/enclaves/latest/user/verify-root.html"
             target="_blank"
             rel="noopener noreferrer"
-            className="underline hover:text-foreground/80 dark:hover:text-white/80"
+            className="underline hover:text-foreground/80 dark:hover:text-[hsl(var(--marketing-hero-fg)/0.8)]"
           >
             AWS Nitro Enclaves documentation
           </a>
@@ -59,14 +59,14 @@ function ProofDisplay({
         </p>
       </div>
 
-      <details className="group rounded p-8 dark:bg-black/75 bg-[hsl(var(--marketing-card))]/80 border border-[hsl(var(--marketing-card-border))] dark:border-white/10">
-        <summary className="font-medium cursor-pointer hover:text-foreground/80 dark:hover:text-white/80">
+      <details className="group rounded border border-[hsl(var(--marketing-card-border))] bg-[hsl(var(--marketing-card))]/80 p-8 dark:border-[hsl(var(--marketing-hero-fg)/0.1)] dark:bg-[hsl(var(--marketing-hero-scrim)/0.75)]">
+        <summary className="cursor-pointer font-medium hover:text-foreground/80 dark:text-[hsl(var(--marketing-hero-fg))] dark:hover:text-[hsl(var(--marketing-hero-fg)/0.8)]">
           <span className="group-open:hidden">Show</span>
           <span className="hidden group-open:inline">Hide</span>
           {" Full Attestation Details"}
         </summary>
         <div className="mt-4 space-y-4">
-          <div className="text-sm dark:text-gray-400 text-foreground/70 space-y-2">
+          <div className="space-y-2 text-sm text-foreground/70">
             <p>
               Module ID: <span className="font-mono break-all">{parsedDocument.moduleId}</span>
             </p>
@@ -91,7 +91,7 @@ function ProofDisplay({
             )}
             <div>
               <details className="group mt-2">
-                <summary className="text-sm cursor-pointer hover:text-foreground/80 dark:hover:text-white/80">
+                <summary className="cursor-pointer text-sm hover:text-foreground/80 dark:text-[hsl(var(--marketing-hero-fg))] dark:hover:text-[hsl(var(--marketing-hero-fg)/0.8)]">
                   Additional PCR Values
                 </summary>
                 <div className="mt-2 space-y-2">
@@ -111,7 +111,10 @@ function ProofDisplay({
             <div>
               <p className="font-medium mt-4 mb-2">Certificate Chain:</p>
               {parsedDocument.certificates.map((cert, index) => (
-                <div key={index} className="mb-4 p-3 dark:bg-black/50 bg-foreground/5 rounded">
+                <div
+                  key={index}
+                  className="mb-4 rounded bg-foreground/5 p-3 dark:bg-[hsl(var(--marketing-hero-scrim)/0.5)]"
+                >
                   {cert.isRoot ? (
                     <p className="font-medium mb-1">Root Certificate</p>
                   ) : (
@@ -143,10 +146,10 @@ function ProofDisplay({
                     <MatchIndicator isMatch={true} text="Signature verified with chain" />
                   )}
                   <details className="mt-2">
-                    <summary className="text-sm cursor-pointer hover:text-foreground/80 dark:hover:text-white/80">
+                    <summary className="cursor-pointer text-sm hover:text-foreground/80 dark:text-[hsl(var(--marketing-hero-fg))] dark:hover:text-[hsl(var(--marketing-hero-fg)/0.8)]">
                       Show PEM Certificate
                     </summary>
-                    <pre className="mt-2 p-2 dark:bg-black/50 bg-foreground/5 rounded text-xs font-mono whitespace-pre-wrap break-all">
+                    <pre className="mt-2 rounded bg-foreground/5 p-2 font-mono text-xs whitespace-pre-wrap break-all dark:bg-[hsl(var(--marketing-hero-scrim)/0.5)]">
                       {cert.pem}
                     </pre>
                   </details>
@@ -183,7 +186,9 @@ function Verify() {
         <MarketingHeader
           title={
             <h2 className="text-6xl font-light mb-0">
-              <span className="dark:text-[hsl(var(--blue))] text-[hsl(var(--purple))]">Proof</span>{" "}
+              <span className="dark:text-[hsl(var(--blue))] text-[hsl(var(--maple-primary))]">
+                Proof
+              </span>{" "}
               of Security
             </h2>
           }
@@ -201,7 +206,7 @@ function Verify() {
         )}
 
         {error && (
-          <div className="text-red-700 dark:text-red-500 p-4 rounded bg-red-500/10">
+          <div className="rounded bg-maple-error/10 p-4 text-maple-error">
             Failed to validate attestation document:{" "}
             {error instanceof Error ? error.message : "Unknown error"}
           </div>

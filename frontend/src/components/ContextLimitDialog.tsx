@@ -22,7 +22,7 @@ export function ContextLimitDialog({ open, onOpenChange, hasDocument }: ContextL
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <div className="flex items-center gap-3 mb-2">
-            <div className="p-2 rounded-lg bg-orange-500/10 text-orange-500">
+            <div className="rounded-lg bg-[hsl(var(--maple-primary))]/10 p-2 text-[hsl(var(--maple-primary))]">
               <AlertCircle className="h-8 w-8" />
             </div>
             <DialogTitle>Message Too Large</DialogTitle>

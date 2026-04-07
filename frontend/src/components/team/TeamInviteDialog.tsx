@@ -230,11 +230,9 @@ or comma-separated: john@example.com, jane@example.com`}
             )}
 
             {successMessage && (
-              <Alert className="border-green-200 bg-green-50 dark:border-green-800 dark:bg-green-950">
-                <UserPlus className="h-4 w-4 text-green-600 dark:text-green-400" />
-                <AlertDescription className="text-green-800 dark:text-green-200">
-                  {successMessage}
-                </AlertDescription>
+              <Alert className="border-maple-success/30 bg-maple-success/10 dark:border-maple-success/40 dark:bg-maple-success/15">
+                <UserPlus className="h-4 w-4 text-maple-success" />
+                <AlertDescription className="text-maple-success">{successMessage}</AlertDescription>
               </Alert>
             )}
           </div>

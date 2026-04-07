@@ -39,7 +39,7 @@ export function BillingDebugger({ currentStatus, onOverride }: BillingDebuggerPr
         variant="outline"
         size="sm"
         onClick={() => setIsOpen(true)}
-        className="fixed bottom-4 right-4 z-50 bg-yellow-500/50 border-yellow-500/30 text-yellow-500"
+        className="fixed bottom-4 right-4 z-50 border border-maple-warning/30 bg-maple-warning/50 text-maple-warning"
       >
         Debug Billing
       </Button>
@@ -47,7 +47,7 @@ export function BillingDebugger({ currentStatus, onOverride }: BillingDebuggerPr
   }
 
   return (
-    <Card className="fixed bottom-4 right-4 z-50 p-4 bg-yellow-500/50 border-yellow-500/30 text-black space-y-4">
+    <Card className="fixed bottom-4 right-4 z-50 space-y-4 border border-maple-warning/30 bg-maple-warning/50 p-4 text-foreground">
       <div className="flex justify-between items-center">
         <h3 className="font-bold">Billing Debugger</h3>
         <Button variant="ghost" size="sm" onClick={() => setIsOpen(false)}>
@@ -61,7 +61,7 @@ export function BillingDebugger({ currentStatus, onOverride }: BillingDebuggerPr
           <Input
             value={debugStatus.product_name}
             onChange={(e) => setDebugStatus((prev) => ({ ...prev, product_name: e.target.value }))}
-            className="w-full bg-transparent border-yellow-500/30"
+            className="w-full bg-transparent border-maple-warning/30"
           />
         </div>
 
@@ -76,7 +76,7 @@ export function BillingDebugger({ currentStatus, onOverride }: BillingDebuggerPr
                 chats_remaining: e.target.value ? parseInt(e.target.value) : null
               }))
             }
-            className="w-full bg-transparent border-yellow-500/30"
+            className="w-full bg-transparent border-maple-warning/30"
           />
         </div>
 
@@ -91,7 +91,7 @@ export function BillingDebugger({ currentStatus, onOverride }: BillingDebuggerPr
                   can_chat: e.target.checked
                 }))
               }
-              className="rounded border-yellow-500/30"
+              className="rounded border-maple-warning/30"
             />
             Can Chat
           </label>
@@ -108,7 +108,7 @@ export function BillingDebugger({ currentStatus, onOverride }: BillingDebuggerPr
                 total_tokens: e.target.value ? parseInt(e.target.value) : null
               }))
             }
-            className="w-full bg-transparent border-yellow-500/30"
+            className="w-full bg-transparent border-maple-warning/30"
           />
         </div>
 
@@ -123,7 +123,7 @@ export function BillingDebugger({ currentStatus, onOverride }: BillingDebuggerPr
                 used_tokens: e.target.value ? parseInt(e.target.value) : null
               }))
             }
-            className="w-full bg-transparent border-yellow-500/30"
+            className="w-full bg-transparent border-maple-warning/30"
           />
         </div>
 
@@ -145,7 +145,7 @@ export function BillingDebugger({ currentStatus, onOverride }: BillingDebuggerPr
               }))
             }
             placeholder="Enter UTC time"
-            className="w-full bg-transparent border-yellow-500/30"
+            className="w-full bg-transparent border-maple-warning/30"
           />
           <span className="text-xs text-muted-foreground">
             Enter time in UTC (current UTC:{" "}
@@ -158,7 +158,7 @@ export function BillingDebugger({ currentStatus, onOverride }: BillingDebuggerPr
             variant="outline"
             size="sm"
             onClick={() => handleOverride(debugStatus)}
-            className="border-yellow-500/30 hover:bg-yellow-500/20"
+            className="border-maple-warning/30 hover:bg-maple-warning/20"
           >
             Apply Override
           </Button>
@@ -184,7 +184,7 @@ export function BillingDebugger({ currentStatus, onOverride }: BillingDebuggerPr
               setDebugStatus(newStatus);
               handleOverride(newStatus);
             }}
-            className="border-yellow-500/30 hover:bg-yellow-500/20"
+            className="border-maple-warning/30 hover:bg-maple-warning/20"
           >
             Test Pro + No Messages
           </Button>
@@ -212,7 +212,7 @@ export function BillingDebugger({ currentStatus, onOverride }: BillingDebuggerPr
               setDebugStatus(newStatus);
               handleOverride(newStatus);
             }}
-            className="border-yellow-500/30 hover:bg-yellow-500/20"
+            className="border-maple-warning/30 hover:bg-maple-warning/20"
           >
             Reset in 3 Hours
           </Button>
@@ -240,7 +240,7 @@ export function BillingDebugger({ currentStatus, onOverride }: BillingDebuggerPr
               setDebugStatus(newStatus);
               handleOverride(newStatus);
             }}
-            className="border-yellow-500/30 hover:bg-yellow-500/20"
+            className="border-maple-warning/30 hover:bg-maple-warning/20"
           >
             Reset Tomorrow
           </Button>
@@ -268,7 +268,7 @@ export function BillingDebugger({ currentStatus, onOverride }: BillingDebuggerPr
               setDebugStatus(newStatus);
               handleOverride(newStatus);
             }}
-            className="border-yellow-500/30 hover:bg-yellow-500/20"
+            className="border-maple-warning/30 hover:bg-maple-warning/20"
           >
             Reset in 5 Days
           </Button>

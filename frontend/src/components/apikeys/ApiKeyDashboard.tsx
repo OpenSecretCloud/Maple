@@ -122,7 +122,7 @@ export function ApiKeyDashboard({ showCreditSuccessMessage = false }: ApiKeyDash
       <>
         <DialogHeader>
           <DialogTitle className="text-base flex items-center gap-2">
-            <Sparkles className="h-5 w-5 text-amber-500" />
+            <Sparkles className="h-5 w-5 text-maple-warning" />
             Unlock API Access
           </DialogTitle>
           <DialogDescription>
@@ -131,11 +131,11 @@ export function ApiKeyDashboard({ showCreditSuccessMessage = false }: ApiKeyDash
         </DialogHeader>
 
         <div className="mt-6 space-y-4">
-          <Card className="p-6 bg-gradient-to-br from-amber-500/10 to-orange-500/10 border-amber-500/20">
+          <Card className="border-maple-warning/20 bg-gradient-to-br from-maple-warning/10 to-[hsl(var(--maple-primary))]/10 p-6">
             <div className="space-y-4">
               <div className="flex items-center gap-3">
-                <div className="p-2 bg-amber-500/20 rounded-lg">
-                  <Zap className="h-5 w-5 text-amber-500" />
+                <div className="rounded-lg bg-maple-warning/20 p-2">
+                  <Zap className="h-5 w-5 text-maple-warning" />
                 </div>
                 <div>
                   <h3 className="font-semibold">Programmatic Access</h3>
@@ -146,8 +146,8 @@ export function ApiKeyDashboard({ showCreditSuccessMessage = false }: ApiKeyDash
               </div>
 
               <div className="flex items-center gap-3">
-                <div className="p-2 bg-blue-500/20 rounded-lg">
-                  <Shield className="h-5 w-5 text-blue-500" />
+                <div className="rounded-lg bg-maple-info/20 p-2">
+                  <Shield className="h-5 w-5 text-maple-info" />
                 </div>
                 <div>
                   <h3 className="font-semibold">Secure API Keys</h3>
@@ -158,8 +158,8 @@ export function ApiKeyDashboard({ showCreditSuccessMessage = false }: ApiKeyDash
               </div>
 
               <div className="flex items-center gap-3">
-                <div className="p-2 bg-green-500/20 rounded-lg">
-                  <Rocket className="h-5 w-5 text-green-500" />
+                <div className="rounded-lg bg-maple-success/20 p-2">
+                  <Rocket className="h-5 w-5 text-maple-success" />
                 </div>
                 <div>
                   <h3 className="font-semibold">Extend Your Subscription</h3>

@@ -689,7 +689,8 @@ function PricingPage() {
           <MarketingHeader
             title={
               <h2 className="text-6xl font-light mb-0">
-                Simple, <span className="text-[hsl(var(--purple))]">Transparent</span> Pricing
+                Simple, <span className="text-[hsl(var(--maple-primary))]">Transparent</span>{" "}
+                Pricing
               </h2>
             }
             subtitle={
@@ -728,8 +729,8 @@ function PricingPage() {
           <div className="pt-8 w-full grid grid-cols-1 md:grid-cols-3 gap-4 md:gap-4 lg:gap-6 px-4 sm:px-6 lg:px-8">
             <div className="flex flex-col border-[hsl(var(--marketing-card-border))] bg-[hsl(var(--marketing-card))]/75 text-foreground p-8 border rounded-lg col-span-full">
               <div className="flex flex-col items-center text-center gap-4">
-                <div className="rounded-full bg-red-500/10 p-3">
-                  <AlertTriangle className="w-6 h-6 text-red-500" />
+                <div className="rounded-full bg-maple-error/10 p-3">
+                  <AlertTriangle className="h-6 w-6 text-maple-error" />
                 </div>
                 <div className="space-y-2">
                   <h3 className="text-xl font-medium">Unable to Load Pricing</h3>
@@ -738,11 +739,11 @@ function PricingPage() {
                 <Button
                   onClick={() => window.location.reload()}
                   className="mt-4 
-                    dark:bg-white/90 dark:text-black dark:hover:bg-[hsl(var(--purple))]/80 dark:hover:text-[hsl(var(--foreground))] dark:active:bg-white/80
-                    bg-background text-foreground hover:bg-[hsl(var(--purple))] hover:text-[hsl(var(--foreground))] active:bg-background/80 
-                    border border-[hsl(var(--purple))]/30 hover:border-[hsl(var(--purple))]
+                    dark:bg-[hsl(var(--marketing-cta-invert-bg)/0.9)] dark:text-[hsl(var(--marketing-cta-invert-fg))] dark:hover:bg-[hsl(var(--maple-primary))]/80 dark:hover:text-[hsl(var(--foreground))] dark:active:bg-[hsl(var(--marketing-cta-invert-bg)/0.8)]
+                    bg-background text-foreground hover:bg-[hsl(var(--maple-primary))] hover:text-[hsl(var(--foreground))] active:bg-background/80 
+                    border border-[hsl(var(--maple-primary))]/30 hover:border-[hsl(var(--maple-primary))]
                     px-8 py-4 rounded-lg text-xl font-light transition-all duration-300 
-                    shadow-[0_0_15px_rgba(var(--purple-rgb),0.2)] hover:shadow-[0_0_25px_rgba(var(--purple-rgb),0.3)]"
+                    shadow-[0_0_15px_rgba(var(--maple-primary-rgb),0.2)] hover:shadow-[0_0_25px_rgba(var(--maple-primary-rgb),0.3)]"
                 >
                   Retry
                 </Button>
@@ -763,7 +764,7 @@ function PricingPage() {
         <MarketingHeader
           title={
             <h2 className="text-6xl font-light mb-0">
-              Simple, <span className="text-[hsl(var(--purple))]">Transparent</span> Pricing
+              Simple, <span className="text-[hsl(var(--maple-primary))]">Transparent</span> Pricing
             </h2>
           }
           subtitle={
@@ -777,9 +778,9 @@ function PricingPage() {
         {/* Payment Callback Status Messages */}
         {success && (
           <div className="w-full max-w-7xl mx-auto mt-4 px-4 sm:px-6 lg:px-8">
-            <div className="bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-900/50 text-green-800 dark:text-green-100 rounded-lg p-4 flex items-center gap-3">
-              <div className="rounded-full bg-green-100 dark:bg-green-800 p-1">
-                <Check className="w-5 h-5 text-green-600 dark:text-green-200" />
+            <div className="flex items-center gap-3 rounded-lg border border-maple-success/30 bg-maple-success/10 p-4 text-maple-success dark:border-maple-success/40 dark:bg-maple-success/15 dark:text-maple-success">
+              <div className="rounded-full bg-maple-success/20 p-1 dark:bg-maple-success/25">
+                <Check className="h-5 w-5 text-maple-success" />
               </div>
               <p>Payment successful! Your subscription has been updated.</p>
             </div>
@@ -788,9 +789,9 @@ function PricingPage() {
 
         {canceled && (
           <div className="w-full max-w-7xl mx-auto mt-4 px-4 sm:px-6 lg:px-8">
-            <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-900/50 text-amber-800 dark:text-amber-100 rounded-lg p-4 flex items-center gap-3">
-              <div className="rounded-full bg-amber-100 dark:bg-amber-800 p-1">
-                <AlertTriangle className="w-5 h-5 text-amber-600 dark:text-amber-200" />
+            <div className="flex items-center gap-3 rounded-lg border border-maple-warning/30 bg-maple-warning/10 p-4 text-maple-warning dark:border-maple-warning/40 dark:bg-maple-warning/15 dark:text-maple-warning">
+              <div className="rounded-full bg-maple-warning/20 p-1 dark:bg-maple-warning/25">
+                <AlertTriangle className="h-5 w-5 text-maple-warning" />
               </div>
               <p>Payment canceled. Your subscription remains unchanged.</p>
             </div>
@@ -810,9 +811,9 @@ function PricingPage() {
         {/* Promotion Banner */}
         {discount?.active && (
           <div className="w-full max-w-7xl mx-auto mt-4 px-4 sm:px-6 lg:px-8">
-            <div className="bg-gradient-to-r from-pink-500/10 to-orange-500/10 border border-pink-500/30 rounded-lg p-4 flex items-center gap-3">
-              <div className="rounded-full bg-gradient-to-r from-pink-500 to-orange-500 p-2">
-                <Tag className="w-5 h-5 text-white" />
+            <div className="flex items-center gap-3 rounded-lg border border-[hsl(var(--maple-primary))/0.3] bg-gradient-to-r from-[hsl(var(--maple-primary))/0.1] to-[hsl(var(--maple-primary-strong))/0.1] p-4">
+              <div className="rounded-full bg-gradient-to-r from-[hsl(var(--maple-primary))] to-[hsl(var(--maple-primary-strong))] p-2">
+                <Tag className="h-5 w-5 text-[hsl(var(--maple-on-primary))]" />
               </div>
               <div className="flex-1">
                 <p className="font-medium text-foreground">{discount.name}</p>
@@ -820,7 +821,7 @@ function PricingPage() {
                   {discount.description}
                 </p>
               </div>
-              <Badge className="bg-gradient-to-r from-pink-500 to-orange-500 text-white text-lg px-3 py-1">
+              <Badge className="bg-gradient-to-r from-[hsl(var(--maple-primary))] to-[hsl(var(--maple-primary-strong))] px-3 py-1 text-lg text-[hsl(var(--maple-on-primary))]">
                 {discount.percent_off}% OFF
               </Badge>
             </div>
@@ -918,14 +919,14 @@ function PricingPage() {
                     key={plan.name}
                     className={`flex flex-col ${
                       plan.popular && !isCurrentPlan
-                        ? "border-2 border-[hsl(var(--purple))] bg-gradient-to-b from-[hsl(var(--marketing-card))] to-[hsl(var(--marketing-card))]/80 relative shadow-[0_0_30px_rgba(var(--purple-rgb),0.2)]"
+                        ? "border-2 border-[hsl(var(--maple-primary))] bg-gradient-to-b from-[hsl(var(--marketing-card))] to-[hsl(var(--marketing-card))]/80 relative shadow-[0_0_30px_rgba(var(--maple-primary-rgb),0.2)]"
                         : "border border-[hsl(var(--marketing-card-border))] bg-[hsl(var(--marketing-card))]/75"
                     } text-foreground p-4 sm:p-6 md:p-8 rounded-lg relative group transition-all duration-300 hover:border-foreground/30 ${
                       isCurrentPlan ? "ring-2 ring-foreground" : ""
                     } ${useBitcoin && isTeamPlan ? "opacity-50 cursor-not-allowed" : ""}`}
                   >
                     {plan.popular && !isCurrentPlan && (
-                      <div className="absolute -top-4 left-1/2 transform -translate-x-1/2 bg-[hsl(var(--purple))] text-[hsl(var(--marketing-card))] px-4 py-1 rounded-full text-sm font-medium text-center min-w-[110px] whitespace-normal">
+                      <div className="absolute -top-4 left-1/2 transform -translate-x-1/2 bg-[hsl(var(--maple-primary))] text-[hsl(var(--marketing-card))] px-4 py-1 rounded-full text-sm font-medium text-center min-w-[110px] whitespace-normal">
                         Most Popular
                       </div>
                     )}
@@ -935,12 +936,12 @@ function PricingPage() {
                       </Badge>
                     )}
                     {showPromoBadge && (
-                      <Badge className="absolute -top-3 right-4 bg-gradient-to-r from-pink-500 to-orange-500 text-white">
+                      <Badge className="absolute -top-3 right-4 bg-gradient-to-r from-[hsl(var(--maple-primary))] to-[hsl(var(--maple-primary-strong))] text-[hsl(var(--maple-on-primary))]">
                         {promoDiscountPercent}% OFF
                       </Badge>
                     )}
                     {showBitcoinBadge && (
-                      <Badge className="absolute -top-3 right-4 bg-gradient-to-r from-pink-500 to-orange-500 text-white">
+                      <Badge className="absolute -top-3 right-4 bg-gradient-to-r from-[hsl(var(--maple-primary))] to-[hsl(var(--maple-primary-strong))] text-[hsl(var(--maple-on-primary))]">
                         {bitcoinYearlyDiscountPercent}% OFF
                       </Badge>
                     )}
@@ -948,7 +949,7 @@ function PricingPage() {
                       <h3 className="text-xl sm:text-2xl font-medium flex items-center gap-2">
                         {plan.name}
                         {useBitcoin && !isFreeplan && !isTeamPlan ? " (Yearly)" : ""}
-                        {isCurrentPlan && <Check className="w-5 h-5 text-green-500" />}
+                        {isCurrentPlan && <Check className="h-5 w-5 text-maple-success" />}
                       </h3>
 
                       <p className="text-base sm:text-lg font-light text-[hsl(var(--marketing-text-muted))] break-words">
@@ -964,7 +965,7 @@ function PricingPage() {
                             {feature.text !== "" &&
                               (feature.icon ||
                                 (feature.included ? (
-                                  <Check className="w-4 h-4 text-green-500 mt-0.5 flex-shrink-0" />
+                                  <Check className="mt-0.5 h-4 w-4 flex-shrink-0 text-maple-success" />
                                 ) : null))}
                             <span
                               className={`${feature.included ? "text-foreground/80" : "text-foreground/50"}`}
@@ -1063,14 +1064,14 @@ function PricingPage() {
                           (isIOSPlatform && !isFreeplan && product?.is_available === false)
                         }
                         className={`w-full 
-                      dark:bg-white/90 dark:text-black dark:hover:bg-[hsl(var(--purple))]/80 dark:hover:text-[hsl(var(--foreground))] dark:active:bg-white/80
-                      bg-background text-foreground hover:bg-[hsl(var(--purple))] hover:text-[hsl(var(--foreground))] active:bg-background/80 
-                      border border-[hsl(var(--purple))]/30 hover:border-[hsl(var(--purple))]
+                      dark:bg-[hsl(var(--marketing-cta-invert-bg)/0.9)] dark:text-[hsl(var(--marketing-cta-invert-fg))] dark:hover:bg-[hsl(var(--maple-primary))]/80 dark:hover:text-[hsl(var(--foreground))] dark:active:bg-[hsl(var(--marketing-cta-invert-bg)/0.8)]
+                      bg-background text-foreground hover:bg-[hsl(var(--maple-primary))] hover:text-[hsl(var(--foreground))] active:bg-background/80 
+                      border border-[hsl(var(--maple-primary))]/30 hover:border-[hsl(var(--maple-primary))]
                       px-4 sm:px-8 py-3 sm:py-4 rounded-lg text-lg sm:text-xl font-light 
-                      transition-all duration-300 shadow-[0_0_15px_rgba(var(--purple-rgb),0.2)] 
-                      hover:shadow-[0_0_25px_rgba(var(--purple-rgb),0.3)] disabled:opacity-50 
+                      transition-all duration-300 shadow-[0_0_15px_rgba(var(--maple-primary-rgb),0.2)] 
+                      hover:shadow-[0_0_25px_rgba(var(--maple-primary-rgb),0.3)] disabled:opacity-50 
                       disabled:cursor-not-allowed flex items-center justify-center gap-2 
-                      group-hover:bg-[hsl(var(--purple))] group-hover:text-[hsl(var(--foreground))] dark:group-hover:text-[hsl(var(--foreground))] dark:group-hover:bg-[hsl(var(--purple))]/80`}
+                      group-hover:bg-[hsl(var(--maple-primary))] group-hover:text-[hsl(var(--foreground))] dark:group-hover:text-[hsl(var(--foreground))] dark:group-hover:bg-[hsl(var(--maple-primary))]/80`}
                       >
                         {useBitcoin && isTeamPlan
                           ? "Not Available"
@@ -1124,7 +1125,7 @@ function PricingPage() {
               />
             </div>
             {isGuestUser && (
-              <div className="text-sm text-amber-600 dark:text-amber-500 font-medium">
+              <div className="text-sm font-medium text-maple-warning">
                 Anonymous accounts must pay with Bitcoin (yearly only)
               </div>
             )}

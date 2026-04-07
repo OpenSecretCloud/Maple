@@ -20,11 +20,12 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useOpenSecret } from "@opensecret/react";
-import { CheckCircle, XCircle, Trash } from "lucide-react";
+import { CheckCircle, XCircle, Trash, Sun, Moon, Monitor } from "lucide-react";
 import { ChangePasswordDialog } from "./ChangePasswordDialog";
 import { useLocalState } from "@/state/useLocalState";
 import { DeleteAccountDialog } from "./DeleteAccountDialog";
 import { PreferencesDialog } from "./PreferencesDialog";
+import { useTheme } from "@/contexts/ThemeContext";
 
 export function AccountDialog() {
   const os = useOpenSecret();
@@ -35,6 +36,7 @@ export function AccountDialog() {
     "unverified"
   );
   const { billingStatus } = useLocalState();
+  const { theme, setTheme } = useTheme();
 
   // Check user login method
   const isEmailUser = os.auth.user?.user.login_method === "email";
@@ -69,9 +71,9 @@ export function AccountDialog() {
                   disabled
                 />
                 {os.auth.user?.user.email_verified ? (
-                  <CheckCircle className="dark:text-green-500 text-green-700" />
+                  <CheckCircle className="text-maple-success" />
                 ) : (
-                  <XCircle className="dark:text-red-500 text-red-700" />
+                  <XCircle className="text-maple-error" />
                 )}
               </div>
               {!os.auth.user?.user.email_verified && (
@@ -105,7 +107,7 @@ export function AccountDialog() {
               <SelectContent>
                 <SelectGroup>
                   <SelectLabel>Plan</SelectLabel>
-                  <SelectItem value={billingStatus?.product_name || ""}>
+                  <SelectItem value={billingStatus?.product_name || "loading"}>
                     {billingStatus ? `${billingStatus.product_name} Plan` : "Loading..."}
                   </SelectItem>
                 </SelectGroup>
@@ -127,6 +129,50 @@ export function AccountDialog() {
                 )}
               </div>
             )}
+          </div>
+          <div className="grid gap-2">
+            <Label>Theme</Label>
+            <div className="flex gap-2">
+              <Button
+                type="button"
+                variant={theme === "light" ? "default" : "outline"}
+                size="sm"
+                className="flex-1"
+                onClick={(e) => {
+                  e.preventDefault();
+                  setTheme("light");
+                }}
+              >
+                <Sun className="mr-2 h-4 w-4" />
+                Light
+              </Button>
+              <Button
+                type="button"
+                variant={theme === "dark" ? "default" : "outline"}
+                size="sm"
+                className="flex-1"
+                onClick={(e) => {
+                  e.preventDefault();
+                  setTheme("dark");
+                }}
+              >
+                <Moon className="mr-2 h-4 w-4" />
+                Dark
+              </Button>
+              <Button
+                type="button"
+                variant={theme === "system" ? "default" : "outline"}
+                size="sm"
+                className="flex-1"
+                onClick={(e) => {
+                  e.preventDefault();
+                  setTheme("system");
+                }}
+              >
+                <Monitor className="mr-2 h-4 w-4" />
+                System
+              </Button>
+            </div>
           </div>
           <div className="flex flex-col space-y-2">
             <Button
@@ -153,8 +199,8 @@ export function AccountDialog() {
               </DialogTrigger>
             )}
             <Button
-              variant="outline"
-              className="border-destructive text-destructive hover:bg-destructive/10"
+              variant="ghost"
+              className="text-destructive hover:bg-destructive/10 hover:text-destructive dark:hover:bg-destructive/10"
               onClick={(e) => {
                 e.preventDefault(); // Prevent form submission
                 setIsDeleteAccountOpen(true);

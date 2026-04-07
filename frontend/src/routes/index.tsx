@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { UnifiedChat } from "@/components/UnifiedChat";
-import { Marketing } from "@/components/Marketing";
+import { MarketingSiteHome } from "@/components/MarketingSiteHome";
 import { TopNav } from "@/components/TopNav";
 import { VerificationModal } from "@/components/VerificationModal";
 import { GuestPaymentWarningDialog } from "@/components/GuestPaymentWarningDialog";
@@ -177,7 +177,7 @@ function Index() {
     return (
       <>
         <TopNav />
-        <Marketing />
+        <MarketingSiteHome />
         <VerificationModal />
       </>
     );

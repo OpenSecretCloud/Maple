@@ -160,14 +160,14 @@ export function ProxyConfigSection({ apiKeys, onRequestNewApiKey }: ProxyConfigS
       {message && (
         <Alert
           className={`${
-            message.type === "error" ? "border-destructive/50" : "border-green-500/50"
+            message.type === "error" ? "border-destructive/50" : "border-maple-success/50"
           } mb-3`}
         >
           <div className="flex items-start gap-2">
             {message.type === "error" ? (
               <AlertCircle className="h-4 w-4 flex-shrink-0" />
             ) : (
-              <CheckCircle className="h-4 w-4 text-green-500 flex-shrink-0" />
+              <CheckCircle className="h-4 w-4 flex-shrink-0 text-maple-success" />
             )}
             <AlertDescription className="text-xs">{message.text}</AlertDescription>
           </div>
@@ -181,7 +181,9 @@ export function ProxyConfigSection({ apiKeys, onRequestNewApiKey }: ProxyConfigS
         </h3>
         <div className="flex items-center gap-2">
           <span className="text-xs text-muted-foreground">{isRunning ? "Running" : "Stopped"}</span>
-          <div className={`h-2 w-2 rounded-full ${isRunning ? "bg-green-500" : "bg-gray-400"}`} />
+          <div
+            className={`h-2 w-2 rounded-full ${isRunning ? "bg-maple-success" : "bg-muted-foreground/50"}`}
+          />
         </div>
       </div>
 

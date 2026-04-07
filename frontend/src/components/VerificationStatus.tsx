@@ -31,14 +31,14 @@ export function VerificationStatus() {
       )}
       {status === "verified" && (
         <>
-          <CheckCircle className="h-3 w-3 text-green-700 dark:text-green-500" />
-          <span className="text-green-700 dark:text-green-500">Verified</span>
+          <CheckCircle className="h-3 w-3 text-maple-success" />
+          <span className="text-maple-success">Verified</span>
         </>
       )}
       {status === "failed" && (
         <>
-          <XCircle className="h-3 w-3 text-red-700 dark:text-red-500" />
-          <span className="text-red-700 dark:text-red-500">Verification failed</span>
+          <XCircle className="h-3 w-3 text-maple-error" />
+          <span className="text-maple-error">Verification failed</span>
         </>
       )}
     </Link>

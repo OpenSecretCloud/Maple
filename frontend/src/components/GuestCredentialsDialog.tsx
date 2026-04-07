@@ -55,7 +55,7 @@ export function GuestCredentialsDialog({
         onEscapeKeyDown={(e) => e.preventDefault()}
       >
         <DialogHeader>
-          <DialogTitle className="flex items-center gap-2 text-amber-600 dark:text-amber-500">
+          <DialogTitle className="flex items-center gap-2 text-maple-warning">
             <AlertTriangle className="w-5 h-5" />
             Save Your Anonymous Account ID
           </DialogTitle>
@@ -66,11 +66,11 @@ export function GuestCredentialsDialog({
 
         <div className="space-y-4 py-4">
           {/* Critical Warning Banner */}
-          <div className="rounded-lg border-2 border-red-500 bg-red-500/10 p-4">
+          <div className="rounded-lg border-2 border-maple-error bg-maple-error/10 p-4">
             <div className="flex items-start gap-3">
-              <AlertTriangle className="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5" />
+              <AlertTriangle className="mt-0.5 h-5 w-5 flex-shrink-0 text-maple-error" />
               <div className="space-y-2 text-sm">
-                <p className="font-semibold text-red-600 dark:text-red-500">
+                <p className="font-semibold text-maple-error">
                   Critical: Save your Account ID immediately!
                 </p>
                 <p>
@@ -97,7 +97,7 @@ export function GuestCredentialsDialog({
                 className="flex-shrink-0"
               >
                 {uuidCopied ? (
-                  <CheckCircle className="w-4 h-4 text-green-500" />
+                  <CheckCircle className="h-4 w-4 text-maple-success" />
                 ) : (
                   <Copy className="w-4 h-4" />
                 )}

@@ -13,6 +13,7 @@ import { Button } from "./ui/button";
 import { Check, Copy, ChevronDown, ChevronRight, Brain, FileText } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "./ui/dialog";
 import { openExternalUrlWithConfirmation } from "@/utils/openUrl";
+import { cn } from "@/utils/utils";
 
 async function copyToClipboard(text: string) {
   try {
@@ -76,42 +77,47 @@ export function ThinkingBlock({ content, isThinking, duration }: ThinkingBlockPr
   const durationText = `${displayDuration}`;
 
   return (
-    <div className="my-3 border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden bg-gray-50 dark:bg-gray-900/50">
+    <div className="my-3">
       <button
+        type="button"
         onClick={() => setIsExpanded(!isExpanded)}
-        className="w-full px-4 py-2 flex items-center gap-2 hover:bg-gray-100 dark:hover:bg-gray-800/50 transition-colors text-left"
+        className="flex w-full items-center gap-2 py-2 text-left rounded-md"
         aria-expanded={isExpanded}
       >
-        <span className="text-gray-500 dark:text-gray-400">
-          {isExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
-        </span>
-        <Brain className="h-4 w-4 text-gray-500 dark:text-gray-400" />
-        <span className="text-sm text-gray-600 dark:text-gray-300 font-medium">
-          {isThinking ? (
-            <span className="inline-flex items-center gap-2">
-              Thinking for {durationText} seconds
-              <span className="inline-flex gap-1 items-baseline">
-                <span className="animate-bounce inline-block" style={{ animationDelay: "0ms" }}>
-                  .
-                </span>
-                <span className="animate-bounce inline-block" style={{ animationDelay: "150ms" }}>
-                  .
-                </span>
-                <span className="animate-bounce inline-block" style={{ animationDelay: "300ms" }}>
-                  .
+        <Brain className="h-4 w-4 shrink-0 text-muted-foreground" />
+        <span className="flex min-w-0 flex-1 items-center gap-2">
+          <span className="min-w-0 text-sm font-medium text-muted-foreground">
+            {isThinking ? (
+              <span className="inline-flex items-center gap-2">
+                Thinking for {durationText} seconds
+                <span className="inline-flex gap-1 items-baseline">
+                  <span className="animate-bounce inline-block" style={{ animationDelay: "0ms" }}>
+                    .
+                  </span>
+                  <span className="animate-bounce inline-block" style={{ animationDelay: "150ms" }}>
+                    .
+                  </span>
+                  <span className="animate-bounce inline-block" style={{ animationDelay: "300ms" }}>
+                    .
+                  </span>
                 </span>
               </span>
-            </span>
-          ) : (
-            `Thought for ${durationText} seconds`
-          )}
+            ) : (
+              `Thought for ${durationText} seconds`
+            )}
+          </span>
+          <span className="shrink-0 text-muted-foreground" aria-hidden>
+            {isExpanded ? (
+              <ChevronDown className="h-4 w-4" />
+            ) : (
+              <ChevronRight className="h-4 w-4" />
+            )}
+          </span>
         </span>
       </button>
       {isExpanded && (
-        <div className="px-4 py-3 border-t border-gray-200 dark:border-gray-700">
-          <div className="text-sm text-gray-600 dark:text-gray-400 whitespace-pre-wrap">
-            {content}
-          </div>
+        <div className="pb-1 pt-2">
+          <div className="whitespace-pre-wrap text-sm text-muted-foreground">{content}</div>
         </div>
       )}
     </div>
@@ -269,48 +275,20 @@ function ResponsiveTable({ children, className, ...rest }: JSX.IntrinsicElements
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const { node, inline, ...safeRest } = rest as Record<string, unknown>;
 
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const [canScrollLeft, setCanScrollLeft] = useState(false);
-  const [canScrollRight, setCanScrollRight] = useState(false);
-
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-
-    const checkScroll = () => {
-      const { scrollLeft, scrollWidth, clientWidth } = el;
-      setCanScrollLeft(scrollLeft > 0);
-      setCanScrollRight(scrollLeft + clientWidth < scrollWidth - 1);
-    };
-
-    checkScroll();
-    el.addEventListener("scroll", checkScroll);
-    window.addEventListener("resize", checkScroll);
-
-    return () => {
-      el.removeEventListener("scroll", checkScroll);
-      window.removeEventListener("resize", checkScroll);
-    };
-  }, []);
-
   return (
-    <div className="my-4 -mx-4 px-4 relative">
-      {canScrollLeft && (
-        <div className="absolute left-[15px] top-0 bottom-0 w-8 pointer-events-none bg-gradient-to-r from-background to-transparent z-10" />
-      )}
-      {canScrollRight && (
-        <div className="absolute right-[15px] top-0 bottom-0 w-8 pointer-events-none bg-gradient-to-l from-background to-transparent z-10" />
-      )}
-      <div ref={scrollRef} className="overflow-x-auto">
-        <div className="inline-block rounded-md border border-border/50 shadow-sm">
-          <table
-            className={className || ""}
-            style={{ minWidth: "max-content" }}
-            {...(safeRest as object)}
-          >
-            {children}
-          </table>
-        </div>
+    <div className="my-4 w-full min-w-0 max-w-none self-stretch">
+      <div
+        className={cn(
+          "block w-full min-w-0 overflow-x-auto overflow-y-visible overscroll-x-contain",
+          "[-webkit-overflow-scrolling:touch]"
+        )}
+      >
+        <table
+          className={cn("markdown-table-maple w-full min-w-0", className || "")}
+          {...(safeRest as object)}
+        >
+          {children}
+        </table>
       </div>
     </div>
   );

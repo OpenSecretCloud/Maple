@@ -43,7 +43,7 @@ export function GuestSignupWarningDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-[calc(100vw-2rem)] sm:max-w-[550px] max-h-[calc(100vh-2rem)] overflow-y-auto [&>button]:hidden">
         <DialogHeader>
-          <DialogTitle className="flex items-center gap-2 text-amber-600 dark:text-amber-500">
+          <DialogTitle className="flex items-center gap-2 text-maple-warning">
             <AlertTriangle className="w-5 h-5" />
             Anonymous Account - Important Warnings
           </DialogTitle>
@@ -53,7 +53,7 @@ export function GuestSignupWarningDialog({
         </DialogHeader>
 
         <div className="space-y-4 py-4">
-          <div className="rounded-lg border border-amber-500/50 bg-amber-500/10 p-4 space-y-4">
+          <div className="space-y-4 rounded-lg border border-maple-warning/50 bg-maple-warning/10 p-4">
             {/* Warning 1: Bitcoin Payment */}
             <div className="flex items-start space-x-3">
               <Checkbox

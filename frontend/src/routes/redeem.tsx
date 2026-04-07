@@ -248,7 +248,7 @@ function RedeemPage() {
         <MarketingHeader
           title={
             <h2 className="text-6xl font-light mb-0">
-              Redeem <span className="text-[hsl(var(--purple))]">Subscription Pass</span>
+              Redeem <span className="text-[hsl(var(--maple-primary))]">Subscription Pass</span>
             </h2>
           }
           subtitle={
@@ -261,9 +261,9 @@ function RedeemPage() {
 
         <div className="pt-8 w-full max-w-2xl mx-auto px-4 sm:px-6 lg:px-8">
           {isLoggedIn && isOnNonFreePlan && !redeemSuccess && (
-            <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-900/50 text-amber-800 dark:text-amber-100 rounded-lg p-6 flex items-start gap-3 mb-6">
-              <div className="rounded-full bg-amber-100 dark:bg-amber-800 p-1">
-                <AlertTriangle className="w-6 h-6 text-amber-600 dark:text-amber-200" />
+            <div className="mb-6 flex items-start gap-3 rounded-lg border border-maple-warning/30 bg-maple-warning/10 p-6 text-maple-warning dark:border-maple-warning/40 dark:bg-maple-warning/15 dark:text-maple-warning">
+              <div className="rounded-full bg-maple-warning/20 p-1 dark:bg-maple-warning/25">
+                <AlertTriangle className="h-6 w-6 text-maple-warning" />
               </div>
               <div className="flex-1">
                 <p className="font-semibold text-lg">
@@ -330,47 +330,37 @@ function RedeemPage() {
 
               {statusMessage && (
                 <div
-                  className={`rounded-lg p-4 flex items-start gap-3 ${
+                  className={`flex items-start gap-3 rounded-lg border p-4 ${
                     statusMessage.type === "success"
-                      ? "bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-900/50 text-green-800 dark:text-green-100"
+                      ? "border-maple-success/30 bg-maple-success/10 text-maple-success dark:border-maple-success/40 dark:bg-maple-success/15"
                       : statusMessage.type === "error"
-                        ? "bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-900/50 text-red-800 dark:text-red-100"
+                        ? "border-maple-error/30 bg-maple-error/10 text-maple-error dark:border-maple-error/40 dark:bg-maple-error/15"
                         : statusMessage.type === "warning"
-                          ? "bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-900/50 text-amber-800 dark:text-amber-100"
-                          : "bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-900/50 text-blue-800 dark:text-blue-100"
+                          ? "border-maple-warning/30 bg-maple-warning/10 text-maple-warning dark:border-maple-warning/40 dark:bg-maple-warning/15"
+                          : "border-maple-info/30 bg-maple-info/10 text-maple-info dark:border-maple-info/40 dark:bg-maple-info/15"
                   }`}
                 >
                   <div
                     className={`rounded-full p-1 ${
                       statusMessage.type === "success"
-                        ? "bg-green-100 dark:bg-green-800"
+                        ? "bg-maple-success/20 dark:bg-maple-success/25"
                         : statusMessage.type === "error"
-                          ? "bg-red-100 dark:bg-red-800"
+                          ? "bg-maple-error/20 dark:bg-maple-error/25"
                           : statusMessage.type === "warning"
-                            ? "bg-amber-100 dark:bg-amber-800"
-                            : "bg-blue-100 dark:bg-blue-800"
+                            ? "bg-maple-warning/20 dark:bg-maple-warning/25"
+                            : "bg-maple-info/20 dark:bg-maple-info/25"
                     }`}
                   >
                     {statusMessage.type === "success" ? (
-                      <Check
-                        className={`w-5 h-5 ${
-                          statusMessage.type === "success"
-                            ? "text-green-600 dark:text-green-200"
-                            : ""
-                        }`}
-                      />
+                      <Check className="h-5 w-5 text-maple-success" />
                     ) : statusMessage.type === "error" ? (
-                      <X
-                        className={`w-5 h-5 ${
-                          statusMessage.type === "error" ? "text-red-600 dark:text-red-200" : ""
-                        }`}
-                      />
+                      <X className="h-5 w-5 text-maple-error" />
                     ) : (
                       <AlertTriangle
-                        className={`w-5 h-5 ${
+                        className={`h-5 w-5 ${
                           statusMessage.type === "warning"
-                            ? "text-amber-600 dark:text-amber-200"
-                            : "text-blue-600 dark:text-blue-200"
+                            ? "text-maple-warning"
+                            : "text-maple-info"
                         }`}
                       />
                     )}
@@ -382,7 +372,7 @@ function RedeemPage() {
               )}
 
               {passCheckData?.valid && passCheckData?.status === "active" && (
-                <div className="space-y-4 p-6 bg-gradient-to-b from-[hsl(var(--purple))]/5 to-transparent rounded-lg border border-[hsl(var(--purple))]/20">
+                <div className="space-y-4 p-6 bg-gradient-to-b from-[hsl(var(--maple-primary))]/5 to-transparent rounded-lg border border-[hsl(var(--maple-primary))]/20">
                   <h3 className="text-xl font-medium">Plan Details</h3>
                   <div className="space-y-2 text-[hsl(var(--marketing-text-muted))]">
                     <div className="flex justify-between">
@@ -411,12 +401,12 @@ function RedeemPage() {
                 onClick={handleRedeem}
                 disabled={!canRedeem || isOnNonFreePlan || redeemMutation.isPending}
                 className="w-full 
-                  dark:bg-white/90 dark:text-black dark:hover:bg-[hsl(var(--purple))]/80 dark:hover:text-[hsl(var(--foreground))] dark:active:bg-white/80
-                  bg-background text-foreground hover:bg-[hsl(var(--purple))] hover:text-[hsl(var(--foreground))] active:bg-background/80 
-                  border border-[hsl(var(--purple))]/30 hover:border-[hsl(var(--purple))]
+                  dark:bg-[hsl(var(--marketing-cta-invert-bg)/0.9)] dark:text-[hsl(var(--marketing-cta-invert-fg))] dark:hover:bg-[hsl(var(--maple-primary))]/80 dark:hover:text-[hsl(var(--foreground))] dark:active:bg-[hsl(var(--marketing-cta-invert-bg)/0.8)]
+                  bg-background text-foreground hover:bg-[hsl(var(--maple-primary))] hover:text-[hsl(var(--foreground))] active:bg-background/80 
+                  border border-[hsl(var(--maple-primary))]/30 hover:border-[hsl(var(--maple-primary))]
                   px-8 py-4 rounded-lg text-xl font-light 
-                  transition-all duration-300 shadow-[0_0_15px_rgba(var(--purple-rgb),0.2)] 
-                  hover:shadow-[0_0_25px_rgba(var(--purple-rgb),0.3)] disabled:opacity-50 
+                  transition-all duration-300 shadow-[0_0_15px_rgba(var(--maple-primary-rgb),0.2)] 
+                  hover:shadow-[0_0_25px_rgba(var(--maple-primary-rgb),0.3)] disabled:opacity-50 
                   disabled:cursor-not-allowed flex items-center justify-center gap-2"
               >
                 {redeemMutation.isPending ? (
@@ -444,7 +434,7 @@ function RedeemPage() {
                         }
                       })
                     }
-                    className="text-[hsl(var(--purple))] hover:underline"
+                    className="text-[hsl(var(--maple-primary))] hover:underline"
                   >
                     log in
                   </button>

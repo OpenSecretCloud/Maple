@@ -150,8 +150,8 @@ function TeamInviteAcceptance() {
             <Card className="w-full max-w-md">
               <CardHeader>
                 <div className="flex items-center justify-center mb-4">
-                  <div className="rounded-full bg-green-100 dark:bg-green-900/20 p-3">
-                    <CheckCircle className="h-8 w-8 text-green-600 dark:text-green-400" />
+                  <div className="rounded-full bg-maple-success/15 p-3 dark:bg-maple-success/20">
+                    <CheckCircle className="h-8 w-8 text-maple-success" />
                   </div>
                 </div>
                 <CardTitle className="text-center">Welcome to the Team!</CardTitle>

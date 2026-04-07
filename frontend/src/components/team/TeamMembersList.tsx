@@ -187,7 +187,7 @@ export function TeamMembersList({ teamStatus }: TeamMembersListProps) {
               <AlertDialogAction
                 onClick={handleLeaveTeam}
                 disabled={isProcessing}
-                className="bg-destructive text-white hover:bg-destructive/90"
+                className="bg-destructive text-destructive-onFilled hover:bg-destructive/90"
               >
                 {isProcessing ? (
                   <>
@@ -363,7 +363,7 @@ export function TeamMembersList({ teamStatus }: TeamMembersListProps) {
                 removeMemberDialog.member && handleRemoveMember(removeMemberDialog.member.user_id)
               }
               disabled={isProcessing}
-              className="bg-destructive text-white hover:bg-destructive/90"
+              className="bg-destructive text-destructive-onFilled hover:bg-destructive/90"
             >
               {isProcessing ? (
                 <>
@@ -407,7 +407,7 @@ export function TeamMembersList({ teamStatus }: TeamMembersListProps) {
                 revokeInviteDialog.invite && handleRevokeInvite(revokeInviteDialog.invite.invite_id)
               }
               disabled={isProcessing}
-              className="bg-destructive text-white hover:bg-destructive/90"
+              className="bg-destructive text-destructive-onFilled hover:bg-destructive/90"
             >
               {isProcessing ? (
                 <>
@@ -449,7 +449,7 @@ export function TeamMembersList({ teamStatus }: TeamMembersListProps) {
             <AlertDialogAction
               onClick={handleLeaveTeam}
               disabled={isProcessing}
-              className="bg-destructive text-white hover:bg-destructive/90"
+              className="bg-destructive text-destructive-onFilled hover:bg-destructive/90"
             >
               {isProcessing ? (
                 <>

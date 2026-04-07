@@ -25,7 +25,7 @@ export function SimplifiedFooter() {
             href="https://opensecret.cloud"
             target="_blank"
             rel="noopener noreferrer"
-            className="text-[hsl(var(--purple))] hover:text-[hsl(var(--purple))]/80 dark:text-[hsl(var(--blue))] dark:hover:text-[hsl(var(--blue))]/80 transition-colors"
+            className="text-[hsl(var(--maple-primary))] hover:text-[hsl(var(--maple-primary))]/80 dark:text-[hsl(var(--blue))] dark:hover:text-[hsl(var(--blue))]/80 transition-colors"
           >
             OpenSecret
           </a>

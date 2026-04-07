@@ -170,8 +170,8 @@ export function CreateApiKeyDialog({ open, onOpenChange, onKeyCreated }: CreateA
         ) : (
           <>
             <div className="space-y-4">
-              <Alert className="border-amber-500/50 bg-amber-500/10">
-                <AlertCircle className="h-4 w-4 text-amber-500" />
+              <Alert className="border-maple-warning/50 bg-maple-warning/10">
+                <AlertCircle className="h-4 w-4 text-maple-warning" />
                 <AlertDescription className="text-sm">
                   Make sure to copy your API key now. You won't be able to see it again!
                 </AlertDescription>
@@ -188,7 +188,7 @@ export function CreateApiKeyDialog({ open, onOpenChange, onKeyCreated }: CreateA
                   />
                   <Button size="icon" variant="outline" onClick={handleCopy} className="shrink-0">
                     {copied ? (
-                      <CheckCircle className="h-4 w-4 text-green-500" />
+                      <CheckCircle className="h-4 w-4 text-maple-success" />
                     ) : (
                       <Copy className="h-4 w-4" />
                     )}

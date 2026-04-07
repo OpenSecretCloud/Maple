@@ -24,6 +24,13 @@ import { useOpenSecret } from "@opensecret/react";
 import { useRouter } from "@tanstack/react-router";
 import { LocalStateContext } from "@/state/LocalStateContext";
 
+/** Matches Sidebar: `bg-muted` / `dark:bg-[hsl(var(--sidebar))]` */
+const SIDEBAR_TITLE_FADE =
+  "pointer-events-none absolute inset-y-0 right-0 z-[1] bg-gradient-to-l from-muted from-35% via-muted/85 to-transparent dark:from-[hsl(var(--sidebar))] dark:from-35% dark:via-[hsl(var(--sidebar)/0.85)] dark:to-transparent";
+
+const SIDEBAR_ELLIPSIS_BTN =
+  "z-20 shrink-0 rounded-full bg-muted/90 p-1.5 text-primary backdrop-blur-sm transition-opacity dark:bg-[hsl(var(--sidebar)/0.9)]";
+
 interface ChatHistoryListProps {
   currentChatId?: string;
   searchQuery?: string;
@@ -832,10 +839,14 @@ export function ChatHistoryList({
           // Only attach ref when not searching and it's the last item
           const shouldAttachRef = isLastConversation && !searchQuery.trim();
 
+          const fadeWidth = isMobile ? "w-[4.5rem]" : "w-12";
+
           return (
             <div
               key={conv.id}
-              className={`relative group select-none ${isSelected ? "bg-primary/10 rounded-lg" : ""}`}
+              className={`group relative flex select-none items-center gap-0.5 rounded-2xl pr-1 ${
+                isSelected ? "bg-primary/10" : ""
+              }`}
               ref={shouldAttachRef ? lastConversationRef : undefined}
               onContextMenu={(e) => e.preventDefault()}
             >
@@ -854,12 +865,12 @@ export function ChatHistoryList({
                 onTouchMove={handleLongPressMove}
                 onTouchEnd={handleLongPressEnd}
                 onTouchCancel={handleLongPressEnd}
-                className={`rounded-lg py-2 transition-all hover:text-primary cursor-pointer ${
+                className={`relative min-w-0 flex-1 cursor-pointer rounded-2xl py-1 transition-all hover:text-primary ${
                   isActive && !isSelectionMode ? "text-primary" : "text-muted-foreground"
                 } ${isSelectionMode ? "pl-8" : ""}`}
               >
                 {isSelectionMode && (
-                  <div className="absolute left-1.5 top-1/2 -translate-y-1/2">
+                  <div className="absolute left-1.5 top-1/2 z-10 -translate-y-1/2">
                     <Checkbox
                       checked={isSelected}
                       onCheckedChange={() => toggleSelection(conv.id)}
@@ -868,14 +879,17 @@ export function ChatHistoryList({
                     />
                   </div>
                 )}
-                <div
-                  className={`overflow-hidden whitespace-nowrap ${
-                    !isSelectionMode ? "hover:underline" : ""
-                  } pr-8`}
-                >
-                  {title}
+                <div className="relative min-w-0">
+                  <div
+                    className={`overflow-hidden whitespace-nowrap ${
+                      !isSelectionMode ? "hover:underline" : ""
+                    }`}
+                  >
+                    {title}
+                  </div>
+                  <div className={`${SIDEBAR_TITLE_FADE} ${fadeWidth}`} aria-hidden />
                 </div>
-                <div className="text-xs opacity-70 mt-1">
+                <div className="mt-0.5 hidden text-[10px] opacity-50">
                   {new Date(conv.created_at * 1000).toLocaleDateString()}
                 </div>
               </div>
@@ -883,8 +897,11 @@ export function ChatHistoryList({
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
                     <button
-                      className={`z-50 bg-background/80 absolute right-2 top-1/2 transform -translate-y-1/2 text-primary transition-opacity p-2 ${
-                        isMobile ? "opacity-100" : "opacity-0 group-hover:opacity-100"
+                      type="button"
+                      className={`${SIDEBAR_ELLIPSIS_BTN} ${
+                        isMobile
+                          ? "opacity-100"
+                          : "opacity-0 group-hover:opacity-100 focus:opacity-100"
                       }`}
                       onClick={(e) => {
                         e.preventDefault();
@@ -909,9 +926,6 @@ export function ChatHistoryList({
                     </DropdownMenuItem>
                   </DropdownMenuContent>
                 </DropdownMenu>
-              )}
-              {!isSelectionMode && (
-                <div className="absolute inset-y-0 right-0 w-[3rem] bg-gradient-to-l from-background to-transparent pointer-events-none"></div>
               )}
             </div>
           );
@@ -947,28 +961,38 @@ export function ChatHistoryList({
               <div className="flex flex-col gap-2">
                 {filteredArchivedChats.map((chat) => {
                   const isActive = chat.id === currentChatId;
+                  const archivedFade = isMobile ? "w-[4.5rem]" : "w-12";
                   return (
-                    <div key={chat.id} className="relative group">
+                    <div
+                      key={chat.id}
+                      className="group relative flex items-center gap-0.5 rounded-2xl pr-1"
+                    >
                       <div
                         onClick={() => {
                           router.navigate({ to: "/chat/$chatId", params: { chatId: chat.id } });
                         }}
-                        className={`rounded-lg py-2 transition-all hover:text-primary cursor-pointer ${
+                        className={`relative min-w-0 flex-1 cursor-pointer rounded-2xl py-1 transition-all hover:text-primary ${
                           isActive ? "text-primary" : "text-muted-foreground"
                         }`}
                       >
-                        <div className="overflow-hidden whitespace-nowrap hover:underline pr-8">
-                          {chat.title}
+                        <div className="relative min-w-0">
+                          <div className="overflow-hidden whitespace-nowrap hover:underline">
+                            {chat.title}
+                          </div>
+                          <div className={`${SIDEBAR_TITLE_FADE} ${archivedFade}`} aria-hidden />
                         </div>
-                        <div className="text-xs opacity-70 mt-1">
+                        <div className="mt-0.5 hidden text-[10px] opacity-50">
                           {new Date(chat.updated_at || chat.created_at).toLocaleDateString()}
                         </div>
                       </div>
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
                           <button
-                            className={`z-50 bg-background/80 absolute right-2 top-1/2 transform -translate-y-1/2 text-primary transition-opacity p-2 ${
-                              isMobile ? "opacity-100" : "opacity-0 group-hover:opacity-100"
+                            type="button"
+                            className={`${SIDEBAR_ELLIPSIS_BTN} ${
+                              isMobile
+                                ? "opacity-100"
+                                : "opacity-0 group-hover:opacity-100 focus:opacity-100"
                             }`}
                             onClick={(e) => {
                               e.preventDefault();
@@ -989,7 +1013,6 @@ export function ChatHistoryList({
                           </DropdownMenuItem>
                         </DropdownMenuContent>
                       </DropdownMenu>
-                      <div className="absolute inset-y-0 right-0 w-[3rem] bg-gradient-to-l from-background to-transparent pointer-events-none"></div>
                     </div>
                   );
                 })}

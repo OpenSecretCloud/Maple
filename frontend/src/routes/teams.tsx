@@ -21,9 +21,9 @@ function FeatureCard({
   description: string;
 }) {
   return (
-    <div className="feature-card from-[hsl(var(--purple))]/10 to-[hsl(var(--blue))]/10">
-      <div className="p-3 rounded-full bg-[hsl(var(--marketing-card))]/50 border border-[hsl(var(--purple))]/30 w-fit">
-        <Icon className="w-6 h-6 text-[hsl(var(--purple))]" />
+    <div className="feature-card from-[hsl(var(--maple-primary))]/10 to-[hsl(var(--blue))]/10">
+      <div className="p-3 rounded-full bg-[hsl(var(--marketing-card))]/50 border border-[hsl(var(--maple-primary))]/30 w-fit">
+        <Icon className="w-6 h-6 text-[hsl(var(--maple-primary))]" />
       </div>
       <h3 className="text-2xl font-medium text-foreground">{title}</h3>
       <p className="text-lg font-light text-[hsl(var(--marketing-text-muted))]">{description}</p>
@@ -39,7 +39,7 @@ function TeamsPage() {
         <MarketingHeader
           title={
             <span>
-              Secure AI for <span className="text-[hsl(var(--purple))]">Teams</span>
+              Secure AI for <span className="text-[hsl(var(--maple-primary))]">Teams</span>
             </span>
           }
           subtitle={
@@ -61,7 +61,7 @@ function TeamsPage() {
           </Link>
           <a
             href="mailto:team@opensecret.cloud"
-            className="cta-button-secondary flex items-center gap-2 px-8 py-4 text-xl font-light rounded-lg border border-[hsl(var(--purple))]/30 hover:border-[hsl(var(--purple))] mt-2"
+            className="cta-button-secondary flex items-center gap-2 px-8 py-4 text-xl font-light rounded-lg border border-[hsl(var(--maple-primary))]/30 hover:border-[hsl(var(--maple-primary))] mt-2"
           >
             Request a Demo
           </a>
@@ -73,7 +73,7 @@ function TeamsPage() {
             <div className="text-center mb-8">
               <h2 className="text-4xl font-light mb-4">
                 Why Choose{" "}
-                <span className="text-[hsl(var(--purple))] font-medium">Maple Teams?</span>
+                <span className="text-[hsl(var(--maple-primary))] font-medium">Maple Teams?</span>
               </h2>
               <p className="text-xl text-[hsl(var(--marketing-text-muted))] max-w-2xl mx-auto">
                 Experience the productivity gains of AI without the data tracking.
@@ -116,7 +116,9 @@ function TeamsPage() {
             <div className="text-center mb-12">
               <h2 className="text-4xl font-light mb-4">
                 Powerful AI models.{" "}
-                <span className="text-[hsl(var(--purple))] font-medium">No data sharing.</span>
+                <span className="text-[hsl(var(--maple-primary))] font-medium">
+                  No data sharing.
+                </span>
               </h2>
               <p className="text-xl text-[hsl(var(--marketing-text-muted))] max-w-2xl mx-auto">
                 We use open-source models from the biggest providers.
@@ -162,7 +164,8 @@ function TeamsPage() {
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
             <div className="text-center mb-8">
               <h2 className="text-4xl font-light mb-4">
-                Security by <span className="text-[hsl(var(--purple))] font-medium">Design</span>
+                Security by{" "}
+                <span className="text-[hsl(var(--maple-primary))] font-medium">Design</span>
               </h2>
               <p className="text-xl text-[hsl(var(--marketing-text-muted))] max-w-2xl mx-auto">
                 You don't share company secrets with competitors, so why should your AI? Whether
@@ -217,7 +220,7 @@ function TeamsPage() {
                   href="https://blog.trymaple.ai/manage-your-team-on-maple/"
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="text-[hsl(var(--purple))] underline text-lg font-medium hover:text-[hsl(var(--purple))]/80 transition-colors"
+                  className="text-[hsl(var(--maple-primary))] underline text-lg font-medium hover:text-[hsl(var(--maple-primary))]/80 transition-colors"
                 >
                   Learn More
                 </a>
@@ -226,7 +229,7 @@ function TeamsPage() {
             <div className="flex flex-col md:flex-row gap-8 items-center justify-center">
               <div className="flex-1 flex flex-col gap-4">
                 <div className="flex items-center gap-3">
-                  <Building2 className="w-8 h-8 text-[hsl(var(--purple))]" />
+                  <Building2 className="w-8 h-8 text-[hsl(var(--maple-primary))]" />
                   <span className="text-xl font-medium">For Businesses</span>
                 </div>
                 <p className="text-[hsl(var(--marketing-text-muted))]">
@@ -244,7 +247,7 @@ function TeamsPage() {
               </div>
               <div className="flex-1 flex flex-col gap-4">
                 <div className="flex items-center gap-3">
-                  <Users className="w-8 h-8 text-[hsl(var(--purple))]" />
+                  <Users className="w-8 h-8 text-[hsl(var(--maple-primary))]" />
                   <span className="text-xl font-medium">For Non-Profits</span>
                 </div>
                 <p className="text-[hsl(var(--marketing-text-muted))]">

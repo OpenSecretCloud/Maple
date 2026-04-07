@@ -5,24 +5,28 @@ import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "@/utils/utils";
 
 const buttonVariants = cva(
-  "hover:backdrop-blur-xs inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium ring-offset-background transition-colors transition-opacity focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50",
+  "inline-flex items-center justify-center whitespace-nowrap font-medium ring-offset-background transition-all duration-200 ease-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-40 active:scale-[0.95] rounded-full",
   {
     variants: {
       variant: {
         default:
-          "bg-primary backdrop-blur-xs text-primary-foreground hover:bg-primary/90 active:bg-primary/80",
-        destructive: "bg-destructive text-white hover:bg-destructive/90",
+          "bg-gradient-to-b from-[hsl(var(--maple-tertiary-container)/0.5)] to-[hsl(var(--maple-tertiary-container)/0.25)] text-[hsl(var(--maple-secondary-700))] hover:brightness-110 dark:from-[hsl(var(--maple-tertiary-container)/0.15)] dark:to-[hsl(var(--maple-tertiary-container)/0.08)] dark:text-[hsl(var(--maple-on-secondary))]",
+        primary:
+          "bg-gradient-to-b from-[hsl(var(--maple-primary))] to-[hsl(var(--maple-primary-strong))] text-[hsl(var(--maple-on-primary))]/90 hover:brightness-110",
+        destructive:
+          "bg-gradient-to-b from-[hsl(var(--maple-error))] to-[hsl(var(--maple-error)/0.8)] text-destructive-onFilled hover:brightness-110",
         outline:
-          "border border-[hsl(var(--purple))]/20 hover:border-[hsl(var(--purple))]/80 bg-background/80 hover:bg-background/80 hover:text-foreground dark:text-foreground dark:hover:text-white dark:hover:bg-[hsl(var(--purple))]/20 dark:border-[hsl(var(--blue))]/20 dark:hover:border-[hsl(var(--blue))]/80 dark:focus:text-white dark:active:text-white transition-all duration-300",
-        secondary: "bg-secondary text-secondary-foreground hover:bg-secondary/80",
+          "border border-[hsl(var(--maple-secondary))]/30 hover:border-[hsl(var(--maple-primary))]/80 bg-transparent text-foreground hover:brightness-110 dark:border-[hsl(var(--maple-secondary))]/20 dark:hover:border-[hsl(var(--maple-primary))]/60",
+        secondary:
+          "bg-gradient-to-b from-[hsl(var(--maple-secondary-container))] to-[hsl(var(--maple-secondary-container)/0.6)] text-[hsl(var(--maple-secondary-700))] hover:brightness-110 dark:from-[hsl(var(--maple-secondary-container))] dark:to-[hsl(var(--maple-secondary-container)/0.4)] dark:text-[hsl(var(--maple-on-secondary))]",
         ghost:
-          "hover:bg-accent hover:text-accent-foreground dark:hover:bg-[hsl(var(--purple))]/20 dark:hover:text-white",
-        link: "text-primary underline-offset-4 hover:underline"
+          "text-foreground hover:bg-[hsl(var(--maple-secondary-container))] dark:hover:bg-[hsl(var(--maple-secondary-container))]",
+        link: "text-[hsl(var(--maple-primary))] underline-offset-4 hover:underline rounded-none active:scale-100"
       },
       size: {
-        default: "h-10 px-4 py-2",
-        sm: "h-9 rounded-md px-3",
-        lg: "h-11 rounded-md px-8",
+        default: "h-10 px-5 py-2 text-sm",
+        sm: "h-9 px-4 py-2 text-xs",
+        lg: "h-11 px-7 py-2 text-base",
         icon: "h-10 w-10"
       }
     },

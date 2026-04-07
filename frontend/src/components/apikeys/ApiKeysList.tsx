@@ -99,7 +99,7 @@ export function ApiKeysList({ apiKeys, onKeyDeleted }: ApiKeysListProps) {
             <AlertDialogAction
               onClick={handleDelete}
               disabled={isDeleting}
-              className="bg-destructive text-white hover:bg-destructive/90"
+              className="bg-destructive text-destructive-onFilled hover:bg-destructive/90"
             >
               {isDeleting ? (
                 <>

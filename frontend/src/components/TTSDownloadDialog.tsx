@@ -128,7 +128,7 @@ export function TTSDownloadDialog({ open, onOpenChange }: TTSDownloadDialogProps
 
           {isReady && (
             <div className="space-y-4">
-              <div className="flex items-center gap-3 p-3 rounded-lg bg-green-500/10 text-green-600 dark:text-green-400">
+              <div className="flex items-center gap-3 rounded-lg bg-maple-success/10 p-3 text-maple-success">
                 <Check className="h-5 w-5 shrink-0" />
                 <p className="text-sm">
                   TTS is ready! Click the speaker icon on any assistant message to listen.

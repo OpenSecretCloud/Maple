@@ -24,41 +24,45 @@ export const PRICING_PLANS: PricingPlan[] = [
       {
         text: "25 messages per week",
         included: true,
-        icon: <Check className="w-4 h-4 text-green-500" />
+        icon: <Check className="w-4 h-4 text-maple-success" />
       },
       {
         text: "End-to-end encryption",
         included: true,
-        icon: <Check className="w-4 h-4 text-green-500" />
+        icon: <Check className="w-4 h-4 text-maple-success" />
       },
       {
         text: "Access to core AI features",
         included: true,
-        icon: <Check className="w-4 h-4 text-green-500" />
+        icon: <Check className="w-4 h-4 text-maple-success" />
       },
       {
         text: "Search Chat History",
         included: true,
-        icon: <Check className="w-4 h-4 text-green-500" />
+        icon: <Check className="w-4 h-4 text-maple-success" />
       },
-      { text: "Rename Chats", included: true, icon: <Check className="w-4 h-4 text-green-500" /> },
-      { text: "Image Upload", included: false, icon: <X className="w-4 h-4 text-red-500" /> },
+      {
+        text: "Rename Chats",
+        included: true,
+        icon: <Check className="w-4 h-4 text-maple-success" />
+      },
+      { text: "Image Upload", included: false, icon: <X className="w-4 h-4 text-maple-error" /> },
       {
         text: "Document Upload (PDF, TXT, MD)",
         included: false,
-        icon: <X className="w-4 h-4 text-red-500" />
+        icon: <X className="w-4 h-4 text-maple-error" />
       },
       {
         text: "Voice Recording (Whisper)",
         included: false,
-        icon: <X className="w-4 h-4 text-red-500" />
+        icon: <X className="w-4 h-4 text-maple-error" />
       },
       {
         text: "Paid AI models including Gemma 4 31B and Kimi K2.5",
         included: false,
-        icon: <X className="w-4 h-4 text-red-500" />
+        icon: <X className="w-4 h-4 text-maple-error" />
       },
-      { text: "API Access", included: false, icon: <X className="w-4 h-4 text-red-500" /> }
+      { text: "API Access", included: false, icon: <X className="w-4 h-4 text-maple-error" /> }
     ],
     ctaText: "Start Free"
   },
@@ -70,40 +74,44 @@ export const PRICING_PLANS: PricingPlan[] = [
       {
         text: "All features from Free",
         included: true,
-        icon: <Check className="w-4 h-4 text-green-500" />
+        icon: <Check className="w-4 h-4 text-maple-success" />
       },
       {
         text: "Enough messages for casual use",
         included: true,
-        icon: <Check className="w-4 h-4 text-green-500" />
+        icon: <Check className="w-4 h-4 text-maple-success" />
       },
       {
         text: "AI Naming of Chats",
         included: true,
-        icon: <Check className="w-4 h-4 text-green-500" />
+        icon: <Check className="w-4 h-4 text-maple-success" />
       },
       {
         text: "Gemma 4 31B + Qwen3-VL 30B",
         included: true,
-        icon: <Check className="w-4 h-4 text-green-500" />
+        icon: <Check className="w-4 h-4 text-maple-success" />
       },
-      { text: "Image Upload", included: true, icon: <Check className="w-4 h-4 text-green-500" /> },
+      {
+        text: "Image Upload",
+        included: true,
+        icon: <Check className="w-4 h-4 text-maple-success" />
+      },
       {
         text: "Document Upload (PDF, TXT, MD)",
         included: false,
-        icon: <X className="w-4 h-4 text-red-500" />
+        icon: <X className="w-4 h-4 text-maple-error" />
       },
       {
         text: "Voice Recording (Whisper)",
         included: false,
-        icon: <X className="w-4 h-4 text-red-500" />
+        icon: <X className="w-4 h-4 text-maple-error" />
       },
       {
         text: "Kimi K2.5",
         included: false,
-        icon: <X className="w-4 h-4 text-red-500" />
+        icon: <X className="w-4 h-4 text-maple-error" />
       },
-      { text: "API Access", included: false, icon: <X className="w-4 h-4 text-red-500" /> }
+      { text: "API Access", included: false, icon: <X className="w-4 h-4 text-maple-error" /> }
     ],
     ctaText: "Start Chatting"
   },
@@ -115,33 +123,37 @@ export const PRICING_PLANS: PricingPlan[] = [
       {
         text: "All features from Free",
         included: true,
-        icon: <Check className="w-4 h-4 text-green-500" />
+        icon: <Check className="w-4 h-4 text-maple-success" />
       },
       {
         text: "Generous usage for power users",
         included: true,
-        icon: <Check className="w-4 h-4 text-green-500" />
+        icon: <Check className="w-4 h-4 text-maple-success" />
       },
-      { text: "Image Upload", included: true, icon: <Check className="w-4 h-4 text-green-500" /> },
+      {
+        text: "Image Upload",
+        included: true,
+        icon: <Check className="w-4 h-4 text-maple-success" />
+      },
       {
         text: "Document Upload (PDF, TXT, MD)",
         included: true,
-        icon: <Check className="w-4 h-4 text-green-500" />
+        icon: <Check className="w-4 h-4 text-maple-success" />
       },
       {
         text: "Voice Recording (Whisper Large v3)",
         included: true,
-        icon: <Check className="w-4 h-4 text-green-500" />
+        icon: <Check className="w-4 h-4 text-maple-success" />
       },
       {
         text: "All AI models including Kimi K2.5",
         included: true,
-        icon: <Check className="w-4 h-4 text-green-500" />
+        icon: <Check className="w-4 h-4 text-maple-success" />
       },
       {
         text: "API Access (use plan credits via API)",
         included: true,
-        icon: <Check className="w-4 h-4 text-green-500" />
+        icon: <Check className="w-4 h-4 text-maple-success" />
       }
     ],
     ctaText: "Start Chatting",
@@ -155,43 +167,47 @@ export const PRICING_PLANS: PricingPlan[] = [
       {
         text: "All features from Pro",
         included: true,
-        icon: <Check className="w-4 h-4 text-green-500" />
+        icon: <Check className="w-4 h-4 text-maple-success" />
       },
       {
         text: "20x more usage than Pro",
         included: true,
-        icon: <Check className="w-4 h-4 text-green-500" />
+        icon: <Check className="w-4 h-4 text-maple-success" />
       },
       {
         text: "Priority support",
         included: true,
-        icon: <Check className="w-4 h-4 text-green-500" />
+        icon: <Check className="w-4 h-4 text-maple-success" />
       },
       {
         text: "Early Access to features and models",
         included: true,
-        icon: <Check className="w-4 h-4 text-green-500" />
+        icon: <Check className="w-4 h-4 text-maple-success" />
       },
-      { text: "Image Upload", included: true, icon: <Check className="w-4 h-4 text-green-500" /> },
+      {
+        text: "Image Upload",
+        included: true,
+        icon: <Check className="w-4 h-4 text-maple-success" />
+      },
       {
         text: "Document Upload (PDF, TXT, MD)",
         included: true,
-        icon: <Check className="w-4 h-4 text-green-500" />
+        icon: <Check className="w-4 h-4 text-maple-success" />
       },
       {
         text: "Voice Recording (Whisper Large v3)",
         included: true,
-        icon: <Check className="w-4 h-4 text-green-500" />
+        icon: <Check className="w-4 h-4 text-maple-success" />
       },
       {
         text: "All AI models including Kimi K2.5",
         included: true,
-        icon: <Check className="w-4 h-4 text-green-500" />
+        icon: <Check className="w-4 h-4 text-maple-success" />
       },
       {
         text: "API Access (use plan credits via API)",
         included: true,
-        icon: <Check className="w-4 h-4 text-green-500" />
+        icon: <Check className="w-4 h-4 text-maple-success" />
       }
     ],
     ctaText: "Start Chatting"
@@ -204,53 +220,57 @@ export const PRICING_PLANS: PricingPlan[] = [
       {
         text: "All features from Pro",
         included: true,
-        icon: <Check className="w-4 h-4 text-green-500" />
+        icon: <Check className="w-4 h-4 text-maple-success" />
       },
       {
         text: "2x more usage than Pro per team member",
         included: true,
-        icon: <Check className="w-4 h-4 text-green-500" />
+        icon: <Check className="w-4 h-4 text-maple-success" />
       },
       {
         text: "Priority support",
         included: true,
-        icon: <Check className="w-4 h-4 text-green-500" />
+        icon: <Check className="w-4 h-4 text-maple-success" />
       },
       {
         text: "Unified billing",
         included: true,
-        icon: <Check className="w-4 h-4 text-green-500" />
+        icon: <Check className="w-4 h-4 text-maple-success" />
       },
       {
         text: "Pool chat credits among team",
         included: true,
-        icon: <Check className="w-4 h-4 text-green-500" />
+        icon: <Check className="w-4 h-4 text-maple-success" />
       },
       {
         text: "Early Access to features and models",
         included: true,
-        icon: <Check className="w-4 h-4 text-green-500" />
+        icon: <Check className="w-4 h-4 text-maple-success" />
       },
-      { text: "Image Upload", included: true, icon: <Check className="w-4 h-4 text-green-500" /> },
+      {
+        text: "Image Upload",
+        included: true,
+        icon: <Check className="w-4 h-4 text-maple-success" />
+      },
       {
         text: "Document Upload (PDF, TXT, MD)",
         included: true,
-        icon: <Check className="w-4 h-4 text-green-500" />
+        icon: <Check className="w-4 h-4 text-maple-success" />
       },
       {
         text: "Voice Recording (Whisper Large v3)",
         included: true,
-        icon: <Check className="w-4 h-4 text-green-500" />
+        icon: <Check className="w-4 h-4 text-maple-success" />
       },
       {
         text: "All AI models including Kimi K2.5",
         included: true,
-        icon: <Check className="w-4 h-4 text-green-500" />
+        icon: <Check className="w-4 h-4 text-maple-success" />
       },
       {
         text: "API Access (use plan credits via API)",
         included: true,
-        icon: <Check className="w-4 h-4 text-green-500" />
+        icon: <Check className="w-4 h-4 text-maple-success" />
       }
     ],
     ctaText: "Start Chatting"

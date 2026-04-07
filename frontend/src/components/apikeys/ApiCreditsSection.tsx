@@ -196,8 +196,8 @@ export function ApiCreditsSection({ showSuccessMessage = false }: ApiCreditsSect
     <div className="space-y-4">
       {/* Success Message */}
       {showSuccess && (
-        <Alert className="border-green-500/50 bg-green-500/10">
-          <CheckCircle className="h-4 w-4 text-green-500" />
+        <Alert className="border-maple-success/50 bg-maple-success/10">
+          <CheckCircle className="h-4 w-4 text-maple-success" />
           <AlertDescription className="text-sm">
             Payment successful! Your credits have been added to your account.
           </AlertDescription>

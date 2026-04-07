@@ -66,7 +66,7 @@ function DownloadPage() {
         <MarketingHeader
           title={
             <span className="text-6xl font-light mb-0">
-              <span className="text-[hsl(var(--purple))]">Download</span> Maple
+              <span className="text-[hsl(var(--maple-primary))]">Download</span> Maple
             </span>
           }
           subtitle={
@@ -88,8 +88,8 @@ function DownloadPage() {
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6 max-w-3xl mx-auto">
             <div className="flex flex-col border border-[hsl(var(--marketing-card-border))] bg-[hsl(var(--marketing-card))]/75 text-foreground p-6 rounded-lg hover:border-foreground/30 transition-all duration-300">
-              <div className="p-3 rounded-full bg-[hsl(var(--marketing-card))]/50 border border-[hsl(var(--purple))]/30 w-fit mb-4">
-                <Apple className="w-6 h-6 text-[hsl(var(--purple))]" />
+              <div className="p-3 rounded-full bg-[hsl(var(--marketing-card))]/50 border border-[hsl(var(--maple-primary))]/30 w-fit mb-4">
+                <Apple className="w-6 h-6 text-[hsl(var(--maple-primary))]" />
               </div>
               <h3 className="text-xl font-medium mb-2">macOS</h3>
               <p className="text-[hsl(var(--marketing-text-muted))] mb-6 flex-grow">
@@ -99,10 +99,10 @@ function DownloadPage() {
                 <a
                   href={downloadUrls.macOS}
                   className="py-3 rounded-lg text-center font-medium transition-all duration-300 
-                  dark:bg-white/90 dark:text-black dark:hover:bg-[hsl(var(--purple))]/80 dark:hover:text-[hsl(var(--foreground))] dark:active:bg-white/80
-                  bg-background text-foreground hover:bg-[hsl(var(--purple))] hover:text-[hsl(var(--foreground))] active:bg-background/80 
-                  border border-[hsl(var(--purple))]/30 hover:border-[hsl(var(--purple))]
-                  shadow-[0_0_15px_rgba(var(--purple-rgb),0.2)] hover:shadow-[0_0_25px_rgba(var(--purple-rgb),0.3)]"
+                  dark:bg-[hsl(var(--marketing-cta-invert-bg)/0.9)] dark:text-[hsl(var(--marketing-cta-invert-fg))] dark:hover:bg-[hsl(var(--maple-primary))]/80 dark:hover:text-[hsl(var(--foreground))] dark:active:bg-[hsl(var(--marketing-cta-invert-bg)/0.8)]
+                  bg-background text-foreground hover:bg-[hsl(var(--maple-primary))] hover:text-[hsl(var(--foreground))] active:bg-background/80 
+                  border border-[hsl(var(--maple-primary))]/30 hover:border-[hsl(var(--maple-primary))]
+                  shadow-[0_0_15px_rgba(var(--maple-primary-rgb),0.2)] hover:shadow-[0_0_25px_rgba(var(--maple-primary-rgb),0.3)]"
                 >
                   Download for macOS
                 </a>
@@ -113,8 +113,8 @@ function DownloadPage() {
             </div>
 
             <div className="flex flex-col border border-[hsl(var(--marketing-card-border))] bg-[hsl(var(--marketing-card))]/75 text-foreground p-6 rounded-lg hover:border-foreground/30 transition-all duration-300">
-              <div className="p-3 rounded-full bg-[hsl(var(--marketing-card))]/50 border border-[hsl(var(--purple))]/30 w-fit mb-4">
-                <Terminal className="w-6 h-6 text-[hsl(var(--purple))]" />
+              <div className="p-3 rounded-full bg-[hsl(var(--marketing-card))]/50 border border-[hsl(var(--maple-primary))]/30 w-fit mb-4">
+                <Terminal className="w-6 h-6 text-[hsl(var(--maple-primary))]" />
               </div>
               <h3 className="text-xl font-medium mb-2">Linux</h3>
               <p className="text-[hsl(var(--marketing-text-muted))] mb-6 flex-grow">
@@ -124,10 +124,10 @@ function DownloadPage() {
                 <a
                   href={downloadUrls.linuxAppImage}
                   className="py-3 rounded-lg text-center font-medium transition-all duration-300 
-                  dark:bg-white/90 dark:text-black dark:hover:bg-[hsl(var(--purple))]/80 dark:hover:text-[hsl(var(--foreground))] dark:active:bg-white/80
-                  bg-background text-foreground hover:bg-[hsl(var(--purple))] hover:text-[hsl(var(--foreground))] active:bg-background/80 
-                  border border-[hsl(var(--purple))]/30 hover:border-[hsl(var(--purple))]
-                  shadow-[0_0_15px_rgba(var(--purple-rgb),0.2)] hover:shadow-[0_0_25px_rgba(var(--purple-rgb),0.3)]"
+                  dark:bg-[hsl(var(--marketing-cta-invert-bg)/0.9)] dark:text-[hsl(var(--marketing-cta-invert-fg))] dark:hover:bg-[hsl(var(--maple-primary))]/80 dark:hover:text-[hsl(var(--foreground))] dark:active:bg-[hsl(var(--marketing-cta-invert-bg)/0.8)]
+                  bg-background text-foreground hover:bg-[hsl(var(--maple-primary))] hover:text-[hsl(var(--foreground))] active:bg-background/80 
+                  border border-[hsl(var(--maple-primary))]/30 hover:border-[hsl(var(--maple-primary))]
+                  shadow-[0_0_15px_rgba(var(--maple-primary-rgb),0.2)] hover:shadow-[0_0_25px_rgba(var(--maple-primary-rgb),0.3)]"
                 >
                   Download AppImage
                 </a>
@@ -135,18 +135,18 @@ function DownloadPage() {
                   <a
                     href={downloadUrls.linuxDeb}
                     className="py-2 rounded-lg text-center text-sm font-medium transition-all duration-300 
-                    dark:bg-white/90 dark:text-black dark:hover:bg-[hsl(var(--purple))]/80 dark:hover:text-[hsl(var(--foreground))] dark:active:bg-white/80
-                    bg-background text-foreground hover:bg-[hsl(var(--purple))] hover:text-[hsl(var(--foreground))] active:bg-background/80 
-                    border border-[hsl(var(--purple))]/30 hover:border-[hsl(var(--purple))]"
+                    dark:bg-[hsl(var(--marketing-cta-invert-bg)/0.9)] dark:text-[hsl(var(--marketing-cta-invert-fg))] dark:hover:bg-[hsl(var(--maple-primary))]/80 dark:hover:text-[hsl(var(--foreground))] dark:active:bg-[hsl(var(--marketing-cta-invert-bg)/0.8)]
+                    bg-background text-foreground hover:bg-[hsl(var(--maple-primary))] hover:text-[hsl(var(--foreground))] active:bg-background/80 
+                    border border-[hsl(var(--maple-primary))]/30 hover:border-[hsl(var(--maple-primary))]"
                   >
                     .deb
                   </a>
                   <a
                     href={downloadUrls.linuxRpm}
                     className="py-2 rounded-lg text-center text-sm font-medium transition-all duration-300 
-                    dark:bg-white/90 dark:text-black dark:hover:bg-[hsl(var(--purple))]/80 dark:hover:text-[hsl(var(--foreground))] dark:active:bg-white/80
-                    bg-background text-foreground hover:bg-[hsl(var(--purple))] hover:text-[hsl(var(--foreground))] active:bg-background/80 
-                    border border-[hsl(var(--purple))]/30 hover:border-[hsl(var(--purple))]"
+                    dark:bg-[hsl(var(--marketing-cta-invert-bg)/0.9)] dark:text-[hsl(var(--marketing-cta-invert-fg))] dark:hover:bg-[hsl(var(--maple-primary))]/80 dark:hover:text-[hsl(var(--foreground))] dark:active:bg-[hsl(var(--marketing-cta-invert-bg)/0.8)]
+                    bg-background text-foreground hover:bg-[hsl(var(--maple-primary))] hover:text-[hsl(var(--foreground))] active:bg-background/80 
+                    border border-[hsl(var(--maple-primary))]/30 hover:border-[hsl(var(--maple-primary))]"
                   >
                     .rpm
                   </a>
@@ -158,7 +158,7 @@ function DownloadPage() {
           <div className="text-center mt-8 space-y-2 text-[hsl(var(--marketing-text-muted))] max-w-2xl mx-auto">
             <p>
               Windows version coming soon. In the meantime, you can use the{" "}
-              <a href="/login" className="text-[hsl(var(--purple))] hover:underline">
+              <a href="/login" className="text-[hsl(var(--maple-primary))] hover:underline">
                 web app
               </a>
               .
@@ -171,7 +171,7 @@ function DownloadPage() {
               •{" "}
               <a
                 href={releaseUrl}
-                className="text-[hsl(var(--purple))] hover:underline"
+                className="text-[hsl(var(--maple-primary))] hover:underline"
                 target="_blank"
                 rel="noopener noreferrer"
               >
@@ -189,8 +189,8 @@ function DownloadPage() {
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6 max-w-3xl mx-auto">
             <div className="flex flex-col border border-[hsl(var(--marketing-card-border))] bg-[hsl(var(--marketing-card))]/75 text-foreground p-6 rounded-lg hover:border-foreground/30 transition-all duration-300">
-              <div className="p-3 rounded-full bg-[hsl(var(--marketing-card))]/50 border border-[hsl(var(--purple))]/30 w-fit mb-4">
-                <Apple className="w-6 h-6 text-[hsl(var(--purple))]" />
+              <div className="p-3 rounded-full bg-[hsl(var(--marketing-card))]/50 border border-[hsl(var(--maple-primary))]/30 w-fit mb-4">
+                <Apple className="w-6 h-6 text-[hsl(var(--maple-primary))]" />
               </div>
               <h3 className="text-xl font-medium mb-2">iOS</h3>
               <p className="text-[hsl(var(--marketing-text-muted))] mb-6 flex-grow">
@@ -235,8 +235,8 @@ function DownloadPage() {
             </div>
             {!isIOSPlatform && (
               <div className="flex flex-col border border-[hsl(var(--marketing-card-border))] bg-[hsl(var(--marketing-card))]/75 text-foreground p-6 rounded-lg hover:border-foreground/30 transition-all duration-300">
-                <div className="p-3 rounded-full bg-[hsl(var(--marketing-card))]/50 border border-[hsl(var(--purple))]/30 w-fit mb-4">
-                  <Android className="w-6 h-6 text-[hsl(var(--purple))]" />
+                <div className="p-3 rounded-full bg-[hsl(var(--marketing-card))]/50 border border-[hsl(var(--maple-primary))]/30 w-fit mb-4">
+                  <Android className="w-6 h-6 text-[hsl(var(--maple-primary))]" />
                 </div>
                 <h3 className="text-xl font-medium mb-2">Android</h3>
                 <p className="text-[hsl(var(--marketing-text-muted))] mb-6">
@@ -274,9 +274,9 @@ function DownloadPage() {
                       <a
                         href="https://play.google.com/apps/testing/cloud.opensecret.maple"
                         className="py-2 px-4 rounded-lg text-center text-sm font-medium transition-all duration-300
-                        dark:bg-white/90 dark:text-black dark:hover:bg-[hsl(var(--purple))]/80 dark:hover:text-[hsl(var(--foreground))] dark:active:bg-white/80
-                        bg-background text-foreground hover:bg-[hsl(var(--purple))] hover:text-[hsl(var(--foreground))] active:bg-background/80
-                        border border-[hsl(var(--purple))]/30 hover:border-[hsl(var(--purple))]"
+                        dark:bg-[hsl(var(--marketing-cta-invert-bg)/0.9)] dark:text-[hsl(var(--marketing-cta-invert-fg))] dark:hover:bg-[hsl(var(--maple-primary))]/80 dark:hover:text-[hsl(var(--foreground))] dark:active:bg-[hsl(var(--marketing-cta-invert-bg)/0.8)]
+                        bg-background text-foreground hover:bg-[hsl(var(--maple-primary))] hover:text-[hsl(var(--foreground))] active:bg-background/80
+                        border border-[hsl(var(--maple-primary))]/30 hover:border-[hsl(var(--maple-primary))]"
                         target="_blank"
                         rel="noopener noreferrer"
                       >
@@ -292,7 +292,7 @@ function DownloadPage() {
 
         {/* Web Access Section */}
         <section className="w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12 mb-12">
-          <div className="flex flex-col p-4 sm:p-8 rounded-2xl bg-gradient-to-b from-[hsl(var(--marketing-card))] to-[hsl(var(--marketing-card))]/80 border-2 border-[hsl(var(--purple))] shadow-[0_0_30px_rgba(148,105,248,0.2)]">
+          <div className="flex flex-col p-4 sm:p-8 rounded-2xl bg-gradient-to-b from-[hsl(var(--marketing-card))] to-[hsl(var(--marketing-card))]/80 border-2 border-[hsl(var(--maple-primary))] shadow-[0_0_30px_rgba(var(--purple-rgb),0.2)]">
             <div className="flex flex-col md:flex-row items-center gap-6 md:gap-8">
               <div className="flex-1">
                 <h3 className="text-3xl font-light mb-3">Web Version</h3>
@@ -303,10 +303,10 @@ function DownloadPage() {
                 <a
                   href="/login"
                   className="inline-flex items-center gap-2 py-3 px-6 rounded-lg text-center font-medium transition-all duration-300 
-                  dark:bg-white/90 dark:text-black dark:hover:bg-[hsl(var(--purple))]/80 dark:hover:text-[hsl(var(--foreground))] dark:active:bg-white/80
-                  bg-background text-foreground hover:bg-[hsl(var(--purple))] hover:text-[hsl(var(--foreground))] active:bg-background/80 
-                  border border-[hsl(var(--purple))]/30 hover:border-[hsl(var(--purple))]
-                  shadow-[0_0_15px_rgba(var(--purple-rgb),0.2)] hover:shadow-[0_0_25px_rgba(var(--purple-rgb),0.3)]"
+                  dark:bg-[hsl(var(--marketing-cta-invert-bg)/0.9)] dark:text-[hsl(var(--marketing-cta-invert-fg))] dark:hover:bg-[hsl(var(--maple-primary))]/80 dark:hover:text-[hsl(var(--foreground))] dark:active:bg-[hsl(var(--marketing-cta-invert-bg)/0.8)]
+                  bg-background text-foreground hover:bg-[hsl(var(--maple-primary))] hover:text-[hsl(var(--foreground))] active:bg-background/80 
+                  border border-[hsl(var(--maple-primary))]/30 hover:border-[hsl(var(--maple-primary))]
+                  shadow-[0_0_15px_rgba(var(--maple-primary-rgb),0.2)] hover:shadow-[0_0_25px_rgba(var(--maple-primary-rgb),0.3)]"
                 >
                   <Globe className="w-5 h-5" />
                   Open Web App
@@ -316,9 +316,9 @@ function DownloadPage() {
                 <div className="w-full max-w-[380px] aspect-video bg-[hsl(var(--background))] rounded-lg border border-[hsl(var(--border))] overflow-hidden shadow-xl mx-auto">
                   <div className="h-8 border-b border-[hsl(var(--border))] bg-[hsl(var(--background))] flex items-center px-4">
                     <div className="flex gap-1.5">
-                      <div className="w-3 h-3 rounded-full bg-red-500/50"></div>
-                      <div className="w-3 h-3 rounded-full bg-yellow-500/50"></div>
-                      <div className="w-3 h-3 rounded-full bg-green-500/50"></div>
+                      <div className="h-3 w-3 rounded-full bg-maple-error/50" />
+                      <div className="h-3 w-3 rounded-full bg-maple-warning/50" />
+                      <div className="h-3 w-3 rounded-full bg-maple-success/50" />
                     </div>
                     <div className="mx-auto text-xs text-[hsl(var(--muted-foreground))]">
                       trymaple.ai
@@ -329,7 +329,7 @@ function DownloadPage() {
                     <div className="w-3/4 p-2">
                       <div className="h-3 bg-[hsl(var(--muted))]/40 rounded-full w-3/4 mb-2"></div>
                       <div className="h-3 bg-[hsl(var(--muted))]/40 rounded-full w-1/2 mb-4"></div>
-                      <div className="bg-[hsl(var(--purple))]/10 rounded p-2 mb-2">
+                      <div className="bg-[hsl(var(--maple-primary))]/10 rounded p-2 mb-2">
                         <div className="h-2 bg-[hsl(var(--muted))]/40 rounded-full w-full mb-1"></div>
                         <div className="h-2 bg-[hsl(var(--muted))]/40 rounded-full w-3/4"></div>
                       </div>

@@ -6,6 +6,7 @@ module.exports = {
     "./app/**/*.{ts,tsx}",
     "./src/**/*.{ts,tsx}",
   ],
+  darkMode: "class",
   prefix: "",
   theme: {
     container: {
@@ -36,6 +37,7 @@ module.exports = {
         destructive: {
           DEFAULT: "hsl(var(--destructive))",
           foreground: "hsl(var(--destructive-foreground))",
+          onFilled: "hsl(var(--destructive-on-filled))",
         },
         muted: {
           DEFAULT: "hsl(var(--muted))",
@@ -52,6 +54,52 @@ module.exports = {
         card: {
           DEFAULT: "hsl(var(--card))",
           foreground: "hsl(var(--card-foreground))",
+        },
+        maple: {
+          primary: {
+            DEFAULT: "hsl(var(--maple-primary))",
+            on: "hsl(var(--maple-on-primary))",
+            container: "hsl(var(--maple-primary-container))",
+            strong: "hsl(var(--maple-primary-strong))",
+          },
+          secondary: {
+            DEFAULT: "hsl(var(--maple-secondary))",
+            on: "hsl(var(--maple-on-secondary))",
+            container: "hsl(var(--maple-secondary-container))",
+            "700": "hsl(var(--maple-secondary-700))",
+          },
+          tertiary: {
+            DEFAULT: "hsl(var(--maple-tertiary))",
+            on: "hsl(var(--maple-on-tertiary))",
+            container: "hsl(var(--maple-tertiary-container))",
+          },
+          success: "hsl(var(--maple-success))",
+          warning: "hsl(var(--maple-warning))",
+          onWarning: "hsl(var(--maple-on-warning))",
+          error: "hsl(var(--maple-error))",
+          info: "hsl(var(--maple-info))",
+          surface: {
+            DEFAULT: "hsl(var(--maple-surface))",
+            dim: "hsl(var(--maple-surface-dim))",
+          },
+        },
+        marketingNav: {
+          bg: "hsl(var(--marketing-nav-bg))",
+          fg: "hsl(var(--marketing-nav-fg))",
+        },
+        /* Matches design neutral swatches (#FAFAFA … #0A0A0A); see index.css */
+        neutral: {
+          50: "hsl(var(--neutral-50) / <alpha-value>)",
+          100: "hsl(var(--neutral-100) / <alpha-value>)",
+          200: "hsl(var(--neutral-200) / <alpha-value>)",
+          300: "hsl(var(--neutral-300) / <alpha-value>)",
+          400: "hsl(var(--neutral-400) / <alpha-value>)",
+          500: "hsl(var(--neutral-500) / <alpha-value>)",
+          600: "hsl(var(--neutral-600) / <alpha-value>)",
+          700: "hsl(var(--neutral-700) / <alpha-value>)",
+          800: "hsl(var(--neutral-800) / <alpha-value>)",
+          900: "hsl(var(--neutral-900) / <alpha-value>)",
+          950: "hsl(var(--neutral-950) / <alpha-value>)",
         },
       },
       borderRadius: {

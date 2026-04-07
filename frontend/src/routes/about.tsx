@@ -17,7 +17,9 @@ function About(): JSX.Element {
         <MarketingHeader
           title={
             <h2 className="text-6xl font-light mb-0">
-              <span className="dark:text-[hsl(var(--blue))] text-[hsl(var(--purple))]">About</span>{" "}
+              <span className="dark:text-[hsl(var(--blue))] text-[hsl(var(--maple-primary))]">
+                About
+              </span>{" "}
               Maple AI
             </h2>
           }
@@ -32,9 +34,9 @@ function About(): JSX.Element {
           {/* Maple Trees Section */}
           <div
             className={
-              "flex flex-col gap-6 dark:border-white/10 " +
-              "border-[hsl(var(--marketing-card-border))] dark:bg-black/75 " +
-              "bg-[hsl(var(--marketing-card))]/80 dark:text-white p-8 border rounded-lg"
+              "flex flex-col gap-6 dark:border-[hsl(var(--marketing-hero-fg)/0.1)] " +
+              "border-[hsl(var(--marketing-card-border))] dark:bg-[hsl(var(--marketing-hero-scrim)/0.75)] " +
+              "bg-[hsl(var(--marketing-card))]/80 dark:text-[hsl(var(--marketing-hero-fg))] p-8 border rounded-lg"
             }
           >
             <h3 className="text-2xl font-medium">Our Inspiration</h3>
@@ -86,9 +88,9 @@ function About(): JSX.Element {
           {/* Founders Section */}
           <div
             className={
-              "flex flex-col gap-6 dark:border-white/10 " +
-              "border-[hsl(var(--marketing-card-border))] dark:bg-black/75 " +
-              "bg-[hsl(var(--marketing-card))]/80 dark:text-white p-8 border rounded-lg"
+              "flex flex-col gap-6 dark:border-[hsl(var(--marketing-hero-fg)/0.1)] " +
+              "border-[hsl(var(--marketing-card-border))] dark:bg-[hsl(var(--marketing-hero-scrim)/0.75)] " +
+              "bg-[hsl(var(--marketing-card))]/80 dark:text-[hsl(var(--marketing-hero-fg))] p-8 border rounded-lg"
             }
           >
             <h3 className="text-2xl font-medium">Founders</h3>
@@ -110,7 +112,7 @@ function About(): JSX.Element {
                   <img
                     src="/mark.jpg"
                     alt="Mark, Co-founder of Maple AI"
-                    className="w-32 h-32 rounded-full object-cover border-4 border-[hsl(var(--purple))]"
+                    className="w-32 h-32 rounded-full object-cover border-4 border-[hsl(var(--maple-primary))]"
                   />
                 </a>
                 <div>
@@ -125,7 +127,7 @@ function About(): JSX.Element {
                         href="https://x.com/marks_ftw"
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="inline-flex items-center justify-center rounded-md p-1 bg-[hsl(var(--purple))] text-white dark:bg-transparent dark:text-[hsl(var(--purple))] dark:border dark:border-[hsl(var(--purple))] transition-colors"
+                        className="inline-flex items-center justify-center rounded-md p-1 bg-[hsl(var(--maple-primary))] text-[hsl(var(--maple-on-primary))] dark:bg-transparent dark:text-[hsl(var(--maple-primary))] dark:border dark:border-[hsl(var(--maple-primary))] transition-colors"
                         aria-label="Mark Suman on X"
                       >
                         <X className="w-3 h-3 align-middle" />
@@ -134,7 +136,7 @@ function About(): JSX.Element {
                         href="https://linkedin.com/in/marksuman"
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="inline-flex items-center justify-center rounded-md p-1 bg-[hsl(var(--purple))] text-white dark:bg-transparent dark:text-[hsl(var(--purple))] dark:border dark:border-[hsl(var(--purple))] transition-colors"
+                        className="inline-flex items-center justify-center rounded-md p-1 bg-[hsl(var(--maple-primary))] text-[hsl(var(--maple-on-primary))] dark:bg-transparent dark:text-[hsl(var(--maple-primary))] dark:border dark:border-[hsl(var(--maple-primary))] transition-colors"
                         aria-label="Mark Suman on LinkedIn"
                       >
                         <LinkedIn className="w-3 h-3 align-middle" />
@@ -169,7 +171,7 @@ function About(): JSX.Element {
                         href="https://x.com/anthonyronning_"
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="inline-flex items-center justify-center rounded-md p-1 bg-[hsl(var(--blue))] text-white dark:bg-transparent dark:text-[hsl(var(--blue))] dark:border dark:border-[hsl(var(--blue))] transition-colors"
+                        className="inline-flex items-center justify-center rounded-md p-1 bg-[hsl(var(--blue))] text-[hsl(var(--maple-on-primary))] dark:bg-transparent dark:text-[hsl(var(--blue))] dark:border dark:border-[hsl(var(--blue))] transition-colors"
                         aria-label="Anthony Ronning on X"
                       >
                         <X className="w-3 h-3 align-middle" />
@@ -184,9 +186,9 @@ function About(): JSX.Element {
           {/* OpenSecret Company Section */}
           <div
             className={
-              "flex flex-col gap-6 dark:border-white/10 " +
-              "border-[hsl(var(--marketing-card-border))] dark:bg-black/75 " +
-              "bg-[hsl(var(--marketing-card))]/80 dark:text-white p-8 border rounded-lg"
+              "flex flex-col gap-6 dark:border-[hsl(var(--marketing-hero-fg)/0.1)] " +
+              "border-[hsl(var(--marketing-card-border))] dark:bg-[hsl(var(--marketing-hero-scrim)/0.75)] " +
+              "bg-[hsl(var(--marketing-card))]/80 dark:text-[hsl(var(--marketing-hero-fg))] p-8 border rounded-lg"
             }
           >
             <h3 className="text-2xl font-medium">Built on OpenSecret</h3>
@@ -207,7 +209,7 @@ function About(): JSX.Element {
                   href="https://opensecret.cloud"
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="inline-flex items-center text-[hsl(var(--blue))] hover:text-[hsl(var(--purple))] transition-colors underline"
+                  className="inline-flex items-center text-[hsl(var(--blue))] hover:text-[hsl(var(--maple-primary))] transition-colors underline"
                 >
                   Learn more about OpenSecret →
                 </a>
@@ -218,9 +220,9 @@ function About(): JSX.Element {
           {/* Developer Programs Section */}
           <div
             className={
-              "flex flex-col gap-6 dark:border-white/10 " +
-              "border-[hsl(var(--marketing-card-border))] dark:bg-black/75 " +
-              "bg-[hsl(var(--marketing-card))]/80 dark:text-white p-8 border rounded-lg"
+              "flex flex-col gap-6 dark:border-[hsl(var(--marketing-hero-fg)/0.1)] " +
+              "border-[hsl(var(--marketing-card-border))] dark:bg-[hsl(var(--marketing-hero-scrim)/0.75)] " +
+              "bg-[hsl(var(--marketing-card))]/80 dark:text-[hsl(var(--marketing-hero-fg))] p-8 border rounded-lg"
             }
           >
             <h3 className="text-2xl font-medium">Developer Programs</h3>

@@ -99,39 +99,33 @@ const ValueIcon = ({ value }: { value: string }) => {
   switch (value) {
     case "Yes":
       return (
-        <div className="flex items-center justify-center w-6 h-6 bg-green-300 dark:bg-green-900/30 rounded-full">
-          <Check className="w-4 h-4 text-green-600 dark:text-green-400" aria-label="Available" />
+        <div className="flex h-6 w-6 items-center justify-center rounded-full bg-maple-success/25 dark:bg-maple-success/30">
+          <Check className="h-4 w-4 text-maple-success" aria-label="Available" />
         </div>
       );
     case "No":
       return (
-        <div className="flex items-center justify-center w-6 h-6 bg-red-300 dark:bg-red-900/30 rounded-full">
-          <X className="w-4 h-4 text-red-600 dark:text-red-400" aria-label="Not Available" />
+        <div className="flex h-6 w-6 items-center justify-center rounded-full bg-maple-error/25 dark:bg-maple-error/30">
+          <X className="h-4 w-4 text-maple-error" aria-label="Not Available" />
         </div>
       );
     case "?":
       return (
-        <div className="flex items-center justify-center w-6 h-6 bg-yellow-300 dark:bg-yellow-900/30 rounded-full">
-          <HelpCircle
-            className="w-4 h-4 text-yellow-600 dark:text-yellow-400"
-            aria-label="Unknown or Unclear"
-          />
+        <div className="flex h-6 w-6 items-center justify-center rounded-full bg-maple-warning/25 dark:bg-maple-warning/30">
+          <HelpCircle className="h-4 w-4 text-maple-warning" aria-label="Unknown or Unclear" />
         </div>
       );
     case "$":
       return (
-        <div className="flex items-center justify-center w-6 h-6 bg-blue-300 dark:bg-blue-900/30 rounded-full">
-          <DollarSign
-            className="w-4 h-4 text-blue-600 dark:text-blue-400"
-            aria-label="Paid Feature"
-          />
+        <div className="flex h-6 w-6 items-center justify-center rounded-full bg-maple-info/25 dark:bg-maple-info/30">
+          <DollarSign className="h-4 w-4 text-maple-info" aria-label="Paid Feature" />
         </div>
       );
     case "Partial":
       return (
-        <div className="flex items-center justify-center w-6 h-6 bg-orange-300 dark:bg-orange-900/30 rounded-full">
+        <div className="flex h-6 w-6 items-center justify-center rounded-full bg-[hsl(var(--maple-primary))]/25 dark:bg-[hsl(var(--maple-primary))]/30">
           <MinusCircle
-            className="w-4 h-4 text-orange-600 dark:text-orange-400"
+            className="h-4 w-4 text-[hsl(var(--maple-primary))]"
             aria-label="Partially Available"
           />
         </div>
@@ -154,7 +148,7 @@ export function ComparisonChart() {
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="text-center mb-16">
           <h2 className="text-4xl font-light mb-4">
-            How We <span className="text-[hsl(var(--purple))] font-medium">Compare</span>
+            How We <span className="text-[hsl(var(--maple-primary))] font-medium">Compare</span>
           </h2>
           <p className="text-xl text-[hsl(var(--marketing-text-muted))] max-w-2xl mx-auto">
             See how Maple stacks up against other AI chat platforms when it comes to privacy,
@@ -178,7 +172,7 @@ export function ComparisonChart() {
                     key={product.key}
                     className={`p-3 text-center font-medium ${
                       product.highlight
-                        ? "bg-[hsl(var(--purple))]/5 text-[hsl(var(--purple))] border-l-2 border-r-2 border-[hsl(var(--purple))]/30"
+                        ? "bg-[hsl(var(--maple-primary))]/5 text-[hsl(var(--maple-primary))] border-l-2 border-r-2 border-[hsl(var(--maple-primary))]/30"
                         : "text-foreground bg-[hsl(var(--marketing-card-highlight))]/30"
                     }`}
                   >
@@ -206,7 +200,7 @@ export function ComparisonChart() {
                       key={product.key}
                       className={`p-3 text-center font-medium ${
                         product.highlight
-                          ? "bg-[hsl(var(--purple))]/5 text-[hsl(var(--purple))] border-l-2 border-r-2 border-[hsl(var(--purple))]/30"
+                          ? "bg-[hsl(var(--maple-primary))]/5 text-[hsl(var(--maple-primary))] border-l-2 border-r-2 border-[hsl(var(--maple-primary))]/30"
                           : "text-foreground bg-[hsl(var(--marketing-card-highlight))]/30"
                       }`}
                     >
