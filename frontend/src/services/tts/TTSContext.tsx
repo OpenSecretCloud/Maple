@@ -48,6 +48,7 @@ interface TTSContextValue {
   downloadDetail: string;
   totalSizeMB: number;
   isPlaying: boolean;
+  isGenerating: boolean;
   currentPlayingId: string | null;
   isTauriEnv: boolean;
 
@@ -55,7 +56,11 @@ interface TTSContextValue {
   startDownload: () => Promise<void>;
   deleteModels: () => Promise<void>;
   speak: (text: string, messageId: string) => Promise<void>;
+  /** Like speak(), but returns a promise that resolves when playback ends (for voice mode loop). */
+  speakAndWait: (text: string, messageId: string) => Promise<void>;
   stop: () => void;
+  /** Cancel an in-progress TTS generation (returns to idle without playing). */
+  cancelGeneration: () => void;
   clearPlaybackError: () => void;
 }
 
@@ -72,6 +77,7 @@ export function TTSProvider({ children }: { children: ReactNode }) {
   const [downloadDetail, setDownloadDetail] = useState("");
   const [totalSizeMB, setTotalSizeMB] = useState(264);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [isGenerating, setIsGenerating] = useState(false);
   const [currentPlayingId, setCurrentPlayingId] = useState<string | null>(null);
   const [playbackError, setPlaybackError] = useState<string | null>(null);
 
@@ -84,6 +90,9 @@ export function TTSProvider({ children }: { children: ReactNode }) {
     playbackState: MediaSessionPlaybackState;
   } | null>(null);
   const unlistenRef = useRef<(() => void) | null>(null);
+
+  // Generation sequence ID to detect stale results
+  const generationSeqRef = useRef(0);
 
   const cleanupDownloadListener = useCallback(() => {
     if (unlistenRef.current) {
@@ -171,7 +180,7 @@ export function TTSProvider({ children }: { children: ReactNode }) {
     }
   }, [isTauriEnv, cleanupDownloadListener]);
 
-  const stop = useCallback(() => {
+  const stopPlayback = useCallback(() => {
     if (audioUrlRef.current) {
       URL.revokeObjectURL(audioUrlRef.current);
       audioUrlRef.current = null;
@@ -219,6 +228,22 @@ export function TTSProvider({ children }: { children: ReactNode }) {
     setCurrentPlayingId(null);
   }, []);
 
+  const stop = useCallback(() => {
+    // Invalidate any in-flight generation
+    generationSeqRef.current++;
+    setIsGenerating(false);
+    stopPlayback();
+  }, [stopPlayback]);
+
+  const cancelGeneration = useCallback(() => {
+    // Bump the sequence so the in-flight tts_synthesize result is discarded
+    generationSeqRef.current++;
+    setIsGenerating(false);
+    // Also stop playback to close the AudioContext — this prevents audio from
+    // playing if cancelGeneration is called during the async decoding window.
+    stopPlayback();
+  }, [stopPlayback]);
+
   const deleteModels = useCallback(async () => {
     if (!isTauriEnv) return;
 
@@ -238,26 +263,43 @@ export function TTSProvider({ children }: { children: ReactNode }) {
     }
   }, [isTauriEnv, stop]);
 
-  const speak = useCallback(
-    async (text: string, messageId: string) => {
+  /**
+   * Internal speak implementation. Returns a promise that resolves when playback ends
+   * if `waitForEnd` is true, otherwise resolves immediately after starting playback.
+   */
+  const speakInternal = useCallback(
+    async (text: string, messageId: string, waitForEnd: boolean): Promise<void> => {
       if (!isTauriEnv || status !== "ready") return;
 
-      // Stop any currently playing audio
+      // Stop any currently playing audio and invalidate previous generation
       stop();
 
       // Preprocess text to remove think blocks and other non-speakable content
       const processedText = preprocessTextForTTS(text);
       if (!processedText) {
-        return;
+        // Signal to callers that there was nothing to play (not a real error).
+        // Voice loop catches this to restart recording instead of exiting.
+        throw new Error("no_speakable_text");
       }
 
+      // Capture a sequence ID for this generation so we can detect staleness
+      const mySeq = ++generationSeqRef.current;
+
       try {
-        setIsPlaying(true);
+        setIsGenerating(true);
         setCurrentPlayingId(messageId);
 
         const result = await invoke<TTSSynthesizeResponse>("tts_synthesize", {
           text: processedText
         });
+
+        // Check if this generation is still current
+        if (generationSeqRef.current !== mySeq) {
+          // Stale - a newer speak() call or cancelGeneration() happened
+          return;
+        }
+
+        setIsGenerating(false);
 
         // Create audio from base64
         const audioBlob = base64ToBlob(result.audio_base64, "audio/wav");
@@ -304,7 +346,7 @@ export function TTSProvider({ children }: { children: ReactNode }) {
         }
 
         // iOS: try to force media playback routing (speaker) for Web Audio.
-        // This helps avoid “only works with headphones / earpiece” routing issues.
+        // This helps avoid "only works with headphones / earpiece" routing issues.
         try {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const nav = navigator as any;
@@ -318,9 +360,23 @@ export function TTSProvider({ children }: { children: ReactNode }) {
 
         const audioContext = new AudioContextClass() as AudioContext;
 
+        // Store context ref immediately so stopPlayback() can clean it up
+        // if any operation below throws (prevents AudioContext resource leak)
+        audioContextRef.current = audioContext;
+
         // iOS requires user interaction to start audio - resume if suspended
         if (audioContext.state === "suspended") {
           await audioContext.resume();
+        }
+
+        // Re-check staleness after async work
+        if (generationSeqRef.current !== mySeq) {
+          void audioContext.close().catch(() => {});
+          if (audioContextRef.current === audioContext) {
+            audioContextRef.current = null;
+          }
+          URL.revokeObjectURL(audioUrl);
+          return;
         }
 
         const arrayBuffer = await audioBlob.arrayBuffer();
@@ -330,62 +386,97 @@ export function TTSProvider({ children }: { children: ReactNode }) {
         source.buffer = audioBuffer;
         source.connect(audioContext.destination);
 
-        // Store context and source for stop functionality
-        audioContextRef.current = audioContext;
         sourceNodeRef.current = source;
 
-        source.onended = () => {
-          if (sourceNodeRef.current !== source) {
-            return;
-          }
-          setIsPlaying(false);
-          setCurrentPlayingId(null);
+        setIsPlaying(true);
 
-          if (audioUrlRef.current === audioUrl) {
-            URL.revokeObjectURL(audioUrlRef.current);
-            audioUrlRef.current = null;
-          }
-          void audioContext.close().catch(() => {
-            // Ignore
-          });
-          audioContextRef.current = null;
-          sourceNodeRef.current = null;
-
-          if (audioSessionPrevTypeRef.current) {
-            try {
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              const nav = navigator as any;
-              if (nav.audioSession && typeof nav.audioSession.type === "string") {
-                nav.audioSession.type = audioSessionPrevTypeRef.current;
-              }
-            } catch {
-              // Ignore
+        // Wrap playback in a promise that resolves when it ends (for waitForEnd mode)
+        const playbackPromise = new Promise<void>((resolve) => {
+          source.onended = () => {
+            if (sourceNodeRef.current !== source) {
+              resolve();
+              return;
             }
-            audioSessionPrevTypeRef.current = null;
-          }
+            setIsPlaying(false);
+            setCurrentPlayingId(null);
 
-          if (mediaSessionPrevStateRef.current) {
-            try {
-              if ("mediaSession" in navigator) {
-                navigator.mediaSession.metadata = mediaSessionPrevStateRef.current.metadata;
-                navigator.mediaSession.playbackState =
-                  mediaSessionPrevStateRef.current.playbackState;
-              }
-            } catch {
-              // Ignore
+            if (audioUrlRef.current === audioUrl) {
+              URL.revokeObjectURL(audioUrlRef.current);
+              audioUrlRef.current = null;
             }
-            mediaSessionPrevStateRef.current = null;
-          }
-        };
+            void audioContext.close().catch(() => {
+              // Ignore
+            });
+            audioContextRef.current = null;
+            sourceNodeRef.current = null;
+
+            if (audioSessionPrevTypeRef.current) {
+              try {
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                const nav = navigator as any;
+                if (nav.audioSession && typeof nav.audioSession.type === "string") {
+                  nav.audioSession.type = audioSessionPrevTypeRef.current;
+                }
+              } catch {
+                // Ignore
+              }
+              audioSessionPrevTypeRef.current = null;
+            }
+
+            if (mediaSessionPrevStateRef.current) {
+              try {
+                if ("mediaSession" in navigator) {
+                  navigator.mediaSession.metadata = mediaSessionPrevStateRef.current.metadata;
+                  navigator.mediaSession.playbackState =
+                    mediaSessionPrevStateRef.current.playbackState;
+                }
+              } catch {
+                // Ignore
+              }
+              mediaSessionPrevStateRef.current = null;
+            }
+
+            resolve();
+          };
+        });
 
         source.start(0);
+
+        if (waitForEnd) {
+          await playbackPromise;
+        }
       } catch (err) {
+        // Check staleness before setting error state
+        if (generationSeqRef.current !== mySeq) return;
+
         console.error("TTS playback failed:", err);
+        setIsGenerating(false);
         setPlaybackError(err instanceof Error ? err.message : "TTS playback failed");
-        stop();
+        stopPlayback();
+        // Re-throw so speakAndWait callers (e.g. voice mode loop) can catch and exit
+        throw err;
       }
     },
-    [isTauriEnv, status, stop]
+    [isTauriEnv, status, stop, stopPlayback]
+  );
+
+  const speak = useCallback(
+    async (text: string, messageId: string) => {
+      try {
+        await speakInternal(text, messageId, false);
+      } catch {
+        // Error already handled by speakInternal (playbackError state set).
+        // Only speakAndWait needs to propagate for voice mode loop.
+      }
+    },
+    [speakInternal]
+  );
+
+  const speakAndWait = useCallback(
+    async (text: string, messageId: string) => {
+      await speakInternal(text, messageId, true);
+    },
+    [speakInternal]
   );
 
   const clearPlaybackError = useCallback(() => {
@@ -452,13 +543,16 @@ export function TTSProvider({ children }: { children: ReactNode }) {
         downloadDetail,
         totalSizeMB,
         isPlaying,
+        isGenerating,
         currentPlayingId,
         isTauriEnv,
         checkStatus,
         startDownload,
         deleteModels,
         speak,
+        speakAndWait,
         stop,
+        cancelGeneration,
         clearPlaybackError
       }}
     >
