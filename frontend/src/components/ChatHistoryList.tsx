@@ -183,7 +183,8 @@ export function ChatHistoryList({
       try {
         // Load initial 20 conversations (newest first by default)
         const response = await opensecret.listConversations({
-          limit: 20
+          limit: 20,
+          unassigned_project: true
         });
 
         const loadedConversations = response.data || [];
@@ -221,7 +222,8 @@ export function ChatHistoryList({
       // Fetch latest conversations to detect new ones or metadata changes
       // Default order is desc (newest first), fetches up to 20 conversations
       const response = await opensecret.listConversations({
-        limit: 20 // Fetch up to 20 to catch any new conversations
+        limit: 20, // Fetch up to 20 to catch any new conversations
+        unassigned_project: true
       });
 
       const newConversations = response.data || [];
@@ -425,7 +427,8 @@ export function ChatHistoryList({
       // Fetch next 10 older conversations using the oldest conversation ID we have
       const response = await opensecret.listConversations({
         limit: 10,
-        after: oldestConversationId
+        after: oldestConversationId,
+        unassigned_project: true
       });
 
       const olderConversations = response.data || [];

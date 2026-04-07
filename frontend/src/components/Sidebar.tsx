@@ -214,7 +214,12 @@ export function Sidebar({
             </Button>
           </div>
         </div>
-        <div className={`flex justify-between items-center px-4 ${isSelectionMode ? "mb-2" : ""}`}>
+        <div
+          className={cn(
+            "px-4",
+            isSelectionMode ? "mb-2 space-y-2" : "flex items-center justify-between"
+          )}
+        >
           {isSelectionMode ? (
             <>
               <div className="flex items-center gap-2">
@@ -231,11 +236,11 @@ export function Sidebar({
                   {selectedIds.size >= 20 ? "max" : selectedIds.size} selected
                 </span>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex w-full items-center gap-2">
                 <Button
                   variant="outline"
                   size="sm"
-                  className="h-8"
+                  className="h-8 flex-1"
                   onClick={handleMoveSelected}
                   disabled={selectedIds.size === 0}
                 >
@@ -245,7 +250,7 @@ export function Sidebar({
                 <Button
                   variant="destructive"
                   size="sm"
-                  className="h-8"
+                  className="h-8 flex-1"
                   onClick={handleDeleteSelected}
                   disabled={selectedIds.size === 0}
                 >
