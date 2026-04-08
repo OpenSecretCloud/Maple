@@ -1560,8 +1560,12 @@ export function UnifiedChat() {
           setTitleJustUpdated(true);
           // Remove animation class after animation completes (800ms for flash animation)
           setTimeout(() => setTitleJustUpdated(false), 850);
-          // Refresh the sidebar conversation list
-          queryClient.invalidateQueries({ queryKey: ["conversations"] });
+          // Refresh all sidebar conversation lists
+          await Promise.all([
+            queryClient.invalidateQueries({ queryKey: ["conversations"] }),
+            queryClient.invalidateQueries({ queryKey: ["pinnedConversations"] }),
+            queryClient.invalidateQueries({ queryKey: ["projectConversations"] })
+          ]);
           return; // Stop polling once title is updated
         }
 
