@@ -244,6 +244,37 @@ export function ProjectDetailView({ projectId }: ProjectDetailViewProps) {
     void loadConversations();
   }, [hasAuthUser, loadConversations]);
 
+  useEffect(() => {
+    if (!hasAuthUser) return;
+
+    const handleConversationMetadataUpdated = (
+      event: CustomEvent<{ conversationId: string; projectId?: string | null }>
+    ) => {
+      if (!Object.prototype.hasOwnProperty.call(event.detail, "projectId")) {
+        return;
+      }
+
+      const isConversationVisible = conversations.some(
+        (conversation) => conversation.id === event.detail.conversationId
+      );
+
+      if (event.detail.projectId === projectId || isConversationVisible) {
+        void loadConversations();
+      }
+    };
+
+    window.addEventListener(
+      "conversationmetadataupdated",
+      handleConversationMetadataUpdated as EventListener
+    );
+    return () => {
+      window.removeEventListener(
+        "conversationmetadataupdated",
+        handleConversationMetadataUpdated as EventListener
+      );
+    };
+  }, [conversations, hasAuthUser, loadConversations, projectId]);
+
   const invalidateConversationData = useCallback(async () => {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: ["conversations"] }),
