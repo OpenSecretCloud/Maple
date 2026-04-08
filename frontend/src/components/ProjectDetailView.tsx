@@ -48,6 +48,7 @@ import { MoveChatsDialog } from "@/components/MoveChatsDialog";
 import { listAllConversationProjects } from "@/utils/paginatedLists";
 
 const PROJECT_PAGE_SIZE = 20;
+const MAX_SELECTION = 20;
 
 interface ProjectDetailViewProps {
   projectId: string;
@@ -389,6 +390,9 @@ export function ProjectDetailView({ projectId }: ProjectDetailViewProps) {
       if (next.has(conversationId)) {
         next.delete(conversationId);
       } else {
+        if (next.size >= MAX_SELECTION) {
+          return prev;
+        }
         next.add(conversationId);
       }
       return next;
@@ -494,7 +498,7 @@ export function ProjectDetailView({ projectId }: ProjectDetailViewProps) {
                       {isSelectionMode ? (
                         <div className="flex flex-wrap items-center gap-2">
                           <span className="text-sm text-muted-foreground">
-                            {selectedIds.size} selected
+                            {selectedIds.size}/{MAX_SELECTION} selected
                           </span>
                           <Button
                             type="button"
