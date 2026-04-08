@@ -127,10 +127,11 @@ function TeamsPage() {
                 { src: "/badge-openai-logo.png", alt: "OpenAI", label: "OpenAI GPT-OSS" },
                 { src: "/badge-google-logo.png", alt: "Google", label: "Gemma 4" },
                 { src: "/badge-kimi-logo.png", alt: "Moonshot", label: "Kimi K2.5" },
+                { src: "/badge-zai-logo.svg", alt: "Z.ai", label: "GLM 5.1" },
                 { src: "/badge-meta-logo.png", alt: "Meta", label: "Meta Llama" }
               ];
               return (
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8">
+                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-8">
                   {models.map((model) => (
                     <div key={model.label} className="flex flex-col items-center">
                       <img
@@ -138,7 +139,7 @@ function TeamsPage() {
                         alt={model.alt}
                         loading="lazy"
                         decoding="async"
-                        className="w-72 h-24 object-contain mb-4"
+                        className="max-w-full h-24 object-contain mb-4"
                       />
                       <span className="text-lg font-medium text-foreground">{model.label}</span>
                     </div>

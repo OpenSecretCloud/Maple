@@ -44,10 +44,17 @@ export const MODEL_CONFIG: Record<string, ModelCfg> = {
     supportsVision: true,
     tokenLimit: 256000
   },
+  "glm-5-1": {
+    displayName: "GLM 5.1",
+    shortName: "GLM 5.1",
+    badges: ["Pro", "New", "Reasoning"],
+    requiresPro: true,
+    tokenLimit: 202000
+  },
   "kimi-k2-5": {
     displayName: "Kimi K2.5",
     shortName: "Kimi K2.5",
-    badges: ["Pro", "New", "Reasoning"],
+    badges: ["Pro", "Reasoning"],
     requiresPro: true,
     supportsVision: true,
     tokenLimit: 256000
