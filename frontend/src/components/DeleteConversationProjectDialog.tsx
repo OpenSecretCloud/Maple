@@ -12,7 +12,7 @@ import {
 interface DeleteConversationProjectDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onConfirm: () => void;
+  onConfirm: () => Promise<void> | void;
   projectName: string;
   conversationCount?: number;
 }
@@ -21,13 +21,16 @@ export function DeleteConversationProjectDialog({
   open,
   onOpenChange,
   onConfirm,
-  projectName,
-  conversationCount = 0
+  projectName
 }: DeleteConversationProjectDialogProps) {
-  function handleConfirm(event: React.MouseEvent) {
+  async function handleConfirm(event: React.MouseEvent) {
     event.preventDefault();
-    onConfirm();
-    onOpenChange(false);
+    try {
+      await onConfirm();
+      onOpenChange(false);
+    } catch (error) {
+      console.error("Failed to delete project:", error);
+    }
   }
 
   return (
@@ -36,9 +39,7 @@ export function DeleteConversationProjectDialog({
         <AlertDialogHeader>
           <AlertDialogTitle>Delete this project?</AlertDialogTitle>
           <AlertDialogDescription>
-            {conversationCount > 0
-              ? `This will permanently delete "${projectName}" and any chats in it. Move chats out first if you want to keep them. This action cannot be undone.`
-              : `This will permanently delete "${projectName}". This action cannot be undone.`}
+            {`This will permanently delete "${projectName}" and any chats in it. Move chats out first if you want to keep them. This action cannot be undone.`}
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>

@@ -12,6 +12,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle
 } from "@/components/ui/alert-dialog";
+import { useQueryClient } from "@tanstack/react-query";
 import { generateSecureSecret, hashSecret, useOpenSecret } from "@opensecret/react";
 import { getBillingService } from "@/billing/billingService";
 import { Loader2 } from "lucide-react";
@@ -23,6 +24,7 @@ interface DeleteAccountDialogProps {
 
 export function DeleteAccountDialog({ open, onOpenChange }: DeleteAccountDialogProps) {
   const os = useOpenSecret();
+  const queryClient = useQueryClient();
   const [step, setStep] = useState<"request" | "confirm">("request");
   const [uuid, setUuid] = useState("");
   const [secret, setSecret] = useState("");
@@ -88,6 +90,7 @@ export function DeleteAccountDialog({ open, onOpenChange }: DeleteAccountDialogP
 
       // Sign out
       await os.signOut();
+      queryClient.clear();
 
       // Force page refresh to go to logged out state
       window.location.href = "/";

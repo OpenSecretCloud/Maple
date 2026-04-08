@@ -6,6 +6,7 @@ import {
   DialogHeader,
   DialogTitle
 } from "@/components/ui/dialog";
+import { useQueryClient } from "@tanstack/react-query";
 import { useOpenSecret } from "@opensecret/react";
 import { useNavigate } from "@tanstack/react-router";
 import { useState, useEffect } from "react";
@@ -16,6 +17,7 @@ import { AlertDestructive } from "./AlertDestructive";
 
 export function VerificationModal() {
   const os = useOpenSecret();
+  const queryClient = useQueryClient();
   const navigate = useNavigate();
   const [isOpen, setIsOpen] = useState(() => {
     if (!os.auth.user) return false;
@@ -115,6 +117,7 @@ export function VerificationModal() {
     }
 
     await os.signOut();
+    queryClient.clear();
   };
 
   return (

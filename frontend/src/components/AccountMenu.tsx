@@ -105,6 +105,7 @@ function ConfirmDeleteDialog() {
 
 export function AccountMenu() {
   const os = useOpenSecret();
+  const queryClient = useQueryClient();
   const router = useRouter();
   const { billingStatus } = useLocalState();
   const [isPortalLoading, setIsPortalLoading] = useState(false);
@@ -274,6 +275,7 @@ export function AccountMenu() {
 
       // Sign out from OpenSecret
       await os.signOut();
+      queryClient.clear();
 
       // Navigate after everything is done
       await router.invalidate();

@@ -754,7 +754,7 @@ export function ProjectDetailView({ projectId }: ProjectDetailViewProps) {
             onOpenChange={setIsDeleteProjectDialogOpen}
             projectName={project.name}
             conversationCount={conversations.length}
-            onConfirm={() => void handleDeleteProject()}
+            onConfirm={handleDeleteProject}
           />
         </>
       ) : null}

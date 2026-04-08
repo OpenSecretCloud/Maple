@@ -984,6 +984,7 @@ export function ChatHistoryList({
       }
     } catch (error) {
       console.error("Error deleting project:", error);
+      throw error;
     }
   }, [
     expandedProjectId,

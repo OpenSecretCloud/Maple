@@ -6,6 +6,7 @@ import {
   DialogHeader,
   DialogTitle
 } from "@/components/ui/dialog";
+import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useOpenSecret } from "@opensecret/react";
 import { AlertTriangle, LogOut, CreditCard } from "lucide-react";
@@ -18,6 +19,7 @@ interface GuestPaymentWarningDialogProps {
 export function GuestPaymentWarningDialog({ open, onOpenChange }: GuestPaymentWarningDialogProps) {
   const navigate = useNavigate();
   const os = useOpenSecret();
+  const queryClient = useQueryClient();
 
   const handleGoToPricing = () => {
     navigate({ to: "/pricing" });
@@ -33,6 +35,7 @@ export function GuestPaymentWarningDialog({ open, onOpenChange }: GuestPaymentWa
     }
 
     await os.signOut();
+    queryClient.clear();
   };
 
   return (

@@ -101,12 +101,6 @@ export function ConversationProjectDialog({
               onChange={(event) => setName(event.target.value)}
               autoFocus
               required
-              onKeyDown={(event) => {
-                if (event.key === "Enter") {
-                  event.preventDefault();
-                  event.currentTarget.form?.requestSubmit();
-                }
-              }}
             />
           </div>
           <DialogFooter>
