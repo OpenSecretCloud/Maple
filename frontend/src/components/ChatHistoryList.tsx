@@ -1488,9 +1488,6 @@ export function ChatHistoryList({
         open={isDeleteProjectDialogOpen}
         onOpenChange={setIsDeleteProjectDialogOpen}
         projectName={selectedProject?.name ?? "Project"}
-        conversationCount={
-          selectedProject?.id === expandedProjectId ? expandedProjectConversations.length : 0
-        }
         onConfirm={handleDeleteProject}
       />
 
