@@ -21,6 +21,7 @@
  *   - Keep for backwards compatibility with chat history
  */
 import { useState, useRef, useEffect, useCallback, memo, useMemo } from "react";
+import { flushSync } from "react-dom";
 import {
   Send,
   Bot,
@@ -892,7 +893,7 @@ export function UnifiedChat() {
   const isMobile = useIsMobile();
   const openai = useOpenAI();
   const localState = useLocalState();
-  const { selectedProjectId } = localState;
+  const { selectedProjectId, setSelectedProjectId } = localState;
   const os = useOpenSecret();
   const isTauriEnv = isTauri();
   const queryClient = useQueryClient();
@@ -996,6 +997,7 @@ export function UnifiedChat() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const firstMessageRef = useRef<HTMLDivElement>(null);
+  const activeConversationLoadRef = useRef(0);
 
   // Attachment cleanup function - defined early to avoid reference errors
   const clearAllAttachments = useCallback(() => {
@@ -1158,6 +1160,7 @@ export function UnifiedChat() {
           ? (event.detail.projectId ?? null)
           : (selectedProjectId ?? null);
 
+      activeConversationLoadRef.current += 1;
       setChatId(undefined);
       setConversation(null);
       setMessages([]);
@@ -1181,6 +1184,7 @@ export function UnifiedChat() {
       if (conversationId && conversationId !== chatId) {
         // Reset scroll tracking for new conversation
         prevMessageCountRef.current = 0;
+        activeConversationLoadRef.current += 1;
         // Update our local chatId state to trigger load
         setChatId(conversationId);
         setError(null);
@@ -1194,6 +1198,7 @@ export function UnifiedChat() {
       if (newChatId !== chatId) {
         // Reset scroll tracking for navigation
         prevMessageCountRef.current = 0;
+        activeConversationLoadRef.current += 1;
         setChatId(newChatId);
       }
     };
@@ -1236,12 +1241,18 @@ export function UnifiedChat() {
     async (conversationId: string) => {
       if (!openai) return;
 
+      const requestId = ++activeConversationLoadRef.current;
+      const isStaleRequest = () => requestId !== activeConversationLoadRef.current;
+
       // Reset message count before loading new conversation
       prevMessageCountRef.current = 0;
 
       try {
         // Start both fetches immediately in parallel
-        const convPromise = openai.conversations.retrieve(conversationId);
+        const convPromise = openai.conversations.retrieve(conversationId).then(
+          (conv) => ({ ok: true as const, value: conv }),
+          (error) => ({ ok: false as const, error })
+        );
         const itemsPromise = openai.conversations.items.list(conversationId, {
           limit: 10,
           order: "desc"
@@ -1249,6 +1260,7 @@ export function UnifiedChat() {
 
         // Process items as soon as they're ready (don't wait for metadata)
         const itemsResponse = await itemsPromise;
+        if (isStaleRequest()) return;
 
         // Convert items to messages, grouping tool calls with their messages
         const loadedMessages = convertItemsToMessages(
@@ -1297,8 +1309,14 @@ export function UnifiedChat() {
 
         // Then handle conversation metadata when it arrives
         const conv = await convPromise;
-        setConversation(conv as Conversation);
+        if (isStaleRequest()) return;
+        if (!conv.ok) {
+          throw conv.error;
+        }
+        setConversation(conv.value as Conversation);
       } catch (error) {
+        if (isStaleRequest()) return;
+
         const err = error as { status?: number; message?: string };
         if (err.status === 404) {
           // Conversation doesn't exist - clear and start fresh
@@ -2749,14 +2767,15 @@ export function UnifiedChat() {
                   size="icon"
                   className="absolute right-0 h-9 w-9"
                   onClick={() => {
+                    flushSync(() => {
+                      setSelectedProjectId(null);
+                    });
+
                     // Clear conversation and start new chat
-                    const usp = new URLSearchParams(window.location.search);
-                    usp.delete("conversation_id");
-                    const newUrl = usp.toString()
-                      ? `${window.location.pathname}?${usp.toString()}`
-                      : window.location.pathname;
-                    window.history.replaceState(null, "", newUrl);
-                    window.dispatchEvent(new Event("newchat"));
+                    window.history.replaceState(null, "", "/");
+                    window.dispatchEvent(
+                      new CustomEvent("newchat", { detail: { projectId: null } })
+                    );
                     setChatId(undefined);
                     setConversation(null);
                     setMessages([]);

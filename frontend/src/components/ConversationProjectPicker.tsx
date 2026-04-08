@@ -2,6 +2,7 @@ import { Check, Folder, FolderOpen } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { useOpenSecret } from "@opensecret/react";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/utils/utils";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -32,6 +33,7 @@ export function ConversationProjectPicker({
   });
 
   const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? null;
+  const isProjectSelected = !!selectedProject;
 
   return (
     <DropdownMenu>
@@ -40,10 +42,15 @@ export function ConversationProjectPicker({
           type="button"
           variant="ghost"
           size="sm"
-          className="h-8 gap-2 px-2"
+          className={cn(
+            "h-8 gap-2 px-2 text-muted-foreground",
+            isProjectSelected &&
+              "bg-blue-500/10 text-blue-500 hover:bg-blue-500/15 hover:text-blue-500"
+          )}
           disabled={disabled}
+          aria-label={selectedProject ? `Project: ${selectedProject.name}` : "No project selected"}
         >
-          <Folder className="h-4 w-4" />
+          {isProjectSelected ? <FolderOpen className="h-4 w-4" /> : <Folder className="h-4 w-4" />}
           {selectedProject ? (
             <span className="hidden max-w-[120px] truncate md:inline">{selectedProject.name}</span>
           ) : null}
