@@ -358,11 +358,15 @@ export function ProjectDetailView({ projectId }: ProjectDetailViewProps) {
     if (selectedIds.size === 0) return;
 
     setIsBulkDeleting(true);
+    setError(null);
     try {
       await os.batchDeleteConversations(Array.from(selectedIds));
       setSelectedIds(new Set());
       setIsBulkDeleteDialogOpen(false);
       await refreshProjectPage();
+    } catch (error) {
+      console.error("Error bulk deleting chats:", error);
+      setError("Failed to delete selected chats. Please try again.");
     } finally {
       setIsBulkDeleting(false);
     }
@@ -373,10 +377,14 @@ export function ProjectDetailView({ projectId }: ProjectDetailViewProps) {
       if (selectedIds.size === 0) return;
 
       setIsBulkMoving(true);
+      setError(null);
       try {
         await os.batchUpdateConversationProject(Array.from(selectedIds), targetProjectId);
         setSelectedIds(new Set());
         await refreshProjectPage();
+      } catch (error) {
+        console.error("Error moving selected chats:", error);
+        setError("Failed to move selected chats. Please try again.");
       } finally {
         setIsBulkMoving(false);
       }
