@@ -38,6 +38,7 @@ import { LocalStateContext } from "@/state/LocalStateContext";
 import { ConversationProjectDialog } from "@/components/ConversationProjectDialog";
 import { DeleteConversationProjectDialog } from "@/components/DeleteConversationProjectDialog";
 import { MoveChatsDialog } from "@/components/MoveChatsDialog";
+import { listAllConversationProjects, listAllConversations } from "@/utils/paginatedLists";
 
 interface ChatHistoryListProps {
   currentChatId?: string;
@@ -72,6 +73,7 @@ export function ChatHistoryList({
   const queryClient = useQueryClient();
   const localState = useContext(LocalStateContext);
   const { selectedProjectId, setSelectedProjectId } = localState;
+  const userId = opensecret.auth.user?.user.id;
   const [isRenameDialogOpen, setIsRenameDialogOpen] = useState(false);
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
   const [isBulkDeleteDialogOpen, setIsBulkDeleteDialogOpen] = useState(false);
@@ -513,37 +515,29 @@ export function ChatHistoryList({
   });
 
   const { data: conversationProjects = [] } = useQuery({
-    queryKey: ["conversationProjects"],
-    queryFn: async () => {
-      const response = await opensecret.listConversationProjects({ limit: 20 });
-      return response.data ?? [];
-    },
-    enabled: !!opensecret?.auth.user
+    queryKey: ["conversationProjects", userId],
+    queryFn: () => listAllConversationProjects(opensecret),
+    enabled: !!userId
   });
 
   const { data: expandedProjectConversations = [] } = useQuery({
-    queryKey: ["projectConversations", expandedProjectId],
-    queryFn: async () => {
+    queryKey: ["projectConversations", userId, expandedProjectId],
+    queryFn: () => {
       if (!expandedProjectId) return [];
-      const response = await opensecret.listConversations({
-        limit: 50,
+      return listAllConversations(opensecret, {
         project_id: expandedProjectId
       });
-      return response.data ?? [];
     },
-    enabled: !!expandedProjectId
+    enabled: !!userId && !!expandedProjectId
   });
 
   const { data: pinnedConversations = [] } = useQuery({
-    queryKey: ["pinnedConversations"],
-    queryFn: async () => {
-      const response = await opensecret.listConversations({
-        limit: 20,
+    queryKey: ["pinnedConversations", userId],
+    queryFn: () =>
+      listAllConversations(opensecret, {
         pinned: true
-      });
-      return response.data ?? [];
-    },
-    enabled: !!opensecret?.auth.user
+      }),
+    enabled: !!userId
   });
 
   useEffect(() => {

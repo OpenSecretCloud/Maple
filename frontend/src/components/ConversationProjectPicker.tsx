@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useOpenSecret } from "@opensecret/react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/utils/utils";
+import { listAllConversationProjects } from "@/utils/paginatedLists";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -23,13 +24,11 @@ export function ConversationProjectPicker({
   disabled = false
 }: ConversationProjectPickerProps) {
   const os = useOpenSecret();
+  const userId = os.auth.user?.user.id;
   const { data: projects = [] } = useQuery({
-    queryKey: ["conversationProjects"],
-    queryFn: async () => {
-      const response = await os.listConversationProjects({ limit: 20 });
-      return response.data ?? [];
-    },
-    enabled: !!os.auth.user
+    queryKey: ["conversationProjects", userId],
+    queryFn: () => listAllConversationProjects(os),
+    enabled: !!userId
   });
 
   const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? null;

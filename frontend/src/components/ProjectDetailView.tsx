@@ -45,6 +45,7 @@ import { RenameChatDialog } from "@/components/RenameChatDialog";
 import { DeleteChatDialog } from "@/components/DeleteChatDialog";
 import { BulkDeleteDialog } from "@/components/BulkDeleteDialog";
 import { MoveChatsDialog } from "@/components/MoveChatsDialog";
+import { listAllConversationProjects } from "@/utils/paginatedLists";
 
 const PROJECT_PAGE_SIZE = 20;
 
@@ -140,6 +141,7 @@ function ProjectInstructionsDialog({
 
 export function ProjectDetailView({ projectId }: ProjectDetailViewProps) {
   const os = useOpenSecret();
+  const userId = os.auth.user?.user.id;
   const queryClient = useQueryClient();
   const isMobile = useIsMobile();
   const { setSelectedProjectId } = useLocalState();
@@ -179,12 +181,9 @@ export function ProjectDetailView({ projectId }: ProjectDetailViewProps) {
   });
 
   const { data: conversationProjects = [] } = useQuery({
-    queryKey: ["conversationProjects"],
-    queryFn: async () => {
-      const response = await os.listConversationProjects({ limit: 20 });
-      return response.data ?? [];
-    },
-    enabled: hasAuthUser
+    queryKey: ["conversationProjects", userId],
+    queryFn: () => listAllConversationProjects(os),
+    enabled: !!userId
   });
 
   const isSelectionMode = selectedIds.size > 0;
