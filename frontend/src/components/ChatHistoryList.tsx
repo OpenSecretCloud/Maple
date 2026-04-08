@@ -899,6 +899,7 @@ export function ChatHistoryList({
         onExitSelectionMode?.();
       } catch (error) {
         console.error("Error moving selected chats:", error);
+        throw error;
       } finally {
         setIsBulkMoving(false);
       }

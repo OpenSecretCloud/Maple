@@ -377,14 +377,13 @@ export function ProjectDetailView({ projectId }: ProjectDetailViewProps) {
       if (selectedIds.size === 0) return;
 
       setIsBulkMoving(true);
-      setError(null);
       try {
         await os.batchUpdateConversationProject(Array.from(selectedIds), targetProjectId);
         setSelectedIds(new Set());
         await refreshProjectPage();
       } catch (error) {
         console.error("Error moving selected chats:", error);
-        setError("Failed to move selected chats. Please try again.");
+        throw error;
       } finally {
         setIsBulkMoving(false);
       }

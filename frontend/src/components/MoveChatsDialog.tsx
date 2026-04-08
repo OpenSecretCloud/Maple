@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Check, Folder, FolderOpen } from "lucide-react";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -30,11 +31,11 @@ export function MoveChatsDialog({
   isMoving = false
 }: MoveChatsDialogProps) {
   const [selectedProjectId, setSelectedProjectId] = useState<string | null | undefined>(undefined);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (open) {
-      setSelectedProjectId(undefined);
-    }
+    setSelectedProjectId(undefined);
+    setError(null);
   }, [open]);
 
   async function handleConfirm() {
@@ -42,8 +43,15 @@ export function MoveChatsDialog({
       return;
     }
 
-    await onConfirm(selectedProjectId);
-    onOpenChange(false);
+    setError(null);
+
+    try {
+      await onConfirm(selectedProjectId);
+      onOpenChange(false);
+    } catch (error) {
+      console.error("Failed to move chats:", error);
+      setError("Failed to move selected chats. Please try again.");
+    }
   }
 
   function renderOption(
@@ -59,9 +67,13 @@ export function MoveChatsDialog({
       <button
         key={key}
         type="button"
-        onClick={() => setSelectedProjectId(value)}
+        onClick={() => {
+          setSelectedProjectId(value);
+          setError(null);
+        }}
+        disabled={isMoving}
         className={cn(
-          "flex w-full items-center gap-3 rounded-lg border px-3 py-3 text-left transition-colors",
+          "flex w-full items-center gap-3 rounded-lg border px-3 py-3 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-50",
           isSelected ? "border-primary bg-primary/5 text-foreground" : "hover:bg-accent"
         )}
       >
@@ -79,7 +91,19 @@ export function MoveChatsDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[425px]">
+      <DialogContent
+        className="sm:max-w-[425px]"
+        onInteractOutside={(event) => {
+          if (isMoving) {
+            event.preventDefault();
+          }
+        }}
+        onEscapeKeyDown={(event) => {
+          if (isMoving) {
+            event.preventDefault();
+          }
+        }}
+      >
         <DialogHeader>
           <DialogTitle>
             Move {count} chat{count === 1 ? "" : "s"}
@@ -87,13 +111,23 @@ export function MoveChatsDialog({
           <DialogDescription>Choose where the selected chats should live.</DialogDescription>
         </DialogHeader>
         <div className="grid gap-2 py-4">
+          {error ? (
+            <Alert variant="destructive">
+              <AlertDescription>{error}</AlertDescription>
+            </Alert>
+          ) : null}
           {renderOption("no-project", "No project", null, <FolderOpen className="h-4 w-4" />)}
           {projects.map((project) =>
             renderOption(project.id, project.name, project.id, <Folder className="h-4 w-4" />)
           )}
         </div>
         <DialogFooter>
-          <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => onOpenChange(false)}
+            disabled={isMoving}
+          >
             Cancel
           </Button>
           <Button
