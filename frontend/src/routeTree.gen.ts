@@ -27,6 +27,7 @@ import { Route as AuthImport } from './routes/_auth'
 import { Route as IndexImport } from './routes/index'
 import { Route as VerifyCodeImport } from './routes/verify.$code'
 import { Route as PasswordResetConfirmImport } from './routes/password-reset.confirm'
+import { Route as AuthAssistantImport } from './routes/_auth.assistant'
 import { Route as TeamInviteInviteIdImport } from './routes/team.invite.$inviteId'
 import { Route as AuthProviderCallbackImport } from './routes/auth.$provider.callback'
 import { Route as AuthChatChatIdImport } from './routes/_auth.chat.$chatId'
@@ -126,6 +127,12 @@ const PasswordResetConfirmRoute = PasswordResetConfirmImport.update({
   id: '/confirm',
   path: '/confirm',
   getParentRoute: () => PasswordResetRoute,
+} as any)
+
+const AuthAssistantRoute = AuthAssistantImport.update({
+  id: '/assistant',
+  path: '/assistant',
+  getParentRoute: () => AuthRoute,
 } as any)
 
 const TeamInviteInviteIdRoute = TeamInviteInviteIdImport.update({
@@ -248,6 +255,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof TeamsImport
       parentRoute: typeof rootRoute
     }
+    '/_auth/assistant': {
+      id: '/_auth/assistant'
+      path: '/assistant'
+      fullPath: '/assistant'
+      preLoaderRoute: typeof AuthAssistantImport
+      parentRoute: typeof AuthImport
+    }
     '/password-reset/confirm': {
       id: '/password-reset/confirm'
       path: '/confirm'
@@ -289,10 +303,12 @@ declare module '@tanstack/react-router' {
 // Create and export the route tree
 
 interface AuthRouteChildren {
+  AuthAssistantRoute: typeof AuthAssistantRoute
   AuthChatChatIdRoute: typeof AuthChatChatIdRoute
 }
 
 const AuthRouteChildren: AuthRouteChildren = {
+  AuthAssistantRoute: AuthAssistantRoute,
   AuthChatChatIdRoute: AuthChatChatIdRoute,
 }
 
@@ -325,6 +341,7 @@ export interface FileRoutesByFullPath {
   '/redeem': typeof RedeemRoute
   '/signup': typeof SignupRoute
   '/teams': typeof TeamsRoute
+  '/assistant': typeof AuthAssistantRoute
   '/password-reset/confirm': typeof PasswordResetConfirmRoute
   '/verify/$code': typeof VerifyCodeRoute
   '/chat/$chatId': typeof AuthChatChatIdRoute
@@ -347,6 +364,7 @@ export interface FileRoutesByTo {
   '/redeem': typeof RedeemRoute
   '/signup': typeof SignupRoute
   '/teams': typeof TeamsRoute
+  '/assistant': typeof AuthAssistantRoute
   '/password-reset/confirm': typeof PasswordResetConfirmRoute
   '/verify/$code': typeof VerifyCodeRoute
   '/chat/$chatId': typeof AuthChatChatIdRoute
@@ -370,6 +388,7 @@ export interface FileRoutesById {
   '/redeem': typeof RedeemRoute
   '/signup': typeof SignupRoute
   '/teams': typeof TeamsRoute
+  '/_auth/assistant': typeof AuthAssistantRoute
   '/password-reset/confirm': typeof PasswordResetConfirmRoute
   '/verify/$code': typeof VerifyCodeRoute
   '/_auth/chat/$chatId': typeof AuthChatChatIdRoute
@@ -394,6 +413,7 @@ export interface FileRouteTypes {
     | '/redeem'
     | '/signup'
     | '/teams'
+    | '/assistant'
     | '/password-reset/confirm'
     | '/verify/$code'
     | '/chat/$chatId'
@@ -415,6 +435,7 @@ export interface FileRouteTypes {
     | '/redeem'
     | '/signup'
     | '/teams'
+    | '/assistant'
     | '/password-reset/confirm'
     | '/verify/$code'
     | '/chat/$chatId'
@@ -436,6 +457,7 @@ export interface FileRouteTypes {
     | '/redeem'
     | '/signup'
     | '/teams'
+    | '/_auth/assistant'
     | '/password-reset/confirm'
     | '/verify/$code'
     | '/_auth/chat/$chatId'
@@ -519,6 +541,7 @@ export const routeTree = rootRoute
     "/_auth": {
       "filePath": "_auth.tsx",
       "children": [
+        "/_auth/assistant",
         "/_auth/chat/$chatId"
       ]
     },
@@ -560,6 +583,10 @@ export const routeTree = rootRoute
     },
     "/teams": {
       "filePath": "teams.tsx"
+    },
+    "/_auth/assistant": {
+      "filePath": "_auth.assistant.tsx",
+      "parent": "/_auth"
     },
     "/password-reset/confirm": {
       "filePath": "password-reset.confirm.tsx",

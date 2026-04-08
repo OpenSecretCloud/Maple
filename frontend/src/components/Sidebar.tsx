@@ -5,10 +5,11 @@ import {
   PanelRightOpen,
   XCircle,
   Trash2,
-  X
+  X,
+  Sparkles
 } from "lucide-react";
 import { Button } from "./ui/button";
-import { useLocation, useRouter } from "@tanstack/react-router";
+import { useLocation, useRouter, Link } from "@tanstack/react-router";
 import { ChatHistoryList } from "./ChatHistoryList";
 import { AccountMenu } from "./AccountMenu";
 import { useRef, useEffect, KeyboardEvent, useCallback, useLayoutEffect, useState } from "react";
@@ -187,6 +188,30 @@ export function Sidebar({
               <span className="hidden md:block">New Chat</span>
             </Button>
           </div>
+        </div>
+        {/* Assistant button */}
+        <div className="px-4 mb-2">
+          <Link to="/assistant">
+            <Button
+              variant="outline"
+              className={cn(
+                "w-full h-10 justify-start gap-3 font-medium transition-all duration-300",
+                location.pathname === "/assistant"
+                  ? "bg-[hsl(var(--purple))]/10 border-[hsl(var(--purple))]/40 text-foreground dark:bg-[hsl(var(--purple))]/20 dark:border-[hsl(var(--purple))]/60"
+                  : ""
+              )}
+              onClick={() => {
+                if (isOpen && isMobile) {
+                  onToggle();
+                }
+              }}
+            >
+              <div className="h-6 w-6 rounded-full bg-gradient-to-br from-[hsl(var(--purple))] to-[hsl(var(--blue))] flex items-center justify-center shrink-0">
+                <Sparkles className="h-3.5 w-3.5 text-white" />
+              </div>
+              <span>Assistant</span>
+            </Button>
+          </Link>
         </div>
         <div className={`flex justify-between items-center px-4 ${isSelectionMode ? "mb-2" : ""}`}>
           {isSelectionMode ? (
