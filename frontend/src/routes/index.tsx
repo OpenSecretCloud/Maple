@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { UnifiedChat } from "@/components/UnifiedChat";
+import { ProjectDetailView } from "@/components/ProjectDetailView";
 import { Marketing } from "@/components/Marketing";
 import { TopNav } from "@/components/TopNav";
 import { VerificationModal } from "@/components/VerificationModal";
@@ -39,6 +40,48 @@ export const Route = createFileRoute("/")({
   component: Index,
   validateSearch
 });
+
+function getActiveProjectIdFromSearch() {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  return new URLSearchParams(window.location.search).get("project_id");
+}
+
+function AuthenticatedHomeContent() {
+  const [activeProjectId, setActiveProjectId] = useState<string | null>(() =>
+    getActiveProjectIdFromSearch()
+  );
+
+  useEffect(() => {
+    const syncFromLocation = () => {
+      setActiveProjectId(getActiveProjectIdFromSearch());
+    };
+
+    window.addEventListener("projectselected", syncFromLocation);
+    window.addEventListener("conversationselected", syncFromLocation as EventListener);
+    window.addEventListener("newchat", syncFromLocation);
+    window.addEventListener("popstate", syncFromLocation);
+
+    return () => {
+      window.removeEventListener("projectselected", syncFromLocation);
+      window.removeEventListener("conversationselected", syncFromLocation as EventListener);
+      window.removeEventListener("newchat", syncFromLocation);
+      window.removeEventListener("popstate", syncFromLocation);
+    };
+  }, []);
+
+  const hasConversationId =
+    typeof window !== "undefined" &&
+    new URLSearchParams(window.location.search).has("conversation_id");
+
+  if (activeProjectId && !hasConversationId) {
+    return <ProjectDetailView projectId={activeProjectId} />;
+  }
+
+  return <UnifiedChat />;
+}
 
 function Index() {
   const navigate = useNavigate();
@@ -186,7 +229,7 @@ function Index() {
   // Show unified chat for authenticated users
   return (
     <>
-      <UnifiedChat />
+      <AuthenticatedHomeContent />
 
       {/* Modals */}
       <VerificationModal />

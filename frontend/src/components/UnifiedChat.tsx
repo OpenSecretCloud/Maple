@@ -21,6 +21,7 @@
  *   - Keep for backwards compatibility with chat history
  */
 import { useState, useRef, useEffect, useCallback, memo, useMemo } from "react";
+import { flushSync } from "react-dom";
 import {
   Send,
   Bot,
@@ -72,6 +73,7 @@ import {
   DropdownMenuTrigger
 } from "@/components/ui/dropdown-menu";
 import { isTauri } from "@/utils/platform";
+import { ConversationProjectPicker } from "@/components/ConversationProjectPicker";
 import type {
   InputTextContent,
   OutputTextContent,
@@ -891,6 +893,7 @@ export function UnifiedChat() {
   const isMobile = useIsMobile();
   const openai = useOpenAI();
   const localState = useLocalState();
+  const { selectedProjectId, setSelectedProjectId } = localState;
   const os = useOpenSecret();
   const isTauriEnv = isTauri();
   const queryClient = useQueryClient();
@@ -906,6 +909,7 @@ export function UnifiedChat() {
   const [conversation, setConversation] = useState<Conversation | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
+  const [draftProjectId, setDraftProjectId] = useState<string | null>(() => selectedProjectId);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(!isMobile);
   const [error, setError] = useState<string | null>(null);
@@ -993,6 +997,7 @@ export function UnifiedChat() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const firstMessageRef = useRef<HTMLDivElement>(null);
+  const activeConversationLoadRef = useRef(0);
 
   // Attachment cleanup function - defined early to avoid reference errors
   const clearAllAttachments = useCallback(() => {
@@ -1149,11 +1154,18 @@ export function UnifiedChat() {
   // Unified event handling for conversation changes
   useEffect(() => {
     // Handle new chat event
-    const handleNewChat = () => {
+    const handleNewChat = (event?: Event) => {
+      const nextProjectId =
+        event instanceof CustomEvent && event.detail && "projectId" in event.detail
+          ? (event.detail.projectId ?? null)
+          : (selectedProjectId ?? null);
+
+      activeConversationLoadRef.current += 1;
       setChatId(undefined);
       setConversation(null);
       setMessages([]);
       setInput("");
+      setDraftProjectId(nextProjectId);
       setError(null);
       setLastSeenItemId(undefined);
       // Clear pagination state
@@ -1172,6 +1184,7 @@ export function UnifiedChat() {
       if (conversationId && conversationId !== chatId) {
         // Reset scroll tracking for new conversation
         prevMessageCountRef.current = 0;
+        activeConversationLoadRef.current += 1;
         // Update our local chatId state to trigger load
         setChatId(conversationId);
         setError(null);
@@ -1185,6 +1198,7 @@ export function UnifiedChat() {
       if (newChatId !== chatId) {
         // Reset scroll tracking for navigation
         prevMessageCountRef.current = 0;
+        activeConversationLoadRef.current += 1;
         setChatId(newChatId);
       }
     };
@@ -1201,7 +1215,7 @@ export function UnifiedChat() {
       );
       window.removeEventListener("popstate", handlePopState);
     };
-  }, [chatId, clearAllAttachments]);
+  }, [chatId, clearAllAttachments, selectedProjectId]);
 
   // Cancel the current response
   const handleCancelResponse = useCallback(async () => {
@@ -1227,12 +1241,18 @@ export function UnifiedChat() {
     async (conversationId: string) => {
       if (!openai) return;
 
+      const requestId = ++activeConversationLoadRef.current;
+      const isStaleRequest = () => requestId !== activeConversationLoadRef.current;
+
       // Reset message count before loading new conversation
       prevMessageCountRef.current = 0;
 
       try {
         // Start both fetches immediately in parallel
-        const convPromise = openai.conversations.retrieve(conversationId);
+        const convPromise = openai.conversations.retrieve(conversationId).then(
+          (conv) => ({ ok: true as const, value: conv }),
+          (error) => ({ ok: false as const, error })
+        );
         const itemsPromise = openai.conversations.items.list(conversationId, {
           limit: 10,
           order: "desc"
@@ -1240,6 +1260,7 @@ export function UnifiedChat() {
 
         // Process items as soon as they're ready (don't wait for metadata)
         const itemsResponse = await itemsPromise;
+        if (isStaleRequest()) return;
 
         // Convert items to messages, grouping tool calls with their messages
         const loadedMessages = convertItemsToMessages(
@@ -1288,8 +1309,14 @@ export function UnifiedChat() {
 
         // Then handle conversation metadata when it arrives
         const conv = await convPromise;
-        setConversation(conv as Conversation);
+        if (isStaleRequest()) return;
+        if (!conv.ok) {
+          throw conv.error;
+        }
+        setConversation(conv.value as Conversation);
       } catch (error) {
+        if (isStaleRequest()) return;
+
         const err = error as { status?: number; message?: string };
         if (err.status === 404) {
           // Conversation doesn't exist - clear and start fresh
@@ -1461,6 +1488,7 @@ export function UnifiedChat() {
       // Clear if no conversation ID
       setConversation(null);
       setMessages([]);
+      setDraftProjectId(selectedProjectId ?? null);
       setLastSeenItemId(undefined);
       // Clear pagination state
       setOldestItemId(undefined);
@@ -1469,7 +1497,7 @@ export function UnifiedChat() {
       // Reset scroll tracking
       prevMessageCountRef.current = 0;
     }
-  }, [chatId, openai, loadConversation]);
+  }, [chatId, openai, loadConversation, selectedProjectId]);
 
   // Set up progressive polling interval
   useEffect(() => {
@@ -1532,8 +1560,12 @@ export function UnifiedChat() {
           setTitleJustUpdated(true);
           // Remove animation class after animation completes (800ms for flash animation)
           setTimeout(() => setTitleJustUpdated(false), 850);
-          // Refresh the sidebar conversation list
-          queryClient.invalidateQueries({ queryKey: ["conversations"] });
+          // Refresh all sidebar conversation lists
+          await Promise.all([
+            queryClient.invalidateQueries({ queryKey: ["conversations"] }),
+            queryClient.invalidateQueries({ queryKey: ["pinnedConversations"] }),
+            queryClient.invalidateQueries({ queryKey: ["projectConversations"] })
+          ]);
           return; // Stop polling once title is updated
         }
 
@@ -2349,9 +2381,16 @@ export function UnifiedChat() {
         // Create conversation if we don't have one
         let conversationId = conversation?.id;
         if (!conversationId) {
-          const newConv = await openai.conversations.create({
-            metadata: {}
-          });
+          const newConv = draftProjectId
+            ? await os.createConversation(
+                {},
+                {
+                  project_id: draftProjectId
+                }
+              )
+            : await openai.conversations.create({
+                metadata: {}
+              });
           conversationId = newConv.id;
           setConversation(newConv as Conversation);
 
@@ -2646,7 +2685,9 @@ export function UnifiedChat() {
       input,
       isGenerating,
       openai,
+      os,
       conversation,
+      draftProjectId,
       localState.model,
       draftImages,
       documentText,
@@ -2730,14 +2771,15 @@ export function UnifiedChat() {
                   size="icon"
                   className="absolute right-0 h-9 w-9"
                   onClick={() => {
+                    flushSync(() => {
+                      setSelectedProjectId(null);
+                    });
+
                     // Clear conversation and start new chat
-                    const usp = new URLSearchParams(window.location.search);
-                    usp.delete("conversation_id");
-                    const newUrl = usp.toString()
-                      ? `${window.location.pathname}?${usp.toString()}`
-                      : window.location.pathname;
-                    window.history.replaceState(null, "", newUrl);
-                    window.dispatchEvent(new Event("newchat"));
+                    window.history.replaceState(null, "", "/");
+                    window.dispatchEvent(
+                      new CustomEvent("newchat", { detail: { projectId: null } })
+                    );
                     setChatId(undefined);
                     setConversation(null);
                     setMessages([]);
@@ -2936,6 +2978,12 @@ export function UnifiedChat() {
                                   )
                               )
                             }
+                          />
+
+                          <ConversationProjectPicker
+                            selectedProjectId={draftProjectId}
+                            onSelect={setDraftProjectId}
+                            disabled={isGenerating}
                           />
 
                           {/* Web search toggle button - always visible */}

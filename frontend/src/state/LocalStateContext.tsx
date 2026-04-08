@@ -1,5 +1,5 @@
 import { useOpenSecret } from "@opensecret/react";
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import { BillingStatus } from "@/billing/billingApi";
 import { LocalStateContext, Chat, HistoryItem, OpenSecretModel } from "./LocalStateContextDef";
 import { aliasModelName } from "@/utils/utils";
@@ -67,6 +67,7 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
     billingStatus: null as BillingStatus | null,
     searchQuery: "",
     isSearchVisible: false,
+    selectedProjectId: null as string | null,
     draftMessages: new Map<string, string>()
   });
 
@@ -199,6 +200,10 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
   function setIsSearchVisible(visible: boolean) {
     setLocalState((prev) => ({ ...prev, isSearchVisible: visible }));
   }
+
+  const setSelectedProjectId = useCallback((projectId: string | null) => {
+    setLocalState((prev) => ({ ...prev, selectedProjectId: projectId }));
+  }, []);
 
   async function addChat(title: string = "New Chat") {
     const newChat = {
@@ -397,6 +402,8 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
         setSearchQuery,
         isSearchVisible: localState.isSearchVisible,
         setIsSearchVisible,
+        selectedProjectId: localState.selectedProjectId,
+        setSelectedProjectId,
         setBillingStatus,
         setUserPrompt,
         setSystemPrompt,

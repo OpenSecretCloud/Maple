@@ -7,22 +7,38 @@ import {
   ChevronDown,
   ChevronRight,
   CheckSquare,
-  RefreshCw
+  RefreshCw,
+  Folder,
+  FolderPlus,
+  FolderInput,
+  Pin,
+  PinOff
 } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger
 } from "@/components/ui/dropdown-menu";
 import { Checkbox } from "@/components/ui/checkbox";
 import { RenameChatDialog } from "@/components/RenameChatDialog";
 import { DeleteChatDialog } from "@/components/DeleteChatDialog";
 import { BulkDeleteDialog } from "@/components/BulkDeleteDialog";
-import { useOpenAI } from "@/ai/useOpenAi";
-import { useOpenSecret } from "@opensecret/react";
+import {
+  useOpenSecret,
+  type Conversation,
+  type ConversationProjectListItem
+} from "@opensecret/react";
 import { useRouter } from "@tanstack/react-router";
 import { LocalStateContext } from "@/state/LocalStateContext";
+import { ConversationProjectDialog } from "@/components/ConversationProjectDialog";
+import { DeleteConversationProjectDialog } from "@/components/DeleteConversationProjectDialog";
+import { MoveChatsDialog } from "@/components/MoveChatsDialog";
+import { listAllConversationProjects, listAllConversations } from "@/utils/paginatedLists";
 
 interface ChatHistoryListProps {
   currentChatId?: string;
@@ -33,16 +49,6 @@ interface ChatHistoryListProps {
   selectedIds: Set<string>;
   onSelectionChange: (ids: Set<string>) => void;
   containerRef?: React.RefObject<HTMLElement>;
-}
-
-interface Conversation {
-  id: string;
-  object: "conversation";
-  created_at: number;
-  metadata?: {
-    title?: string;
-    [key: string]: unknown;
-  };
 }
 
 interface ArchivedChat {
@@ -62,16 +68,24 @@ export function ChatHistoryList({
   onSelectionChange,
   containerRef
 }: ChatHistoryListProps) {
-  const openai = useOpenAI();
   const opensecret = useOpenSecret();
   const router = useRouter();
   const queryClient = useQueryClient();
   const localState = useContext(LocalStateContext);
+  const { selectedProjectId, setSelectedProjectId } = localState;
+  const userId = opensecret.auth.user?.user.id;
   const [isRenameDialogOpen, setIsRenameDialogOpen] = useState(false);
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
   const [isBulkDeleteDialogOpen, setIsBulkDeleteDialogOpen] = useState(false);
+  const [isMoveDialogOpen, setIsMoveDialogOpen] = useState(false);
   const [isBulkDeleting, setIsBulkDeleting] = useState(false);
+  const [isBulkMoving, setIsBulkMoving] = useState(false);
+  const [isProjectDialogOpen, setIsProjectDialogOpen] = useState(false);
+  const [projectDialogMode, setProjectDialogMode] = useState<"create" | "rename">("create");
+  const [isDeleteProjectDialogOpen, setIsDeleteProjectDialogOpen] = useState(false);
   const [selectedChat, setSelectedChat] = useState<{ id: string; title: string } | null>(null);
+  const [selectedProject, setSelectedProject] = useState<ConversationProjectListItem | null>(null);
+  const [expandedProjectId, setExpandedProjectId] = useState<string | null>(selectedProjectId);
   const [isArchivedExpanded, setIsArchivedExpanded] = useState(false);
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -93,6 +107,21 @@ export function ChatHistoryList({
   const pullContentRef = useRef<HTMLDivElement>(null);
   const pullIndicatorRef = useRef<HTMLDivElement>(null);
   const refreshIconRef = useRef<SVGSVGElement>(null);
+
+  const getConversationTitle = useCallback((conversation: Conversation) => {
+    const rawTitle = conversation.metadata?.title;
+    return typeof rawTitle === "string" && rawTitle.trim() ? rawTitle : "Untitled Chat";
+  }, []);
+
+  const invalidateConversationData = useCallback(async () => {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["conversations"] }),
+      queryClient.invalidateQueries({ queryKey: ["pinnedConversations"] }),
+      queryClient.invalidateQueries({ queryKey: ["projectConversations"] }),
+      queryClient.invalidateQueries({ queryKey: ["conversationProjects"] }),
+      queryClient.invalidateQueries({ queryKey: ["conversationProject"] })
+    ]);
+  }, [queryClient]);
 
   const applyPullStyles = useCallback(() => {
     const distance = pullDistanceRef.current;
@@ -156,7 +185,8 @@ export function ChatHistoryList({
       try {
         // Load initial 20 conversations (newest first by default)
         const response = await opensecret.listConversations({
-          limit: 20
+          limit: 20,
+          unassigned_project: true
         });
 
         const loadedConversations = response.data || [];
@@ -194,7 +224,8 @@ export function ChatHistoryList({
       // Fetch latest conversations to detect new ones or metadata changes
       // Default order is desc (newest first), fetches up to 20 conversations
       const response = await opensecret.listConversations({
-        limit: 20 // Fetch up to 20 to catch any new conversations
+        limit: 20, // Fetch up to 20 to catch any new conversations
+        unassigned_project: true
       });
 
       const newConversations = response.data || [];
@@ -398,7 +429,8 @@ export function ChatHistoryList({
       // Fetch next 10 older conversations using the oldest conversation ID we have
       const response = await opensecret.listConversations({
         limit: 10,
-        after: oldestConversationId
+        after: oldestConversationId,
+        unassigned_project: true
       });
 
       const olderConversations = response.data || [];
@@ -482,72 +514,166 @@ export function ChatHistoryList({
     retry: false
   });
 
-  // Filter conversations based on search query
-  const filteredConversations = useMemo(() => {
-    if (!conversations) return [];
-    if (!searchQuery.trim()) return conversations;
+  const { data: conversationProjects = [] } = useQuery({
+    queryKey: ["conversationProjects", userId],
+    queryFn: () => listAllConversationProjects(opensecret),
+    enabled: !!userId
+  });
 
-    const normalizedQuery = searchQuery.trim().toLowerCase();
-    return conversations.filter((conv: Conversation) => {
-      const title = conv.metadata?.title || "Untitled Chat";
-      return title.toLowerCase().includes(normalizedQuery);
+  const { data: expandedProjectConversations = [] } = useQuery({
+    queryKey: ["projectConversations", userId, expandedProjectId],
+    queryFn: () => {
+      if (!expandedProjectId) return [];
+      return listAllConversations(opensecret, {
+        project_id: expandedProjectId
+      });
+    },
+    enabled: !!userId && !!expandedProjectId
+  });
+
+  const { data: pinnedConversations = [] } = useQuery({
+    queryKey: ["pinnedConversations", userId],
+    queryFn: () =>
+      listAllConversations(opensecret, {
+        pinned: true
+      }),
+    enabled: !!userId
+  });
+
+  useEffect(() => {
+    if (
+      selectedProjectId &&
+      conversationProjects.length > 0 &&
+      !conversationProjects.some((project) => project.id === selectedProjectId)
+    ) {
+      setSelectedProjectId(null);
+    }
+  }, [selectedProjectId, conversationProjects, setSelectedProjectId]);
+
+  useEffect(() => {
+    if (selectedProjectId) {
+      setExpandedProjectId(selectedProjectId);
+    }
+  }, [selectedProjectId]);
+
+  useEffect(() => {
+    if (
+      expandedProjectId &&
+      conversationProjects.length > 0 &&
+      !conversationProjects.some((project) => project.id === expandedProjectId)
+    ) {
+      setExpandedProjectId(null);
+    }
+  }, [expandedProjectId, conversationProjects]);
+
+  const normalizedQuery = searchQuery.trim().toLowerCase();
+
+  const filteredProjects = useMemo(() => {
+    if (!normalizedQuery) return conversationProjects;
+
+    return conversationProjects.filter((project) => {
+      if (project.name.toLowerCase().includes(normalizedQuery)) {
+        return true;
+      }
+
+      if (project.id !== expandedProjectId) {
+        return false;
+      }
+
+      return expandedProjectConversations.some((conversation) =>
+        getConversationTitle(conversation).toLowerCase().includes(normalizedQuery)
+      );
     });
-  }, [conversations, searchQuery]);
+  }, [
+    conversationProjects,
+    expandedProjectConversations,
+    expandedProjectId,
+    getConversationTitle,
+    normalizedQuery
+  ]);
+
+  const filteredExpandedProjectConversations = useMemo(() => {
+    if (!normalizedQuery) return expandedProjectConversations;
+
+    return expandedProjectConversations.filter((conversation) =>
+      getConversationTitle(conversation).toLowerCase().includes(normalizedQuery)
+    );
+  }, [expandedProjectConversations, getConversationTitle, normalizedQuery]);
+
+  const filteredPinnedConversations = useMemo(() => {
+    if (!normalizedQuery) return pinnedConversations;
+
+    return pinnedConversations.filter((conversation) =>
+      getConversationTitle(conversation).toLowerCase().includes(normalizedQuery)
+    );
+  }, [getConversationTitle, normalizedQuery, pinnedConversations]);
+
+  const filteredRecentConversations = useMemo(() => {
+    const filtered = conversations.filter(
+      (conversation) => !conversation.pinned && !conversation.project_id
+    );
+
+    if (!normalizedQuery) return filtered;
+
+    return filtered.filter((conversation) =>
+      getConversationTitle(conversation).toLowerCase().includes(normalizedQuery)
+    );
+  }, [conversations, getConversationTitle, normalizedQuery]);
 
   // Filter archived chats based on search query
   const filteredArchivedChats = useMemo(() => {
     if (!archivedChats) return [];
-    if (!searchQuery.trim()) return archivedChats;
+    if (!normalizedQuery) return archivedChats;
 
-    const normalizedQuery = searchQuery.trim().toLowerCase();
     return archivedChats.filter((chat) => chat.title.toLowerCase().includes(normalizedQuery));
-  }, [archivedChats, searchQuery]);
+  }, [archivedChats, normalizedQuery]);
 
   // Auto-expand archived section when searching with results
   useEffect(() => {
-    if (searchQuery.trim() && filteredArchivedChats.length > 0) {
+    if (normalizedQuery && filteredArchivedChats.length > 0) {
       setIsArchivedExpanded(true);
     }
-  }, [searchQuery, filteredArchivedChats.length]);
+  }, [normalizedQuery, filteredArchivedChats.length]);
+
+  const dispatchConversationMetadataUpdated = useCallback(
+    (conversationId: string, updates: Record<string, unknown>) => {
+      window.dispatchEvent(
+        new CustomEvent("conversationmetadataupdated", {
+          detail: { conversationId, ...updates }
+        })
+      );
+    },
+    []
+  );
 
   // Handle conversation deletion via API
   const handleDeleteConversation = useCallback(
     async (conversationId: string) => {
-      // Check if it's an archived chat
       const isArchived = archivedChats?.some((chat) => chat.id === conversationId);
 
       if (isArchived) {
-        // Handle archived chat deletion
         if (!localState?.deleteChat) return;
         try {
           await localState.deleteChat(conversationId);
-          // Refresh archived chats list
-          queryClient.invalidateQueries({ queryKey: ["archivedChats"] });
+          await queryClient.invalidateQueries({ queryKey: ["archivedChats"] });
 
-          // If deleting the current chat, navigate to home
           if (conversationId === currentChatId) {
             router.navigate({ to: "/" });
+            setSelectedProjectId(null);
           }
         } catch (error) {
           console.error("Error deleting archived chat:", error);
         }
       } else {
-        // Handle API conversation deletion
-        if (!openai) return;
         try {
-          await openai.conversations.delete(conversationId);
-
-          // Remove from local state immediately
+          await opensecret.deleteConversation(conversationId);
           setConversations((prev) => prev.filter((conv) => conv.id !== conversationId));
+          await invalidateConversationData();
 
-          // If deleting the current conversation, navigate to home
           if (conversationId === currentChatId) {
-            // Clear URL and start fresh
             const params = new URLSearchParams(window.location.search);
             params.delete("conversation_id");
             window.history.replaceState({}, "", params.toString() ? `/?${params}` : "/");
-
-            // Dispatch event to clear UnifiedChat
             window.dispatchEvent(new Event("newchat"));
           }
         } catch (error) {
@@ -555,7 +681,16 @@ export function ChatHistoryList({
         }
       }
     },
-    [openai, currentChatId, archivedChats, localState, queryClient, router]
+    [
+      archivedChats,
+      currentChatId,
+      invalidateConversationData,
+      localState,
+      opensecret,
+      queryClient,
+      router,
+      setSelectedProjectId
+    ]
   );
 
   const MAX_SELECTION = 20;
@@ -596,11 +731,11 @@ export function ChatHistoryList({
       if (conversationIds.length > 0 && opensecret) {
         const result = await opensecret.batchDeleteConversations(conversationIds);
 
-        // Remove successfully deleted conversations from local state
         const deletedIds = new Set(
           result.data.filter((item) => item.deleted).map((item) => item.id)
         );
         setConversations((prev) => prev.filter((conv) => !deletedIds.has(conv.id)));
+        await invalidateConversationData();
       }
 
       // Delete archived chats individually
@@ -636,6 +771,7 @@ export function ChatHistoryList({
     selectedIds,
     archivedChats,
     opensecret,
+    invalidateConversationData,
     localState,
     queryClient,
     currentChatId,
@@ -692,100 +828,289 @@ export function ChatHistoryList({
     return () => window.removeEventListener("openbulkdelete", handleOpenBulkDelete);
   }, [selectedIds.size]);
 
-  const handleOpenRenameDialog = useCallback((conv: Conversation) => {
-    const title = conv.metadata?.title || "Untitled Chat";
-    setSelectedChat({ id: conv.id, title });
-    setIsRenameDialogOpen(true);
+  useEffect(() => {
+    const handleOpenBulkMove = () => {
+      if (selectedIds.size > 0) {
+        setIsMoveDialogOpen(true);
+      }
+    };
+    window.addEventListener("openbulkmove", handleOpenBulkMove);
+    return () => window.removeEventListener("openbulkmove", handleOpenBulkMove);
+  }, [selectedIds.size]);
+
+  const handleMoveConversationToProject = useCallback(
+    async (conversation: Conversation, projectId: string | null) => {
+      try {
+        await opensecret.batchUpdateConversationProject([conversation.id], projectId);
+        await invalidateConversationData();
+
+        if (conversation.id === currentChatId) {
+          setSelectedProjectId(projectId);
+        }
+
+        dispatchConversationMetadataUpdated(conversation.id, {
+          projectId
+        });
+      } catch (error) {
+        console.error("Error moving conversation to project:", error);
+      }
+    },
+    [
+      currentChatId,
+      dispatchConversationMetadataUpdated,
+      invalidateConversationData,
+      opensecret,
+      setSelectedProjectId
+    ]
+  );
+
+  const handleToggleConversationPin = useCallback(
+    async (conversation: Conversation) => {
+      try {
+        await opensecret.updateConversation(conversation.id, undefined, {
+          pinned: !conversation.pinned
+        });
+        await invalidateConversationData();
+        dispatchConversationMetadataUpdated(conversation.id, {
+          pinned: !conversation.pinned
+        });
+      } catch (error) {
+        console.error("Error toggling conversation pin:", error);
+      }
+    },
+    [dispatchConversationMetadataUpdated, invalidateConversationData, opensecret]
+  );
+
+  const handleMoveSelectedConversations = useCallback(
+    async (projectId: string | null) => {
+      if (selectedIds.size === 0) return;
+
+      setIsBulkMoving(true);
+      try {
+        const ids = Array.from(selectedIds);
+        await opensecret.batchUpdateConversationProject(ids, projectId);
+        await invalidateConversationData();
+
+        if (currentChatId && selectedIds.has(currentChatId)) {
+          setSelectedProjectId(projectId);
+        }
+
+        onSelectionChange(new Set());
+        onExitSelectionMode?.();
+      } catch (error) {
+        console.error("Error moving selected chats:", error);
+        throw error;
+      } finally {
+        setIsBulkMoving(false);
+      }
+    },
+    [
+      currentChatId,
+      invalidateConversationData,
+      onExitSelectionMode,
+      onSelectionChange,
+      opensecret,
+      selectedIds,
+      setSelectedProjectId
+    ]
+  );
+
+  const handleToggleProjectExpanded = useCallback((projectId: string) => {
+    setExpandedProjectId((currentProjectId) => (currentProjectId === projectId ? null : projectId));
   }, []);
+
+  const handleViewProject = useCallback(
+    async (projectId: string) => {
+      setSelectedProjectId(projectId);
+      setExpandedProjectId(projectId);
+
+      if (window.location.pathname !== "/") {
+        await router.navigate({ to: "/" });
+      }
+
+      const params = new URLSearchParams(window.location.search);
+      params.delete("conversation_id");
+      params.set("project_id", projectId);
+
+      window.history.replaceState({}, "", params.toString() ? `/?${params.toString()}` : "/");
+      window.dispatchEvent(new CustomEvent("newchat", { detail: { projectId } }));
+      window.dispatchEvent(new Event("projectselected"));
+    },
+    [router, setSelectedProjectId]
+  );
+
+  const handleCreateProject = useCallback(
+    async (name: string) => {
+      const project = await opensecret.createConversationProject({ name });
+      await invalidateConversationData();
+      await handleViewProject(project.id);
+    },
+    [handleViewProject, invalidateConversationData, opensecret]
+  );
+
+  const handleRenameProject = useCallback(
+    async (name: string) => {
+      if (!selectedProject) return;
+      await opensecret.updateConversationProject(selectedProject.id, { name });
+      await invalidateConversationData();
+    },
+    [invalidateConversationData, opensecret, selectedProject]
+  );
+
+  const handleDeleteProject = useCallback(async () => {
+    if (!selectedProject) return;
+
+    try {
+      await opensecret.deleteConversationProject(selectedProject.id);
+      await invalidateConversationData();
+
+      if (expandedProjectId === selectedProject.id) {
+        setExpandedProjectId(null);
+      }
+
+      if (selectedProjectId === selectedProject.id) {
+        setSelectedProjectId(null);
+        const params = new URLSearchParams(window.location.search);
+        params.delete("conversation_id");
+        params.delete("project_id");
+        window.history.replaceState({}, "", params.toString() ? `/?${params.toString()}` : "/");
+        window.dispatchEvent(new CustomEvent("newchat", { detail: { projectId: null } }));
+        window.dispatchEvent(new Event("projectselected"));
+      }
+    } catch (error) {
+      console.error("Error deleting project:", error);
+      throw error;
+    }
+  }, [
+    expandedProjectId,
+    invalidateConversationData,
+    opensecret,
+    selectedProject,
+    selectedProjectId,
+    setSelectedProjectId
+  ]);
+
+  const handleOpenRenameDialog = useCallback(
+    (conv: Conversation) => {
+      setSelectedChat({ id: conv.id, title: getConversationTitle(conv) });
+      setIsRenameDialogOpen(true);
+    },
+    [getConversationTitle]
+  );
 
   const handleOpenRenameDialogArchived = useCallback((chat: ArchivedChat) => {
     setSelectedChat({ id: chat.id, title: chat.title });
     setIsRenameDialogOpen(true);
   }, []);
 
-  const handleOpenDeleteDialog = useCallback((conv: Conversation) => {
-    const title = conv.metadata?.title || "Untitled Chat";
-    setSelectedChat({ id: conv.id, title });
-    setIsDeleteDialogOpen(true);
-  }, []);
+  const handleOpenDeleteDialog = useCallback(
+    (conv: Conversation) => {
+      setSelectedChat({ id: conv.id, title: getConversationTitle(conv) });
+      setIsDeleteDialogOpen(true);
+    },
+    [getConversationTitle]
+  );
 
   const handleOpenDeleteDialogArchived = useCallback((chat: ArchivedChat) => {
     setSelectedChat({ id: chat.id, title: chat.title });
     setIsDeleteDialogOpen(true);
   }, []);
 
+  const handleOpenCreateProjectDialog = useCallback(() => {
+    setSelectedProject(null);
+    setProjectDialogMode("create");
+    setIsProjectDialogOpen(true);
+  }, []);
+
+  const handleOpenRenameProjectDialog = useCallback((project: ConversationProjectListItem) => {
+    setSelectedProject(project);
+    setProjectDialogMode("rename");
+    setIsProjectDialogOpen(true);
+  }, []);
+
+  const handleOpenDeleteProjectDialog = useCallback((project: ConversationProjectListItem) => {
+    setSelectedProject(project);
+    setIsDeleteProjectDialogOpen(true);
+  }, []);
+
   // Handle conversation renaming via API
   const handleRenameConversation = useCallback(
     async (conversationId: string, newTitle: string) => {
-      // Check if it's an archived chat
       const isArchived = archivedChats?.some((chat) => chat.id === conversationId);
 
       if (isArchived) {
-        // Handle archived chat rename
         if (!localState?.renameChat) return;
         try {
           await localState.renameChat(conversationId, newTitle);
-          // Refresh archived chats list
-          queryClient.invalidateQueries({ queryKey: ["archivedChats"] });
+          await queryClient.invalidateQueries({ queryKey: ["archivedChats"] });
         } catch (error) {
           console.error("Error renaming archived chat:", error);
           throw error;
         }
       } else {
-        // Handle API conversation rename
-        if (!openai) return;
         try {
-          // Update conversation metadata with new title
-          await openai.conversations.update(conversationId, {
-            metadata: { title: newTitle }
-          });
-
-          // Update local state immediately
+          await opensecret.updateConversation(conversationId, { title: newTitle });
           setConversations((prev) =>
             prev.map((conv) =>
               conv.id === conversationId
-                ? { ...conv, metadata: { ...conv.metadata, title: newTitle } }
+                ? { ...conv, metadata: { ...(conv.metadata ?? {}), title: newTitle } }
                 : conv
             )
           );
+          await invalidateConversationData();
+          dispatchConversationMetadataUpdated(conversationId, {
+            metadata: { title: newTitle }
+          });
         } catch (error) {
           console.error("Error renaming conversation:", error);
           throw error;
         }
       }
     },
-    [openai, archivedChats, localState, queryClient]
+    [
+      archivedChats,
+      dispatchConversationMetadataUpdated,
+      invalidateConversationData,
+      localState,
+      opensecret,
+      queryClient
+    ]
   );
 
   // Handle conversation selection
-  const handleSelectConversation = useCallback((conversationId: string) => {
-    // Update URL with conversation ID
-    const params = new URLSearchParams(window.location.search);
-    params.set("conversation_id", conversationId);
-    const newUrl = `/?${params}`;
+  const handleSelectConversation = useCallback(
+    async (conversation: Conversation) => {
+      setSelectedProjectId(conversation.project_id ?? null);
 
-    // Update the URL
-    window.history.pushState({}, "", newUrl);
+      if (window.location.pathname !== "/") {
+        await router.navigate({ to: "/" });
+      }
 
-    // Always dispatch event for UnifiedChat to handle
-    // This ensures UnifiedChat knows about the change even if URL is the same
-    window.dispatchEvent(
-      new CustomEvent("conversationselected", {
-        detail: { conversationId }
-      })
-    );
-  }, []);
+      const params = new URLSearchParams(window.location.search);
+      params.delete("project_id");
+      params.set("conversation_id", conversation.id);
+      window.history.pushState({}, "", `/?${params.toString()}`);
+
+      window.dispatchEvent(
+        new CustomEvent("conversationselected", {
+          detail: { conversationId: conversation.id }
+        })
+      );
+    },
+    [router, setSelectedProjectId]
+  );
 
   // Listen for conversation created event to refresh the list
   useEffect(() => {
     const handleConversationCreated = () => {
-      // Trigger immediate poll to get the new conversation
       pollForUpdates();
+      queryClient.invalidateQueries({ queryKey: ["projectConversations"] });
+      queryClient.invalidateQueries({ queryKey: ["pinnedConversations"] });
     };
 
     window.addEventListener("conversationcreated", handleConversationCreated);
     return () => window.removeEventListener("conversationcreated", handleConversationCreated);
-  }, [pollForUpdates]);
+  }, [pollForUpdates, queryClient]);
 
   if (error) {
     return <div>{error.message}</div>;
@@ -795,9 +1120,15 @@ export function ChatHistoryList({
     return <div>Loading chat history...</div>;
   }
 
-  // Only show no results message if we have a trimmed search query and no results anywhere
   const trimmedQuery = searchQuery.trim();
-  if (trimmedQuery && filteredConversations.length === 0 && filteredArchivedChats.length === 0) {
+  if (
+    trimmedQuery &&
+    filteredProjects.length === 0 &&
+    filteredExpandedProjectConversations.length === 0 &&
+    filteredPinnedConversations.length === 0 &&
+    filteredRecentConversations.length === 0 &&
+    filteredArchivedChats.length === 0
+  ) {
     return (
       <div className="text-muted-foreground text-center py-4">
         <p>No chats found matching "{trimmedQuery}"</p>
@@ -805,6 +1136,127 @@ export function ChatHistoryList({
       </div>
     );
   }
+
+  const renderConversationRow = (conversation: Conversation, options?: { compact?: boolean }) => {
+    const title = getConversationTitle(conversation);
+    const isActive = conversation.id === currentChatId;
+    const isSelected = selectedIds.has(conversation.id);
+
+    return (
+      <div
+        key={conversation.id}
+        className={`relative group select-none ${isSelected ? "rounded-lg bg-primary/10" : ""}`}
+        onContextMenu={(event) => event.preventDefault()}
+      >
+        <div
+          onClick={() => {
+            if (isSelectionMode) {
+              toggleSelection(conversation.id);
+            } else {
+              void handleSelectConversation(conversation);
+            }
+          }}
+          onMouseDown={() => isMobile && handleLongPressStart(conversation.id)}
+          onMouseUp={handleLongPressEnd}
+          onMouseLeave={handleLongPressEnd}
+          onTouchStart={() => isMobile && handleLongPressStart(conversation.id)}
+          onTouchMove={handleLongPressMove}
+          onTouchEnd={handleLongPressEnd}
+          onTouchCancel={handleLongPressEnd}
+          className={`cursor-pointer rounded-lg py-2 transition-all hover:text-primary ${
+            isActive && !isSelectionMode ? "text-primary" : "text-muted-foreground"
+          } ${options?.compact ? "pl-4" : ""} ${isSelectionMode ? "pl-8" : ""}`}
+        >
+          {isSelectionMode ? (
+            <div className="absolute left-1.5 top-1/2 -translate-y-1/2">
+              <Checkbox
+                checked={isSelected}
+                onCheckedChange={() => toggleSelection(conversation.id)}
+                onClick={(event) => event.stopPropagation()}
+                className="data-[state=checked]:bg-primary"
+              />
+            </div>
+          ) : null}
+          <div className="pr-8">
+            <div
+              className={`overflow-hidden whitespace-nowrap ${!isSelectionMode ? "hover:underline" : ""}`}
+            >
+              {title}
+            </div>
+            <div className="mt-1 text-xs opacity-70">
+              {new Date(conversation.last_activity_at * 1000).toLocaleDateString()}
+            </div>
+          </div>
+        </div>
+        {!isSelectionMode ? (
+          <>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  className={`absolute right-2 top-1/2 z-50 -translate-y-1/2 bg-background/80 p-2 text-primary transition-opacity ${
+                    isMobile ? "opacity-100" : "opacity-0 group-hover:opacity-100"
+                  }`}
+                  onClick={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                  }}
+                >
+                  <MoreHorizontal size={16} />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent>
+                <DropdownMenuItem onClick={() => onSelectionChange(new Set([conversation.id]))}>
+                  <CheckSquare className="mr-2 h-4 w-4" />
+                  Select
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => handleToggleConversationPin(conversation)}>
+                  {conversation.pinned ? (
+                    <PinOff className="mr-2 h-4 w-4" />
+                  ) : (
+                    <Pin className="mr-2 h-4 w-4" />
+                  )}
+                  {conversation.pinned ? "Unpin Chat" : "Pin Chat"}
+                </DropdownMenuItem>
+                <DropdownMenuSub>
+                  <DropdownMenuSubTrigger>
+                    <FolderInput className="mr-2 h-4 w-4" />
+                    Move to Project
+                  </DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent>
+                    <DropdownMenuItem
+                      onClick={() => handleMoveConversationToProject(conversation, null)}
+                    >
+                      <Folder className="mr-2 h-4 w-4" />
+                      No project
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                    {conversationProjects.map((project) => (
+                      <DropdownMenuItem
+                        key={project.id}
+                        onClick={() => handleMoveConversationToProject(conversation, project.id)}
+                      >
+                        <Folder className="mr-2 h-4 w-4" />
+                        {project.name}
+                      </DropdownMenuItem>
+                    ))}
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
+                <DropdownMenuItem onClick={() => handleOpenRenameDialog(conversation)}>
+                  <Pencil className="mr-2 h-4 w-4" />
+                  Rename Chat
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => handleOpenDeleteDialog(conversation)}>
+                  <Trash className="mr-2 h-4 w-4" />
+                  Delete Chat
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+            <div className="pointer-events-none absolute inset-y-0 right-0 w-[3rem] bg-gradient-to-l from-background to-transparent" />
+          </>
+        ) : null}
+      </div>
+    );
+  };
 
   return (
     <>
@@ -823,101 +1275,104 @@ export function ChatHistoryList({
         />
       </div>
 
-      <div ref={pullContentRef} className="flex flex-col gap-2" style={{ willChange: "transform" }}>
-        {filteredConversations.map((conv: Conversation, index: number) => {
-          const title = conv.metadata?.title || "Untitled Chat";
-          const isActive = conv.id === currentChatId;
-          const isSelected = selectedIds.has(conv.id);
-          const isLastConversation = index === filteredConversations.length - 1;
-          // Only attach ref when not searching and it's the last item
-          const shouldAttachRef = isLastConversation && !searchQuery.trim();
+      <div ref={pullContentRef} className="flex flex-col gap-5" style={{ willChange: "transform" }}>
+        <div className="space-y-2">
+          <div className="text-sm font-semibold text-muted-foreground">Projects</div>
+          <button
+            type="button"
+            onClick={handleOpenCreateProjectDialog}
+            className="flex w-full items-center gap-2 rounded-lg py-2 text-left text-muted-foreground transition-colors hover:text-primary"
+          >
+            <FolderPlus className="h-4 w-4" />
+            <span>New project</span>
+          </button>
 
-          return (
-            <div
-              key={conv.id}
-              className={`relative group select-none ${isSelected ? "bg-primary/10 rounded-lg" : ""}`}
-              ref={shouldAttachRef ? lastConversationRef : undefined}
-              onContextMenu={(e) => e.preventDefault()}
-            >
-              <div
-                onClick={() => {
-                  if (isSelectionMode) {
-                    toggleSelection(conv.id);
-                  } else {
-                    handleSelectConversation(conv.id);
-                  }
-                }}
-                onMouseDown={() => isMobile && handleLongPressStart(conv.id)}
-                onMouseUp={handleLongPressEnd}
-                onMouseLeave={handleLongPressEnd}
-                onTouchStart={() => isMobile && handleLongPressStart(conv.id)}
-                onTouchMove={handleLongPressMove}
-                onTouchEnd={handleLongPressEnd}
-                onTouchCancel={handleLongPressEnd}
-                className={`rounded-lg py-2 transition-all hover:text-primary cursor-pointer ${
-                  isActive && !isSelectionMode ? "text-primary" : "text-muted-foreground"
-                } ${isSelectionMode ? "pl-8" : ""}`}
-              >
-                {isSelectionMode && (
-                  <div className="absolute left-1.5 top-1/2 -translate-y-1/2">
-                    <Checkbox
-                      checked={isSelected}
-                      onCheckedChange={() => toggleSelection(conv.id)}
-                      onClick={(e) => e.stopPropagation()}
-                      className="data-[state=checked]:bg-primary"
-                    />
+          {filteredProjects.map((project) => {
+            const isProjectExpanded = expandedProjectId === project.id;
+            const isProjectSelected = selectedProjectId === project.id;
+            return (
+              <div key={project.id} className="relative">
+                <div className="relative group">
+                  <button
+                    type="button"
+                    onClick={() => handleToggleProjectExpanded(project.id)}
+                    className={`w-full rounded-lg py-2 text-left text-muted-foreground transition-colors hover:text-primary ${
+                      isProjectExpanded || isProjectSelected ? "text-foreground" : ""
+                    }`}
+                  >
+                    <div className="flex items-center gap-2 pr-10">
+                      {isProjectExpanded ? (
+                        <ChevronDown className="h-4 w-4 shrink-0" />
+                      ) : (
+                        <ChevronRight className="h-4 w-4 shrink-0" />
+                      )}
+                      <Folder className="h-4 w-4" />
+                      <span className="truncate">{project.name}</span>
+                    </div>
+                  </button>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <button
+                        className={`absolute right-2 top-0 z-50 bg-background/80 p-2 text-primary transition-opacity ${
+                          isMobile ? "opacity-100" : "opacity-0 group-hover:opacity-100"
+                        }`}
+                        onClick={(event) => {
+                          event.preventDefault();
+                          event.stopPropagation();
+                        }}
+                      >
+                        <MoreHorizontal size={16} />
+                      </button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent>
+                      <DropdownMenuItem onClick={() => void handleViewProject(project.id)}>
+                        <Folder className="mr-2 h-4 w-4" />
+                        View Project
+                      </DropdownMenuItem>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem onClick={() => handleOpenRenameProjectDialog(project)}>
+                        <Pencil className="mr-2 h-4 w-4" />
+                        Rename Project
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => handleOpenDeleteProjectDialog(project)}>
+                        <Trash className="mr-2 h-4 w-4" />
+                        Delete Project
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
+
+                {isProjectExpanded && filteredExpandedProjectConversations.length > 0 ? (
+                  <div className="ml-4 border-l border-border pl-3">
+                    {filteredExpandedProjectConversations.map((conversation) =>
+                      renderConversationRow(conversation, { compact: true })
+                    )}
                   </div>
-                )}
-                <div
-                  className={`overflow-hidden whitespace-nowrap ${
-                    !isSelectionMode ? "hover:underline" : ""
-                  } pr-8`}
-                >
-                  {title}
-                </div>
-                <div className="text-xs opacity-70 mt-1">
-                  {new Date(conv.created_at * 1000).toLocaleDateString()}
-                </div>
+                ) : null}
               </div>
-              {!isSelectionMode && (
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <button
-                      className={`z-50 bg-background/80 absolute right-2 top-1/2 transform -translate-y-1/2 text-primary transition-opacity p-2 ${
-                        isMobile ? "opacity-100" : "opacity-0 group-hover:opacity-100"
-                      }`}
-                      onClick={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                      }}
-                    >
-                      <MoreHorizontal size={16} />
-                    </button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent>
-                    <DropdownMenuItem onClick={() => onSelectionChange(new Set([conv.id]))}>
-                      <CheckSquare className="mr-2 h-4 w-4" />
-                      <span>Select</span>
-                    </DropdownMenuItem>
-                    <DropdownMenuItem onClick={() => handleOpenRenameDialog(conv)}>
-                      <Pencil className="mr-2 h-4 w-4" />
-                      <span>Rename Chat</span>
-                    </DropdownMenuItem>
-                    <DropdownMenuItem onClick={() => handleOpenDeleteDialog(conv)}>
-                      <Trash className="mr-2 h-4 w-4" />
-                      <span>Delete Chat</span>
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              )}
-              {!isSelectionMode && (
-                <div className="absolute inset-y-0 right-0 w-[3rem] bg-gradient-to-l from-background to-transparent pointer-events-none"></div>
-              )}
-            </div>
-          );
-        })}
+            );
+          })}
+        </div>
 
-        {/* Loading indicator for pagination */}
+        {filteredPinnedConversations.length > 0 ? (
+          <div className="space-y-2">
+            <div className="flex items-center gap-2 text-sm font-semibold text-muted-foreground">
+              <Pin className="h-4 w-4" />
+              <span>Pinned</span>
+            </div>
+            {filteredPinnedConversations.map((conversation) => renderConversationRow(conversation))}
+          </div>
+        ) : null}
+
+        <div className="space-y-2">
+          <div className="text-sm font-semibold text-muted-foreground">Recents</div>
+          {filteredRecentConversations.length > 0 ? (
+            filteredRecentConversations.map((conversation) => renderConversationRow(conversation))
+          ) : (
+            <div className="py-2 text-sm text-muted-foreground">No recent chats.</div>
+          )}
+        </div>
+
         {isLoadingMore && (
           <div className="flex items-center justify-center py-4">
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -928,12 +1383,11 @@ export function ChatHistoryList({
           </div>
         )}
 
-        {/* Archived Chats Section - only show if there are archived chats */}
         {filteredArchivedChats && filteredArchivedChats.length > 0 && (
-          <div className="mt-4">
+          <div className="mt-1">
             <button
               onClick={() => setIsArchivedExpanded(!isArchivedExpanded)}
-              className="flex items-center gap-2 w-full text-sm text-muted-foreground hover:text-foreground transition-colors mb-2"
+              className="mb-2 flex w-full items-center gap-2 text-sm text-muted-foreground transition-colors hover:text-foreground"
             >
               {isArchivedExpanded ? (
                 <ChevronDown className="h-4 w-4" />
@@ -951,6 +1405,7 @@ export function ChatHistoryList({
                     <div key={chat.id} className="relative group">
                       <div
                         onClick={() => {
+                          setSelectedProjectId(null);
                           router.navigate({ to: "/chat/$chatId", params: { chatId: chat.id } });
                         }}
                         className={`rounded-lg py-2 transition-all hover:text-primary cursor-pointer ${
@@ -997,6 +1452,10 @@ export function ChatHistoryList({
             )}
           </div>
         )}
+
+        {!trimmedQuery && hasMoreConversations ? (
+          <div ref={lastConversationRef} className="h-px w-full" aria-hidden="true" />
+        ) : null}
       </div>
 
       {selectedChat && (
@@ -1017,12 +1476,36 @@ export function ChatHistoryList({
         </>
       )}
 
+      <ConversationProjectDialog
+        open={isProjectDialogOpen}
+        onOpenChange={setIsProjectDialogOpen}
+        mode={projectDialogMode}
+        initialName={selectedProject?.name}
+        onSubmit={projectDialogMode === "create" ? handleCreateProject : handleRenameProject}
+      />
+
+      <DeleteConversationProjectDialog
+        open={isDeleteProjectDialogOpen}
+        onOpenChange={setIsDeleteProjectDialogOpen}
+        projectName={selectedProject?.name ?? "Project"}
+        onConfirm={handleDeleteProject}
+      />
+
       <BulkDeleteDialog
         open={isBulkDeleteDialogOpen}
         onOpenChange={setIsBulkDeleteDialogOpen}
         onConfirm={handleBulkDelete}
         count={selectedIds.size}
         isDeleting={isBulkDeleting}
+      />
+
+      <MoveChatsDialog
+        open={isMoveDialogOpen}
+        onOpenChange={setIsMoveDialogOpen}
+        count={selectedIds.size}
+        projects={conversationProjects}
+        onConfirm={handleMoveSelectedConversations}
+        isMoving={isBulkMoving}
       />
     </>
   );

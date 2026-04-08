@@ -5,13 +5,15 @@ import {
   PanelRightOpen,
   XCircle,
   Trash2,
-  X
+  X,
+  FolderInput
 } from "lucide-react";
 import { Button } from "./ui/button";
 import { useLocation, useRouter } from "@tanstack/react-router";
 import { ChatHistoryList } from "./ChatHistoryList";
 import { AccountMenu } from "./AccountMenu";
 import { useRef, useEffect, KeyboardEvent, useCallback, useLayoutEffect, useState } from "react";
+import { flushSync } from "react-dom";
 import { cn, useClickOutside, useIsMobile } from "@/utils/utils";
 import { Input } from "./ui/input";
 import { useLocalState } from "@/state/useLocalState";
@@ -27,7 +29,14 @@ export function Sidebar({
 }) {
   const router = useRouter();
   const location = useLocation();
-  const { searchQuery, setSearchQuery, isSearchVisible, setIsSearchVisible } = useLocalState();
+  const {
+    searchQuery,
+    setSearchQuery,
+    isSearchVisible,
+    setIsSearchVisible,
+    selectedProjectId,
+    setSelectedProjectId
+  } = useLocalState();
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   // Multi-select state
@@ -52,21 +61,38 @@ export function Sidebar({
     }
   }, [selectedIds.size]);
 
+  const handleMoveSelected = useCallback(() => {
+    if (selectedIds.size > 0) {
+      window.dispatchEvent(new Event("openbulkmove"));
+    }
+  }, [selectedIds.size]);
+
   async function addChat() {
     // If sidebar is open on mobile, close it
     if (isOpen && isMobile) {
       onToggle();
     }
 
+    flushSync(() => {
+      setSelectedProjectId(null);
+    });
+
     // Clear any conversation_id from URL to start fresh
-    if (location.pathname === "/" && window.location.search.includes("conversation_id")) {
+    if (
+      location.pathname === "/" &&
+      (window.location.search.includes("conversation_id") ||
+        window.location.search.includes("project_id"))
+    ) {
       // Just clear the query params without navigation
       window.history.replaceState(null, "", "/");
       // Clear messages by triggering a re-render
-      window.dispatchEvent(new Event("newchat"));
+      window.dispatchEvent(new CustomEvent("newchat", { detail: { projectId: null } }));
       document.getElementById("message")?.focus();
     } else if (location.pathname === "/") {
       // Already on home with no conversation_id, just focus
+      if (selectedProjectId) {
+        window.dispatchEvent(new CustomEvent("newchat", { detail: { projectId: null } }));
+      }
       document.getElementById("message")?.focus();
     } else {
       try {
@@ -188,7 +214,12 @@ export function Sidebar({
             </Button>
           </div>
         </div>
-        <div className={`flex justify-between items-center px-4 ${isSelectionMode ? "mb-2" : ""}`}>
+        <div
+          className={cn(
+            "px-4",
+            isSelectionMode ? "mb-2 space-y-2" : "flex items-center justify-between"
+          )}
+        >
           {isSelectionMode ? (
             <>
               <div className="flex items-center gap-2">
@@ -205,19 +236,31 @@ export function Sidebar({
                   {selectedIds.size >= 20 ? "max" : selectedIds.size} selected
                 </span>
               </div>
-              <Button
-                variant="destructive"
-                size="sm"
-                className="h-8"
-                onClick={handleDeleteSelected}
-                disabled={selectedIds.size === 0}
-              >
-                <Trash2 className="h-4 w-4 mr-1" />
-                Delete
-              </Button>
+              <div className="flex w-full items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-8 flex-1"
+                  onClick={handleMoveSelected}
+                  disabled={selectedIds.size === 0}
+                >
+                  <FolderInput className="mr-1 h-4 w-4" />
+                  Move
+                </Button>
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  className="h-8 flex-1"
+                  onClick={handleDeleteSelected}
+                  disabled={selectedIds.size === 0}
+                >
+                  <Trash2 className="mr-1 h-4 w-4" />
+                  Delete
+                </Button>
+              </div>
             </>
           ) : (
-            <>
+            <div className="flex w-full items-center justify-between">
               <h2 className="font-semibold">History</h2>
               <Button
                 variant="outline"
@@ -228,7 +271,7 @@ export function Sidebar({
               >
                 <Search className="h-4 w-4" />
               </Button>
-            </>
+            </div>
           )}
         </div>
         {isSearchVisible && (

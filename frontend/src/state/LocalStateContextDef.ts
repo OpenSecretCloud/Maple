@@ -44,6 +44,10 @@ export type LocalState = {
   isSearchVisible: boolean;
   /** Controls the visibility of the search input */
   setIsSearchVisible: (visible: boolean) => void;
+  /** Currently selected conversation project for sidebar/composer context */
+  selectedProjectId: string | null;
+  /** Updates the selected conversation project context */
+  setSelectedProjectId: (projectId: string | null) => void;
   setBillingStatus: (status: BillingStatus) => void;
   setUserPrompt: (prompt: string) => void;
   setSystemPrompt: (prompt: string | null) => void;
@@ -80,6 +84,8 @@ export const LocalStateContext = createContext<LocalState>({
   setSearchQuery: () => void 0,
   isSearchVisible: false,
   setIsSearchVisible: () => void 0,
+  selectedProjectId: null,
+  setSelectedProjectId: () => void 0,
   setBillingStatus: () => void 0,
   setUserPrompt: () => void 0,
   setSystemPrompt: () => void 0,
