@@ -83,7 +83,7 @@ Security architecture: AWS Nitro Enclaves for backend processing, NVIDIA GPU TEE
 
 ## Company
 
-- **Company**: Maple AI, based in Austin, TX. Legal entity is Mutiny Wallet Inc.
+- **Company**: Maple AI, based in Austin, TX. Legal entity is Maple Privacy Labs Inc.
 - **Founders**: Mark Suman (CEO, ex-Apple AI/Privacy engineer) and Anthony Ronning (CTO, defense/security/bitcoin infrastructure)
 - **Programs**: NVIDIA Inception Program, Google Cloud for Startups
 - **Contact**: team@trymaple.ai, support@trymaple.ai

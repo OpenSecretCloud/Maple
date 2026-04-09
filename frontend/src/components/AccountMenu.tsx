@@ -425,7 +425,7 @@ export function AccountMenu() {
                   <DropdownMenuItem
                     onClick={(e) => {
                       e.preventDefault();
-                      handleOpenExternalUrl("https://opensecret.cloud/privacy");
+                      handleOpenExternalUrl("https://trymaple.ai/privacy");
                     }}
                     onSelect={(e) => {
                       e.preventDefault();
@@ -437,7 +437,7 @@ export function AccountMenu() {
                   <DropdownMenuItem
                     onClick={(e) => {
                       e.preventDefault();
-                      handleOpenExternalUrl("https://opensecret.cloud/terms");
+                      handleOpenExternalUrl("https://trymaple.ai/terms");
                     }}
                     onSelect={(e) => {
                       e.preventDefault();

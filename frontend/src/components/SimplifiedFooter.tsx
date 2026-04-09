@@ -20,15 +20,7 @@ export function SimplifiedFooter() {
           />
         )}
         <p className="text-[hsl(var(--marketing-text-muted))]/70 text-sm text-center">
-          © {new Date().getFullYear()} Maple AI. All rights reserved. Powered by{" "}
-          <a
-            href="https://opensecret.cloud"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-[hsl(var(--purple))] hover:text-[hsl(var(--purple))]/80 dark:text-[hsl(var(--blue))] dark:hover:text-[hsl(var(--blue))]/80 transition-colors"
-          >
-            OpenSecret
-          </a>
+          © {new Date().getFullYear()} Maple Privacy Labs Inc. All rights reserved.
         </p>
         <div className="flex justify-center gap-6 mt-2">
           <a
@@ -38,17 +30,13 @@ export function SimplifiedFooter() {
             Downloads
           </a>
           <a
-            href="https://opensecret.cloud/terms"
-            target="_blank"
-            rel="noopener noreferrer"
+            href="/terms"
             className="text-[hsl(var(--marketing-text-muted))] hover:text-foreground text-sm transition-colors"
           >
             Terms of Service
           </a>
           <a
-            href="https://opensecret.cloud/privacy"
-            target="_blank"
-            rel="noopener noreferrer"
+            href="/privacy"
             className="text-[hsl(var(--marketing-text-muted))] hover:text-foreground text-sm transition-colors"
           >
             Privacy Policy

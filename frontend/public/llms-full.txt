@@ -306,7 +306,7 @@ Key backend capabilities:
 
 **Maple AI**
 — Based in Austin, TX
-- Legal entity: Mutiny Wallet Inc
+- Legal entity: Maple Privacy Labs Inc
 - Part of NVIDIA Inception Program and Google Cloud for Startups
 - Founded by Mark Suman (CEO) and Anthony Ronning (CTO)
 

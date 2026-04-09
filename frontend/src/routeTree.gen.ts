@@ -11,10 +11,12 @@
 // Import Routes
 
 import { Route as rootRoute } from './routes/__root'
+import { Route as TermsImport } from './routes/terms'
 import { Route as TeamsImport } from './routes/teams'
 import { Route as SignupImport } from './routes/signup'
 import { Route as RedeemImport } from './routes/redeem'
 import { Route as ProofImport } from './routes/proof'
+import { Route as PrivacyImport } from './routes/privacy'
 import { Route as PricingImport } from './routes/pricing'
 import { Route as PaymentSuccessImport } from './routes/payment-success'
 import { Route as PaymentCanceledImport } from './routes/payment-canceled'
@@ -32,6 +34,12 @@ import { Route as AuthProviderCallbackImport } from './routes/auth.$provider.cal
 import { Route as AuthChatChatIdImport } from './routes/_auth.chat.$chatId'
 
 // Create/Update Routes
+
+const TermsRoute = TermsImport.update({
+  id: '/terms',
+  path: '/terms',
+  getParentRoute: () => rootRoute,
+} as any)
 
 const TeamsRoute = TeamsImport.update({
   id: '/teams',
@@ -54,6 +62,12 @@ const RedeemRoute = RedeemImport.update({
 const ProofRoute = ProofImport.update({
   id: '/proof',
   path: '/proof',
+  getParentRoute: () => rootRoute,
+} as any)
+
+const PrivacyRoute = PrivacyImport.update({
+  id: '/privacy',
+  path: '/privacy',
   getParentRoute: () => rootRoute,
 } as any)
 
@@ -220,6 +234,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof PricingImport
       parentRoute: typeof rootRoute
     }
+    '/privacy': {
+      id: '/privacy'
+      path: '/privacy'
+      fullPath: '/privacy'
+      preLoaderRoute: typeof PrivacyImport
+      parentRoute: typeof rootRoute
+    }
     '/proof': {
       id: '/proof'
       path: '/proof'
@@ -246,6 +267,13 @@ declare module '@tanstack/react-router' {
       path: '/teams'
       fullPath: '/teams'
       preLoaderRoute: typeof TeamsImport
+      parentRoute: typeof rootRoute
+    }
+    '/terms': {
+      id: '/terms'
+      path: '/terms'
+      fullPath: '/terms'
+      preLoaderRoute: typeof TermsImport
       parentRoute: typeof rootRoute
     }
     '/password-reset/confirm': {
@@ -321,10 +349,12 @@ export interface FileRoutesByFullPath {
   '/payment-canceled': typeof PaymentCanceledRoute
   '/payment-success': typeof PaymentSuccessRoute
   '/pricing': typeof PricingRoute
+  '/privacy': typeof PrivacyRoute
   '/proof': typeof ProofRoute
   '/redeem': typeof RedeemRoute
   '/signup': typeof SignupRoute
   '/teams': typeof TeamsRoute
+  '/terms': typeof TermsRoute
   '/password-reset/confirm': typeof PasswordResetConfirmRoute
   '/verify/$code': typeof VerifyCodeRoute
   '/chat/$chatId': typeof AuthChatChatIdRoute
@@ -343,10 +373,12 @@ export interface FileRoutesByTo {
   '/payment-canceled': typeof PaymentCanceledRoute
   '/payment-success': typeof PaymentSuccessRoute
   '/pricing': typeof PricingRoute
+  '/privacy': typeof PrivacyRoute
   '/proof': typeof ProofRoute
   '/redeem': typeof RedeemRoute
   '/signup': typeof SignupRoute
   '/teams': typeof TeamsRoute
+  '/terms': typeof TermsRoute
   '/password-reset/confirm': typeof PasswordResetConfirmRoute
   '/verify/$code': typeof VerifyCodeRoute
   '/chat/$chatId': typeof AuthChatChatIdRoute
@@ -366,10 +398,12 @@ export interface FileRoutesById {
   '/payment-canceled': typeof PaymentCanceledRoute
   '/payment-success': typeof PaymentSuccessRoute
   '/pricing': typeof PricingRoute
+  '/privacy': typeof PrivacyRoute
   '/proof': typeof ProofRoute
   '/redeem': typeof RedeemRoute
   '/signup': typeof SignupRoute
   '/teams': typeof TeamsRoute
+  '/terms': typeof TermsRoute
   '/password-reset/confirm': typeof PasswordResetConfirmRoute
   '/verify/$code': typeof VerifyCodeRoute
   '/_auth/chat/$chatId': typeof AuthChatChatIdRoute
@@ -390,10 +424,12 @@ export interface FileRouteTypes {
     | '/payment-canceled'
     | '/payment-success'
     | '/pricing'
+    | '/privacy'
     | '/proof'
     | '/redeem'
     | '/signup'
     | '/teams'
+    | '/terms'
     | '/password-reset/confirm'
     | '/verify/$code'
     | '/chat/$chatId'
@@ -411,10 +447,12 @@ export interface FileRouteTypes {
     | '/payment-canceled'
     | '/payment-success'
     | '/pricing'
+    | '/privacy'
     | '/proof'
     | '/redeem'
     | '/signup'
     | '/teams'
+    | '/terms'
     | '/password-reset/confirm'
     | '/verify/$code'
     | '/chat/$chatId'
@@ -432,10 +470,12 @@ export interface FileRouteTypes {
     | '/payment-canceled'
     | '/payment-success'
     | '/pricing'
+    | '/privacy'
     | '/proof'
     | '/redeem'
     | '/signup'
     | '/teams'
+    | '/terms'
     | '/password-reset/confirm'
     | '/verify/$code'
     | '/_auth/chat/$chatId'
@@ -455,10 +495,12 @@ export interface RootRouteChildren {
   PaymentCanceledRoute: typeof PaymentCanceledRoute
   PaymentSuccessRoute: typeof PaymentSuccessRoute
   PricingRoute: typeof PricingRoute
+  PrivacyRoute: typeof PrivacyRoute
   ProofRoute: typeof ProofRoute
   RedeemRoute: typeof RedeemRoute
   SignupRoute: typeof SignupRoute
   TeamsRoute: typeof TeamsRoute
+  TermsRoute: typeof TermsRoute
   VerifyCodeRoute: typeof VerifyCodeRoute
   AuthProviderCallbackRoute: typeof AuthProviderCallbackRoute
   TeamInviteInviteIdRoute: typeof TeamInviteInviteIdRoute
@@ -475,10 +517,12 @@ const rootRouteChildren: RootRouteChildren = {
   PaymentCanceledRoute: PaymentCanceledRoute,
   PaymentSuccessRoute: PaymentSuccessRoute,
   PricingRoute: PricingRoute,
+  PrivacyRoute: PrivacyRoute,
   ProofRoute: ProofRoute,
   RedeemRoute: RedeemRoute,
   SignupRoute: SignupRoute,
   TeamsRoute: TeamsRoute,
+  TermsRoute: TermsRoute,
   VerifyCodeRoute: VerifyCodeRoute,
   AuthProviderCallbackRoute: AuthProviderCallbackRoute,
   TeamInviteInviteIdRoute: TeamInviteInviteIdRoute,
@@ -504,10 +548,12 @@ export const routeTree = rootRoute
         "/payment-canceled",
         "/payment-success",
         "/pricing",
+        "/privacy",
         "/proof",
         "/redeem",
         "/signup",
         "/teams",
+        "/terms",
         "/verify/$code",
         "/auth/$provider/callback",
         "/team/invite/$inviteId"
@@ -549,6 +595,9 @@ export const routeTree = rootRoute
     "/pricing": {
       "filePath": "pricing.tsx"
     },
+    "/privacy": {
+      "filePath": "privacy.tsx"
+    },
     "/proof": {
       "filePath": "proof.tsx"
     },
@@ -560,6 +609,9 @@ export const routeTree = rootRoute
     },
     "/teams": {
       "filePath": "teams.tsx"
+    },
+    "/terms": {
+      "filePath": "terms.tsx"
     },
     "/password-reset/confirm": {
       "filePath": "password-reset.confirm.tsx",
