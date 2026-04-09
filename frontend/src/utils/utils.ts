@@ -74,37 +74,18 @@ export function useClickOutside(
   }, [ref, callback]);
 }
 
-/**
- * Alias old model names to new simplified names
- * This ensures backward compatibility when the backend changes model names
- */
+export const LLAMA_MODEL_ID = "llama-3.3-70b";
+
+const MODEL_NAME_ALIASES: Record<string, string> = {
+  "llama3-3-70b": LLAMA_MODEL_ID,
+  "gemma-3-27b": "gemma4-31b",
+  "deepseek-r1-0528": "kimi-k2-5",
+  "kimi-k2": "kimi-k2-5",
+  "kimi-k2-thinking": "kimi-k2-5"
+};
+
 export function aliasModelName(modelName: string | undefined): string {
   if (!modelName) return "";
 
-  // Map old model names to new simplified name
-  if (
-    modelName === "ibnzterrell/Meta-Llama-3.3-70B-Instruct-AWQ-INT4" ||
-    modelName === "llama3-3-70b"
-  ) {
-    return "llama-3.3-70b";
-  }
-
-  if (modelName === "qwen3-coder-480b") {
-    return "kimi-k2-5";
-  }
-
-  if (modelName === "gemma-3-27b" || modelName === "leon-se/gemma-3-27b-it-fp8-dynamic") {
-    return "gemma4-31b";
-  }
-
-  if (modelName === "deepseek-r1-0528") {
-    return "kimi-k2-5";
-  }
-
-  // Alias kimi-k2 (old thinking model) to kimi-k2-5
-  if (modelName === "kimi-k2" || modelName === "kimi-k2-thinking") {
-    return "kimi-k2-5";
-  }
-
-  return modelName;
+  return MODEL_NAME_ALIASES[modelName] ?? modelName;
 }

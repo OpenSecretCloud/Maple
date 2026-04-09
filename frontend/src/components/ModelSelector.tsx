@@ -12,6 +12,7 @@ import { useOpenSecret } from "@opensecret/react";
 import { useEffect, useRef, useState } from "react";
 import type { Model } from "openai/resources/models.js";
 import { UpgradePromptDialog } from "@/components/UpgradePromptDialog";
+import { aliasModelName, LLAMA_MODEL_ID } from "@/utils/utils";
 
 // Model configuration for display names, badges, and token limits
 type ModelCfg = {
@@ -26,12 +27,7 @@ type ModelCfg = {
 };
 
 export const MODEL_CONFIG: Record<string, ModelCfg> = {
-  "ibnzterrell/Meta-Llama-3.3-70B-Instruct-AWQ-INT4": {
-    displayName: "Llama 3.3 70B",
-    shortName: "Llama 3.3",
-    tokenLimit: 70000
-  },
-  "llama-3.3-70b": {
+  [LLAMA_MODEL_ID]: {
     displayName: "Llama 3.3 70B",
     shortName: "Llama 3.3",
     tokenLimit: 70000
@@ -79,7 +75,7 @@ export const DEFAULT_TOKEN_LIMIT = 64000;
 
 // Get token limit for a specific model
 export function getModelTokenLimit(modelId: string): number {
-  return MODEL_CONFIG[modelId]?.tokenLimit || DEFAULT_TOKEN_LIMIT;
+  return MODEL_CONFIG[aliasModelName(modelId)]?.tokenLimit || DEFAULT_TOKEN_LIMIT;
 }
 
 // Primary model options
@@ -176,8 +172,10 @@ export function ModelSelector({ hasImages = false }: { hasImages?: boolean }) {
 
           // Get current models for merging from ref
           const currentModels = availableModelsRef.current || [];
-          const existingModelIds = new Set(currentModels.map((m) => m.id));
-          const newModels = filteredModels.filter((m) => !existingModelIds.has(m.id));
+          const existingModelIds = new Set(currentModels.map((m) => aliasModelName(m.id)));
+          const newModels = filteredModels.filter(
+            (m) => !existingModelIds.has(aliasModelName(m.id))
+          );
 
           // Merge with existing models (keeping the hardcoded one)
           setAvailableModels([...currentModels, ...newModels]);
@@ -448,13 +446,6 @@ export function ModelSelector({ hasImages = false }: { hasImages?: boolean }) {
                   Array.isArray(availableModels) &&
                   [...availableModels]
                     .filter((m) => MODEL_CONFIG[m.id] !== undefined)
-                    // Deduplicate: prefer short names over long names
-                    .filter((m) => {
-                      if (m.id === "ibnzterrell/Meta-Llama-3.3-70B-Instruct-AWQ-INT4") {
-                        return !availableModels.some((model) => model.id === "llama-3.3-70b");
-                      }
-                      return true;
-                    })
                     // Remove duplicates by id
                     .filter(
                       (m, index, self) =>
