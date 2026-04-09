@@ -161,7 +161,7 @@ All pricing is pay-as-you-go. Purchase credits in $10 increments.
 
 | Model | Price per million tokens |
 |---|---|
-| llama-3.3-70b | $4 input / $4 output |
+| llama3-3-70b | $4 input / $4 output |
 | gpt-oss-120b | $4 input / $4 output |
 | kimi-k2-5 | $4 input / $4 output |
 | qwen3-vl-30b | $4 input / $4 output |

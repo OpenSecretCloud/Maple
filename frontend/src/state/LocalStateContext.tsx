@@ -46,6 +46,21 @@ function getInitialModel(): string {
   return DEFAULT_MODEL_ID;
 }
 
+function normalizeAvailableModels(models: OpenSecretModel[]): OpenSecretModel[] {
+  const normalizedModels = new Map<string, OpenSecretModel>();
+
+  for (const model of models) {
+    const normalizedId = aliasModelName(model.id);
+    const normalizedModel = normalizedId === model.id ? model : { ...model, id: normalizedId };
+
+    if (!normalizedModels.has(normalizedId) || model.id === normalizedId) {
+      normalizedModels.set(normalizedId, normalizedModel);
+    }
+  }
+
+  return Array.from(normalizedModels.values());
+}
+
 export const LocalStateProvider = ({ children }: { children: React.ReactNode }) => {
   /** The model that should be assumed when a chat doesn't yet have one */
   const defaultModel: OpenSecretModel = {
@@ -62,7 +77,7 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
     userImages: [] as File[],
     sentViaVoice: false,
     model: getInitialModel(),
-    availableModels: [defaultModel] as OpenSecretModel[],
+    availableModels: normalizeAvailableModels([defaultModel]),
     hasWhisperModel: true, // Default to true to avoid hiding button during loading
     billingStatus: null as BillingStatus | null,
     searchQuery: "",
@@ -77,7 +92,7 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
     const chatToSave = {
       ...chat,
 
-      /** If a model is missing, assume the default Llama and write it now */
+      /** If a model is missing, assume the default model and write it now */
       model: aliasModelName(chat.model) || DEFAULT_MODEL_ID
     };
 
@@ -377,7 +392,10 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
   }
 
   function setAvailableModels(models: OpenSecretModel[]) {
-    setLocalState((prev) => ({ ...prev, availableModels: models }));
+    setLocalState((prev) => ({
+      ...prev,
+      availableModels: normalizeAvailableModels(models)
+    }));
   }
 
   function setHasWhisperModel(hasWhisper: boolean) {
