@@ -519,7 +519,7 @@ const sendMessage = async (userInput: string, conversationId: string) => {
   try {
     // Create streaming response
     const stream = await openai.responses.create({
-      model: "ibnzterrell/Meta-Llama-3.3-70B-Instruct-AWQ-INT4", // Or user's selected model
+      model: "llama3-3-70b", // Or user's selected model
       conversation: conversationId,
       input: [{ role: "user", content: userInput }],
       stream: true,        // Enable streaming
