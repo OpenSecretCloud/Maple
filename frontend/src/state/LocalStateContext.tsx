@@ -12,6 +12,47 @@ export {
 } from "./LocalStateContextDef";
 
 export const DEFAULT_MODEL_ID = "gpt-oss-120b";
+export const PAID_DEFAULT_MODEL_ID = "kimi-k2-5";
+
+// Check if a plan name corresponds to a pro/max/team plan
+function isProMaxOrTeamPlan(planName: string): boolean {
+  return planName.includes("pro") || planName.includes("max") || planName.includes("team");
+}
+
+// Check if paid defaults have already been applied for this user.
+// The value is an ISO date string indicating when defaults were last applied.
+function hasPaidDefaultsBeenApplied(): boolean {
+  return localStorage.getItem("paidDefaultsApplied") !== null;
+}
+
+// Helper to get the initial web search state from localStorage, billing-aware
+export function getInitialWebSearchEnabled(): boolean {
+  try {
+    // If user has explicitly toggled web search before, respect that
+    const webSearchSetting = localStorage.getItem("webSearchEnabled");
+    if (webSearchSetting !== null) {
+      return webSearchSetting === "true";
+    }
+
+    // No explicit setting — check if paid defaults were applied (web search would be on)
+    if (hasPaidDefaultsBeenApplied()) {
+      return true;
+    }
+
+    // Check cached billing for fast initial load (before billing fetch completes)
+    const cachedBillingStr = localStorage.getItem("cachedBillingStatus");
+    if (cachedBillingStr) {
+      const cachedBilling = JSON.parse(cachedBillingStr) as BillingStatus;
+      const planName = cachedBilling.product_name?.toLowerCase() || "";
+      if (isProMaxOrTeamPlan(planName)) {
+        return true;
+      }
+    }
+  } catch (error) {
+    console.error("Failed to get initial web search state:", error);
+  }
+  return false;
+}
 
 // Helper to get default model based on cached billing status
 function getInitialModel(): string {
@@ -21,28 +62,35 @@ function getInitialModel(): string {
   }
 
   try {
-    // Priority 1: Check local storage for last used model
+    // Priority 1: Check local storage for user's explicit model choice
     const selectedModel = localStorage.getItem("selectedModel");
     if (selectedModel) {
       return aliasModelName(selectedModel);
     }
 
-    // Priority 2: Check cached billing status for pro/max/team users
+    // Priority 2: Check if paid defaults were already applied
+    // (user is returning paid user who got the one-time flip but then
+    // cleared selectedModel somehow — unlikely but safe fallback)
+    if (hasPaidDefaultsBeenApplied()) {
+      return PAID_DEFAULT_MODEL_ID;
+    }
+
+    // Priority 3: Check cached billing status for pro/max/team users
     const cachedBillingStr = localStorage.getItem("cachedBillingStatus");
     if (cachedBillingStr) {
       const cachedBilling = JSON.parse(cachedBillingStr) as BillingStatus;
       const planName = cachedBilling.product_name?.toLowerCase() || "";
 
-      // Pro, Max, or Team users get default model
-      if (planName.includes("pro") || planName.includes("max") || planName.includes("team")) {
-        return DEFAULT_MODEL_ID;
+      // Pro, Max, or Team users get the powerful reasoning model
+      if (isProMaxOrTeamPlan(planName)) {
+        return PAID_DEFAULT_MODEL_ID;
       }
     }
   } catch (error) {
     console.error("Failed to load initial model:", error);
   }
 
-  // Priority 3: Default to free model
+  // Priority 4: Default to free model
   return DEFAULT_MODEL_ID;
 }
 
@@ -162,8 +210,7 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
       planName.includes("team") ||
       planName.includes("starter");
 
-    const isProMaxOrTeam =
-      planName.includes("pro") || planName.includes("max") || planName.includes("team");
+    const isProMaxOrTeam = isProMaxOrTeamPlan(planName);
 
     // Check if billing plan changed from cached version
     let billingChanged = false;
@@ -190,17 +237,43 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
       console.error("Failed to cache billing status:", error);
     }
 
-    // Update model if: 1) no custom selectedModel OR 2) billing plan changed
+    // One-time paid defaults: when a user is on pro/max/team and we haven't
+    // applied paid defaults yet, flip model to "Powerful" and web search ON.
+    // This handles both new signups and free-to-paid upgrades.
     try {
-      const selectedModel = localStorage.getItem("selectedModel");
-      const shouldUpdateModel = !selectedModel || billingChanged;
+      if (isProMaxOrTeam && !hasPaidDefaultsBeenApplied()) {
+        // Apply paid defaults — set model to Powerful reasoning model
+        setModelInternal(PAID_DEFAULT_MODEL_ID);
 
-      if (shouldUpdateModel) {
+        // Enable web search
+        localStorage.setItem("webSearchEnabled", "true");
+
+        // Mark when we applied paid defaults (ISO date) so we never override again.
+        // Future defaults can check this date to decide whether to re-apply newer defaults.
+        localStorage.setItem("paidDefaultsApplied", new Date().toISOString());
+
+        return;
+      }
+    } catch (error) {
+      console.error("Failed to apply paid defaults:", error);
+    }
+
+    // For users who already had defaults applied: handle plan changes
+    try {
+      if (billingChanged) {
         if (isProMaxOrTeam) {
-          setModel(DEFAULT_MODEL_ID);
-        } else if (billingChanged) {
-          // User downgraded, switch back to free model
-          setModel(DEFAULT_MODEL_ID);
+          // Plan changed but still pro-tier — only update model if user
+          // hasn't manually chosen one (selectedModel not in localStorage)
+          const selectedModel = localStorage.getItem("selectedModel");
+          if (!selectedModel) {
+            setModelInternal(PAID_DEFAULT_MODEL_ID);
+          }
+        } else {
+          // User downgraded to free/starter — switch back to free model
+          // and clear paid defaults so they get re-applied if they upgrade again
+          setModelInternal(DEFAULT_MODEL_ID);
+          localStorage.removeItem("paidDefaultsApplied");
+          localStorage.removeItem("selectedModel");
         }
       }
     } catch (error) {
@@ -375,12 +448,29 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
     });
   }
 
+  // Internal model setter — updates state and localStorage but does NOT mark as
+  // a user's explicit choice. Used by billing/system logic.
+  function setModelInternal(modelId: string) {
+    const aliasedModel = aliasModelName(modelId);
+    setLocalState((prev) => {
+      if (prev.model === aliasedModel) return prev;
+      return { ...prev, model: aliasedModel };
+    });
+    try {
+      localStorage.setItem("selectedModel", aliasedModel);
+    } catch (error) {
+      console.error("Failed to save model to localStorage:", error);
+    }
+  }
+
+  // Public model setter — records the choice as a user-initiated selection.
+  // After this, we won't auto-override their model choice.
   function setModel(model: string) {
     const aliasedModel = aliasModelName(model);
     setLocalState((prev) => {
       if (prev.model === aliasedModel) return prev;
 
-      // Save to localStorage when model changes
+      // Save to localStorage as user's explicit choice
       try {
         localStorage.setItem("selectedModel", aliasedModel);
       } catch (error) {
