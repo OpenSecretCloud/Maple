@@ -504,7 +504,7 @@ export function ProjectDetailView({ projectId }: ProjectDetailViewProps) {
           </div>
         </div>
 
-        <div className="flex-1 min-h-0 overflow-y-auto">
+        <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden">
           <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-4 py-6 md:px-8">
             {error ? (
               <Alert variant="destructive">
@@ -517,7 +517,7 @@ export function ProjectDetailView({ projectId }: ProjectDetailViewProps) {
                 Project not found.
               </div>
             ) : project ? (
-              <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
+              <div className="grid grid-cols-[minmax(0,1fr)] gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
                 <div className="contents lg:block lg:space-y-4">
                   <button
                     type="button"
@@ -530,7 +530,7 @@ export function ProjectDetailView({ projectId }: ProjectDetailViewProps) {
                     </span>
                   </button>
 
-                  <div className="order-3 rounded-xl border bg-background/60 lg:order-none">
+                  <div className="order-3 min-w-0 overflow-hidden rounded-xl border bg-background/60 lg:order-none">
                     <div className="flex flex-wrap items-center justify-between gap-3 border-b px-4 py-3">
                       <h2 className="font-medium">Chats</h2>
                       {isSelectionMode ? (
