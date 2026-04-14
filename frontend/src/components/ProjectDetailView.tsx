@@ -617,7 +617,7 @@ export function ProjectDetailView({ projectId }: ProjectDetailViewProps) {
                                 )}
 
                                 <div className="min-w-0 flex-1 pr-10">
-                                  <div className="flex items-center gap-2">
+                                  <div className="flex min-w-0 items-center gap-2">
                                     <span className="truncate font-medium">
                                       {getConversationTitle(conversation)}
                                     </span>
