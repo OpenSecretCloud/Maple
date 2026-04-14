@@ -518,7 +518,7 @@ export function ProjectDetailView({ projectId }: ProjectDetailViewProps) {
               </div>
             ) : project ? (
               <div className="grid grid-cols-[minmax(0,1fr)] gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
-                <div className="contents lg:block lg:space-y-4">
+                <div className="contents lg:block lg:min-w-0 lg:overflow-hidden lg:space-y-4">
                   <button
                     type="button"
                     onClick={handleStartNewChat}
