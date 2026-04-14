@@ -1293,7 +1293,7 @@ export function ChatHistoryList({
                   <span>New project</span>
                 </button>
               </TooltipTrigger>
-              <TooltipContent side="bottom">
+              <TooltipContent side="bottom" className="bg-muted">
                 <p>Maximum of {MAX_PROJECTS} projects reached</p>
               </TooltipContent>
             </Tooltip>
