@@ -42,6 +42,16 @@ import { MoveChatsDialog } from "@/components/MoveChatsDialog";
 import { listAllConversationProjects, listAllConversations } from "@/utils/paginatedLists";
 
 const MAX_PROJECTS = 10;
+const SIDEBAR_TITLE_FADE = "pointer-events-none absolute inset-y-0 right-0 z-[1] overflow-hidden";
+const SIDEBAR_TITLE_FADE_MOBILE = "w-[4.5rem] opacity-100";
+const SIDEBAR_TITLE_FADE_DESKTOP = "w-4 opacity-70 group-hover:w-12 group-hover:opacity-100";
+const SIDEBAR_TITLE_FADE_DESKTOP_ACTIVE = "w-3 opacity-60 group-hover:w-9 group-hover:opacity-90";
+const SIDEBAR_TITLE_FADE_GRADIENT =
+  "absolute inset-y-0 right-0 w-full bg-gradient-to-l from-muted from-45% via-muted/92 to-transparent transition-all duration-150 ease-out dark:from-[hsl(var(--sidebar))] dark:via-[hsl(var(--sidebar)/0.92)] dark:to-transparent";
+const SIDEBAR_TITLE_FADE_CAP =
+  "absolute inset-y-0 right-0 w-2.5 bg-muted dark:bg-[hsl(var(--sidebar))]";
+const SIDEBAR_ELLIPSIS_BTN =
+  "z-20 shrink-0 rounded-full bg-muted/90 p-1.5 text-primary backdrop-blur-sm transition-opacity dark:bg-[hsl(var(--sidebar)/0.9)]";
 
 interface ChatHistoryListProps {
   currentChatId?: string;
@@ -1144,11 +1154,21 @@ export function ChatHistoryList({
     const title = getConversationTitle(conversation);
     const isActive = conversation.id === currentChatId;
     const isSelected = selectedIds.has(conversation.id);
+    const fadeClass = isMobile
+      ? SIDEBAR_TITLE_FADE_MOBILE
+      : isActive
+        ? SIDEBAR_TITLE_FADE_DESKTOP_ACTIVE
+        : SIDEBAR_TITLE_FADE_DESKTOP;
+    const titlePaddingClass = isMobile
+      ? "pr-8"
+      : "pr-2 transition-[padding] duration-150 ease-out group-hover:pr-8";
 
     return (
       <div
         key={conversation.id}
-        className={`relative group select-none ${isSelected ? "rounded-lg bg-primary/10" : ""}`}
+        className={`group relative flex select-none items-center gap-0.5 rounded-2xl pr-1 ${
+          isSelected ? "bg-primary/10" : ""
+        }`}
         onContextMenu={(event) => event.preventDefault()}
       >
         <div
@@ -1166,7 +1186,7 @@ export function ChatHistoryList({
           onTouchMove={handleLongPressMove}
           onTouchEnd={handleLongPressEnd}
           onTouchCancel={handleLongPressEnd}
-          className={`cursor-pointer rounded-lg py-2 transition-all hover:text-primary ${
+          className={`relative min-w-0 flex-1 cursor-pointer rounded-2xl py-1 transition-all hover:text-primary ${
             isActive && !isSelectionMode ? "text-primary" : "text-muted-foreground"
           } ${options?.compact ? "pl-4" : ""} ${isSelectionMode ? "pl-8" : ""}`}
         >
@@ -1180,13 +1200,22 @@ export function ChatHistoryList({
               />
             </div>
           ) : null}
-          <div className="pr-8">
-            <div
-              className={`overflow-hidden whitespace-nowrap ${!isSelectionMode ? "hover:underline" : ""}`}
-            >
-              {title}
+          <div className={titlePaddingClass}>
+            <div className="relative flex items-center">
+              {conversation.pinned ? (
+                <Pin className="mr-2 h-3.5 w-3.5 shrink-0 fill-current text-muted-foreground" />
+              ) : null}
+              <div
+                className={`min-w-0 flex-1 overflow-hidden whitespace-nowrap ${!isSelectionMode ? "hover:underline" : ""}`}
+              >
+                {title}
+              </div>
+              <div className={`${SIDEBAR_TITLE_FADE} ${fadeClass}`} aria-hidden>
+                <div className={SIDEBAR_TITLE_FADE_GRADIENT} />
+                <div className={SIDEBAR_TITLE_FADE_CAP} />
+              </div>
             </div>
-            <div className="mt-1 text-xs opacity-70">
+            <div className="mt-0.5 hidden text-[10px] opacity-50">
               {new Date(conversation.last_activity_at * 1000).toLocaleDateString()}
             </div>
           </div>
@@ -1196,8 +1225,8 @@ export function ChatHistoryList({
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <button
-                  className={`absolute right-2 top-1/2 z-50 -translate-y-1/2 bg-background/80 p-2 text-primary transition-opacity ${
-                    isMobile ? "opacity-100" : "opacity-0 group-hover:opacity-100"
+                  className={`absolute right-1 top-1/2 -translate-y-1/2 ${SIDEBAR_ELLIPSIS_BTN} ${
+                    isMobile ? "opacity-100" : "opacity-0 group-hover:opacity-100 focus:opacity-100"
                   }`}
                   onClick={(event) => {
                     event.preventDefault();
@@ -1254,7 +1283,6 @@ export function ChatHistoryList({
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
-            <div className="pointer-events-none absolute inset-y-0 right-0 w-[3rem] bg-gradient-to-l from-background to-transparent" />
           </>
         ) : null}
       </div>
@@ -1280,14 +1308,16 @@ export function ChatHistoryList({
 
       <div ref={pullContentRef} className="flex flex-col gap-5" style={{ willChange: "transform" }}>
         <div className="space-y-2">
-          <div className="text-sm font-semibold text-muted-foreground">Projects</div>
+          <div className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+            Projects
+          </div>
           {conversationProjects.length >= MAX_PROJECTS ? (
             <Tooltip>
               <TooltipTrigger asChild>
                 <button
                   type="button"
                   disabled
-                  className="flex w-full items-center gap-2 rounded-lg py-2 text-left text-muted-foreground/50 cursor-not-allowed"
+                  className="flex w-full items-center gap-2 rounded-2xl py-1.5 pl-0 pr-1 text-left text-muted-foreground/50 cursor-not-allowed"
                 >
                   <FolderPlus className="h-4 w-4" />
                   <span>New project</span>
@@ -1301,7 +1331,7 @@ export function ChatHistoryList({
             <button
               type="button"
               onClick={handleOpenCreateProjectDialog}
-              className="flex w-full items-center gap-2 rounded-lg py-2 text-left text-muted-foreground transition-colors hover:text-primary"
+              className="flex w-full items-center gap-2 rounded-2xl py-1.5 pl-0 pr-1 text-left text-muted-foreground transition-colors hover:text-primary"
             >
               <FolderPlus className="h-4 w-4" />
               <span>New project</span>
@@ -1317,7 +1347,7 @@ export function ChatHistoryList({
                   <button
                     type="button"
                     onClick={() => handleToggleProjectExpanded(project.id)}
-                    className={`w-full rounded-lg py-2 text-left text-muted-foreground transition-colors hover:text-primary ${
+                    className={`w-full rounded-2xl py-1 text-left text-muted-foreground transition-colors hover:text-primary ${
                       isProjectExpanded || isProjectSelected ? "text-foreground" : ""
                     }`}
                   >
@@ -1334,8 +1364,10 @@ export function ChatHistoryList({
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
                       <button
-                        className={`absolute right-2 top-0 z-50 bg-background/80 p-2 text-primary transition-opacity ${
-                          isMobile ? "opacity-100" : "opacity-0 group-hover:opacity-100"
+                        className={`absolute right-1 top-1/2 -translate-y-1/2 ${SIDEBAR_ELLIPSIS_BTN} ${
+                          isMobile
+                            ? "opacity-100"
+                            : "opacity-0 group-hover:opacity-100 focus:opacity-100"
                         }`}
                         onClick={(event) => {
                           event.preventDefault();
@@ -1377,8 +1409,8 @@ export function ChatHistoryList({
 
         {filteredPinnedConversations.length > 0 ? (
           <div className="space-y-2">
-            <div className="flex items-center gap-2 text-sm font-semibold text-muted-foreground">
-              <Pin className="h-4 w-4" />
+            <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+              <Pin className="h-3.5 w-3.5" />
               <span>Pinned</span>
             </div>
             {filteredPinnedConversations.map((conversation) => renderConversationRow(conversation))}
@@ -1386,7 +1418,9 @@ export function ChatHistoryList({
         ) : null}
 
         <div className="space-y-2">
-          <div className="text-sm font-semibold text-muted-foreground">Recents</div>
+          <div className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+            Recents
+          </div>
           {filteredRecentConversations.length > 0 ? (
             filteredRecentConversations.map((conversation) => renderConversationRow(conversation))
           ) : (
@@ -1408,12 +1442,12 @@ export function ChatHistoryList({
           <div className="mt-1">
             <button
               onClick={() => setIsArchivedExpanded(!isArchivedExpanded)}
-              className="mb-2 flex w-full items-center gap-2 text-sm text-muted-foreground transition-colors hover:text-foreground"
+              className="mb-2 flex w-full items-center gap-2 text-xs font-medium uppercase tracking-wider text-muted-foreground transition-colors hover:text-foreground"
             >
               {isArchivedExpanded ? (
-                <ChevronDown className="h-4 w-4" />
+                <ChevronDown className="h-3.5 w-3.5" />
               ) : (
-                <ChevronRight className="h-4 w-4" />
+                <ChevronRight className="h-3.5 w-3.5" />
               )}
               <span>Archived ({filteredArchivedChats.length})</span>
             </button>
@@ -1422,29 +1456,48 @@ export function ChatHistoryList({
               <div className="flex flex-col gap-2">
                 {filteredArchivedChats.map((chat) => {
                   const isActive = chat.id === currentChatId;
+                  const archivedFadeClass = isMobile
+                    ? SIDEBAR_TITLE_FADE_MOBILE
+                    : isActive
+                      ? SIDEBAR_TITLE_FADE_DESKTOP_ACTIVE
+                      : SIDEBAR_TITLE_FADE_DESKTOP;
+                  const archivedTitlePaddingClass = isMobile
+                    ? "pr-8"
+                    : "pr-2 transition-[padding] duration-150 ease-out group-hover:pr-8";
                   return (
-                    <div key={chat.id} className="relative group">
+                    <div
+                      key={chat.id}
+                      className="group relative flex items-center gap-0.5 rounded-2xl pr-1"
+                    >
                       <div
                         onClick={() => {
                           setSelectedProjectId(null);
                           router.navigate({ to: "/chat/$chatId", params: { chatId: chat.id } });
                         }}
-                        className={`rounded-lg py-2 transition-all hover:text-primary cursor-pointer ${
+                        className={`relative min-w-0 flex-1 cursor-pointer rounded-2xl py-1 transition-all hover:text-primary ${
                           isActive ? "text-primary" : "text-muted-foreground"
                         }`}
                       >
-                        <div className="overflow-hidden whitespace-nowrap hover:underline pr-8">
-                          {chat.title}
+                        <div className={`relative flex items-center ${archivedTitlePaddingClass}`}>
+                          <div className="overflow-hidden whitespace-nowrap hover:underline">
+                            {chat.title}
+                          </div>
+                          <div className={`${SIDEBAR_TITLE_FADE} ${archivedFadeClass}`} aria-hidden>
+                            <div className={SIDEBAR_TITLE_FADE_GRADIENT} />
+                            <div className={SIDEBAR_TITLE_FADE_CAP} />
+                          </div>
                         </div>
-                        <div className="text-xs opacity-70 mt-1">
+                        <div className="mt-0.5 hidden text-[10px] opacity-50">
                           {new Date(chat.updated_at || chat.created_at).toLocaleDateString()}
                         </div>
                       </div>
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
                           <button
-                            className={`z-50 bg-background/80 absolute right-2 top-1/2 transform -translate-y-1/2 text-primary transition-opacity p-2 ${
-                              isMobile ? "opacity-100" : "opacity-0 group-hover:opacity-100"
+                            className={`absolute right-1 top-1/2 -translate-y-1/2 ${SIDEBAR_ELLIPSIS_BTN} ${
+                              isMobile
+                                ? "opacity-100"
+                                : "opacity-0 group-hover:opacity-100 focus:opacity-100"
                             }`}
                             onClick={(e) => {
                               e.preventDefault();
@@ -1465,7 +1518,6 @@ export function ChatHistoryList({
                           </DropdownMenuItem>
                         </DropdownMenuContent>
                       </DropdownMenu>
-                      <div className="absolute inset-y-0 right-0 w-[3rem] bg-gradient-to-l from-background to-transparent pointer-events-none"></div>
                     </div>
                   );
                 })}

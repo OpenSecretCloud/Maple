@@ -218,7 +218,7 @@ export function UpgradePromptDialog({
             <ul className="space-y-2">
               {info.benefits.map((benefit, i) => (
                 <li key={i} className="flex items-start gap-2 text-sm">
-                  <Check className="h-4 w-4 text-green-500 mt-0.5 shrink-0" />
+                  <Check className="mt-0.5 h-4 w-4 shrink-0 text-maple-success" />
                   <span>{benefit}</span>
                 </li>
               ))}
@@ -240,7 +240,7 @@ export function UpgradePromptDialog({
 
         <DialogFooter className="flex flex-col gap-2 sm:flex-col sm:justify-stretch sm:space-x-0">
           {(info.requiredPlan !== "Max" || !isMax) && (
-            <Button onClick={handleUpgrade} className="w-full gap-2">
+            <Button variant="primary" onClick={handleUpgrade} className="w-full gap-2">
               <Sparkles className="h-4 w-4" />
               {isFreeTier ? "Upgrade to Pro" : isPro ? "Upgrade to Max" : "View Plans"}
             </Button>

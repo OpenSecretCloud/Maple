@@ -25,7 +25,7 @@ export function ProxyEventListener() {
             type: "success",
             title: "Proxy Started",
             message: `Local proxy is running on ${config.host}:${config.port}`,
-            icon: <Server className="h-5 w-5 text-green-600 dark:text-green-500" />,
+            icon: <Server className="h-5 w-5 text-maple-success" />,
             duration: 5000
           });
         });

@@ -59,15 +59,15 @@ export function PromoDialog({ open, onOpenChange, discount }: PromoDialogProps) 
         <DialogHeader>
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-2">
             <div className="flex items-center gap-3">
-              <div className="p-2 sm:p-2.5 rounded-xl bg-gradient-to-br from-pink-500/20 to-orange-500/20 shrink-0">
-                <Tag className="h-6 w-6 sm:h-7 sm:w-7 text-pink-500" />
+              <div className="shrink-0 rounded-xl bg-gradient-to-br from-[hsl(var(--maple-primary))/0.2] to-[hsl(var(--maple-primary-strong))/0.2] p-2 sm:p-2.5">
+                <Tag className="h-6 w-6 text-[hsl(var(--maple-primary))] sm:h-7 sm:w-7" />
               </div>
               <div>
                 <DialogTitle className="text-lg sm:text-xl">{discount.name}</DialogTitle>
                 <DialogDescription className="text-sm mt-0.5">Limited time offer</DialogDescription>
               </div>
             </div>
-            <Badge className="bg-gradient-to-r from-pink-500 to-orange-500 text-white text-base sm:text-lg px-3 py-1 sm:py-1.5 shadow-lg w-fit">
+            <Badge className="w-fit bg-gradient-to-r from-[hsl(var(--maple-primary))] to-[hsl(var(--maple-primary-strong))] px-3 py-1 text-base text-[hsl(var(--maple-on-primary))] shadow-lg sm:py-1.5 sm:text-lg">
               {discount.percent_off}% OFF
             </Badge>
           </div>
@@ -75,7 +75,7 @@ export function PromoDialog({ open, onOpenChange, discount }: PromoDialogProps) 
 
         <div className="space-y-5 py-4">
           {/* Promo description */}
-          <div className="p-4 rounded-xl bg-gradient-to-r from-pink-500/10 to-orange-500/10 border border-pink-500/20">
+          <div className="rounded-xl border border-[hsl(var(--maple-primary))/0.2] bg-gradient-to-r from-[hsl(var(--maple-primary))/0.1] to-[hsl(var(--maple-primary-strong))/0.1] p-4">
             <p className="text-base font-medium text-foreground">{discount.description}</p>
             {discount.duration_months && (
               <p className="text-sm text-muted-foreground mt-1">
@@ -91,7 +91,7 @@ export function PromoDialog({ open, onOpenChange, discount }: PromoDialogProps) 
             <ul className="grid gap-2.5">
               {benefits.map((benefit, i) => (
                 <li key={i} className="flex items-center gap-3 text-sm">
-                  <div className="p-1.5 rounded-lg bg-green-500/10 text-green-500 shrink-0">
+                  <div className="shrink-0 rounded-lg bg-maple-success/10 p-1.5 text-maple-success">
                     {benefit.icon}
                   </div>
                   <span>{benefit.text}</span>
@@ -103,7 +103,7 @@ export function PromoDialog({ open, onOpenChange, discount }: PromoDialogProps) 
           {/* Privacy note */}
           <div className="pt-3 border-t">
             <div className="flex items-start gap-2 text-sm text-muted-foreground">
-              <Check className="h-4 w-4 text-green-500 mt-0.5 shrink-0" />
+              <Check className="mt-0.5 h-4 w-4 shrink-0 text-maple-success" />
               <span>All features include end-to-end encryption. Your data stays private.</span>
             </div>
           </div>
@@ -119,7 +119,7 @@ export function PromoDialog({ open, onOpenChange, discount }: PromoDialogProps) 
           </Button>
           <Button
             onClick={handleUpgrade}
-            className="w-full sm:w-auto gap-2 bg-gradient-to-r from-pink-500 to-orange-500 hover:from-pink-600 hover:to-orange-600 text-white border-0"
+            className="w-full gap-2 border-0 bg-gradient-to-r from-[hsl(var(--maple-primary))] to-[hsl(var(--maple-primary-strong))] text-[hsl(var(--maple-on-primary))] hover:brightness-110 sm:w-auto"
           >
             <Sparkles className="h-4 w-4" />
             Upgrade Now
