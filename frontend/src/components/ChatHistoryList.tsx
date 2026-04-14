@@ -28,6 +28,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { RenameChatDialog } from "@/components/RenameChatDialog";
 import { DeleteChatDialog } from "@/components/DeleteChatDialog";
 import { BulkDeleteDialog } from "@/components/BulkDeleteDialog";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   useOpenSecret,
   type Conversation,
@@ -39,6 +40,8 @@ import { ConversationProjectDialog } from "@/components/ConversationProjectDialo
 import { DeleteConversationProjectDialog } from "@/components/DeleteConversationProjectDialog";
 import { MoveChatsDialog } from "@/components/MoveChatsDialog";
 import { listAllConversationProjects, listAllConversations } from "@/utils/paginatedLists";
+
+const MAX_PROJECTS = 10;
 
 interface ChatHistoryListProps {
   currentChatId?: string;
@@ -1278,14 +1281,32 @@ export function ChatHistoryList({
       <div ref={pullContentRef} className="flex flex-col gap-5" style={{ willChange: "transform" }}>
         <div className="space-y-2">
           <div className="text-sm font-semibold text-muted-foreground">Projects</div>
-          <button
-            type="button"
-            onClick={handleOpenCreateProjectDialog}
-            className="flex w-full items-center gap-2 rounded-lg py-2 text-left text-muted-foreground transition-colors hover:text-primary"
-          >
-            <FolderPlus className="h-4 w-4" />
-            <span>New project</span>
-          </button>
+          {conversationProjects.length >= MAX_PROJECTS ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  disabled
+                  className="flex w-full items-center gap-2 rounded-lg py-2 text-left text-muted-foreground/50 cursor-not-allowed"
+                >
+                  <FolderPlus className="h-4 w-4" />
+                  <span>New project</span>
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">
+                <p>Maximum of {MAX_PROJECTS} projects reached</p>
+              </TooltipContent>
+            </Tooltip>
+          ) : (
+            <button
+              type="button"
+              onClick={handleOpenCreateProjectDialog}
+              className="flex w-full items-center gap-2 rounded-lg py-2 text-left text-muted-foreground transition-colors hover:text-primary"
+            >
+              <FolderPlus className="h-4 w-4" />
+              <span>New project</span>
+            </button>
+          )}
 
           {filteredProjects.map((project) => {
             const isProjectExpanded = expandedProjectId === project.id;
