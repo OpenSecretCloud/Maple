@@ -79,6 +79,7 @@ frontend/*.local
 *.tsbuildinfo
 
 **/.claude/settings.local.json
+**/.factory/
 
 .repo_ignore
 
