@@ -52,7 +52,7 @@ import { useIsMobile } from "@/utils/utils";
 import { fileToDataURL } from "@/utils/file";
 import { truncateMarkdownPreservingLinks } from "@/utils/markdown";
 import { useOpenAI } from "@/ai/useOpenAi";
-import { DEFAULT_MODEL_ID } from "@/state/LocalStateContext";
+import { DEFAULT_MODEL_ID, getInitialWebSearchEnabled } from "@/state/LocalStateContext";
 import { Markdown, ThinkingBlock } from "@/components/markdown";
 import { ModelSelector } from "@/components/ModelSelector";
 import { useLocalState } from "@/state/useLocalState";
@@ -61,7 +61,6 @@ import { UpgradePromptDialog } from "@/components/UpgradePromptDialog";
 import { DocumentPlatformDialog } from "@/components/DocumentPlatformDialog";
 import { ContextLimitDialog } from "@/components/ContextLimitDialog";
 import { RecordingOverlay } from "@/components/RecordingOverlay";
-import { WebSearchInfoDialog } from "@/components/WebSearchInfoDialog";
 import { TTSDownloadDialog } from "@/components/TTSDownloadDialog";
 import { useTTS } from "@/services/tts/TTSContext";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -936,7 +935,6 @@ export function UnifiedChat() {
   >("image");
   const [documentPlatformDialogOpen, setDocumentPlatformDialogOpen] = useState(false);
   const [contextLimitDialogOpen, setContextLimitDialogOpen] = useState(false);
-  const [webSearchInfoDialogOpen, setWebSearchInfoDialogOpen] = useState(false);
   const [ttsSetupDialogOpen, setTtsSetupDialogOpen] = useState(false);
 
   // Audio recording states
@@ -945,10 +943,8 @@ export function UnifiedChat() {
   const [isProcessingSend, setIsProcessingSend] = useState(false);
   const [audioError, setAudioError] = useState<string | null>(null);
 
-  // Web search toggle state - persisted in localStorage
-  const [isWebSearchEnabled, setIsWebSearchEnabled] = useState(() => {
-    return localStorage.getItem("webSearchEnabled") === "true";
-  });
+  // Web search toggle state - persisted in localStorage, billing-aware initial default
+  const [isWebSearchEnabled, setIsWebSearchEnabled] = useState(getInitialWebSearchEnabled);
 
   // Fullscreen mode for power users - persisted in localStorage
   const [isFullscreen, setIsFullscreen] = useState(() => {
@@ -965,6 +961,15 @@ export function UnifiedChat() {
   useEffect(() => {
     localStorage.setItem("webSearchEnabled", isWebSearchEnabled.toString());
   }, [isWebSearchEnabled]);
+
+  // Sync web search state when billing status changes (handles the one-time paid defaults flip).
+  // When setBillingStatus writes "webSearchEnabled" to localStorage, we need to pick that up.
+  useEffect(() => {
+    if (localState.billingStatus) {
+      const storedValue = localStorage.getItem("webSearchEnabled") === "true";
+      setIsWebSearchEnabled(storedValue);
+    }
+  }, [localState.billingStatus]);
 
   // Toggle fullscreen with animation
   const toggleFullscreen = useCallback(() => {
@@ -2993,24 +2998,11 @@ export function UnifiedChat() {
                             size="sm"
                             className="h-8 w-8 p-0"
                             onClick={() => {
-                              // Step 1: Check if user has access (free/starter users see upsell)
                               if (!canUseWebSearch) {
                                 setUpgradeFeature("websearch");
                                 setUpgradeDialogOpen(true);
                                 return;
                               }
-
-                              // Step 2: Check if this is their first time (enable web search, set flag, show popup)
-                              const hasSeenWebSearchInfo =
-                                localStorage.getItem("hasSeenWebSearchInfo") === "true";
-                              if (!hasSeenWebSearchInfo) {
-                                localStorage.setItem("hasSeenWebSearchInfo", "true");
-                                setIsWebSearchEnabled(true);
-                                setWebSearchInfoDialogOpen(true);
-                                return;
-                              }
-
-                              // Step 3: Toggle web search directly
                               setIsWebSearchEnabled(!isWebSearchEnabled);
                             }}
                             aria-label={
@@ -3236,24 +3228,11 @@ export function UnifiedChat() {
                           size="sm"
                           className="h-8 w-8 p-0"
                           onClick={() => {
-                            // Step 1: Check if user has access (free/starter users see upsell)
                             if (!canUseWebSearch) {
                               setUpgradeFeature("websearch");
                               setUpgradeDialogOpen(true);
                               return;
                             }
-
-                            // Step 2: Check if this is their first time (enable web search, set flag, show popup)
-                            const hasSeenWebSearchInfo =
-                              localStorage.getItem("hasSeenWebSearchInfo") === "true";
-                            if (!hasSeenWebSearchInfo) {
-                              localStorage.setItem("hasSeenWebSearchInfo", "true");
-                              setIsWebSearchEnabled(true);
-                              setWebSearchInfoDialogOpen(true);
-                              return;
-                            }
-
-                            // Step 3: Toggle web search directly
                             setIsWebSearchEnabled(!isWebSearchEnabled);
                           }}
                           aria-label={
@@ -3402,19 +3381,6 @@ export function UnifiedChat() {
           onOpenChange={setContextLimitDialogOpen}
           currentModel={localState.model}
           hasDocument={!!documentName}
-        />
-
-        {/* Web search info dialog for first-time paid users */}
-        <WebSearchInfoDialog
-          open={webSearchInfoDialogOpen}
-          onOpenChange={(open) => {
-            // When dialog is closed via X or backdrop, just dismiss - web search already enabled on click
-            setWebSearchInfoDialogOpen(open);
-          }}
-          onConfirm={() => {
-            // "Got it" button - just close (web search already enabled on click)
-            setWebSearchInfoDialogOpen(false);
-          }}
         />
 
         {/* TTS setup dialog */}
