@@ -2839,7 +2839,7 @@ export function UnifiedChat() {
                 className={`flex flex-col items-center gap-6 ${isFullscreen ? "flex-1 justify-center" : ""}`}
               >
                 {!isFullscreen && (
-                  <h1 className="mb-6 overflow-visible pb-1 font-displayWide text-4xl font-normal leading-relaxed tracking-[0.035em] brand-gradient-text">
+                  <h1 className="mb-6 w-full overflow-visible pb-1 text-center font-displayWide text-4xl font-normal leading-tight tracking-[0.035em] brand-gradient-text sm:leading-relaxed">
                     Research anything...
                   </h1>
                 )}
@@ -2930,8 +2930,8 @@ export function UnifiedChat() {
                         </button>
                       </div>
 
-                      <div className="flex shrink-0 items-center justify-between px-2 pb-2 pt-1">
-                        <div className="flex items-center gap-2">
+                      <div className="grid shrink-0 grid-cols-[minmax(0,1fr)_auto] items-end gap-x-2 gap-y-2 px-2 pb-2 pt-1">
+                        <div className="flex min-w-0 flex-wrap items-center gap-1.5 sm:gap-2">
                           <ModelSelector
                             hasImages={
                               draftImages.length > 0 ||
@@ -3022,14 +3022,14 @@ export function UnifiedChat() {
                           </DropdownMenu>
                         </div>
 
-                        <div className="flex items-center gap-2">
+                        <div className="flex shrink-0 items-center self-end gap-1.5 sm:gap-2">
                           <Button
                             type="button"
                             onClick={startRecording}
                             disabled={isGenerating || isRecording || !canUseVoice}
                             size="icon"
                             variant="ghost"
-                            className="h-9 w-9 rounded-xl hover:bg-muted"
+                            className="h-8 w-8 rounded-xl hover:bg-muted sm:h-9 sm:w-9"
                           >
                             <Mic className="h-4 w-4" />
                           </Button>
@@ -3039,7 +3039,7 @@ export function UnifiedChat() {
                               onClick={handleCancelResponse}
                               size="icon"
                               variant="destructive"
-                              className="h-9 w-9 rounded-xl"
+                              className="h-8 w-8 rounded-xl sm:h-9 sm:w-9"
                             >
                               <div className="h-3 w-3 rounded-md bg-current" />
                             </Button>
@@ -3047,9 +3047,9 @@ export function UnifiedChat() {
                             <button
                               type="submit"
                               disabled={!input.trim() && !draftImages.length && !documentText}
-                              className="flex h-9 w-9 items-center justify-center rounded-full bg-gradient-to-b from-[hsl(var(--maple-primary))] to-[hsl(var(--maple-primary-strong))] text-[hsl(var(--maple-on-primary))]/90 transition-all duration-200 ease-out active:scale-[0.95] disabled:pointer-events-none"
+                              className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-b from-[hsl(var(--maple-primary))] to-[hsl(var(--maple-primary-strong))] text-[hsl(var(--maple-on-primary))]/90 transition-all duration-200 ease-out active:scale-[0.95] disabled:pointer-events-none sm:h-9 sm:w-9"
                             >
-                              <ArrowUp className="h-4 w-4" />
+                              <ArrowUp className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
                             </button>
                           )}
                         </div>
@@ -3142,8 +3142,8 @@ export function UnifiedChat() {
                       id="message"
                     />
 
-                    <div className="flex items-center justify-between px-2 pb-2 pt-1">
-                      <div className="flex items-center gap-2">
+                    <div className="grid grid-cols-[minmax(0,1fr)_auto] items-end gap-x-2 gap-y-2 px-2 pb-2 pt-1">
+                      <div className="flex min-w-0 flex-wrap items-center gap-1.5 sm:gap-2">
                         <ModelSelector
                           hasImages={
                             draftImages.length > 0 ||
@@ -3228,7 +3228,7 @@ export function UnifiedChat() {
                         </DropdownMenu>
                       </div>
 
-                      <div className="flex items-center gap-2">
+                      <div className="flex shrink-0 items-center self-end gap-1.5 sm:gap-2">
                         <Button
                           type="button"
                           onClick={startRecording}
