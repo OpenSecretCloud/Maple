@@ -472,7 +472,7 @@ function mergeStreamingConversationItem(messages: Message[], item: Message): Mes
           item.arguments.length >= (existingToolCall?.arguments.length ?? 0)
             ? item.arguments
             : (existingToolCall?.arguments ?? item.arguments),
-        status: existingToolCall?.status ?? "in_progress"
+        status: item.status ?? existingToolCall?.status ?? "in_progress"
       }
     ]);
   }
@@ -490,7 +490,7 @@ function mergeStreamingConversationItem(messages: Message[], item: Message): Mes
           item.output.length >= (existingToolOutput?.output.length ?? 0)
             ? item.output
             : (existingToolOutput?.output ?? item.output),
-        status: existingToolOutput?.status ?? "in_progress"
+        status: item.status ?? existingToolOutput?.status ?? "in_progress"
       }
     ]);
   }
