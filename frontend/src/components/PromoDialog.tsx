@@ -59,7 +59,7 @@ export function PromoDialog({ open, onOpenChange, discount }: PromoDialogProps) 
         <DialogHeader>
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-2">
             <div className="flex items-center gap-3">
-              <div className="shrink-0 rounded-xl bg-gradient-to-br from-[hsl(var(--maple-primary))/0.2] to-[hsl(var(--maple-primary-strong))/0.2] p-2 sm:p-2.5">
+              <div className="shrink-0 rounded-xl bg-gradient-to-br from-[hsl(var(--maple-primary)/0.2)] to-[hsl(var(--maple-primary-strong)/0.2)] p-2 sm:p-2.5">
                 <Tag className="h-6 w-6 text-[hsl(var(--maple-primary))] sm:h-7 sm:w-7" />
               </div>
               <div>
@@ -75,7 +75,7 @@ export function PromoDialog({ open, onOpenChange, discount }: PromoDialogProps) 
 
         <div className="space-y-5 py-4">
           {/* Promo description */}
-          <div className="rounded-xl border border-[hsl(var(--maple-primary))/0.2] bg-gradient-to-r from-[hsl(var(--maple-primary))/0.1] to-[hsl(var(--maple-primary-strong))/0.1] p-4">
+          <div className="rounded-xl border border-[hsl(var(--maple-primary)/0.2)] bg-gradient-to-r from-[hsl(var(--maple-primary)/0.1)] to-[hsl(var(--maple-primary-strong)/0.1)] p-4">
             <p className="text-base font-medium text-foreground">{discount.description}</p>
             {discount.duration_months && (
               <p className="text-sm text-muted-foreground mt-1">

@@ -311,6 +311,7 @@ export function AccountMenu() {
                 <DropdownMenuTrigger asChild>
                   <button
                     type="button"
+                    aria-label="Open account menu"
                     className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[hsl(var(--sidebar-chrome))] text-[hsl(var(--on-sidebar-chrome))] shadow-none ring-0 transition-colors hover:bg-[hsl(var(--sidebar-chrome-hover))]"
                   >
                     <User className="h-4 w-4" />

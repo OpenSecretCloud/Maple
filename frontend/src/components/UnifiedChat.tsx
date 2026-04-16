@@ -1636,6 +1636,7 @@ export function UnifiedChat() {
 
     const usp = new URLSearchParams(window.location.search);
     usp.delete("conversation_id");
+    usp.delete("project_id");
     const newUrl = usp.toString()
       ? `${window.location.pathname}?${usp.toString()}`
       : window.location.pathname;
@@ -3047,7 +3048,7 @@ export function UnifiedChat() {
                             <button
                               type="submit"
                               disabled={!input.trim() && !draftImages.length && !documentText}
-                              className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-b from-[hsl(var(--maple-primary))] to-[hsl(var(--maple-primary-strong))] text-[hsl(var(--maple-on-primary))]/90 transition-all duration-200 ease-out active:scale-[0.95] disabled:pointer-events-none sm:h-9 sm:w-9"
+                              className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-b from-[hsl(var(--maple-primary))] to-[hsl(var(--maple-primary-strong))] text-[hsl(var(--maple-on-primary))]/90 transition-all duration-200 ease-out active:scale-[0.95] disabled:pointer-events-none disabled:opacity-40 sm:h-9 sm:w-9"
                             >
                               <ArrowUp className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
                             </button>
@@ -3253,7 +3254,7 @@ export function UnifiedChat() {
                           <button
                             type="submit"
                             disabled={!input.trim() && !draftImages.length && !documentText}
-                            className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-b from-[hsl(var(--maple-primary))] to-[hsl(var(--maple-primary-strong))] text-[hsl(var(--maple-on-primary))]/90 transition-all duration-200 ease-out active:scale-[0.95] disabled:pointer-events-none"
+                            className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-b from-[hsl(var(--maple-primary))] to-[hsl(var(--maple-primary-strong))] text-[hsl(var(--maple-on-primary))]/90 transition-all duration-200 ease-out active:scale-[0.95] disabled:pointer-events-none disabled:opacity-40"
                           >
                             <ArrowUp className="h-4 w-4" />
                           </button>

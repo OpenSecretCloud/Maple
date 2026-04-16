@@ -1479,7 +1479,7 @@ export function ChatHistoryList({
                         }`}
                       >
                         <div className={`relative flex items-center ${archivedTitlePaddingClass}`}>
-                          <div className="overflow-hidden whitespace-nowrap hover:underline">
+                          <div className="min-w-0 flex-1 overflow-hidden whitespace-nowrap hover:underline">
                             {chat.title}
                           </div>
                           <div className={`${SIDEBAR_TITLE_FADE} ${archivedFadeClass}`} aria-hidden>

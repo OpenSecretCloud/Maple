@@ -6,16 +6,21 @@ import { cn } from "@/utils/utils";
 
 type CreditUsageLayout = "bar" | "ring";
 
-/** Dev-only: localStorage `maple_mock_credit_scenario` = demo | full | high | warn | ok | off */
+/** Dev-only opt-in: localStorage `maple_mock_credit_scenario` = demo | full | high | warn | ok | off */
 type MockScenario = "demo" | "full" | "high" | "warn" | "ok";
 
 function readMockScenario(): MockScenario | "off" | null {
   if (!import.meta.env.DEV || typeof window === "undefined") return null;
-  const raw = localStorage.getItem("maple_mock_credit_scenario");
+  let raw: string | null = null;
+  try {
+    raw = localStorage.getItem("maple_mock_credit_scenario");
+  } catch {
+    return null;
+  }
   if (raw === "off") return "off";
   if (raw === "demo" || raw === "full" || raw === "high" || raw === "warn" || raw === "ok")
     return raw;
-  return "demo";
+  return null;
 }
 
 function mockPreset(scenario: MockScenario): {
@@ -160,19 +165,19 @@ export function CreditUsage({ layout = "bar" }: { layout?: CreditUsageLayout }) 
 
   const totalLive = billingStatus?.total_tokens;
   const usedLive = billingStatus?.used_tokens;
-  const hasRealUsage = totalLive != null && usedLive != null && totalLive > 0;
+  const hasRealUsage = totalLive != null && totalLive > 0 && usedLive != null && usedLive > 0;
 
   const mockFlag = readMockScenario();
-  const useMock = !hasRealUsage && import.meta.env.DEV && mockFlag !== "off";
+  const useMock = !hasRealUsage && import.meta.env.DEV && mockFlag !== null && mockFlag !== "off";
 
-  if (!hasRealUsage && (!import.meta.env.DEV || mockFlag === "off")) {
+  if (!hasRealUsage && !useMock) {
     return null;
   }
 
   const mock = useMock ? mockPreset(mockFlag as MockScenario) : null;
   const total = hasRealUsage ? totalLive! : mock!.total_tokens;
   const used = hasRealUsage ? usedLive! : mock!.used_tokens;
-  const productName = hasRealUsage ? billingStatus!.product_name : "Pro";
+  const productName = hasRealUsage ? billingStatus?.product_name : "Pro";
   const usageResetDate = hasRealUsage ? billingStatus!.usage_reset_date : mockUsageResetIso();
   const apiBalance = hasRealUsage ? billingStatus!.api_credit_balance : mock?.api_credit_balance;
 
@@ -181,7 +186,7 @@ export function CreditUsage({ layout = "bar" }: { layout?: CreditUsageLayout }) 
   const tone = usageTone(percentUsed);
   const barColor = toneColor(tone);
 
-  const isMaxPlan = productName.toLowerCase().includes("max");
+  const isMaxPlan = productName?.toLowerCase().includes("max") ?? false;
   if (isMaxPlan && percentUsed < 90) {
     return null;
   }
