@@ -36,7 +36,7 @@ jobs:
 
       - name: Install zsp
         run: |
-          go install "github.com/zapstore/zsp@v0.3.3"
+          go install "github.com/zapstore/zsp@v0.4.5"
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
       - name: Publish to Zapstore
