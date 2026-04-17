@@ -23,9 +23,7 @@
 import { useState, useRef, useEffect, useCallback, memo, useMemo } from "react";
 import { flushSync } from "react-dom";
 import {
-  Send,
-  Bot,
-  User,
+  ArrowUp,
   Copy,
   Check,
   Plus,
@@ -37,10 +35,11 @@ import {
   Search,
   Loader2,
   Globe,
-  Maximize2,
-  Minimize2,
+  Expand,
+  Shrink,
   Volume2,
-  Square
+  Square,
+  LockKeyhole
 } from "lucide-react";
 import RecordRTC from "recordrtc";
 import { useQueryClient } from "@tanstack/react-query";
@@ -48,6 +47,7 @@ import { v4 as uuidv4 } from "uuid";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Sidebar, SidebarToggle } from "@/components/Sidebar";
+import { MapleWordmark } from "@/components/MapleWordmark";
 import { useIsMobile } from "@/utils/utils";
 import { fileToDataURL } from "@/utils/file";
 import { truncateMarkdownPreservingLinks } from "@/utils/markdown";
@@ -140,6 +140,19 @@ function mergeMessagesById(existingMessages: Message[], newMessages: Message[]):
 
   // Return as array, maintaining insertion order (Map preserves insertion order)
   return Array.from(messagesMap.values());
+}
+
+function MapleChatAvatar() {
+  return (
+    <img
+      src="/m-avatar.svg"
+      alt=""
+      width={32}
+      height={32}
+      draggable={false}
+      className="h-8 w-8 shrink-0 select-none"
+    />
+  );
 }
 
 // Helper function to convert conversation items - just returns them as-is (flat, no grouping)
@@ -312,7 +325,7 @@ function ToolCallRenderer({
     const isActive = webSearch.status === "in_progress" || webSearch.status === "searching";
 
     return (
-      <div className="flex items-center gap-2 text-sm text-muted-foreground bg-muted/30 px-3 py-2 rounded-md mb-2">
+      <div className="mb-2 flex items-center gap-2 rounded-2xl bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
         {isActive ? (
           <Loader2 className="h-3.5 w-3.5 animate-spin" />
         ) : (
@@ -345,10 +358,10 @@ function ToolCallRenderer({
       // Web search specific rendering
       if (isWebSearch) {
         return (
-          <div className="text-sm bg-muted/20 border border-muted/40 rounded-lg px-4 py-3 mb-2">
+          <div className="mb-2 rounded-3xl border border-muted/40 bg-muted/20 px-4 py-3 text-sm">
             {/* Web search header with icon and query */}
-            <div className="flex items-center gap-2 mb-2">
-              <Search className="h-4 w-4 text-primary flex-shrink-0" />
+            <div className="mb-2 flex items-center gap-2">
+              <Search className="h-4 w-4 flex-shrink-0 text-[hsl(var(--maple-primary))]" />
               <span className="font-medium text-foreground">
                 {query ? `Searched: "${query}"` : "Web Search"}
               </span>
@@ -377,10 +390,10 @@ function ToolCallRenderer({
         : `Tool "${functionCall.name}" completed`;
 
       return (
-        <div className="text-sm bg-muted/20 border border-muted/40 rounded-lg px-4 py-3 mb-2">
+        <div className="mb-2 rounded-3xl border border-muted/40 bg-muted/20 px-4 py-3 text-sm">
           {/* Tool call header */}
-          <div className="flex items-center gap-2 mb-2">
-            <Check className="h-4 w-4 text-green-600 dark:text-green-400 flex-shrink-0" />
+          <div className="mb-2 flex items-center gap-2">
+            <Check className="h-4 w-4 flex-shrink-0 text-maple-success" />
             <span className="font-medium text-foreground">{statusText}</span>
           </div>
           {/* Tool output - indented, render as markdown for links */}
@@ -404,8 +417,8 @@ function ToolCallRenderer({
 
     if (isWebSearch) {
       return (
-        <div className="flex items-center gap-2 text-sm bg-muted/30 px-3 py-2 rounded-md mb-2">
-          <Loader2 className="h-4 w-4 text-primary animate-spin flex-shrink-0" />
+        <div className="mb-2 flex items-center gap-2 rounded-2xl bg-muted/30 px-3 py-2 text-sm">
+          <Loader2 className="h-4 w-4 animate-spin flex-shrink-0 text-[hsl(var(--maple-primary))]" />
           <span className="text-foreground">
             {query ? `Searching for "${query}"...` : "Searching the web..."}
           </span>
@@ -415,7 +428,7 @@ function ToolCallRenderer({
 
     // Generic tool call without output - show as in progress
     return (
-      <div className="flex items-center gap-2 text-sm text-muted-foreground bg-muted/30 px-3 py-2 rounded-md mb-2">
+      <div className="mb-2 flex items-center gap-2 rounded-2xl bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
         <Loader2 className="h-3.5 w-3.5 animate-spin" />
         <span>{query ? `Searching for "${query}"...` : "Running tool..."}</span>
       </div>
@@ -431,9 +444,9 @@ function ToolCallRenderer({
     const hasMore = output.length > 150;
 
     return (
-      <div className="text-sm bg-muted/20 border border-muted/40 rounded-lg px-4 py-3 mb-2">
-        <div className="flex items-center gap-2 mb-2">
-          <Check className="h-4 w-4 text-green-600 dark:text-green-400 flex-shrink-0" />
+      <div className="mb-2 rounded-3xl border border-muted/40 bg-muted/20 px-4 py-3 text-sm">
+        <div className="mb-2 flex items-center gap-2">
+          <Check className="h-4 w-4 flex-shrink-0 text-maple-success" />
           <span className="font-medium text-foreground">Tool Result</span>
         </div>
         <div className="pl-6 text-foreground/80">
@@ -652,7 +665,7 @@ const MessageList = memo(
                         <img
                           src={part.image_url}
                           alt={`Image ${partIdx + 1}`}
-                          className="max-w-full rounded-lg"
+                          className="max-w-full rounded-2xl"
                           style={{ maxHeight: "400px", objectFit: "contain" }}
                         />
                       </div>
@@ -672,8 +685,8 @@ const MessageList = memo(
               </div>
             )}
             {message.status === "incomplete" && (
-              <div className="inline-flex items-center gap-2 text-sm text-muted-foreground bg-muted/50 px-3 py-1.5 rounded-md mt-2">
-                <div className="w-1.5 h-1.5 rounded-full bg-yellow-500" />
+              <div className="mt-2 inline-flex items-center gap-2 rounded-2xl bg-muted/50 px-3 py-1.5 text-sm text-muted-foreground">
+                <div className="h-1.5 w-1.5 rounded-full bg-maple-warning" />
                 <span>Chat Canceled</span>
               </div>
             )}
@@ -721,53 +734,39 @@ const MessageList = memo(
               <div
                 key={group.id}
                 ref={groupIndex === 0 ? firstMessageRef : undefined}
-                className="group py-6 px-4 bg-muted/30"
+                className="group flex justify-end py-4"
               >
-                <div className="flex flex-col md:flex-row gap-3 max-w-4xl mx-auto">
-                  <div className="flex-shrink-0">
-                    <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center">
-                      <User className="h-4 w-4 text-primary" />
-                    </div>
-                  </div>
-                  <div className="flex-1 overflow-hidden w-full md:w-auto">
-                    <div className="space-y-2">
-                      <div className="font-semibold text-sm">You</div>
-                      <div className="prose prose-sm dark:prose-invert max-w-none">
-                        <div className="space-y-3">
-                          {message.content.map((part, partIdx) => {
-                            if (
-                              (part.type === "input_text" ||
-                                part.type === "output_text" ||
-                                part.type === "text") &&
-                              "text" in part &&
-                              part.text
-                            ) {
-                              return (
-                                <div key={partIdx}>
-                                  <Markdown content={part.text} chatId={chatId || ""} />
-                                </div>
-                              );
-                            }
-                            if (
-                              part.type === "input_image" &&
-                              "image_url" in part &&
-                              part.image_url
-                            ) {
-                              return (
-                                <div key={partIdx}>
-                                  <img
-                                    src={part.image_url}
-                                    alt={`Image ${partIdx + 1}`}
-                                    className="max-w-full rounded-lg"
-                                    style={{ maxHeight: "400px", objectFit: "contain" }}
-                                  />
-                                </div>
-                              );
-                            }
-                            return null;
-                          })}
-                        </div>
-                      </div>
+                <div className="max-w-[min(100%,42rem)] rounded-2xl border border-border bg-muted px-4 py-3 backdrop-blur-lg dark:bg-card">
+                  <div className="prose prose-sm max-w-none text-left dark:prose-invert">
+                    <div className="space-y-3">
+                      {message.content.map((part, partIdx) => {
+                        if (
+                          (part.type === "input_text" ||
+                            part.type === "output_text" ||
+                            part.type === "text") &&
+                          "text" in part &&
+                          part.text
+                        ) {
+                          return (
+                            <div key={partIdx}>
+                              <Markdown content={part.text} chatId={chatId || ""} />
+                            </div>
+                          );
+                        }
+                        if (part.type === "input_image" && "image_url" in part && part.image_url) {
+                          return (
+                            <div key={partIdx}>
+                              <img
+                                src={part.image_url}
+                                alt={`Image ${partIdx + 1}`}
+                                className="max-w-full rounded-2xl"
+                                style={{ maxHeight: "400px", objectFit: "contain" }}
+                              />
+                            </div>
+                          );
+                        }
+                        return null;
+                      })}
                     </div>
                   </div>
                 </div>
@@ -796,17 +795,18 @@ const MessageList = memo(
               <div
                 key={group.id}
                 ref={groupIndex === 0 ? firstMessageRef : undefined}
-                className="group py-6 px-4"
+                className="group py-4 px-0 md:p-4"
               >
-                <div className="flex flex-col md:flex-row gap-3 max-w-4xl mx-auto">
-                  <div className="flex-shrink-0">
-                    <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center">
-                      <Bot className="h-4 w-4 text-primary" />
-                    </div>
+                <div className="mx-auto flex w-full max-w-4xl flex-col gap-2 md:flex-row md:items-start md:gap-3">
+                  <div className="flex h-8 shrink-0 items-center gap-2 px-0 md:h-auto md:flex-col md:items-start md:gap-3">
+                    <MapleChatAvatar />
+                    <div className="text-sm font-semibold leading-none md:hidden">Maple</div>
                   </div>
-                  <div className="flex-1 overflow-hidden w-full md:w-auto">
+                  <div className="flex min-w-0 w-full flex-1 flex-col overflow-hidden px-2 md:gap-2 md:px-0">
+                    <div className="hidden md:block">
+                      <div className="text-left text-sm font-semibold leading-none">Maple</div>
+                    </div>
                     <div className="space-y-2">
-                      <div className="font-semibold text-sm">Maple</div>
                       {group.items.map((item) => renderAssistantItem(item))}
                       {/* Copy and TTS buttons for the assistant's text content */}
                       {textContent && (
@@ -863,19 +863,20 @@ const MessageList = memo(
             !isLastItemToolRelated
           );
         })() && (
-          <div className="group py-6 px-4">
-            <div className="flex gap-3 max-w-4xl mx-auto">
-              <div className="flex-shrink-0">
-                <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center">
-                  <Bot className="h-4 w-4 text-primary" />
-                </div>
+          <div className="group py-4 px-0 md:p-4">
+            <div className="mx-auto flex w-full max-w-4xl flex-col gap-2 md:flex-row md:items-start md:gap-3">
+              <div className="flex h-8 shrink-0 items-center gap-2 px-0 md:h-auto md:flex-col md:items-start md:gap-3">
+                <MapleChatAvatar />
+                <div className="text-sm font-semibold leading-none md:hidden">Maple</div>
               </div>
-              <div className="flex-1 space-y-2">
-                <div className="font-semibold text-sm">Maple</div>
+              <div className="flex min-w-0 w-full flex-1 flex-col px-2 md:gap-2 md:px-0">
+                <div className="hidden md:block">
+                  <div className="text-left text-sm font-semibold leading-none">Maple</div>
+                </div>
                 <div className="flex items-center gap-1">
-                  <div className="w-2 h-2 bg-foreground/60 rounded-full animate-pulse" />
-                  <div className="w-2 h-2 bg-foreground/60 rounded-full animate-pulse delay-75" />
-                  <div className="w-2 h-2 bg-foreground/60 rounded-full animate-pulse delay-150" />
+                  <div className="h-2 w-2 animate-pulse rounded-full bg-foreground/60" />
+                  <div className="h-2 w-2 animate-pulse rounded-full bg-foreground/60 delay-75" />
+                  <div className="h-2 w-2 animate-pulse rounded-full bg-foreground/60 delay-150" />
                 </div>
               </div>
             </div>
@@ -978,10 +979,6 @@ export function UnifiedChat() {
     // Reset animation state after transition completes
     setTimeout(() => setIsFullscreenAnimating(false), 300);
   }, []);
-
-  // Easter egg state (for future features)
-  const [logoTapCount, setLogoTapCount] = useState(0);
-  const tapTimeoutRef = useRef<number | null>(null);
 
   // Scroll state
   const [isUserScrolling, setIsUserScrolling] = useState(false);
@@ -1629,44 +1626,26 @@ export function UnifiedChat() {
     }
   }, [error]);
 
-  // Cleanup tap timeout on unmount
-  useEffect(() => {
-    return () => {
-      if (tapTimeoutRef.current !== null) {
-        window.clearTimeout(tapTimeoutRef.current);
-        tapTimeoutRef.current = null;
-      }
-    };
-  }, []);
-
   // Toggle sidebar
   const toggleSidebar = useCallback(() => setIsSidebarOpen((prev) => !prev), []);
 
-  // Handle logo tap for easter egg (reserved for future features)
-  const handleLogoTap = useCallback(() => {
-    const newCount = logoTapCount + 1;
-    setLogoTapCount(newCount);
+  const handleNewChatFromHeader = useCallback(() => {
+    flushSync(() => {
+      setSelectedProjectId(null);
+    });
 
-    // Clear any existing timeout
-    if (tapTimeoutRef.current !== null) {
-      window.clearTimeout(tapTimeoutRef.current);
+    const usp = new URLSearchParams(window.location.search);
+    usp.delete("conversation_id");
+    usp.delete("project_id");
+    const newUrl = usp.toString()
+      ? `${window.location.pathname}?${usp.toString()}`
+      : window.location.pathname;
+    window.history.replaceState(null, "", newUrl);
+    window.dispatchEvent(new CustomEvent("newchat", { detail: { projectId: null } }));
+    if (isSidebarOpen) {
+      toggleSidebar();
     }
-
-    // Reset tap count after 2 seconds of inactivity
-    tapTimeoutRef.current = window.setTimeout(() => {
-      setLogoTapCount(0);
-    }, 2000);
-
-    // Easter egg trigger at 7 taps (currently unused, reserved for future features)
-    if (newCount >= 7) {
-      console.log("Easter egg activated! 🥚");
-      setLogoTapCount(0);
-      if (tapTimeoutRef.current !== null) {
-        window.clearTimeout(tapTimeoutRef.current);
-      }
-      // TODO: Add easter egg feature here
-    }
-  }, [logoTapCount]);
+  }, [isSidebarOpen, setSelectedProjectId, toggleSidebar]);
 
   // Check user's billing access
   const billingStatus = localState.billingStatus;
@@ -2751,61 +2730,70 @@ export function UnifiedChat() {
           </div>
         )}
 
-        {/* Sidebar toggle - visible when sidebar is closed */}
-        {!isSidebarOpen && (
-          <div className="fixed top-[9.5px] left-4 z-20">
+        {/* Sidebar toggle + wordmark — fixed except on mobile while chatting (two-row header below) */}
+        {!isSidebarOpen && !(isMobile && messages.length > 0) && (
+          <div className="fixed left-4 top-[9.5px] z-20 flex items-center gap-1.5">
             <SidebarToggle onToggle={toggleSidebar} />
+            <MapleWordmark
+              className="h-4 w-auto animate-in fade-in-0 slide-in-from-left-1 duration-300"
+              aria-hidden
+            />
           </div>
         )}
 
         {/* Only show header when there are messages (conversation exists) */}
-        {messages.length > 0 && (
-          <div className="h-14 flex items-center px-4">
-            <div className="flex-1 flex items-center justify-center relative">
+        {messages.length > 0 &&
+          (isMobile && !isSidebarOpen ? (
+            <div className="z-10 flex shrink-0 flex-col gap-2 bg-background pb-2 pl-1 pr-4 pt-2">
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex min-w-0 flex-1 items-center gap-1.5">
+                  <SidebarToggle onToggle={toggleSidebar} />
+                  <div className="min-w-0 overflow-hidden">
+                    <MapleWordmark className="h-4 w-auto max-w-full" aria-hidden />
+                  </div>
+                </div>
+                <Button
+                  variant="outline"
+                  size="icon"
+                  className="h-9 w-9 shrink-0 border-0"
+                  onClick={handleNewChatFromHeader}
+                  aria-label="New chat"
+                >
+                  <SquarePen className="h-4 w-4" />
+                </Button>
+              </div>
               <h1
-                className={`text-base font-medium truncate max-w-[20rem] text-foreground transition-colors duration-300 ${
+                className={`w-full truncate px-1 text-center text-base font-medium text-foreground transition-colors duration-300 ${
                   titleJustUpdated ? "title-update-animation" : ""
                 }`}
               >
                 {conversation?.metadata?.title || "Chat"}
               </h1>
-              {/* New chat button - visible when sidebar is closed */}
-              {!isSidebarOpen && (
-                <Button
-                  variant="outline"
-                  size="icon"
-                  className="absolute right-0 h-9 w-9"
-                  onClick={() => {
-                    flushSync(() => {
-                      setSelectedProjectId(null);
-                    });
-
-                    // Clear conversation and start new chat
-                    window.history.replaceState(null, "", "/");
-                    window.dispatchEvent(
-                      new CustomEvent("newchat", { detail: { projectId: null } })
-                    );
-                    setChatId(undefined);
-                    setConversation(null);
-                    setMessages([]);
-                    setLastSeenItemId(undefined);
-                    // Clear pagination state
-                    setOldestItemId(undefined);
-                    setHasMoreOlderMessages(false);
-                    setIsLoadingOlderMessages(false);
-                    // Close sidebar if open
-                    if (isSidebarOpen) {
-                      toggleSidebar();
-                    }
-                  }}
-                  aria-label="New chat"
-                >
-                  <SquarePen className="h-4 w-4" />
-                </Button>
-              )}
             </div>
-          </div>
-        )}
+          ) : (
+            <div className="h-14 flex items-center px-4">
+              <div className="relative flex flex-1 items-center justify-center">
+                <h1
+                  className={`max-w-[20rem] truncate text-base font-medium text-foreground transition-colors duration-300 ${
+                    titleJustUpdated ? "title-update-animation" : ""
+                  }`}
+                >
+                  {conversation?.metadata?.title || "Chat"}
+                </h1>
+                {!isSidebarOpen && (
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    className="absolute right-0 h-9 w-9 border-0"
+                    onClick={handleNewChatFromHeader}
+                    aria-label="New chat"
+                  >
+                    <SquarePen className="h-4 w-4" />
+                  </Button>
+                )}
+              </div>
+            </div>
+          ))}
 
         {/* Messages Area */}
         <div
@@ -2814,7 +2802,7 @@ export function UnifiedChat() {
         >
           {/* Only show messages when there are messages */}
           {messages.length > 0 && (
-            <div className="max-w-4xl mx-auto p-6 w-full">
+            <div className="mx-auto w-full max-w-4xl p-4 md:p-6">
               {/* Message list with modern ChatGPT/Claude style */}
               <div className="space-y-1">
                 <MessageList
@@ -2842,67 +2830,38 @@ export function UnifiedChat() {
             } ${isFullscreen ? "justify-start pt-8" : "justify-center"}`}
           >
             <div
-              className={`w-full mx-auto ${
+              className={`mx-auto w-full ${
                 isFullscreenAnimating ? "transition-all duration-300" : ""
-              } ${isFullscreen ? "max-w-6xl h-full flex flex-col" : "max-w-4xl"}`}
+              } ${isFullscreen ? "flex h-full max-w-6xl flex-col" : "max-w-4xl"}`}
             >
-              {/* Logo section - hidden in fullscreen */}
-              {!isFullscreen && (
-                <div className="flex flex-col items-center -mt-20 mb-16">
-                  {/* Logo with Maple text - combined image */}
-                  <div
-                    className="flex items-center justify-center mb-3"
-                    onClick={handleLogoTap}
-                    style={{ cursor: "default" }}
-                  >
-                    <img
-                      src="/maple-leaf-and-maple-white.png"
-                      alt="Maple"
-                      className="h-12 hidden dark:block"
-                    />
-                    <img
-                      src="/maple-leaf-and-maple-black.png"
-                      alt="Maple"
-                      className="h-12 block dark:hidden"
-                    />
-                  </div>
+              {!isFullscreen && <div className="mb-16" />}
 
-                  {/* Subtitle right under the logo */}
-                  <p className="text-xl font-light text-muted-foreground">Private AI Chat</p>
-                </div>
-              )}
-
-              {/* Main prompt section with more emphasis */}
               <div
                 className={`flex flex-col items-center gap-6 ${isFullscreen ? "flex-1 justify-center" : ""}`}
               >
-                {/* "How can I help you today?" - hidden in fullscreen */}
                 {!isFullscreen && (
-                  <h1 className="text-3xl font-medium text-foreground">
-                    How can I help you today?
+                  <h1 className="mb-6 w-full overflow-visible pb-1 text-center font-displayWide text-4xl font-normal leading-tight tracking-[0.035em] brand-gradient-text sm:leading-relaxed">
+                    Research anything...
                   </h1>
                 )}
 
-                {/* Input form */}
-                <form onSubmit={handleSendMessage} className="w-full relative">
+                <form onSubmit={handleSendMessage} className="relative w-full">
                   <div className="space-y-2">
-                    {/* Attachment previews */}
                     {(draftImages.length > 0 || documentName) && (
                       <div className="space-y-2">
-                        {/* Image previews */}
                         {draftImages.length > 0 && (
-                          <div className="flex gap-2 flex-wrap">
+                          <div className="flex flex-wrap gap-2">
                             {draftImages.map((file, i) => (
-                              <div key={i} className="relative group">
+                              <div key={i} className="group relative">
                                 <img
                                   src={imageUrls.get(file) || ""}
                                   alt={`Attachment ${i + 1}`}
-                                  className="w-16 h-16 object-cover rounded-md border"
+                                  className="h-16 w-16 rounded-xl border object-cover"
                                 />
                                 <button
                                   type="button"
                                   onClick={() => removeImage(i)}
-                                  className="absolute -top-1 -right-1 bg-background border rounded-full p-0.5 opacity-0 group-hover:opacity-100 transition-opacity"
+                                  className="absolute -right-1 -top-1 rounded-full border bg-background p-0.5 opacity-0 transition-opacity group-hover:opacity-100"
                                 >
                                   <X className="h-3 w-3" />
                                 </button>
@@ -2911,11 +2870,10 @@ export function UnifiedChat() {
                           </div>
                         )}
 
-                        {/* Document preview */}
                         {documentName && (
-                          <div className="flex items-center gap-2 p-2 bg-muted/50 rounded-md">
+                          <div className="flex items-center gap-2 rounded-2xl bg-muted/50 p-2">
                             <FileText className="h-4 w-4 text-muted-foreground" />
-                            <span className="text-sm truncate flex-1">{documentName}</span>
+                            <span className="flex-1 truncate text-sm">{documentName}</span>
                             <button
                               type="button"
                               onClick={removeDocument}
@@ -2928,50 +2886,53 @@ export function UnifiedChat() {
                       </div>
                     )}
 
-                    {/* Error display */}
                     {(attachmentError || audioError) && (
-                      <div className="text-sm text-red-500 px-2">
+                      <div className="px-2 text-sm text-maple-error">
                         {attachmentError || audioError}
                       </div>
                     )}
 
-                    {/* Main input container with purple focus border */}
                     <div
-                      className={`relative rounded-xl border-2 border-border focus-within:border-purple-500 bg-background overflow-hidden ${
+                      className={`relative flex flex-col overflow-hidden rounded-3xl border border-[hsl(var(--maple-secondary-container))] bg-background focus-within:border-[hsl(var(--maple-primary))] ${
                         isFullscreenAnimating ? "transition-all duration-300" : "transition-colors"
-                      } ${isFullscreen ? "flex flex-col h-[70vh] max-h-[800px]" : ""}`}
+                      } ${isFullscreen ? "h-[70vh] max-h-[800px] min-h-0" : ""}`}
                     >
-                      {/* Fullscreen toggle button - top right corner */}
-                      <button
-                        type="button"
-                        onClick={toggleFullscreen}
-                        className="absolute right-2 top-2 z-10 p-1.5 rounded-md text-muted-foreground/60 hover:text-foreground hover:bg-muted/50 transition-colors"
-                        aria-label={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
-                      >
-                        {isFullscreen ? (
-                          <Minimize2 className="h-4 w-4" />
-                        ) : (
-                          <Maximize2 className="h-4 w-4" />
-                        )}
-                      </button>
-
-                      <Textarea
-                        ref={textareaRef}
-                        value={input}
-                        onChange={(e) => setInput(e.target.value)}
-                        onKeyDown={handleKeyDown}
-                        placeholder="Message Maple..."
-                        disabled={isGenerating || isRecording}
-                        className={`w-full resize-none px-5 pt-4 pb-2 pr-10 border-0 bg-transparent focus-visible:ring-0 focus-visible:ring-offset-0 placeholder:text-muted-foreground/60 text-base ${
-                          isFullscreen ? "flex-1 min-h-0" : "min-h-[120px] max-h-[200px]"
+                      <div
+                        className={`flex items-start gap-1 pl-4 pr-2 pt-2 ${
+                          isFullscreen ? "min-h-0 flex-1" : ""
                         }`}
-                        rows={isFullscreen ? undefined : 4}
-                        id="message"
-                      />
+                      >
+                        <Textarea
+                          ref={textareaRef}
+                          value={input}
+                          onChange={(e) => setInput(e.target.value)}
+                          onKeyDown={handleKeyDown}
+                          placeholder="Message Maple..."
+                          disabled={isGenerating || isRecording}
+                          className={`min-w-0 flex-1 resize-none border-0 bg-transparent text-base leading-6 focus-visible:ring-0 focus-visible:ring-offset-0 placeholder:text-muted-foreground/60 ${
+                            isFullscreen
+                              ? "min-h-0 flex-1 py-3 pl-0 pr-2"
+                              : "min-h-[52px] max-h-[200px] py-3 pl-0 pr-2"
+                          }`}
+                          rows={isFullscreen ? undefined : 1}
+                          id="message"
+                        />
+                        <button
+                          type="button"
+                          onClick={toggleFullscreen}
+                          className="mt-0.5 shrink-0 rounded-full p-1.5 text-muted-foreground/60 transition-colors hover:bg-muted/50 hover:text-foreground"
+                          aria-label={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+                        >
+                          {isFullscreen ? (
+                            <Shrink className="h-4 w-4" />
+                          ) : (
+                            <Expand className="h-4 w-4" />
+                          )}
+                        </button>
+                      </div>
 
-                      {/* Bottom toolbar */}
-                      <div className="flex items-center justify-between px-3 pb-2 pt-1 border-t border-border/50">
-                        <div className="flex items-center gap-2">
+                      <div className="grid shrink-0 grid-cols-[minmax(0,1fr)_auto] items-end gap-x-2 gap-y-2 px-2 pb-2 pt-1">
+                        <div className="flex min-w-0 flex-wrap items-center gap-1.5 sm:gap-2">
                           <ModelSelector
                             hasImages={
                               draftImages.length > 0 ||
@@ -2991,12 +2952,11 @@ export function UnifiedChat() {
                             disabled={isGenerating}
                           />
 
-                          {/* Web search toggle button - always visible */}
                           <Button
                             type="button"
                             variant="ghost"
                             size="sm"
-                            className="h-8 w-8 p-0"
+                            className="h-8 w-8 p-0 text-[hsl(var(--maple-secondary-700))] hover:bg-[hsl(var(--maple-primary-container))] hover:text-[hsl(var(--maple-secondary-700))]"
                             onClick={() => {
                               if (!canUseWebSearch) {
                                 setUpgradeFeature("websearch");
@@ -3011,22 +2971,23 @@ export function UnifiedChat() {
                           >
                             <Globe
                               className={`h-4 w-4 ${
-                                isWebSearchEnabled ? "text-blue-500" : "text-muted-foreground"
+                                isWebSearchEnabled
+                                  ? "text-[hsl(var(--maple-primary))]"
+                                  : "text-[hsl(var(--maple-secondary-700))]"
                               }`}
                             />
                           </Button>
 
-                          {/* Attachment dropdown */}
                           <DropdownMenu>
                             <DropdownMenuTrigger asChild>
                               <Button
                                 type="button"
                                 variant="ghost"
                                 size="sm"
-                                className="h-8 w-8 p-0"
+                                className="h-8 w-8 p-0 text-[hsl(var(--maple-secondary-700))] hover:bg-[hsl(var(--maple-primary-container))] hover:text-[hsl(var(--maple-secondary-700))]"
                                 disabled={isProcessingDocument}
                               >
-                                <Plus className="h-4 w-4" />
+                                <Plus className="h-4 w-4 text-[hsl(var(--maple-secondary-700))]" />
                               </Button>
                             </DropdownMenuTrigger>
                             <DropdownMenuContent align="start">
@@ -3062,43 +3023,39 @@ export function UnifiedChat() {
                           </DropdownMenu>
                         </div>
 
-                        <div className="flex items-center gap-2">
-                          {/* Mic button */}
+                        <div className="flex shrink-0 items-center self-end gap-1.5 sm:gap-2">
                           <Button
                             type="button"
                             onClick={startRecording}
                             disabled={isGenerating || isRecording || !canUseVoice}
                             size="icon"
                             variant="ghost"
-                            className="h-9 w-9 rounded-lg hover:bg-muted"
+                            className="h-8 w-8 rounded-xl hover:bg-muted sm:h-9 sm:w-9"
                           >
                             <Mic className="h-4 w-4" />
                           </Button>
-                          {/* Send/Stop button */}
                           {isGenerating ? (
                             <Button
                               type="button"
                               onClick={handleCancelResponse}
                               size="icon"
                               variant="destructive"
-                              className="h-9 w-9 rounded-lg"
+                              className="h-8 w-8 rounded-xl sm:h-9 sm:w-9"
                             >
-                              <div className="h-3 w-3 bg-current rounded-sm" />
+                              <div className="h-3 w-3 rounded-md bg-current" />
                             </Button>
                           ) : (
-                            <Button
+                            <button
                               type="submit"
                               disabled={!input.trim() && !draftImages.length && !documentText}
-                              size="icon"
-                              className="h-9 w-9 rounded-lg"
+                              className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-b from-[hsl(var(--maple-primary))] to-[hsl(var(--maple-primary-strong))] text-[hsl(var(--maple-on-primary))]/90 transition-all duration-200 ease-out active:scale-[0.95] disabled:pointer-events-none disabled:opacity-40 sm:h-9 sm:w-9"
                             >
-                              <Send className="h-4 w-4" />
-                            </Button>
+                              <ArrowUp className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
+                            </button>
                           )}
                         </div>
                       </div>
 
-                      {/* Recording overlay for centered input */}
                       {isRecording && (
                         <RecordingOverlay
                           isRecording={isRecording}
@@ -3106,34 +3063,18 @@ export function UnifiedChat() {
                           onSend={() => stopRecording(true)}
                           onCancel={() => stopRecording(false)}
                           isCompact={false}
-                          className="absolute inset-0 rounded-xl"
+                          className="absolute inset-0 rounded-3xl"
                         />
                       )}
                     </div>
                   </div>
                 </form>
 
-                {/* Footer text - hidden in fullscreen */}
                 {!isFullscreen && (
-                  <p className="text-sm text-center text-muted-foreground/60">
-                    Encrypted at every step
+                  <p className="flex items-center justify-center gap-1 text-center text-xs text-muted-foreground/60">
+                    <LockKeyhole className="h-3 w-3" />
+                    Encrypted and private at every step
                   </p>
-                )}
-
-                {/* Tiny branding in bottom right when fullscreen */}
-                {isFullscreen && (
-                  <div className="fixed bottom-4 right-4">
-                    <img
-                      src="/maple-leaf-and-maple-white.png"
-                      alt="Maple"
-                      className="h-6 hidden dark:block"
-                    />
-                    <img
-                      src="/maple-leaf-and-maple-black.png"
-                      alt="Maple"
-                      className="h-6 block dark:hidden"
-                    />
-                  </div>
                 )}
               </div>
             </div>
@@ -3141,26 +3082,24 @@ export function UnifiedChat() {
         ) : (
           // Fixed at bottom when there are messages
           <div className="bg-background pb-[env(safe-area-inset-bottom)]">
-            <div className="max-w-4xl mx-auto px-4">
+            <div className="mx-auto max-w-4xl px-4">
               <form onSubmit={handleSendMessage} className="relative">
                 <div className="space-y-2">
-                  {/* Attachment previews */}
                   {(draftImages.length > 0 || documentName) && (
                     <div className="space-y-2">
-                      {/* Image previews */}
                       {draftImages.length > 0 && (
-                        <div className="flex gap-2 flex-wrap">
+                        <div className="flex flex-wrap gap-2">
                           {draftImages.map((file, i) => (
-                            <div key={i} className="relative group">
+                            <div key={i} className="group relative">
                               <img
                                 src={imageUrls.get(file) || ""}
                                 alt={`Attachment ${i + 1}`}
-                                className="w-12 h-12 object-cover rounded-md border"
+                                className="h-12 w-12 rounded-xl border object-cover"
                               />
                               <button
                                 type="button"
                                 onClick={() => removeImage(i)}
-                                className="absolute -top-1 -right-1 bg-background border rounded-full p-0.5 opacity-0 group-hover:opacity-100 transition-opacity"
+                                className="absolute -right-1 -top-1 rounded-full border bg-background p-0.5 opacity-0 transition-opacity group-hover:opacity-100"
                               >
                                 <X className="h-2.5 w-2.5" />
                               </button>
@@ -3169,11 +3108,10 @@ export function UnifiedChat() {
                         </div>
                       )}
 
-                      {/* Document preview */}
                       {documentName && (
-                        <div className="flex items-center gap-2 p-1.5 bg-muted/50 rounded-md text-xs">
+                        <div className="flex items-center gap-2 rounded-2xl bg-muted/50 p-1.5 text-xs">
                           <FileText className="h-3 w-3 text-muted-foreground" />
-                          <span className="truncate flex-1">{documentName}</span>
+                          <span className="flex-1 truncate">{documentName}</span>
                           <button
                             type="button"
                             onClick={removeDocument}
@@ -3186,13 +3124,13 @@ export function UnifiedChat() {
                     </div>
                   )}
 
-                  {/* Error display */}
                   {(attachmentError || audioError) && (
-                    <div className="text-xs text-red-500 px-2">{attachmentError || audioError}</div>
+                    <div className="px-2 text-xs text-maple-error">
+                      {attachmentError || audioError}
+                    </div>
                   )}
 
-                  {/* Main input container with purple focus border */}
-                  <div className="relative rounded-xl border-2 border-border focus-within:border-purple-500 transition-colors bg-background overflow-hidden">
+                  <div className="relative overflow-hidden rounded-3xl border border-[hsl(var(--maple-secondary-container))] bg-background transition-colors focus-within:border-[hsl(var(--maple-primary))]">
                     <Textarea
                       ref={textareaRef}
                       value={input}
@@ -3200,14 +3138,13 @@ export function UnifiedChat() {
                       onKeyDown={handleKeyDown}
                       placeholder="Message Maple..."
                       disabled={isGenerating || isRecording}
-                      className="w-full resize-none min-h-[52px] max-h-[200px] px-4 pt-3 pb-2 border-0 bg-transparent focus-visible:ring-0 focus-visible:ring-offset-0 placeholder:text-muted-foreground/60"
+                      className="w-full min-h-[52px] max-h-[200px] resize-none border-0 bg-transparent py-3.5 pl-4 pr-2 leading-6 focus-visible:ring-0 focus-visible:ring-offset-0 placeholder:text-muted-foreground/60"
                       rows={1}
                       id="message"
                     />
 
-                    {/* Bottom toolbar */}
-                    <div className="flex items-center justify-between px-3 pb-2 pt-1 border-t border-border/50">
-                      <div className="flex items-center gap-2">
+                    <div className="grid grid-cols-[minmax(0,1fr)_auto] items-end gap-x-2 gap-y-2 px-2 pb-2 pt-1">
+                      <div className="flex min-w-0 flex-wrap items-center gap-1.5 sm:gap-2">
                         <ModelSelector
                           hasImages={
                             draftImages.length > 0 ||
@@ -3221,12 +3158,11 @@ export function UnifiedChat() {
                           }
                         />
 
-                        {/* Web search toggle button - always visible */}
                         <Button
                           type="button"
                           variant="ghost"
                           size="sm"
-                          className="h-8 w-8 p-0"
+                          className="h-8 w-8 p-0 text-[hsl(var(--maple-secondary-700))] hover:bg-[hsl(var(--maple-primary-container))] hover:text-[hsl(var(--maple-secondary-700))]"
                           onClick={() => {
                             if (!canUseWebSearch) {
                               setUpgradeFeature("websearch");
@@ -3241,22 +3177,23 @@ export function UnifiedChat() {
                         >
                           <Globe
                             className={`h-4 w-4 ${
-                              isWebSearchEnabled ? "text-blue-500" : "text-muted-foreground"
+                              isWebSearchEnabled
+                                ? "text-[hsl(var(--maple-primary))]"
+                                : "text-[hsl(var(--maple-secondary-700))]"
                             }`}
                           />
                         </Button>
 
-                        {/* Attachment dropdown */}
                         <DropdownMenu>
                           <DropdownMenuTrigger asChild>
                             <Button
                               type="button"
                               variant="ghost"
                               size="sm"
-                              className="h-8 w-8 p-0"
+                              className="h-8 w-8 p-0 text-[hsl(var(--maple-secondary-700))] hover:bg-[hsl(var(--maple-primary-container))] hover:text-[hsl(var(--maple-secondary-700))]"
                               disabled={isProcessingDocument}
                             >
-                              <Plus className="h-4 w-4" />
+                              <Plus className="h-4 w-4 text-[hsl(var(--maple-secondary-700))]" />
                             </Button>
                           </DropdownMenuTrigger>
                           <DropdownMenuContent align="start">
@@ -3292,43 +3229,39 @@ export function UnifiedChat() {
                         </DropdownMenu>
                       </div>
 
-                      <div className="flex items-center gap-2">
-                        {/* Mic button */}
+                      <div className="flex shrink-0 items-center self-end gap-1.5 sm:gap-2">
                         <Button
                           type="button"
                           onClick={startRecording}
                           disabled={isGenerating || isRecording || !canUseVoice}
                           size="icon"
                           variant="ghost"
-                          className="h-8 w-8 rounded-lg hover:bg-muted"
+                          className="h-8 w-8 rounded-xl text-[hsl(var(--maple-secondary-700))] hover:bg-[hsl(var(--maple-primary-container))] hover:text-[hsl(var(--maple-secondary-700))]"
                         >
-                          <Mic className="h-4 w-4" />
+                          <Mic className="h-4 w-4 text-[hsl(var(--maple-secondary-700))]" />
                         </Button>
-                        {/* Send/Stop button */}
                         {isGenerating ? (
                           <Button
                             type="button"
                             onClick={handleCancelResponse}
                             size="icon"
                             variant="destructive"
-                            className="h-8 w-8 rounded-lg"
+                            className="h-8 w-8 rounded-xl"
                           >
-                            <div className="h-3 w-3 bg-current rounded-sm" />
+                            <div className="h-3 w-3 rounded-md bg-current" />
                           </Button>
                         ) : (
-                          <Button
+                          <button
                             type="submit"
                             disabled={!input.trim() && !draftImages.length && !documentText}
-                            size="icon"
-                            className="h-8 w-8 rounded-lg"
+                            className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-b from-[hsl(var(--maple-primary))] to-[hsl(var(--maple-primary-strong))] text-[hsl(var(--maple-on-primary))]/90 transition-all duration-200 ease-out active:scale-[0.95] disabled:pointer-events-none disabled:opacity-40"
                           >
-                            <Send className="h-4 w-4" />
-                          </Button>
+                            <ArrowUp className="h-4 w-4" />
+                          </button>
                         )}
                       </div>
                     </div>
 
-                    {/* Recording overlay for bottom input */}
                     {isRecording && (
                       <RecordingOverlay
                         isRecording={isRecording}
@@ -3336,13 +3269,13 @@ export function UnifiedChat() {
                         onSend={() => stopRecording(true)}
                         onCancel={() => stopRecording(false)}
                         isCompact={true}
-                        className="absolute inset-0 rounded-xl"
+                        className="absolute inset-0 rounded-3xl"
                       />
                     )}
                   </div>
                 </div>
               </form>
-              <p className="text-sm text-center text-muted-foreground/60 mt-2">
+              <p className="mb-2 mt-1 text-center text-[10px] text-muted-foreground/50">
                 AI can make mistakes. Check important info.
               </p>
             </div>

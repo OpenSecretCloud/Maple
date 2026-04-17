@@ -290,22 +290,23 @@ export function ModelSelector({ hasImages = false }: { hasImages?: boolean }) {
       const badges = getModelBadges(modelId);
       if (badges && badges.length > 0) {
         badges.forEach((badge, index) => {
-          let badgeClass = "text-[10px] px-1.5 py-0.5 rounded-sm font-medium";
+          let badgeClass = "rounded-md px-1.5 py-0.5 text-[10px] font-medium";
 
           if (badge === "Coming Soon") {
-            badgeClass += " bg-gray-500/10 text-gray-600";
+            badgeClass += " bg-muted text-muted-foreground";
           } else if (badge === "Pro") {
-            badgeClass += " bg-gradient-to-r from-purple-500/10 to-blue-500/10 text-purple-600";
+            badgeClass +=
+              " bg-gradient-to-r from-[hsl(var(--maple-primary))]/10 to-[hsl(var(--maple-tertiary))]/10 text-[hsl(var(--maple-primary))]";
           } else if (badge === "Starter") {
-            badgeClass += " bg-gradient-to-r from-green-500/10 to-emerald-500/10 text-green-600";
+            badgeClass += " bg-maple-success/10 text-maple-success";
           } else if (badge === "New") {
-            badgeClass += " bg-gradient-to-r from-blue-500/10 to-cyan-500/10 text-blue-600";
+            badgeClass += " bg-maple-info/10 text-maple-info";
           } else if (badge === "Reasoning") {
-            badgeClass += " bg-gradient-to-r from-orange-500/10 to-red-500/10 text-orange-600";
+            badgeClass += " bg-maple-error/10 text-maple-error";
           } else if (badge === "Beta") {
-            badgeClass += " bg-gradient-to-r from-yellow-500/10 to-orange-500/10 text-yellow-600";
+            badgeClass += " bg-maple-warning/10 text-maple-warning";
           } else {
-            badgeClass += " bg-purple-500/10 text-purple-600";
+            badgeClass += " bg-[hsl(var(--maple-primary))]/10 text-[hsl(var(--maple-primary))]";
           }
 
           elements.push(
@@ -334,7 +335,7 @@ export function ModelSelector({ hasImages = false }: { hasImages?: boolean }) {
       elements.push(
         <span
           key="badge"
-          className="text-[10px] px-1.5 py-0.5 rounded-sm font-medium bg-gray-500/10 text-gray-600"
+          className="rounded-md bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground"
         >
           Coming Soon
         </span>
@@ -347,7 +348,7 @@ export function ModelSelector({ hasImages = false }: { hasImages?: boolean }) {
   // Show current category or model name in the collapsed view
   const modelDisplay = (
     <div className="flex items-center gap-1">
-      <div className="text-sm font-medium">{getDropdownLabel()}</div>
+      <div className="text-xs font-medium">{getDropdownLabel()}</div>
     </div>
   );
 
@@ -360,12 +361,12 @@ export function ModelSelector({ hasImages = false }: { hasImages?: boolean }) {
           <Button
             variant="ghost"
             size="sm"
-            className="h-8 gap-1 px-2"
+            className="h-8 gap-1 px-2 text-[hsl(var(--maple-secondary-700))] hover:bg-[hsl(var(--maple-primary-container))] hover:text-[hsl(var(--maple-secondary-700))]"
             data-testid="model-selector-button"
             aria-label={`Current model: ${MODEL_CONFIG[model]?.displayName || model}. Click to change model.`}
           >
             {modelDisplay}
-            <ChevronDown className="h-3 w-3 opacity-50" />
+            <ChevronDown className="h-3 w-3" />
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="start" className="w-64 p-0">
@@ -391,7 +392,11 @@ export function ModelSelector({ hasImages = false }: { hasImages?: boolean }) {
                     onClick={() => handlePrimarySelect(key)}
                     className={`flex items-center gap-2 px-3 py-1.5 cursor-pointer ${
                       isDisabled ? "opacity-50 cursor-not-allowed" : ""
-                    } ${requiresUpgrade ? "hover:bg-purple-50 dark:hover:bg-purple-950/20" : ""}`}
+                    } ${
+                      requiresUpgrade
+                        ? "hover:bg-[hsl(var(--maple-primary-container))] dark:hover:bg-[hsl(var(--maple-primary))]/10"
+                        : ""
+                    }`}
                     disabled={isDisabled}
                   >
                     <Icon className="h-4 w-4 opacity-70" />
@@ -512,7 +517,9 @@ export function ModelSelector({ hasImages = false }: { hasImages?: boolean }) {
                           className={`flex items-center justify-between group ${
                             effectivelyDisabled ? "opacity-50 cursor-not-allowed" : ""
                           } ${
-                            isRestricted ? "hover:bg-purple-50 dark:hover:bg-purple-950/20" : ""
+                            isRestricted
+                              ? "hover:bg-[hsl(var(--maple-primary-container))] dark:hover:bg-[hsl(var(--maple-primary))]/10"
+                              : ""
                           }`}
                           disabled={effectivelyDisabled}
                         >

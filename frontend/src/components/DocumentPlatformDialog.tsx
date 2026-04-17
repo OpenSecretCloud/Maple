@@ -68,19 +68,19 @@ export function DocumentPlatformDialog({
             <p className="text-sm font-medium">Features include:</p>
             <ul className="space-y-2">
               <li className="flex items-start gap-2 text-sm">
-                <Check className="h-4 w-4 text-green-500 mt-0.5 shrink-0" />
+                <Check className="mt-0.5 h-4 w-4 shrink-0 text-maple-success" />
                 <span>Local PDF processing - files are processed on your device</span>
               </li>
               <li className="flex items-start gap-2 text-sm">
-                <Check className="h-4 w-4 text-green-500 mt-0.5 shrink-0" />
+                <Check className="mt-0.5 h-4 w-4 shrink-0 text-maple-success" />
                 <span>Support for PDF, TXT, and Markdown files</span>
               </li>
               <li className="flex items-start gap-2 text-sm">
-                <Check className="h-4 w-4 text-green-500 mt-0.5 shrink-0" />
+                <Check className="mt-0.5 h-4 w-4 shrink-0 text-maple-success" />
                 <span>Extracted text is secured with end-to-end encryption</span>
               </li>
               <li className="flex items-start gap-2 text-sm">
-                <Check className="h-4 w-4 text-green-500 mt-0.5 shrink-0" />
+                <Check className="mt-0.5 h-4 w-4 shrink-0 text-maple-success" />
                 <span>Files up to 10MB supported</span>
               </li>
             </ul>

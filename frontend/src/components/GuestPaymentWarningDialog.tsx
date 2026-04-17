@@ -46,7 +46,7 @@ export function GuestPaymentWarningDialog({ open, onOpenChange }: GuestPaymentWa
         onEscapeKeyDown={(e) => e.preventDefault()}
       >
         <DialogHeader>
-          <DialogTitle className="flex items-center gap-2 text-amber-600 dark:text-amber-500">
+          <DialogTitle className="flex items-center gap-2 text-maple-warning">
             <AlertTriangle className="w-5 h-5" />
             Subscription Required
           </DialogTitle>
@@ -56,7 +56,7 @@ export function GuestPaymentWarningDialog({ open, onOpenChange }: GuestPaymentWa
         </DialogHeader>
 
         <div className="space-y-4 py-4">
-          <div className="rounded-lg border border-amber-500/50 bg-amber-500/10 p-4 space-y-3">
+          <div className="space-y-3 rounded-lg border border-maple-warning/40 bg-maple-warning/10 p-4">
             <p className="text-sm font-medium">
               Your anonymous account is not activated yet and cannot use the chat feature.
             </p>

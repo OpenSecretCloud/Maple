@@ -70,7 +70,7 @@ export function GlobalNotification({ notification, onDismiss }: GlobalNotificati
 
     switch (notification.type) {
       case "success":
-        return <CheckCircle className="h-5 w-5 text-green-600 dark:text-green-500" />;
+        return <CheckCircle className="h-5 w-5 text-maple-success" />;
       case "error":
         return <AlertCircle className="h-5 w-5 text-destructive" />;
       case "info":
@@ -89,7 +89,7 @@ export function GlobalNotification({ notification, onDismiss }: GlobalNotificati
           "pointer-events-auto flex flex-col gap-3 rounded-lg border bg-card text-card-foreground p-4 shadow-lg transition-all duration-200 min-w-[320px] max-w-md",
           isLeaving ? "opacity-0 translate-x-full" : "opacity-100 translate-x-0",
           notification.type === "error" && "border-destructive/50 dark:border-destructive",
-          notification.type === "success" && "border-green-500/50 dark:border-green-500",
+          notification.type === "success" && "border-maple-success/40 dark:border-maple-success",
           notification.type === "info" && "border-primary/50",
           notification.type === "update" && "border-primary/50"
         )}

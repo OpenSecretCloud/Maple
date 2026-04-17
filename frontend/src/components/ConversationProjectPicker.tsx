@@ -44,7 +44,7 @@ export function ConversationProjectPicker({
           className={cn(
             "h-8 gap-2 px-2 text-muted-foreground",
             isProjectSelected &&
-              "bg-blue-500/10 text-blue-500 hover:bg-blue-500/15 hover:text-blue-500"
+              "bg-[hsl(var(--maple-primary-container))] text-[hsl(var(--maple-primary))] hover:bg-[hsl(var(--maple-primary-container))] hover:text-[hsl(var(--maple-primary))]"
           )}
           disabled={disabled}
           aria-label={selectedProject ? `Project: ${selectedProject.name}` : "No project selected"}
