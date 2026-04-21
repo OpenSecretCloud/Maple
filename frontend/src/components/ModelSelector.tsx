@@ -55,6 +55,14 @@ export const MODEL_CONFIG: Record<string, ModelCfg> = {
     supportsVision: true,
     tokenLimit: 256000
   },
+  "kimi-k2-6": {
+    displayName: "Kimi K2.6",
+    shortName: "Kimi K2.6",
+    badges: ["Pro", "New", "Reasoning"],
+    requiresPro: true,
+    supportsVision: true,
+    tokenLimit: 256000
+  },
   "gpt-oss-120b": {
     displayName: "OpenAI GPT-OSS 120B",
     shortName: "GPT-OSS",
