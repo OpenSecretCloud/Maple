@@ -49,8 +49,25 @@ jobs:
             exit 1
           fi
 
-          zsp publish \
-            -y \
-            --skip-preview \
-            --commit "$COMMIT_SHA" \
-            zapstore.yaml
+          set +e
+          output="$(
+            zsp publish \
+              --quiet \
+              --commit "$COMMIT_SHA" \
+              zapstore.yaml 2>&1
+          )"
+          status=$?
+          set -e
+
+          if [ -n "$output" ]; then
+            printf '%s\n' "$output"
+          fi
+
+          if [ "$status" -ne 0 ]; then
+            exit "$status"
+          fi
+
+          if [[ "$output" == *"flag provided but not defined"* || "$output" == *"Usage of publish:"* ]]; then
+            echo "zsp returned success but printed CLI usage, treating this as a failure." >&2
+            exit 1
+          fi
