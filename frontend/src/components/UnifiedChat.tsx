@@ -391,6 +391,194 @@ function normalizeConversationItem(item: unknown): Message | null {
   return null;
 }
 
+function isAssistantConversationItem(item: Message): boolean {
+  return item.type !== "message" || (item as ExtendedMessage).role !== "user";
+}
+
+function summarizeConversationItemForLog(item: unknown): Record<string, unknown> {
+  const normalizedItem = normalizeConversationItem(item);
+
+  if (!normalizedItem) {
+    return {};
+  }
+
+  if (normalizedItem.type === "reasoning") {
+    return {
+      itemType: normalizedItem.type,
+      itemId: normalizedItem.id,
+      status: normalizedItem.status,
+      contentLength: getReasoningContentLength(normalizedItem.content)
+    };
+  }
+
+  if (normalizedItem.type === "message") {
+    const message = normalizedItem as ExtendedMessage;
+
+    return {
+      itemType: message.type,
+      itemId: message.id,
+      role: message.role,
+      status: message.status,
+      contentParts: message.content?.length ?? 0,
+      contentLength: getMessageContentLength(message.content)
+    };
+  }
+
+  if (normalizedItem.type === "web_search_call") {
+    return {
+      itemType: normalizedItem.type,
+      itemId: normalizedItem.id,
+      status: normalizedItem.status
+    };
+  }
+
+  if (normalizedItem.type === "tool_call") {
+    return {
+      itemType: normalizedItem.type,
+      itemId: normalizedItem.id,
+      callId: normalizedItem.call_id,
+      name: normalizedItem.name,
+      status: normalizedItem.status,
+      argumentsLength: normalizedItem.arguments.length
+    };
+  }
+
+  return {
+    itemType: normalizedItem.type,
+    itemId: normalizedItem.id,
+    callId: normalizedItem.call_id,
+    status: normalizedItem.status,
+    outputLength: normalizedItem.output.length
+  };
+}
+
+function summarizeStreamEventForLog(eventType: string, event: unknown): Record<string, unknown> {
+  const summary: Record<string, unknown> = {};
+  const eventRecord = event as
+    | {
+        sequence_number?: number;
+        item_id?: string;
+        response?: {
+          id?: string;
+          status?: string;
+          output?: unknown[];
+        };
+      }
+    | undefined;
+
+  if (typeof eventRecord?.sequence_number === "number") {
+    summary.sequenceNumber = eventRecord.sequence_number;
+  }
+
+  if (typeof eventRecord?.item_id === "string") {
+    summary.itemId = eventRecord.item_id;
+  }
+
+  switch (eventType) {
+    case "response.created":
+    case "response.completed": {
+      const response = eventRecord?.response;
+
+      if (response?.id) {
+        summary.responseId = response.id;
+      }
+
+      if (typeof response?.status === "string") {
+        summary.status = response.status;
+      }
+
+      if (Array.isArray(response?.output)) {
+        summary.outputCount = response.output.length;
+      }
+
+      return summary;
+    }
+    case "response.output_item.added":
+    case "response.output_item.done": {
+      const itemEvent = event as { output_index?: number; item?: unknown };
+
+      if (typeof itemEvent.output_index === "number") {
+        summary.outputIndex = itemEvent.output_index;
+      }
+
+      return {
+        ...summary,
+        ...summarizeConversationItemForLog(itemEvent.item)
+      };
+    }
+    case "response.reasoning_text.delta": {
+      const reasoningEvent = event as ResponseReasoningTextDeltaEvent;
+
+      return {
+        ...summary,
+        contentIndex: reasoningEvent.content_index,
+        deltaLength: reasoningEvent.delta.length
+      };
+    }
+    case "response.reasoning_text.done": {
+      const reasoningEvent = event as ResponseReasoningTextDoneEvent;
+
+      return {
+        ...summary,
+        contentIndex: reasoningEvent.content_index,
+        textLength: reasoningEvent.text.length
+      };
+    }
+    case "response.output_text.delta": {
+      const textEvent = event as ResponseTextDeltaEvent;
+
+      return {
+        ...summary,
+        contentIndex: textEvent.content_index,
+        deltaLength: textEvent.delta.length
+      };
+    }
+    case "response.output_text.done": {
+      const textEvent = event as ResponseTextDoneEvent;
+
+      return {
+        ...summary,
+        contentIndex: textEvent.content_index,
+        textLength: textEvent.text.length
+      };
+    }
+    case "tool_call.created": {
+      const toolCallEvent = event as {
+        tool_call_id?: string;
+        name?: string;
+        arguments?: string | Record<string, unknown>;
+      };
+
+      return {
+        ...summary,
+        toolCallId: toolCallEvent.tool_call_id,
+        name: toolCallEvent.name,
+        ...(typeof toolCallEvent.arguments === "string"
+          ? { argumentsLength: toolCallEvent.arguments.length }
+          : toolCallEvent.arguments && typeof toolCallEvent.arguments === "object"
+            ? { argumentKeys: Object.keys(toolCallEvent.arguments) }
+            : {})
+      };
+    }
+    case "tool_output.created": {
+      const toolOutputEvent = event as {
+        tool_output_id?: string;
+        tool_call_id?: string;
+        output?: string;
+      };
+
+      return {
+        ...summary,
+        toolOutputId: toolOutputEvent.tool_output_id,
+        toolCallId: toolOutputEvent.tool_call_id,
+        outputLength: toolOutputEvent.output?.length ?? 0
+      };
+    }
+    default:
+      return summary;
+  }
+}
+
 function updateActiveItemStatuses(messages: Message[], status: "error" | "incomplete"): Message[] {
   const updatedMessages = messages
     .filter((message) => {
@@ -1342,6 +1530,7 @@ export function UnifiedChat() {
 
   // Scroll state
   const [isUserScrolling, setIsUserScrolling] = useState(false);
+  const isUserScrollingRef = useRef(false);
   const prevMessageCountRef = useRef(0);
   const prevStreamingRef = useRef(false);
   const [hasNewPolledMessages, setHasNewPolledMessages] = useState(false);
@@ -1415,6 +1604,10 @@ export function UnifiedChat() {
     setIsUserScrolling(!isNearBottom);
   }, []);
 
+  useEffect(() => {
+    isUserScrollingRef.current = isUserScrolling;
+  }, [isUserScrolling]);
+
   // Scroll to bottom helper
   const scrollToBottom = useCallback((behavior: ScrollBehavior = "smooth") => {
     if (chatContainerRef.current) {
@@ -1424,6 +1617,48 @@ export function UnifiedChat() {
       });
     }
   }, []);
+
+  const getScrollDebugSnapshot = useCallback(() => {
+    const container = chatContainerRef.current;
+
+    if (!container) {
+      return null;
+    }
+
+    const { scrollTop, scrollHeight, clientHeight } = container;
+
+    return {
+      scrollTop: Math.round(scrollTop),
+      scrollHeight: Math.round(scrollHeight),
+      clientHeight: Math.round(clientHeight),
+      distanceFromBottom: Math.max(0, Math.round(scrollHeight - scrollTop - clientHeight))
+    };
+  }, []);
+
+  const logStreamEvent = useCallback(
+    (streamStartedAt: number, eventIndex: number, eventType: string, event: unknown) => {
+      const includeScrollSnapshot =
+        eventType === "response.output_item.added" ||
+        eventType === "response.output_item.done" ||
+        eventType === "tool_call.created" ||
+        eventType === "tool_output.created";
+
+      console.log("🔵 SSE Event", {
+        at: new Date().toISOString(),
+        elapsedMs: Math.round(performance.now() - streamStartedAt),
+        eventIndex,
+        eventType,
+        ...summarizeStreamEventForLog(eventType, event),
+        ...(includeScrollSnapshot
+          ? {
+              isUserScrolling: isUserScrollingRef.current,
+              scroll: getScrollDebugSnapshot()
+            }
+          : {})
+      });
+    },
+    [getScrollDebugSnapshot]
+  );
 
   // Attach scroll listener
   useEffect(() => {
@@ -1457,21 +1692,26 @@ export function UnifiedChat() {
   const prevLastMessageId = useRef(lastMessageId);
 
   useEffect(() => {
-    // Only scroll if the LAST message changed AND it's a user message
-    // This means a message was added to the END (not prepended)
-    if (
-      lastMessageId !== prevLastMessageId.current &&
-      messages.length > 0 &&
-      messages[messages.length - 1].type === "message" &&
-      (messages[messages.length - 1] as ExtendedMessage).role === "user"
-    ) {
-      // User just sent a message - scroll to bottom
-      setTimeout(() => {
-        scrollToBottom("smooth");
-      }, 50);
+    // Only scroll if the LAST message changed, which means an item was added to the END
+    // (not prepended while loading older history).
+    if (lastMessageId !== prevLastMessageId.current && messages.length > 0) {
+      const lastItem = messages[messages.length - 1];
+      const isUserMessage =
+        lastItem.type === "message" && (lastItem as ExtendedMessage).role === "user";
+      const shouldAutoScrollAssistantItem =
+        isAssistantConversationItem(lastItem) && !isUserScrolling;
+
+      if (isUserMessage || shouldAutoScrollAssistantItem) {
+        setTimeout(
+          () => {
+            scrollToBottom("smooth");
+          },
+          isUserMessage ? 50 : 0
+        );
+      }
     }
     prevLastMessageId.current = lastMessageId;
-  }, [lastMessageId, messages, scrollToBottom]);
+  }, [isUserScrolling, lastMessageId, messages, scrollToBottom]);
 
   // Auto-scroll when assistant starts streaming (but not while streaming)
   useEffect(() => {
@@ -2321,263 +2561,267 @@ export function UnifiedChat() {
   };
 
   // Helper function to process streaming response - used by both initial request and retry
-  const processStreamingResponse = useCallback(async (stream: AsyncIterable<unknown>) => {
-    const messageTextBuffers = new Map<string, Map<number, string>>();
-    const reasoningTextBuffers = new Map<string, Map<number, string>>();
+  const processStreamingResponse = useCallback(
+    async (stream: AsyncIterable<unknown>) => {
+      const messageTextBuffers = new Map<string, Map<number, string>>();
+      const reasoningTextBuffers = new Map<string, Map<number, string>>();
+      const streamStartedAt = performance.now();
+      let streamEventCount = 0;
 
-    const appendBufferedText = (
-      buffers: Map<string, Map<number, string>>,
-      itemId: string,
-      contentIndex: number,
-      delta: string
-    ) => {
-      const contentBuffers = buffers.get(itemId) ?? new Map<number, string>();
-      const nextText = `${contentBuffers.get(contentIndex) ?? ""}${delta}`;
-      contentBuffers.set(contentIndex, nextText);
-      buffers.set(itemId, contentBuffers);
-      return nextText;
-    };
+      const appendBufferedText = (
+        buffers: Map<string, Map<number, string>>,
+        itemId: string,
+        contentIndex: number,
+        delta: string
+      ) => {
+        const contentBuffers = buffers.get(itemId) ?? new Map<number, string>();
+        const nextText = `${contentBuffers.get(contentIndex) ?? ""}${delta}`;
+        contentBuffers.set(contentIndex, nextText);
+        buffers.set(itemId, contentBuffers);
+        return nextText;
+      };
 
-    const setBufferedText = (
-      buffers: Map<string, Map<number, string>>,
-      itemId: string,
-      contentIndex: number,
-      text: string
-    ) => {
-      const contentBuffers = buffers.get(itemId) ?? new Map<number, string>();
-      contentBuffers.set(contentIndex, text);
-      buffers.set(itemId, contentBuffers);
-      return text;
-    };
+      const setBufferedText = (
+        buffers: Map<string, Map<number, string>>,
+        itemId: string,
+        contentIndex: number,
+        text: string
+      ) => {
+        const contentBuffers = buffers.get(itemId) ?? new Map<number, string>();
+        contentBuffers.set(contentIndex, text);
+        buffers.set(itemId, contentBuffers);
+        return text;
+      };
 
-    for await (const event of stream) {
-      const eventType = (event as { type: string }).type;
+      for await (const event of stream) {
+        const eventType = (event as { type: string }).type;
+        streamEventCount += 1;
+        logStreamEvent(streamStartedAt, streamEventCount, eventType, event);
 
-      // Log all SSE events for debugging
-      console.log("🔵 SSE Event:", eventType, event);
+        if (eventType === "response.created") {
+          const eventWithResponse = event as { response?: { id?: string } };
+          if (eventWithResponse.response?.id) {
+            setCurrentResponseId(eventWithResponse.response.id);
+          }
+        } else if (eventType === "response.output_item.added") {
+          const addedEvent = event as ResponseOutputItemAddedEvent;
+          const item = normalizeConversationItem(addedEvent.item);
 
-      if (eventType === "response.created") {
-        const eventWithResponse = event as { response?: { id?: string } };
-        if (eventWithResponse.response?.id) {
-          setCurrentResponseId(eventWithResponse.response.id);
-        }
-      } else if (eventType === "response.output_item.added") {
-        const addedEvent = event as ResponseOutputItemAddedEvent;
-        const item = normalizeConversationItem(addedEvent.item);
-
-        if (item) {
-          setMessages((prev) => mergeStreamingConversationItem(prev, item));
-        }
-      } else if (eventType === "response.web_search_call.in_progress") {
-        const webSearchEvent = event as { item_id?: string };
-        if (webSearchEvent.item_id) {
-          setMessages((prev) =>
-            updateMessageById(prev, webSearchEvent.item_id!, (message) =>
-              message.type === "web_search_call"
-                ? ({ ...message, status: "in_progress" } as unknown as Message)
-                : message
-            )
-          );
-        }
-      } else if (eventType === "response.web_search_call.searching") {
-        const webSearchEvent = event as { item_id?: string };
-        if (webSearchEvent.item_id) {
-          setMessages((prev) =>
-            updateMessageById(prev, webSearchEvent.item_id!, (message) =>
-              message.type === "web_search_call"
-                ? ({ ...message, status: "searching" } as unknown as Message)
-                : message
-            )
-          );
-        }
-      } else if (eventType === "response.web_search_call.completed") {
-        const webSearchEvent = event as { item_id?: string };
-        if (webSearchEvent.item_id) {
-          setMessages((prev) =>
-            updateMessageById(prev, webSearchEvent.item_id!, (message) =>
-              message.type === "web_search_call"
-                ? ({ ...message, status: "completed" } as unknown as Message)
-                : message
-            )
-          );
-        }
-      } else if (eventType === "tool_call.created") {
-        const toolCallEvent = event as {
-          tool_call_id?: string;
-          name?: string;
-          arguments?: { query?: string };
-        };
-        if (toolCallEvent.tool_call_id) {
-          const toolCallItem: ToolCallItem = {
-            id: toolCallEvent.tool_call_id,
-            call_id: toolCallEvent.tool_call_id,
-            type: "tool_call",
-            name: toolCallEvent.name || "function",
-            arguments: JSON.stringify(toolCallEvent.arguments || {}),
-            status: "in_progress"
-          };
-
-          setMessages((prev) => {
-            const existingToolCall = prev.find(
-              (message) => message.id === toolCallEvent.tool_call_id
+          if (item) {
+            setMessages((prev) => mergeStreamingConversationItem(prev, item));
+          }
+        } else if (eventType === "response.web_search_call.in_progress") {
+          const webSearchEvent = event as { item_id?: string };
+          if (webSearchEvent.item_id) {
+            setMessages((prev) =>
+              updateMessageById(prev, webSearchEvent.item_id!, (message) =>
+                message.type === "web_search_call"
+                  ? ({ ...message, status: "in_progress" } as unknown as Message)
+                  : message
+              )
             );
-
-            if (existingToolCall && isToolCallItem(existingToolCall)) {
-              return mergeMessagesById(prev, [
-                {
-                  ...existingToolCall,
-                  ...toolCallItem,
-                  status: existingToolCall.status || toolCallItem.status
-                }
-              ]);
-            }
-
-            return mergeMessagesById(prev, [toolCallItem]);
-          });
-        }
-      } else if (eventType === "tool_output.created") {
-        const toolOutputEvent = event as {
-          tool_output_id?: string;
-          tool_call_id?: string;
-          output?: string;
-        };
-        if (toolOutputEvent.tool_output_id && toolOutputEvent.tool_call_id) {
-          const toolOutputItem: ToolOutputItem = {
-            id: toolOutputEvent.tool_output_id,
-            call_id: toolOutputEvent.tool_call_id,
-            type: "tool_output",
-            output: toolOutputEvent.output || "",
-            status: "completed"
-          };
-
-          setMessages((prev) => {
-            const existingToolOutput = prev.find(
-              (message) => message.id === toolOutputEvent.tool_output_id
+          }
+        } else if (eventType === "response.web_search_call.searching") {
+          const webSearchEvent = event as { item_id?: string };
+          if (webSearchEvent.item_id) {
+            setMessages((prev) =>
+              updateMessageById(prev, webSearchEvent.item_id!, (message) =>
+                message.type === "web_search_call"
+                  ? ({ ...message, status: "searching" } as unknown as Message)
+                  : message
+              )
             );
-            const withOutput = mergeMessagesById(prev, [
-              existingToolOutput && isToolOutputItem(existingToolOutput)
-                ? {
-                    ...existingToolOutput,
-                    ...toolOutputItem
+          }
+        } else if (eventType === "response.web_search_call.completed") {
+          const webSearchEvent = event as { item_id?: string };
+          if (webSearchEvent.item_id) {
+            setMessages((prev) =>
+              updateMessageById(prev, webSearchEvent.item_id!, (message) =>
+                message.type === "web_search_call"
+                  ? ({ ...message, status: "completed" } as unknown as Message)
+                  : message
+              )
+            );
+          }
+        } else if (eventType === "tool_call.created") {
+          const toolCallEvent = event as {
+            tool_call_id?: string;
+            name?: string;
+            arguments?: { query?: string };
+          };
+          if (toolCallEvent.tool_call_id) {
+            const toolCallItem: ToolCallItem = {
+              id: toolCallEvent.tool_call_id,
+              call_id: toolCallEvent.tool_call_id,
+              type: "tool_call",
+              name: toolCallEvent.name || "function",
+              arguments: JSON.stringify(toolCallEvent.arguments || {}),
+              status: "in_progress"
+            };
+
+            setMessages((prev) => {
+              const existingToolCall = prev.find(
+                (message) => message.id === toolCallEvent.tool_call_id
+              );
+
+              if (existingToolCall && isToolCallItem(existingToolCall)) {
+                return mergeMessagesById(prev, [
+                  {
+                    ...existingToolCall,
+                    ...toolCallItem,
+                    status: existingToolCall.status || toolCallItem.status
                   }
-                : toolOutputItem
-            ]);
+                ]);
+              }
 
-            return updateMessageById(withOutput, toolOutputEvent.tool_call_id!, (message) =>
-              isToolCallItem(message)
-                ? ({ ...message, status: "completed" } as unknown as Message)
+              return mergeMessagesById(prev, [toolCallItem]);
+            });
+          }
+        } else if (eventType === "tool_output.created") {
+          const toolOutputEvent = event as {
+            tool_output_id?: string;
+            tool_call_id?: string;
+            output?: string;
+          };
+          if (toolOutputEvent.tool_output_id && toolOutputEvent.tool_call_id) {
+            const toolOutputItem: ToolOutputItem = {
+              id: toolOutputEvent.tool_output_id,
+              call_id: toolOutputEvent.tool_call_id,
+              type: "tool_output",
+              output: toolOutputEvent.output || "",
+              status: "completed"
+            };
+
+            setMessages((prev) => {
+              const existingToolOutput = prev.find(
+                (message) => message.id === toolOutputEvent.tool_output_id
+              );
+              const withOutput = mergeMessagesById(prev, [
+                existingToolOutput && isToolOutputItem(existingToolOutput)
+                  ? {
+                      ...existingToolOutput,
+                      ...toolOutputItem
+                    }
+                  : toolOutputItem
+              ]);
+
+              return updateMessageById(withOutput, toolOutputEvent.tool_call_id!, (message) =>
+                isToolCallItem(message)
+                  ? ({ ...message, status: "completed" } as unknown as Message)
+                  : message
+              );
+            });
+          }
+        } else if (
+          eventType === "response.reasoning_text.delta" &&
+          (event as { delta?: string }).delta
+        ) {
+          const reasoningEvent = event as ResponseReasoningTextDeltaEvent;
+          const nextText = appendBufferedText(
+            reasoningTextBuffers,
+            reasoningEvent.item_id,
+            reasoningEvent.content_index,
+            reasoningEvent.delta
+          );
+
+          setMessages((prev) =>
+            updateMessageById(prev, reasoningEvent.item_id, (message) =>
+              message.type === "reasoning"
+                ? upsertReasoningTextContent(
+                    message as ReasoningItem,
+                    reasoningEvent.content_index,
+                    nextText,
+                    "streaming"
+                  )
                 : message
-            );
-          });
+            )
+          );
+        } else if (eventType === "response.reasoning_text.done") {
+          const reasoningEvent = event as ResponseReasoningTextDoneEvent;
+          const nextText = setBufferedText(
+            reasoningTextBuffers,
+            reasoningEvent.item_id,
+            reasoningEvent.content_index,
+            reasoningEvent.text
+          );
+
+          setMessages((prev) =>
+            updateMessageById(prev, reasoningEvent.item_id, (message) =>
+              message.type === "reasoning"
+                ? upsertReasoningTextContent(
+                    message as ReasoningItem,
+                    reasoningEvent.content_index,
+                    nextText,
+                    "completed"
+                  )
+                : message
+            )
+          );
+        } else if (
+          eventType === "response.output_text.delta" &&
+          (event as { delta?: string }).delta
+        ) {
+          const textEvent = event as ResponseTextDeltaEvent;
+          const nextText = appendBufferedText(
+            messageTextBuffers,
+            textEvent.item_id,
+            textEvent.content_index,
+            textEvent.delta
+          );
+
+          setMessages((prev) =>
+            updateMessageById(prev, textEvent.item_id, (message) =>
+              message.type === "message"
+                ? (upsertAssistantTextContent(
+                    message as ExtendedMessage,
+                    textEvent.content_index,
+                    nextText,
+                    "streaming"
+                  ) as unknown as Message)
+                : message
+            )
+          );
+        } else if (eventType === "response.output_text.done") {
+          const textEvent = event as ResponseTextDoneEvent;
+          const nextText = setBufferedText(
+            messageTextBuffers,
+            textEvent.item_id,
+            textEvent.content_index,
+            textEvent.text
+          );
+
+          setMessages((prev) =>
+            updateMessageById(prev, textEvent.item_id, (message) =>
+              message.type === "message"
+                ? (upsertAssistantTextContent(
+                    message as ExtendedMessage,
+                    textEvent.content_index,
+                    nextText,
+                    "completed"
+                  ) as unknown as Message)
+                : message
+            )
+          );
+        } else if (eventType === "response.output_item.done") {
+          const doneEvent = event as ResponseOutputItemDoneEvent;
+          const item = normalizeConversationItem(doneEvent.item);
+
+          if (item) {
+            setMessages((prev) => mergeStreamingConversationItem(prev, item));
+            setLastSeenItemId(item.id);
+          }
+        } else if (eventType === "response.failed" || eventType === "error") {
+          console.error("Streaming error:", event);
+          setMessages((prev) => updateActiveItemStatuses(prev, "error"));
+          setError("Failed to generate response. Please try again.");
+        } else if (eventType === "response.cancelled") {
+          setMessages((prev) => updateActiveItemStatuses(prev, "incomplete"));
+          break;
         }
-      } else if (
-        eventType === "response.reasoning_text.delta" &&
-        (event as { delta?: string }).delta
-      ) {
-        const reasoningEvent = event as ResponseReasoningTextDeltaEvent;
-        const nextText = appendBufferedText(
-          reasoningTextBuffers,
-          reasoningEvent.item_id,
-          reasoningEvent.content_index,
-          reasoningEvent.delta
-        );
-
-        setMessages((prev) =>
-          updateMessageById(prev, reasoningEvent.item_id, (message) =>
-            message.type === "reasoning"
-              ? upsertReasoningTextContent(
-                  message as ReasoningItem,
-                  reasoningEvent.content_index,
-                  nextText,
-                  "streaming"
-                )
-              : message
-          )
-        );
-      } else if (eventType === "response.reasoning_text.done") {
-        const reasoningEvent = event as ResponseReasoningTextDoneEvent;
-        const nextText = setBufferedText(
-          reasoningTextBuffers,
-          reasoningEvent.item_id,
-          reasoningEvent.content_index,
-          reasoningEvent.text
-        );
-
-        setMessages((prev) =>
-          updateMessageById(prev, reasoningEvent.item_id, (message) =>
-            message.type === "reasoning"
-              ? upsertReasoningTextContent(
-                  message as ReasoningItem,
-                  reasoningEvent.content_index,
-                  nextText,
-                  "completed"
-                )
-              : message
-          )
-        );
-      } else if (
-        eventType === "response.output_text.delta" &&
-        (event as { delta?: string }).delta
-      ) {
-        const textEvent = event as ResponseTextDeltaEvent;
-        const nextText = appendBufferedText(
-          messageTextBuffers,
-          textEvent.item_id,
-          textEvent.content_index,
-          textEvent.delta
-        );
-
-        setMessages((prev) =>
-          updateMessageById(prev, textEvent.item_id, (message) =>
-            message.type === "message"
-              ? (upsertAssistantTextContent(
-                  message as ExtendedMessage,
-                  textEvent.content_index,
-                  nextText,
-                  "streaming"
-                ) as unknown as Message)
-              : message
-          )
-        );
-      } else if (eventType === "response.output_text.done") {
-        const textEvent = event as ResponseTextDoneEvent;
-        const nextText = setBufferedText(
-          messageTextBuffers,
-          textEvent.item_id,
-          textEvent.content_index,
-          textEvent.text
-        );
-
-        setMessages((prev) =>
-          updateMessageById(prev, textEvent.item_id, (message) =>
-            message.type === "message"
-              ? (upsertAssistantTextContent(
-                  message as ExtendedMessage,
-                  textEvent.content_index,
-                  nextText,
-                  "completed"
-                ) as unknown as Message)
-              : message
-          )
-        );
-      } else if (eventType === "response.output_item.done") {
-        const doneEvent = event as ResponseOutputItemDoneEvent;
-        const item = normalizeConversationItem(doneEvent.item);
-
-        if (item) {
-          setMessages((prev) => mergeStreamingConversationItem(prev, item));
-          setLastSeenItemId(item.id);
-        }
-      } else if (eventType === "response.failed" || eventType === "error") {
-        console.error("Streaming error:", event);
-        setMessages((prev) => updateActiveItemStatuses(prev, "error"));
-        setError("Failed to generate response. Please try again.");
-      } else if (eventType === "response.cancelled") {
-        setMessages((prev) => updateActiveItemStatuses(prev, "incomplete"));
-        break;
       }
-    }
-  }, []);
+    },
+    [logStreamEvent]
+  );
 
   // Send message handler - now accepts optional override text for voice input
   const handleSendMessage = useCallback(
