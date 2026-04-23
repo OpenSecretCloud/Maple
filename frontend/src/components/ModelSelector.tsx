@@ -89,7 +89,7 @@ export function getModelTokenLimit(modelId: string): number {
 // Primary model options
 const PRIMARY_MODELS = {
   quick: "gpt-oss-120b",
-  powerful: "kimi-k2-5"
+  powerful: "kimi-k2-6"
 };
 
 const PRIMARY_INFO = {
@@ -213,7 +213,7 @@ export function ModelSelector({ hasImages = false }: { hasImages?: boolean }) {
     const isStarter = planName.includes("starter");
 
     if (isProMaxOrTeam) {
-      // Pro/Max/Team: switch to Powerful (kimi-k2-5 has vision)
+      // Pro/Max/Team: switch to Powerful (Kimi K2.6 has vision)
       setModel(PRIMARY_MODELS.powerful);
     } else if (isStarter) {
       // Starter: switch to Gemma 4
