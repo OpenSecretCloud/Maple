@@ -86,7 +86,14 @@ import type {
 import type {
   ResponseFunctionWebSearch,
   ResponseFunctionToolCall,
-  ResponseFunctionToolCallOutputItem
+  ResponseFunctionToolCallOutputItem,
+  ResponseOutputItemAddedEvent,
+  ResponseOutputItemDoneEvent,
+  ResponseReasoningItem,
+  ResponseReasoningTextDeltaEvent,
+  ResponseReasoningTextDoneEvent,
+  ResponseTextDeltaEvent,
+  ResponseTextDoneEvent
 } from "openai/resources/responses/responses.js";
 import type { Message as OpenAIMessage } from "openai/resources/conversations/conversations.js";
 
@@ -100,22 +107,35 @@ type ConversationContent =
   | ComputerScreenshotContent
   | InputFileContent
   | ResponseFunctionWebSearch
-  | ResponseFunctionToolCall
-  | ResponseFunctionToolCallOutputItem;
+  | ToolCallItem
+  | ToolOutputItem;
 
-// Extended message type with streaming status support
-type ExtendedMessage = OpenAIMessage & {
-  status?: "completed" | "in_progress" | "incomplete" | "streaming" | "error";
+type MessageStatus = "completed" | "in_progress" | "incomplete" | "streaming" | "error";
+type ExtendedMessage = Omit<OpenAIMessage, "status"> & {
+  status?: MessageStatus;
 };
 
-// Reasoning item type for model thinking/reasoning (e.g., Kimi K2)
-type ReasoningContentItem = { type: "text"; text: string };
-type ReasoningItem = {
-  type: "reasoning";
+type ReasoningContentItem = { type: "reasoning_text"; text: string };
+type ReasoningItem = Omit<ResponseReasoningItem, "content" | "status"> & {
+  content?: ReasoningContentItem[];
+  status?: MessageStatus;
+};
+
+type ToolCallItem = {
   id: string;
-  content: ReasoningContentItem[];
-  status?: "completed" | "in_progress" | "incomplete" | "streaming";
-  created_at?: number;
+  type: "tool_call";
+  call_id: string;
+  name: string;
+  arguments: string;
+  status?: MessageStatus;
+};
+
+type ToolOutputItem = {
+  id: string;
+  type: "tool_output";
+  call_id: string;
+  output: string;
+  status?: MessageStatus;
 };
 
 // Union type for all possible conversation items (messages, tool calls, tool outputs, web search, reasoning)
@@ -123,8 +143,8 @@ type ReasoningItem = {
 type Message =
   | ExtendedMessage
   | (ResponseFunctionWebSearch & { id: string })
-  | (ResponseFunctionToolCall & { id: string })
-  | (ResponseFunctionToolCallOutputItem & { id: string })
+  | ToolCallItem
+  | ToolOutputItem
   | ReasoningItem;
 
 // Helper function to merge messages while ensuring uniqueness by ID
@@ -155,17 +175,528 @@ function MapleChatAvatar() {
   );
 }
 
+function updateMessageById(
+  messages: Message[],
+  messageId: string,
+  updater: (message: Message) => Message
+): Message[] {
+  const messageToUpdate = messages.find((message) => message.id === messageId);
+  if (!messageToUpdate) return messages;
+  return mergeMessagesById(messages, [updater(messageToUpdate)]);
+}
+
+function upsertAssistantTextContent(
+  message: ExtendedMessage,
+  contentIndex: number,
+  text: string,
+  status?: ExtendedMessage["status"]
+): ExtendedMessage {
+  const content = [...(message.content ?? [])];
+  const existingPart = content[contentIndex];
+
+  if (
+    existingPart &&
+    (existingPart.type === "input_text" ||
+      existingPart.type === "output_text" ||
+      existingPart.type === "text") &&
+    "text" in existingPart
+  ) {
+    content[contentIndex] = {
+      ...existingPart,
+      text
+    };
+  } else {
+    content[contentIndex] = {
+      type: "output_text",
+      text,
+      annotations: []
+    };
+  }
+
+  return {
+    ...message,
+    content,
+    ...(status ? { status } : {})
+  };
+}
+
+function normalizeReasoningItem(item: ResponseReasoningItem | ReasoningItem): ReasoningItem {
+  const summary = Array.isArray(item.summary) ? item.summary : [];
+  const contentItems = Array.isArray(item.content) ? item.content : [];
+  const content = (contentItems.length > 0 ? contentItems : summary)
+    .map((contentItem) =>
+      typeof contentItem?.text === "string"
+        ? ({
+            type: "reasoning_text",
+            text: contentItem.text
+          } as const)
+        : null
+    )
+    .filter((contentItem): contentItem is ReasoningContentItem => contentItem !== null);
+
+  return {
+    ...item,
+    summary,
+    content
+  };
+}
+
+function normalizeToolCallItem(item: unknown): ToolCallItem | null {
+  if (!item || typeof item !== "object" || !("type" in item)) return null;
+
+  if ((item as { type?: string }).type === "tool_call") {
+    const toolCall = item as Partial<ToolCallItem>;
+    if (typeof toolCall.id !== "string" || typeof toolCall.call_id !== "string") return null;
+
+    return {
+      id: toolCall.id,
+      type: "tool_call",
+      call_id: toolCall.call_id,
+      name: typeof toolCall.name === "string" ? toolCall.name : "function",
+      arguments:
+        typeof toolCall.arguments === "string"
+          ? toolCall.arguments
+          : JSON.stringify(toolCall.arguments || {}),
+      status: toolCall.status
+    };
+  }
+
+  if ((item as { type?: string }).type === "function_call") {
+    const toolCall = item as ResponseFunctionToolCall & { id: string };
+    if (!toolCall.id) return null;
+
+    return {
+      id: toolCall.id,
+      type: "tool_call",
+      call_id: toolCall.call_id,
+      name: toolCall.name,
+      arguments: toolCall.arguments,
+      status: toolCall.status
+    };
+  }
+
+  return null;
+}
+
+function normalizeToolOutputItem(item: unknown): ToolOutputItem | null {
+  if (!item || typeof item !== "object" || !("type" in item)) return null;
+
+  if ((item as { type?: string }).type === "tool_output") {
+    const toolOutput = item as Partial<ToolOutputItem>;
+    if (typeof toolOutput.id !== "string" || typeof toolOutput.call_id !== "string") return null;
+
+    return {
+      id: toolOutput.id,
+      type: "tool_output",
+      call_id: toolOutput.call_id,
+      output:
+        typeof toolOutput.output === "string"
+          ? toolOutput.output
+          : JSON.stringify(toolOutput.output || ""),
+      status: toolOutput.status
+    };
+  }
+
+  if ((item as { type?: string }).type === "function_call_output") {
+    const toolOutput = item as ResponseFunctionToolCallOutputItem & { id: string };
+    if (!toolOutput.id) return null;
+
+    return {
+      id: toolOutput.id,
+      type: "tool_output",
+      call_id: toolOutput.call_id,
+      output: toolOutput.output,
+      status: toolOutput.status
+    };
+  }
+
+  return null;
+}
+
+function isToolCallItem(item: Message): item is ToolCallItem {
+  return item.type === "tool_call";
+}
+
+function isToolOutputItem(item: Message): item is ToolOutputItem {
+  return item.type === "tool_output";
+}
+
+function toolOutputHasResult(item: ToolOutputItem): boolean {
+  return item.status === "completed" || item.output.length > 0;
+}
+
+function getReasoningContentLength(content?: ReasoningContentItem[]): number {
+  return (content ?? []).reduce((total, contentItem) => total + contentItem.text.length, 0);
+}
+
+function getMessageContentLength(content?: ExtendedMessage["content"]): number {
+  return (content ?? []).reduce((total, contentItem) => {
+    if (
+      (contentItem.type === "input_text" ||
+        contentItem.type === "output_text" ||
+        contentItem.type === "text") &&
+      "text" in contentItem
+    ) {
+      return total + contentItem.text.length;
+    }
+
+    if (contentItem.type === "input_image") {
+      return total + 1;
+    }
+
+    return total;
+  }, 0);
+}
+
+function upsertReasoningTextContent(
+  reasoning: ReasoningItem,
+  contentIndex: number,
+  text: string,
+  status?: ReasoningItem["status"]
+): ReasoningItem {
+  const content = [...(reasoning.content ?? [])];
+  content[contentIndex] = {
+    type: "reasoning_text",
+    text
+  };
+
+  return {
+    ...reasoning,
+    content,
+    ...(status ? { status } : {})
+  };
+}
+
+function normalizeConversationItem(item: unknown): Message | null {
+  const toolCall = normalizeToolCallItem(item);
+  if (toolCall) return toolCall;
+
+  const toolOutput = normalizeToolOutputItem(item);
+  if (toolOutput) return toolOutput;
+
+  if (!item || typeof item !== "object" || !("id" in item) || !("type" in item)) {
+    return null;
+  }
+
+  const typedItem = item as { type: string };
+
+  if (typedItem.type === "reasoning") {
+    return normalizeReasoningItem(item as ResponseReasoningItem | ReasoningItem);
+  }
+
+  if (typedItem.type === "message" || typedItem.type === "web_search_call") {
+    return item as Message;
+  }
+
+  return null;
+}
+
+function isAssistantConversationItem(item: Message): boolean {
+  return item.type !== "message" || (item as ExtendedMessage).role !== "user";
+}
+
+function summarizeConversationItemForLog(item: unknown): Record<string, unknown> {
+  const normalizedItem = normalizeConversationItem(item);
+
+  if (!normalizedItem) {
+    return {};
+  }
+
+  if (normalizedItem.type === "reasoning") {
+    return {
+      itemType: normalizedItem.type,
+      itemId: normalizedItem.id,
+      status: normalizedItem.status,
+      contentLength: getReasoningContentLength(normalizedItem.content)
+    };
+  }
+
+  if (normalizedItem.type === "message") {
+    const message = normalizedItem as ExtendedMessage;
+
+    return {
+      itemType: message.type,
+      itemId: message.id,
+      role: message.role,
+      status: message.status,
+      contentParts: message.content?.length ?? 0,
+      contentLength: getMessageContentLength(message.content)
+    };
+  }
+
+  if (normalizedItem.type === "web_search_call") {
+    return {
+      itemType: normalizedItem.type,
+      itemId: normalizedItem.id,
+      status: normalizedItem.status
+    };
+  }
+
+  if (normalizedItem.type === "tool_call") {
+    return {
+      itemType: normalizedItem.type,
+      itemId: normalizedItem.id,
+      callId: normalizedItem.call_id,
+      name: normalizedItem.name,
+      status: normalizedItem.status,
+      argumentsLength: normalizedItem.arguments.length
+    };
+  }
+
+  return {
+    itemType: normalizedItem.type,
+    itemId: normalizedItem.id,
+    callId: normalizedItem.call_id,
+    status: normalizedItem.status,
+    outputLength: normalizedItem.output.length
+  };
+}
+
+function summarizeStreamEventForLog(eventType: string, event: unknown): Record<string, unknown> {
+  const summary: Record<string, unknown> = {};
+  const eventRecord = event as
+    | {
+        sequence_number?: number;
+        item_id?: string;
+        response?: {
+          id?: string;
+          status?: string;
+          output?: unknown[];
+        };
+      }
+    | undefined;
+
+  if (typeof eventRecord?.sequence_number === "number") {
+    summary.sequenceNumber = eventRecord.sequence_number;
+  }
+
+  if (typeof eventRecord?.item_id === "string") {
+    summary.itemId = eventRecord.item_id;
+  }
+
+  switch (eventType) {
+    case "response.created":
+    case "response.completed": {
+      const response = eventRecord?.response;
+
+      if (response?.id) {
+        summary.responseId = response.id;
+      }
+
+      if (typeof response?.status === "string") {
+        summary.status = response.status;
+      }
+
+      if (Array.isArray(response?.output)) {
+        summary.outputCount = response.output.length;
+      }
+
+      return summary;
+    }
+    case "response.output_item.added":
+    case "response.output_item.done": {
+      const itemEvent = event as { output_index?: number; item?: unknown };
+
+      if (typeof itemEvent.output_index === "number") {
+        summary.outputIndex = itemEvent.output_index;
+      }
+
+      return {
+        ...summary,
+        ...summarizeConversationItemForLog(itemEvent.item)
+      };
+    }
+    case "response.reasoning_text.delta": {
+      const reasoningEvent = event as ResponseReasoningTextDeltaEvent;
+
+      return {
+        ...summary,
+        contentIndex: reasoningEvent.content_index,
+        deltaLength: reasoningEvent.delta.length
+      };
+    }
+    case "response.reasoning_text.done": {
+      const reasoningEvent = event as ResponseReasoningTextDoneEvent;
+
+      return {
+        ...summary,
+        contentIndex: reasoningEvent.content_index,
+        textLength: reasoningEvent.text.length
+      };
+    }
+    case "response.output_text.delta": {
+      const textEvent = event as ResponseTextDeltaEvent;
+
+      return {
+        ...summary,
+        contentIndex: textEvent.content_index,
+        deltaLength: textEvent.delta.length
+      };
+    }
+    case "response.output_text.done": {
+      const textEvent = event as ResponseTextDoneEvent;
+
+      return {
+        ...summary,
+        contentIndex: textEvent.content_index,
+        textLength: textEvent.text.length
+      };
+    }
+    case "tool_call.created": {
+      const toolCallEvent = event as {
+        tool_call_id?: string;
+        name?: string;
+        arguments?: string | Record<string, unknown>;
+      };
+
+      return {
+        ...summary,
+        toolCallId: toolCallEvent.tool_call_id,
+        name: toolCallEvent.name,
+        ...(typeof toolCallEvent.arguments === "string"
+          ? { argumentsLength: toolCallEvent.arguments.length }
+          : toolCallEvent.arguments && typeof toolCallEvent.arguments === "object"
+            ? { argumentKeys: Object.keys(toolCallEvent.arguments) }
+            : {})
+      };
+    }
+    case "tool_output.created": {
+      const toolOutputEvent = event as {
+        tool_output_id?: string;
+        tool_call_id?: string;
+        output?: string;
+      };
+
+      return {
+        ...summary,
+        toolOutputId: toolOutputEvent.tool_output_id,
+        toolCallId: toolOutputEvent.tool_call_id,
+        outputLength: toolOutputEvent.output?.length ?? 0
+      };
+    }
+    default:
+      return summary;
+  }
+}
+
+function updateActiveItemStatuses(messages: Message[], status: "error" | "incomplete"): Message[] {
+  const updatedMessages = messages
+    .filter((message) => {
+      const currentStatus = (message as { status?: string }).status;
+      return (
+        currentStatus === "in_progress" ||
+        currentStatus === "streaming" ||
+        currentStatus === "searching"
+      );
+    })
+    .map((message) => ({ ...message, status }) as Message);
+
+  return updatedMessages.length > 0 ? mergeMessagesById(messages, updatedMessages) : messages;
+}
+
+function mergeStreamingConversationItem(messages: Message[], item: Message): Message[] {
+  if (item.type === "reasoning") {
+    const existingReasoning = messages.find(
+      (message): message is ReasoningItem => message.id === item.id && message.type === "reasoning"
+    );
+
+    if (!existingReasoning) {
+      return mergeMessagesById(messages, [item]);
+    }
+
+    const incomingReasoning = item as ReasoningItem;
+    const existingContentLength = getReasoningContentLength(existingReasoning.content);
+    const incomingContentLength = getReasoningContentLength(incomingReasoning.content);
+
+    return mergeMessagesById(messages, [
+      {
+        ...existingReasoning,
+        ...incomingReasoning,
+        content:
+          incomingContentLength >= existingContentLength
+            ? incomingReasoning.content
+            : existingReasoning.content,
+        status: incomingReasoning.status ?? existingReasoning.status
+      }
+    ]);
+  }
+
+  if (item.type === "message") {
+    const existingMessage = messages.find(
+      (message): message is ExtendedMessage => message.id === item.id && message.type === "message"
+    );
+
+    if (!existingMessage) {
+      return mergeMessagesById(messages, [item]);
+    }
+
+    const incomingMessage = item as ExtendedMessage;
+    const existingContentLength = getMessageContentLength(existingMessage.content);
+    const incomingContentLength = getMessageContentLength(incomingMessage.content);
+
+    return mergeMessagesById(messages, [
+      {
+        ...existingMessage,
+        ...incomingMessage,
+        content:
+          incomingContentLength >= existingContentLength
+            ? incomingMessage.content
+            : existingMessage.content,
+        status: incomingMessage.status ?? existingMessage.status
+      } as Message
+    ]);
+  }
+
+  if (isToolCallItem(item)) {
+    const existingToolCall = messages.find(
+      (message): message is ToolCallItem => message.id === item.id && isToolCallItem(message)
+    );
+
+    return mergeMessagesById(messages, [
+      {
+        ...(existingToolCall ?? {}),
+        ...item,
+        arguments:
+          item.arguments.length >= (existingToolCall?.arguments.length ?? 0)
+            ? item.arguments
+            : (existingToolCall?.arguments ?? item.arguments),
+        status: item.status ?? existingToolCall?.status ?? "in_progress"
+      }
+    ]);
+  }
+
+  if (isToolOutputItem(item)) {
+    const existingToolOutput = messages.find(
+      (message): message is ToolOutputItem => message.id === item.id && isToolOutputItem(message)
+    );
+
+    return mergeMessagesById(messages, [
+      {
+        ...(existingToolOutput ?? {}),
+        ...item,
+        output:
+          item.output.length >= (existingToolOutput?.output.length ?? 0)
+            ? item.output
+            : (existingToolOutput?.output ?? item.output),
+        status: item.status ?? existingToolOutput?.status ?? "in_progress"
+      }
+    ]);
+  }
+
+  return mergeMessagesById(messages, [item]);
+}
+
 // Helper function to convert conversation items - just returns them as-is (flat, no grouping)
 // The API already returns items in the correct format (ConversationItem union)
 function convertItemsToMessages(items: Array<unknown>): Message[] {
-  return items.filter((item): item is Message => {
-    const isValid = item != null && typeof item === "object" && "id" in item && "type" in item;
+  return items.flatMap((item) => {
+    const normalizedItem = normalizeConversationItem(item);
 
-    if (!isValid && item != null) {
+    if (!normalizedItem && item != null) {
       console.warn("Invalid conversation item filtered from API response:", item);
     }
 
-    return isValid;
+    return normalizedItem ? [normalizedItem] : [];
   });
 }
 
@@ -301,13 +832,24 @@ interface Conversation {
   };
 }
 
+function getToolCallQuery(functionCall: ToolCallItem): string {
+  try {
+    const args = JSON.parse(functionCall.arguments);
+    return args.query || "";
+  } catch {
+    return "";
+  }
+}
+
 // Component to render tool calls
 function ToolCallRenderer({
   tool,
-  toolOutput
+  toolOutputs,
+  relatedCall
 }: {
   tool: ConversationContent;
-  toolOutput?: ResponseFunctionToolCallOutputItem;
+  toolOutputs?: ToolOutputItem[];
+  relatedCall?: ToolCallItem;
 }) {
   const [isExpanded, setIsExpanded] = useState(false);
 
@@ -336,69 +878,46 @@ function ToolCallRenderer({
     );
   }
 
-  if (tool.type === "function_call") {
-    const functionCall = tool as ResponseFunctionToolCall;
+  if (tool.type === "tool_call") {
+    const functionCall = tool as ToolCallItem;
+    const isWebSearch = functionCall.name === "web_search";
+    const query = getToolCallQuery(functionCall);
+    const availableToolOutputs = toolOutputs ?? [];
+    const combinedOutput = availableToolOutputs
+      .map((toolOutput) => toolOutput.output || "")
+      .filter(Boolean)
+      .join("\n\n");
+    const hasToolOutput = combinedOutput.length > 0;
+    const isCompleted = availableToolOutputs.some(toolOutputHasResult);
+    const isError = functionCall.status === "error";
+    const isIncomplete = functionCall.status === "incomplete";
+    const isFailed = isError || isIncomplete;
+    const isActive = !isCompleted && !isFailed;
 
-    // Try to parse arguments to get query
-    let query = "";
-    try {
-      const args = JSON.parse(functionCall.arguments);
-      query = args.query || "";
-    } catch {
-      // Ignore parse errors
-    }
-
-    // If we have a toolOutput, render them grouped together
-    if (toolOutput) {
-      const output = toolOutput.output || "";
-      const preview = truncateMarkdownPreservingLinks(output, 150);
-      const hasMore = output.length > 150;
-      const isWebSearch = functionCall.name === "web_search";
-
-      // Web search specific rendering
-      if (isWebSearch) {
-        return (
-          <div className="mb-2 rounded-3xl border border-muted/40 bg-muted/20 px-4 py-3 text-sm">
-            {/* Web search header with icon and query */}
-            <div className="mb-2 flex items-center gap-2">
-              <Search className="h-4 w-4 flex-shrink-0 text-[hsl(var(--maple-primary))]" />
-              <span className="font-medium text-foreground">
-                {query ? `Searched: "${query}"` : "Web Search"}
-              </span>
-            </div>
-            {/* Search result - indented to align with text, render as markdown for links */}
-            <div className="pl-6 text-foreground/80">
-              <Markdown content={isExpanded ? output : preview} fontSize={14} />
-              {hasMore && (
-                <button
-                  onClick={() => setIsExpanded(!isExpanded)}
-                  className="ml-2 text-xs text-primary hover:text-primary/80 font-medium"
-                >
-                  {isExpanded ? "Show less" : "Show more"}
-                </button>
-              )}
-            </div>
-          </div>
-        );
-      }
-
-      // Generic tool call rendering - we have output, so show completed state
-      const statusText = isWebSearch
-        ? query
-          ? `Searched for "${query}"`
-          : "Web search completed"
-        : `Tool "${functionCall.name}" completed`;
+    if (hasToolOutput) {
+      const preview = truncateMarkdownPreservingLinks(combinedOutput, 150);
+      const hasMore = combinedOutput.length > 150;
 
       return (
         <div className="mb-2 rounded-3xl border border-muted/40 bg-muted/20 px-4 py-3 text-sm">
-          {/* Tool call header */}
           <div className="mb-2 flex items-center gap-2">
-            <Check className="h-4 w-4 flex-shrink-0 text-maple-success" />
-            <span className="font-medium text-foreground">{statusText}</span>
+            {isWebSearch ? (
+              <Search className="h-4 w-4 flex-shrink-0 text-[hsl(var(--maple-primary))]" />
+            ) : (
+              <Check className="h-4 w-4 flex-shrink-0 text-maple-success" />
+            )}
+            <span className="font-medium text-foreground">
+              {isWebSearch
+                ? query
+                  ? `Searched: "${query}"`
+                  : "Web Search"
+                : query
+                  ? `Ran "${functionCall.name}" for "${query}"`
+                  : `Tool "${functionCall.name}" completed`}
+            </span>
           </div>
-          {/* Tool output - indented, render as markdown for links */}
           <div className="pl-6 text-foreground/80">
-            <Markdown content={isExpanded ? output : preview} fontSize={14} />
+            <Markdown content={isExpanded ? combinedOutput : preview} fontSize={14} />
             {hasMore && (
               <button
                 onClick={() => setIsExpanded(!isExpanded)}
@@ -412,32 +931,76 @@ function ToolCallRenderer({
       );
     }
 
-    // No output yet - always show as "searching" since we don't have results
-    const isWebSearch = functionCall.name === "web_search";
-
     if (isWebSearch) {
       return (
         <div className="mb-2 flex items-center gap-2 rounded-2xl bg-muted/30 px-3 py-2 text-sm">
-          <Loader2 className="h-4 w-4 animate-spin flex-shrink-0 text-[hsl(var(--maple-primary))]" />
+          {isActive ? (
+            <Loader2 className="h-4 w-4 animate-spin flex-shrink-0 text-[hsl(var(--maple-primary))]" />
+          ) : isFailed ? (
+            <X
+              className={`h-4 w-4 flex-shrink-0 ${
+                isError ? "text-maple-error" : "text-maple-warning"
+              }`}
+            />
+          ) : (
+            <Search className="h-4 w-4 flex-shrink-0 text-[hsl(var(--maple-primary))]" />
+          )}
           <span className="text-foreground">
-            {query ? `Searching for "${query}"...` : "Searching the web..."}
+            {isFailed
+              ? isError
+                ? query
+                  ? `Search for "${query}" failed`
+                  : "Web search failed"
+                : query
+                  ? `Search for "${query}" incomplete`
+                  : "Web search incomplete"
+              : isCompleted
+                ? query
+                  ? `Searched: "${query}"`
+                  : "Web search completed"
+                : query
+                  ? `Searching for "${query}"...`
+                  : "Searching the web..."}
           </span>
         </div>
       );
     }
 
-    // Generic tool call without output - show as in progress
     return (
-      <div className="mb-2 flex items-center gap-2 rounded-2xl bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
-        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-        <span>{query ? `Searching for "${query}"...` : "Running tool..."}</span>
+      <div
+        className={`mb-2 flex items-center gap-2 rounded-2xl bg-muted/30 px-3 py-2 text-sm ${
+          isActive ? "text-muted-foreground" : "text-foreground"
+        }`}
+      >
+        {isActive ? (
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+        ) : isFailed ? (
+          <X className={`h-3.5 w-3.5 ${isError ? "text-maple-error" : "text-maple-warning"}`} />
+        ) : (
+          <Check className="h-3.5 w-3.5 text-maple-success" />
+        )}
+        <span>
+          {isCompleted
+            ? query
+              ? `Ran "${functionCall.name}" for "${query}"`
+              : `Ran "${functionCall.name}"`
+            : isFailed
+              ? isError
+                ? `Tool "${functionCall.name}" failed`
+                : `Tool "${functionCall.name}" incomplete`
+              : query
+                ? `Running "${functionCall.name}" for "${query}"...`
+                : `Running "${functionCall.name}"...`}
+        </span>
       </div>
     );
   }
 
-  if (tool.type === "function_call_output") {
-    const toolOutput = tool as ResponseFunctionToolCallOutputItem;
+  if (tool.type === "tool_output") {
+    const toolOutput = tool as ToolOutputItem;
     const output = toolOutput.output || "";
+    const query = relatedCall ? getToolCallQuery(relatedCall) : "";
+    const isWebSearch = relatedCall?.name === "web_search";
 
     // Show preview (first 150 chars to match grouped rendering)
     const preview = truncateMarkdownPreservingLinks(output, 150);
@@ -446,8 +1009,20 @@ function ToolCallRenderer({
     return (
       <div className="mb-2 rounded-3xl border border-muted/40 bg-muted/20 px-4 py-3 text-sm">
         <div className="mb-2 flex items-center gap-2">
-          <Check className="h-4 w-4 flex-shrink-0 text-maple-success" />
-          <span className="font-medium text-foreground">Tool Result</span>
+          {isWebSearch ? (
+            <Search className="h-4 w-4 flex-shrink-0 text-[hsl(var(--maple-primary))]" />
+          ) : (
+            <Check className="h-4 w-4 flex-shrink-0 text-maple-success" />
+          )}
+          <span className="font-medium text-foreground">
+            {isWebSearch
+              ? query
+                ? `Searched: "${query}"`
+                : "Web Search"
+              : relatedCall
+                ? `Tool "${relatedCall.name}" result`
+                : "Tool Result"}
+          </span>
         </div>
         <div className="pl-6 text-foreground/80">
           <Markdown content={isExpanded ? output : preview} fontSize={14} />
@@ -491,37 +1066,26 @@ const MessageList = memo(
     onTTSSetupOpen: () => void;
     onTTSManage: () => void;
   }) => {
-    // Build Maps for O(1) lookup of tool calls and outputs by call_id
-    const { callMap, outputMap } = useMemo(() => {
-      const calls = new Map<string, Message>();
-      const outputs = new Map<string, Message>();
+    const toolCallsByCallId = useMemo(() => {
+      const toolCalls = new Map<string, ToolCallItem>();
 
-      messages.forEach((msg) => {
-        if (msg.type === "function_call") {
-          calls.set((msg as unknown as ResponseFunctionToolCall).call_id, msg);
-        } else if (msg.type === "function_call_output") {
-          outputs.set((msg as unknown as ResponseFunctionToolCallOutputItem).call_id, msg);
+      messages.forEach((message) => {
+        if (isToolCallItem(message)) {
+          toolCalls.set(message.call_id, message);
         }
       });
 
-      return { callMap: calls, outputMap: outputs };
+      return toolCalls;
     }, [messages]);
 
-    // Sort priority for assistant items: reasoning first, then tool-related, then messages last.
-    // This prevents a race condition where SSE events arrive out of order (e.g., assistant message
-    // "added" event before reasoning "added" event), which would cause thinking blocks to render
-    // below the "..." loading dots or streamed text.
-    const assistantItemSortOrder = (item: Message): number => {
-      if (item.type === "reasoning") return 0;
-      if (
-        item.type === "web_search_call" ||
-        item.type === "function_call" ||
-        item.type === "function_call_output"
-      )
-        return 1;
-      // "message" items (assistant content / streaming text) come last
-      return 2;
-    };
+    const completedToolCallIds = useMemo(() => {
+      return new Set(
+        messages
+          .filter((message): message is ToolOutputItem => isToolOutputItem(message))
+          .filter(toolOutputHasResult)
+          .map((message) => message.call_id)
+      );
+    }, [messages]);
 
     // Group messages into user turns and assistant turns
     // Assistant turns include: reasoning, tool calls, tool outputs, web search, and assistant messages
@@ -536,9 +1100,7 @@ const MessageList = memo(
           if (currentAssistantItems.length > 0) {
             groups.push({
               type: "assistant",
-              items: [...currentAssistantItems].sort(
-                (a, b) => assistantItemSortOrder(a) - assistantItemSortOrder(b)
-              ),
+              items: [...currentAssistantItems],
               id: `assistant-${currentAssistantItems[0].id}`
             });
             currentAssistantItems = [];
@@ -558,9 +1120,7 @@ const MessageList = memo(
       if (currentAssistantItems.length > 0) {
         groups.push({
           type: "assistant",
-          items: [...currentAssistantItems].sort(
-            (a, b) => assistantItemSortOrder(a) - assistantItemSortOrder(b)
-          ),
+          items: [...currentAssistantItems],
           id: `assistant-${currentAssistantItems[0].id}`
         });
       }
@@ -568,133 +1128,149 @@ const MessageList = memo(
       return groups;
     }, [messages]);
 
-    // Helper to render an individual item within an assistant group
-    const renderAssistantItem = (item: Message) => {
-      const itemType = item.type;
+    const renderAssistantItems = (items: Message[]) => {
+      const renderedItems: JSX.Element[] = [];
 
-      // Tool calls - render with pairing
-      if (itemType === "function_call") {
-        const toolCall = item as unknown as ResponseFunctionToolCall;
-        const output = outputMap.get(toolCall.call_id) as
-          | ResponseFunctionToolCallOutputItem
-          | undefined;
+      for (let index = 0; index < items.length; index++) {
+        const item = items[index];
+        const itemType = item.type;
 
-        return (
-          <div key={item.id} className="mb-2">
-            <ToolCallRenderer tool={toolCall} toolOutput={output} />
-          </div>
-        );
-      }
+        if (itemType === "tool_call") {
+          const toolCall = item as ToolCallItem;
+          const renderedToolCall =
+            completedToolCallIds.has(toolCall.call_id) && toolCall.status !== "completed"
+              ? ({ ...toolCall, status: "completed" } as ToolCallItem)
+              : toolCall;
 
-      // Tool outputs - skip if already rendered with call
-      if (itemType === "function_call_output") {
-        const output = item as unknown as ResponseFunctionToolCallOutputItem;
-        const matchingCall = callMap.get(output.call_id);
+          const matchedOutputs: ToolOutputItem[] = [];
+          let nextIndex = index + 1;
 
-        if (matchingCall) {
-          return null; // Already rendered with the call
-        }
-        return (
-          <div key={item.id} className="mb-2">
-            <ToolCallRenderer tool={output} />
-          </div>
-        );
-      }
+          while (nextIndex < items.length) {
+            const nextItem = items[nextIndex];
+            if (isToolOutputItem(nextItem) && nextItem.call_id === toolCall.call_id) {
+              matchedOutputs.push(nextItem);
+              nextIndex++;
+            } else {
+              break;
+            }
+          }
 
-      // Web search
-      if (itemType === "web_search_call") {
-        const webSearch = item as unknown as ResponseFunctionWebSearch;
-        return (
-          <div key={item.id} className="mb-2">
-            <ToolCallRenderer tool={webSearch} />
-          </div>
-        );
-      }
-
-      // Reasoning - render with ThinkingBlock
-      if (itemType === "reasoning") {
-        const reasoning = item as ReasoningItem;
-        const text = reasoning.content
-          .filter((c) => c.type === "text")
-          .map((c) => c.text)
-          .join("");
-        const isThinking = reasoning.status === "in_progress" || reasoning.status === "streaming";
-
-        return (
-          <div key={item.id} className="mb-2">
-            <ThinkingBlock content={text} isThinking={isThinking} />
-          </div>
-        );
-      }
-
-      // Assistant message content
-      if (itemType === "message") {
-        const message = item as unknown as ExtendedMessage;
-        if (message.role !== "assistant") return null;
-
-        const isAssistantLoading = message.status === "in_progress";
-        if ((!message.content || message.content.length === 0) && !isAssistantLoading) {
-          return null;
-        }
-
-        return (
-          <div key={item.id}>
-            <div className="prose prose-sm dark:prose-invert max-w-none">
-              <div className="space-y-3">
-                {message.content?.map((part, partIdx) => {
-                  if (
-                    (part.type === "input_text" ||
-                      part.type === "output_text" ||
-                      part.type === "text") &&
-                    "text" in part &&
-                    part.text
-                  ) {
-                    return (
-                      <div key={partIdx}>
-                        <Markdown
-                          content={part.text}
-                          loading={(message as { status?: string }).status === "streaming"}
-                          chatId={chatId || ""}
-                        />
-                      </div>
-                    );
-                  }
-                  if (part.type === "input_image" && "image_url" in part && part.image_url) {
-                    return (
-                      <div key={partIdx}>
-                        <img
-                          src={part.image_url}
-                          alt={`Image ${partIdx + 1}`}
-                          className="max-w-full rounded-2xl"
-                          style={{ maxHeight: "400px", objectFit: "contain" }}
-                        />
-                      </div>
-                    );
-                  }
-                  return null;
-                })}
-              </div>
+          renderedItems.push(
+            <div key={item.id} className="mb-2">
+              <ToolCallRenderer tool={renderedToolCall} toolOutputs={matchedOutputs} />
             </div>
+          );
 
-            {/* Status indicators */}
-            {message.status === "in_progress" && (
-              <div className="flex items-center gap-1 text-muted-foreground mt-2">
-                <div className="w-2 h-2 bg-foreground/60 rounded-full animate-pulse" />
-                <div className="w-2 h-2 bg-foreground/60 rounded-full animate-pulse delay-75" />
-                <div className="w-2 h-2 bg-foreground/60 rounded-full animate-pulse delay-150" />
+          if (matchedOutputs.length > 0) {
+            index = nextIndex - 1;
+          }
+
+          continue;
+        }
+
+        if (itemType === "tool_output") {
+          const output = item as ToolOutputItem;
+          renderedItems.push(
+            <div key={item.id} className="mb-2">
+              <ToolCallRenderer tool={output} relatedCall={toolCallsByCallId.get(output.call_id)} />
+            </div>
+          );
+          continue;
+        }
+
+        if (itemType === "web_search_call") {
+          const webSearch = item as unknown as ResponseFunctionWebSearch;
+          renderedItems.push(
+            <div key={item.id} className="mb-2">
+              <ToolCallRenderer tool={webSearch} />
+            </div>
+          );
+          continue;
+        }
+
+        if (itemType === "reasoning") {
+          const reasoning = item as ReasoningItem;
+          const text = (reasoning.content ?? [])
+            .filter((c) => c.type === "reasoning_text")
+            .map((c) => c.text)
+            .join("");
+          const isThinking = reasoning.status === "in_progress" || reasoning.status === "streaming";
+
+          renderedItems.push(
+            <div key={item.id} className="mb-2">
+              <ThinkingBlock content={text} isThinking={isThinking} />
+            </div>
+          );
+          continue;
+        }
+
+        if (itemType === "message") {
+          const message = item as unknown as ExtendedMessage;
+          if (message.role !== "assistant") continue;
+
+          const isAssistantLoading = message.status === "in_progress";
+          if ((!message.content || message.content.length === 0) && !isAssistantLoading) {
+            continue;
+          }
+
+          renderedItems.push(
+            <div key={item.id}>
+              <div className="prose prose-sm dark:prose-invert max-w-none">
+                <div className="space-y-3">
+                  {message.content?.map((part, partIdx) => {
+                    if (
+                      (part.type === "input_text" ||
+                        part.type === "output_text" ||
+                        part.type === "text") &&
+                      "text" in part &&
+                      part.text
+                    ) {
+                      return (
+                        <div key={partIdx}>
+                          <Markdown
+                            content={part.text}
+                            loading={(message as { status?: string }).status === "streaming"}
+                            chatId={chatId || ""}
+                          />
+                        </div>
+                      );
+                    }
+                    if (part.type === "input_image" && "image_url" in part && part.image_url) {
+                      return (
+                        <div key={partIdx}>
+                          <img
+                            src={part.image_url}
+                            alt={`Image ${partIdx + 1}`}
+                            className="max-w-full rounded-2xl"
+                            style={{ maxHeight: "400px", objectFit: "contain" }}
+                          />
+                        </div>
+                      );
+                    }
+                    return null;
+                  })}
+                </div>
               </div>
-            )}
-            {message.status === "incomplete" && (
-              <div className="mt-2 inline-flex items-center gap-2 rounded-2xl bg-muted/50 px-3 py-1.5 text-sm text-muted-foreground">
-                <div className="h-1.5 w-1.5 rounded-full bg-maple-warning" />
-                <span>Chat Canceled</span>
-              </div>
-            )}
-          </div>
-        );
+
+              {message.status === "in_progress" && (
+                <div className="mt-2 flex items-center gap-1 text-muted-foreground">
+                  <div className="h-2 w-2 animate-pulse rounded-full bg-foreground/60" />
+                  <div className="h-2 w-2 animate-pulse rounded-full bg-foreground/60 delay-75" />
+                  <div className="h-2 w-2 animate-pulse rounded-full bg-foreground/60 delay-150" />
+                </div>
+              )}
+              {message.status === "incomplete" && (
+                <div className="mt-2 inline-flex items-center gap-2 rounded-2xl bg-muted/50 px-3 py-1.5 text-sm text-muted-foreground">
+                  <div className="h-1.5 w-1.5 rounded-full bg-maple-warning" />
+                  <span>Chat Canceled</span>
+                </div>
+              )}
+            </div>
+          );
+        }
       }
 
-      return null;
+      return renderedItems;
     };
 
     // Get all text content from an assistant group for the copy button
@@ -711,6 +1287,9 @@ const MessageList = memo(
         })
         .join("");
     };
+
+    const shouldShowInitialAssistantLoader =
+      isGenerating && groupedMessages[groupedMessages.length - 1]?.type !== "assistant";
 
     return (
       <>
@@ -807,7 +1386,7 @@ const MessageList = memo(
                       <div className="text-left text-sm font-semibold leading-none">Maple</div>
                     </div>
                     <div className="space-y-2">
-                      {group.items.map((item) => renderAssistantItem(item))}
+                      {renderAssistantItems(group.items)}
                       {/* Copy and TTS buttons for the assistant's text content */}
                       {textContent && (
                         <div className="flex gap-1">
@@ -830,39 +1409,8 @@ const MessageList = memo(
           return null;
         })}
 
-        {/* Loading indicator - modern style */}
-        {/* Only show when generating AND no assistant content is being rendered */}
-        {(() => {
-          // Check if the last item is tool-related (means we're in tool phase, already rendering in Maple box)
-          const lastItem = messages[messages.length - 1];
-          const isLastItemToolRelated =
-            lastItem &&
-            (lastItem.type === "function_call" ||
-              lastItem.type === "function_call_output" ||
-              lastItem.type === "web_search_call");
-
-          const hasStreamingAssistant = messages.some(
-            (item) =>
-              item.type === "message" &&
-              (item as unknown as ExtendedMessage).role === "assistant" &&
-              ((item as { status?: string }).status === "streaming" ||
-                (item as { status?: string }).status === "in_progress")
-          );
-
-          const hasStreamingReasoning = messages.some(
-            (item) =>
-              item.type === "reasoning" &&
-              ((item as { status?: string }).status === "streaming" ||
-                (item as { status?: string }).status === "in_progress")
-          );
-
-          return (
-            isGenerating &&
-            !hasStreamingAssistant &&
-            !hasStreamingReasoning &&
-            !isLastItemToolRelated
-          );
-        })() && (
+        {/* Loading indicator - only show while waiting for the first assistant item (TTFT) */}
+        {shouldShowInitialAssistantLoader && (
           <div className="group py-4 px-0 md:p-4">
             <div className="mx-auto flex w-full max-w-4xl flex-col gap-2 md:flex-row md:items-start md:gap-3">
               <div className="flex h-8 shrink-0 items-center gap-2 px-0 md:h-auto md:flex-col md:items-start md:gap-3">
@@ -982,6 +1530,7 @@ export function UnifiedChat() {
 
   // Scroll state
   const [isUserScrolling, setIsUserScrolling] = useState(false);
+  const isUserScrollingRef = useRef(false);
   const prevMessageCountRef = useRef(0);
   const prevStreamingRef = useRef(false);
   const [hasNewPolledMessages, setHasNewPolledMessages] = useState(false);
@@ -1055,6 +1604,10 @@ export function UnifiedChat() {
     setIsUserScrolling(!isNearBottom);
   }, []);
 
+  useEffect(() => {
+    isUserScrollingRef.current = isUserScrolling;
+  }, [isUserScrolling]);
+
   // Scroll to bottom helper
   const scrollToBottom = useCallback((behavior: ScrollBehavior = "smooth") => {
     if (chatContainerRef.current) {
@@ -1064,6 +1617,48 @@ export function UnifiedChat() {
       });
     }
   }, []);
+
+  const getScrollDebugSnapshot = useCallback(() => {
+    const container = chatContainerRef.current;
+
+    if (!container) {
+      return null;
+    }
+
+    const { scrollTop, scrollHeight, clientHeight } = container;
+
+    return {
+      scrollTop: Math.round(scrollTop),
+      scrollHeight: Math.round(scrollHeight),
+      clientHeight: Math.round(clientHeight),
+      distanceFromBottom: Math.max(0, Math.round(scrollHeight - scrollTop - clientHeight))
+    };
+  }, []);
+
+  const logStreamEvent = useCallback(
+    (streamStartedAt: number, eventIndex: number, eventType: string, event: unknown) => {
+      const includeScrollSnapshot =
+        eventType === "response.output_item.added" ||
+        eventType === "response.output_item.done" ||
+        eventType === "tool_call.created" ||
+        eventType === "tool_output.created";
+
+      console.log("🔵 SSE Event", {
+        at: new Date().toISOString(),
+        elapsedMs: Math.round(performance.now() - streamStartedAt),
+        eventIndex,
+        eventType,
+        ...summarizeStreamEventForLog(eventType, event),
+        ...(includeScrollSnapshot
+          ? {
+              isUserScrolling: isUserScrollingRef.current,
+              scroll: getScrollDebugSnapshot()
+            }
+          : {})
+      });
+    },
+    [getScrollDebugSnapshot]
+  );
 
   // Attach scroll listener
   useEffect(() => {
@@ -1097,21 +1692,26 @@ export function UnifiedChat() {
   const prevLastMessageId = useRef(lastMessageId);
 
   useEffect(() => {
-    // Only scroll if the LAST message changed AND it's a user message
-    // This means a message was added to the END (not prepended)
-    if (
-      lastMessageId !== prevLastMessageId.current &&
-      messages.length > 0 &&
-      messages[messages.length - 1].type === "message" &&
-      (messages[messages.length - 1] as ExtendedMessage).role === "user"
-    ) {
-      // User just sent a message - scroll to bottom
-      setTimeout(() => {
-        scrollToBottom("smooth");
-      }, 50);
+    // Only scroll if the LAST message changed, which means an item was added to the END
+    // (not prepended while loading older history).
+    if (lastMessageId !== prevLastMessageId.current && messages.length > 0) {
+      const lastItem = messages[messages.length - 1];
+      const isUserMessage =
+        lastItem.type === "message" && (lastItem as ExtendedMessage).role === "user";
+      const shouldAutoScrollAssistantItem =
+        isAssistantConversationItem(lastItem) && !isUserScrolling;
+
+      if (isUserMessage || shouldAutoScrollAssistantItem) {
+        setTimeout(
+          () => {
+            scrollToBottom("smooth");
+          },
+          isUserMessage ? 50 : 0
+        );
+      }
     }
     prevLastMessageId.current = lastMessageId;
-  }, [lastMessageId, messages, scrollToBottom]);
+  }, [isUserScrolling, lastMessageId, messages, scrollToBottom]);
 
   // Auto-scroll when assistant starts streaming (but not while streaming)
   useEffect(() => {
@@ -1961,327 +2561,267 @@ export function UnifiedChat() {
   };
 
   // Helper function to process streaming response - used by both initial request and retry
-  const processStreamingResponse = useCallback(async (stream: AsyncIterable<unknown>) => {
-    let serverAssistantId: string | undefined;
-    let serverReasoningId: string | undefined;
-    let accumulatedContent = "";
-    let accumulatedReasoning = "";
+  const processStreamingResponse = useCallback(
+    async (stream: AsyncIterable<unknown>) => {
+      const messageTextBuffers = new Map<string, Map<number, string>>();
+      const reasoningTextBuffers = new Map<string, Map<number, string>>();
+      const streamStartedAt = performance.now();
+      let streamEventCount = 0;
 
-    for await (const event of stream) {
-      const eventType = (event as { type: string }).type;
+      const appendBufferedText = (
+        buffers: Map<string, Map<number, string>>,
+        itemId: string,
+        contentIndex: number,
+        delta: string
+      ) => {
+        const contentBuffers = buffers.get(itemId) ?? new Map<number, string>();
+        const nextText = `${contentBuffers.get(contentIndex) ?? ""}${delta}`;
+        contentBuffers.set(contentIndex, nextText);
+        buffers.set(itemId, contentBuffers);
+        return nextText;
+      };
 
-      // Log all SSE events for debugging
-      console.log("🔵 SSE Event:", eventType, event);
+      const setBufferedText = (
+        buffers: Map<string, Map<number, string>>,
+        itemId: string,
+        contentIndex: number,
+        text: string
+      ) => {
+        const contentBuffers = buffers.get(itemId) ?? new Map<number, string>();
+        contentBuffers.set(contentIndex, text);
+        buffers.set(itemId, contentBuffers);
+        return text;
+      };
 
-      if (eventType === "response.created") {
-        const eventWithResponse = event as { response?: { id?: string } };
-        if (eventWithResponse.response?.id) {
-          setCurrentResponseId(eventWithResponse.response.id);
-        }
-      } else if (
-        eventType === "response.output_item.added" &&
-        (event as { item?: { type?: string } }).item?.type === "message"
-      ) {
-        // Assistant message created - add immediately as a flat item
-        const eventWithItem = event as { item?: { id?: string } };
-        if (eventWithItem.item?.id) {
-          serverAssistantId = eventWithItem.item.id;
+      for await (const event of stream) {
+        const eventType = (event as { type: string }).type;
+        streamEventCount += 1;
+        logStreamEvent(streamStartedAt, streamEventCount, eventType, event);
 
-          const assistantMessage = {
-            id: serverAssistantId,
-            type: "message",
-            role: "assistant",
-            content: [],
-            status: "in_progress"
-          } as unknown as Message;
+        if (eventType === "response.created") {
+          const eventWithResponse = event as { response?: { id?: string } };
+          if (eventWithResponse.response?.id) {
+            setCurrentResponseId(eventWithResponse.response.id);
+          }
+        } else if (eventType === "response.output_item.added") {
+          const addedEvent = event as ResponseOutputItemAddedEvent;
+          const item = normalizeConversationItem(addedEvent.item);
 
-          setMessages((prev) => mergeMessagesById(prev, [assistantMessage]));
-        }
-      } else if (
-        eventType === "response.output_item.added" &&
-        (event as { item?: { type?: string } }).item?.type === "web_search_call"
-      ) {
-        // Web search call created - add immediately as a flat item
-        const eventWithItem = event as { item?: { id?: string } };
-        if (eventWithItem.item?.id) {
-          const webSearchItem = {
-            id: eventWithItem.item.id,
-            type: "web_search_call",
-            status: "in_progress"
-          } as unknown as Message;
-
-          setMessages((prev) => mergeMessagesById(prev, [webSearchItem]));
-        }
-      } else if (
-        eventType === "response.output_item.added" &&
-        (event as { item?: { type?: string } }).item?.type === "reasoning"
-      ) {
-        // Reasoning item created - add immediately as a flat item (for models like Kimi K2)
-        const eventWithItem = event as { item?: { id?: string } };
-        if (eventWithItem.item?.id) {
-          serverReasoningId = eventWithItem.item.id;
-
-          const reasoningItem: ReasoningItem = {
-            id: serverReasoningId,
-            type: "reasoning",
-            content: [],
-            status: "in_progress"
-          };
-
-          setMessages((prev) => mergeMessagesById(prev, [reasoningItem]));
-        }
-      } else if (eventType === "response.web_search_call.in_progress") {
-        // Update web search status
-        const webSearchEvent = event as { item_id?: string };
-        if (webSearchEvent.item_id) {
-          setMessages((prev) => {
-            const itemToUpdate = prev.find((m) => m.id === webSearchEvent.item_id);
-            if (itemToUpdate && itemToUpdate.type === "web_search_call") {
-              const updated = {
-                ...itemToUpdate,
-                status: "in_progress"
-              } as unknown as Message;
-              return mergeMessagesById(prev, [updated]);
-            }
-            return prev;
-          });
-        }
-      } else if (eventType === "response.web_search_call.searching") {
-        // Update web search status
-        const webSearchEvent = event as { item_id?: string };
-        if (webSearchEvent.item_id) {
-          setMessages((prev) => {
-            const itemToUpdate = prev.find((m) => m.id === webSearchEvent.item_id);
-            if (itemToUpdate && itemToUpdate.type === "web_search_call") {
-              const updated = {
-                ...itemToUpdate,
-                status: "searching"
-              } as unknown as Message;
-              return mergeMessagesById(prev, [updated]);
-            }
-            return prev;
-          });
-        }
-      } else if (eventType === "response.web_search_call.completed") {
-        // Update web search status
-        const webSearchEvent = event as { item_id?: string };
-        if (webSearchEvent.item_id) {
-          setMessages((prev) => {
-            const itemToUpdate = prev.find((m) => m.id === webSearchEvent.item_id);
-            if (itemToUpdate && itemToUpdate.type === "web_search_call") {
-              const updated = {
-                ...itemToUpdate,
-                status: "completed"
-              } as unknown as Message;
-              return mergeMessagesById(prev, [updated]);
-            }
-            return prev;
-          });
-        }
-      } else if (eventType === "tool_call.created") {
-        // Tool call created - add immediately as a flat item
-        const toolCallEvent = event as {
-          tool_call_id?: string;
-          name?: string;
-          arguments?: { query?: string };
-        };
-        if (toolCallEvent.tool_call_id) {
-          const toolCallItem = {
-            id: toolCallEvent.tool_call_id,
-            call_id: toolCallEvent.tool_call_id,
-            type: "function_call",
-            name: toolCallEvent.name || "function",
-            arguments: JSON.stringify(toolCallEvent.arguments || {}),
-            status: "in_progress"
-          } as unknown as Message;
-
-          setMessages((prev) => mergeMessagesById(prev, [toolCallItem]));
-        }
-      } else if (eventType === "tool_output.created") {
-        // Tool output created - add immediately as a flat item
-        const toolOutputEvent = event as {
-          tool_output_id?: string;
-          tool_call_id?: string;
-          output?: string;
-        };
-        if (toolOutputEvent.tool_output_id && toolOutputEvent.tool_call_id) {
-          const toolOutputItem = {
-            id: toolOutputEvent.tool_output_id,
-            call_id: toolOutputEvent.tool_call_id,
-            type: "function_call_output",
-            output: toolOutputEvent.output || "",
-            status: "completed"
-          } as unknown as Message;
-
-          // Add tool output and update corresponding tool call status in one setState
-          setMessages((prev) => {
-            // First add the tool output item
-            const withOutput = mergeMessagesById(prev, [toolOutputItem]);
-
-            // Then update the corresponding tool call status to completed
-            const toolCallToUpdate = withOutput.find(
-              (m) =>
-                m.type === "function_call" &&
-                (m as unknown as ResponseFunctionToolCall).call_id === toolOutputEvent.tool_call_id
+          if (item) {
+            setMessages((prev) => mergeStreamingConversationItem(prev, item));
+          }
+        } else if (eventType === "response.web_search_call.in_progress") {
+          const webSearchEvent = event as { item_id?: string };
+          if (webSearchEvent.item_id) {
+            setMessages((prev) =>
+              updateMessageById(prev, webSearchEvent.item_id!, (message) =>
+                message.type === "web_search_call"
+                  ? ({ ...message, status: "in_progress" } as unknown as Message)
+                  : message
+              )
             );
-            if (toolCallToUpdate) {
-              const updated = {
-                ...toolCallToUpdate,
-                status: "completed"
-              } as unknown as Message;
-              return mergeMessagesById(withOutput, [updated]);
-            }
-            return withOutput;
-          });
-        }
-      } else if (
-        eventType === "response.reasoning_text.delta" &&
-        (event as { delta?: string }).delta
-      ) {
-        // Reasoning text delta - update the reasoning item (for models like Kimi K2)
-        const reasoningEvent = event as { delta: string; item_id?: string };
-        const delta = reasoningEvent.delta;
-        accumulatedReasoning += delta;
+          }
+        } else if (eventType === "response.web_search_call.searching") {
+          const webSearchEvent = event as { item_id?: string };
+          if (webSearchEvent.item_id) {
+            setMessages((prev) =>
+              updateMessageById(prev, webSearchEvent.item_id!, (message) =>
+                message.type === "web_search_call"
+                  ? ({ ...message, status: "searching" } as unknown as Message)
+                  : message
+              )
+            );
+          }
+        } else if (eventType === "response.web_search_call.completed") {
+          const webSearchEvent = event as { item_id?: string };
+          if (webSearchEvent.item_id) {
+            setMessages((prev) =>
+              updateMessageById(prev, webSearchEvent.item_id!, (message) =>
+                message.type === "web_search_call"
+                  ? ({ ...message, status: "completed" } as unknown as Message)
+                  : message
+              )
+            );
+          }
+        } else if (eventType === "tool_call.created") {
+          const toolCallEvent = event as {
+            tool_call_id?: string;
+            name?: string;
+            arguments?: { query?: string };
+          };
+          if (toolCallEvent.tool_call_id) {
+            const toolCallItem: ToolCallItem = {
+              id: toolCallEvent.tool_call_id,
+              call_id: toolCallEvent.tool_call_id,
+              type: "tool_call",
+              name: toolCallEvent.name || "function",
+              arguments: JSON.stringify(toolCallEvent.arguments || {}),
+              status: "in_progress"
+            };
 
-        // Use item_id from event if available, otherwise fall back to serverReasoningId
-        const reasoningId = reasoningEvent.item_id || serverReasoningId;
+            setMessages((prev) => {
+              const existingToolCall = prev.find(
+                (message) => message.id === toolCallEvent.tool_call_id
+              );
 
-        if (reasoningId) {
-          setMessages((prev) => {
-            const itemToUpdate = prev.find((m) => m.id === reasoningId);
-            if (itemToUpdate && itemToUpdate.type === "reasoning") {
-              const updated: ReasoningItem = {
-                ...(itemToUpdate as ReasoningItem),
-                content: [{ type: "text", text: accumulatedReasoning }],
-                status: "streaming"
-              };
-              return mergeMessagesById(prev, [updated]);
-            }
-            return prev;
-          });
-        }
-      } else if (eventType === "response.reasoning_text.done") {
-        // Reasoning completed - finalize the reasoning item
-        const doneEvent = event as { text?: string; item_id?: string };
-        if (doneEvent.text) {
-          accumulatedReasoning = doneEvent.text;
-        }
+              if (existingToolCall && isToolCallItem(existingToolCall)) {
+                return mergeMessagesById(prev, [
+                  {
+                    ...existingToolCall,
+                    ...toolCallItem,
+                    status: existingToolCall.status || toolCallItem.status
+                  }
+                ]);
+              }
 
-        // Use item_id from event if available, otherwise fall back to serverReasoningId
-        const reasoningId = doneEvent.item_id || serverReasoningId;
+              return mergeMessagesById(prev, [toolCallItem]);
+            });
+          }
+        } else if (eventType === "tool_output.created") {
+          const toolOutputEvent = event as {
+            tool_output_id?: string;
+            tool_call_id?: string;
+            output?: string;
+          };
+          if (toolOutputEvent.tool_output_id && toolOutputEvent.tool_call_id) {
+            const toolOutputItem: ToolOutputItem = {
+              id: toolOutputEvent.tool_output_id,
+              call_id: toolOutputEvent.tool_call_id,
+              type: "tool_output",
+              output: toolOutputEvent.output || "",
+              status: "completed"
+            };
 
-        if (reasoningId) {
-          setMessages((prev) => {
-            const itemToUpdate = prev.find((m) => m.id === reasoningId);
-            if (itemToUpdate && itemToUpdate.type === "reasoning") {
-              const updated: ReasoningItem = {
-                ...(itemToUpdate as ReasoningItem),
-                content: [{ type: "text", text: accumulatedReasoning }],
-                status: "completed"
-              };
-              return mergeMessagesById(prev, [updated]);
-            }
-            return prev;
-          });
-        }
-      } else if (
-        eventType === "response.output_text.delta" &&
-        (event as { delta?: string }).delta
-      ) {
-        // Text delta - update the assistant message
-        const delta = (event as { delta: string }).delta;
-        accumulatedContent += delta;
+            setMessages((prev) => {
+              const existingToolOutput = prev.find(
+                (message) => message.id === toolOutputEvent.tool_output_id
+              );
+              const withOutput = mergeMessagesById(prev, [
+                existingToolOutput && isToolOutputItem(existingToolOutput)
+                  ? {
+                      ...existingToolOutput,
+                      ...toolOutputItem
+                    }
+                  : toolOutputItem
+              ]);
 
-        if (serverAssistantId) {
-          setMessages((prev) => {
-            const msgToUpdate = prev.find((m) => m.id === serverAssistantId);
-            if (msgToUpdate && msgToUpdate.type === "message") {
-              const message = msgToUpdate as unknown as ExtendedMessage;
-              const outputContent: OutputTextContent = {
-                type: "output_text",
-                text: accumulatedContent,
-                annotations: []
-              };
-              const updated = {
-                ...message,
-                content: [outputContent],
-                status: "streaming" as const
-              } as unknown as Message;
-              return mergeMessagesById(prev, [updated]);
-            }
-            return prev;
-          });
-        }
-      } else if (eventType === "response.output_item.done") {
-        // Handle completion for any item type (reasoning, message, etc.)
-        const doneEvent = event as { item?: { id?: string; type?: string } };
-        const itemId = doneEvent.item?.id;
+              return updateMessageById(withOutput, toolOutputEvent.tool_call_id!, (message) =>
+                isToolCallItem(message)
+                  ? ({ ...message, status: "completed" } as unknown as Message)
+                  : message
+              );
+            });
+          }
+        } else if (
+          eventType === "response.reasoning_text.delta" &&
+          (event as { delta?: string }).delta
+        ) {
+          const reasoningEvent = event as ResponseReasoningTextDeltaEvent;
+          const nextText = appendBufferedText(
+            reasoningTextBuffers,
+            reasoningEvent.item_id,
+            reasoningEvent.content_index,
+            reasoningEvent.delta
+          );
 
-        if (itemId) {
-          setMessages((prev) => {
-            const itemToUpdate = prev.find((m) => m.id === itemId);
-            if (itemToUpdate) {
-              const updated = {
-                ...itemToUpdate,
-                status: "completed"
-              } as unknown as Message;
-              return mergeMessagesById(prev, [updated]);
-            }
-            return prev;
-          });
-          // Update lastSeenItemId for polling (use the latest completed item)
-          setLastSeenItemId(itemId);
-        } else if (serverAssistantId) {
-          // Fallback to serverAssistantId if item.id not in event
-          setMessages((prev) => {
-            const msgToUpdate = prev.find((m) => m.id === serverAssistantId);
-            if (msgToUpdate) {
-              const updated = {
-                ...msgToUpdate,
-                status: "completed"
-              } as unknown as Message;
-              return mergeMessagesById(prev, [updated]);
-            }
-            return prev;
-          });
-          setLastSeenItemId(serverAssistantId);
+          setMessages((prev) =>
+            updateMessageById(prev, reasoningEvent.item_id, (message) =>
+              message.type === "reasoning"
+                ? upsertReasoningTextContent(
+                    message as ReasoningItem,
+                    reasoningEvent.content_index,
+                    nextText,
+                    "streaming"
+                  )
+                : message
+            )
+          );
+        } else if (eventType === "response.reasoning_text.done") {
+          const reasoningEvent = event as ResponseReasoningTextDoneEvent;
+          const nextText = setBufferedText(
+            reasoningTextBuffers,
+            reasoningEvent.item_id,
+            reasoningEvent.content_index,
+            reasoningEvent.text
+          );
+
+          setMessages((prev) =>
+            updateMessageById(prev, reasoningEvent.item_id, (message) =>
+              message.type === "reasoning"
+                ? upsertReasoningTextContent(
+                    message as ReasoningItem,
+                    reasoningEvent.content_index,
+                    nextText,
+                    "completed"
+                  )
+                : message
+            )
+          );
+        } else if (
+          eventType === "response.output_text.delta" &&
+          (event as { delta?: string }).delta
+        ) {
+          const textEvent = event as ResponseTextDeltaEvent;
+          const nextText = appendBufferedText(
+            messageTextBuffers,
+            textEvent.item_id,
+            textEvent.content_index,
+            textEvent.delta
+          );
+
+          setMessages((prev) =>
+            updateMessageById(prev, textEvent.item_id, (message) =>
+              message.type === "message"
+                ? (upsertAssistantTextContent(
+                    message as ExtendedMessage,
+                    textEvent.content_index,
+                    nextText,
+                    "streaming"
+                  ) as unknown as Message)
+                : message
+            )
+          );
+        } else if (eventType === "response.output_text.done") {
+          const textEvent = event as ResponseTextDoneEvent;
+          const nextText = setBufferedText(
+            messageTextBuffers,
+            textEvent.item_id,
+            textEvent.content_index,
+            textEvent.text
+          );
+
+          setMessages((prev) =>
+            updateMessageById(prev, textEvent.item_id, (message) =>
+              message.type === "message"
+                ? (upsertAssistantTextContent(
+                    message as ExtendedMessage,
+                    textEvent.content_index,
+                    nextText,
+                    "completed"
+                  ) as unknown as Message)
+                : message
+            )
+          );
+        } else if (eventType === "response.output_item.done") {
+          const doneEvent = event as ResponseOutputItemDoneEvent;
+          const item = normalizeConversationItem(doneEvent.item);
+
+          if (item) {
+            setMessages((prev) => mergeStreamingConversationItem(prev, item));
+            setLastSeenItemId(item.id);
+          }
+        } else if (eventType === "response.failed" || eventType === "error") {
+          console.error("Streaming error:", event);
+          setMessages((prev) => updateActiveItemStatuses(prev, "error"));
+          setError("Failed to generate response. Please try again.");
+        } else if (eventType === "response.cancelled") {
+          setMessages((prev) => updateActiveItemStatuses(prev, "incomplete"));
+          break;
         }
-      } else if (eventType === "response.failed" || eventType === "error") {
-        console.error("Streaming error:", event);
-        if (serverAssistantId) {
-          // Update status to error
-          setMessages((prev) => {
-            const msgToUpdate = prev.find((m) => m.id === serverAssistantId);
-            if (msgToUpdate) {
-              const updated = {
-                ...msgToUpdate,
-                status: "error"
-              } as unknown as Message;
-              return mergeMessagesById(prev, [updated]);
-            }
-            return prev;
-          });
-        }
-        setError("Failed to generate response. Please try again.");
-      } else if (eventType === "response.cancelled") {
-        if (serverAssistantId) {
-          // Update status to incomplete
-          setMessages((prev) => {
-            const msgToUpdate = prev.find((m) => m.id === serverAssistantId);
-            if (msgToUpdate) {
-              const updated = {
-                ...msgToUpdate,
-                status: "incomplete"
-              } as unknown as Message;
-              return mergeMessagesById(prev, [updated]);
-            }
-            return prev;
-          });
-        }
-        break;
       }
-    }
-  }, []);
+    },
+    [logStreamEvent]
+  );
 
   // Send message handler - now accepts optional override text for voice input
   const handleSendMessage = useCallback(
