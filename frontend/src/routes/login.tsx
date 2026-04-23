@@ -33,7 +33,7 @@ export const Route = createFileRoute("/login")({
   })
 });
 
-type LoginMethod = "email" | "github" | "google" | "apple" | "guest" | null;
+type LoginMethod = "email" | "github" | "google" | "apple" | "guest" | "paste-code" | null;
 
 function LoginPage() {
   const navigate = useNavigate();
@@ -43,9 +43,25 @@ function LoginPage() {
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
 
+  const [pasteCodeValue, setPasteCodeValue] = useState("");
+  const [oauthProvider, setOauthProvider] = useState<string | null>(null);
+  const [showPasteInput, setShowPasteInput] = useState(false);
+
   // Use platform detection functions
   const isIOSPlatform = isIOS();
   const isTauriEnv = isTauri();
+
+  // Show paste code input after a delay when auto-navigated from OAuth
+  useEffect(() => {
+    if (loginMethod === "paste-code" && oauthProvider) {
+      setShowPasteInput(false);
+      const timer = setTimeout(() => setShowPasteInput(true), 3000);
+      return () => clearTimeout(timer);
+    }
+    if (loginMethod === "paste-code" && !oauthProvider) {
+      setShowPasteInput(true);
+    }
+  }, [loginMethod, oauthProvider]);
 
   // Redirect if already logged in
   useEffect(() => {
@@ -105,6 +121,49 @@ function LoginPage() {
     }
   };
 
+  const handlePasteCode = async () => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      const decoded = atob(pasteCodeValue.trim());
+      const parsed = JSON.parse(decoded) as { access_token?: string; refresh_token?: string };
+
+      if (!parsed.access_token) {
+        throw new Error("Invalid login code: missing token");
+      }
+
+      // Store tokens in localStorage (clear old refresh token to prevent stale mismatch)
+      localStorage.setItem("access_token", parsed.access_token);
+      localStorage.removeItem("refresh_token");
+      if (parsed.refresh_token) {
+        localStorage.setItem("refresh_token", parsed.refresh_token);
+      }
+
+      // Clear any existing billing token
+      try {
+        getBillingService().clearToken();
+      } catch (billingError) {
+        console.warn("Failed to clear billing token:", billingError);
+      }
+
+      // Reload the app to pick up the new tokens
+      window.location.href = "/";
+    } catch (err) {
+      if (
+        err instanceof SyntaxError ||
+        (err instanceof DOMException && err.name === "InvalidCharacterError")
+      ) {
+        setError("Invalid login code. Please copy the code from the browser and try again.");
+      } else if (err instanceof Error) {
+        setError(err.message);
+      } else {
+        setError("Failed to process login code. Please try again.");
+      }
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const handleGitHubLogin = async () => {
     try {
       console.log("[OAuth] Using", isTauriEnv ? "Tauri" : "web", "flow");
@@ -130,6 +189,11 @@ function LoginPage() {
           console.error("[OAuth] Failed to open external browser:", error);
           setError("Failed to open authentication page in browser");
         });
+
+        // Navigate to paste-code screen so user sees it while browser is open
+        setError(null);
+        setOauthProvider("GitHub");
+        setLoginMethod("paste-code");
       } else {
         // Web flow remains unchanged
         const { auth_url } = await os.initiateGitHubAuth("");
@@ -175,6 +239,11 @@ function LoginPage() {
           console.error("[OAuth] Failed to open external browser:", error);
           setError("Failed to open authentication page in browser");
         });
+
+        // Navigate to paste-code screen so user sees it while browser is open
+        setError(null);
+        setOauthProvider("Google");
+        setLoginMethod("paste-code");
       } else {
         // Web flow remains unchanged
         const { auth_url } = await os.initiateGoogleAuth("");
@@ -342,6 +411,11 @@ function LoginPage() {
           console.error("[OAuth] Failed to open external browser:", error);
           setError("Failed to open authentication page in browser");
         });
+
+        // Navigate to paste-code screen so user sees it while browser is open
+        setError(null);
+        setOauthProvider("Apple");
+        setLoginMethod("paste-code");
       } else {
         // Web flow - use AppleAuthProvider component which will initiate the flow
         console.log("[OAuth] Using web flow for Apple Sign In (Web only)");
@@ -403,6 +477,79 @@ function LoginPage() {
             Sign Up
           </Link>
         </div>
+      </AuthMain>
+    );
+  }
+
+  if (loginMethod === "paste-code") {
+    return (
+      <AuthMain
+        title={oauthProvider ? `Logging in with ${oauthProvider}` : "Paste Login Code"}
+        description={
+          oauthProvider
+            ? `Complete your ${oauthProvider} login in the browser that just opened.`
+            : "Paste the code from your browser to complete authentication."
+        }
+      >
+        {oauthProvider && !showPasteInput && (
+          <div className="flex justify-center py-4">
+            <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+          </div>
+        )}
+        {error && <AlertDestructive title="Error" description={error} />}
+        {showPasteInput && (
+          <>
+            {oauthProvider && (
+              <p className="text-sm text-muted-foreground text-center">
+                Having trouble? Paste the login code from the browser below.
+              </p>
+            )}
+            <div className="grid gap-2">
+              <Label htmlFor="auth-code">Login Code</Label>
+              <Input
+                id="auth-code"
+                type="text"
+                placeholder="Paste your login code here"
+                value={pasteCodeValue}
+                onChange={(e) => setPasteCodeValue(e.target.value)}
+                className="font-mono text-xs"
+                autoFocus
+              />
+              <p className="text-xs text-muted-foreground">
+                After signing in with your browser, copy the code shown on the success page and
+                paste it here.
+              </p>
+            </div>
+            <Button
+              onClick={handlePasteCode}
+              className="w-full"
+              disabled={isLoading || !pasteCodeValue.trim()}
+            >
+              {isLoading ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Verifying...
+                </>
+              ) : (
+                "Complete Login"
+              )}
+            </Button>
+          </>
+        )}
+        <Button
+          type="button"
+          variant="outline"
+          onClick={() => {
+            setLoginMethod(null);
+            setOauthProvider(null);
+            setPasteCodeValue("");
+            setShowPasteInput(false);
+            setError(null);
+          }}
+          className="w-full"
+        >
+          Back
+        </Button>
       </AuthMain>
     );
   }
