@@ -12,7 +12,7 @@ export {
 } from "./LocalStateContextDef";
 
 export const DEFAULT_MODEL_ID = "gpt-oss-120b";
-export const PAID_DEFAULT_MODEL_ID = "kimi-k2-5";
+export const PAID_DEFAULT_MODEL_ID = "kimi-k2-6";
 
 // Check if a plan name corresponds to a pro/max/team plan
 function isProMaxOrTeamPlan(planName: string): boolean {
