@@ -664,44 +664,16 @@
   background-color: var(--color-canvas-subtle);
 }
 
-/* Chat markdown tables (ResponsiveTable): horizontal rules, Maple tokens, full width + wrap */
+/* Chat markdown tables (ResponsiveTable): Maple tokens with intrinsic column sizing */
 .markdown-body table.markdown-table-maple {
   display: table;
-  table-layout: fixed;
-  width: 100%;
-  max-width: 100%;
-  min-width: 0;
+  table-layout: auto;
+  width: max-content;
+  max-width: none;
   background-color: transparent;
   box-shadow: none;
   border: none;
   border-radius: 0;
-}
-
-.markdown-body table.markdown-table-maple thead th,
-.markdown-body table.markdown-table-maple tbody td,
-.markdown-body table.markdown-table-maple tbody th {
-  min-width: 0;
-  overflow-wrap: break-word;
-  word-break: break-word;
-}
-
-/* Slightly wider label column on small screens */
-@media (max-width: 767px) {
-  .markdown-body table.markdown-table-maple th:first-child,
-  .markdown-body table.markdown-table-maple td:first-child {
-    padding-left: 0;
-    width: 34%;
-    max-width: 11rem;
-  }
-}
-
-@media (min-width: 768px) {
-  .markdown-body table.markdown-table-maple th:first-child,
-  .markdown-body table.markdown-table-maple td:first-child {
-    padding-left: 0;
-    width: 22%;
-    max-width: 10.5rem;
-  }
 }
 
 .markdown-body table.markdown-table-maple thead th {
@@ -713,7 +685,6 @@
   border: none;
   border-bottom: 1px solid hsl(var(--maple-secondary) / 0.2);
   background-color: transparent;
-  max-width: none;
 }
 
 .markdown-body table.markdown-table-maple tbody td,
@@ -726,10 +697,9 @@
   border: none;
   border-bottom: 1px solid hsl(var(--maple-secondary-container));
   background-color: transparent;
-  max-width: none;
 }
 
-/* First column flush left (base); width caps only on md+ above */
+/* First column flush left */
 .markdown-body table.markdown-table-maple th:first-child,
 .markdown-body table.markdown-table-maple td:first-child {
   padding-left: 0;
