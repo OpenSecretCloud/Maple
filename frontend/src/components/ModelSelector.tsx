@@ -47,6 +47,13 @@ export const MODEL_CONFIG: Record<string, ModelCfg> = {
     requiresPro: true,
     tokenLimit: 202000
   },
+  "deepseek-v4-pro": {
+    displayName: "DeepSeek V4 Pro",
+    shortName: "DeepSeek V4 Pro",
+    badges: ["Pro", "New", "Reasoning"],
+    requiresPro: true,
+    tokenLimit: 256000
+  },
   "kimi-k2-5": {
     displayName: "Kimi K2.5",
     shortName: "Kimi K2.5",
