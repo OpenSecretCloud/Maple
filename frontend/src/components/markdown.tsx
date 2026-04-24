@@ -274,18 +274,68 @@ function ResponsiveTable({ children, className, ...rest }: JSX.IntrinsicElements
   // Strip off props added by react-markdown that the DOM doesn't understand
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const { node, inline, ...safeRest } = rest as Record<string, unknown>;
+  const tableProps = safeRest as JSX.IntrinsicElements["table"];
+  const tableStyle = {
+    ...(tableProps.style ?? {}),
+    minWidth: "max-content"
+  };
+
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [canScrollLeft, setCanScrollLeft] = useState(false);
+  const [canScrollRight, setCanScrollRight] = useState(false);
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+
+    const checkScroll = () => {
+      const { scrollLeft, scrollWidth, clientWidth } = el;
+      setCanScrollLeft(scrollLeft > 0);
+      setCanScrollRight(scrollLeft + clientWidth < scrollWidth - 1);
+    };
+
+    const frameId = window.requestAnimationFrame(checkScroll);
+
+    el.addEventListener("scroll", checkScroll, { passive: true });
+    window.addEventListener("resize", checkScroll);
+
+    let resizeObserver: ResizeObserver | undefined;
+    if (typeof ResizeObserver !== "undefined") {
+      resizeObserver = new ResizeObserver(checkScroll);
+      resizeObserver.observe(el);
+      const tableEl = el.querySelector("table");
+      if (tableEl) {
+        resizeObserver.observe(tableEl);
+      }
+    }
+
+    return () => {
+      window.cancelAnimationFrame(frameId);
+      el.removeEventListener("scroll", checkScroll);
+      window.removeEventListener("resize", checkScroll);
+      resizeObserver?.disconnect();
+    };
+  }, [children]);
 
   return (
-    <div className="my-4 w-full min-w-0 max-w-none self-stretch">
+    <div className="relative my-4 -mx-4 px-4">
+      {canScrollLeft && (
+        <div className="pointer-events-none absolute bottom-0 left-[15px] top-0 z-10 w-8 bg-gradient-to-r from-background via-background/85 to-transparent" />
+      )}
+      {canScrollRight && (
+        <div className="pointer-events-none absolute bottom-0 right-[15px] top-0 z-10 w-8 bg-gradient-to-l from-background via-background/85 to-transparent" />
+      )}
       <div
+        ref={scrollRef}
         className={cn(
-          "block w-full min-w-0 overflow-x-auto overflow-y-visible overscroll-x-contain",
+          "overflow-x-auto overflow-y-visible overscroll-x-contain",
           "[-webkit-overflow-scrolling:touch]"
         )}
       >
         <table
-          className={cn("markdown-table-maple w-full min-w-0", className || "")}
-          {...(safeRest as object)}
+          {...tableProps}
+          className={cn("markdown-table-maple", className || "")}
+          style={tableStyle}
         >
           {children}
         </table>
