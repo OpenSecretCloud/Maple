@@ -167,6 +167,18 @@ jobs:
               libayatana-appindicator3-dev \
               librsvg2-dev
 
+      - name: Provide ONNX Runtime (Linux)
+        run: |
+          ORT_VERSION=1.22.0
+          ORT_ROOT="$RUNNER_TEMP/onnxruntime"
+          mkdir -p "$ORT_ROOT"
+          curl -fL --retry 5 --retry-delay 2 --retry-all-errors \
+            "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-linux-x64-${ORT_VERSION}.tgz" \
+            | tar -xz -C "$ORT_ROOT"
+          echo "ORT_LIB_LOCATION=$ORT_ROOT/onnxruntime-linux-x64-${ORT_VERSION}" >> "$GITHUB_ENV"
+          echo "ORT_SKIP_DOWNLOAD=true" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$ORT_ROOT/onnxruntime-linux-x64-${ORT_VERSION}/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
+
       - name: Install frontend dependencies
         working-directory: ./frontend
         run: bun install
@@ -191,8 +203,10 @@ jobs:
 
       - name: Build Tauri App (Linux)
         working-directory: ./frontend
-        run: cargo tauri build
+        run: cargo tauri build --verbose
         env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+          NO_STRIP: true
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           VITE_OPEN_SECRET_API_URL: ${{ github.event_name == 'pull_request' && 'https://enclave.secretgpt.ai' || 'https://enclave.trymaple.ai' }}

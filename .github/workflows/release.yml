@@ -33,7 +33,7 @@ jobs:
           - platform: macos-latest-xlarge
             args: --target universal-apple-darwin
           - platform: ubuntu-latest-8-cores
-            args: ""
+            args: --verbose
 
     runs-on: ${{ matrix.platform }}
     steps:
@@ -97,6 +97,19 @@ jobs:
               libayatana-appindicator3-dev \
               librsvg2-dev
 
+      - name: Provide ONNX Runtime (Linux)
+        if: matrix.platform == 'ubuntu-latest-8-cores'
+        run: |
+          ORT_VERSION=1.22.0
+          ORT_ROOT="$RUNNER_TEMP/onnxruntime"
+          mkdir -p "$ORT_ROOT"
+          curl -fL --retry 5 --retry-delay 2 --retry-all-errors \
+            "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-linux-x64-${ORT_VERSION}.tgz" \
+            | tar -xz -C "$ORT_ROOT"
+          echo "ORT_LIB_LOCATION=$ORT_ROOT/onnxruntime-linux-x64-${ORT_VERSION}" >> "$GITHUB_ENV"
+          echo "ORT_SKIP_DOWNLOAD=true" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$ORT_ROOT/onnxruntime-linux-x64-${ORT_VERSION}/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
+
       - name: Install frontend dependencies
         working-directory: ./frontend
         run: bun install
@@ -111,6 +124,8 @@ jobs:
       - name: Build Tauri App
         uses: tauri-apps/tauri-action@v0
         env:
+          APPIMAGE_EXTRACT_AND_RUN: ${{ matrix.platform == 'ubuntu-latest-8-cores' && '1' || '' }}
+          NO_STRIP: ${{ matrix.platform == 'ubuntu-latest-8-cores' && 'true' || '' }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
