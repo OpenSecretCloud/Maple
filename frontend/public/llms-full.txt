@@ -53,7 +53,7 @@ Compared to ChatGPT, Claude, Gemini, Grok, and other AI services:
 All plans include end-to-end encrypted AI chat. Bitcoin payments accepted with a 10% annual discount.
 
 - **Free** ($0/month): end-to-end encryption, core AI features, search chat history, rename chats, GPT-OSS 120B and Meta Llama 3.3 70B
-- **Pro** ($20/month, most popular): All Free features plus generous usage, image upload, document upload (PDF/TXT/MD), voice recording (Whisper Large v3), powerful models including Gemma 4 31B and Kimi K2.5, live web search, API access
+- **Pro** ($20/month, most popular): All Free features plus generous usage, image upload, document upload (PDF/TXT/MD), voice recording (Whisper Large v3), powerful models including Gemma 4 31B and Kimi K2.6, live web search, API access
 - **Max** ($100/month): All Pro features plus 20x more usage, priority support, early access to new features and models, API access
 - **Team** ($30/month per seat): All Pro features plus 2x more usage per member, pooled chat credits across the team, priority support, unified billing, early access, API access. Minimum 2 seats.
 
@@ -61,7 +61,7 @@ All plans include end-to-end encrypted AI chat. Bitcoin payments accepted with a
 
 All models run inside secure enclaves with zero data retention. None of your data is transmitted to the companies that created these models.
 
-**Kimi K2.5** (by Moonshot AI)
+**Kimi K2.6** (by Moonshot AI)
 - 1 trillion total parameters, 32 billion active per query (Mixture of Experts architecture)
 - 256K context window
 - Best for: Advanced reasoning, coding, research, multi-step agentic tasks, image analysis
@@ -104,7 +104,7 @@ Chats sync automatically between web, desktop, and mobile devices using an encry
 Upload files for AI analysis, summarization, or explanation. Supported formats: PDF, TXT, MD. Max file size: 10MB. One file per reply. Files are encrypted before upload and processed inside secure enclaves.
 
 **Image Upload**
-Upload images (JPG, PNG, WEBP) for analysis, text extraction, translation, and visual understanding. Available with Gemma 4, Qwen3-VL, and Kimi K2.5.
+Upload images (JPG, PNG, WEBP) for analysis, text extraction, translation, and visual understanding. Available with Gemma 4, Qwen3-VL, and Kimi K2.6.
 
 **Voice Input and Output**
 Tap the microphone icon to speak naturally. Audio is encrypted before leaving your device. Speech-to-text uses Whisper (OpenAI's open-source model) running in a secure enclave. Maple responds with both text and natural speech. The natural speech is generated locally on-device. Zero audio retention.
@@ -163,7 +163,7 @@ All pricing is pay-as-you-go. Purchase credits in $10 increments.
 |---|---|
 | llama3-3-70b | $4 input / $4 output |
 | gpt-oss-120b | $4 input / $4 output |
-| kimi-k2-5 | $4 input / $4 output |
+| kimi-k2-6 | $4 input / $4 output |
 | qwen3-vl-30b | $4 input / $4 output |
 
 ### Getting Started

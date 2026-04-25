@@ -25,7 +25,7 @@ const AI_MODELS = [
   {
     src: "/badge-kimi-logo.png",
     alt: "Moonshot",
-    labels: ["Kimi K2.5"]
+    labels: ["Kimi K2.6"]
   },
   { src: "/badge-zai-logo.png", alt: "Z.ai", labels: ["GLM 5.1"] },
   { src: "/badge-qwen-logo.png", alt: "Qwen", labels: ["Qwen3-VL"] },

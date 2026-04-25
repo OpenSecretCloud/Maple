@@ -215,7 +215,7 @@ We keep it open so anyone can review and verify our security claims.
 **Answer:**
 - **Free tier:** GPT-OSS 120B, Llama 3.3 70B
 - **Legacy Starter+ tier:** Gemma 4 31B (reasoning, vision), Qwen3-VL 30B (vision)
-- **Pro+ tier:** Kimi K2.5 (reasoning, vision)
+- **Pro+ tier:** Kimi K2.6 (reasoning, vision)
 
 None of your data is transmitted to model providers - everything stays within secure enclaves.
 

@@ -26,7 +26,7 @@ Key differentiators from ChatGPT, Claude, Gemini, and Grok:
 - [Model Guide](https://blog.trymaple.ai/maple-ai-model-guide-with-example-prompts/): Detailed guide to all available models with example prompts and use cases.
 
 Available models (all running inside secure enclaves with zero data retention):
-- Kimi K2.5 (1T params, 32B active per query, MoE architecture, 256K context) — advanced reasoning, coding, research, image analysis
+- Kimi K2.6 (1T params, 32B active per query, MoE architecture, 256K context) — advanced reasoning, coding, research, image analysis
 - Gemma 4 31B (256K context) — reasoning, long-context work, image analysis
 - OpenAI GPT-OSS 120B (128K context) — creative chat, structured data
 - Meta Llama 3.3 70B (128K context) — general reasoning, daily tasks (available on Free plan)
@@ -74,7 +74,7 @@ Security architecture: AWS Nitro Enclaves for backend processing, NVIDIA GPU TEE
 
 - [One Year of Private AI](https://blog.trymaple.ai/one-year-of-private-ai-how-maple-ai-made-encryption-easy/): Retrospective on Maple's first year — 5x user growth, 90%+ paying customer retention, and the mission ahead.
 - [Maple 2.0 - Now with Live Data](https://blog.trymaple.ai/maple-2-0-now-with-live-data/): Live web search, anonymous accounts, custom AI personality, and background processing.
-- [Kimi K2.5 in Maple AI](https://blog.trymaple.ai/kimi-k2-in-maple-ai-open-reasoning-that-competes-with-chatgpt-and-claude/): Open reasoning model that competes with GPT-5 and Claude Sonnet 4.5.
+- [Kimi K2.6 in Maple AI](https://blog.trymaple.ai/kimi-k2-in-maple-ai-open-reasoning-that-competes-with-chatgpt-and-claude/): Open reasoning model that competes with GPT-5 and Claude Sonnet 4.5.
 - [Encrypted Voice in Maple](https://blog.trymaple.ai/speak-freely-encrypted-voice-arrives-in-maple/): Voice input and output with end-to-end encryption.
 - [Document and Image Upload](https://blog.trymaple.ai/introducing-confidential-document-and-image-upload-in-maple-ai/): Confidential document and image analysis.
 - [Introducing Maple Proxy](https://blog.trymaple.ai/introducing-maple-proxy-the-maple-ai-api-that-brings-encrypted-llms-to-your-openai-apps/): OpenAI-compatible encrypted API for developers.

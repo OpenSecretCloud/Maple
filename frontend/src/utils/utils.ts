@@ -79,9 +79,10 @@ export const LLAMA_MODEL_ID = "llama3-3-70b";
 const MODEL_NAME_ALIASES: Record<string, string> = {
   "llama-3.3-70b": LLAMA_MODEL_ID,
   "gemma-3-27b": "gemma4-31b",
-  "deepseek-r1-0528": "kimi-k2-5",
-  "kimi-k2": "kimi-k2-5",
-  "kimi-k2-thinking": "kimi-k2-5"
+  "deepseek-r1-0528": "kimi-k2-6",
+  "kimi-k2": "kimi-k2-6",
+  "kimi-k2-thinking": "kimi-k2-6",
+  "kimi-k2-5": "kimi-k2-6"
 };
 
 export function aliasModelName(modelName: string | undefined): string {
