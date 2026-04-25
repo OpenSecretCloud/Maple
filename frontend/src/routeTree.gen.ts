@@ -8,339 +8,136 @@
 // You should NOT make any changes in this file as it will be overwritten.
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
-// Import Routes
+import { Route as rootRouteImport } from './routes/__root'
+import { Route as TermsRouteImport } from './routes/terms'
+import { Route as TeamsRouteImport } from './routes/teams'
+import { Route as SignupRouteImport } from './routes/signup'
+import { Route as RedeemRouteImport } from './routes/redeem'
+import { Route as ProofRouteImport } from './routes/proof'
+import { Route as PrivacyRouteImport } from './routes/privacy'
+import { Route as PricingRouteImport } from './routes/pricing'
+import { Route as PaymentSuccessRouteImport } from './routes/payment-success'
+import { Route as PaymentCanceledRouteImport } from './routes/payment-canceled'
+import { Route as PasswordResetRouteImport } from './routes/password-reset'
+import { Route as LoginRouteImport } from './routes/login'
+import { Route as DownloadsRouteImport } from './routes/downloads'
+import { Route as DesktopAuthRouteImport } from './routes/desktop-auth'
+import { Route as AboutRouteImport } from './routes/about'
+import { Route as AuthRouteImport } from './routes/_auth'
+import { Route as IndexRouteImport } from './routes/index'
+import { Route as VerifyCodeRouteImport } from './routes/verify.$code'
+import { Route as PasswordResetConfirmRouteImport } from './routes/password-reset.confirm'
+import { Route as TeamInviteInviteIdRouteImport } from './routes/team.invite.$inviteId'
+import { Route as AuthProviderCallbackRouteImport } from './routes/auth.$provider.callback'
+import { Route as AuthChatChatIdRouteImport } from './routes/_auth.chat.$chatId'
 
-import { Route as rootRoute } from './routes/__root'
-import { Route as TermsImport } from './routes/terms'
-import { Route as TeamsImport } from './routes/teams'
-import { Route as SignupImport } from './routes/signup'
-import { Route as RedeemImport } from './routes/redeem'
-import { Route as ProofImport } from './routes/proof'
-import { Route as PrivacyImport } from './routes/privacy'
-import { Route as PricingImport } from './routes/pricing'
-import { Route as PaymentSuccessImport } from './routes/payment-success'
-import { Route as PaymentCanceledImport } from './routes/payment-canceled'
-import { Route as PasswordResetImport } from './routes/password-reset'
-import { Route as LoginImport } from './routes/login'
-import { Route as DownloadsImport } from './routes/downloads'
-import { Route as DesktopAuthImport } from './routes/desktop-auth'
-import { Route as AboutImport } from './routes/about'
-import { Route as AuthImport } from './routes/_auth'
-import { Route as IndexImport } from './routes/index'
-import { Route as VerifyCodeImport } from './routes/verify.$code'
-import { Route as PasswordResetConfirmImport } from './routes/password-reset.confirm'
-import { Route as TeamInviteInviteIdImport } from './routes/team.invite.$inviteId'
-import { Route as AuthProviderCallbackImport } from './routes/auth.$provider.callback'
-import { Route as AuthChatChatIdImport } from './routes/_auth.chat.$chatId'
-
-// Create/Update Routes
-
-const TermsRoute = TermsImport.update({
+const TermsRoute = TermsRouteImport.update({
   id: '/terms',
   path: '/terms',
-  getParentRoute: () => rootRoute,
+  getParentRoute: () => rootRouteImport,
 } as any)
-
-const TeamsRoute = TeamsImport.update({
+const TeamsRoute = TeamsRouteImport.update({
   id: '/teams',
   path: '/teams',
-  getParentRoute: () => rootRoute,
+  getParentRoute: () => rootRouteImport,
 } as any)
-
-const SignupRoute = SignupImport.update({
+const SignupRoute = SignupRouteImport.update({
   id: '/signup',
   path: '/signup',
-  getParentRoute: () => rootRoute,
+  getParentRoute: () => rootRouteImport,
 } as any)
-
-const RedeemRoute = RedeemImport.update({
+const RedeemRoute = RedeemRouteImport.update({
   id: '/redeem',
   path: '/redeem',
-  getParentRoute: () => rootRoute,
+  getParentRoute: () => rootRouteImport,
 } as any)
-
-const ProofRoute = ProofImport.update({
+const ProofRoute = ProofRouteImport.update({
   id: '/proof',
   path: '/proof',
-  getParentRoute: () => rootRoute,
+  getParentRoute: () => rootRouteImport,
 } as any)
-
-const PrivacyRoute = PrivacyImport.update({
+const PrivacyRoute = PrivacyRouteImport.update({
   id: '/privacy',
   path: '/privacy',
-  getParentRoute: () => rootRoute,
+  getParentRoute: () => rootRouteImport,
 } as any)
-
-const PricingRoute = PricingImport.update({
+const PricingRoute = PricingRouteImport.update({
   id: '/pricing',
   path: '/pricing',
-  getParentRoute: () => rootRoute,
+  getParentRoute: () => rootRouteImport,
 } as any)
-
-const PaymentSuccessRoute = PaymentSuccessImport.update({
+const PaymentSuccessRoute = PaymentSuccessRouteImport.update({
   id: '/payment-success',
   path: '/payment-success',
-  getParentRoute: () => rootRoute,
+  getParentRoute: () => rootRouteImport,
 } as any)
-
-const PaymentCanceledRoute = PaymentCanceledImport.update({
+const PaymentCanceledRoute = PaymentCanceledRouteImport.update({
   id: '/payment-canceled',
   path: '/payment-canceled',
-  getParentRoute: () => rootRoute,
+  getParentRoute: () => rootRouteImport,
 } as any)
-
-const PasswordResetRoute = PasswordResetImport.update({
+const PasswordResetRoute = PasswordResetRouteImport.update({
   id: '/password-reset',
   path: '/password-reset',
-  getParentRoute: () => rootRoute,
+  getParentRoute: () => rootRouteImport,
 } as any)
-
-const LoginRoute = LoginImport.update({
+const LoginRoute = LoginRouteImport.update({
   id: '/login',
   path: '/login',
-  getParentRoute: () => rootRoute,
+  getParentRoute: () => rootRouteImport,
 } as any)
-
-const DownloadsRoute = DownloadsImport.update({
+const DownloadsRoute = DownloadsRouteImport.update({
   id: '/downloads',
   path: '/downloads',
-  getParentRoute: () => rootRoute,
+  getParentRoute: () => rootRouteImport,
 } as any)
-
-const DesktopAuthRoute = DesktopAuthImport.update({
+const DesktopAuthRoute = DesktopAuthRouteImport.update({
   id: '/desktop-auth',
   path: '/desktop-auth',
-  getParentRoute: () => rootRoute,
+  getParentRoute: () => rootRouteImport,
 } as any)
-
-const AboutRoute = AboutImport.update({
+const AboutRoute = AboutRouteImport.update({
   id: '/about',
   path: '/about',
-  getParentRoute: () => rootRoute,
+  getParentRoute: () => rootRouteImport,
 } as any)
-
-const AuthRoute = AuthImport.update({
+const AuthRoute = AuthRouteImport.update({
   id: '/_auth',
-  getParentRoute: () => rootRoute,
+  getParentRoute: () => rootRouteImport,
 } as any)
-
-const IndexRoute = IndexImport.update({
+const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
-  getParentRoute: () => rootRoute,
+  getParentRoute: () => rootRouteImport,
 } as any)
-
-const VerifyCodeRoute = VerifyCodeImport.update({
+const VerifyCodeRoute = VerifyCodeRouteImport.update({
   id: '/verify/$code',
   path: '/verify/$code',
-  getParentRoute: () => rootRoute,
+  getParentRoute: () => rootRouteImport,
 } as any)
-
-const PasswordResetConfirmRoute = PasswordResetConfirmImport.update({
+const PasswordResetConfirmRoute = PasswordResetConfirmRouteImport.update({
   id: '/confirm',
   path: '/confirm',
   getParentRoute: () => PasswordResetRoute,
 } as any)
-
-const TeamInviteInviteIdRoute = TeamInviteInviteIdImport.update({
+const TeamInviteInviteIdRoute = TeamInviteInviteIdRouteImport.update({
   id: '/team/invite/$inviteId',
   path: '/team/invite/$inviteId',
-  getParentRoute: () => rootRoute,
+  getParentRoute: () => rootRouteImport,
 } as any)
-
-const AuthProviderCallbackRoute = AuthProviderCallbackImport.update({
+const AuthProviderCallbackRoute = AuthProviderCallbackRouteImport.update({
   id: '/auth/$provider/callback',
   path: '/auth/$provider/callback',
-  getParentRoute: () => rootRoute,
+  getParentRoute: () => rootRouteImport,
 } as any)
-
-const AuthChatChatIdRoute = AuthChatChatIdImport.update({
+const AuthChatChatIdRoute = AuthChatChatIdRouteImport.update({
   id: '/chat/$chatId',
   path: '/chat/$chatId',
   getParentRoute: () => AuthRoute,
 } as any)
 
-// Populate the FileRoutesByPath interface
-
-declare module '@tanstack/react-router' {
-  interface FileRoutesByPath {
-    '/': {
-      id: '/'
-      path: '/'
-      fullPath: '/'
-      preLoaderRoute: typeof IndexImport
-      parentRoute: typeof rootRoute
-    }
-    '/_auth': {
-      id: '/_auth'
-      path: ''
-      fullPath: ''
-      preLoaderRoute: typeof AuthImport
-      parentRoute: typeof rootRoute
-    }
-    '/about': {
-      id: '/about'
-      path: '/about'
-      fullPath: '/about'
-      preLoaderRoute: typeof AboutImport
-      parentRoute: typeof rootRoute
-    }
-    '/desktop-auth': {
-      id: '/desktop-auth'
-      path: '/desktop-auth'
-      fullPath: '/desktop-auth'
-      preLoaderRoute: typeof DesktopAuthImport
-      parentRoute: typeof rootRoute
-    }
-    '/downloads': {
-      id: '/downloads'
-      path: '/downloads'
-      fullPath: '/downloads'
-      preLoaderRoute: typeof DownloadsImport
-      parentRoute: typeof rootRoute
-    }
-    '/login': {
-      id: '/login'
-      path: '/login'
-      fullPath: '/login'
-      preLoaderRoute: typeof LoginImport
-      parentRoute: typeof rootRoute
-    }
-    '/password-reset': {
-      id: '/password-reset'
-      path: '/password-reset'
-      fullPath: '/password-reset'
-      preLoaderRoute: typeof PasswordResetImport
-      parentRoute: typeof rootRoute
-    }
-    '/payment-canceled': {
-      id: '/payment-canceled'
-      path: '/payment-canceled'
-      fullPath: '/payment-canceled'
-      preLoaderRoute: typeof PaymentCanceledImport
-      parentRoute: typeof rootRoute
-    }
-    '/payment-success': {
-      id: '/payment-success'
-      path: '/payment-success'
-      fullPath: '/payment-success'
-      preLoaderRoute: typeof PaymentSuccessImport
-      parentRoute: typeof rootRoute
-    }
-    '/pricing': {
-      id: '/pricing'
-      path: '/pricing'
-      fullPath: '/pricing'
-      preLoaderRoute: typeof PricingImport
-      parentRoute: typeof rootRoute
-    }
-    '/privacy': {
-      id: '/privacy'
-      path: '/privacy'
-      fullPath: '/privacy'
-      preLoaderRoute: typeof PrivacyImport
-      parentRoute: typeof rootRoute
-    }
-    '/proof': {
-      id: '/proof'
-      path: '/proof'
-      fullPath: '/proof'
-      preLoaderRoute: typeof ProofImport
-      parentRoute: typeof rootRoute
-    }
-    '/redeem': {
-      id: '/redeem'
-      path: '/redeem'
-      fullPath: '/redeem'
-      preLoaderRoute: typeof RedeemImport
-      parentRoute: typeof rootRoute
-    }
-    '/signup': {
-      id: '/signup'
-      path: '/signup'
-      fullPath: '/signup'
-      preLoaderRoute: typeof SignupImport
-      parentRoute: typeof rootRoute
-    }
-    '/teams': {
-      id: '/teams'
-      path: '/teams'
-      fullPath: '/teams'
-      preLoaderRoute: typeof TeamsImport
-      parentRoute: typeof rootRoute
-    }
-    '/terms': {
-      id: '/terms'
-      path: '/terms'
-      fullPath: '/terms'
-      preLoaderRoute: typeof TermsImport
-      parentRoute: typeof rootRoute
-    }
-    '/password-reset/confirm': {
-      id: '/password-reset/confirm'
-      path: '/confirm'
-      fullPath: '/password-reset/confirm'
-      preLoaderRoute: typeof PasswordResetConfirmImport
-      parentRoute: typeof PasswordResetImport
-    }
-    '/verify/$code': {
-      id: '/verify/$code'
-      path: '/verify/$code'
-      fullPath: '/verify/$code'
-      preLoaderRoute: typeof VerifyCodeImport
-      parentRoute: typeof rootRoute
-    }
-    '/_auth/chat/$chatId': {
-      id: '/_auth/chat/$chatId'
-      path: '/chat/$chatId'
-      fullPath: '/chat/$chatId'
-      preLoaderRoute: typeof AuthChatChatIdImport
-      parentRoute: typeof AuthImport
-    }
-    '/auth/$provider/callback': {
-      id: '/auth/$provider/callback'
-      path: '/auth/$provider/callback'
-      fullPath: '/auth/$provider/callback'
-      preLoaderRoute: typeof AuthProviderCallbackImport
-      parentRoute: typeof rootRoute
-    }
-    '/team/invite/$inviteId': {
-      id: '/team/invite/$inviteId'
-      path: '/team/invite/$inviteId'
-      fullPath: '/team/invite/$inviteId'
-      preLoaderRoute: typeof TeamInviteInviteIdImport
-      parentRoute: typeof rootRoute
-    }
-  }
-}
-
-// Create and export the route tree
-
-interface AuthRouteChildren {
-  AuthChatChatIdRoute: typeof AuthChatChatIdRoute
-}
-
-const AuthRouteChildren: AuthRouteChildren = {
-  AuthChatChatIdRoute: AuthChatChatIdRoute,
-}
-
-const AuthRouteWithChildren = AuthRoute._addFileChildren(AuthRouteChildren)
-
-interface PasswordResetRouteChildren {
-  PasswordResetConfirmRoute: typeof PasswordResetConfirmRoute
-}
-
-const PasswordResetRouteChildren: PasswordResetRouteChildren = {
-  PasswordResetConfirmRoute: PasswordResetConfirmRoute,
-}
-
-const PasswordResetRouteWithChildren = PasswordResetRoute._addFileChildren(
-  PasswordResetRouteChildren,
-)
-
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
-  '': typeof AuthRouteWithChildren
   '/about': typeof AboutRoute
   '/desktop-auth': typeof DesktopAuthRoute
   '/downloads': typeof DownloadsRoute
@@ -361,10 +158,8 @@ export interface FileRoutesByFullPath {
   '/auth/$provider/callback': typeof AuthProviderCallbackRoute
   '/team/invite/$inviteId': typeof TeamInviteInviteIdRoute
 }
-
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
-  '': typeof AuthRouteWithChildren
   '/about': typeof AboutRoute
   '/desktop-auth': typeof DesktopAuthRoute
   '/downloads': typeof DownloadsRoute
@@ -385,9 +180,8 @@ export interface FileRoutesByTo {
   '/auth/$provider/callback': typeof AuthProviderCallbackRoute
   '/team/invite/$inviteId': typeof TeamInviteInviteIdRoute
 }
-
 export interface FileRoutesById {
-  __root__: typeof rootRoute
+  __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/_auth': typeof AuthRouteWithChildren
   '/about': typeof AboutRoute
@@ -410,12 +204,10 @@ export interface FileRoutesById {
   '/auth/$provider/callback': typeof AuthProviderCallbackRoute
   '/team/invite/$inviteId': typeof TeamInviteInviteIdRoute
 }
-
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
-    | ''
     | '/about'
     | '/desktop-auth'
     | '/downloads'
@@ -438,7 +230,6 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
-    | ''
     | '/about'
     | '/desktop-auth'
     | '/downloads'
@@ -483,7 +274,6 @@ export interface FileRouteTypes {
     | '/team/invite/$inviteId'
   fileRoutesById: FileRoutesById
 }
-
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AuthRoute: typeof AuthRouteWithChildren
@@ -506,6 +296,180 @@ export interface RootRouteChildren {
   TeamInviteInviteIdRoute: typeof TeamInviteInviteIdRoute
 }
 
+declare module '@tanstack/react-router' {
+  interface FileRoutesByPath {
+    '/terms': {
+      id: '/terms'
+      path: '/terms'
+      fullPath: '/terms'
+      preLoaderRoute: typeof TermsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/teams': {
+      id: '/teams'
+      path: '/teams'
+      fullPath: '/teams'
+      preLoaderRoute: typeof TeamsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/signup': {
+      id: '/signup'
+      path: '/signup'
+      fullPath: '/signup'
+      preLoaderRoute: typeof SignupRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/redeem': {
+      id: '/redeem'
+      path: '/redeem'
+      fullPath: '/redeem'
+      preLoaderRoute: typeof RedeemRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/proof': {
+      id: '/proof'
+      path: '/proof'
+      fullPath: '/proof'
+      preLoaderRoute: typeof ProofRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/privacy': {
+      id: '/privacy'
+      path: '/privacy'
+      fullPath: '/privacy'
+      preLoaderRoute: typeof PrivacyRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/pricing': {
+      id: '/pricing'
+      path: '/pricing'
+      fullPath: '/pricing'
+      preLoaderRoute: typeof PricingRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/payment-success': {
+      id: '/payment-success'
+      path: '/payment-success'
+      fullPath: '/payment-success'
+      preLoaderRoute: typeof PaymentSuccessRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/payment-canceled': {
+      id: '/payment-canceled'
+      path: '/payment-canceled'
+      fullPath: '/payment-canceled'
+      preLoaderRoute: typeof PaymentCanceledRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/password-reset': {
+      id: '/password-reset'
+      path: '/password-reset'
+      fullPath: '/password-reset'
+      preLoaderRoute: typeof PasswordResetRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/login': {
+      id: '/login'
+      path: '/login'
+      fullPath: '/login'
+      preLoaderRoute: typeof LoginRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/downloads': {
+      id: '/downloads'
+      path: '/downloads'
+      fullPath: '/downloads'
+      preLoaderRoute: typeof DownloadsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/desktop-auth': {
+      id: '/desktop-auth'
+      path: '/desktop-auth'
+      fullPath: '/desktop-auth'
+      preLoaderRoute: typeof DesktopAuthRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/about': {
+      id: '/about'
+      path: '/about'
+      fullPath: '/about'
+      preLoaderRoute: typeof AboutRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/_auth': {
+      id: '/_auth'
+      path: ''
+      fullPath: '/'
+      preLoaderRoute: typeof AuthRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/': {
+      id: '/'
+      path: '/'
+      fullPath: '/'
+      preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/verify/$code': {
+      id: '/verify/$code'
+      path: '/verify/$code'
+      fullPath: '/verify/$code'
+      preLoaderRoute: typeof VerifyCodeRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/password-reset/confirm': {
+      id: '/password-reset/confirm'
+      path: '/confirm'
+      fullPath: '/password-reset/confirm'
+      preLoaderRoute: typeof PasswordResetConfirmRouteImport
+      parentRoute: typeof PasswordResetRoute
+    }
+    '/team/invite/$inviteId': {
+      id: '/team/invite/$inviteId'
+      path: '/team/invite/$inviteId'
+      fullPath: '/team/invite/$inviteId'
+      preLoaderRoute: typeof TeamInviteInviteIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/auth/$provider/callback': {
+      id: '/auth/$provider/callback'
+      path: '/auth/$provider/callback'
+      fullPath: '/auth/$provider/callback'
+      preLoaderRoute: typeof AuthProviderCallbackRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/_auth/chat/$chatId': {
+      id: '/_auth/chat/$chatId'
+      path: '/chat/$chatId'
+      fullPath: '/chat/$chatId'
+      preLoaderRoute: typeof AuthChatChatIdRouteImport
+      parentRoute: typeof AuthRoute
+    }
+  }
+}
+
+interface AuthRouteChildren {
+  AuthChatChatIdRoute: typeof AuthChatChatIdRoute
+}
+
+const AuthRouteChildren: AuthRouteChildren = {
+  AuthChatChatIdRoute: AuthChatChatIdRoute,
+}
+
+const AuthRouteWithChildren = AuthRoute._addFileChildren(AuthRouteChildren)
+
+interface PasswordResetRouteChildren {
+  PasswordResetConfirmRoute: typeof PasswordResetConfirmRoute
+}
+
+const PasswordResetRouteChildren: PasswordResetRouteChildren = {
+  PasswordResetConfirmRoute: PasswordResetConfirmRoute,
+}
+
+const PasswordResetRouteWithChildren = PasswordResetRoute._addFileChildren(
+  PasswordResetRouteChildren,
+)
+
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AuthRoute: AuthRouteWithChildren,
@@ -527,109 +491,6 @@ const rootRouteChildren: RootRouteChildren = {
   AuthProviderCallbackRoute: AuthProviderCallbackRoute,
   TeamInviteInviteIdRoute: TeamInviteInviteIdRoute,
 }
-
-export const routeTree = rootRoute
+export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
   ._addFileTypes<FileRouteTypes>()
-
-/* ROUTE_MANIFEST_START
-{
-  "routes": {
-    "__root__": {
-      "filePath": "__root.tsx",
-      "children": [
-        "/",
-        "/_auth",
-        "/about",
-        "/desktop-auth",
-        "/downloads",
-        "/login",
-        "/password-reset",
-        "/payment-canceled",
-        "/payment-success",
-        "/pricing",
-        "/privacy",
-        "/proof",
-        "/redeem",
-        "/signup",
-        "/teams",
-        "/terms",
-        "/verify/$code",
-        "/auth/$provider/callback",
-        "/team/invite/$inviteId"
-      ]
-    },
-    "/": {
-      "filePath": "index.tsx"
-    },
-    "/_auth": {
-      "filePath": "_auth.tsx",
-      "children": [
-        "/_auth/chat/$chatId"
-      ]
-    },
-    "/about": {
-      "filePath": "about.tsx"
-    },
-    "/desktop-auth": {
-      "filePath": "desktop-auth.tsx"
-    },
-    "/downloads": {
-      "filePath": "downloads.tsx"
-    },
-    "/login": {
-      "filePath": "login.tsx"
-    },
-    "/password-reset": {
-      "filePath": "password-reset.tsx",
-      "children": [
-        "/password-reset/confirm"
-      ]
-    },
-    "/payment-canceled": {
-      "filePath": "payment-canceled.tsx"
-    },
-    "/payment-success": {
-      "filePath": "payment-success.tsx"
-    },
-    "/pricing": {
-      "filePath": "pricing.tsx"
-    },
-    "/privacy": {
-      "filePath": "privacy.tsx"
-    },
-    "/proof": {
-      "filePath": "proof.tsx"
-    },
-    "/redeem": {
-      "filePath": "redeem.tsx"
-    },
-    "/signup": {
-      "filePath": "signup.tsx"
-    },
-    "/teams": {
-      "filePath": "teams.tsx"
-    },
-    "/terms": {
-      "filePath": "terms.tsx"
-    },
-    "/password-reset/confirm": {
-      "filePath": "password-reset.confirm.tsx",
-      "parent": "/password-reset"
-    },
-    "/verify/$code": {
-      "filePath": "verify.$code.tsx"
-    },
-    "/_auth/chat/$chatId": {
-      "filePath": "_auth.chat.$chatId.tsx",
-      "parent": "/_auth"
-    },
-    "/auth/$provider/callback": {
-      "filePath": "auth.$provider.callback.tsx"
-    },
-    "/team/invite/$inviteId": {
-      "filePath": "team.invite.$inviteId.tsx"
-    }
-  }
-}
-ROUTE_MANIFEST_END */
