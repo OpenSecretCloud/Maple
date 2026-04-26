@@ -78,7 +78,7 @@ function PricingFAQ() {
               <li>Pro: Generous usage for power users with a high monthly cap</li>
               <li>Max: 20x more usage than Pro for maximum power users</li>
               <li>Team: Even more usage per team member with unified billing</li>
-              <li>Enterprise: Message us at team@opensecret.cloud</li>
+              <li>Enterprise: Message us at team@trymaple.ai</li>
             </ul>
           </div>
         </details>
@@ -512,7 +512,7 @@ function PricingPage() {
           import("@tauri-apps/api/core")
             .then((coreModule) => {
               return coreModule.invoke("plugin:opener|open_url", {
-                url: "mailto:support@opensecret.cloud"
+                url: "mailto:support@trymaple.ai"
               });
             })
             .then(() => {
@@ -521,10 +521,10 @@ function PricingPage() {
             .catch((err) => {
               console.error("[Contact] Failed to open mailto link with Tauri opener:", err);
               // Fallback for web or if Tauri fails
-              window.location.href = "mailto:support@opensecret.cloud";
+              window.location.href = "mailto:support@trymaple.ai";
             });
         } else {
-          window.location.href = "mailto:support@opensecret.cloud";
+          window.location.href = "mailto:support@trymaple.ai";
         }
         return;
       }
@@ -546,7 +546,7 @@ function PricingPage() {
             import("@tauri-apps/api/core")
               .then((coreModule) => {
                 return coreModule.invoke("plugin:opener|open_url", {
-                  url: "mailto:support@opensecret.cloud"
+                  url: "mailto:support@trymaple.ai"
                 });
               })
               .then(() => {
@@ -555,10 +555,10 @@ function PricingPage() {
               .catch((err) => {
                 console.error("[Contact] Failed to open mailto link with Tauri opener:", err);
                 // Fallback for web or if Tauri fails
-                window.location.href = "mailto:support@opensecret.cloud";
+                window.location.href = "mailto:support@trymaple.ai";
               });
           } else {
-            window.location.href = "mailto:support@opensecret.cloud";
+            window.location.href = "mailto:support@trymaple.ai";
           }
         }
         return;
@@ -619,7 +619,7 @@ function PricingPage() {
       // show an error instead of silently falling through to checkout
       if (isCurrentPlan) {
         setPortalError(
-          "Unable to open subscription management. Please try again or contact support@opensecret.cloud."
+          "Unable to open subscription management. Please try again or contact support@trymaple.ai."
         );
         return;
       }

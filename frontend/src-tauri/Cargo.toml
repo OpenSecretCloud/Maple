@@ -2,7 +2,7 @@
 name = "maple"
 version = "2.0.27"
 description = "Maple AI"
-authors = ["tony@opensecret.cloud"]
+authors = ["tony@trymaple.ai"]
 license = "MIT"
 repository = "https://github.com/OpenSecretCloud/Maple"
 edition = "2021"
