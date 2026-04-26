@@ -86,7 +86,7 @@ Security architecture: AWS Nitro Enclaves for backend processing, NVIDIA GPU TEE
 - **Company**: Maple AI, based in Austin, TX. Legal entity is Maple Privacy Labs Inc.
 - **Founders**: Mark Suman (CEO, ex-Apple AI/Privacy engineer) and Anthony Ronning (CTO, defense/security/bitcoin infrastructure)
 - **Programs**: NVIDIA Inception Program, Google Cloud for Startups
-- **Contact**: team@trymaple.ai, support@trymaple.ai
+- **Contact**: support@trymaple.ai
 - **Community**: [Discord](https://discord.gg/ch2gjZAMGy)
 - **Social**: [X/Twitter](https://twitter.com/TryMapleAI)
 - **Blog**: [blog.trymaple.ai](https://blog.trymaple.ai)

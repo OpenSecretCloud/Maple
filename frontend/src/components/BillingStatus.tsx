@@ -88,7 +88,7 @@ export function BillingStatus() {
           variant="default"
           onClick={() =>
             !billingStatus.can_chat && isMax
-              ? (window.location.href = "mailto:team@trymaple.ai")
+              ? (window.location.href = "mailto:support@trymaple.ai")
               : navigate({ to: "/pricing" })
           }
           className="h-auto whitespace-normal py-2"
