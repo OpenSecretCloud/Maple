@@ -4,8 +4,9 @@
   margin: 0;
   color: var(--color-fg-default);
   background-color: var(--color-canvas-default);
-  font-size: 14px;
-  line-height: 1.5;
+  font-size: 15px;
+  line-height: 1.65;
+  letter-spacing: 0.1px;
   word-wrap: break-word;
 }
 
@@ -341,8 +342,9 @@
 .markdown-body p {
   margin-top: 0;
   margin-bottom: 10px;
-  font-size: 14px;
-  line-height: 1.5;
+  font-size: 15px;
+  line-height: 1.65;
+  letter-spacing: 0.1px;
 }
 
 .markdown-body blockquote {
@@ -357,8 +359,9 @@
   margin-top: 0;
   margin-bottom: 0;
   padding-left: 2em;
-  font-size: 14px;
-  line-height: 1.5;
+  font-size: 15px;
+  line-height: 1.65;
+  letter-spacing: 0.1px;
 }
 
 .markdown-body ul {
@@ -608,13 +611,15 @@
 
 .markdown-body li > p {
   margin-top: 16px;
-  font-size: 14px;
-  line-height: 1.5;
+  font-size: 15px;
+  line-height: 1.65;
+  letter-spacing: 0.1px;
 }
 
 .markdown-body li {
-  font-size: 14px;
-  line-height: 1.5;
+  font-size: 15px;
+  line-height: 1.65;
+  letter-spacing: 0.1px;
 }
 
 .markdown-body li + li {
@@ -651,8 +656,9 @@
   word-wrap: break-word;
   overflow-wrap: break-word;
   white-space: normal;
-  font-size: 14px;
-  line-height: 1.5;
+  font-size: 15px;
+  line-height: 1.65;
+  letter-spacing: 0.1px;
 }
 
 .markdown-body table tr {

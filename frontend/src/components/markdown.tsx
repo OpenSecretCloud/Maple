@@ -328,7 +328,7 @@ function ResponsiveTable({ children, className, ...rest }: JSX.IntrinsicElements
       <div
         ref={scrollRef}
         className={cn(
-          "overflow-x-auto overflow-y-visible overscroll-x-contain",
+          "maple-thin-scrollbar overflow-x-auto overflow-y-visible overscroll-x-contain",
           "[-webkit-overflow-scrolling:touch]"
         )}
       >
@@ -705,8 +705,6 @@ export function Markdown(
   props: {
     content: string;
     loading?: boolean;
-    fontSize?: number;
-    fontFamily?: string;
     parentRef?: RefObject<HTMLDivElement>;
     defaultShow?: boolean;
     chatId?: string;
@@ -718,8 +716,6 @@ export function Markdown(
     <div
       className="markdown-body"
       style={{
-        fontSize: `${props.fontSize ?? 16}px`,
-        fontFamily: props.fontFamily || "inherit",
         wordBreak: "break-word"
       }}
       ref={mdRef}

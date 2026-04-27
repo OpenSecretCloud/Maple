@@ -1,10 +1,5 @@
-import { useId } from "react";
-
 import { useLocalState } from "@/state/useLocalState";
 import { formatResetDate } from "@/utils/dateFormat";
-import { cn } from "@/utils/utils";
-
-type CreditUsageLayout = "bar" | "ring";
 
 /** Dev-only opt-in: localStorage `maple_mock_credit_scenario` = demo | full | high | warn | ok | off */
 type MockScenario = "demo" | "full" | "high" | "warn" | "ok";
@@ -52,115 +47,84 @@ function mockUsageResetIso(): string {
   return d.toISOString();
 }
 
-function usageTone(percentUsed: number): "danger" | "warn" | "ok" {
-  if (percentUsed >= 90) return "danger";
-  if (percentUsed >= 75) return "warn";
-  return "ok";
+function toPlanNameLabel(rawPlanName: string | undefined): string {
+  const cleaned = (rawPlanName ?? "Pro").trim();
+  const hasPlanSuffix = /\bplan\b/i.test(cleaned);
+  return hasPlanSuffix ? cleaned : `${cleaned} Plan`;
 }
 
-function toneColor(tone: ReturnType<typeof usageTone>): string {
-  switch (tone) {
-    case "danger":
-      return "hsl(var(--maple-error))";
-    case "warn":
-      return "hsl(var(--maple-warning))";
-    default:
-      return "hsl(var(--maple-success))";
-  }
-}
-
-function toneTextClass(tone: ReturnType<typeof usageTone>): string {
-  switch (tone) {
-    case "danger":
-      return "text-maple-error";
-    case "warn":
-      return "text-maple-warning";
-    default:
-      return "text-maple-success";
-  }
-}
-
-type RingMeterProps = {
-  percent: number;
-  size?: number;
-  stroke?: number;
+type CreditUsageViewProps = {
+  planLabel: string;
+  percentRemaining: number;
+  roundedRemaining: number;
+  total: number;
+  tokensRemaining: number;
+  apiBalance?: number;
+  hasApiCredits: boolean;
+  resetFullLabel: string;
+  formatCredits: (n: number) => string;
 };
 
-function RingMeter({ percent, size = 32, stroke = 3.5 }: RingMeterProps) {
-  const gradId = `credit-ring-grad-${useId().replace(/:/g, "")}`;
-  const r = (size - stroke) / 2;
-  const c = 2 * Math.PI * r;
-  const clamped = Math.min(100, Math.max(0, percent));
-  const offset = c - (clamped / 100) * c;
-
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox={`0 0 ${size} ${size}`}
-      className="absolute left-0 top-0 -rotate-90"
-      aria-hidden
-    >
-      <defs>
-        <linearGradient
-          id={gradId}
-          gradientUnits="userSpaceOnUse"
-          x1={size / 2}
-          y1={0}
-          x2={size / 2}
-          y2={size}
-        >
-          <stop offset="0%" stopColor="hsl(var(--maple-primary))" />
-          <stop offset="100%" stopColor="hsl(var(--maple-primary-strong))" />
-        </linearGradient>
-      </defs>
-      <circle
-        cx={size / 2}
-        cy={size / 2}
-        r={r}
-        fill="none"
-        strokeWidth={stroke}
-        className="fill-none stroke-[hsl(var(--sidebar-chrome))]"
-      />
-      <circle
-        cx={size / 2}
-        cy={size / 2}
-        r={r}
-        fill="none"
-        stroke={`url(#${gradId})`}
-        strokeWidth={stroke}
-        strokeLinecap="round"
-        strokeDasharray={c}
-        strokeDashoffset={offset}
-        className="transition-[stroke-dashoffset] duration-500 ease-out"
-      />
-    </svg>
-  );
-}
-
-function UsageRing({
-  percentUsed,
-  roundedPercent,
-  size = 32,
-  stroke = 3.5
-}: {
-  percentUsed: number;
-  roundedPercent: number;
-  size?: number;
-  stroke?: number;
-}) {
+function CreditUsageView(p: CreditUsageViewProps) {
   return (
     <div
-      className="relative shrink-0"
-      style={{ width: size, height: size }}
-      aria-label={`${roundedPercent} percent of plan credits used`}
+      className="w-full rounded-xl bg-[hsl(var(--sidebar-chrome))] p-2"
+      title={p.resetFullLabel || undefined}
     >
-      <RingMeter percent={percentUsed} size={size} stroke={stroke} />
+      <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[10px] leading-tight">
+        <span className="inline-flex shrink-0 items-center rounded-full border border-border/50 bg-muted px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-foreground">
+          {p.planLabel}
+        </span>
+        <span className="text-muted-foreground/50">·</span>
+        <span className="shrink-0 font-semibold tabular-nums text-foreground">
+          {p.roundedRemaining}% left
+        </span>
+        {p.resetFullLabel && (
+          <>
+            <span className="text-muted-foreground/50">·</span>
+            <span className="min-w-0 flex-1 truncate text-muted-foreground">
+              {p.resetFullLabel}
+            </span>
+          </>
+        )}
+      </div>
+      {/* Bar + token row: hover or focus the bar area to reveal exact token amounts */}
+      <div
+        className="group/creditbar mt-1.5 min-h-0 cursor-default rounded-sm py-1.5 outline-none transition-shadow focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+        tabIndex={0}
+        role="group"
+        aria-label={`${p.roundedRemaining} percent of plan tokens remaining. Hover the usage bar or focus this control to read exact token counts.`}
+      >
+        <div className="h-[4px] w-full overflow-hidden rounded-full bg-[hsl(var(--sidebar-chrome-hover))]">
+          <div
+            className="h-full rounded-full transition-[width] duration-500 ease-out"
+            style={{
+              width: `${p.percentRemaining}%`,
+              background:
+                "linear-gradient(90deg, hsl(var(--maple-primary)), hsl(var(--maple-primary-strong)))"
+            }}
+          />
+        </div>
+        <div className="grid grid-rows-[0fr] transition-[grid-template-rows] duration-200 ease-out group-hover/creditbar:grid-rows-[1fr] group-focus-within/creditbar:grid-rows-[1fr] [@media(hover:none)]:grid-rows-[1fr]">
+          <div className="min-h-0 overflow-hidden">
+            <div className="pt-1.5 text-[9.5px] leading-none text-muted-foreground">
+              <span className="min-w-0 truncate tabular-nums">
+                {p.formatCredits(p.tokensRemaining)} / {p.formatCredits(p.total)} tokens
+                {p.hasApiCredits && (
+                  <span className="ml-1 text-[hsl(var(--maple-success))]">
+                    +{p.formatCredits(p.apiBalance ?? 0)}
+                  </span>
+                )}
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
 
-export function CreditUsage({ layout = "bar" }: { layout?: CreditUsageLayout }) {
+export function CreditUsage({ mockScenario }: { mockScenario?: MockScenario }) {
   const { billingStatus } = useLocalState();
 
   const totalLive = billingStatus?.total_tokens;
@@ -168,13 +132,15 @@ export function CreditUsage({ layout = "bar" }: { layout?: CreditUsageLayout }) 
   const hasRealUsage = totalLive != null && totalLive > 0 && usedLive != null && usedLive > 0;
 
   const mockFlag = readMockScenario();
-  const useMock = !hasRealUsage && import.meta.env.DEV && mockFlag !== null && mockFlag !== "off";
+  const forcedMock = import.meta.env.DEV ? mockScenario : undefined;
+  const scenario = forcedMock ?? (mockFlag !== null && mockFlag !== "off" ? mockFlag : null);
+  const useMock = !hasRealUsage && import.meta.env.DEV && scenario !== null;
 
   if (!hasRealUsage && !useMock) {
     return null;
   }
 
-  const mock = useMock ? mockPreset(mockFlag as MockScenario) : null;
+  const mock = useMock ? mockPreset(scenario as MockScenario) : null;
   const total = hasRealUsage ? totalLive! : mock!.total_tokens;
   const used = hasRealUsage ? usedLive! : mock!.used_tokens;
   const productName = hasRealUsage ? billingStatus?.product_name : "Pro";
@@ -182,9 +148,9 @@ export function CreditUsage({ layout = "bar" }: { layout?: CreditUsageLayout }) 
   const apiBalance = hasRealUsage ? billingStatus!.api_credit_balance : mock?.api_credit_balance;
 
   const percentUsed = Math.min(100, Math.max(0, (used / total) * 100));
-  const roundedPercent = Math.round(percentUsed);
-  const tone = usageTone(percentUsed);
-  const barColor = toneColor(tone);
+  const percentRemaining = Math.max(0, 100 - percentUsed);
+  const roundedRemaining = Math.round(percentRemaining);
+  const tokensRemaining = Math.max(0, total - used);
 
   const isMaxPlan = productName?.toLowerCase().includes("max") ?? false;
   if (isMaxPlan && percentUsed < 90) {
@@ -193,58 +159,22 @@ export function CreditUsage({ layout = "bar" }: { layout?: CreditUsageLayout }) 
 
   const hasApiCredits = apiBalance !== undefined && apiBalance > 0;
 
-  const formatCredits = (credits: number) => {
-    return new Intl.NumberFormat("en-US").format(credits);
+  const formatCredits = (credits: number) => new Intl.NumberFormat("en-US").format(credits);
+
+  const planLabel = toPlanNameLabel(productName);
+  const resetFullLabel = formatResetDate(usageResetDate);
+
+  const props: CreditUsageViewProps = {
+    planLabel,
+    percentRemaining,
+    roundedRemaining,
+    total,
+    tokensRemaining,
+    apiBalance,
+    hasApiCredits,
+    resetFullLabel,
+    formatCredits
   };
 
-  const statusLabel =
-    percentUsed >= 100 ? "Limit reached" : percentUsed >= 90 ? "Almost full" : "Plan credits";
-
-  if (layout === "ring") {
-    return (
-      <div className="w-full rounded-xl border border-[hsl(var(--sidebar-chrome))] bg-transparent p-3">
-        <div className="flex items-center gap-3">
-          <div className="min-w-0 flex-1">
-            <div className="flex items-baseline gap-2">
-              <span className="truncate text-[11px] font-medium text-foreground">
-                {statusLabel}
-              </span>
-            </div>
-            <p className="mt-0.5 truncate text-[10px] text-muted-foreground">
-              {hasApiCredits && (
-                <>
-                  +{formatCredits(apiBalance ?? 0)} extra
-                  <span className="text-muted-foreground/50"> · </span>
-                </>
-              )}
-              {formatResetDate(usageResetDate)}
-            </p>
-          </div>
-          <UsageRing percentUsed={percentUsed} roundedPercent={roundedPercent} />
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="px-2 py-2 text-xs text-muted-foreground">
-      <div className="mb-1 flex justify-between">
-        <span>{percentUsed >= 100 ? "Plan credits (full)" : "Plan Credits"}</span>
-        <span className={cn("tabular-nums", toneTextClass(tone))}>{roundedPercent}%</span>
-      </div>
-      <div className="h-2.5 w-full overflow-hidden rounded-full bg-muted">
-        <div
-          className="h-full transition-all duration-500 ease-out"
-          style={{
-            width: `${percentUsed}%`,
-            backgroundColor: barColor
-          }}
-        />
-      </div>
-      <div className="mt-1 flex justify-between text-xs">
-        {hasApiCredits && <span>+ {formatCredits(apiBalance ?? 0)} extra credits</span>}
-        <span className={hasApiCredits ? "" : "ml-auto"}>{formatResetDate(usageResetDate)}</span>
-      </div>
-    </div>
-  );
+  return <CreditUsageView {...props} />;
 }

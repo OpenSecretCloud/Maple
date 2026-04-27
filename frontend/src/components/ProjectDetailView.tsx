@@ -12,7 +12,13 @@ import {
   SquarePen,
   Trash2
 } from "lucide-react";
-import { useOpenSecret, type Conversation } from "@opensecret/react";
+import {
+  useOpenSecret,
+  getConversationProject,
+  updateConversationProject,
+  deleteConversationProject,
+  type Conversation
+} from "@opensecret/react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Sidebar, SidebarToggle } from "@/components/Sidebar";
 import { useIsMobile } from "@/utils/utils";
@@ -177,13 +183,13 @@ export function ProjectDetailView({ projectId }: ProjectDetailViewProps) {
 
   const { data: project, isPending: isProjectPending } = useQuery({
     queryKey: ["conversationProject", projectId],
-    queryFn: () => os.getConversationProject(projectId),
+    queryFn: () => getConversationProject(projectId),
     enabled: !!projectId && hasAuthUser
   });
 
   const { data: conversationProjects = [] } = useQuery({
     queryKey: ["conversationProjects", userId],
-    queryFn: () => listAllConversationProjects(os),
+    queryFn: () => listAllConversationProjects(),
     enabled: !!userId
   });
 
@@ -318,28 +324,28 @@ export function ProjectDetailView({ projectId }: ProjectDetailViewProps) {
 
   const handleSaveProjectInstructions = useCallback(
     async (instructions: string | null) => {
-      await os.updateConversationProject(projectId, { instructions });
+      await updateConversationProject(projectId, { instructions });
       await invalidateConversationData();
     },
-    [invalidateConversationData, os, projectId]
+    [invalidateConversationData, projectId]
   );
 
   const handleRenameProject = useCallback(
     async (name: string) => {
-      await os.updateConversationProject(projectId, { name });
+      await updateConversationProject(projectId, { name });
       await invalidateConversationData();
     },
-    [invalidateConversationData, os, projectId]
+    [invalidateConversationData, projectId]
   );
 
   const handleDeleteProject = useCallback(async () => {
-    await os.deleteConversationProject(projectId);
+    await deleteConversationProject(projectId);
     await invalidateConversationData();
     setSelectedProjectId(null);
     window.history.replaceState({}, "", "/");
     window.dispatchEvent(new CustomEvent("newchat", { detail: { projectId: null } }));
     window.dispatchEvent(new Event("projectselected"));
-  }, [invalidateConversationData, os, projectId, setSelectedProjectId]);
+  }, [invalidateConversationData, projectId, setSelectedProjectId]);
 
   const handleRenameConversation = useCallback(
     async (conversationId: string, newTitle: string) => {
@@ -449,7 +455,7 @@ export function ProjectDetailView({ projectId }: ProjectDetailViewProps) {
     return (
       <div
         className={`grid h-dvh min-h-0 w-full grid-cols-1 overflow-hidden ${
-          isSidebarOpen ? "md:grid-cols-[280px_1fr]" : ""
+          isSidebarOpen ? "md:grid-cols-[296px_1fr]" : ""
         }`}
       >
         <Sidebar isOpen={isSidebarOpen} onToggle={toggleSidebar} />
@@ -463,7 +469,7 @@ export function ProjectDetailView({ projectId }: ProjectDetailViewProps) {
   return (
     <div
       className={`grid h-dvh min-h-0 w-full grid-cols-1 overflow-hidden ${
-        isSidebarOpen ? "md:grid-cols-[280px_1fr]" : ""
+        isSidebarOpen ? "md:grid-cols-[296px_1fr]" : ""
       }`}
     >
       <Sidebar isOpen={isSidebarOpen} onToggle={toggleSidebar} />
@@ -585,7 +591,7 @@ export function ProjectDetailView({ projectId }: ProjectDetailViewProps) {
                           return (
                             <div
                               key={conversation.id}
-                              className={`relative border-b last:border-b-0 ${
+                              className={`group relative border-b last:border-b-0 ${
                                 isSelected ? "bg-primary/5" : ""
                               }`}
                             >
@@ -640,7 +646,7 @@ export function ProjectDetailView({ projectId }: ProjectDetailViewProps) {
                                       type="button"
                                       variant="ghost"
                                       size="icon"
-                                      className="absolute right-2 top-2 h-8 w-8"
+                                      className="absolute right-2 top-2 h-8 w-8 text-foreground/40 transition-colors hover:text-foreground group-hover:text-foreground focus-visible:text-foreground"
                                       onClick={(event) => {
                                         event.preventDefault();
                                         event.stopPropagation();

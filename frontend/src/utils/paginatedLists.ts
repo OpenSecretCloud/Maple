@@ -1,14 +1,14 @@
-import type {
-  Conversation,
-  ConversationProjectListItem,
-  ConversationsListParams,
-  OpenSecretContextType
+import {
+  listConversationProjects,
+  type Conversation,
+  type ConversationProjectListItem,
+  type ConversationsListParams,
+  type OpenSecretContextType
 } from "@opensecret/react";
 
 const SIDEBAR_PAGE_SIZE = 20;
 
 type ConversationsClient = Pick<OpenSecretContextType, "listConversations">;
-type ConversationProjectsClient = Pick<OpenSecretContextType, "listConversationProjects">;
 
 export async function listAllConversations(
   client: ConversationsClient,
@@ -40,15 +40,13 @@ export async function listAllConversations(
   }
 }
 
-export async function listAllConversationProjects(
-  client: ConversationProjectsClient
-): Promise<ConversationProjectListItem[]> {
+export async function listAllConversationProjects(): Promise<ConversationProjectListItem[]> {
   const projects: ConversationProjectListItem[] = [];
   const seenProjectIds = new Set<string>();
   let after: string | undefined;
 
   while (true) {
-    const response = await client.listConversationProjects({
+    const response = await listConversationProjects({
       limit: SIDEBAR_PAGE_SIZE,
       ...(after ? { after } : {})
     });
