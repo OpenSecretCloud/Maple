@@ -43,12 +43,14 @@
 @layer base {
   body {
     @apply h-dvh;
-    font-family: "Manrope", sans-serif;
+    font-family: var(--app-font-family);
     font-size: 14px;
   }
 
   /* Light mode by default — Neutral scale from Figma */
   :root {
+    --app-font-family: "Manrope", sans-serif;
+
     /* Base colors — Neutral 50 / Neutral 800 (body text) */
     --background: 0 0% 98%; /* #FAFAFA - Neutral 50 */
     --foreground: 0 0% 15%; /* #262626 - Neutral 800 */
@@ -177,6 +179,13 @@
     --hljs-addition: 211 93% 45%;
     --hljs-attribute: 270 75% 48%;
     --hljs-punctuation: 225 27% 40%;
+  }
+
+  button,
+  input,
+  select,
+  textarea {
+    font-family: inherit;
   }
 
   /* Apply light mode styles */

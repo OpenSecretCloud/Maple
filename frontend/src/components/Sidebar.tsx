@@ -193,10 +193,10 @@ export function Sidebar({
       ref={sidebarRef}
       className={cn([
         "fixed md:static z-10 h-full overflow-y-hidden",
-        isOpen ? "block w-[280px]" : "hidden"
+        isOpen ? "block w-[296px]" : "hidden"
       ])}
     >
-      <div className="flex h-full w-[280px] flex-col items-stretch border-r border-border/20 bg-muted backdrop-blur-lg dark:bg-[hsl(var(--sidebar))]">
+      <div className="flex h-full w-[296px] flex-col items-stretch border-r border-border/20 bg-muted backdrop-blur-lg dark:bg-[hsl(var(--sidebar))]">
         {/* Header section */}
         <div className="flex flex-col gap-2 pt-3 pb-2">
           <div className="flex items-center pl-4 pr-[8px]">
@@ -295,10 +295,7 @@ export function Sidebar({
         )}
         <nav
           ref={historyContainerRef}
-          className={cn(
-            "relative flex-1 overflow-y-auto pl-4 pr-2 md:px-4",
-            isSearchVisible ? "pt-3" : "pt-1"
-          )}
+          className="relative flex-1 overflow-y-auto pl-4 pr-2 pt-5 md:px-4"
         >
           <ChatHistoryList
             currentChatId={chatId}

@@ -917,7 +917,7 @@ function ToolCallRenderer({
             </span>
           </div>
           <div className="pl-6 text-foreground/80">
-            <Markdown content={isExpanded ? combinedOutput : preview} fontSize={14} />
+            <Markdown content={isExpanded ? combinedOutput : preview} />
             {hasMore && (
               <button
                 onClick={() => setIsExpanded(!isExpanded)}
@@ -1025,7 +1025,7 @@ function ToolCallRenderer({
           </span>
         </div>
         <div className="pl-6 text-foreground/80">
-          <Markdown content={isExpanded ? output : preview} fontSize={14} />
+          <Markdown content={isExpanded ? output : preview} />
           {hasMore && (
             <button
               onClick={() => setIsExpanded(!isExpanded)}
@@ -3232,7 +3232,7 @@ export function UnifiedChat() {
 
   return (
     <div
-      className={`grid h-dvh min-h-0 w-full grid-cols-1 overflow-hidden ${isSidebarOpen ? "md:grid-cols-[280px_1fr]" : ""}`}
+      className={`grid h-dvh min-h-0 w-full grid-cols-1 overflow-hidden ${isSidebarOpen ? "md:grid-cols-[296px_1fr]" : ""}`}
     >
       {/* Use the existing Sidebar component */}
       <Sidebar chatId={chatId} isOpen={isSidebarOpen} onToggle={toggleSidebar} />
@@ -3380,7 +3380,7 @@ export function UnifiedChat() {
                 className={`flex flex-col items-center gap-6 ${isFullscreen ? "flex-1 justify-center" : ""}`}
               >
                 {!isFullscreen && (
-                  <h1 className="mb-6 w-full overflow-visible pb-1 text-center font-displayWide text-4xl font-normal leading-tight tracking-[0.035em] brand-gradient-text sm:leading-relaxed">
+                  <h1 className="mb-6 w-full overflow-visible pb-1 text-center font-displayWide text-4xl font-normal leading-tight brand-gradient-text sm:leading-relaxed">
                     Research anything...
                   </h1>
                 )}

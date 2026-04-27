@@ -214,7 +214,7 @@ function ChatComponent() {
 
   if (isPending) {
     return (
-      <div className="grid h-dvh w-full grid-cols-1 md:grid-cols-[280px_1fr]">
+      <div className="grid h-dvh w-full grid-cols-1 md:grid-cols-[296px_1fr]">
         <Sidebar chatId={chatId} isOpen={isSidebarOpen} onToggle={toggleSidebar} />
         <main className="flex h-dvh flex-col items-center justify-center">
           <p className="text-muted-foreground">Loading archived chat...</p>
@@ -225,7 +225,7 @@ function ChatComponent() {
 
   if (!chat) {
     return (
-      <div className="grid h-dvh w-full grid-cols-1 md:grid-cols-[280px_1fr]">
+      <div className="grid h-dvh w-full grid-cols-1 md:grid-cols-[296px_1fr]">
         <Sidebar chatId={chatId} isOpen={isSidebarOpen} onToggle={toggleSidebar} />
         <main className="flex h-dvh flex-col items-center justify-center">
           <p className="text-muted-foreground">Archived chat not found</p>
@@ -242,7 +242,7 @@ function ChatComponent() {
   }));
 
   return (
-    <div className="grid h-dvh w-full grid-cols-1 md:grid-cols-[280px_1fr]">
+    <div className="grid h-dvh w-full grid-cols-1 md:grid-cols-[296px_1fr]">
       <Sidebar chatId={chatId} isOpen={isSidebarOpen} onToggle={toggleSidebar} />
       <main className="flex h-dvh flex-col bg-card/90 backdrop-blur-lg bg-center overflow-hidden">
         {!isSidebarOpen && (

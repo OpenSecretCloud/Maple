@@ -29,7 +29,7 @@ import { useNavigate, useRouter } from "@tanstack/react-router";
 import { Dialog, DialogTrigger } from "./ui/dialog";
 import { AccountDialog } from "./AccountDialog";
 import { CreditUsage } from "./CreditUsage";
-import { Badge } from "./ui/badge";
+import { Badge } from "@/components/ui/badge";
 
 import {
   AlertDialog,
@@ -112,6 +112,7 @@ export function AccountMenu() {
   const [isApiKeyDialogOpen, setIsApiKeyDialogOpen] = useState(false);
   const [showAboutMenu, setShowAboutMenu] = useState(false);
   const [portalError, setPortalError] = useState<string | null>(null);
+  const useMockCreditPreview = import.meta.env.DEV && !billingStatus;
 
   const hasStripeAccount = billingStatus?.stripe_customer_id !== null;
   const productName = billingStatus?.product_name || "";
@@ -291,23 +292,8 @@ export function AccountMenu() {
       <AlertDialog>
         <Dialog>
           <DropdownMenu onOpenChange={(open) => !open && setShowAboutMenu(false)}>
-            <div className="flex w-full max-w-full flex-col gap-2">
-              <div className="flex w-full flex-col items-center gap-2">
-                <div className="flex w-full justify-center">
-                  <Link to="/pricing">
-                    <Badge
-                      variant="secondary"
-                      className="bg-[hsl(var(--maple-tertiary-container))] text-[hsl(var(--maple-tertiary))] hover:bg-[hsl(var(--maple-tertiary-container))]/80 transition-colors cursor-pointer uppercase text-[10px]"
-                    >
-                      {billingStatus ? `${billingStatus.product_name} Plan` : "Loading..."}
-                    </Badge>
-                  </Link>
-                </div>
-                <div className="w-full">
-                  <CreditUsage layout="ring" />
-                </div>
-              </div>
-              <div className="flex w-full justify-start">
+            {useMockCreditPreview ? (
+              <div className="flex w-full items-end gap-2">
                 <DropdownMenuTrigger asChild>
                   <button
                     type="button"
@@ -320,11 +306,34 @@ export function AccountMenu() {
                     )}
                   </button>
                 </DropdownMenuTrigger>
+                <div className="min-w-0 flex-1">
+                  <CreditUsage mockScenario="demo" />
+                </div>
               </div>
-            </div>
+            ) : (
+              <div className="flex w-full max-w-full items-end gap-2">
+                <div className="flex shrink-0 justify-start">
+                  <DropdownMenuTrigger asChild>
+                    <button
+                      type="button"
+                      aria-label="Open account menu"
+                      className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[hsl(var(--sidebar-chrome))] text-[hsl(var(--on-sidebar-chrome))] shadow-none ring-0 transition-colors hover:bg-[hsl(var(--sidebar-chrome-hover))]"
+                    >
+                      <User className="h-4 w-4" />
+                      {showTeamSetupAlert && (
+                        <AlertCircle className="absolute -right-1 -top-1 h-4 w-4 rounded-full bg-background text-maple-warning" />
+                      )}
+                    </button>
+                  </DropdownMenuTrigger>
+                </div>
+                <div className="min-w-0 flex-1">
+                  <CreditUsage />
+                </div>
+              </div>
+            )}
             {/* align=start: panel aligns to sidebar content edge; center was relative to the small icon */}
             <DropdownMenuContent
-              className="w-[calc(280px-2rem)] max-w-[calc(100vw-2rem)] overflow-hidden dark:bg-[hsl(var(--sidebar-chrome))]"
+              className="w-[calc(296px-2rem)] max-w-[calc(100vw-2rem)] overflow-hidden dark:bg-[hsl(var(--sidebar-chrome))]"
               align="start"
               side="top"
               sideOffset={8}

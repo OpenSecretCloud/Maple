@@ -31,6 +31,9 @@ import { BulkDeleteDialog } from "@/components/BulkDeleteDialog";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   useOpenSecret,
+  createConversationProject,
+  updateConversationProject,
+  deleteConversationProject,
   type Conversation,
   type ConversationProjectListItem
 } from "@opensecret/react";
@@ -42,16 +45,16 @@ import { MoveChatsDialog } from "@/components/MoveChatsDialog";
 import { listAllConversationProjects, listAllConversations } from "@/utils/paginatedLists";
 
 const MAX_PROJECTS = 10;
-const SIDEBAR_TITLE_FADE = "pointer-events-none absolute inset-y-0 right-0 z-[1] overflow-hidden";
-const SIDEBAR_TITLE_FADE_MOBILE = "w-[4.5rem] opacity-100";
-const SIDEBAR_TITLE_FADE_DESKTOP = "w-4 opacity-70 group-hover:w-12 group-hover:opacity-100";
-const SIDEBAR_TITLE_FADE_DESKTOP_ACTIVE = "w-3 opacity-60 group-hover:w-9 group-hover:opacity-90";
-const SIDEBAR_TITLE_FADE_GRADIENT =
-  "absolute inset-y-0 right-0 w-full bg-gradient-to-l from-muted from-45% via-muted/92 to-transparent transition-all duration-150 ease-out dark:from-[hsl(var(--sidebar))] dark:via-[hsl(var(--sidebar)/0.92)] dark:to-transparent";
-const SIDEBAR_TITLE_FADE_CAP =
-  "absolute inset-y-0 right-0 w-2.5 bg-muted dark:bg-[hsl(var(--sidebar))]";
+/** Lucide default; keep sidebar list icons visually consistent. */
+const ICON_STROKE = 2;
+const ROW_CONTENT_Z = "z-0";
+const ROW_CHECKBOX_Z = "z-20";
+const ROW_MENU_Z = "z-30";
+const SIDEBAR_ELLIPSIS_FADE =
+  "pointer-events-none w-4 shrink-0 self-stretch bg-gradient-to-r from-transparent to-[hsl(var(--muted))] dark:to-[hsl(var(--sidebar))]";
+const SIDEBAR_ELLIPSIS_TRIGGER_ROW = `absolute inset-y-0 right-0 ${ROW_MENU_Z} flex min-h-0 items-stretch`;
 const SIDEBAR_ELLIPSIS_BTN =
-  "z-20 shrink-0 rounded-full bg-muted/90 p-1.5 text-primary backdrop-blur-sm transition-opacity dark:bg-[hsl(var(--sidebar)/0.9)]";
+  "relative z-10 shrink-0 rounded-full border-0 bg-muted p-1.5 text-foreground/40 transition-colors dark:bg-[hsl(var(--sidebar))] hover:text-foreground group-hover:text-foreground focus-visible:text-foreground focus-visible:outline-none";
 
 interface ChatHistoryListProps {
   currentChatId?: string;
@@ -529,7 +532,7 @@ export function ChatHistoryList({
 
   const { data: conversationProjects = [] } = useQuery({
     queryKey: ["conversationProjects", userId],
-    queryFn: () => listAllConversationProjects(opensecret),
+    queryFn: () => listAllConversationProjects(),
     enabled: !!userId
   });
 
@@ -954,27 +957,27 @@ export function ChatHistoryList({
 
   const handleCreateProject = useCallback(
     async (name: string) => {
-      const project = await opensecret.createConversationProject({ name });
+      const project = await createConversationProject({ name });
       await invalidateConversationData();
       await handleViewProject(project.id);
     },
-    [handleViewProject, invalidateConversationData, opensecret]
+    [handleViewProject, invalidateConversationData]
   );
 
   const handleRenameProject = useCallback(
     async (name: string) => {
       if (!selectedProject) return;
-      await opensecret.updateConversationProject(selectedProject.id, { name });
+      await updateConversationProject(selectedProject.id, { name });
       await invalidateConversationData();
     },
-    [invalidateConversationData, opensecret, selectedProject]
+    [invalidateConversationData, selectedProject]
   );
 
   const handleDeleteProject = useCallback(async () => {
     if (!selectedProject) return;
 
     try {
-      await opensecret.deleteConversationProject(selectedProject.id);
+      await deleteConversationProject(selectedProject.id);
       await invalidateConversationData();
 
       if (expandedProjectId === selectedProject.id) {
@@ -997,7 +1000,6 @@ export function ChatHistoryList({
   }, [
     expandedProjectId,
     invalidateConversationData,
-    opensecret,
     selectedProject,
     selectedProjectId,
     setSelectedProjectId
@@ -1150,25 +1152,21 @@ export function ChatHistoryList({
     );
   }
 
-  const renderConversationRow = (conversation: Conversation, options?: { compact?: boolean }) => {
+  const renderConversationRow = (conversation: Conversation) => {
     const title = getConversationTitle(conversation);
     const isActive = conversation.id === currentChatId;
     const isSelected = selectedIds.has(conversation.id);
-    const fadeClass = isMobile
-      ? SIDEBAR_TITLE_FADE_MOBILE
-      : isActive
-        ? SIDEBAR_TITLE_FADE_DESKTOP_ACTIVE
-        : SIDEBAR_TITLE_FADE_DESKTOP;
-    const titlePaddingClass = isMobile
-      ? "pr-8"
-      : "pr-2 transition-[padding] duration-150 ease-out group-hover:pr-8";
+    const titlePaddingClass = "pr-8";
+
+    const isBoldState = (isActive && !isSelectionMode) || (isSelectionMode && isSelected);
+    const rowTextClass = isBoldState
+      ? "font-bold text-foreground"
+      : "text-foreground/95 group-hover:text-foreground";
 
     return (
       <div
         key={conversation.id}
-        className={`group relative flex select-none items-center gap-0.5 rounded-2xl pr-1 ${
-          isSelected ? "bg-primary/10" : ""
-        }`}
+        className="group relative isolate flex w-full min-w-0 select-none items-stretch gap-0.5 rounded-2xl"
         onContextMenu={(event) => event.preventDefault()}
       >
         <div
@@ -1186,103 +1184,107 @@ export function ChatHistoryList({
           onTouchMove={handleLongPressMove}
           onTouchEnd={handleLongPressEnd}
           onTouchCancel={handleLongPressEnd}
-          className={`relative min-w-0 flex-1 cursor-pointer rounded-2xl py-1 transition-all hover:text-primary ${
-            isActive && !isSelectionMode ? "text-primary" : "text-muted-foreground"
-          } ${options?.compact ? "pl-4" : ""} ${isSelectionMode ? "pl-8" : ""}`}
+          className={`relative ${ROW_CONTENT_Z} min-w-0 flex-1 cursor-pointer py-1 pr-2 ${rowTextClass} ${
+            isSelectionMode ? "pl-8" : "pl-0"
+          }`}
         >
-          {isSelectionMode ? (
-            <div className="absolute left-1.5 top-1/2 -translate-y-1/2">
-              <Checkbox
-                checked={isSelected}
-                onCheckedChange={() => toggleSelection(conversation.id)}
-                onClick={(event) => event.stopPropagation()}
-                className="data-[state=checked]:bg-primary"
-              />
-            </div>
-          ) : null}
           <div className={titlePaddingClass}>
-            <div className="relative flex items-center">
+            <div className="relative z-0 flex min-w-0 items-center gap-1.5">
               {conversation.pinned ? (
-                <Pin className="mr-2 h-3.5 w-3.5 shrink-0 fill-current text-muted-foreground" />
+                <Pin
+                  className="h-3.5 w-3.5 shrink-0 fill-none text-foreground"
+                  strokeWidth={ICON_STROKE}
+                  aria-hidden
+                />
               ) : null}
-              <div
-                className={`min-w-0 flex-1 overflow-hidden whitespace-nowrap ${!isSelectionMode ? "hover:underline" : ""}`}
-              >
-                {title}
-              </div>
-              <div className={`${SIDEBAR_TITLE_FADE} ${fadeClass}`} aria-hidden>
-                <div className={SIDEBAR_TITLE_FADE_GRADIENT} />
-                <div className={SIDEBAR_TITLE_FADE_CAP} />
-              </div>
+              <div className="min-w-0 flex-1 overflow-hidden whitespace-nowrap">{title}</div>
             </div>
             <div className="mt-0.5 hidden text-[10px] opacity-50">
               {new Date(conversation.last_activity_at * 1000).toLocaleDateString()}
             </div>
           </div>
         </div>
+        {isSelectionMode ? (
+          <div
+            className={`absolute left-1.5 top-1/2 ${ROW_CHECKBOX_Z} -translate-y-1/2`}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <Checkbox
+              checked={isSelected}
+              onCheckedChange={() => toggleSelection(conversation.id)}
+              onClick={(event) => event.stopPropagation()}
+              className="data-[state=checked]:bg-primary"
+            />
+          </div>
+        ) : null}
         {!isSelectionMode ? (
           <>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <button
-                  className={`absolute right-1 top-1/2 -translate-y-1/2 ${SIDEBAR_ELLIPSIS_BTN} ${
-                    isMobile ? "opacity-100" : "opacity-0 group-hover:opacity-100 focus:opacity-100"
-                  }`}
-                  onClick={(event) => {
-                    event.preventDefault();
-                    event.stopPropagation();
-                  }}
-                >
-                  <MoreHorizontal size={16} />
-                </button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent>
-                <DropdownMenuItem onClick={() => onSelectionChange(new Set([conversation.id]))}>
-                  <CheckSquare className="mr-2 h-4 w-4" />
-                  Select
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => handleToggleConversationPin(conversation)}>
-                  {conversation.pinned ? (
-                    <PinOff className="mr-2 h-4 w-4" />
-                  ) : (
-                    <Pin className="mr-2 h-4 w-4" />
-                  )}
-                  {conversation.pinned ? "Unpin Chat" : "Pin Chat"}
-                </DropdownMenuItem>
-                <DropdownMenuSub>
-                  <DropdownMenuSubTrigger>
-                    <FolderInput className="mr-2 h-4 w-4" />
-                    Move to Project
-                  </DropdownMenuSubTrigger>
-                  <DropdownMenuSubContent>
-                    <DropdownMenuItem
-                      onClick={() => handleMoveConversationToProject(conversation, null)}
+            <div className={SIDEBAR_ELLIPSIS_TRIGGER_ROW}>
+              <div className={SIDEBAR_ELLIPSIS_FADE} aria-hidden="true" />
+              <div className="flex items-center">
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <button
+                      className={SIDEBAR_ELLIPSIS_BTN}
+                      onClick={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                      }}
                     >
-                      <Folder className="mr-2 h-4 w-4" />
-                      No project
+                      <MoreHorizontal className="h-4 w-4" strokeWidth={ICON_STROKE} />
+                    </button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent>
+                    <DropdownMenuItem onClick={() => onSelectionChange(new Set([conversation.id]))}>
+                      <CheckSquare className="mr-2 h-4 w-4" strokeWidth={ICON_STROKE} />
+                      Select
                     </DropdownMenuItem>
-                    <DropdownMenuSeparator />
-                    {conversationProjects.map((project) => (
-                      <DropdownMenuItem
-                        key={project.id}
-                        onClick={() => handleMoveConversationToProject(conversation, project.id)}
-                      >
-                        <Folder className="mr-2 h-4 w-4" />
-                        {project.name}
-                      </DropdownMenuItem>
-                    ))}
-                  </DropdownMenuSubContent>
-                </DropdownMenuSub>
-                <DropdownMenuItem onClick={() => handleOpenRenameDialog(conversation)}>
-                  <Pencil className="mr-2 h-4 w-4" />
-                  Rename Chat
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => handleOpenDeleteDialog(conversation)}>
-                  <Trash className="mr-2 h-4 w-4" />
-                  Delete Chat
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
+                    <DropdownMenuItem onClick={() => handleToggleConversationPin(conversation)}>
+                      {conversation.pinned ? (
+                        <PinOff className="mr-2 h-4 w-4" strokeWidth={ICON_STROKE} />
+                      ) : (
+                        <Pin className="mr-2 h-4 w-4" strokeWidth={ICON_STROKE} />
+                      )}
+                      {conversation.pinned ? "Unpin Chat" : "Pin Chat"}
+                    </DropdownMenuItem>
+                    <DropdownMenuSub>
+                      <DropdownMenuSubTrigger>
+                        <FolderInput className="mr-2 h-4 w-4" strokeWidth={ICON_STROKE} />
+                        Move to Project
+                      </DropdownMenuSubTrigger>
+                      <DropdownMenuSubContent>
+                        <DropdownMenuItem
+                          onClick={() => handleMoveConversationToProject(conversation, null)}
+                        >
+                          <Folder className="mr-2 h-4 w-4" strokeWidth={ICON_STROKE} />
+                          No project
+                        </DropdownMenuItem>
+                        <DropdownMenuSeparator />
+                        {conversationProjects.map((project) => (
+                          <DropdownMenuItem
+                            key={project.id}
+                            onClick={() =>
+                              handleMoveConversationToProject(conversation, project.id)
+                            }
+                          >
+                            <Folder className="mr-2 h-4 w-4" strokeWidth={ICON_STROKE} />
+                            {project.name}
+                          </DropdownMenuItem>
+                        ))}
+                      </DropdownMenuSubContent>
+                    </DropdownMenuSub>
+                    <DropdownMenuItem onClick={() => handleOpenRenameDialog(conversation)}>
+                      <Pencil className="mr-2 h-4 w-4" strokeWidth={ICON_STROKE} />
+                      Rename Chat
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => handleOpenDeleteDialog(conversation)}>
+                      <Trash className="mr-2 h-4 w-4" strokeWidth={ICON_STROKE} />
+                      Delete Chat
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </div>
+            </div>
           </>
         ) : null}
       </div>
@@ -1303,6 +1305,7 @@ export function ChatHistoryList({
         <RefreshCw
           ref={refreshIconRef}
           className={`h-4 w-4 text-muted-foreground ${isPullRefreshing ? "animate-spin" : ""}`}
+          strokeWidth={ICON_STROKE}
         />
       </div>
 
@@ -1319,7 +1322,7 @@ export function ChatHistoryList({
                   disabled
                   className="flex w-full items-center gap-2 rounded-2xl py-1.5 pl-0 pr-1 text-left text-muted-foreground/50 cursor-not-allowed"
                 >
-                  <FolderPlus className="h-4 w-4" />
+                  <FolderPlus className="h-4 w-4" strokeWidth={ICON_STROKE} />
                   <span>New project</span>
                 </button>
               </TooltipTrigger>
@@ -1331,9 +1334,9 @@ export function ChatHistoryList({
             <button
               type="button"
               onClick={handleOpenCreateProjectDialog}
-              className="flex w-full items-center gap-2 rounded-2xl py-1.5 pl-0 pr-1 text-left text-muted-foreground transition-colors hover:text-primary"
+              className="flex w-full items-center gap-2 rounded-2xl py-1.5 pl-0 pr-1 text-left text-foreground/95 transition-colors hover:text-foreground"
             >
-              <FolderPlus className="h-4 w-4" />
+              <FolderPlus className="h-4 w-4" strokeWidth={ICON_STROKE} />
               <span>New project</span>
             </button>
           )}
@@ -1343,62 +1346,65 @@ export function ChatHistoryList({
             const isProjectSelected = selectedProjectId === project.id;
             return (
               <div key={project.id} className="relative">
-                <div className="relative group">
+                <div className="relative isolate group w-full min-w-0">
                   <button
                     type="button"
                     onClick={() => handleToggleProjectExpanded(project.id)}
-                    className={`w-full rounded-2xl py-1 text-left text-muted-foreground transition-colors hover:text-primary ${
-                      isProjectExpanded || isProjectSelected ? "text-foreground" : ""
+                    className={`relative ${ROW_CONTENT_Z} w-full rounded-2xl py-1 text-left ${
+                      isProjectExpanded || isProjectSelected
+                        ? "font-bold text-foreground"
+                        : "text-foreground"
                     }`}
                   >
-                    <div className="flex items-center gap-2 pr-10">
+                    <div className="relative z-0 flex items-center gap-2 pr-8">
                       {isProjectExpanded ? (
-                        <ChevronDown className="h-4 w-4 shrink-0" />
+                        <ChevronDown className="h-4 w-4 shrink-0" strokeWidth={ICON_STROKE} />
                       ) : (
-                        <ChevronRight className="h-4 w-4 shrink-0" />
+                        <ChevronRight className="h-4 w-4 shrink-0" strokeWidth={ICON_STROKE} />
                       )}
-                      <Folder className="h-4 w-4" />
+                      <Folder className="h-4 w-4" strokeWidth={ICON_STROKE} />
                       <span className="truncate">{project.name}</span>
                     </div>
                   </button>
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <button
-                        className={`absolute right-1 top-1/2 -translate-y-1/2 ${SIDEBAR_ELLIPSIS_BTN} ${
-                          isMobile
-                            ? "opacity-100"
-                            : "opacity-0 group-hover:opacity-100 focus:opacity-100"
-                        }`}
-                        onClick={(event) => {
-                          event.preventDefault();
-                          event.stopPropagation();
-                        }}
-                      >
-                        <MoreHorizontal size={16} />
-                      </button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent>
-                      <DropdownMenuItem onClick={() => void handleViewProject(project.id)}>
-                        <Folder className="mr-2 h-4 w-4" />
-                        View Project
-                      </DropdownMenuItem>
-                      <DropdownMenuSeparator />
-                      <DropdownMenuItem onClick={() => handleOpenRenameProjectDialog(project)}>
-                        <Pencil className="mr-2 h-4 w-4" />
-                        Rename Project
-                      </DropdownMenuItem>
-                      <DropdownMenuItem onClick={() => handleOpenDeleteProjectDialog(project)}>
-                        <Trash className="mr-2 h-4 w-4" />
-                        Delete Project
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
+                  <div className={SIDEBAR_ELLIPSIS_TRIGGER_ROW}>
+                    <div className={SIDEBAR_ELLIPSIS_FADE} aria-hidden="true" />
+                    <div className="flex items-center">
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <button
+                            className={SIDEBAR_ELLIPSIS_BTN}
+                            onClick={(event) => {
+                              event.preventDefault();
+                              event.stopPropagation();
+                            }}
+                          >
+                            <MoreHorizontal className="h-4 w-4" strokeWidth={ICON_STROKE} />
+                          </button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent>
+                          <DropdownMenuItem onClick={() => void handleViewProject(project.id)}>
+                            <Folder className="mr-2 h-4 w-4" strokeWidth={ICON_STROKE} />
+                            View Project
+                          </DropdownMenuItem>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem onClick={() => handleOpenRenameProjectDialog(project)}>
+                            <Pencil className="mr-2 h-4 w-4" strokeWidth={ICON_STROKE} />
+                            Rename Project
+                          </DropdownMenuItem>
+                          <DropdownMenuItem onClick={() => handleOpenDeleteProjectDialog(project)}>
+                            <Trash className="mr-2 h-4 w-4" strokeWidth={ICON_STROKE} />
+                            Delete Project
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </div>
+                  </div>
                 </div>
 
                 {isProjectExpanded && filteredExpandedProjectConversations.length > 0 ? (
-                  <div className="ml-4 border-l border-border pl-3">
+                  <div className="w-full">
                     {filteredExpandedProjectConversations.map((conversation) =>
-                      renderConversationRow(conversation, { compact: true })
+                      renderConversationRow(conversation)
                     )}
                   </div>
                 ) : null}
@@ -1409,9 +1415,8 @@ export function ChatHistoryList({
 
         {filteredPinnedConversations.length > 0 ? (
           <div className="space-y-2">
-            <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
-              <Pin className="h-3.5 w-3.5" />
-              <span>Pinned</span>
+            <div className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+              Pinned
             </div>
             {filteredPinnedConversations.map((conversation) => renderConversationRow(conversation))}
           </div>
@@ -1445,9 +1450,9 @@ export function ChatHistoryList({
               className="mb-2 flex w-full items-center gap-2 text-xs font-medium uppercase tracking-wider text-muted-foreground transition-colors hover:text-foreground"
             >
               {isArchivedExpanded ? (
-                <ChevronDown className="h-3.5 w-3.5" />
+                <ChevronDown className="h-3.5 w-3.5" strokeWidth={ICON_STROKE} />
               ) : (
-                <ChevronRight className="h-3.5 w-3.5" />
+                <ChevronRight className="h-3.5 w-3.5" strokeWidth={ICON_STROKE} />
               )}
               <span>Archived ({filteredArchivedChats.length})</span>
             </button>
@@ -1456,68 +1461,66 @@ export function ChatHistoryList({
               <div className="flex flex-col gap-2">
                 {filteredArchivedChats.map((chat) => {
                   const isActive = chat.id === currentChatId;
-                  const archivedFadeClass = isMobile
-                    ? SIDEBAR_TITLE_FADE_MOBILE
-                    : isActive
-                      ? SIDEBAR_TITLE_FADE_DESKTOP_ACTIVE
-                      : SIDEBAR_TITLE_FADE_DESKTOP;
-                  const archivedTitlePaddingClass = isMobile
-                    ? "pr-8"
-                    : "pr-2 transition-[padding] duration-150 ease-out group-hover:pr-8";
+                  const archivedTitlePaddingClass = "pr-8";
                   return (
                     <div
                       key={chat.id}
-                      className="group relative flex items-center gap-0.5 rounded-2xl pr-1"
+                      className="group relative isolate flex w-full min-w-0 select-none items-stretch gap-0.5 rounded-2xl"
                     >
                       <div
                         onClick={() => {
                           setSelectedProjectId(null);
                           router.navigate({ to: "/chat/$chatId", params: { chatId: chat.id } });
                         }}
-                        className={`relative min-w-0 flex-1 cursor-pointer rounded-2xl py-1 transition-all hover:text-primary ${
-                          isActive ? "text-primary" : "text-muted-foreground"
+                        className={`relative ${ROW_CONTENT_Z} min-w-0 flex-1 cursor-pointer py-1 pl-0 pr-2 ${
+                          isActive
+                            ? "font-bold text-foreground"
+                            : "text-foreground/95 group-hover:text-foreground"
                         }`}
                       >
-                        <div className={`relative flex items-center ${archivedTitlePaddingClass}`}>
-                          <div className="min-w-0 flex-1 overflow-hidden whitespace-nowrap hover:underline">
+                        <div
+                          className={`relative flex min-w-0 items-center ${archivedTitlePaddingClass}`}
+                        >
+                          <div className="relative z-0 min-w-0 flex-1 overflow-hidden whitespace-nowrap">
                             {chat.title}
-                          </div>
-                          <div className={`${SIDEBAR_TITLE_FADE} ${archivedFadeClass}`} aria-hidden>
-                            <div className={SIDEBAR_TITLE_FADE_GRADIENT} />
-                            <div className={SIDEBAR_TITLE_FADE_CAP} />
                           </div>
                         </div>
                         <div className="mt-0.5 hidden text-[10px] opacity-50">
                           {new Date(chat.updated_at || chat.created_at).toLocaleDateString()}
                         </div>
                       </div>
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <button
-                            className={`absolute right-1 top-1/2 -translate-y-1/2 ${SIDEBAR_ELLIPSIS_BTN} ${
-                              isMobile
-                                ? "opacity-100"
-                                : "opacity-0 group-hover:opacity-100 focus:opacity-100"
-                            }`}
-                            onClick={(e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                            }}
-                          >
-                            <MoreHorizontal size={16} />
-                          </button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent>
-                          <DropdownMenuItem onClick={() => handleOpenRenameDialogArchived(chat)}>
-                            <Pencil className="mr-2 h-4 w-4" />
-                            <span>Rename Chat</span>
-                          </DropdownMenuItem>
-                          <DropdownMenuItem onClick={() => handleOpenDeleteDialogArchived(chat)}>
-                            <Trash className="mr-2 h-4 w-4" />
-                            <span>Delete Chat</span>
-                          </DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
+                      <div className={SIDEBAR_ELLIPSIS_TRIGGER_ROW}>
+                        <div className={SIDEBAR_ELLIPSIS_FADE} aria-hidden="true" />
+                        <div className="flex items-center">
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <button
+                                className={SIDEBAR_ELLIPSIS_BTN}
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                }}
+                              >
+                                <MoreHorizontal className="h-4 w-4" strokeWidth={ICON_STROKE} />
+                              </button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent>
+                              <DropdownMenuItem
+                                onClick={() => handleOpenRenameDialogArchived(chat)}
+                              >
+                                <Pencil className="mr-2 h-4 w-4" strokeWidth={ICON_STROKE} />
+                                <span>Rename Chat</span>
+                              </DropdownMenuItem>
+                              <DropdownMenuItem
+                                onClick={() => handleOpenDeleteDialogArchived(chat)}
+                              >
+                                <Trash className="mr-2 h-4 w-4" strokeWidth={ICON_STROKE} />
+                                <span>Delete Chat</span>
+                              </DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        </div>
+                      </div>
                     </div>
                   );
                 })}
