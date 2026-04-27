@@ -72,7 +72,7 @@ export function TeamInviteDialog({ open, onOpenChange, teamStatus }: TeamInviteD
     } catch (error) {
       console.error("Failed to open billing portal:", error);
       setError(
-        "Unable to open subscription management. Please try again or contact support@opensecret.cloud."
+        "Unable to open subscription management. Please try again or contact support@trymaple.ai."
       );
     } finally {
       setIsPortalLoading(false);

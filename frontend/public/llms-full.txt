@@ -139,7 +139,7 @@ Setup: Purchase seats on the Pricing page (minimum 2), invite colleagues by emai
 
 Pricing: $30/month per seat. No hidden fees. All features included.
 
-Contact for enterprise: team@trymaple.ai
+Contact for enterprise: support@trymaple.ai
 
 ## Developer API (Maple Proxy)
 
@@ -317,7 +317,7 @@ Early employee in Product and Engineering at multiple startups, including Instru
 Infrastructure engineer in many startups over 9+ years. Previous experience in defense, security, networking, and bitcoin companies.
 
 **Contact**
-- General/Teams: team@trymaple.ai
+- General/Teams: support@trymaple.ai
 - Support: support@trymaple.ai
 - Community: Discord (discord.gg/ch2gjZAMGy)
 - Social: X/Twitter (@TryMapleAI)

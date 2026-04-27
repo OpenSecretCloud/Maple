@@ -215,7 +215,7 @@ export function AccountMenu() {
     } catch (error) {
       console.error("Error fetching portal URL:", error);
       setPortalError(
-        "Unable to open subscription management. Please try again or contact support@opensecret.cloud."
+        "Unable to open subscription management. Please try again or contact support@trymaple.ai."
       );
     } finally {
       setIsPortalLoading(false);
@@ -469,7 +469,7 @@ export function AccountMenu() {
                     <DropdownMenuItem
                       onClick={(e) => {
                         e.preventDefault();
-                        handleOpenExternalUrl("mailto:support@opensecret.cloud");
+                        handleOpenExternalUrl("mailto:support@trymaple.ai");
                       }}
                       onSelect={(e) => {
                         e.preventDefault();

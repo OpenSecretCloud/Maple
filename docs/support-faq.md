@@ -44,7 +44,7 @@ Common user questions and suggested responses.
 - **Pro ($20/mo):** Generous usage for power users with a high monthly cap
 - **Max ($100/mo):** 20x more usage than Pro for maximum power users
 - **Team ($30/user/mo):** 2x more usage than Pro per team member with unified billing
-- **Enterprise:** Contact team@opensecret.cloud
+- **Enterprise:** Contact support@trymaple.ai
 
 **References:**
 - Pricing config: `/frontend/src/config/pricingConfig.tsx`

@@ -60,7 +60,7 @@ function TeamsPage() {
             Get Started with Teams <ArrowRight className="w-5 h-5" />
           </Link>
           <a
-            href="mailto:team@opensecret.cloud"
+            href="mailto:support@trymaple.ai"
             className="cta-button-secondary flex items-center gap-2 px-8 py-4 text-xl font-light rounded-lg border border-[hsl(var(--purple))]/30 hover:border-[hsl(var(--purple))] mt-2"
           >
             Request a Demo
@@ -286,7 +286,7 @@ function TeamsPage() {
             </div>
             <div className="mt-6 text-[hsl(var(--marketing-text-muted))] text-sm">
               Need a larger deployment or have compliance questions?{" "}
-              <a href="mailto:team@opensecret.cloud" className="underline hover:text-foreground">
+              <a href="mailto:support@trymaple.ai" className="underline hover:text-foreground">
                 Contact us
               </a>{" "}
               for enterprise options.

@@ -239,7 +239,7 @@ function DataFlowDiagram() {
   );
 }
 
-const CONTACT_EMAIL = "team@trymaple.ai";
+const CONTACT_EMAIL = "support@trymaple.ai";
 const CONTACT_SUBJECT = "Security Evaluation of Maple";
 const CONTACT_BODY = `Hi Maple team,
 
@@ -771,10 +771,10 @@ function Verify() {
             <p className="mt-8 text-sm text-[hsl(var(--marketing-text-muted))]">
               Questions? Reach us at{" "}
               <a
-                href="mailto:team@trymaple.ai"
+                href="mailto:support@trymaple.ai"
                 className="text-foreground hover:text-foreground/80 underline"
               >
-                team@trymaple.ai
+                support@trymaple.ai
               </a>
             </p>
           </div>

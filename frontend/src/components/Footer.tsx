@@ -45,7 +45,7 @@ export function Footer() {
                 <DiscordIcon className="h-5 w-5" />
               </a>
               <a
-                href="mailto:team@opensecret.cloud"
+                href="mailto:support@trymaple.ai"
                 className="dark:hover:text-[hsl(var(--blue))] hover:text-[hsl(var(--green))] transition-colors"
                 aria-label="Email"
               >
