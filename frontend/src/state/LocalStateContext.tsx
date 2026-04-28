@@ -1,8 +1,14 @@
 import { useOpenSecret } from "@opensecret/react";
 import { useCallback, useState } from "react";
 import { BillingStatus } from "@/billing/billingApi";
-import { LocalStateContext, Chat, HistoryItem, OpenSecretModel } from "./LocalStateContextDef";
-import { aliasModelName } from "@/utils/utils";
+import {
+  LocalStateContext,
+  Chat,
+  HistoryItem,
+  OpenSecretModel,
+  OpenSecretModelAlias
+} from "./LocalStateContextDef";
+import { aliasModelName, migrateStickyModelName } from "@/utils/utils";
 
 export {
   LocalStateContext,
@@ -11,8 +17,32 @@ export {
   type LocalState
 } from "./LocalStateContextDef";
 
-export const DEFAULT_MODEL_ID = "gpt-oss-120b";
-export const PAID_DEFAULT_MODEL_ID = "kimi-k2-6";
+export const QUICK_MODEL_ALIAS = "auto:quick";
+export const POWERFUL_MODEL_ALIAS = "auto:powerful";
+export const DEFAULT_MODEL_ID = QUICK_MODEL_ALIAS;
+export const PAID_DEFAULT_MODEL_ID = POWERFUL_MODEL_ALIAS;
+const SELECTED_MODEL_METADATA_KEY = "selectedModelMetadata";
+
+const DEFAULT_MODEL_ALIASES: OpenSecretModelAlias[] = [
+  {
+    id: QUICK_MODEL_ALIAS,
+    label: "Quick",
+    short_name: "Quick",
+    description: "Fast, everyday responses",
+    target_model: "",
+    access: "free",
+    capabilities: { chat: true, vision: false, reasoning: true, tool_use: true }
+  },
+  {
+    id: POWERFUL_MODEL_ALIAS,
+    label: "Powerful",
+    short_name: "Powerful",
+    description: "Deeper thinking & analysis",
+    target_model: "",
+    access: "pro",
+    capabilities: { chat: true, vision: true, reasoning: true, tool_use: true }
+  }
+];
 
 // Check if a plan name corresponds to a pro/max/team plan
 function isProMaxOrTeamPlan(planName: string): boolean {
@@ -65,7 +95,11 @@ function getInitialModel(): string {
     // Priority 1: Check local storage for user's explicit model choice
     const selectedModel = localStorage.getItem("selectedModel");
     if (selectedModel) {
-      return aliasModelName(selectedModel);
+      if (getCachedSelectedModelMetadata(selectedModel)) {
+        return selectedModel;
+      }
+
+      return migrateStickyModelName(selectedModel);
     }
 
     // Priority 2: Check if paid defaults were already applied
@@ -98,34 +132,73 @@ function normalizeAvailableModels(models: OpenSecretModel[]): OpenSecretModel[] 
   const normalizedModels = new Map<string, OpenSecretModel>();
 
   for (const model of models) {
-    const normalizedId = aliasModelName(model.id);
-    const normalizedModel = normalizedId === model.id ? model : { ...model, id: normalizedId };
-
-    if (!normalizedModels.has(normalizedId) || model.id === normalizedId) {
-      normalizedModels.set(normalizedId, normalizedModel);
+    if (!normalizedModels.has(model.id)) {
+      normalizedModels.set(model.id, model);
     }
   }
 
   return Array.from(normalizedModels.values());
 }
 
+function isAutoModelAlias(modelId: string): boolean {
+  return modelId === QUICK_MODEL_ALIAS || modelId === POWERFUL_MODEL_ALIAS;
+}
+
+function getCachedSelectedModelMetadata(modelId: string): OpenSecretModel | null {
+  if (!modelId || isAutoModelAlias(modelId)) return null;
+
+  try {
+    const cachedMetadata = localStorage.getItem(SELECTED_MODEL_METADATA_KEY);
+    if (!cachedMetadata) return null;
+
+    const parsedMetadata = JSON.parse(cachedMetadata) as OpenSecretModel;
+    if (parsedMetadata.id !== modelId) return null;
+
+    return {
+      ...parsedMetadata,
+      object: "model",
+      created: parsedMetadata.created || Date.now(),
+      owned_by: parsedMetadata.owned_by || "opensecret"
+    };
+  } catch (error) {
+    console.error("Failed to load selected model metadata:", error);
+    return null;
+  }
+}
+
+function cacheSelectedModelMetadata(modelId: string, modelMetadata?: OpenSecretModel | null) {
+  try {
+    if (!modelMetadata || isAutoModelAlias(modelId)) {
+      localStorage.removeItem(SELECTED_MODEL_METADATA_KEY);
+      return;
+    }
+
+    const cacheableMetadata: OpenSecretModel = {
+      ...modelMetadata,
+      id: modelId,
+      object: "model",
+      created: modelMetadata.created || Date.now(),
+      owned_by: modelMetadata.owned_by || "opensecret"
+    };
+
+    localStorage.setItem(SELECTED_MODEL_METADATA_KEY, JSON.stringify(cacheableMetadata));
+  } catch (error) {
+    console.error("Failed to cache selected model metadata:", error);
+  }
+}
+
 export const LocalStateProvider = ({ children }: { children: React.ReactNode }) => {
-  /** The model that should be assumed when a chat doesn't yet have one */
-  const defaultModel: OpenSecretModel = {
-    id: DEFAULT_MODEL_ID,
-    object: "model",
-    created: Date.now(),
-    owned_by: "openai",
-    tasks: ["generate"]
-  };
+  const initialModel = getInitialModel();
+  const cachedSelectedModel = getCachedSelectedModelMetadata(initialModel);
 
   const [localState, setLocalState] = useState({
     userPrompt: "",
     systemPrompt: null as string | null,
     userImages: [] as File[],
     sentViaVoice: false,
-    model: getInitialModel(),
-    availableModels: normalizeAvailableModels([defaultModel]),
+    model: initialModel,
+    availableModels: cachedSelectedModel ? [cachedSelectedModel] : ([] as OpenSecretModel[]),
+    modelAliases: DEFAULT_MODEL_ALIASES,
     hasWhisperModel: true, // Default to true to avoid hiding button during loading
     billingStatus: null as BillingStatus | null,
     searchQuery: "",
@@ -243,7 +316,7 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
     try {
       if (isProMaxOrTeam && !hasPaidDefaultsBeenApplied()) {
         // Apply paid defaults — set model to Powerful reasoning model
-        setModelInternal(PAID_DEFAULT_MODEL_ID);
+        setModelInternal(PAID_DEFAULT_MODEL_ID, true);
 
         // Enable web search
         localStorage.setItem("webSearchEnabled", "true");
@@ -266,7 +339,7 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
           // hasn't manually chosen one (selectedModel not in localStorage)
           const selectedModel = localStorage.getItem("selectedModel");
           if (!selectedModel) {
-            setModelInternal(PAID_DEFAULT_MODEL_ID);
+            setModelInternal(PAID_DEFAULT_MODEL_ID, true);
           }
         } else {
           // User downgraded to free/starter — switch back to free model
@@ -450,34 +523,43 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
 
   // Internal model setter — updates state and localStorage but does NOT mark as
   // a user's explicit choice. Used by billing/system logic.
-  function setModelInternal(modelId: string) {
+  function setModelInternal(modelId: string, persist = false) {
     const aliasedModel = aliasModelName(modelId);
     setLocalState((prev) => {
       if (prev.model === aliasedModel) return prev;
       return { ...prev, model: aliasedModel };
     });
-    try {
-      localStorage.setItem("selectedModel", aliasedModel);
-    } catch (error) {
-      console.error("Failed to save model to localStorage:", error);
+    if (persist) {
+      try {
+        localStorage.setItem("selectedModel", aliasedModel);
+        cacheSelectedModelMetadata(aliasedModel);
+      } catch (error) {
+        console.error("Failed to save model to localStorage:", error);
+      }
     }
   }
 
   // Public model setter — records the choice as a user-initiated selection.
   // After this, we won't auto-override their model choice.
-  function setModel(model: string) {
-    const aliasedModel = aliasModelName(model);
+  function setModel(model: string, modelMetadata?: OpenSecretModel | null) {
+    const nextModel = modelMetadata ? model : aliasModelName(model);
     setLocalState((prev) => {
-      if (prev.model === aliasedModel) return prev;
+      if (prev.model === nextModel && !modelMetadata) return prev;
 
       // Save to localStorage as user's explicit choice
       try {
-        localStorage.setItem("selectedModel", aliasedModel);
+        localStorage.setItem("selectedModel", nextModel);
+        cacheSelectedModelMetadata(nextModel, modelMetadata);
       } catch (error) {
         console.error("Failed to save model to localStorage:", error);
       }
 
-      return { ...prev, model: aliasedModel };
+      const availableModels =
+        modelMetadata && !isAutoModelAlias(nextModel)
+          ? normalizeAvailableModels([modelMetadata, ...prev.availableModels])
+          : prev.availableModels;
+
+      return { ...prev, model: nextModel, availableModels };
     });
   }
 
@@ -485,6 +567,13 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
     setLocalState((prev) => ({
       ...prev,
       availableModels: normalizeAvailableModels(models)
+    }));
+  }
+
+  function setModelAliases(aliases: OpenSecretModelAlias[]) {
+    setLocalState((prev) => ({
+      ...prev,
+      modelAliases: aliases.length > 0 ? aliases : DEFAULT_MODEL_ALIASES
     }));
   }
 
@@ -497,8 +586,10 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
       value={{
         model: localState.model,
         availableModels: localState.availableModels,
+        modelAliases: localState.modelAliases,
         setModel,
         setAvailableModels,
+        setModelAliases,
         hasWhisperModel: localState.hasWhisperModel,
         setHasWhisperModel,
         userPrompt: localState.userPrompt,

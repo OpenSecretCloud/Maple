@@ -7,7 +7,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Play, Square, Loader2, AlertCircle, CheckCircle, Server, Copy, Check } from "lucide-react";
 import { proxyService, ProxyConfig, ProxyStatus } from "@/services/proxyService";
 import { isTauriDesktop } from "@/utils/platform";
-import { LLAMA_MODEL_ID } from "@/utils/utils";
+import { QUICK_MODEL_ALIAS } from "@/utils/utils";
 
 interface ProxyConfigSectionProps {
   apiKeys: Array<{ name: string; created_at: string }>;
@@ -342,7 +342,7 @@ client = OpenAI(
 )
 
 response = client.chat.completions.create(
-  model="${LLAMA_MODEL_ID}",
+  model="${QUICK_MODEL_ALIAS}",
   messages=[{"role": "user", "content": "Hello!"}],
   stream=True
 )
@@ -360,7 +360,7 @@ for chunk in response:
                 <code>{`curl -N http://${config.host}:${config.port}/v1/chat/completions \\
   -H "Content-Type: application/json" \\
   -d '{
-    "model": "${LLAMA_MODEL_ID}",
+    "model": "${QUICK_MODEL_ALIAS}",
     "messages": [{"role": "user", "content": "Hello!"}],
     "stream": true
   }'`}</code>

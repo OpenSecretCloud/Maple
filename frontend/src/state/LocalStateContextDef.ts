@@ -5,9 +5,63 @@ import type { Responses } from "openai/resources/responses.js";
 type ResponseItem = Responses.ResponseItem;
 
 // Extended Model type for OpenSecret API which includes additional properties
+export type ModelAccessTier = "free" | "starter" | "pro";
+
+export type ModelCapabilities = {
+  chat?: boolean;
+  vision?: boolean;
+  reasoning?: boolean;
+  tool_use?: boolean;
+};
+
 export interface OpenSecretModel extends Model {
   tasks?: string[];
+  provider?: string;
+  provider_id?: string;
+  display_name?: string;
+  short_name?: string;
+  description?: string;
+  context_window?: number;
+  max_context_tokens?: number;
+  access?: ModelAccessTier;
+  capabilities?: ModelCapabilities;
+  badges?: string[];
+  enabled?: boolean;
+  deprecated?: boolean;
+  sort_order?: number;
 }
+
+export type OpenSecretModelAlias = {
+  id: "auto:quick" | "auto:powerful";
+  label: string;
+  short_name: string;
+  description: string;
+  target_model: string;
+  access?: ModelAccessTier;
+  capabilities?: ModelCapabilities;
+};
+
+export type OpenSecretModelCatalog = {
+  object: "list";
+  data: OpenSecretModel[];
+  aliases: OpenSecretModelAlias[];
+  defaults?: {
+    quick: "auto:quick";
+    powerful: "auto:powerful";
+  };
+  audio?: {
+    transcription?: {
+      available: boolean;
+      model: string;
+      display_name?: string;
+    };
+    speech?: {
+      available: boolean;
+      model: string;
+      display_name?: string;
+    };
+  };
+};
 
 export type Chat = {
   id: string;
@@ -26,8 +80,10 @@ export type HistoryItem = {
 export type LocalState = {
   model: string;
   availableModels: OpenSecretModel[];
-  setModel: (model: string) => void;
+  modelAliases: OpenSecretModelAlias[];
+  setModel: (model: string, modelMetadata?: OpenSecretModel | null) => void;
   setAvailableModels: (models: OpenSecretModel[]) => void;
+  setModelAliases: (aliases: OpenSecretModelAlias[]) => void;
   /** Whether the whisper transcription model is available */
   hasWhisperModel: boolean;
   setHasWhisperModel: (hasWhisper: boolean) => void;
@@ -71,8 +127,10 @@ export type LocalState = {
 export const LocalStateContext = createContext<LocalState>({
   model: "",
   availableModels: [],
+  modelAliases: [],
   setModel: () => void 0,
   setAvailableModels: () => void 0,
+  setModelAliases: () => void 0,
   hasWhisperModel: true,
   setHasWhisperModel: () => void 0,
   userPrompt: "",
