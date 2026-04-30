@@ -79,6 +79,8 @@ frontend/*.local
 *.tsbuildinfo
 
 **/.claude/settings.local.json
+.codex
+**/.codex/
 **/.factory/
 
 .repo_ignore
