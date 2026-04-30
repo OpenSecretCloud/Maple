@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { useNavigate } from "@tanstack/react-router";
 import { useIsMobile } from "@/utils/utils";
 import { useQuery } from "@tanstack/react-query";
+import { SIDEBAR_GRID_COLUMNS_CLASS, SIDEBAR_LAYOUT_STYLE } from "@/constants/layout";
 
 // Simple message type for archived chats
 interface ArchivedMessage {
@@ -214,7 +215,10 @@ function ChatComponent() {
 
   if (isPending) {
     return (
-      <div className="grid h-dvh w-full grid-cols-1 md:grid-cols-[296px_1fr]">
+      <div
+        style={SIDEBAR_LAYOUT_STYLE}
+        className={`grid h-dvh w-full grid-cols-1 ${SIDEBAR_GRID_COLUMNS_CLASS}`}
+      >
         <Sidebar chatId={chatId} isOpen={isSidebarOpen} onToggle={toggleSidebar} />
         <main className="flex h-dvh flex-col items-center justify-center">
           <p className="text-muted-foreground">Loading archived chat...</p>
@@ -225,7 +229,10 @@ function ChatComponent() {
 
   if (!chat) {
     return (
-      <div className="grid h-dvh w-full grid-cols-1 md:grid-cols-[296px_1fr]">
+      <div
+        style={SIDEBAR_LAYOUT_STYLE}
+        className={`grid h-dvh w-full grid-cols-1 ${SIDEBAR_GRID_COLUMNS_CLASS}`}
+      >
         <Sidebar chatId={chatId} isOpen={isSidebarOpen} onToggle={toggleSidebar} />
         <main className="flex h-dvh flex-col items-center justify-center">
           <p className="text-muted-foreground">Archived chat not found</p>
@@ -242,7 +249,10 @@ function ChatComponent() {
   }));
 
   return (
-    <div className="grid h-dvh w-full grid-cols-1 md:grid-cols-[296px_1fr]">
+    <div
+      style={SIDEBAR_LAYOUT_STYLE}
+      className={`grid h-dvh w-full grid-cols-1 ${SIDEBAR_GRID_COLUMNS_CLASS}`}
+    >
       <Sidebar chatId={chatId} isOpen={isSidebarOpen} onToggle={toggleSidebar} />
       <main className="flex h-dvh flex-col bg-card/90 backdrop-blur-lg bg-center overflow-hidden">
         {!isSidebarOpen && (

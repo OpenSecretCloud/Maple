@@ -46,6 +46,7 @@ import { DeleteChatDialog } from "@/components/DeleteChatDialog";
 import { BulkDeleteDialog } from "@/components/BulkDeleteDialog";
 import { MoveChatsDialog } from "@/components/MoveChatsDialog";
 import { listAllConversationProjects } from "@/utils/paginatedLists";
+import { SIDEBAR_GRID_COLUMNS_CLASS, SIDEBAR_LAYOUT_STYLE } from "@/constants/layout";
 
 const PROJECT_PAGE_SIZE = 20;
 const MAX_SELECTION = 20;
@@ -448,8 +449,9 @@ export function ProjectDetailView({ projectId }: ProjectDetailViewProps) {
   if (isProjectPending && !project) {
     return (
       <div
+        style={SIDEBAR_LAYOUT_STYLE}
         className={`grid h-dvh min-h-0 w-full grid-cols-1 overflow-hidden ${
-          isSidebarOpen ? "md:grid-cols-[296px_1fr]" : ""
+          isSidebarOpen ? SIDEBAR_GRID_COLUMNS_CLASS : ""
         }`}
       >
         <Sidebar isOpen={isSidebarOpen} onToggle={toggleSidebar} />
@@ -462,8 +464,9 @@ export function ProjectDetailView({ projectId }: ProjectDetailViewProps) {
 
   return (
     <div
+      style={SIDEBAR_LAYOUT_STYLE}
       className={`grid h-dvh min-h-0 w-full grid-cols-1 overflow-hidden ${
-        isSidebarOpen ? "md:grid-cols-[296px_1fr]" : ""
+        isSidebarOpen ? SIDEBAR_GRID_COLUMNS_CLASS : ""
       }`}
     >
       <Sidebar isOpen={isSidebarOpen} onToggle={toggleSidebar} />

@@ -18,6 +18,11 @@ import { cn, useClickOutside, useIsMobile } from "@/utils/utils";
 import { MapleWordmark } from "@/components/MapleWordmark";
 import { Input } from "./ui/input";
 import { useLocalState } from "@/state/useLocalState";
+import {
+  SIDEBAR_LAYOUT_STYLE,
+  SIDEBAR_MAX_WIDTH_CLASS,
+  SIDEBAR_WIDTH_CLASS
+} from "@/constants/layout";
 
 export function Sidebar({
   chatId,
@@ -191,12 +196,19 @@ export function Sidebar({
   return (
     <div
       ref={sidebarRef}
+      style={SIDEBAR_LAYOUT_STYLE}
       className={cn([
         "fixed md:static z-10 h-full overflow-x-hidden overflow-y-hidden",
-        isOpen ? "block w-[296px]" : "hidden"
+        isOpen ? `block ${SIDEBAR_WIDTH_CLASS}` : "hidden"
       ])}
     >
-      <div className="flex h-full min-h-0 min-w-0 w-[296px] max-w-[296px] flex-col items-stretch overflow-x-hidden border-r border-border/20 bg-muted backdrop-blur-lg dark:bg-[hsl(var(--sidebar))]">
+      <div
+        className={cn(
+          "flex h-full min-h-0 min-w-0 flex-col items-stretch overflow-x-hidden border-r border-border/20 bg-muted backdrop-blur-lg dark:bg-[hsl(var(--sidebar))]",
+          SIDEBAR_WIDTH_CLASS,
+          SIDEBAR_MAX_WIDTH_CLASS
+        )}
+      >
         {/* Header section */}
         <div className="flex flex-col gap-2 pt-3 pb-2">
           <div className="flex items-center pl-4 pr-[8px]">

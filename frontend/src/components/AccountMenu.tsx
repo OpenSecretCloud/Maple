@@ -52,6 +52,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { TeamManagementDialog } from "@/components/team/TeamManagementDialog";
 import { ApiKeyManagementDialog } from "@/components/apikeys/ApiKeyManagementDialog";
 import packageJson from "../../package.json";
+import { SIDEBAR_ACCOUNT_MENU_WIDTH_CLASS, SIDEBAR_LAYOUT_STYLE } from "@/constants/layout";
 
 function ConfirmDeleteDialog() {
   const { clearHistory } = useLocalState();
@@ -316,7 +317,8 @@ export function AccountMenu() {
             </div>
             {/* align=start: panel aligns to sidebar content edge; center was relative to the small icon */}
             <DropdownMenuContent
-              className="w-[calc(296px-2rem)] max-w-[calc(100vw-2rem)] overflow-hidden dark:bg-[hsl(var(--sidebar-chrome))]"
+              style={SIDEBAR_LAYOUT_STYLE}
+              className={`${SIDEBAR_ACCOUNT_MENU_WIDTH_CLASS} max-w-[calc(100vw_-_2rem)] overflow-hidden dark:bg-[hsl(var(--sidebar-chrome))]`}
               align="start"
               side="top"
               sideOffset={8}
