@@ -27,7 +27,7 @@ export function ConversationProjectPicker({
   const userId = os.auth.user?.user.id;
   const { data: projects = [] } = useQuery({
     queryKey: ["conversationProjects", userId],
-    queryFn: () => listAllConversationProjects(),
+    queryFn: () => listAllConversationProjects(os),
     enabled: !!userId
   });
 

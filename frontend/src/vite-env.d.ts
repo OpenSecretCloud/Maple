@@ -5,8 +5,6 @@ interface ImportMetaEnv {
   readonly VITE_CLIENT_ID?: string;
   readonly VITE_MAPLE_BILLING_API_URL?: string;
   readonly VITE_DEV_MODEL_OVERRIDE?: string;
-  /** Dev-only: number of fake sidebar chats, or "0"/"false" to disable. */
-  readonly VITE_MOCK_SIDEBAR_CHAT_COUNT?: string;
 }
 
 interface ImportMeta {

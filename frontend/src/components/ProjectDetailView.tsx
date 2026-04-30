@@ -12,13 +12,7 @@ import {
   SquarePen,
   Trash2
 } from "lucide-react";
-import {
-  useOpenSecret,
-  getConversationProject,
-  updateConversationProject,
-  deleteConversationProject,
-  type Conversation
-} from "@opensecret/react";
+import { useOpenSecret, type Conversation } from "@opensecret/react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Sidebar, SidebarToggle } from "@/components/Sidebar";
 import { useIsMobile } from "@/utils/utils";
@@ -183,13 +177,13 @@ export function ProjectDetailView({ projectId }: ProjectDetailViewProps) {
 
   const { data: project, isPending: isProjectPending } = useQuery({
     queryKey: ["conversationProject", projectId],
-    queryFn: () => getConversationProject(projectId),
+    queryFn: () => os.getConversationProject(projectId),
     enabled: !!projectId && hasAuthUser
   });
 
   const { data: conversationProjects = [] } = useQuery({
     queryKey: ["conversationProjects", userId],
-    queryFn: () => listAllConversationProjects(),
+    queryFn: () => listAllConversationProjects(os),
     enabled: !!userId
   });
 
@@ -324,28 +318,28 @@ export function ProjectDetailView({ projectId }: ProjectDetailViewProps) {
 
   const handleSaveProjectInstructions = useCallback(
     async (instructions: string | null) => {
-      await updateConversationProject(projectId, { instructions });
+      await os.updateConversationProject(projectId, { instructions });
       await invalidateConversationData();
     },
-    [invalidateConversationData, projectId]
+    [invalidateConversationData, os, projectId]
   );
 
   const handleRenameProject = useCallback(
     async (name: string) => {
-      await updateConversationProject(projectId, { name });
+      await os.updateConversationProject(projectId, { name });
       await invalidateConversationData();
     },
-    [invalidateConversationData, projectId]
+    [invalidateConversationData, os, projectId]
   );
 
   const handleDeleteProject = useCallback(async () => {
-    await deleteConversationProject(projectId);
+    await os.deleteConversationProject(projectId);
     await invalidateConversationData();
     setSelectedProjectId(null);
     window.history.replaceState({}, "", "/");
     window.dispatchEvent(new CustomEvent("newchat", { detail: { projectId: null } }));
     window.dispatchEvent(new Event("projectselected"));
-  }, [invalidateConversationData, projectId, setSelectedProjectId]);
+  }, [invalidateConversationData, os, projectId, setSelectedProjectId]);
 
   const handleRenameConversation = useCallback(
     async (conversationId: string, newTitle: string) => {

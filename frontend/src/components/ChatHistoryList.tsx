@@ -31,9 +31,6 @@ import { BulkDeleteDialog } from "@/components/BulkDeleteDialog";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   useOpenSecret,
-  createConversationProject,
-  updateConversationProject,
-  deleteConversationProject,
   type Conversation,
   type ConversationProjectListItem
 } from "@opensecret/react";
@@ -43,11 +40,6 @@ import { ConversationProjectDialog } from "@/components/ConversationProjectDialo
 import { DeleteConversationProjectDialog } from "@/components/DeleteConversationProjectDialog";
 import { MoveChatsDialog } from "@/components/MoveChatsDialog";
 import { listAllConversationProjects, listAllConversations } from "@/utils/paginatedLists";
-import {
-  buildMockSidebarConversations,
-  getMockSidebarChatCount,
-  isMockSidebarChatId
-} from "@/utils/mockSidebarChats";
 
 const MAX_PROJECTS = 10;
 /** Lucide default; keep sidebar list icons visually consistent. */
@@ -543,7 +535,7 @@ export function ChatHistoryList({
 
   const { data: conversationProjects = [] } = useQuery({
     queryKey: ["conversationProjects", userId],
-    queryFn: () => listAllConversationProjects(),
+    queryFn: () => listAllConversationProjects(opensecret),
     enabled: !!userId
   });
 
@@ -595,19 +587,6 @@ export function ChatHistoryList({
 
   const normalizedQuery = searchQuery.trim().toLowerCase();
 
-  const mockSidebarChatCount = getMockSidebarChatCount();
-  const mockSidebarConversations = useMemo(
-    () => buildMockSidebarConversations(mockSidebarChatCount),
-    [mockSidebarChatCount]
-  );
-
-  const displayConversations = useMemo(() => {
-    if (mockSidebarChatCount <= 0) return conversations;
-    const realIds = new Set(conversations.map((c) => c.id));
-    const mocks = mockSidebarConversations.filter((m) => !realIds.has(m.id));
-    return [...mocks, ...conversations];
-  }, [conversations, mockSidebarChatCount, mockSidebarConversations]);
-
   const filteredProjects = useMemo(() => {
     if (!normalizedQuery) return conversationProjects;
 
@@ -649,7 +628,7 @@ export function ChatHistoryList({
   }, [getConversationTitle, normalizedQuery, pinnedConversations]);
 
   const filteredRecentConversations = useMemo(() => {
-    const filtered = displayConversations.filter(
+    const filtered = conversations.filter(
       (conversation) => !conversation.pinned && !conversation.project_id
     );
 
@@ -658,7 +637,7 @@ export function ChatHistoryList({
     return filtered.filter((conversation) =>
       getConversationTitle(conversation).toLowerCase().includes(normalizedQuery)
     );
-  }, [displayConversations, getConversationTitle, normalizedQuery]);
+  }, [conversations, getConversationTitle, normalizedQuery]);
 
   // Filter archived chats based on search query
   const filteredArchivedChats = useMemo(() => {
@@ -738,7 +717,6 @@ export function ChatHistoryList({
   // Toggle selection of a single chat
   const toggleSelection = useCallback(
     (chatId: string) => {
-      if (isMockSidebarChatId(chatId)) return;
       const newSelection = new Set(selectedIds);
       if (newSelection.has(chatId)) {
         newSelection.delete(chatId);
@@ -823,7 +801,6 @@ export function ChatHistoryList({
   // Long press handlers for mobile selection mode activation
   const handleLongPressStart = useCallback(
     (chatId: string) => {
-      if (isMockSidebarChatId(chatId)) return;
       if (isSelectionMode) return; // Already in selection mode
 
       longPressTimerRef.current = setTimeout(() => {
@@ -983,27 +960,27 @@ export function ChatHistoryList({
 
   const handleCreateProject = useCallback(
     async (name: string) => {
-      const project = await createConversationProject({ name });
+      const project = await opensecret.createConversationProject({ name });
       await invalidateConversationData();
       await handleViewProject(project.id);
     },
-    [handleViewProject, invalidateConversationData]
+    [handleViewProject, invalidateConversationData, opensecret]
   );
 
   const handleRenameProject = useCallback(
     async (name: string) => {
       if (!selectedProject) return;
-      await updateConversationProject(selectedProject.id, { name });
+      await opensecret.updateConversationProject(selectedProject.id, { name });
       await invalidateConversationData();
     },
-    [invalidateConversationData, selectedProject]
+    [invalidateConversationData, opensecret, selectedProject]
   );
 
   const handleDeleteProject = useCallback(async () => {
     if (!selectedProject) return;
 
     try {
-      await deleteConversationProject(selectedProject.id);
+      await opensecret.deleteConversationProject(selectedProject.id);
       await invalidateConversationData();
 
       if (expandedProjectId === selectedProject.id) {
@@ -1026,6 +1003,7 @@ export function ChatHistoryList({
   }, [
     expandedProjectId,
     invalidateConversationData,
+    opensecret,
     selectedProject,
     selectedProjectId,
     setSelectedProjectId
@@ -1121,8 +1099,6 @@ export function ChatHistoryList({
   // Handle conversation selection
   const handleSelectConversation = useCallback(
     async (conversation: Conversation) => {
-      if (isMockSidebarChatId(conversation.id)) return;
-
       setSelectedProjectId(conversation.project_id ?? null);
 
       if (window.location.pathname !== "/") {
@@ -1182,10 +1158,9 @@ export function ChatHistoryList({
 
   const renderConversationRow = (conversation: Conversation) => {
     const title = getConversationTitle(conversation);
-    const isMockRow = isMockSidebarChatId(conversation.id);
     const isActive = conversation.id === currentChatId;
     const isSelected = selectedIds.has(conversation.id);
-    const titlePaddingClass = isMockRow ? "pr-2" : "pr-8";
+    const titlePaddingClass = "pr-8";
 
     const isBoldState = (isActive && !isSelectionMode) || (isSelectionMode && isSelected);
     const rowTextClass = isBoldState
@@ -1213,10 +1188,9 @@ export function ChatHistoryList({
           onTouchMove={handleLongPressMove}
           onTouchEnd={handleLongPressEnd}
           onTouchCancel={handleLongPressEnd}
-          title={isMockRow ? "Dev preview row (not a real chat)" : undefined}
           className={`relative ${ROW_CONTENT_Z} min-w-0 flex-1 py-1 pr-2 ${rowTextClass} ${
-            isMockRow ? "cursor-default" : "cursor-pointer"
-          } ${isSelectionMode ? "pl-8" : "pl-0"}`}
+            isSelectionMode ? "pl-8" : "pl-0"
+          } cursor-pointer`}
         >
           <div className={titlePaddingClass}>
             <div className="relative z-0 flex min-w-0 items-center gap-1.5">
@@ -1247,7 +1221,7 @@ export function ChatHistoryList({
             />
           </div>
         ) : null}
-        {!isSelectionMode && !isMockRow ? (
+        {!isSelectionMode ? (
           <>
             <div className={sidebarEllipsisTriggerRowClass(isMobile)}>
               <div className={SIDEBAR_ELLIPSIS_FADE} aria-hidden="true" />
