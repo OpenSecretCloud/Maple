@@ -2,13 +2,13 @@
 
 > Status: proposed strategy and execution plan
 >
-> Last updated: 2026-04-14
+> Last updated: 2026-04-30
 >
 > Purpose: define a deliberate three-phase plan for separating Maple's marketing and app surfaces without coupling this decision to the current redesign work, while still creating a clear long-term path to introduce a product-agnostic auth broker and later move the product from `https://trymaple.ai` to `https://app.trymaple.ai`.
 
 This document captures the current architectural constraints in the Maple frontend, the major migration risks, the options considered, the path that was chosen, and a concrete rollout plan.
 
-This is intentionally a planning document, not an implementation PR checklist for a single day. The goal is to avoid making a brittle short-term decision during the redesign while still preserving a clean long-term end state.
+This is primarily a planning document. The later runbook addendum turns the plan into a concrete checklist template, but the template still needs owners, exact dashboard values, and live validation data before a migration date is scheduled.
 
 ---
 
@@ -1726,3 +1726,810 @@ The following files were the main basis for this plan:
 - Mobile app-link and universal-link config currently depends on apex.
 - Apple web auth host behavior is sensitive to the current origin.
 - There are enough hardcoded apex URLs that a pure one-day string-replacement migration would be too risky.
+- The `www` launch showed that old permanent `301` redirects can remain cached in browsers for a long time; Phase 3 should use temporary redirects first and delay permanent redirects until the cutover is proven stable.
+
+---
+
+## 26. Phase 3 Launch-Day Runbook Addendum
+
+This section is the operational checklist template for the eventual `app.trymaple.ai` cutover.
+
+It intentionally repeats some earlier risks in a more executable form. The goal is to make the future migration boring: every external system should have a named owner, an old value, a new value, a validation step, and a rollback step before launch day.
+
+### 26.1 Status of this runbook
+
+This is a draft runbook, not approval to schedule the cutover.
+
+Before Phase 3 is scheduled, convert each item below into a checked-off launch plan with:
+
+- owner
+- exact dashboard or repository location
+- old value
+- new value
+- change window
+- validation command or manual test
+- rollback action
+- rollback trigger
+- evidence link or screenshot
+
+### 26.2 Non-negotiable cutover principles
+
+- Do not perform Phase 3 until the auth broker is already live and stable.
+- Do not combine first production broker launch with the final app-host cutover.
+- Do not rely on Cloudflare redirects as the primary auth architecture.
+- Do not rely on browser storage moving across origins; `trymaple.ai` and `app.trymaple.ai` have separate `localStorage` and `sessionStorage`.
+- Do not use `301`/permanent redirects during rehearsal, canary, or early cutover.
+- Do not redirect provider POST callbacks. Apple `form_post`-style flows must terminate at a real compatible endpoint or be proxied without changing method/body semantics.
+- Do not challenge protocol surfaces with WAF, Bot Fight Mode, managed challenges, or JS challenges.
+- Do not log OAuth codes, OAuth state, access tokens, refresh tokens, invite codes, checkout session IDs, webhook signatures, or payment provider payload secrets.
+- Do not mutate provider dashboards without screenshots or exports of old settings.
+- Do not depend on instant rollback for changes involving DNS, HSTS, app stores, associated-domain caches, provider dashboards, or browser-cached redirects.
+
+### 26.3 Roles and access-readiness checklist
+
+Before scheduling the cutover, assign named DRIs:
+
+| Area                             | Required owner before scheduling          | Access required                                                                 |
+| -------------------------------- | ----------------------------------------- | ------------------------------------------------------------------------------- |
+| Incident commander               | TBD                                       | All dashboards read access, authority to pause or roll back                     |
+| Cloudflare / DNS / WAF           | TBD                                       | Zone admin, Pages admin, Workers/Rules admin, Security Events                   |
+| Maple app deploy                 | TBD                                       | Web deploy, Tauri deploy, remote config, feature flags                          |
+| Marketing deploy                 | TBD                                       | Marketing Pages deploy, apex custom-domain switch                               |
+| Auth broker / OpenSecret config  | TBD                                       | Broker deploy, OpenSecret project/client config, OAuth redirect allowlists      |
+| Google OAuth                     | TBD                                       | Google Cloud Console OAuth client admin                                         |
+| GitHub OAuth / GitHub App        | TBD                                       | GitHub organization app/OAuth settings admin                                    |
+| Apple Developer                  | TBD                                       | Certificates, Identifiers & Profiles; Services ID; Associated Domains           |
+| Stripe                           | TBD                                       | Checkout, Billing Portal, webhook/event destination, customer email settings    |
+| Zaprite                          | TBD                                       | Hosted checkout, return URL, webhook/API settings                               |
+| iOS release                      | TBD                                       | Apple Developer, App Store Connect, TestFlight                                  |
+| Android release                  | TBD                                       | Play Console, signing certificate fingerprints, test devices                    |
+| Desktop release                  | TBD                                       | Tauri updater/release signing, GitHub Releases                                  |
+| Backend-generated links          | TBD                                       | Email templates, verify/reset/invite/redeem link config                         |
+| Support / communications         | TBD                                       | Status page, support macros, email/social/community channels                    |
+| Observability                    | TBD                                       | Logs, metrics, Cloudflare analytics, payment/auth/broker dashboards             |
+
+Access-readiness requirements:
+
+- every DRI can log in with 2FA before migration day
+- backup DRI exists for every critical dashboard
+- old settings are captured as screenshots or exported config
+- emergency contacts are listed in the runbook
+- support has a live escalation path to engineering
+
+### 26.4 Target host behavior on Phase 3 day
+
+| Host                         | Phase 3 behavior                                                    |
+| ---------------------------- | ------------------------------------------------------------------- |
+| `https://trymaple.ai`        | canonical marketing host                                            |
+| `https://www.trymaple.ai`    | redirect to canonical marketing host                                |
+| `https://app.trymaple.ai`    | canonical app host                                                  |
+| `https://auth.trymaple.ai`   | canonical auth broker host                                          |
+| `https://enclave.trymaple.ai` | backend/API host; must not be caught by marketing/app redirects     |
+| `https://blog.trymaple.ai`   | blog; must not be caught by marketing/app redirects                 |
+| `https://status.trymaple.ai` | status; must not be caught by marketing/app redirects               |
+
+Any broad redirect rule must explicitly avoid non-app subdomains.
+
+### 26.5 Cloudflare and DNS checklist
+
+#### Before cutover
+
+- Create and verify `app.trymaple.ai`.
+- Create and verify `auth.trymaple.ai`.
+- Confirm TLS certificates are active for apex, `www`, `app`, and `auth`.
+- Confirm HSTS implications. If `includeSubDomains` or preload is active, every cutover and rollback host must be HTTPS-ready before launch.
+- Confirm CAA records, if present, allow the certificate authorities used by Cloudflare and any origins.
+- Confirm Cloudflare Pages custom domains are active before traffic switch.
+- Confirm no old `www -> apex` or apex routing rules conflict with the desired Phase 3 behavior.
+- Confirm Cloudflare rule order:
+  1. protocol-surface exceptions
+  2. app compatibility redirects or proxies
+  3. marketing redirects
+  4. broad fallback behavior
+- Confirm WAF/security exceptions for:
+  - `/.well-known/apple-app-site-association`
+  - `/.well-known/assetlinks.json`
+  - `/auth/*` if any legacy callback compatibility remains
+  - `/desktop-auth*` if any legacy desktop compatibility remains
+  - `/payment-success*`
+  - `/payment-canceled*`
+  - payment provider webhook paths, if any are on this zone
+  - health checks
+- Confirm app shell and protocol surfaces are not cached incorrectly:
+  - app HTML shell should be `no-cache` or short-lived
+  - hashed assets can be immutable
+  - auth callbacks should not be cached
+  - payment returns should not be cached
+  - `.well-known` files should be cacheable only after correctness is verified
+
+#### Redirect rules
+
+- Use `302` or `307` for early compatibility redirects.
+- Preserve path and query string.
+- Do not use `301` until the migration is stable and the rollback window is closed.
+- Do not use wildcard redirects that accidentally catch:
+  - `enclave.trymaple.ai`
+  - `blog.trymaple.ai`
+  - `status.trymaple.ai`
+  - `auth.trymaple.ai`
+  - `app.trymaple.ai`
+  - payment webhooks
+  - `.well-known` files
+- Do not redirect provider POST callbacks. Proxy or keep endpoint compatibility instead.
+- Test for redirect loops involving:
+  - Always Use HTTPS
+  - origin-level redirects
+  - Pages redirects
+  - Redirect Rules
+  - Bulk Redirects
+  - Workers routes
+
+#### Low-level validation commands
+
+Run from more than one network if possible:
+
+```bash
+curl -I https://trymaple.ai/
+curl -I https://www.trymaple.ai/
+curl -I https://app.trymaple.ai/
+curl -I https://auth.trymaple.ai/
+curl -I https://app.trymaple.ai/login
+curl -I https://app.trymaple.ai/pricing
+curl -I https://app.trymaple.ai/.well-known/apple-app-site-association
+curl -I https://app.trymaple.ai/.well-known/assetlinks.json
+curl -I "https://trymaple.ai/login?next=%2Fchat%2Fexample"
+curl -I "https://trymaple.ai/payment-success?source=stripe"
+```
+
+Expected properties:
+
+- `app.trymaple.ai` app routes return the app or expected app fallback.
+- apex marketing routes do not redirect to app by accident.
+- legacy app routes either redirect temporarily to `app.trymaple.ai` or are handled by a deliberate compatibility endpoint.
+- `.well-known` files return `200`, not a redirect, challenge, marketing page, or app shell.
+
+### 26.6 Legacy route compatibility matrix for Phase 3
+
+This matrix must be finalized before cutover.
+
+| Legacy apex path family                   | Preferred Phase 3 behavior                                                         | Notes                                                                 |
+| ----------------------------------------- | ---------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| `/`                                       | apex marketing                                                                     | Do not steal marketing root for app compatibility                     |
+| `/login`, `/signup`                       | temporary redirect to same path on `app.trymaple.ai`                               | Preserve query string                                                 |
+| `/chat/*`                                 | temporary redirect to same path on `app.trymaple.ai`                               | Preserve path and query                                               |
+| `/?conversation_id=*`, `/?project_id=*`   | decide explicitly                                                                  | Root query app state conflicts with marketing root                    |
+| `/pricing`                                | apex marketing pricing or redirect to marketing pricing                            | Transactional app pricing lives on `app.trymaple.ai/pricing`          |
+| `/payment-success*`                       | temporary redirect or compatibility handler to app                                 | Preserve query string; validate mobile links                          |
+| `/payment-canceled*`                      | temporary redirect or compatibility handler to app                                 | Preserve query string; validate mobile links                          |
+| `/payment-success-credits*`               | normalize and handle deliberately                                                  | Current repo has an API-credits inconsistency                         |
+| `/?credits_success=true`                  | decide explicitly                                                                  | Root query app state conflicts with marketing root                    |
+| `/auth/$provider/callback`                | broker-owned compatibility endpoint or proxy; avoid POST redirects                 | Apple can require POST-compatible handling                            |
+| `/desktop-auth*`                          | broker-owned compatibility endpoint or redirect if GET-only                        | Validate desktop/native handoff                                       |
+| `/verify/$code`                           | temporary redirect to app or backend-generated links updated before cutover        | Confirm email link config                                             |
+| `/password-reset*`                        | temporary redirect to app or backend-generated links updated before cutover        | Confirm email link config                                             |
+| `/team/invite/$inviteId`                  | temporary redirect to app or backend-generated links updated before cutover        | Preserve invite context                                               |
+| `/redeem*`                                | temporary redirect to app                                                          | Preserve query string                                                 |
+| `/.well-known/apple-app-site-association` | serve exact required file, no redirect/challenge                                   | May need old apex and new app host during overlap                     |
+| `/.well-known/assetlinks.json`            | serve exact required file, no redirect/challenge                                   | Include all required Android fingerprints                             |
+| `/robots.txt`, `/sitemap.xml`, `/llms*`   | marketing-owned on apex                                                            | Update canonicals and Search Console                                  |
+
+### 26.7 OAuth provider migration checklist
+
+The desired Phase 3 state is that OAuth callbacks are already broker-owned on `auth.trymaple.ai`.
+
+#### Shared OAuth checklist
+
+- Inventory every OAuth client/app used by production, staging, desktop, iOS, and Android.
+- Identify whether each provider allows multiple callback URLs or requires an exact single callback switch.
+- Add broker callback URLs before cutover where overlap is supported.
+- Confirm OpenSecret project/client settings and backend allowlists support broker callbacks.
+- Confirm the frontend no longer constructs provider callback URLs from `window.location.origin` except where intentionally app-owned.
+- Confirm broker state carries:
+  - target product identifier
+  - target app origin
+  - selected plan
+  - post-auth redirect path
+  - redeem code or invite context
+  - native/desktop return intent
+  - CSRF nonce
+  - expiry
+- Confirm broker state is signed and cannot become an open redirect.
+- Confirm auth logs redact:
+  - authorization code
+  - state payload
+  - access token
+  - refresh token
+  - ID token
+  - invite/redeem codes
+- Confirm broker error pages are user-actionable and `noindex`.
+
+#### Google
+
+- Check Google Cloud Console OAuth client authorized redirect URIs.
+- Confirm the final redirect URI exactly matches the broker callback URI.
+- Keep old callback URI during overlap if the client supports multiple authorized redirect URIs.
+- Test login from:
+  - fresh browser on `app.trymaple.ai`
+  - existing user
+  - new signup
+  - selected-plan signup
+  - redeem/invite flow
+
+#### GitHub
+
+- Confirm whether Maple uses a GitHub OAuth App or GitHub App for login.
+- Confirm the exact callback URL model for that app.
+- If the current GitHub app cannot safely overlap old and new callback URLs, decide whether to:
+  - use a separate app/client for broker testing
+  - schedule a tight callback switch
+  - keep an apex compatibility endpoint temporarily
+- Test login and signup with both existing and new users.
+
+#### Apple Sign in with Apple
+
+- Confirm the Services ID, currently expected to be `cloud.opensecret.maple.services`.
+- Confirm every Web Domain and Return URL needed for broker/app behavior.
+- Do not assume wildcard return URLs.
+- Confirm any Apple domain-verification requirements for new domains.
+- Test:
+  - popup flow
+  - redirect fallback
+  - POST/form-post behavior
+  - account with private relay email
+  - account with previously authorized Apple credentials
+  - failure/cancel behavior
+- Confirm native iOS Sign in with Apple remains distinct from web Sign in with Apple.
+
+### 26.8 Auth broker production-readiness checklist
+
+The broker must be stable before Phase 3.
+
+Required broker behavior:
+
+- owns OAuth initiation
+- owns OAuth callbacks
+- owns desktop/native auth handoff
+- accepts only allowlisted target products or signed destinations
+- rejects arbitrary redirect URLs
+- carries selected plan, invite, redeem, and post-auth intent safely
+- supports Apple GET and POST callback semantics
+- provides human-readable failure pages
+- emits structured logs and metrics
+- redacts sensitive values
+- has health checks
+- has alerting
+- can be rolled back or disabled without breaking the current app
+
+Required broker tests:
+
+- GitHub auth start and callback
+- Google auth start and callback
+- Apple popup, redirect, and POST-compatible paths
+- expired state
+- tampered state
+- unapproved target
+- desktop/native handoff
+- mobile browser handoff
+- failed provider response
+- callback replay attempt
+
+### 26.9 Billing and payment checklist
+
+Billing remains app-owned during Phase 3.
+
+#### Stripe
+
+Inventory:
+
+- Checkout `success_url`
+- Checkout `cancel_url`
+- Customer Portal `return_url`
+- webhook/event destination URLs
+- product metadata URLs
+- customer emails, receipts, invoices, and portal links
+- support/contact URLs
+
+Requirements:
+
+- fulfillment must rely on signed webhooks, not just success-page visits
+- old and new return URLs should be accepted during the rollback window
+- webhook endpoints should not be challenged, cached, or redirected unexpectedly
+- Stripe Billing Portal return URL should point to `app.trymaple.ai` when the app becomes canonical
+- test mode and live mode settings must both be checked if both exist
+
+Smoke tests:
+
+- checkout success
+- checkout cancel
+- portal open and return
+- subscription update
+- subscription cancel
+- failed payment or incomplete payment path
+- webhook event received and processed
+
+#### Zaprite
+
+Inventory:
+
+- hosted checkout return/success URLs
+- webhook/API callback URLs
+- receipt/invoice links
+- delayed Bitcoin/Lightning settlement behavior
+- support/contact URLs
+
+Requirements:
+
+- old and new return routes remain valid during the settlement and rollback window
+- delayed settlement must still update the correct user/account even if the user never returns to the success URL
+- Zaprite webhook/API events should not be challenged, cached, or redirected unexpectedly
+
+Smoke tests:
+
+- hosted checkout success
+- user closes checkout without returning
+- delayed settlement
+- webhook/API event delivery
+- yearly/Bitcoin plan behavior
+
+#### API credits
+
+The current repo has an inconsistency around:
+
+- `/payment-success-credits`
+- `/payment-success`
+- `/payment-canceled`
+- `?credits_success=true`
+
+Before Phase 3:
+
+- make API-credit returns a first-class route family
+- decide the canonical app route for API-credit success/cancel
+- update mobile deep-link handling if necessary
+- add Stripe and Zaprite API-credit purchases to the smoke-test matrix
+
+### 26.10 Backend-generated links and transactional email checklist
+
+The frontend repo is not the whole source of truth.
+
+Inventory all systems that generate or store links for:
+
+- email verification
+- password reset
+- team invite
+- redeem flow
+- billing portal
+- plan checkout
+- API-credit checkout
+- account deletion or account management
+- support emails
+- onboarding emails
+- receipts and invoices
+- app store metadata
+- QR codes
+- support macros
+- status-page links
+- docs/help-center links
+- social/profile links
+- in-app announcements
+
+Required decisions:
+
+- Which backend config owns `appOrigin`?
+- Which backend config owns `marketingOrigin`?
+- Which backend config owns `authBrokerOrigin`?
+- Can those values be rolled back independently of frontend remote config?
+- How are old queued emails handled if they contain apex app links?
+
+### 26.11 Native, mobile, and desktop checklist
+
+#### iOS Universal Links
+
+Before Phase 3:
+
+- ship an iOS version that understands `app.trymaple.ai`
+- include both old and new associated domains during overlap if feasible
+- publish `apple-app-site-association` on `app.trymaple.ai`
+- keep apex association behavior available during the compatibility window if old clients need it
+- ensure AASA returns `200` with no redirects or challenges
+- test fresh install and upgrade install
+- test link handling after device cache has been warmed with the old domain
+- test payment success/cancel links
+
+#### Android App Links
+
+Before Phase 3:
+
+- ship an Android version that understands `app.trymaple.ai`
+- publish `assetlinks.json` on `app.trymaple.ai`
+- include every relevant release/upload signing certificate fingerprint
+- prefer clear per-host/per-path intent filters where possible
+- test verification with Android tooling and real devices
+- test fresh install and upgrade install
+- test payment success/cancel links
+
+#### Tauri desktop/mobile config
+
+Audit and update:
+
+- `frontend/src-tauri/tauri.conf.json`
+- generated Android manifest/config
+- generated Apple entitlements/config
+- `frontend/src-tauri/capabilities/default.json`
+- `frontend/src-tauri/capabilities/mobile-ios.json`
+- `frontend/src-tauri/capabilities/mobile-android.json`
+
+Required behavior:
+
+- desktop auth should be broker-owned before Phase 3
+- desktop return to `cloud.opensecret.maple://auth?...` should still work
+- external browser auth launch should not depend on apex
+- app capability allowlists should include required `app` and `auth` hosts
+- minimum-version enforcement should block versions that cannot understand the new host model
+
+### 26.12 Web-session and storage migration
+
+Current web auth uses origin-scoped browser storage.
+
+Moving from `trymaple.ai` to `app.trymaple.ai` means existing web sessions on apex will not automatically exist on `app`.
+
+Before Phase 3, choose one:
+
+1. **Expected re-login**
+
+   - simplest operationally
+   - communicate clearly
+   - ensure login is fast and reliable
+   - make sure old apex app links lead users to `app.trymaple.ai/login`
+
+2. **Broker-backed session handoff**
+
+   - apex app mints a short-lived one-time handoff before final cutover
+   - app host redeems it
+   - requires careful token handling and replay protection
+   - should not expose access or refresh tokens in logs or long-lived URLs
+
+3. **Dual-host overlap**
+
+   - both apex and app host serve the app briefly
+   - lets users migrate naturally
+   - increases complexity and duplicate-surface risk
+   - must be timeboxed
+
+Do not assume Cloudflare can read `localStorage` or determine auth state.
+
+### 26.13 App and config prep-release checklist
+
+Before Phase 3, ship app versions that:
+
+- use central URL builders
+- remove raw `https://trymaple.ai/...` app-host literals from feature code
+- read app/auth/marketing origins from config
+- cache last-known-good config
+- have safe bootstrap defaults
+- can flip host behavior without a new release
+- support `auth.trymaple.ai`
+- support `app.trymaple.ai`
+- still work with old config before cutover
+- expose minimum-version enforcement UI
+- clearly tell old users how to update
+
+Required config values:
+
+- `marketingOrigin`
+- `appOrigin`
+- `authBrokerOrigin`
+- `legacyApexOrigin`
+- `canonicalMarketingOrigin`
+- `canonicalAppOrigin`
+- `minimumSupportedDesktopVersion`
+- `minimumSupportedIosVersion`
+- `minimumSupportedAndroidVersion`
+- feature flags for broker/app-host rollout cohorts
+
+### 26.14 Dark-launch and canary plan
+
+Recommended sequence:
+
+1. Deploy `app.trymaple.ai` privately or internally.
+2. Deploy `auth.trymaple.ai` and validate broker flows while app remains on apex.
+3. Enable internal-only config pointing to `app.trymaple.ai`.
+4. Run full smoke tests with internal accounts.
+5. Enable a small allowlisted cohort.
+6. Monitor for at least one business cycle.
+7. Use temporary redirects for selected legacy app paths.
+8. Announce migration date.
+9. Freeze unrelated deploys.
+10. Perform public cutover.
+11. Keep temporary compatibility routes during the rollback window.
+12. Convert selected temporary redirects to permanent only after confidence is high.
+
+### 26.15 Phase 3 smoke-test matrix
+
+Each item needs an owner, account/device, expected result, and evidence.
+
+#### Basic HTTP and routing
+
+- apex marketing root
+- `www` redirect to apex marketing
+- `app` app root
+- `app` login
+- `app` signup
+- `app` pricing
+- legacy apex app path redirect/proxy behavior
+- path/query preservation
+- no redirect loop
+- no cached permanent redirect surprise
+
+#### Well-known files
+
+- `https://app.trymaple.ai/.well-known/apple-app-site-association`
+- `https://app.trymaple.ai/.well-known/assetlinks.json`
+- apex compatibility versions if intentionally kept
+- correct status
+- correct content type
+- no WAF challenge
+- no redirect
+
+#### Auth
+
+- GitHub login
+- GitHub signup
+- Google login
+- Google signup
+- Apple login popup
+- Apple redirect fallback
+- Apple POST/form-post-compatible callback
+- selected-plan signup
+- team invite signup
+- redeem signup
+- logout
+- auth cancellation/error path
+- tampered/expired broker state
+
+#### Billing
+
+- Stripe checkout success
+- Stripe checkout cancel
+- Stripe portal open and return
+- Zaprite checkout success
+- delayed Zaprite settlement
+- API credits via Stripe
+- API credits via Zaprite
+- webhook delivery and processing
+- payment return on mobile browser
+
+#### Account flows
+
+- email verification
+- request password reset
+- password reset confirm
+- team invite acceptance
+- redeem flow
+- account menu/legal links
+- billing management links
+
+#### Native
+
+- desktop GitHub auth
+- desktop Google auth
+- desktop Apple auth if supported
+- desktop return to custom scheme
+- iOS payment success universal link
+- iOS payment cancel universal link
+- Android payment success app link
+- Android payment cancel app link
+- old-client minimum-version block
+- update path from old client
+
+#### SEO and marketing
+
+- apex canonical tags
+- apex sitemap
+- apex robots
+- apex `llms.txt`
+- apex `llms-full.txt`
+- structured metadata
+- social preview
+- marketing CTA to app
+- Search Console property coverage
+
+### 26.16 Observability and alerting plan
+
+Baseline at least one week before cutover:
+
+- host/path traffic split
+- apex app-route traffic
+- `www` marketing traffic
+- OAuth starts by provider
+- OAuth callback success/failure by provider
+- broker handoff success/failure
+- desktop auth starts and completions
+- checkout created by provider
+- checkout returns by provider
+- webhook delivery success/failure
+- verification/password-reset/invite success
+- mobile app-link open rates where measurable
+- Cloudflare WAF/challenge/block counts by hostname/path
+- app-version distribution
+- support ticket categories
+
+Migration-day dashboards should show:
+
+- OAuth callback error rate by provider
+- Apple-specific callback errors
+- broker state validation failures
+- broker target rejection counts
+- payment webhook failures
+- payment return failures
+- legacy apex app-route hits
+- `app.trymaple.ai` 4xx/5xx rate
+- `auth.trymaple.ai` 4xx/5xx rate
+- Cloudflare redirect counts
+- Cloudflare WAF/challenge counts
+- TLS/certificate health
+- DNS health
+- support ticket volume
+
+Add non-PII correlation IDs to:
+
+- OAuth state
+- broker handoff
+- checkout metadata
+- payment return
+- backend logs
+
+Do not place tokens or secrets in correlation IDs.
+
+### 26.17 Rollback plan
+
+Rollback must be written before scheduling Phase 3.
+
+Rollback levers:
+
+- flip remote config back to apex app behavior
+- disable app-host cohort flag
+- restore old provider callback settings
+- restore old billing return settings
+- disable minimum-version enforcement
+- restore selected Cloudflare compatibility rules
+- pause marketing apex switch if still early
+- temporarily serve app on both apex and `app`
+- publish status/support guidance
+
+Rollback constraints:
+
+- app-store releases cannot be instantly undone
+- associated-domain caches may lag
+- DNS and certificate changes may not roll back instantly
+- browser-cached `301`s can persist
+- provider dashboard changes may have propagation delay
+- users who moved storage/session state to the new origin may need to re-authenticate
+
+Rollback trigger examples:
+
+- OAuth callback success drops below agreed threshold for more than N minutes
+- Apple login fails above agreed threshold
+- payment webhook processing fails above agreed threshold
+- support tickets spike above agreed threshold
+- app 5xx rate exceeds agreed threshold
+- minimum-version enforcement blocks too many supported users
+
+The exact thresholds must be filled in before launch.
+
+### 26.18 Cutover timeline template
+
+#### T-30 days
+
+- complete external-system inventory
+- choose final auth broker host
+- choose web-session migration strategy
+- choose legacy support window
+- confirm app-store release runway
+- create runbook owners
+
+#### T-21 days
+
+- ship prep releases
+- deploy broker to production
+- deploy `app.trymaple.ai` dark launch
+- enable internal config cohort
+- start baseline dashboards
+
+#### T-14 days
+
+- finish provider-dashboard rehearsals
+- finish billing-dashboard rehearsals
+- publish support macros
+- begin user communication if old clients need updates
+- validate app-store availability
+
+#### T-7 days
+
+- freeze risky unrelated changes
+- run full internal smoke test
+- verify rollback settings
+- verify Cloudflare rule order
+- verify WAF exceptions
+- screenshot all old external settings
+
+#### T-1 day
+
+- final go/no-go meeting
+- confirm owners and backup owners
+- verify dashboards
+- verify support staffing
+- prepare status-page draft
+- prepare rollback commands/settings
+
+#### T-0 cutover
+
+1. freeze unrelated deploys
+2. confirm app, auth, marketing, and billing health
+3. apply provider-dashboard changes if not already staged
+4. apply billing return/portal changes if needed
+5. flip remote config to app host
+6. enable minimum-version enforcement
+7. move marketing to apex
+8. redirect `www` to apex using temporary redirect first unless the rollback window is closed
+9. enable legacy compatibility rules
+10. run smoke-test matrix
+11. publish status update
+
+#### T+1 hour
+
+- review OAuth metrics
+- review billing metrics
+- review WAF/challenge metrics
+- review support tickets
+- decide continue/rollback
+
+#### T+1 day
+
+- review long-tail flows
+- review mobile app-link behavior
+- review Search Console and analytics
+- update support guidance
+
+#### T+7 to T+14 days
+
+- decide whether to remove temporary compatibility routes
+- decide whether any redirects can become permanent
+- keep old settings available until support volume is normal
+
+### 26.19 Decisions required before Phase 3 can be scheduled
+
+The following decisions are still required:
+
+1. Is `auth.trymaple.ai` definitely the sole long-term OAuth callback host?
+2. Will `app.trymaple.ai/auth/*/callback` exist at all, or only broker callbacks?
+3. How will existing web users move from apex local storage/session state to the app subdomain?
+4. Is expected re-login acceptable, or do we need a broker-backed one-time session handoff?
+5. How long will old apex app-route compatibility remain after Phase 3?
+6. Which old apex protocol endpoints remain live instead of redirecting?
+7. Should Apple use the existing Services ID or a new broker-specific Services ID?
+8. Can GitHub callback migration be staged with current app settings, or does it need a separate OAuth/GitHub App?
+9. Which mobile hosts are included during overlap: apex only, apex + app, or apex + app + auth?
+10. What adoption threshold is required before enforcing minimum desktop/iOS/Android versions?
+11. Who owns backend-generated app links?
+12. Are Stripe and Zaprite webhooks on billing domains, app domains, or provider-managed defaults?
+13. When is it safe to convert any temporary redirects to `301`?
+14. What support SLA applies during the cutover window?
+15. What exact metric thresholds trigger rollback?
+
+### 26.20 Items that must be manually verified outside this repo
+
+These cannot be proven from this repository:
+
+- Cloudflare live DNS, Rules, Workers, Pages custom domains, WAF, and Security Events
+- Google Cloud Console OAuth client settings
+- GitHub OAuth App or GitHub App callback settings
+- Apple Developer Services ID, domains, return URLs, associated domains, and App Store state
+- Stripe live/test checkout, portal, webhook, email, receipt, and product URL settings
+- Zaprite checkout, webhook/API, email, receipt, and settlement behavior
+- OpenSecret backend/project callback allowlists and generated-link configuration
+- billing backend environment variables and webhook handlers
+- production email templates and queued transactional emails
+- app store metadata
+- support macros and status page links
+
+Do not schedule Phase 3 until this external inventory is complete.
