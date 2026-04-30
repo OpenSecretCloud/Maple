@@ -43,6 +43,7 @@
 @layer base {
   body {
     @apply h-dvh;
+
     font-family: var(--app-font-family);
     font-size: 14px;
   }

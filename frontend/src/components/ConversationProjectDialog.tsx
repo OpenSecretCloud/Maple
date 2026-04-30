@@ -69,11 +69,7 @@ export function ConversationProjectDialog({
       onOpenChange(false);
     } catch (submitError) {
       console.error("Failed to save conversation project:", submitError);
-      const errorMessage =
-        submitError instanceof Error && submitError.message
-          ? `Failed to save project: ${submitError.message}`
-          : "Failed to save project. Please try again.";
-      setError(errorMessage);
+      setError("Failed to save project. Please try again.");
     } finally {
       setIsLoading(false);
     }

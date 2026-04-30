@@ -297,7 +297,7 @@ export function Sidebar({
         <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
           <nav
             ref={historyContainerRef}
-            className="sidebar-scrollbar relative flex min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-clip pl-4 pr-2 pt-5 md:px-4"
+            className="sidebar-scrollbar relative flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto overflow-x-clip pl-4 pr-2 pt-5 md:px-4"
           >
             <ChatHistoryList
               currentChatId={chatId}
