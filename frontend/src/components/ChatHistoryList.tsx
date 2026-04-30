@@ -43,6 +43,11 @@ import { ConversationProjectDialog } from "@/components/ConversationProjectDialo
 import { DeleteConversationProjectDialog } from "@/components/DeleteConversationProjectDialog";
 import { MoveChatsDialog } from "@/components/MoveChatsDialog";
 import { listAllConversationProjects, listAllConversations } from "@/utils/paginatedLists";
+import {
+  buildMockSidebarConversations,
+  getMockSidebarChatCount,
+  isMockSidebarChatId
+} from "@/utils/mockSidebarChats";
 
 const MAX_PROJECTS = 10;
 /** Lucide default; keep sidebar list icons visually consistent. */
@@ -52,7 +57,13 @@ const ROW_CHECKBOX_Z = "z-20";
 const ROW_MENU_Z = "z-30";
 const SIDEBAR_ELLIPSIS_FADE =
   "pointer-events-none w-4 shrink-0 self-stretch bg-gradient-to-r from-transparent to-[hsl(var(--muted))] dark:to-[hsl(var(--sidebar))]";
-const SIDEBAR_ELLIPSIS_TRIGGER_ROW = `absolute inset-y-0 right-0 ${ROW_MENU_Z} flex min-h-0 items-stretch`;
+const SIDEBAR_ELLIPSIS_TRIGGER_ROW_BASE = `absolute inset-y-0 right-0 ${ROW_MENU_Z} flex min-h-0 items-stretch`;
+
+/** Desktop: hide overflow menu until row hover, keyboard focus, or open menu (touch keeps it visible). */
+function sidebarEllipsisTriggerRowClass(isMobile: boolean): string {
+  if (isMobile) return SIDEBAR_ELLIPSIS_TRIGGER_ROW_BASE;
+  return `${SIDEBAR_ELLIPSIS_TRIGGER_ROW_BASE} transition-opacity duration-150 opacity-0 pointer-events-none group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100 has-[[data-state=open]]:pointer-events-auto has-[[data-state=open]]:opacity-100`;
+}
 const SIDEBAR_ELLIPSIS_BTN =
   "relative z-10 shrink-0 rounded-full border-0 bg-muted p-1.5 text-foreground/40 transition-colors dark:bg-[hsl(var(--sidebar))] hover:text-foreground group-hover:text-foreground focus-visible:text-foreground focus-visible:outline-none";
 
@@ -584,6 +595,19 @@ export function ChatHistoryList({
 
   const normalizedQuery = searchQuery.trim().toLowerCase();
 
+  const mockSidebarChatCount = getMockSidebarChatCount();
+  const mockSidebarConversations = useMemo(
+    () => buildMockSidebarConversations(mockSidebarChatCount),
+    [mockSidebarChatCount]
+  );
+
+  const displayConversations = useMemo(() => {
+    if (mockSidebarChatCount <= 0) return conversations;
+    const realIds = new Set(conversations.map((c) => c.id));
+    const mocks = mockSidebarConversations.filter((m) => !realIds.has(m.id));
+    return [...mocks, ...conversations];
+  }, [conversations, mockSidebarChatCount, mockSidebarConversations]);
+
   const filteredProjects = useMemo(() => {
     if (!normalizedQuery) return conversationProjects;
 
@@ -625,7 +649,7 @@ export function ChatHistoryList({
   }, [getConversationTitle, normalizedQuery, pinnedConversations]);
 
   const filteredRecentConversations = useMemo(() => {
-    const filtered = conversations.filter(
+    const filtered = displayConversations.filter(
       (conversation) => !conversation.pinned && !conversation.project_id
     );
 
@@ -634,7 +658,7 @@ export function ChatHistoryList({
     return filtered.filter((conversation) =>
       getConversationTitle(conversation).toLowerCase().includes(normalizedQuery)
     );
-  }, [conversations, getConversationTitle, normalizedQuery]);
+  }, [displayConversations, getConversationTitle, normalizedQuery]);
 
   // Filter archived chats based on search query
   const filteredArchivedChats = useMemo(() => {
@@ -714,6 +738,7 @@ export function ChatHistoryList({
   // Toggle selection of a single chat
   const toggleSelection = useCallback(
     (chatId: string) => {
+      if (isMockSidebarChatId(chatId)) return;
       const newSelection = new Set(selectedIds);
       if (newSelection.has(chatId)) {
         newSelection.delete(chatId);
@@ -798,6 +823,7 @@ export function ChatHistoryList({
   // Long press handlers for mobile selection mode activation
   const handleLongPressStart = useCallback(
     (chatId: string) => {
+      if (isMockSidebarChatId(chatId)) return;
       if (isSelectionMode) return; // Already in selection mode
 
       longPressTimerRef.current = setTimeout(() => {
@@ -1095,6 +1121,8 @@ export function ChatHistoryList({
   // Handle conversation selection
   const handleSelectConversation = useCallback(
     async (conversation: Conversation) => {
+      if (isMockSidebarChatId(conversation.id)) return;
+
       setSelectedProjectId(conversation.project_id ?? null);
 
       if (window.location.pathname !== "/") {
@@ -1154,9 +1182,10 @@ export function ChatHistoryList({
 
   const renderConversationRow = (conversation: Conversation) => {
     const title = getConversationTitle(conversation);
+    const isMockRow = isMockSidebarChatId(conversation.id);
     const isActive = conversation.id === currentChatId;
     const isSelected = selectedIds.has(conversation.id);
-    const titlePaddingClass = "pr-8";
+    const titlePaddingClass = isMockRow ? "pr-2" : "pr-8";
 
     const isBoldState = (isActive && !isSelectionMode) || (isSelectionMode && isSelected);
     const rowTextClass = isBoldState
@@ -1184,9 +1213,10 @@ export function ChatHistoryList({
           onTouchMove={handleLongPressMove}
           onTouchEnd={handleLongPressEnd}
           onTouchCancel={handleLongPressEnd}
-          className={`relative ${ROW_CONTENT_Z} min-w-0 flex-1 cursor-pointer py-1 pr-2 ${rowTextClass} ${
-            isSelectionMode ? "pl-8" : "pl-0"
-          }`}
+          title={isMockRow ? "Dev preview row (not a real chat)" : undefined}
+          className={`relative ${ROW_CONTENT_Z} min-w-0 flex-1 py-1 pr-2 ${rowTextClass} ${
+            isMockRow ? "cursor-default" : "cursor-pointer"
+          } ${isSelectionMode ? "pl-8" : "pl-0"}`}
         >
           <div className={titlePaddingClass}>
             <div className="relative z-0 flex min-w-0 items-center gap-1.5">
@@ -1217,9 +1247,9 @@ export function ChatHistoryList({
             />
           </div>
         ) : null}
-        {!isSelectionMode ? (
+        {!isSelectionMode && !isMockRow ? (
           <>
-            <div className={SIDEBAR_ELLIPSIS_TRIGGER_ROW}>
+            <div className={sidebarEllipsisTriggerRowClass(isMobile)}>
               <div className={SIDEBAR_ELLIPSIS_FADE} aria-hidden="true" />
               <div className="flex items-center">
                 <DropdownMenu>
@@ -1309,7 +1339,11 @@ export function ChatHistoryList({
         />
       </div>
 
-      <div ref={pullContentRef} className="flex flex-col gap-5" style={{ willChange: "transform" }}>
+      <div
+        ref={pullContentRef}
+        className="flex min-w-0 w-full max-w-full flex-col gap-5"
+        style={{ willChange: "transform" }}
+      >
         <div className="space-y-2">
           <div className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
             Projects
@@ -1362,11 +1396,10 @@ export function ChatHistoryList({
                       ) : (
                         <ChevronRight className="h-4 w-4 shrink-0" strokeWidth={ICON_STROKE} />
                       )}
-                      <Folder className="h-4 w-4" strokeWidth={ICON_STROKE} />
                       <span className="truncate">{project.name}</span>
                     </div>
                   </button>
-                  <div className={SIDEBAR_ELLIPSIS_TRIGGER_ROW}>
+                  <div className={sidebarEllipsisTriggerRowClass(isMobile)}>
                     <div className={SIDEBAR_ELLIPSIS_FADE} aria-hidden="true" />
                     <div className="flex items-center">
                       <DropdownMenu>
@@ -1402,7 +1435,7 @@ export function ChatHistoryList({
                 </div>
 
                 {isProjectExpanded && filteredExpandedProjectConversations.length > 0 ? (
-                  <div className="w-full">
+                  <div className="mt-2 w-full space-y-2 pl-6">
                     {filteredExpandedProjectConversations.map((conversation) =>
                       renderConversationRow(conversation)
                     )}
@@ -1489,7 +1522,7 @@ export function ChatHistoryList({
                           {new Date(chat.updated_at || chat.created_at).toLocaleDateString()}
                         </div>
                       </div>
-                      <div className={SIDEBAR_ELLIPSIS_TRIGGER_ROW}>
+                      <div className={sidebarEllipsisTriggerRowClass(isMobile)}>
                         <div className={SIDEBAR_ELLIPSIS_FADE} aria-hidden="true" />
                         <div className="flex items-center">
                           <DropdownMenu>

@@ -328,7 +328,7 @@ function ResponsiveTable({ children, className, ...rest }: JSX.IntrinsicElements
       <div
         ref={scrollRef}
         className={cn(
-          "overflow-x-auto overflow-y-visible overscroll-x-contain",
+          "maple-thin-scrollbar overflow-x-auto overflow-y-visible overscroll-x-contain",
           "[-webkit-overflow-scrolling:touch]"
         )}
       >

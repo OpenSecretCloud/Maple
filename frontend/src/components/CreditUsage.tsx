@@ -68,7 +68,7 @@ type CreditUsageViewProps = {
 function CreditUsageView(p: CreditUsageViewProps) {
   return (
     <div
-      className="w-full rounded-xl border border-[hsl(var(--sidebar-chrome))] bg-[hsl(var(--sidebar-chrome))]/30 p-2"
+      className="w-full rounded-xl bg-[hsl(var(--sidebar-chrome))] p-2"
       title={p.resetFullLabel || undefined}
     >
       <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[10px] leading-tight">
@@ -95,7 +95,7 @@ function CreditUsageView(p: CreditUsageViewProps) {
         role="group"
         aria-label={`${p.roundedRemaining} percent of plan tokens remaining. Hover the usage bar or focus this control to read exact token counts.`}
       >
-        <div className="h-[4px] w-full overflow-hidden rounded-full bg-[hsl(var(--sidebar-chrome))]">
+        <div className="h-[4px] w-full overflow-hidden rounded-full bg-[hsl(var(--sidebar-chrome-hover))]">
           <div
             className="h-full rounded-full transition-[width] duration-500 ease-out"
             style={{
