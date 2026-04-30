@@ -17,6 +17,8 @@ import { ProxyEventListener } from "./components/ProxyEventListener";
 import { UpdateEventListener } from "./components/UpdateEventListener";
 import { TTSProvider } from "./services/tts/TTSContext";
 
+const DEFAULT_OPEN_SECRET_CLIENT_ID = "ba5a14b5-d915-47b1-b7b1-afda52bc5fc6";
+
 // Create a new router instance
 const router = createRouter({
   routeTree,
@@ -56,7 +58,7 @@ export default function App() {
       <NotificationProvider>
         <OpenSecretProvider
           apiUrl={import.meta.env.VITE_OPEN_SECRET_API_URL}
-          clientId={import.meta.env.VITE_CLIENT_ID}
+          clientId={import.meta.env.VITE_CLIENT_ID || DEFAULT_OPEN_SECRET_CLIENT_ID}
           pcrConfig={{
             pcr0Values: [
               "ed9109c16f30a470cf0ea2251816789b4ffa510c990118323ce94a2364b9bf05bdb8777959cbac86f5cabc4852e0da71",

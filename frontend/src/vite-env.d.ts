@@ -1,6 +1,12 @@
 /// <reference types="vite/client" />
 
 interface ImportMetaEnv {
-  /** Dev-only: number of fake sidebar chats, or "0"/"false" to disable. */
-  readonly VITE_MOCK_SIDEBAR_CHAT_COUNT?: string;
+  readonly VITE_OPEN_SECRET_API_URL: string;
+  readonly VITE_CLIENT_ID?: string;
+  readonly VITE_MAPLE_BILLING_API_URL?: string;
+  readonly VITE_DEV_MODEL_OVERRIDE?: string;
+}
+
+interface ImportMeta {
+  readonly env: ImportMetaEnv;
 }
