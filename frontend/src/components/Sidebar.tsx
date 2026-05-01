@@ -18,6 +18,11 @@ import { cn, useClickOutside, useIsMobile } from "@/utils/utils";
 import { MapleWordmark } from "@/components/MapleWordmark";
 import { Input } from "./ui/input";
 import { useLocalState } from "@/state/useLocalState";
+import {
+  SIDEBAR_LAYOUT_STYLE,
+  SIDEBAR_MAX_WIDTH_CLASS,
+  SIDEBAR_WIDTH_CLASS
+} from "@/constants/layout";
 
 export function Sidebar({
   chatId,
@@ -191,12 +196,19 @@ export function Sidebar({
   return (
     <div
       ref={sidebarRef}
+      style={SIDEBAR_LAYOUT_STYLE}
       className={cn([
-        "fixed md:static z-10 h-full overflow-y-hidden",
-        isOpen ? "block w-[280px]" : "hidden"
+        "fixed md:static z-10 h-full overflow-x-hidden overflow-y-hidden",
+        isOpen ? `block ${SIDEBAR_WIDTH_CLASS}` : "hidden"
       ])}
     >
-      <div className="flex h-full w-[280px] flex-col items-stretch border-r border-border/20 bg-muted backdrop-blur-lg dark:bg-[hsl(var(--sidebar))]">
+      <div
+        className={cn(
+          "flex h-full min-h-0 min-w-0 flex-col items-stretch overflow-x-hidden border-r border-border/20 bg-muted backdrop-blur-lg dark:bg-[hsl(var(--sidebar))]",
+          SIDEBAR_WIDTH_CLASS,
+          SIDEBAR_MAX_WIDTH_CLASS
+        )}
+      >
         {/* Header section */}
         <div className="flex flex-col gap-2 pt-3 pb-2">
           <div className="flex items-center pl-4 pr-[8px]">
@@ -214,10 +226,11 @@ export function Sidebar({
           </div>
           <div className="flex flex-col gap-2 px-4">
             <button
-              className="flex w-full items-center justify-start gap-2 py-1.5 pr-1 pl-0 text-sm text-foreground hover:text-foreground/70 transition-colors"
+              type="button"
+              className="flex w-full items-center justify-start gap-2 py-1.5 pr-1 pl-0 text-sm text-[hsl(var(--maple-primary-strong))] transition-colors hover:text-[hsl(var(--maple-primary))] dark:text-[hsl(var(--maple-primary))] dark:hover:text-[hsl(var(--maple-primary-strong))]"
               onClick={addChat}
             >
-              <SquarePenIcon className="h-4 w-4" />
+              <SquarePenIcon className="h-4 w-4 shrink-0" />
               New Chat
             </button>
             <button
@@ -293,25 +306,40 @@ export function Sidebar({
             )}
           </div>
         )}
-        <nav
-          ref={historyContainerRef}
-          className={cn(
-            "relative flex-1 overflow-y-auto pl-4 pr-2 md:px-4",
-            isSearchVisible ? "pt-3" : "pt-1"
-          )}
-        >
-          <ChatHistoryList
-            currentChatId={chatId}
-            searchQuery={searchQuery}
-            isMobile={isMobile}
-            isSelectionMode={isSelectionMode}
-            onExitSelectionMode={exitSelectionMode}
-            selectedIds={selectedIds}
-            onSelectionChange={setSelectedIds}
-            containerRef={historyContainerRef}
+        <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
+          <nav
+            ref={historyContainerRef}
+            className="sidebar-scrollbar relative flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto overflow-x-clip pl-4 pr-2 pt-5 md:px-4"
+          >
+            <ChatHistoryList
+              currentChatId={chatId}
+              searchQuery={searchQuery}
+              isMobile={isMobile}
+              isSelectionMode={isSelectionMode}
+              onExitSelectionMode={exitSelectionMode}
+              selectedIds={selectedIds}
+              onSelectionChange={setSelectedIds}
+              containerRef={historyContainerRef}
+            />
+            {/* Real empty tail so the last row sits in clear space — no overlay on hit targets */}
+            <div aria-hidden className="min-h-[7.5rem] shrink-0 bg-transparent" />
+          </nav>
+          {/* Fades sit over the scrollport; spacer above keeps last rows out of the bottom band */}
+          <div
+            aria-hidden
+            className={cn(
+              "pointer-events-none absolute left-0 top-0 z-[8] h-8 w-[calc(100%-10px)] max-w-full bg-gradient-to-b to-transparent",
+              isSearchVisible
+                ? "from-background/75 dark:from-background/75"
+                : "from-muted/75 dark:from-[hsl(var(--sidebar)/0.75)]"
+            )}
           />
-        </nav>
-        <div className="w-full px-4 pb-4">
+          <div
+            aria-hidden
+            className="pointer-events-none absolute bottom-0 left-0 z-[8] h-8 w-[calc(100%-10px)] max-w-full bg-gradient-to-b from-transparent to-muted/75 dark:to-[hsl(var(--sidebar)/0.75)]"
+          />
+        </div>
+        <div className="w-full border-t border-border/25 px-4 pb-4 pt-2">
           <AccountMenu />
         </div>
       </div>

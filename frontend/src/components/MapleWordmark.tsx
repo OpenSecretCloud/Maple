@@ -19,17 +19,19 @@ export function MapleWordmark({
 }) {
   return (
     <svg
-      viewBox="0 0 248 48"
+      viewBox="0 0 248 50"
       fill="none"
       xmlns="http://www.w3.org/2000/svg"
-      className={cn("shrink-0 text-foreground", className)}
+      className={cn("block shrink-0 text-foreground", className)}
       role={ariaHidden ? "presentation" : "img"}
       aria-label={ariaHidden ? undefined : ariaLabel}
       aria-hidden={ariaHidden ? true : undefined}
     >
-      {WORD_PATHS.map((d, i) => (
-        <path key={i} d={d} fill="currentColor" />
-      ))}
+      <g transform="translate(0, 1.2)">
+        {WORD_PATHS.map((d, i) => (
+          <path key={i} d={d} fill="currentColor" />
+        ))}
+      </g>
     </svg>
   );
 }

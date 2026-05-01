@@ -18,6 +18,7 @@ module.exports = {
     },
     extend: {
       fontFamily: {
+        sans: ["var(--app-font-family)"],
         display: ["Array", "sans-serif"],
         displayWide: ["Array Wide", "Array", "sans-serif"],
         mondwest: ["Mondwest", "sans-serif"],

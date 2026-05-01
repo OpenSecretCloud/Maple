@@ -29,7 +29,7 @@ import { useNavigate, useRouter } from "@tanstack/react-router";
 import { Dialog, DialogTrigger } from "./ui/dialog";
 import { AccountDialog } from "./AccountDialog";
 import { CreditUsage } from "./CreditUsage";
-import { Badge } from "./ui/badge";
+import { Badge } from "@/components/ui/badge";
 
 import {
   AlertDialog,
@@ -52,6 +52,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { TeamManagementDialog } from "@/components/team/TeamManagementDialog";
 import { ApiKeyManagementDialog } from "@/components/apikeys/ApiKeyManagementDialog";
 import packageJson from "../../package.json";
+import { SIDEBAR_ACCOUNT_MENU_WIDTH_CLASS, SIDEBAR_LAYOUT_STYLE } from "@/constants/layout";
 
 function ConfirmDeleteDialog() {
   const { clearHistory } = useLocalState();
@@ -291,23 +292,8 @@ export function AccountMenu() {
       <AlertDialog>
         <Dialog>
           <DropdownMenu onOpenChange={(open) => !open && setShowAboutMenu(false)}>
-            <div className="flex w-full max-w-full flex-col gap-2">
-              <div className="flex w-full flex-col items-center gap-2">
-                <div className="flex w-full justify-center">
-                  <Link to="/pricing">
-                    <Badge
-                      variant="secondary"
-                      className="bg-[hsl(var(--maple-tertiary-container))] text-[hsl(var(--maple-tertiary))] hover:bg-[hsl(var(--maple-tertiary-container))]/80 transition-colors cursor-pointer uppercase text-[10px]"
-                    >
-                      {billingStatus ? `${billingStatus.product_name} Plan` : "Loading..."}
-                    </Badge>
-                  </Link>
-                </div>
-                <div className="w-full">
-                  <CreditUsage layout="ring" />
-                </div>
-              </div>
-              <div className="flex w-full justify-start">
+            <div className="flex w-full max-w-full items-end gap-2">
+              <div className="flex shrink-0 justify-start">
                 <DropdownMenuTrigger asChild>
                   <button
                     type="button"
@@ -321,10 +307,18 @@ export function AccountMenu() {
                   </button>
                 </DropdownMenuTrigger>
               </div>
+              <Link
+                to="/pricing"
+                className="group/credit-link min-w-0 flex-1 rounded-xl outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+                aria-label={billingStatus ? `${billingStatus.product_name} plan` : "Billing status"}
+              >
+                <CreditUsage />
+              </Link>
             </div>
             {/* align=start: panel aligns to sidebar content edge; center was relative to the small icon */}
             <DropdownMenuContent
-              className="w-[calc(280px-2rem)] max-w-[calc(100vw-2rem)] overflow-hidden dark:bg-[hsl(var(--sidebar-chrome))]"
+              style={SIDEBAR_LAYOUT_STYLE}
+              className={`${SIDEBAR_ACCOUNT_MENU_WIDTH_CLASS} max-w-[calc(100vw_-_2rem)] overflow-hidden dark:bg-[hsl(var(--sidebar-chrome))]`}
               align="start"
               side="top"
               sideOffset={8}

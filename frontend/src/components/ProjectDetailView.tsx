@@ -46,6 +46,7 @@ import { DeleteChatDialog } from "@/components/DeleteChatDialog";
 import { BulkDeleteDialog } from "@/components/BulkDeleteDialog";
 import { MoveChatsDialog } from "@/components/MoveChatsDialog";
 import { listAllConversationProjects } from "@/utils/paginatedLists";
+import { SIDEBAR_GRID_COLUMNS_CLASS, SIDEBAR_LAYOUT_STYLE } from "@/constants/layout";
 
 const PROJECT_PAGE_SIZE = 20;
 const MAX_SELECTION = 20;
@@ -448,8 +449,9 @@ export function ProjectDetailView({ projectId }: ProjectDetailViewProps) {
   if (isProjectPending && !project) {
     return (
       <div
+        style={SIDEBAR_LAYOUT_STYLE}
         className={`grid h-dvh min-h-0 w-full grid-cols-1 overflow-hidden ${
-          isSidebarOpen ? "md:grid-cols-[280px_1fr]" : ""
+          isSidebarOpen ? SIDEBAR_GRID_COLUMNS_CLASS : ""
         }`}
       >
         <Sidebar isOpen={isSidebarOpen} onToggle={toggleSidebar} />
@@ -462,8 +464,9 @@ export function ProjectDetailView({ projectId }: ProjectDetailViewProps) {
 
   return (
     <div
+      style={SIDEBAR_LAYOUT_STYLE}
       className={`grid h-dvh min-h-0 w-full grid-cols-1 overflow-hidden ${
-        isSidebarOpen ? "md:grid-cols-[280px_1fr]" : ""
+        isSidebarOpen ? SIDEBAR_GRID_COLUMNS_CLASS : ""
       }`}
     >
       <Sidebar isOpen={isSidebarOpen} onToggle={toggleSidebar} />
@@ -585,7 +588,7 @@ export function ProjectDetailView({ projectId }: ProjectDetailViewProps) {
                           return (
                             <div
                               key={conversation.id}
-                              className={`relative border-b last:border-b-0 ${
+                              className={`group relative border-b last:border-b-0 ${
                                 isSelected ? "bg-primary/5" : ""
                               }`}
                             >
@@ -640,7 +643,7 @@ export function ProjectDetailView({ projectId }: ProjectDetailViewProps) {
                                       type="button"
                                       variant="ghost"
                                       size="icon"
-                                      className="absolute right-2 top-2 h-8 w-8"
+                                      className="absolute right-2 top-2 h-8 w-8 text-foreground/40 transition-colors hover:text-foreground group-hover:text-foreground focus-visible:text-foreground"
                                       onClick={(event) => {
                                         event.preventDefault();
                                         event.stopPropagation();

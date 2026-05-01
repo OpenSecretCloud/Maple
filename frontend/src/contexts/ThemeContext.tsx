@@ -33,6 +33,18 @@ function getStoredTheme(): Theme {
   return "system";
 }
 
+function applyRootTheme(nextResolvedTheme: ResolvedTheme) {
+  const root = document.documentElement;
+  if (nextResolvedTheme === "dark") {
+    root.classList.add("dark");
+    root.style.colorScheme = "dark";
+    return;
+  }
+
+  root.classList.remove("dark");
+  root.style.colorScheme = "light";
+}
+
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const [theme, setThemeState] = useState<Theme>(getStoredTheme);
   const [resolvedTheme, setResolvedTheme] = useState<ResolvedTheme>(() => {
@@ -43,16 +55,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const nextResolvedTheme = theme === "system" ? getSystemTheme() : theme;
     setResolvedTheme(nextResolvedTheme);
-
-    const root = document.documentElement;
-    if (nextResolvedTheme === "dark") {
-      root.classList.add("dark");
-      root.style.colorScheme = "dark";
-      return;
-    }
-
-    root.classList.remove("dark");
-    root.style.colorScheme = "light";
+    applyRootTheme(nextResolvedTheme);
   }, [theme]);
 
   useEffect(() => {
@@ -64,16 +67,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     const handleChange = () => {
       const nextResolvedTheme = mediaQuery.matches ? "dark" : "light";
       setResolvedTheme(nextResolvedTheme);
-
-      const root = document.documentElement;
-      if (nextResolvedTheme === "dark") {
-        root.classList.add("dark");
-        root.style.colorScheme = "dark";
-        return;
-      }
-
-      root.classList.remove("dark");
-      root.style.colorScheme = "light";
+      applyRootTheme(nextResolvedTheme);
     };
 
     mediaQuery.addEventListener("change", handleChange);

@@ -73,6 +73,11 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { isTauri } from "@/utils/platform";
 import { ConversationProjectPicker } from "@/components/ConversationProjectPicker";
+import {
+  getSidebarLayoutStyle,
+  SIDEBAR_AWARE_FIXED_CENTER_CLASS,
+  SIDEBAR_GRID_COLUMNS_CLASS
+} from "@/constants/layout";
 import type {
   InputTextContent,
   OutputTextContent,
@@ -96,6 +101,8 @@ import type {
   ResponseTextDoneEvent
 } from "openai/resources/responses/responses.js";
 import type { Message as OpenAIMessage } from "openai/resources/conversations/conversations.js";
+
+const CHAT_ALERT_CLASS = `fixed top-16 left-1/2 -translate-x-1/2 z-50 w-full max-w-2xl px-4 ${SIDEBAR_AWARE_FIXED_CENTER_CLASS}`;
 
 type ConversationContent =
   | InputTextContent
@@ -917,7 +924,7 @@ function ToolCallRenderer({
             </span>
           </div>
           <div className="pl-6 text-foreground/80">
-            <Markdown content={isExpanded ? combinedOutput : preview} fontSize={14} />
+            <Markdown content={isExpanded ? combinedOutput : preview} />
             {hasMore && (
               <button
                 onClick={() => setIsExpanded(!isExpanded)}
@@ -1025,7 +1032,7 @@ function ToolCallRenderer({
           </span>
         </div>
         <div className="pl-6 text-foreground/80">
-          <Markdown content={isExpanded ? output : preview} fontSize={14} />
+          <Markdown content={isExpanded ? output : preview} />
           {hasMore && (
             <button
               onClick={() => setIsExpanded(!isExpanded)}
@@ -3230,9 +3237,12 @@ export function UnifiedChat() {
     }
   };
 
+  const sidebarLayoutStyle = getSidebarLayoutStyle({ offsetContent: isSidebarOpen });
+
   return (
     <div
-      className={`grid h-dvh min-h-0 w-full grid-cols-1 overflow-hidden ${isSidebarOpen ? "md:grid-cols-[280px_1fr]" : ""}`}
+      style={sidebarLayoutStyle}
+      className={`grid h-dvh min-h-0 w-full grid-cols-1 overflow-hidden ${isSidebarOpen ? SIDEBAR_GRID_COLUMNS_CLASS : ""}`}
     >
       {/* Use the existing Sidebar component */}
       <Sidebar chatId={chatId} isOpen={isSidebarOpen} onToggle={toggleSidebar} />
@@ -3241,7 +3251,7 @@ export function UnifiedChat() {
       <div className="flex flex-col flex-1 min-w-0 min-h-0 bg-background overflow-hidden relative">
         {/* Error message - fixed at top below header, always visible */}
         {error && (
-          <div className="fixed top-16 left-1/2 -translate-x-1/2 z-50 w-full max-w-2xl px-4 md:left-[calc(50%+140px)]">
+          <div className={CHAT_ALERT_CLASS}>
             <Alert variant="destructive" className="bg-background">
               <AlertCircle className="h-4 w-4" />
               <AlertDescription>{error}</AlertDescription>
@@ -3251,7 +3261,7 @@ export function UnifiedChat() {
 
         {/* TTS playback error - shows when audio context is unavailable (e.g., Lockdown Mode) */}
         {playbackError && (
-          <div className="fixed top-16 left-1/2 -translate-x-1/2 z-50 w-full max-w-2xl px-4 md:left-[calc(50%+140px)]">
+          <div className={CHAT_ALERT_CLASS}>
             <Alert variant="destructive" className="bg-background">
               <AlertCircle className="h-4 w-4" />
               <AlertDescription className="flex items-center justify-between">
@@ -3380,7 +3390,7 @@ export function UnifiedChat() {
                 className={`flex flex-col items-center gap-6 ${isFullscreen ? "flex-1 justify-center" : ""}`}
               >
                 {!isFullscreen && (
-                  <h1 className="mb-6 w-full overflow-visible pb-1 text-center font-displayWide text-4xl font-normal leading-tight tracking-[0.035em] brand-gradient-text sm:leading-relaxed">
+                  <h1 className="mb-6 w-full overflow-visible pb-1 text-center font-displayWide text-4xl font-normal leading-tight brand-gradient-text sm:leading-relaxed">
                     Research anything...
                   </h1>
                 )}
