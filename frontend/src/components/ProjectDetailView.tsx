@@ -15,7 +15,7 @@ import {
 import { useOpenSecret, type Conversation } from "@opensecret/react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Sidebar, SidebarToggle } from "@/components/Sidebar";
-import { useIsMobile } from "@/utils/utils";
+import { useIsMobile, useIsLandscapeMobile } from "@/utils/utils";
 import { useLocalState } from "@/state/useLocalState";
 import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -146,10 +146,19 @@ export function ProjectDetailView({ projectId }: ProjectDetailViewProps) {
   const userId = os.auth.user?.user.id;
   const queryClient = useQueryClient();
   const isMobile = useIsMobile();
+  const isLandscapeMobile = useIsLandscapeMobile();
+  const isCompactLayout = isMobile || isLandscapeMobile;
   const { setSelectedProjectId } = useLocalState();
   const hasAuthUser = !!os.auth.user;
 
-  const [isSidebarOpen, setIsSidebarOpen] = useState(!isMobile);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(!isCompactLayout);
+
+  useEffect(() => {
+    if (isLandscapeMobile && isSidebarOpen) {
+      setIsSidebarOpen(false);
+    }
+  }, [isLandscapeMobile]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [hasMoreConversations, setHasMoreConversations] = useState(false);
   const [lastConversationId, setLastConversationId] = useState<string | undefined>();

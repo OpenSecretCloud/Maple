@@ -48,7 +48,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Sidebar, SidebarToggle } from "@/components/Sidebar";
 import { MapleWordmark } from "@/components/MapleWordmark";
-import { useIsMobile } from "@/utils/utils";
+import { useIsMobile, useIsLandscapeMobile } from "@/utils/utils";
 import { fileToDataURL } from "@/utils/file";
 import { truncateMarkdownPreservingLinks } from "@/utils/markdown";
 import { useOpenAI } from "@/ai/useOpenAi";
@@ -1320,9 +1320,9 @@ const MessageList = memo(
               <div
                 key={group.id}
                 ref={groupIndex === 0 ? firstMessageRef : undefined}
-                className="group flex justify-end py-4"
+                className="group flex justify-end py-4 landscape-short:py-1.5"
               >
-                <div className="max-w-[min(100%,42rem)] rounded-2xl border border-border bg-muted px-4 py-3 backdrop-blur-lg dark:bg-card">
+                <div className="max-w-[min(100%,42rem)] rounded-2xl border border-border bg-muted px-4 py-3 landscape-short:px-3 landscape-short:py-2 backdrop-blur-lg dark:bg-card">
                   <div className="prose prose-sm max-w-none text-left dark:prose-invert">
                     <div className="space-y-3">
                       {message.content.map((part, partIdx) => {
@@ -1381,10 +1381,10 @@ const MessageList = memo(
               <div
                 key={group.id}
                 ref={groupIndex === 0 ? firstMessageRef : undefined}
-                className="group py-4 px-0 md:p-4"
+                className="group py-4 px-0 md:p-4 landscape-short:py-1.5 landscape-short:px-2"
               >
                 <div className="mx-auto flex w-full max-w-4xl flex-col gap-2 md:flex-row md:items-start md:gap-3">
-                  <div className="flex h-8 shrink-0 items-center gap-2 px-0 md:h-auto md:flex-col md:items-start md:gap-3">
+                  <div className="flex h-8 shrink-0 items-center gap-2 px-0 md:h-auto md:flex-col md:items-start md:gap-3 landscape-short:h-6">
                     <MapleChatAvatar />
                     <div className="text-sm font-semibold leading-none md:hidden">Maple</div>
                   </div>
@@ -1418,9 +1418,9 @@ const MessageList = memo(
 
         {/* Loading indicator - only show while waiting for the first assistant item (TTFT) */}
         {shouldShowInitialAssistantLoader && (
-          <div className="group py-4 px-0 md:p-4">
+          <div className="group py-4 px-0 md:p-4 landscape-short:py-1.5 landscape-short:px-2">
             <div className="mx-auto flex w-full max-w-4xl flex-col gap-2 md:flex-row md:items-start md:gap-3">
-              <div className="flex h-8 shrink-0 items-center gap-2 px-0 md:h-auto md:flex-col md:items-start md:gap-3">
+              <div className="flex h-8 shrink-0 items-center gap-2 px-0 md:h-auto md:flex-col md:items-start md:gap-3 landscape-short:h-6">
                 <MapleChatAvatar />
                 <div className="text-sm font-semibold leading-none md:hidden">Maple</div>
               </div>
@@ -1446,6 +1446,8 @@ MessageList.displayName = "MessageList";
 
 export function UnifiedChat() {
   const isMobile = useIsMobile();
+  const isLandscapeMobile = useIsLandscapeMobile();
+  const isCompactLayout = isMobile || isLandscapeMobile;
   const openai = useOpenAI();
   const localState = useLocalState();
   const { selectedProjectId, setSelectedProjectId } = localState;
@@ -1466,7 +1468,7 @@ export function UnifiedChat() {
   const [input, setInput] = useState("");
   const [draftProjectId, setDraftProjectId] = useState<string | null>(() => selectedProjectId);
   const [isGenerating, setIsGenerating] = useState(false);
-  const [isSidebarOpen, setIsSidebarOpen] = useState(!isMobile);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(!isCompactLayout);
   const [error, setError] = useState<string | null>(null);
   const [lastSeenItemId, setLastSeenItemId] = useState<string | undefined>();
   const [isNewConversationJustCreated, setIsNewConversationJustCreated] = useState(false);
@@ -1507,6 +1509,13 @@ export function UnifiedChat() {
     return localStorage.getItem("chatFullscreen") === "true";
   });
   const [isFullscreenAnimating, setIsFullscreenAnimating] = useState(false);
+
+  // Close sidebar when rotating to landscape on a short screen
+  useEffect(() => {
+    if (isLandscapeMobile && isSidebarOpen) {
+      setIsSidebarOpen(false);
+    }
+  }, [isLandscapeMobile]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Save fullscreen preference to localStorage when it changes
   useEffect(() => {
@@ -1586,11 +1595,11 @@ export function UnifiedChat() {
     };
   }, []);
 
-  // Auto-focus textbox on desktop (not mobile to avoid keyboard popup interrupting reading)
+  // Auto-focus textbox on desktop (not mobile/landscape-mobile to avoid keyboard popup interrupting reading)
   // Focus when: app launches, new chat, conversation loads, or assistant finishes streaming
   useEffect(() => {
-    // Skip on mobile to avoid keyboard popup
-    if (isMobile) return;
+    // Skip on compact layouts (mobile + landscape mobile) to avoid keyboard popup
+    if (isCompactLayout) return;
 
     // Focus when not generating and textbox is not disabled
     if (!isGenerating && textareaRef.current && !textareaRef.current.disabled) {
@@ -1599,7 +1608,7 @@ export function UnifiedChat() {
         textareaRef.current?.focus();
       }, 100);
     }
-  }, [isMobile, isGenerating, messages.length, chatId]);
+  }, [isCompactLayout, isGenerating, messages.length, chatId]);
 
   // Improved scroll detection - track if user is near bottom
   const handleScroll = useCallback(() => {
@@ -3231,7 +3240,7 @@ export function UnifiedChat() {
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // On desktop: Enter submits, Shift+Enter for new line
     // On mobile: Enter for new line, no keyboard shortcut to submit (use button)
-    if (e.key === "Enter" && !e.shiftKey && !isMobile) {
+    if (e.key === "Enter" && !e.shiftKey && !isCompactLayout) {
       e.preventDefault();
       handleSendMessage();
     }
@@ -3280,8 +3289,8 @@ export function UnifiedChat() {
           </div>
         )}
 
-        {/* Sidebar toggle + wordmark — fixed except on mobile while chatting (two-row header below) */}
-        {!isSidebarOpen && !(isMobile && messages.length > 0) && (
+        {/* Sidebar toggle + wordmark — fixed except on compact layouts while chatting (two-row header below) */}
+        {!isSidebarOpen && !(isCompactLayout && messages.length > 0) && (
           <div className="fixed left-4 top-[9.5px] z-20 flex items-center gap-1.5">
             <SidebarToggle onToggle={toggleSidebar} />
             <MapleWordmark
@@ -3293,7 +3302,30 @@ export function UnifiedChat() {
 
         {/* Only show header when there are messages (conversation exists) */}
         {messages.length > 0 &&
-          (isMobile && !isSidebarOpen ? (
+          (isLandscapeMobile && !isSidebarOpen ? (
+            <div className="z-10 flex shrink-0 items-center gap-2 bg-background px-1 py-1 pr-4">
+              <SidebarToggle onToggle={toggleSidebar} />
+              <div className="min-w-0 overflow-hidden">
+                <MapleWordmark className="h-4 w-auto max-w-full" aria-hidden />
+              </div>
+              <h1
+                className={`min-w-0 flex-1 truncate px-1 text-center text-base font-medium text-foreground transition-colors duration-300 ${
+                  titleJustUpdated ? "title-update-animation" : ""
+                }`}
+              >
+                {conversation?.metadata?.title || "Chat"}
+              </h1>
+              <Button
+                variant="outline"
+                size="icon"
+                className="h-9 w-9 shrink-0 border-0"
+                onClick={handleNewChatFromHeader}
+                aria-label="New chat"
+              >
+                <SquarePen className="h-4 w-4" />
+              </Button>
+            </div>
+          ) : isMobile && !isSidebarOpen ? (
             <div className="z-10 flex shrink-0 flex-col gap-2 bg-background pb-2 pl-1 pr-4 pt-2">
               <div className="flex items-center justify-between gap-3">
                 <div className="flex min-w-0 flex-1 items-center gap-1.5">
@@ -3352,7 +3384,7 @@ export function UnifiedChat() {
         >
           {/* Only show messages when there are messages */}
           {messages.length > 0 && (
-            <div className="mx-auto w-full max-w-4xl p-4 md:p-6">
+            <div className="mx-auto w-full max-w-4xl p-4 md:p-6 landscape-short:p-2">
               {/* Message list with modern ChatGPT/Claude style */}
               <div className="space-y-1">
                 <MessageList
@@ -3384,13 +3416,13 @@ export function UnifiedChat() {
                 isFullscreenAnimating ? "transition-all duration-300" : ""
               } ${isFullscreen ? "flex h-full max-w-6xl flex-col" : "max-w-4xl"}`}
             >
-              {!isFullscreen && <div className="mb-16" />}
+              {!isFullscreen && <div className="mb-16 landscape-short:mb-4" />}
 
               <div
-                className={`flex flex-col items-center gap-6 ${isFullscreen ? "flex-1 justify-center" : ""}`}
+                className={`flex flex-col items-center gap-6 landscape-short:gap-3 ${isFullscreen ? "flex-1 justify-center" : ""}`}
               >
                 {!isFullscreen && (
-                  <h1 className="mb-6 w-full overflow-visible pb-1 text-center font-displayWide text-4xl font-normal leading-tight brand-gradient-text sm:leading-relaxed">
+                  <h1 className="mb-6 landscape-short:mb-2 w-full overflow-visible pb-1 text-center font-displayWide text-4xl landscape-short:text-2xl font-normal leading-tight brand-gradient-text sm:leading-relaxed">
                     Research anything...
                   </h1>
                 )}
@@ -3632,11 +3664,11 @@ export function UnifiedChat() {
         ) : (
           // Fixed at bottom when there are messages
           <div className="bg-background pb-[env(safe-area-inset-bottom)]">
-            <div className="mx-auto max-w-4xl px-4">
+            <div className="mx-auto max-w-4xl px-4 landscape-short:px-3">
               <form onSubmit={handleSendMessage} className="relative">
-                <div className="space-y-2">
+                <div className="space-y-2 landscape-short:space-y-1">
                   {(draftImages.length > 0 || documentName) && (
-                    <div className="space-y-2">
+                    <div className="space-y-2 landscape-short:space-y-1">
                       {draftImages.length > 0 && (
                         <div className="flex flex-wrap gap-2">
                           {draftImages.map((file, i) => (
@@ -3688,12 +3720,12 @@ export function UnifiedChat() {
                       onKeyDown={handleKeyDown}
                       placeholder="Message Maple..."
                       disabled={isGenerating || isRecording}
-                      className="w-full min-h-[52px] max-h-[200px] resize-none border-0 bg-transparent py-3.5 pl-4 pr-2 leading-6 focus-visible:ring-0 focus-visible:ring-offset-0 placeholder:text-muted-foreground/60"
+                      className="w-full min-h-[52px] landscape-short:min-h-[40px] max-h-[200px] landscape-short:max-h-[100px] resize-none border-0 bg-transparent py-3.5 landscape-short:py-2 pl-4 pr-2 leading-6 focus-visible:ring-0 focus-visible:ring-offset-0 placeholder:text-muted-foreground/60"
                       rows={1}
                       id="message"
                     />
 
-                    <div className="grid grid-cols-[minmax(0,1fr)_auto] items-end gap-x-2 gap-y-2 px-2 pb-2 pt-1">
+                    <div className="grid grid-cols-[minmax(0,1fr)_auto] items-end gap-x-2 gap-y-2 px-2 pb-2 landscape-short:pb-1.5 pt-1">
                       <div className="flex min-w-0 flex-wrap items-center gap-1.5 sm:gap-2">
                         <ModelSelector
                           hasImages={
@@ -3825,7 +3857,7 @@ export function UnifiedChat() {
                   </div>
                 </div>
               </form>
-              <p className="mb-2 mt-1 text-center text-[10px] text-muted-foreground/50">
+              <p className="mb-2 mt-1 landscape-short:mb-1 text-center text-[10px] text-muted-foreground/50">
                 AI can make mistakes. Check important info.
               </p>
             </div>
