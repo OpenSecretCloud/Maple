@@ -26,6 +26,7 @@
             pkgs.bun
             pkgs.just
             pkgs.jq
+            pkgs.jdk17
             rustToolchain
             
             # Basic build dependencies
