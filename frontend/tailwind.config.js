@@ -17,6 +17,9 @@ module.exports = {
       },
     },
     extend: {
+      screens: {
+        "landscape-short": { raw: "(orientation: landscape) and (max-height: 500px)" },
+      },
       fontFamily: {
         sans: ["var(--app-font-family)"],
         display: ["Array", "sans-serif"],

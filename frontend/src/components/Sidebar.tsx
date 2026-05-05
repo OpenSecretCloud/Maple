@@ -14,7 +14,7 @@ import { ChatHistoryList } from "./ChatHistoryList";
 import { AccountMenu } from "./AccountMenu";
 import { useRef, useEffect, KeyboardEvent, useCallback, useLayoutEffect, useState } from "react";
 import { flushSync } from "react-dom";
-import { cn, useClickOutside, useIsMobile } from "@/utils/utils";
+import { cn, useClickOutside, useIsMobile, useIsLandscapeMobile } from "@/utils/utils";
 import { MapleWordmark } from "@/components/MapleWordmark";
 import { Input } from "./ui/input";
 import { useLocalState } from "@/state/useLocalState";
@@ -74,8 +74,8 @@ export function Sidebar({
   }, [selectedIds.size]);
 
   async function addChat() {
-    // If sidebar is open on mobile, close it
-    if (isOpen && isMobile) {
+    // If sidebar is open on compact layout, close it
+    if (isOpen && isCompactLayout) {
       onToggle();
     }
 
@@ -136,14 +136,16 @@ export function Sidebar({
   const sidebarRef = useRef<HTMLDivElement>(null);
   const historyContainerRef = useRef<HTMLElement>(null);
 
-  // Use the centralized hook for mobile detection
+  // Use the centralized hooks for mobile/compact detection
   const isMobile = useIsMobile();
+  const isLandscapeMobile = useIsLandscapeMobile();
+  const isCompactLayout = isMobile || isLandscapeMobile;
 
   // Modified click outside handler to ignore clicks in dropdowns and dialogs
   // Only applies on mobile - desktop users use the toggle button
   const handleClickOutside = useCallback(
     (event: MouseEvent | TouchEvent) => {
-      if (isOpen && isMobile) {
+      if (isOpen && isCompactLayout) {
         // Check if the click was inside a dropdown or dialog
         const target = event.target as HTMLElement;
         const isInDropdown = target.closest('[role="menu"]');
@@ -155,7 +157,7 @@ export function Sidebar({
         }
       }
     },
-    [isOpen, onToggle, isMobile]
+    [isOpen, onToggle, isCompactLayout]
   );
 
   useClickOutside(sidebarRef, handleClickOutside);
@@ -172,8 +174,8 @@ export function Sidebar({
   // This effect closes the sidebar on mobile when navigating,
   // but preserves search state between navigations
   useEffect(() => {
-    // Only subscribe if we're on mobile and sidebar is open
-    if (!isMobile || !isOpen) return;
+    // Only subscribe if we're on compact layout and sidebar is open
+    if (!isCompactLayout || !isOpen) return;
 
     const unsubscribe = router.subscribe("onResolved", () => {
       // Use a microtask to avoid state updates during render
@@ -182,7 +184,7 @@ export function Sidebar({
         if (!isMountedRef.current) return;
 
         // Double-check conditions after async boundary
-        if (isOpen && isMobile) {
+        if (isOpen && isCompactLayout) {
           onToggle();
         }
       });
@@ -191,14 +193,14 @@ export function Sidebar({
     return () => {
       unsubscribe();
     };
-  }, [router, isOpen, onToggle, isMobile]);
+  }, [router, isOpen, onToggle, isCompactLayout]);
 
   return (
     <div
       ref={sidebarRef}
       style={SIDEBAR_LAYOUT_STYLE}
       className={cn([
-        "fixed md:static z-10 h-full overflow-x-hidden overflow-y-hidden",
+        "fixed md:static landscape-short:fixed z-10 h-full overflow-x-hidden overflow-y-hidden",
         isOpen ? `block ${SIDEBAR_WIDTH_CLASS}` : "hidden"
       ])}
     >
@@ -314,7 +316,7 @@ export function Sidebar({
             <ChatHistoryList
               currentChatId={chatId}
               searchQuery={searchQuery}
-              isMobile={isMobile}
+              isMobile={isCompactLayout}
               isSelectionMode={isSelectionMode}
               onExitSelectionMode={exitSelectionMode}
               selectedIds={selectedIds}

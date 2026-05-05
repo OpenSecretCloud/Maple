@@ -6,7 +6,7 @@ import { Markdown } from "@/components/markdown";
 import { Sidebar, SidebarToggle } from "@/components/Sidebar";
 import { Button } from "@/components/ui/button";
 import { useNavigate } from "@tanstack/react-router";
-import { useIsMobile } from "@/utils/utils";
+import { useIsMobile, useIsLandscapeMobile } from "@/utils/utils";
 import { useQuery } from "@tanstack/react-query";
 import { SIDEBAR_GRID_COLUMNS_CLASS, SIDEBAR_LAYOUT_STYLE } from "@/constants/layout";
 
@@ -164,8 +164,18 @@ function ChatComponent() {
   const { getChatById } = useLocalState();
   const navigate = useNavigate();
   const isMobile = useIsMobile();
+  const isLandscapeMobile = useIsLandscapeMobile();
+  const isCompactLayout = isMobile || isLandscapeMobile;
   const [showScrollButton, setShowScrollButton] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+
+  // Close sidebar when rotating to landscape on a short screen
+  useEffect(() => {
+    if (isLandscapeMobile && isSidebarOpen) {
+      setIsSidebarOpen(false);
+    }
+  }, [isLandscapeMobile]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const chatContainerRef = useRef<HTMLDivElement>(null);
 
   // Fetch chat from KV store
@@ -256,7 +266,7 @@ function ChatComponent() {
       <Sidebar chatId={chatId} isOpen={isSidebarOpen} onToggle={toggleSidebar} />
       <main className="flex h-dvh flex-col bg-card/90 backdrop-blur-lg bg-center overflow-hidden">
         {!isSidebarOpen && (
-          <div className="fixed top-4 left-4 z-20 md:hidden">
+          <div className="fixed top-4 left-4 z-20 md:hidden landscape-short:block">
             <SidebarToggle onToggle={toggleSidebar} />
           </div>
         )}
@@ -265,7 +275,7 @@ function ChatComponent() {
           className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden flex flex-col relative"
         >
           <div className="mt-4 md:mt-8 w-full h-10 flex items-center justify-center relative">
-            {isMobile && (
+            {isCompactLayout && (
               <Button
                 variant="outline"
                 size="icon"
