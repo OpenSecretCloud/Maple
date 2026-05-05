@@ -17,6 +17,8 @@ import { bytesToHex } from "@noble/hashes/utils";
 import { AppleAuthProvider } from "@/components/AppleAuthProvider";
 import { getBillingService } from "@/billing/billingService";
 import { isIOS, isTauri } from "@/utils/platform";
+import { appUrl } from "@/config/domains";
+import { useRouteMeta } from "@/utils/routeMeta";
 
 type LoginSearchParams = {
   next?: string;
@@ -34,8 +36,15 @@ export const Route = createFileRoute("/login")({
 });
 
 type LoginMethod = "email" | "github" | "google" | "apple" | "guest" | null;
+const loginCanonicalUrl = appUrl("/login");
 
 function LoginPage() {
+  useRouteMeta({
+    title: "Log In | Maple Research",
+    description: "Log in to Maple Research, your private AI workspace.",
+    canonicalUrl: loginCanonicalUrl
+  });
+
   const navigate = useNavigate();
   const os = useOpenSecret();
   const { next, selected_plan, code } = Route.useSearch();
@@ -362,20 +371,32 @@ function LoginPage() {
     return (
       <AuthMain title="Log In" description="Choose your preferred login method">
         {error && <AlertDestructive title="Note" description={error} />}
-        <Button onClick={() => setLoginMethod("email")} className="w-full">
+        <Button onClick={() => setLoginMethod("email")} variant="primary" className="w-full">
           <Mail className="mr-2 h-4 w-4" />
           Log in with Email
         </Button>
-        <Button onClick={handleGitHubLogin} className="w-full">
+        <Button
+          onClick={handleGitHubLogin}
+          variant="outline"
+          className="w-full bg-white/40 dark:bg-white/0"
+        >
           <Github className="mr-2 h-4 w-4" />
           Log in with GitHub
         </Button>
-        <Button onClick={handleGoogleLogin} className="w-full">
+        <Button
+          onClick={handleGoogleLogin}
+          variant="outline"
+          className="w-full bg-white/40 dark:bg-white/0"
+        >
           <Google className="mr-2 h-4 w-4" />
           Log in with Google
         </Button>
         {isTauriEnv ? (
-          <Button onClick={handleAppleLogin} className="w-full">
+          <Button
+            onClick={handleAppleLogin}
+            variant="outline"
+            className="w-full bg-white/40 dark:bg-white/0"
+          >
             <Apple className="mr-2 h-4 w-4" />
             Log in with Apple
           </Button>
@@ -391,9 +412,11 @@ function LoginPage() {
             }}
             selectedPlan={selected_plan}
             inviteCode=""
+            buttonVariant="outline"
+            className="w-full bg-white/40 dark:bg-white/0"
           />
         )}
-        <Button onClick={() => setLoginMethod("guest")} className="w-full">
+        <Button onClick={() => setLoginMethod("guest")} variant="secondary" className="w-full">
           <UserCircle className="mr-2 h-4 w-4" />
           Log in as Anonymous
         </Button>
@@ -434,7 +457,7 @@ function LoginPage() {
               autoComplete="current-password"
             />
           </div>
-          <Button type="submit" className="w-full" disabled={isLoading}>
+          <Button type="submit" variant="primary" className="w-full" disabled={isLoading}>
             {isLoading ? (
               <>
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -488,7 +511,7 @@ function LoginPage() {
             autoComplete="current-password"
           />
         </div>
-        <Button type="submit" className="w-full" disabled={isLoading}>
+        <Button type="submit" variant="primary" className="w-full" disabled={isLoading}>
           {isLoading ? (
             <>
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />

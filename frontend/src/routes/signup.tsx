@@ -20,6 +20,8 @@ import { isIOS, isTauri } from "@/utils/platform";
 import { GuestSignupWarningDialog } from "@/components/GuestSignupWarningDialog";
 import { GuestCredentialsDialog } from "@/components/GuestCredentialsDialog";
 import { UserCircle } from "lucide-react";
+import { appUrl } from "@/config/domains";
+import { useRouteMeta } from "@/utils/routeMeta";
 
 type SignupSearchParams = {
   next?: string;
@@ -37,8 +39,15 @@ export const Route = createFileRoute("/signup")({
 });
 
 type SignUpMethod = "email" | "github" | "google" | "apple" | "guest" | null;
+const signupCanonicalUrl = appUrl("/signup");
 
 function SignupPage() {
+  useRouteMeta({
+    title: "Sign Up | Maple Research",
+    description: "Create a Maple Research account for your private AI workspace.",
+    canonicalUrl: signupCanonicalUrl
+  });
+
   const navigate = useNavigate();
   const os = useOpenSecret();
   const { next, selected_plan, code } = Route.useSearch();
@@ -378,20 +387,32 @@ function SignupPage() {
     return (
       <AuthMain title="Sign Up" description="Choose your preferred sign-up method">
         {error && <AlertDestructive title="Note" description={error} />}
-        <Button onClick={() => setSignUpMethod("email")} className="w-full">
+        <Button onClick={() => setSignUpMethod("email")} variant="primary" className="w-full">
           <Mail className="mr-2 h-4 w-4" />
           Sign up with Email
         </Button>
-        <Button onClick={handleGitHubSignup} className="w-full">
+        <Button
+          onClick={handleGitHubSignup}
+          variant="outline"
+          className="w-full bg-white/40 dark:bg-white/0"
+        >
           <Github className="mr-2 h-4 w-4" />
           Sign up with GitHub
         </Button>
-        <Button onClick={handleGoogleSignup} className="w-full">
+        <Button
+          onClick={handleGoogleSignup}
+          variant="outline"
+          className="w-full bg-white/40 dark:bg-white/0"
+        >
           <Google className="mr-2 h-4 w-4" />
           Sign up with Google
         </Button>
         {isTauriEnv ? (
-          <Button onClick={handleAppleSignup} className="w-full">
+          <Button
+            onClick={handleAppleSignup}
+            variant="outline"
+            className="w-full bg-white/40 dark:bg-white/0"
+          >
             <Apple className="mr-2 h-4 w-4" />
             Sign up with Apple
           </Button>
@@ -407,9 +428,12 @@ function SignupPage() {
             }}
             selectedPlan={selected_plan}
             inviteCode=""
+            buttonLabel="Sign up with Apple"
+            buttonVariant="outline"
+            className="w-full bg-white/40 dark:bg-white/0"
           />
         )}
-        <Button onClick={() => setShowGuestWarning(true)} className="w-full">
+        <Button onClick={() => setShowGuestWarning(true)} variant="secondary" className="w-full">
           <UserCircle className="mr-2 h-4 w-4" />
           Sign up as Anonymous
         </Button>
@@ -454,7 +478,7 @@ function SignupPage() {
                 will be shown in the next step.
               </p>
             </div>
-            <Button type="submit" className="w-full" disabled={isLoading}>
+            <Button type="submit" variant="primary" className="w-full" disabled={isLoading}>
               {isLoading ? (
                 <>
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -512,7 +536,7 @@ function SignupPage() {
             autoComplete="new-password"
           />
         </div>
-        <Button type="submit" className="w-full" disabled={isLoading}>
+        <Button type="submit" variant="primary" className="w-full" disabled={isLoading}>
           {isLoading ? (
             <>
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />

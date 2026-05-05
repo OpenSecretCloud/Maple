@@ -3,7 +3,7 @@ import { useOpenSecret } from "@opensecret/react";
 import { v4 as uuidv4 } from "uuid";
 import { sha256 } from "@noble/hashes/sha256";
 import { bytesToHex } from "@noble/hashes/utils";
-import { Button } from "./ui/button";
+import { Button, type ButtonProps } from "./ui/button";
 import { Apple } from "./icons/Apple";
 import { getBillingService } from "@/billing/billingService";
 
@@ -15,6 +15,8 @@ interface AppleAuthProviderProps {
   redirectAfterLogin?: (plan?: string) => void;
   selectedPlan?: string;
   className?: string;
+  buttonLabel?: string;
+  buttonVariant?: ButtonProps["variant"];
   children?: React.ReactNode;
 }
 
@@ -78,6 +80,8 @@ export function AppleAuthProvider({
   redirectAfterLogin,
   selectedPlan,
   className,
+  buttonLabel = "Log in with Apple",
+  buttonVariant,
   children
 }: AppleAuthProviderProps) {
   const os = useOpenSecret();
@@ -400,9 +404,14 @@ export function AppleAuthProvider({
       {children}
     </div>
   ) : (
-    <Button onClick={handleAppleSignIn} className={className || "w-full"}>
+    <Button
+      type="button"
+      onClick={handleAppleSignIn}
+      variant={buttonVariant}
+      className={className || "w-full"}
+    >
       <Apple className="mr-2 h-4 w-4" />
-      Log in with Apple
+      {buttonLabel}
     </Button>
   );
 }
