@@ -2,7 +2,7 @@
 
 > Status: proposed strategy and execution plan
 >
-> Last updated: 2026-04-30
+> Last updated: 2026-05-05
 >
 > Purpose: define a deliberate three-phase plan for separating Maple's marketing and app surfaces without coupling this decision to the current redesign work, while still creating a clear long-term path to introduce a product-agnostic auth broker and later move the product from `https://trymaple.ai` to `https://app.trymaple.ai`.
 
@@ -547,11 +547,11 @@ Apex should remain the current app host, but it should stop pretending to be the
 Recommended changes:
 
 - remove or simplify heavy marketing pages from the app codebase
-- keep logged-out apex entry focused on:
+- replace the logged-out apex root with a minimal app-entry page focused on:
   - sign up
   - log in
-  - app entry
-  - critical billing/auth actions
+  - a small link to the canonical marketing site at `https://www.trymaple.ai`
+- keep `/login` and `/signup` as direct app/auth destinations
 - keep all auth, billing, deep-link, and compatibility paths unchanged
 
 ## 8.3 What moves to `www` in Phase 1
@@ -585,8 +585,9 @@ Recommended:
 
 - self-canonical tags on `www`
 - update internal links to `www`
-- update sitemaps and Search Console ownership as needed
+- update sitemaps, robots, `llms.txt`, `llms-full.txt`, and Search Console ownership as needed
 - remove duplicate marketing content from apex or redirect it cleanly
+- treat apex app/auth entry pages as app infrastructure, generally `noindex, follow`
 
 Because apex is still the app at this stage, the SEO objective is not to make apex and `www` equivalent. The objective is to give marketing a stable public home while leaving the app alone.
 
@@ -801,7 +802,7 @@ The table below describes the intended ownership across phases.
 
 | Surface / Path Family                            | Current State                                 | Phase 1 Owner                                  | Phase 2 Owner                                  | Phase 3 Owner                                             | Notes                                                                                             |
 | ------------------------------------------------ | --------------------------------------------- | ---------------------------------------------- | ---------------------------------------------- | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
-| `/`                                              | Marketing when logged out, app when logged in | `trymaple.ai` app-oriented root                | `trymaple.ai` app-oriented root                | `trymaple.ai` marketing root, `app.trymaple.ai/` app root | Root can only have one owner per host                                                             |
+| `/`                                              | Marketing when logged out, app when logged in | `trymaple.ai` app-oriented root                | `trymaple.ai` app-oriented root                | `trymaple.ai` marketing root, `app.trymaple.ai/` app root | In Phase 1, logged-out root should be a minimal app-entry page, not a second marketing homepage   |
 | `/login`                                         | App/auth                                      | `trymaple.ai`                                  | `trymaple.ai`                                  | `app.trymaple.ai`                                         | In Phase 2 the UI still lives on apex, but auth initiation should start moving through the broker |
 | `/signup`                                        | App/auth                                      | `trymaple.ai`                                  | `trymaple.ai`                                  | `app.trymaple.ai`                                         | Same as login                                                                                     |
 | `/desktop-auth`                                  | Critical native OAuth entry                   | `trymaple.ai`                                  | `auth.trymaple.ai`                             | `auth.trymaple.ai`                                        | Should become broker-owned before final app cutover                                               |
@@ -816,7 +817,7 @@ The table below describes the intended ownership across phases.
 | `auth.trymaple.ai/*` broker auth surfaces        | n/a                                           | n/a                                            | `auth.trymaple.ai`                             | `auth.trymaple.ai`                                        | New shared auth infrastructure                                                                    |
 | `/.well-known/*`                                 | Mobile link association                       | `trymaple.ai`                                  | `trymaple.ai`                                  | `app.trymaple.ai`                                         | Need updated assets on final app host                                                             |
 | `/about`, `/proof`, `/downloads`, `/teams`, etc. | Mixed marketing on app host                   | `www.trymaple.ai`                              | `www.trymaple.ai`                              | `trymaple.ai`                                             | Marketing only                                                                                    |
-| `robots.txt`, `sitemap.xml`, `llms*.txt`         | Apex-hosted                                   | `www.trymaple.ai` if marketing canonical there | `www.trymaple.ai` if marketing canonical there | `trymaple.ai`                                             | Update canonicals/Search Console accordingly                                                      |
+| `robots.txt`, `sitemap.xml`, `llms*.txt`         | Apex-hosted                                   | `www.trymaple.ai` if marketing canonical there | `www.trymaple.ai` if marketing canonical there | `trymaple.ai`                                             | App-host copies may remain only as compatibility pointers                                         |
 
 ## 11.1 Path families that should not be treated as "just pages"
 
@@ -936,14 +937,16 @@ This is the operational plan for the near-term marketing launch.
 - `trymaple.ai` remains the app and critical-flow host
 - `www.trymaple.ai` becomes the new marketing site
 - apex stops serving rich marketing as its main logged-out experience
-- apex may keep a slim app-entry page for logged-out users
+- apex should serve a minimal app-entry page for logged-out users
+- the app-entry page should not become a second marketing page; it should offer sign up, log in, and a small link to `www.trymaple.ai`
+- `/login` and `/signup` should remain direct auth pages and should also link users back to `www.trymaple.ai` for public product information
 
 ## 13.2 Suggested Phase 1 route behavior
 
 ### On `trymaple.ai`
 
-- `/` -> app-oriented entry point
-- `/login`, `/signup` -> unchanged
+- `/` -> minimal app-oriented entry point for logged-out users, app shell for logged-in users
+- `/login`, `/signup` -> direct auth pages with a small `www.trymaple.ai` link
 - `/pricing` -> unchanged transactional pricing
 - auth and billing callbacks -> unchanged
 - native deep-link and universal-link paths -> unchanged
@@ -953,7 +956,7 @@ This is the operational plan for the near-term marketing launch.
 - `/` -> redesigned landing page
 - marketing routes -> redesigned marketing pages
 - pricing overview -> optional public marketing pricing page
-- all product CTAs -> point to apex app for now
+- all product CTAs -> point to apex app for now, either `/`, `/signup`, or `/login` depending on CTA intent
 
 ## 13.3 Suggested redirects in Phase 1
 
@@ -1156,9 +1159,12 @@ Recommended actions:
 
 - self-canonical tags on `www`
 - redirects from old apex marketing pages to `www`
-- updated sitemap and robots for the `www` marketing experience
+- updated sitemap, robots, `llms.txt`, and `llms-full.txt` for the `www` marketing experience
 - Search Console setup for `www`
 - updated internal links
+- app-host root/login/signup metadata should be app-oriented and generally `noindex, follow`
+- app-host `sitemap.xml` should not list marketing or auth pages as SEO targets
+- app-host `llms.txt` and `llms-full.txt`, if still served for compatibility, should point agents to the canonical `www` versions rather than duplicating marketing content
 
 ## 16.2 SEO in Phase 2
 
@@ -1311,7 +1317,7 @@ What Maple can do is reduce risk by staging, centralizing, and testing aggressiv
 
 ### Web
 
-- logged-out root behavior on apex
+- logged-out root behavior on apex: minimal app entry with sign up, log in, and `www` link
 - marketing homepage on `www`
 - redirects from old apex marketing routes to `www`
 - login/signup on apex
@@ -1325,9 +1331,11 @@ What Maple can do is reduce risk by staging, centralizing, and testing aggressiv
 
 ### SEO
 
-- canonical tags
-- sitemap
-- robots
+- `www` canonical tags
+- app-host root/login/signup `noindex, follow`
+- `www` sitemap and robots
+- app-host sitemap does not list app/auth/marketing pages as SEO targets
+- app-host `llms*.txt` compatibility pointers, if still served
 - duplicate-content check between apex and `www`
 
 ## 18.2 Phase 2 auth-broker test matrix
@@ -1541,6 +1549,7 @@ The exact dates can change, but the sequence should look roughly like this.
 - build and deploy `www`
 - redirect old marketing routes appropriately
 - simplify logged-out apex entry
+- update app-host SEO/discovery artifacts so marketing discovery points to `www`
 
 ## 22.3 Workstream C: auth broker
 
@@ -1720,7 +1729,7 @@ The following files were the main basis for this plan:
 
 ### Most important repo-specific takeaways
 
-- The root route currently mixes marketing and app concerns.
+- The root route historically mixed marketing and app concerns; after the Phase 1 app-entry change, logged-out root should be app-oriented rather than marketing-heavy.
 - The billing and pricing flow is not just a brochure page.
 - Desktop auth and native handoff currently depend on apex.
 - Mobile app-link and universal-link config currently depends on apex.
