@@ -2,8 +2,7 @@ import { useEffect, useState } from "react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { UnifiedChat } from "@/components/UnifiedChat";
 import { ProjectDetailView } from "@/components/ProjectDetailView";
-import { Marketing } from "@/components/Marketing";
-import { TopNav } from "@/components/TopNav";
+import { AppEntryPage } from "@/components/AppEntryPage";
 import { VerificationModal } from "@/components/VerificationModal";
 import { GuestPaymentWarningDialog } from "@/components/GuestPaymentWarningDialog";
 import { TeamManagementDialog } from "@/components/team/TeamManagementDialog";
@@ -15,6 +14,10 @@ import { getBillingService } from "@/billing/billingService";
 import { useLocalState } from "@/state/useLocalState";
 import type { TeamStatus } from "@/types/team";
 import type { DiscountResponse } from "@/billing/billingApi";
+import { appUrl } from "@/config/domains";
+import { useRouteMeta } from "@/utils/routeMeta";
+
+const appHomeUrl = appUrl("/");
 
 type IndexSearchOptions = {
   login?: string;
@@ -88,6 +91,14 @@ function Index() {
   const os = useOpenSecret();
   const queryClient = useQueryClient();
   const { setBillingStatus, billingStatus } = useLocalState();
+
+  useRouteMeta({
+    title: os.auth.user ? "Maple Research" : "Maple Research | Private AI Workspace",
+    description: os.auth.user
+      ? "Maple Research private AI workspace."
+      : "Open Maple Research to sign up or log in to your private AI workspace.",
+    canonicalUrl: appHomeUrl
+  });
 
   const { login, next, team_setup, credits_success, api_settings } = Route.useSearch();
 
@@ -215,15 +226,9 @@ function Index() {
     shouldShowGuestPaymentWarning
   ]);
 
-  // Show marketing page for non-authenticated users
+  // Signed-out apex is now an app entry point; rich marketing lives on www.trymaple.ai.
   if (!os.auth.user) {
-    return (
-      <>
-        <TopNav />
-        <Marketing />
-        <VerificationModal />
-      </>
-    );
+    return <AppEntryPage />;
   }
 
   // Show unified chat for authenticated users
