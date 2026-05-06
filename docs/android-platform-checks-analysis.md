@@ -957,11 +957,11 @@ Store in GitHub Secrets:
 
 ### Version Code Management
 
-Tauri automatically generates version codes from `tauri.conf.json`:
-- Formula: `versionCode = major * 1000000 + minor * 1000 + patch`
-- Example: `1.3.2` → `1003002`
+Android `versionCode` is not user-visible; `versionName`/Tauri `version` is what users see.
+Google Play only requires that each uploaded build uses a higher `versionCode` than previous uploads
+and stays at or below `2100000000`.
 
-Override in `tauri.conf.json` if needed:
+Set the override in `tauri.conf.json`:
 ```json
 {
   "bundle": {
@@ -997,9 +997,10 @@ Override in `tauri.conf.json` if needed:
 - **Upload Key SHA256**: `C6:12:09:59:0A:27:73:F9:EA:EC:80:0A:C1:09:07:54:4A:56:6C:62:A5:68:7D:DF:9D:B3:DE:91:19:E4:3B:2A`
 
 ### Version Code Management:
-To avoid conflicts with Tauri's automatic version code generation, we use an extended scheme:
-- Base formula: `major*1000000 + minor*1000 + patch`
-- Extended for builds: Add 3 digits for build number (e.g., 1003002001, 1003002002)
+To avoid conflicts with Tauri's automatic version code generation and Google Play's
+`2100000000` cap, Android builds use a simple sequential `versionCode`:
+- Increment by one for each Play Store upload
+- Keep the user-facing app version in Tauri `version`
 - Configured in `tauri.conf.json` under `bundle.android.versionCode`
 
 ### Still Required for Full Release:

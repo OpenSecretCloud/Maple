@@ -101,10 +101,15 @@ update-version version:
     # Parse version into components
     IFS='.' read -r major minor patch <<< "{{version}}"
     
-    # Calculate Android versionCode: M + MMM (minor) + PPP (patch) + 000 (counter reset)
-    # Format: MMMMPPPCCC (10 digits total)
-    android_version_code=$(printf "%d%03d%03d000" "$major" "$minor" "$patch")
-    echo "Calculated Android versionCode: $android_version_code"
+    # Android versionCode is not user-visible. It only has to increase for
+    # every uploaded Play Store build and must stay <= 2100000000.
+    current_android_version_code=$(jq -r '.bundle.android.versionCode' frontend/src-tauri/tauri.conf.json)
+    android_version_code=$((current_android_version_code + 1))
+    if [ "$android_version_code" -gt 2100000000 ]; then
+        echo "Error: Android versionCode $android_version_code exceeds Google Play maximum 2100000000."
+        exit 1
+    fi
+    echo "Calculated Android versionCode: $android_version_code (previous + 1)"
     
     # Update package.json
     sed -i 's/"version": "[^"]*"/"version": "{{version}}"/' frontend/package.json
@@ -169,7 +174,7 @@ bump-major:
     
     just update-version "$new_version"
 
-# Increment Android versionCode counter (last 3 digits) for Play Store updates
+# Increment Android versionCode for another Play Store upload with the same visible version
 update-android-counter:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -177,23 +182,16 @@ update-android-counter:
     # Get current versionCode from tauri.conf.json
     current_code=$(jq -r '.bundle.android.versionCode' frontend/src-tauri/tauri.conf.json)
     
-    # Extract base (first 7 digits) and counter (last 3 digits)
-    base=$((current_code / 1000))
-    counter=$((current_code % 1000))
+    # Increment by one. This value is internal to Android/Play Store and is not user-visible.
+    new_code=$((current_code + 1))
     
-    # Increment counter
-    new_counter=$((counter + 1))
-    
-    # Ensure counter doesn't exceed 999
-    if [ $new_counter -gt 999 ]; then
-        echo "Error: Counter exceeds maximum (999). Consider bumping the version instead."
+    # Ensure versionCode stays within Google Play's maximum.
+    if [ "$new_code" -gt 2100000000 ]; then
+        echo "Error: Android versionCode $new_code exceeds Google Play maximum 2100000000."
         exit 1
     fi
     
-    # Calculate new versionCode
-    new_code=$((base * 1000 + new_counter))
-    
-    echo "Updating Android versionCode: $current_code → $new_code"
+    echo "Updating Android versionCode: $current_code -> $new_code"
     
     # Update tauri.conf.json Android versionCode
     sed -i "s/\"versionCode\": $current_code/\"versionCode\": $new_code/" frontend/src-tauri/tauri.conf.json
