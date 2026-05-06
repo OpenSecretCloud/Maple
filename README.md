@@ -182,6 +182,9 @@ These commands automatically update all necessary files:
 - `frontend/src-tauri/gen/apple/maple_iOS/Info.plist`
 - `Cargo.lock` (via cargo check)
 
+Android `versionCode` is internal and increments by one for each Play Store upload.
+Use `just update-android-counter` for another internal/test build with the same visible version.
+
 #### Creating a GitHub Release
 1. Use one of the version commands above to update the version
 2. Create a new release in GitHub:
