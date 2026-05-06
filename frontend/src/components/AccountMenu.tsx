@@ -51,6 +51,7 @@ import type { TeamStatus } from "@/types/team";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { TeamManagementDialog } from "@/components/team/TeamManagementDialog";
 import { ApiKeyManagementDialog } from "@/components/apikeys/ApiKeyManagementDialog";
+import { getTeamSeatMismatch } from "@/utils/teamSeats";
 import packageJson from "../../package.json";
 import { SIDEBAR_ACCOUNT_MENU_WIDTH_CLASS, SIDEBAR_LAYOUT_STYLE } from "@/constants/layout";
 
@@ -114,7 +115,7 @@ export function AccountMenu() {
   const [showAboutMenu, setShowAboutMenu] = useState(false);
   const [portalError, setPortalError] = useState<string | null>(null);
 
-  const hasStripeAccount = billingStatus?.stripe_customer_id !== null;
+  const hasStripeAccount = !!billingStatus?.stripe_customer_id;
   const productName = billingStatus?.product_name || "";
   const isPro = productName.toLowerCase().includes("pro");
   const isMax = productName.toLowerCase().includes("max");
@@ -157,6 +158,8 @@ export function AccountMenu() {
   // Show alert badge if user has team plan but hasn't created team yet
   const showTeamSetupAlert =
     isTeamPlan && teamStatus?.has_team_subscription && !teamStatus?.team_created;
+  const teamSeatMismatch = getTeamSeatMismatch(teamStatus);
+  const showTeamAttentionAlert = showTeamSetupAlert || !!teamSeatMismatch;
 
   // Determine if API Management should be shown
   // On desktop/web/Android: always show
@@ -301,8 +304,12 @@ export function AccountMenu() {
                     className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[hsl(var(--sidebar-chrome))] text-[hsl(var(--on-sidebar-chrome))] shadow-none ring-0 transition-colors hover:bg-[hsl(var(--sidebar-chrome-hover))]"
                   >
                     <User className="h-4 w-4" />
-                    {showTeamSetupAlert && (
-                      <AlertCircle className="absolute -right-1 -top-1 h-4 w-4 rounded-full bg-background text-maple-warning" />
+                    {showTeamAttentionAlert && (
+                      <AlertCircle
+                        className={`absolute -right-1 -top-1 h-4 w-4 rounded-full bg-background ${
+                          teamSeatMismatch ? "text-destructive" : "text-maple-warning"
+                        }`}
+                      />
                     )}
                   </button>
                 </DropdownMenuTrigger>
@@ -362,14 +369,21 @@ export function AccountMenu() {
                             <Users className="mr-2 h-4 w-4" />
                             <span>Manage Team</span>
                           </div>
-                          {showTeamSetupAlert && (
+                          {teamSeatMismatch ? (
+                            <Badge
+                              variant="secondary"
+                              className="bg-destructive py-0 px-1.5 text-xs font-medium text-destructive-onFilled"
+                            >
+                              Paused
+                            </Badge>
+                          ) : showTeamSetupAlert ? (
                             <Badge
                               variant="secondary"
                               className="bg-maple-warning py-0 px-1.5 text-xs font-medium text-maple-onWarning"
                             >
                               Setup Required
                             </Badge>
-                          )}
+                          ) : null}
                         </div>
                       </DropdownMenuItem>
                     )}

@@ -1,12 +1,30 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
-import { UserPlus, AlertTriangle, Crown, User, Pencil, Check, X, Loader2 } from "lucide-react";
+import {
+  UserPlus,
+  AlertTriangle,
+  Crown,
+  User,
+  Pencil,
+  Check,
+  X,
+  Loader2,
+  CreditCard,
+  Users
+} from "lucide-react";
 import { TeamInviteDialog } from "./TeamInviteDialog";
 import { TeamMembersList } from "./TeamMembersList";
 import { getBillingService } from "@/billing/billingService";
+import { openBillingPortal } from "@/billing/billingPortal";
+import { useLocalState } from "@/state/useLocalState";
+import {
+  formatTeamSeatMismatchMessage,
+  getTeamSeatCounts,
+  getTeamSeatMismatch
+} from "@/utils/teamSeats";
 import { useQueryClient } from "@tanstack/react-query";
 import type { TeamStatus } from "@/types/team";
 
@@ -20,7 +38,11 @@ export function TeamDashboard({ teamStatus }: TeamDashboardProps) {
   const [editedName, setEditedName] = useState("");
   const [isSavingName, setIsSavingName] = useState(false);
   const [nameError, setNameError] = useState<string | null>(null);
+  const [isPortalLoading, setIsPortalLoading] = useState(false);
+  const [portalError, setPortalError] = useState<string | null>(null);
+  const membersSectionRef = useRef<HTMLDivElement>(null);
   const queryClient = useQueryClient();
+  const { billingStatus } = useLocalState();
 
   if (!teamStatus) {
     return (
@@ -33,10 +55,15 @@ export function TeamDashboard({ teamStatus }: TeamDashboardProps) {
     );
   }
 
-  const seatsUsed = teamStatus.seats_used || 0;
-  const seatsPurchased = teamStatus.seats_purchased || 0;
+  const seatCounts = getTeamSeatCounts(teamStatus);
+  const seatMismatch = getTeamSeatMismatch(teamStatus);
+  const seatsUsed = seatCounts.memberCount ?? 0;
+  const seatsPurchased = seatCounts.billedSeatCount ?? 0;
   const isAdmin = teamStatus.role === "admin" || teamStatus.is_team_admin === true;
   const seatUsagePercentage = seatsPurchased > 0 ? (seatsUsed / seatsPurchased) * 100 : 0;
+  const canOpenBillingPortal = billingStatus
+    ? !!billingStatus.stripe_customer_id
+    : !!teamStatus.has_team_subscription;
 
   const handleStartEdit = () => {
     setEditedName(teamStatus.team_name || "");
@@ -90,6 +117,29 @@ export function TeamDashboard({ teamStatus }: TeamDashboardProps) {
     }
   };
 
+  const handleOpenBilling = async () => {
+    if (!canOpenBillingPortal) return;
+
+    try {
+      setPortalError(null);
+      setIsPortalLoading(true);
+      await openBillingPortal();
+      await queryClient.invalidateQueries({ queryKey: ["billingStatus"] });
+      await queryClient.invalidateQueries({ queryKey: ["teamStatus"] });
+    } catch (error) {
+      console.error("Failed to open billing portal:", error);
+      setPortalError(
+        "Unable to open subscription management. Please try again or contact support@trymaple.ai."
+      );
+    } finally {
+      setIsPortalLoading(false);
+    }
+  };
+
+  const handleReviewMembers = () => {
+    membersSectionRef.current?.scrollIntoView({ block: "nearest" });
+  };
+
   // Simplified view for non-admin members
   if (!isAdmin) {
     return (
@@ -99,6 +149,20 @@ export function TeamDashboard({ teamStatus }: TeamDashboardProps) {
         </DialogHeader>
 
         <div className="mt-3 space-y-3 overflow-hidden">
+          {seatMismatch && (
+            <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-destructive">
+              <div className="flex items-start gap-2">
+                <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0" />
+                <div className="space-y-1">
+                  <p className="text-sm font-medium">Team usage is paused</p>
+                  <p className="text-xs leading-relaxed">
+                    {formatTeamSeatMismatchMessage(seatMismatch, "member")}
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Compact team info */}
           <div className="bg-muted/50 rounded-lg p-3">
             <div className="flex items-center justify-between gap-2">
@@ -137,11 +201,45 @@ export function TeamDashboard({ teamStatus }: TeamDashboardProps) {
       </DialogHeader>
 
       <div className="mt-3 space-y-3 overflow-hidden">
-        {/* Seat limit exceeded warning */}
-        {teamStatus.seat_limit_exceeded && (
-          <div className="rounded-md bg-destructive/10 p-2.5 text-destructive text-xs flex items-start gap-2">
-            <AlertTriangle className="h-3.5 w-3.5 mt-0.5 flex-shrink-0" />
-            <span>Seat limit exceeded. Remove members or purchase additional seats.</span>
+        {seatMismatch && (
+          <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-destructive">
+            <div className="flex items-start gap-2">
+              <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0" />
+              <div className="min-w-0 flex-1 space-y-2">
+                <div>
+                  <p className="text-sm font-medium">Team usage is paused</p>
+                  <p className="mt-1 text-xs leading-relaxed">
+                    {formatTeamSeatMismatchMessage(seatMismatch, "admin")}
+                  </p>
+                </div>
+                <div className="flex flex-col gap-2 sm:flex-row">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-8 border-destructive/30 text-destructive hover:text-destructive"
+                    onClick={handleReviewMembers}
+                  >
+                    <Users className="mr-1.5 h-3.5 w-3.5" />
+                    Manage Members
+                  </Button>
+                  {canOpenBillingPortal && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-8 border-destructive/30 text-destructive hover:text-destructive"
+                      onClick={handleOpenBilling}
+                      disabled={isPortalLoading}
+                    >
+                      <CreditCard className="mr-1.5 h-3.5 w-3.5" />
+                      {isPortalLoading ? "Opening..." : "Add Seats"}
+                    </Button>
+                  )}
+                </div>
+                {portalError && <p className="text-xs leading-relaxed">{portalError}</p>}
+              </div>
+            </div>
           </div>
         )}
 
@@ -233,7 +331,11 @@ export function TeamDashboard({ teamStatus }: TeamDashboardProps) {
             </div>
             <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
               <div
-                className="h-full transition-all bg-emerald-500"
+                className={
+                  seatMismatch
+                    ? "h-full bg-destructive transition-all"
+                    : "h-full bg-emerald-500 transition-all"
+                }
                 style={{
                   width: `${Math.min(seatUsagePercentage, 100)}%`
                 }}
@@ -246,7 +348,7 @@ export function TeamDashboard({ teamStatus }: TeamDashboardProps) {
         {isAdmin && (
           <Button
             onClick={() => setIsInviteDialogOpen(true)}
-            disabled={teamStatus.seat_limit_exceeded}
+            disabled={!!seatMismatch}
             size="sm"
             className="w-full"
           >
@@ -256,7 +358,9 @@ export function TeamDashboard({ teamStatus }: TeamDashboardProps) {
         )}
 
         {/* Members list */}
-        <TeamMembersList teamStatus={teamStatus} />
+        <div ref={membersSectionRef}>
+          <TeamMembersList teamStatus={teamStatus} />
+        </div>
       </div>
 
       {/* Invite dialog */}
