@@ -1527,7 +1527,6 @@ export function UnifiedChat() {
     localStorage.setItem("webSearchEnabled", isWebSearchEnabled.toString());
   }, [isWebSearchEnabled]);
 
-
   // Toggle fullscreen with animation
   const toggleFullscreen = useCallback(() => {
     setIsFullscreenAnimating(true);
