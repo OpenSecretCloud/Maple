@@ -1522,11 +1522,6 @@ export function UnifiedChat() {
     localStorage.setItem("chatFullscreen", isFullscreen.toString());
   }, [isFullscreen]);
 
-  // Save web search preference to localStorage when it changes
-  useEffect(() => {
-    localStorage.setItem("webSearchEnabled", isWebSearchEnabled.toString());
-  }, [isWebSearchEnabled]);
-
   // Toggle fullscreen with animation
   const toggleFullscreen = useCallback(() => {
     setIsFullscreenAnimating(true);
@@ -3530,7 +3525,9 @@ export function UnifiedChat() {
                             size="sm"
                             className="h-8 w-8 p-0 text-[hsl(var(--maple-secondary-700))] hover:bg-[hsl(var(--maple-primary-container))] hover:text-[hsl(var(--maple-secondary-700))]"
                             onClick={() => {
-                              setIsWebSearchEnabled(!isWebSearchEnabled);
+                              const newValue = !isWebSearchEnabled;
+                              setIsWebSearchEnabled(newValue);
+                              localStorage.setItem("webSearchEnabled", newValue.toString());
                             }}
                             aria-label={
                               isWebSearchEnabled ? "Disable web search" : "Enable web search"
@@ -3731,7 +3728,9 @@ export function UnifiedChat() {
                           size="sm"
                           className="h-8 w-8 p-0 text-[hsl(var(--maple-secondary-700))] hover:bg-[hsl(var(--maple-primary-container))] hover:text-[hsl(var(--maple-secondary-700))]"
                           onClick={() => {
-                            setIsWebSearchEnabled(!isWebSearchEnabled);
+                            const newValue = !isWebSearchEnabled;
+                            setIsWebSearchEnabled(newValue);
+                            localStorage.setItem("webSearchEnabled", newValue.toString());
                           }}
                           aria-label={
                             isWebSearchEnabled ? "Disable web search" : "Enable web search"
