@@ -55,9 +55,24 @@ function hasPaidDefaultsBeenApplied(): boolean {
   return localStorage.getItem("paidDefaultsApplied") !== null;
 }
 
+// One-time migration: clear stale webSearchEnabled values that were auto-persisted
+// by the old useEffect (not explicit user choices). After this migration, only values
+// written by explicit user toggle clicks are trusted.
+function migrateWebSearchDefault(): void {
+  try {
+    if (localStorage.getItem("webSearchDefaultMigrated") === null) {
+      localStorage.removeItem("webSearchEnabled");
+      localStorage.setItem("webSearchDefaultMigrated", "true");
+    }
+  } catch {
+    // Ignore storage errors
+  }
+}
+
 // Helper to get the initial web search state from localStorage.
 // Web search is on by default for all users, but respects the user's explicit preference.
 export function getInitialWebSearchEnabled(): boolean {
+  migrateWebSearchDefault();
   try {
     // If user has explicitly toggled web search before, respect that
     const webSearchSetting = localStorage.getItem("webSearchEnabled");
