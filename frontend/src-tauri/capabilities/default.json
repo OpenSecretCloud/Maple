@@ -11,38 +11,23 @@
     "fs:default",
     {
       "identifier": "fs:allow-read-file",
-      "allow": [
-        { "path": "$APPCONFIG/**" },
-        { "path": "$HOME/.config/maple/**" }
-      ]
+      "allow": [{ "path": "$APPCONFIG/**" }]
     },
     {
       "identifier": "fs:allow-write-file",
-      "allow": [
-        { "path": "$APPCONFIG/**" },
-        { "path": "$HOME/.config/maple/**" }
-      ]
+      "allow": [{ "path": "$APPCONFIG/**" }]
     },
     {
       "identifier": "fs:allow-create",
-      "allow": [
-        { "path": "$APPCONFIG/**" },
-        { "path": "$HOME/.config/maple/**" }
-      ]
+      "allow": [{ "path": "$APPCONFIG/**" }]
     },
     {
       "identifier": "fs:allow-exists",
-      "allow": [
-        { "path": "$APPCONFIG/**" },
-        { "path": "$HOME/.config/maple/**" }
-      ]
+      "allow": [{ "path": "$APPCONFIG/**" }]
     },
     {
       "identifier": "fs:allow-mkdir",
-      "allow": [
-        { "path": "$APPCONFIG" },
-        { "path": "$HOME/.config/maple" }
-      ]
+      "allow": [{ "path": "$APPCONFIG" }]
     },
     {
       "identifier": "opener:allow-open-url",
