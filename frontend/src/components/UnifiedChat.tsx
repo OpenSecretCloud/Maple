@@ -1563,14 +1563,18 @@ export function UnifiedChat() {
     setAttachmentError(null);
   }, [imageUrls]);
 
-  // Auto-resize textarea
+  // Auto-resize textarea (skip when fullscreen new-chat textarea is active,
+  // since CSS flex handles its height and inline styles would cap it at 200px)
+  const isNewChatFullscreen = isFullscreen && messages.length === 0 && !chatId;
   useEffect(() => {
-    if (textareaRef.current) {
+    if (!textareaRef.current) return;
+    if (isNewChatFullscreen) {
+      textareaRef.current.style.height = "";
+    } else {
       textareaRef.current.style.height = "auto";
-      const scrollHeight = textareaRef.current.scrollHeight;
-      textareaRef.current.style.height = `${Math.min(scrollHeight, 200)}px`;
+      textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 200)}px`;
     }
-  }, [input]);
+  }, [input, isNewChatFullscreen]);
 
   // Cleanup billing refresh timeout on unmount
   useEffect(() => {
@@ -3465,8 +3469,8 @@ export function UnifiedChat() {
                       } ${isFullscreen ? "h-[70vh] max-h-[800px] min-h-0" : ""}`}
                     >
                       <div
-                        className={`flex items-start gap-1 pl-4 pr-2 pt-2 ${
-                          isFullscreen ? "min-h-0 flex-1" : ""
+                        className={`flex gap-1 pl-4 pr-2 pt-2 ${
+                          isFullscreen ? "min-h-0 flex-1 items-stretch" : "items-start"
                         }`}
                       >
                         <Textarea
@@ -3478,7 +3482,7 @@ export function UnifiedChat() {
                           disabled={isGenerating || isRecording}
                           className={`min-w-0 flex-1 resize-none border-0 bg-transparent text-base leading-6 focus-visible:ring-0 focus-visible:ring-offset-0 placeholder:text-muted-foreground/60 ${
                             isFullscreen
-                              ? "min-h-0 flex-1 py-3 pl-0 pr-2"
+                              ? "min-h-0 py-3 pl-0 pr-2"
                               : "min-h-[52px] max-h-[200px] py-3 pl-0 pr-2"
                           }`}
                           rows={isFullscreen ? undefined : 1}
@@ -3487,7 +3491,7 @@ export function UnifiedChat() {
                         <button
                           type="button"
                           onClick={toggleFullscreen}
-                          className="mt-0.5 shrink-0 rounded-full p-1.5 text-muted-foreground/60 transition-colors hover:bg-muted/50 hover:text-foreground"
+                          className="mt-0.5 shrink-0 self-start rounded-full p-1.5 text-muted-foreground/60 transition-colors hover:bg-muted/50 hover:text-foreground"
                           aria-label={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
                         >
                           {isFullscreen ? (
