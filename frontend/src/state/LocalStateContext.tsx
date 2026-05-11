@@ -55,33 +55,35 @@ function hasPaidDefaultsBeenApplied(): boolean {
   return localStorage.getItem("paidDefaultsApplied") !== null;
 }
 
-// Helper to get the initial web search state from localStorage, billing-aware
+// One-time migration: clear stale webSearchEnabled values that were auto-persisted
+// by the old useEffect (not explicit user choices). After this migration, only values
+// written by explicit user toggle clicks are trusted.
+function migrateWebSearchDefault(): void {
+  try {
+    if (localStorage.getItem("webSearchDefaultMigrated") === null) {
+      localStorage.removeItem("webSearchEnabled");
+      localStorage.setItem("webSearchDefaultMigrated", "true");
+    }
+  } catch {
+    // Ignore storage errors
+  }
+}
+
+// Helper to get the initial web search state from localStorage.
+// Web search is on by default for all users, but respects the user's explicit preference.
 export function getInitialWebSearchEnabled(): boolean {
+  migrateWebSearchDefault();
   try {
     // If user has explicitly toggled web search before, respect that
     const webSearchSetting = localStorage.getItem("webSearchEnabled");
     if (webSearchSetting !== null) {
       return webSearchSetting === "true";
     }
-
-    // No explicit setting — check if paid defaults were applied (web search would be on)
-    if (hasPaidDefaultsBeenApplied()) {
-      return true;
-    }
-
-    // Check cached billing for fast initial load (before billing fetch completes)
-    const cachedBillingStr = localStorage.getItem("cachedBillingStatus");
-    if (cachedBillingStr) {
-      const cachedBilling = JSON.parse(cachedBillingStr) as BillingStatus;
-      const planName = cachedBilling.product_name?.toLowerCase() || "";
-      if (isProMaxOrTeamPlan(planName)) {
-        return true;
-      }
-    }
   } catch (error) {
     console.error("Failed to get initial web search state:", error);
   }
-  return false;
+  // Default to enabled for all users
+  return true;
 }
 
 // Helper to get default model based on cached billing status
@@ -317,9 +319,6 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
       if (isProMaxOrTeam && !hasPaidDefaultsBeenApplied()) {
         // Apply paid defaults — set model to Powerful reasoning model
         setModelInternal(PAID_DEFAULT_MODEL_ID, true);
-
-        // Enable web search
-        localStorage.setItem("webSearchEnabled", "true");
 
         // Mark when we applied paid defaults (ISO date) so we never override again.
         // Future defaults can check this date to decide whether to re-apply newer defaults.

@@ -1489,7 +1489,7 @@ export function UnifiedChat() {
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [upgradeDialogOpen, setUpgradeDialogOpen] = useState(false);
   const [upgradeFeature, setUpgradeFeature] = useState<
-    "image" | "document" | "voice" | "usage" | "tokens" | "websearch"
+    "image" | "document" | "voice" | "usage" | "tokens"
   >("image");
   const [documentPlatformDialogOpen, setDocumentPlatformDialogOpen] = useState(false);
   const [contextLimitDialogOpen, setContextLimitDialogOpen] = useState(false);
@@ -1521,20 +1521,6 @@ export function UnifiedChat() {
   useEffect(() => {
     localStorage.setItem("chatFullscreen", isFullscreen.toString());
   }, [isFullscreen]);
-
-  // Save web search preference to localStorage when it changes
-  useEffect(() => {
-    localStorage.setItem("webSearchEnabled", isWebSearchEnabled.toString());
-  }, [isWebSearchEnabled]);
-
-  // Sync web search state when billing status changes (handles the one-time paid defaults flip).
-  // When setBillingStatus writes "webSearchEnabled" to localStorage, we need to pick that up.
-  useEffect(() => {
-    if (localState.billingStatus) {
-      const storedValue = localStorage.getItem("webSearchEnabled") === "true";
-      setIsWebSearchEnabled(storedValue);
-    }
-  }, [localState.billingStatus]);
 
   // Toggle fullscreen with animation
   const toggleFullscreen = useCallback(() => {
@@ -2278,7 +2264,6 @@ export function UnifiedChat() {
   const canUseImages = hasStarterAccess;
   const canUseDocuments = hasProAccess;
   const canUseVoice = hasProAccess && localState.hasWhisperModel;
-  const canUseWebSearch = hasProAccess;
 
   const handleAddImages = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -3540,12 +3525,9 @@ export function UnifiedChat() {
                             size="sm"
                             className="h-8 w-8 p-0 text-[hsl(var(--maple-secondary-700))] hover:bg-[hsl(var(--maple-primary-container))] hover:text-[hsl(var(--maple-secondary-700))]"
                             onClick={() => {
-                              if (!canUseWebSearch) {
-                                setUpgradeFeature("websearch");
-                                setUpgradeDialogOpen(true);
-                                return;
-                              }
-                              setIsWebSearchEnabled(!isWebSearchEnabled);
+                              const newValue = !isWebSearchEnabled;
+                              setIsWebSearchEnabled(newValue);
+                              localStorage.setItem("webSearchEnabled", newValue.toString());
                             }}
                             aria-label={
                               isWebSearchEnabled ? "Disable web search" : "Enable web search"
@@ -3746,12 +3728,9 @@ export function UnifiedChat() {
                           size="sm"
                           className="h-8 w-8 p-0 text-[hsl(var(--maple-secondary-700))] hover:bg-[hsl(var(--maple-primary-container))] hover:text-[hsl(var(--maple-secondary-700))]"
                           onClick={() => {
-                            if (!canUseWebSearch) {
-                              setUpgradeFeature("websearch");
-                              setUpgradeDialogOpen(true);
-                              return;
-                            }
-                            setIsWebSearchEnabled(!isWebSearchEnabled);
+                            const newValue = !isWebSearchEnabled;
+                            setIsWebSearchEnabled(newValue);
+                            localStorage.setItem("webSearchEnabled", newValue.toString());
                           }}
                           aria-label={
                             isWebSearchEnabled ? "Disable web search" : "Enable web search"
@@ -3877,9 +3856,7 @@ export function UnifiedChat() {
                   ? "usage"
                   : upgradeFeature === "tokens"
                     ? "tokens"
-                    : upgradeFeature === "websearch"
-                      ? "websearch"
-                      : "image"
+                    : "image"
           }
         />
 
