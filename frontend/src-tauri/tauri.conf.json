@@ -63,7 +63,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["nsis", "deb", "appimage", "rpm", "dmg", "app"],
     "publisher": "OpenSecret",
     "icon": [
       "icons/32x32.png",
@@ -94,7 +94,13 @@
     "windows": {
       "certificateThumbprint": null,
       "digestAlgorithm": "sha256",
-      "timestampUrl": ""
+      "timestampUrl": "",
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
+      },
+      "nsis": {
+        "installMode": "currentUser"
+      }
     },
     "createUpdaterArtifacts": true
   }
