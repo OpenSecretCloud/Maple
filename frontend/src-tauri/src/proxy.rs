@@ -64,6 +64,7 @@ impl ProxyState {
 
 #[tauri::command]
 pub async fn start_proxy(
+    app_handle: AppHandle,
     state: State<'_, ProxyState>,
     config: ProxyConfig,
 ) -> Result<ProxyStatus, String> {
@@ -132,7 +133,7 @@ pub async fn start_proxy(
     *running = true;
 
     // Save config to disk
-    if let Err(e) = save_proxy_config(&config).await {
+    if let Err(e) = save_proxy_config(&app_handle, &config).await {
         log::error!("Failed to save proxy config: {e}");
     }
 
@@ -185,15 +186,15 @@ pub async fn get_proxy_status(state: State<'_, ProxyState>) -> Result<ProxyStatu
 }
 
 #[tauri::command]
-pub async fn load_proxy_config() -> Result<ProxyConfig, String> {
-    load_saved_proxy_config()
+pub async fn load_proxy_config(app_handle: AppHandle) -> Result<ProxyConfig, String> {
+    load_saved_proxy_config(&app_handle)
         .await
         .map_err(|e| format!("Failed to load proxy config: {e}"))
 }
 
 #[tauri::command]
-pub async fn save_proxy_settings(config: ProxyConfig) -> Result<(), String> {
-    save_proxy_config(&config)
+pub async fn save_proxy_settings(app_handle: AppHandle, config: ProxyConfig) -> Result<(), String> {
+    save_proxy_config(&app_handle, &config)
         .await
         .map_err(|e| format!("Failed to save proxy config: {e}"))
 }
@@ -214,20 +215,24 @@ pub async fn test_proxy_port(host: String, port: u16) -> Result<bool, String> {
     }
 }
 
-// Helper functions for config persistence
-async fn get_config_path() -> Result<PathBuf> {
-    // Use a hardcoded app name for the data directory
-    let app_name = "maple";
-    let home_dir = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .map_err(|_| anyhow!("Failed to get home directory"))?;
-
-    // Note: We use ~/.config on all platforms for simplicity.
-    // This works well on Linux and macOS (our currently supported platforms).
-    // While macOS traditionally uses ~/Library/Application Support, many modern
-    // cross-platform tools use ~/.config on macOS as well.
-    // If Windows support is added in the future, consider using %APPDATA% instead.
-    let app_dir = PathBuf::from(home_dir).join(".config").join(app_name);
+// Helper functions for config persistence.
+// Epic 2 (PR 3) will unify all platforms onto app_config_dir() and add atomic
+// migration + keyring-backed secret storage. This minimal arm just unblocks
+// Windows compile + launch.
+async fn get_config_path(app_handle: &AppHandle) -> Result<PathBuf> {
+    let app_dir = if cfg!(target_os = "windows") {
+        // Resolves to %APPDATA%\cloud.opensecret.maple\ (Roaming).
+        app_handle
+            .path()
+            .app_config_dir()
+            .map_err(|e| anyhow!("Failed to resolve app config dir: {e}"))?
+    } else {
+        // macOS/Linux: ~/.config/maple/ — unchanged for byte-identical behavior.
+        let app_name = "maple";
+        let home_dir =
+            std::env::var("HOME").map_err(|_| anyhow!("Failed to get home directory"))?;
+        PathBuf::from(home_dir).join(".config").join(app_name)
+    };
 
     // Ensure directory exists
     tokio::fs::create_dir_all(&app_dir).await?;
@@ -235,8 +240,8 @@ async fn get_config_path() -> Result<PathBuf> {
     Ok(app_dir.join("proxy_config.json"))
 }
 
-async fn save_proxy_config(config: &ProxyConfig) -> Result<()> {
-    let path = get_config_path().await?;
+async fn save_proxy_config(app_handle: &AppHandle, config: &ProxyConfig) -> Result<()> {
+    let path = get_config_path(app_handle).await?;
     let json = serde_json::to_string_pretty(config)?;
 
     // Write the config file
@@ -253,8 +258,8 @@ async fn save_proxy_config(config: &ProxyConfig) -> Result<()> {
     Ok(())
 }
 
-async fn load_saved_proxy_config() -> Result<ProxyConfig> {
-    let path = get_config_path().await?;
+async fn load_saved_proxy_config(app_handle: &AppHandle) -> Result<ProxyConfig> {
+    let path = get_config_path(app_handle).await?;
 
     if !path.exists() {
         return Ok(ProxyConfig::default());
@@ -268,7 +273,7 @@ async fn load_saved_proxy_config() -> Result<ProxyConfig> {
 // Initialize proxy on app startup if auto_start is enabled
 pub async fn init_proxy_on_startup_simple(app_handle: AppHandle) -> Result<()> {
     // Load saved config
-    let config = load_saved_proxy_config().await?;
+    let config = load_saved_proxy_config(&app_handle).await?;
 
     // Check if auto-start is enabled and we have an API key
     if config.auto_start && !config.api_key.is_empty() {
@@ -278,7 +283,7 @@ pub async fn init_proxy_on_startup_simple(app_handle: AppHandle) -> Result<()> {
         let proxy_state: tauri::State<ProxyState> = app_handle.state();
 
         // Try to start the proxy
-        match start_proxy(proxy_state, config.clone()).await {
+        match start_proxy(app_handle.clone(), proxy_state, config.clone()).await {
             Ok(_) => {
                 log::info!(
                     "Proxy auto-started successfully on {}:{}",
