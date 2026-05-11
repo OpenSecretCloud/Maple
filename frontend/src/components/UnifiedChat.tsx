@@ -3464,39 +3464,33 @@ export function UnifiedChat() {
                         isFullscreenAnimating ? "transition-all duration-300" : "transition-colors"
                       } ${isFullscreen ? "h-[70vh] max-h-[800px] min-h-0" : ""}`}
                     >
-                      <div
-                        className={`flex items-start gap-1 pl-4 pr-2 pt-2 ${
-                          isFullscreen ? "min-h-0 flex-1" : ""
-                        }`}
+                      <button
+                        type="button"
+                        onClick={toggleFullscreen}
+                        className="absolute right-2 top-2 z-10 rounded-full p-1.5 text-muted-foreground/60 transition-colors hover:bg-muted/50 hover:text-foreground"
+                        aria-label={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
                       >
-                        <Textarea
-                          ref={textareaRef}
-                          value={input}
-                          onChange={(e) => setInput(e.target.value)}
-                          onKeyDown={handleKeyDown}
-                          placeholder="Message Maple..."
-                          disabled={isGenerating || isRecording}
-                          className={`min-w-0 flex-1 resize-none border-0 bg-transparent text-base leading-6 focus-visible:ring-0 focus-visible:ring-offset-0 placeholder:text-muted-foreground/60 ${
-                            isFullscreen
-                              ? "min-h-0 flex-1 py-3 pl-0 pr-2"
-                              : "min-h-[52px] max-h-[200px] py-3 pl-0 pr-2"
-                          }`}
-                          rows={isFullscreen ? undefined : 1}
-                          id="message"
-                        />
-                        <button
-                          type="button"
-                          onClick={toggleFullscreen}
-                          className="mt-0.5 shrink-0 rounded-full p-1.5 text-muted-foreground/60 transition-colors hover:bg-muted/50 hover:text-foreground"
-                          aria-label={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
-                        >
-                          {isFullscreen ? (
-                            <Shrink className="h-4 w-4" />
-                          ) : (
-                            <Expand className="h-4 w-4" />
-                          )}
-                        </button>
-                      </div>
+                        {isFullscreen ? (
+                          <Shrink className="h-4 w-4" />
+                        ) : (
+                          <Expand className="h-4 w-4" />
+                        )}
+                      </button>
+                      <Textarea
+                        ref={textareaRef}
+                        value={input}
+                        onChange={(e) => setInput(e.target.value)}
+                        onKeyDown={handleKeyDown}
+                        placeholder="Message Maple..."
+                        disabled={isGenerating || isRecording}
+                        className={`resize-none border-0 bg-transparent pl-4 pr-8 text-base leading-6 focus-visible:ring-0 focus-visible:ring-offset-0 placeholder:text-muted-foreground/60 ${
+                          isFullscreen
+                            ? "flex-1 min-h-0 pt-3 pb-2"
+                            : "min-h-[52px] max-h-[200px] pt-3 pb-2"
+                        }`}
+                        rows={isFullscreen ? undefined : 1}
+                        id="message"
+                      />
 
                       <div className="grid shrink-0 grid-cols-[minmax(0,1fr)_auto] items-end gap-x-2 gap-y-2 px-2 pb-2 pt-1">
                         <div className="flex min-w-0 flex-wrap items-center gap-1.5 sm:gap-2">
