@@ -16,4 +16,4 @@ fi
 
 echo "ORT_LIB_LOCATION=${ORT_DIR}"
 echo "ORT_SKIP_DOWNLOAD=true"
-echo "ORT_DYLIB_PATH=${ORT_DIR}/lib/libonnxruntime.so.1.22.0"
+echo "ORT_DYLIB_PATH=${ORT_DIR}/lib/libonnxruntime.so.${ORT_VERSION}"
