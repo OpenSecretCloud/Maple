@@ -224,3 +224,79 @@ jobs:
             frontend/src-tauri/target/release/bundle/appimage/*.AppImage
             frontend/src-tauri/target/release/bundle/deb/*.deb
           retention-days: 5
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: 1.2.2
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install sccache
+        run: |
+          choco install sccache --no-progress -y
+          sccache --version
+
+      - name: Cache sccache
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\Mozilla\sccache
+          key: ${{ runner.os }}-sccache-windows-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-sccache-windows-
+            ${{ runner.os }}-sccache-
+
+      - name: Provide ONNX Runtime (Windows)
+        shell: bash
+        run: |
+          ORT_VERSION=1.22.0
+          ORT_ROOT="$RUNNER_TEMP/onnxruntime"
+          mkdir -p "$ORT_ROOT"
+          curl -fL --retry 5 --retry-delay 2 --retry-all-errors \
+            "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-win-x64-${ORT_VERSION}.zip" \
+            -o "$ORT_ROOT/ort.zip"
+          unzip -q "$ORT_ROOT/ort.zip" -d "$ORT_ROOT"
+          echo "ORT_LIB_LOCATION=$ORT_ROOT/onnxruntime-win-x64-${ORT_VERSION}" >> "$GITHUB_ENV"
+          echo "ORT_SKIP_DOWNLOAD=true" >> "$GITHUB_ENV"
+
+      - name: Install frontend dependencies
+        working-directory: ./frontend
+        run: bun install
+
+      - name: Configure sccache
+        shell: bash
+        run: |
+          {
+            echo "RUSTC_WRAPPER=sccache"
+            echo "SCCACHE_CACHE_SIZE=2G"
+          } >> "$GITHUB_ENV"
+
+      - name: Build Tauri App (Windows)
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          VITE_OPEN_SECRET_API_URL: ${{ github.event_name == 'pull_request' && 'https://enclave.secretgpt.ai' || 'https://enclave.trymaple.ai' }}
+          VITE_MAPLE_BILLING_API_URL: ${{ github.event_name == 'pull_request' && 'https://billing-dev.opensecret.cloud' || 'https://billing.opensecret.cloud' }}
+          VITE_CLIENT_ID: ba5a14b5-d915-47b1-b7b1-afda52bc5fc6
+        with:
+          projectPath: './frontend'
+          args: --bundles nsis
+
+      - name: Show sccache stats
+        run: sccache --show-stats
+
+      - name: Upload Windows Build
+        uses: actions/upload-artifact@v4
+        with:
+          name: maple-windows-x64
+          path: |
+            frontend/src-tauri/target/release/bundle/nsis/*.exe
+          retention-days: 5
