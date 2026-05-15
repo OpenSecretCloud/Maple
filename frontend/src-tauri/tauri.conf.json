@@ -74,7 +74,15 @@
     ],
     "linux": {
       "appimage": {
-        "bundleMediaFramework": true
+        "bundleMediaFramework": true,
+        "files": {
+          "/usr/lib/maple/libonnxruntime.so": "./onnxruntime-linux/onnxruntime-linux-x64-1.22.0/lib/libonnxruntime.so.1.22.0"
+        }
+      },
+      "deb": {
+        "files": {
+          "/usr/lib/maple/libonnxruntime.so": "./onnxruntime-linux/onnxruntime-linux-x64-1.22.0/lib/libonnxruntime.so.1.22.0"
+        }
       }
     },
     "macOS": {

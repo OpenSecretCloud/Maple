@@ -48,9 +48,22 @@ axum = "0.8"
 pdf-extract = "0.7"
 base64 = "0.22"
 
-[target.'cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))'.dependencies]
+[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
 # TTS dependencies (Supertonic) - desktop only
 ort = "2.0.0-rc.10"
+ndarray = { version = "0.16", features = ["rayon"] }
+rand = "0.8.6"
+rand_distr = "0.4"
+hound = "3.5"
+unicode-normalization = "0.1"
+regex = "1.10"
+reqwest = { version = "0.13", features = ["stream"] }
+futures-util = "0.3"
+dirs = "6.0"
+sha2 = "0.10"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+ort = { version = "2.0.0-rc.10", features = ["load-dynamic"] }
 ndarray = { version = "0.16", features = ["rayon"] }
 rand = "0.8.6"
 rand_distr = "0.4"
