@@ -277,6 +277,34 @@ jobs:
             echo "SCCACHE_CACHE_SIZE=2G"
           } >> "$GITHUB_ENV"
 
+      # Fork PRs do not receive TAURI_SIGNING_PRIVATE_KEY. When absent, write
+      # an unsigned config override so tauri does not attempt updater
+      # artifact signing after producing the NSIS installer.
+      - name: Detect signing capability
+        id: signing
+        env:
+          KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        shell: bash
+        run: |
+          if [ -z "$KEY" ]; then
+            echo "skip_signing=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::TAURI_SIGNING_PRIVATE_KEY unavailable (likely fork PR); skipping updater artifact signing"
+          else
+            echo "skip_signing=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Write unsigned config override
+        if: steps.signing.outputs.skip_signing == 'true'
+        shell: bash
+        run: |
+          cat > frontend/src-tauri/tauri.unsigned.conf.json <<'EOF'
+          {
+            "bundle": {
+              "createUpdaterArtifacts": false
+            }
+          }
+          EOF
+
       - name: Build Tauri App (Windows)
         uses: tauri-apps/tauri-action@v0
         env:
@@ -288,7 +316,7 @@ jobs:
           VITE_CLIENT_ID: ba5a14b5-d915-47b1-b7b1-afda52bc5fc6
         with:
           projectPath: './frontend'
-          args: --bundles nsis
+          args: --bundles nsis ${{ steps.signing.outputs.skip_signing == 'true' && '--config src-tauri/tauri.unsigned.conf.json' || '' }}
 
       - name: Show sccache stats
         run: sccache --show-stats
