@@ -65,7 +65,44 @@ jobs:
             echo "SCCACHE_CACHE_SIZE=2G"
           } >> "$GITHUB_ENV"
 
+      # Fork PRs do not receive repo secrets. Detect which are present and
+      # skip steps / pass an unsigned config override accordingly. On push to
+      # master and PRs from the upstream repo all secrets are available and
+      # the build runs with full signing + notarization.
+      - name: Detect signing capability
+        id: signing
+        env:
+          TAURI_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          APPLE_CERT: ${{ secrets.APPLE_CERTIFICATE }}
+        shell: bash
+        run: |
+          if [ -z "$TAURI_KEY" ]; then
+            echo "skip_updater_signing=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::TAURI_SIGNING_PRIVATE_KEY unavailable (likely fork PR); skipping updater artifact signing"
+          else
+            echo "skip_updater_signing=false" >> "$GITHUB_OUTPUT"
+          fi
+          if [ -z "$APPLE_CERT" ]; then
+            echo "skip_apple_signing=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::APPLE_CERTIFICATE unavailable (likely fork PR); building unsigned .app/.dmg"
+          else
+            echo "skip_apple_signing=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Write unsigned config override
+        if: steps.signing.outputs.skip_updater_signing == 'true'
+        shell: bash
+        run: |
+          cat > frontend/src-tauri/tauri.unsigned.conf.json <<'EOF'
+          {
+            "bundle": {
+              "createUpdaterArtifacts": false
+            }
+          }
+          EOF
+
       - name: Import Apple Developer Certificate
+        if: steps.signing.outputs.skip_apple_signing == 'false'
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -81,6 +118,7 @@ jobs:
           security find-identity -v -p codesigning build.keychain
 
       - name: Verify Certificate
+        if: steps.signing.outputs.skip_apple_signing == 'false'
         run: |
           CERT_INFO=$(security find-identity -v -p codesigning build.keychain | grep "Developer ID Application")
           CERT_ID=$(echo "$CERT_INFO" | awk -F'"' '{print $2}')
@@ -104,7 +142,7 @@ jobs:
           VITE_CLIENT_ID: ba5a14b5-d915-47b1-b7b1-afda52bc5fc6
         with:
           projectPath: './frontend'
-          args: --target ${{ matrix.target }}
+          args: --target ${{ matrix.target }} ${{ steps.signing.outputs.skip_updater_signing == 'true' && '--config src-tauri/tauri.unsigned.conf.json' || '' }}
 
       - name: Show sccache stats
         run: sccache --show-stats
@@ -201,9 +239,42 @@ jobs:
             echo "SCCACHE_CACHE_SIZE=2G"
           } >> "$GITHUB_ENV"
 
+      # Fork PRs do not receive TAURI_SIGNING_PRIVATE_KEY. When absent, write
+      # an unsigned config override so tauri does not attempt updater
+      # artifact signing after producing the bundles.
+      - name: Detect signing capability
+        id: signing
+        env:
+          KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        shell: bash
+        run: |
+          if [ -z "$KEY" ]; then
+            echo "skip_signing=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::TAURI_SIGNING_PRIVATE_KEY unavailable (likely fork PR); skipping updater artifact signing"
+          else
+            echo "skip_signing=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Write unsigned config override
+        if: steps.signing.outputs.skip_signing == 'true'
+        shell: bash
+        run: |
+          cat > frontend/src-tauri/tauri.unsigned.conf.json <<'EOF'
+          {
+            "bundle": {
+              "createUpdaterArtifacts": false
+            }
+          }
+          EOF
+
       - name: Build Tauri App (Linux)
         working-directory: ./frontend
-        run: cargo tauri build --verbose
+        run: |
+          if [ "${{ steps.signing.outputs.skip_signing }}" = "true" ]; then
+            cargo tauri build --verbose --config src-tauri/tauri.unsigned.conf.json
+          else
+            cargo tauri build --verbose
+          fi
         env:
           APPIMAGE_EXTRACT_AND_RUN: "1"
           NO_STRIP: true
