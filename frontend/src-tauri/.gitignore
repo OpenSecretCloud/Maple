@@ -7,5 +7,8 @@
 /onnxruntime-ios/
 /onnxruntime-build/
 
+# ONNX Runtime Linux (downloaded for bundling)
+/onnxruntime-linux/
+
 # Generated cargo config for iOS builds
 /.cargo/
