@@ -1,0 +1,128 @@
+name: iOS App PR Build
+
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    branches: [ master ]
+
+jobs:
+  build-ios:
+    runs-on: macos-26-xlarge
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: 1.3.5
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios-sim
+
+      - name: Cache Homebrew
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Caches/Homebrew
+            /opt/homebrew/Cellar/openssl@3
+          key: ${{ runner.os }}-brew-pr-${{ hashFiles('.github/workflows/mobile-pr-build.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-brew-pr-
+
+      - name: Install frontend dependencies
+        working-directory: ./frontend
+        run: bun install --frozen-lockfile --ignore-scripts
+
+      - name: Cache ONNX Runtime iOS build
+        uses: actions/cache@v4
+        id: cache-onnxruntime
+        with:
+          path: |
+            frontend/src-tauri/onnxruntime-ios
+            frontend/src-tauri/onnxruntime-build
+          key: pr-onnxruntime-ios-simulator-built-1.22.2-xcode26.2-v1
+          restore-keys: |
+            pr-onnxruntime-ios-simulator-built-1.22.2-xcode26.2-
+
+      - name: Build ONNX Runtime for iOS from source
+        if: steps.cache-onnxruntime.outputs.cache-hit != 'true'
+        working-directory: ./frontend/src-tauri
+        run: |
+          chmod +x scripts/build-ios-onnxruntime-all.sh
+          ./scripts/build-ios-onnxruntime-all.sh 1.22.2
+        timeout-minutes: 90
+
+      - name: Verify ONNX Runtime files
+        run: |
+          echo "Checking ONNX Runtime xcframework..."
+          ls -la ${{ github.workspace }}/frontend/src-tauri/onnxruntime-ios/onnxruntime.xcframework/
+          ls -la ${{ github.workspace }}/frontend/src-tauri/onnxruntime-ios/onnxruntime.xcframework/ios-arm64-simulator/
+          echo ""
+          echo "Library info:"
+          file ${{ github.workspace }}/frontend/src-tauri/onnxruntime-ios/onnxruntime.xcframework/ios-arm64-simulator/libonnxruntime.a
+          echo ""
+          echo "Checking for Abseil symbols (should be included):"
+          nm ${{ github.workspace }}/frontend/src-tauri/onnxruntime-ios/onnxruntime.xcframework/ios-arm64-simulator/libonnxruntime.a 2>/dev/null | grep -i "absl" | head -20 || echo "No abseil symbols found (they may be internal)"
+
+      - name: Configure Cargo for iOS ONNX Runtime
+        run: |
+          WORKSPACE="${{ github.workspace }}"
+          mkdir -p "${WORKSPACE}/frontend/src-tauri/.cargo"
+          cat > "${WORKSPACE}/frontend/src-tauri/.cargo/config.toml" << EOF
+          # Auto-generated cargo config for iOS ONNX Runtime linking
+          # Uses absolute paths because xcodebuild may run cargo from different directories
+
+          [target.aarch64-apple-ios.onnxruntime]
+          rustc-link-search = ["${WORKSPACE}/frontend/src-tauri/onnxruntime-ios/onnxruntime.xcframework/ios-arm64"]
+          # Also link libc++ since ONNX Runtime is C++; overriding ort-sys link metadata
+          # suppresses the build script's cargo:rustc-link-lib=c++
+          rustc-link-lib = ["static=onnxruntime", "c++"]
+
+          [target.aarch64-apple-ios-sim.onnxruntime]
+          rustc-link-search = ["${WORKSPACE}/frontend/src-tauri/onnxruntime-ios/onnxruntime.xcframework/ios-arm64-simulator"]
+          rustc-link-lib = ["static=onnxruntime", "c++"]
+          EOF
+
+          echo "Generated cargo config:"
+          cat "${WORKSPACE}/frontend/src-tauri/.cargo/config.toml"
+
+      - name: Setup Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '26.2'
+
+      - name: Install Tauri CLI
+        run: |
+          if ! command -v cargo-tauri &> /dev/null; then
+            cargo install tauri-cli --version "2.9.2" --locked
+          else
+            echo "Tauri CLI already installed"
+          fi
+        env:
+          CARGO_CFG_TARGET_OS: macos
+
+      - name: Build Tauri iOS App (simulator)
+        working-directory: ./frontend
+        run: |
+          bun tauri ios build --debug --target aarch64-sim --ci
+        env:
+          VITE_OPEN_SECRET_API_URL: https://enclave.secretgpt.ai
+          VITE_MAPLE_BILLING_API_URL: https://billing-dev.opensecret.cloud
+          VITE_CLIENT_ID: ba5a14b5-d915-47b1-b7b1-afda52bc5fc6
+          ORT_LIB_LOCATION: ${{ github.workspace }}/frontend/src-tauri/onnxruntime-ios/onnxruntime.xcframework/ios-arm64-simulator
+          ORT_SKIP_DOWNLOAD: "true"
+          IPHONEOS_DEPLOYMENT_TARGET: '16.0'
+
+      - name: Upload iOS PR Simulator App
+        uses: actions/upload-artifact@v4
+        with:
+          name: maple-ios-simulator-pr
+          path: |
+            frontend/src-tauri/gen/apple/build/**/*.app
+          retention-days: 5
