@@ -3,6 +3,7 @@
   "private": true,
   "version": "3.0.1",
   "type": "module",
+  "trustedDependencies": [],
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
@@ -12,7 +13,7 @@
     "test": "bun test",
     "test:coverage": "bun test --coverage",
     "preview": "vite preview",
-    "add": "bunx shadcn-ui@latest add",
+    "add": "echo \"Disabled: use a reviewed, pinned shadcn CLI version explicitly\" && exit 1",
     "format": "prettier --write \"src/**/*.{ts,tsx,js,jsx,json,css,md}\"",
     "format:check": "prettier --check \"src/**/*.{ts,tsx,js,jsx,json,css,md}\""
   },

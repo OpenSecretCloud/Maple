@@ -56,7 +56,7 @@ jobs:
 
       - name: Install frontend dependencies
         working-directory: ./frontend
-        run: bun install
+        run: bun install --frozen-lockfile --ignore-scripts
 
       - name: Configure sccache
         run: |
@@ -173,7 +173,7 @@ jobs:
 
       - name: Install frontend dependencies
         working-directory: ./frontend
-        run: bun install
+        run: bun install --frozen-lockfile --ignore-scripts
 
       - name: Install Tauri CLI
         run: |

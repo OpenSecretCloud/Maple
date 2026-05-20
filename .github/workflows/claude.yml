@@ -61,7 +61,7 @@ jobs:
           path: |
             ~/.bun/install/cache
             frontend/node_modules
-          key: ${{ runner.os }}-bun-${{ hashFiles('frontend/bun.lockb') }}
+          key: ${{ runner.os }}-bun-${{ hashFiles('frontend/bun.lock') }}
           restore-keys: |
             ${{ runner.os }}-bun-
 
@@ -99,7 +99,7 @@ jobs:
 
       - name: Install frontend dependencies
         working-directory: ./frontend
-        run: bun install
+        run: bun install --frozen-lockfile --ignore-scripts
 
       - name: Cache Cargo bin (Tauri CLI)
         uses: actions/cache@v4
@@ -136,4 +136,3 @@ jobs:
             --allowedTools "Bash,Edit,Replace,NotebookEditCell,MultiEdit,Write,Read,Grep,Glob,LS,WebSearch,WebFetch,Task,TodoWrite,BashOutput,KillBash"
             --max-turns 100
             --model claude-sonnet-4-5-20250929
-
