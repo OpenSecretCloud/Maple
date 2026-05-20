@@ -89,7 +89,7 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # was v4
         with:
           path: ~/.cargo/bin/
-          key: ${{ runner.os }}-cargo-bin-tauri-cli-2.9.2
+          key: ${{ runner.os }}-cargo-bin-tauri-cli-2.11.1
           restore-keys: |
             ${{ runner.os }}-cargo-bin-tauri-cli-
             ${{ runner.os }}-cargo-bin-
@@ -105,7 +105,7 @@ jobs:
 
       - name: Install Tauri CLI
         run: |
-          REQUIRED_TAURI_CLI_VERSION="2.9.2"
+          REQUIRED_TAURI_CLI_VERSION="2.11.1"
           INSTALLED_TAURI_CLI_VERSION=""
           if command -v cargo-tauri >/dev/null 2>&1; then
             INSTALLED_TAURI_CLI_VERSION="$(cargo-tauri --version 2>/dev/null | awk '{print $2}')"
@@ -191,7 +191,7 @@ jobs:
           sudo ln -sf $NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib /usr/local/bin/x86_64-linux-android-ranlib
           sudo ln -sf $NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib /usr/local/bin/i686-linux-android-ranlib
 
-          cargo tauri android build --debug --apk true
+          cargo tauri android build --debug --apk
         env:
           VITE_OPEN_SECRET_API_URL: https://enclave.secretgpt.ai
           VITE_MAPLE_BILLING_API_URL: https://billing-dev.opensecret.cloud
