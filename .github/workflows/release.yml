@@ -13,10 +13,12 @@ jobs:
       release_id: ${{ steps.get_version.outputs.version }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # was v4
+        with:
+          persist-credentials: false
 
       - name: Setup Bun
-        uses: oven-sh/setup-bun@v1
+        uses: oven-sh/setup-bun@f4d14e03ff726c06358e5557344e1da148b56cf7 # was v1
         with:
           bun-version: 1.3.5
 
@@ -37,21 +39,24 @@ jobs:
 
     runs-on: ${{ matrix.platform }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # was v4
+        with:
+          persist-credentials: false
 
       - name: Setup Bun
-        uses: oven-sh/setup-bun@v1
+        uses: oven-sh/setup-bun@f4d14e03ff726c06358e5557344e1da148b56cf7 # was v1
         with:
           bun-version: 1.3.5
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # was stable
         with:
+          toolchain: 1.95.0
           targets: ${{ matrix.platform == 'macos-latest-xlarge' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
 
       - name: Cache Homebrew
         if: matrix.platform == 'macos-latest-xlarge'
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # was v4
         with:
           path: |
             ~/Library/Caches/Homebrew
@@ -72,14 +77,18 @@ jobs:
         if: matrix.platform == 'ubuntu-latest-8-cores'
         run: |
           SCCACHE_VERSION=0.8.2
-          SCCACHE_URL="https://github.com/mozilla/sccache/releases/download/v${SCCACHE_VERSION}/sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl.tar.gz"
-          curl -L "$SCCACHE_URL" | tar xz
+          SCCACHE_SHA256="ecda4ddc89a49f1ec6f35bdce5ecbf6f205b399a680d11119d4ce9f6d962104e"
+          SCCACHE_ARCHIVE="sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl.tar.gz"
+          SCCACHE_URL="https://github.com/mozilla/sccache/releases/download/v${SCCACHE_VERSION}/${SCCACHE_ARCHIVE}"
+          curl --fail --location --show-error --silent "$SCCACHE_URL" --output "$SCCACHE_ARCHIVE"
+          echo "${SCCACHE_SHA256}  ${SCCACHE_ARCHIVE}" | sha256sum --check -
+          tar xzf "$SCCACHE_ARCHIVE"
           sudo mv sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl/sccache /usr/local/bin/
           chmod +x /usr/local/bin/sccache
           sccache --version
 
       - name: Cache sccache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # was v4
         with:
           path: ${{ matrix.platform == 'macos-latest-xlarge' && '~/Library/Caches/Mozilla.sccache' || '~/.cache/sccache' }}
           key: ${{ runner.os }}-sccache-release-${{ hashFiles('**/Cargo.lock') }}
@@ -114,7 +123,7 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: Build Tauri App
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # was v0
         env:
           APPIMAGE_EXTRACT_AND_RUN: ${{ matrix.platform == 'ubuntu-latest-8-cores' && '1' || '' }}
           NO_STRIP: ${{ matrix.platform == 'ubuntu-latest-8-cores' && 'true' || '' }}
@@ -143,24 +152,26 @@ jobs:
     needs: create-release
     runs-on: ubuntu-latest-8-cores
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # was v4
+        with:
+          persist-credentials: false
 
       - name: Setup Java
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # was v4
         with:
           distribution: 'temurin'
-          java-version: '21'
+          java-version: '21.0.11'
 
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # was v3
 
       - name: Setup Bun
-        uses: oven-sh/setup-bun@v1
+        uses: oven-sh/setup-bun@f4d14e03ff726c06358e5557344e1da148b56cf7 # was v1
         with:
           bun-version: 1.3.5
 
       - name: Cache Bun dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # was v4
         with:
           path: |
             ~/.bun/install/cache
@@ -170,12 +181,13 @@ jobs:
             ${{ runner.os }}-bun-
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # was stable
         with:
+          toolchain: 1.95.0
           targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android,i686-linux-android
 
       - name: Setup Android NDK
-        uses: nttld/setup-ndk@v1.5.0
+        uses: nttld/setup-ndk@afb4c9964b521afb97c864b7d40b11e6911bd410 # was v1.5.0
         id: setup-ndk
         with:
           ndk-version: r27c
@@ -183,7 +195,7 @@ jobs:
           local-cache: true
 
       - name: Cache Gradle
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # was v4
         with:
           path: |
             ~/.gradle/caches
@@ -195,14 +207,18 @@ jobs:
       - name: Install sccache
         run: |
           SCCACHE_VERSION=0.8.2
-          SCCACHE_URL="https://github.com/mozilla/sccache/releases/download/v${SCCACHE_VERSION}/sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl.tar.gz"
-          curl -L "$SCCACHE_URL" | tar xz
+          SCCACHE_SHA256="ecda4ddc89a49f1ec6f35bdce5ecbf6f205b399a680d11119d4ce9f6d962104e"
+          SCCACHE_ARCHIVE="sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl.tar.gz"
+          SCCACHE_URL="https://github.com/mozilla/sccache/releases/download/v${SCCACHE_VERSION}/${SCCACHE_ARCHIVE}"
+          curl --fail --location --show-error --silent "$SCCACHE_URL" --output "$SCCACHE_ARCHIVE"
+          echo "${SCCACHE_SHA256}  ${SCCACHE_ARCHIVE}" | sha256sum --check -
+          tar xzf "$SCCACHE_ARCHIVE"
           sudo mv sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl/sccache /usr/local/bin/
           chmod +x /usr/local/bin/sccache
           sccache --version
 
       - name: Cache sccache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # was v4
         with:
           path: ~/.cache/sccache
           key: ${{ runner.os }}-sccache-android-release-${{ hashFiles('**/Cargo.lock') }}
@@ -211,7 +227,7 @@ jobs:
             ${{ runner.os }}-sccache-
 
       - name: Cache Cargo bin (Tauri CLI)
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # was v4
         with:
           path: ~/.cargo/bin/
           key: ${{ runner.os }}-cargo-bin-tauri-cli-2.9.2
@@ -355,7 +371,9 @@ jobs:
     needs: build-tauri
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # was v4
+        with:
+          persist-credentials: false
 
       - name: Download release artifacts
         env:
