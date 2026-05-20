@@ -185,13 +185,13 @@ or comma-separated: john@example.com, jane@example.com`}
                   </AlertDescription>
                 </Alert>
                 {canOpenBillingPortal && (
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      className="w-full"
-                      onClick={handleManageSubscription}
-                      disabled={isPortalLoading}
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="w-full"
+                    onClick={handleManageSubscription}
+                    disabled={isPortalLoading}
                   >
                     <CreditCard className="mr-2 h-4 w-4" />
                     {isPortalLoading ? "Loading..." : "Manage Subscription"}
