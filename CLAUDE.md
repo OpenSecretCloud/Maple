@@ -47,8 +47,7 @@ Use justfile for all commands (`just --list` to see all):
 - `just ios-dev-sim "iPhone 16 Pro"` - iOS specific simulator
 - `just ios-dev-device "Your iPhone"` - iOS physical device
 - `just android-build` - Android release build
-- `just desktop-build` - Desktop release build
-- `just desktop-build-no-cc` - Desktop build (with CC unset for compatibility)
+- `just desktop-build` - Desktop release build (unsets Android NDK env vars)
 
 ### Rust (src-tauri)
 - `just rust-fmt` - Format Rust code
