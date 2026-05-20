@@ -57,7 +57,8 @@ export function formatTeamSeatMismatchMessage(
   if (
     mismatch.hasExactCounts &&
     mismatch.memberCount !== null &&
-    mismatch.billedSeatCount !== null
+    mismatch.billedSeatCount !== null &&
+    mismatch.memberCount > mismatch.billedSeatCount
   ) {
     const memberLabel = mismatch.memberCount === 1 ? "member" : "members";
     const seatLabel = mismatch.billedSeatCount === 1 ? "paid seat" : "paid seats";
