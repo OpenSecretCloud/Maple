@@ -186,10 +186,16 @@ jobs:
 
       - name: Install Tauri CLI
         run: |
-          if ! command -v cargo-tauri &> /dev/null; then
-            cargo install tauri-cli --version "2.9.2" --locked
+          REQUIRED_TAURI_CLI_VERSION="2.9.2"
+          INSTALLED_TAURI_CLI_VERSION=""
+          if command -v cargo-tauri >/dev/null 2>&1; then
+            INSTALLED_TAURI_CLI_VERSION="$(cargo-tauri --version 2>/dev/null | awk '{print $2}')"
+          fi
+
+          if [ "$INSTALLED_TAURI_CLI_VERSION" != "$REQUIRED_TAURI_CLI_VERSION" ]; then
+            cargo install tauri-cli --version "$REQUIRED_TAURI_CLI_VERSION" --locked --force
           else
-            echo "Tauri CLI already installed"
+            echo "Tauri CLI $REQUIRED_TAURI_CLI_VERSION already installed"
           fi
         env:
           CARGO_CFG_TARGET_OS: linux
