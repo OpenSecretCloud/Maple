@@ -27,7 +27,7 @@ Maple is a **Tauri-based AI chat application** that runs on desktop (macOS, Linu
 - **Frontend**: TypeScript + React (Vite), Tailwind CSS, shadcn/ui components
 - **Backend**: Rust (Tauri 2.x) with proxy and PDF extraction features
 - **Auth**: OpenSecret (`@opensecret/react`)
-- **Package Manager**: Bun (v1.2.2+)
+- **Package Manager**: Bun (v1.3.5)
 
 ## Environment
 The user typically runs `nix develop` (using `flake.nix`) before starting Claude. This means you're usually in a Nix shell with all required tools (bun, cargo, rustc, etc.) already available.
