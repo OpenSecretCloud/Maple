@@ -14,9 +14,12 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/onnxruntime-pins.sh"
+
 TAURI_DIR="$(dirname "$SCRIPT_DIR")"
 # Use latest 1.22.2 - older versions have Eigen hash mismatch issues with GitLab
 ORT_VERSION="${1:-1.22.2}"
+ORT_COMMIT="${ORT_COMMIT:-$(onnxruntime_ios_commit_for_version "${ORT_VERSION}")}"
 BUILD_DIR="${TAURI_DIR}/onnxruntime-build"
 OUTPUT_DIR="${TAURI_DIR}/onnxruntime-ios"
 XCFRAMEWORK_DIR="${OUTPUT_DIR}/onnxruntime.xcframework"
@@ -27,6 +30,7 @@ IOS_DEPLOYMENT_TARGET="13.0"
 echo "========================================"
 echo "Building ONNX Runtime ${ORT_VERSION} for iOS"
 echo "========================================"
+echo "Source commit: ${ORT_COMMIT}"
 echo "Build directory: ${BUILD_DIR}"
 echo "Output directory: ${OUTPUT_DIR}"
 echo "iOS deployment target: ${IOS_DEPLOYMENT_TARGET}"
@@ -49,13 +53,37 @@ fi
 mkdir -p "$BUILD_DIR"
 cd "$BUILD_DIR"
 
-# Clone ONNX Runtime if not already cloned (with retry for transient network errors)
+# Clone and check out ONNX Runtime at the pinned source commit.
+checkout_onnxruntime_source() {
+    if [ ! -d "onnxruntime/.git" ]; then
+        rm -rf onnxruntime
+        git init onnxruntime
+    fi
+
+    (
+        cd onnxruntime
+        if ! git remote get-url origin >/dev/null 2>&1; then
+            git remote add origin https://github.com/microsoft/onnxruntime.git
+        fi
+        git fetch --depth 1 origin "${ORT_COMMIT}"
+        git checkout --detach FETCH_HEAD
+        git submodule update --init --recursive
+
+        local actual_commit
+        actual_commit="$(git rev-parse HEAD)"
+        if [ "${actual_commit}" != "${ORT_COMMIT}" ]; then
+            echo "Expected ONNX Runtime commit ${ORT_COMMIT}, got ${actual_commit}" >&2
+            return 1
+        fi
+    )
+}
+
 clone_with_retry() {
     local max_attempts=3
     local attempt=1
     while [ $attempt -le $max_attempts ]; do
         echo "Attempt $attempt of $max_attempts..."
-        if git clone --depth 1 --branch "v${ORT_VERSION}" --recursive https://github.com/microsoft/onnxruntime.git; then
+        if checkout_onnxruntime_source; then
             return 0
         fi
         echo "Clone failed, waiting 10 seconds before retry..."
@@ -66,33 +94,8 @@ clone_with_retry() {
     return 1
 }
 
-submodule_update_with_retry() {
-    local max_attempts=3
-    local attempt=1
-    while [ $attempt -le $max_attempts ]; do
-        echo "Attempt $attempt of $max_attempts..."
-        if git submodule update --init --recursive; then
-            return 0
-        fi
-        echo "Submodule update failed, waiting 10 seconds before retry..."
-        sleep 10
-        attempt=$((attempt + 1))
-    done
-    echo "Failed to update submodules after $max_attempts attempts"
-    return 1
-}
-
-if [ ! -d "onnxruntime" ]; then
-    echo "Cloning ONNX Runtime repository..."
-    clone_with_retry
-else
-    echo "ONNX Runtime repository already cloned"
-    cd onnxruntime
-    git fetch --tags
-    git checkout "v${ORT_VERSION}"
-    submodule_update_with_retry
-    cd ..
-fi
+echo "Checking out ONNX Runtime repository..."
+clone_with_retry
 
 cd onnxruntime
 
