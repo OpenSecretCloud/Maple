@@ -416,7 +416,11 @@ function LoginPage() {
             className="w-full bg-white/40 dark:bg-white/0"
           />
         )}
-        <Button onClick={() => setLoginMethod("guest")} variant="secondary" className="w-full">
+        <Button
+          onClick={() => setLoginMethod("guest")}
+          variant="outline"
+          className="w-full bg-white/40 dark:bg-white/0"
+        >
           <UserCircle className="mr-2 h-4 w-4" />
           Log in as Anonymous
         </Button>
