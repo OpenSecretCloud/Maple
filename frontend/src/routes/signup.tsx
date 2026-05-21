@@ -433,7 +433,11 @@ function SignupPage() {
             className="w-full bg-white/40 dark:bg-white/0"
           />
         )}
-        <Button onClick={() => setShowGuestWarning(true)} variant="secondary" className="w-full">
+        <Button
+          onClick={() => setShowGuestWarning(true)}
+          variant="outline"
+          className="w-full bg-white/40 dark:bg-white/0"
+        >
           <UserCircle className="mr-2 h-4 w-4" />
           Sign up as Anonymous
         </Button>
