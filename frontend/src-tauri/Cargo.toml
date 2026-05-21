@@ -26,8 +26,11 @@ tauri = { version = "2.11.2", features = [] }
 tauri-plugin-log = "2.8.0"
 tauri-plugin-updater = "2.10.1"
 tauri-plugin = "2.6.2"
-tauri-plugin-deep-link = "2.4.9"
-tauri-plugin-single-instance = { version = "2.4.2", features = ["deep-link"] }
+# Keep Android deep links on the last known-working plugin behavior.
+# tauri-plugin-deep-link 2.4.9 added Android-side config filtering that drops
+# our existing cloud.opensecret.maple:// OAuth callback before Rust receives it.
+tauri-plugin-deep-link = "=2.4.7"
+tauri-plugin-single-instance = { version = "=2.4.0", features = ["deep-link"] }
 tauri-plugin-opener = "2.5.4"
 tauri-plugin-os = "2.3.2"
 tauri-plugin-sign-in-with-apple = "1.0.2"
@@ -86,3 +89,13 @@ sha2 = "0.10"
 
 [target.'cfg(target_os = "android")'.dependencies]
 openssl = { version = "0.10.80", default-features = false, features = ["vendored"] }
+
+[patch.crates-io]
+# Local patch for tao 0.35.2 Android intent crashes:
+# https://github.com/tauri-apps/tao/issues/1217
+#
+# Tao's Android intent handler currently unwraps several JNI calls that can
+# receive null objects from real Android launch/deep-link flows, aborting the
+# process before tauri-plugin-deep-link sees OAuth/payment redirects. Remove
+# this once Tauri resolves to a Tao release containing the upstream fix.
+tao = { path = "patches/tao-0.35.2" }
