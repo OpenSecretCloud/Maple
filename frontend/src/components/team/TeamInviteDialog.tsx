@@ -14,8 +14,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Loader2, AlertCircle, UserPlus, Info, CreditCard } from "lucide-react";
 import { getBillingService } from "@/billing/billingService";
+import { openBillingPortal } from "@/billing/billingPortal";
 import { useLocalState } from "@/state/useLocalState";
-import { isTauri } from "@/utils/platform";
 import type { TeamStatus } from "@/types/team";
 
 interface TeamInviteDialogProps {
@@ -32,43 +32,20 @@ export function TeamInviteDialog({ open, onOpenChange, teamStatus }: TeamInviteD
   const [isPortalLoading, setIsPortalLoading] = useState(false);
   const queryClient = useQueryClient();
   const { billingStatus } = useLocalState();
-  const seatsAvailable = teamStatus?.seats_available || 0;
-  const hasStripeAccount = billingStatus?.stripe_customer_id !== null;
+  const seatsAvailable = Math.max(0, teamStatus?.seats_available || 0);
+  const canOpenBillingPortal = billingStatus
+    ? !!billingStatus.stripe_customer_id
+    : !!teamStatus?.has_team_subscription;
 
   const handleManageSubscription = async () => {
-    if (!hasStripeAccount) return;
+    if (!canOpenBillingPortal) return;
 
     try {
       setError(null);
       setIsPortalLoading(true);
-      const billingService = getBillingService();
-      const url = await billingService.getPortalUrl();
-
-      // Use external browser for all Tauri platforms (mobile and desktop)
-      if (isTauri()) {
-        try {
-          // Dynamic import to avoid issues in web environments
-          const { invoke } = await import("@tauri-apps/api/core");
-          await invoke("plugin:opener|open_url", { url })
-            .then(() => {
-              console.log("[TeamInvite] Successfully opened URL in external browser");
-            })
-            .catch((error: Error) => {
-              console.error("[TeamInvite] Failed to open external browser:", error);
-              // Fall back to window.open if opener plugin fails
-              window.open(url, "_blank", "noopener,noreferrer");
-            });
-          return;
-        } catch (importError) {
-          console.error("[TeamInvite] Failed to import Tauri APIs:", importError);
-          // Fall back to web approach if dynamic import fails
-          window.open(url, "_blank", "noopener,noreferrer");
-          return;
-        }
-      }
-
-      // Web flow
-      window.open(url, "_blank", "noopener,noreferrer");
+      await openBillingPortal();
+      await queryClient.invalidateQueries({ queryKey: ["billingStatus"] });
+      await queryClient.invalidateQueries({ queryKey: ["teamStatus"] });
     } catch (error) {
       console.error("Failed to open billing portal:", error);
       setError(
@@ -207,8 +184,9 @@ or comma-separated: john@example.com, jane@example.com`}
                     before inviting new ones.
                   </AlertDescription>
                 </Alert>
-                {hasStripeAccount && (
+                {canOpenBillingPortal && (
                   <Button
+                    type="button"
                     variant="outline"
                     size="sm"
                     className="w-full"

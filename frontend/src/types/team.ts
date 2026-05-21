@@ -8,6 +8,8 @@ export interface TeamStatus {
   seats_used?: number;
   seats_available?: number;
   members_count?: number;
+  billed_seat_count?: number;
+  team_member_count?: number;
   pending_invites_count?: number;
   created_at?: string;
   seat_limit_exceeded?: boolean;
