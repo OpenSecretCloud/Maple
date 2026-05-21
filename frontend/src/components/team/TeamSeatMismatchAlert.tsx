@@ -27,7 +27,10 @@ export function TeamSeatMismatchAlert() {
 
   const isAdmin = teamStatus?.role === "admin" || teamStatus?.is_team_admin === true;
   const summary =
-    mismatch.hasExactCounts && mismatch.memberCount !== null && mismatch.billedSeatCount !== null
+    mismatch.hasExactCounts &&
+    mismatch.memberCount !== null &&
+    mismatch.billedSeatCount !== null &&
+    mismatch.memberCount > mismatch.billedSeatCount
       ? `${mismatch.memberCount} ${
           mismatch.memberCount === 1 ? "member" : "members"
         }, ${mismatch.billedSeatCount} paid ${mismatch.billedSeatCount === 1 ? "seat" : "seats"}`
