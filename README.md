@@ -105,7 +105,23 @@ override the default. (See `.env.example`)
 
 ## Building
 
-To build the desktop application:
+### Desktop Builds
+
+Use the `just` commands for desktop builds:
+
+```bash
+# Release build
+just desktop-build
+
+# Debug build
+just desktop-build-debug
+
+# If you encounter CC-related errors in a Nix shell, use the -no-cc variants:
+just desktop-build-no-cc
+just desktop-build-debug-no-cc
+```
+
+Or use `bun tauri build` directly:
 ```bash
 # Standard build
 bun tauri build
@@ -113,6 +129,31 @@ bun tauri build
 # For universal macOS build (Apple Silicon + Intel)
 bun tauri build --target universal-apple-darwin
 ```
+
+#### Linux: ONNX Runtime Setup
+
+Linux builds bundle `libonnxruntime.so` for local TTS (Supertonic). Before building on Linux, you must download the ONNX Runtime shared library:
+
+```bash
+cd frontend/src-tauri
+./scripts/provide-linux-onnxruntime.sh
+```
+
+This downloads the pinned ONNX Runtime release, verifies its SHA-256 checksum, and extracts it to `frontend/src-tauri/onnxruntime-linux/` (which is gitignored). The script is idempotent — it skips the download if the library already exists.
+
+> **Note:** CI workflows call this script automatically. You only need to run it manually for local builds.
+
+#### Linux: Running in Headless/Virtual Display Environments
+
+If you're running the built Maple binary in a headless environment (e.g., CI, virtual display with Xvfb), WebKit may fail to render content. Set these environment variables before launching:
+
+```bash
+export WEBKIT_DISABLE_COMPOSITING_MODE=1
+export WEBKIT_DISABLE_DMABUF_RENDERER=1
+DISPLAY=:0 ./frontend/src-tauri/target/debug/maple
+```
+
+These are set automatically when using `nix develop` (via `flake.nix`).
 
 If you need a new set of icons: 
 
