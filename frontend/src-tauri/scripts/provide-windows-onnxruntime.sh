@@ -2,17 +2,30 @@
 set -euo pipefail
 
 ORT_VERSION="${ORT_VERSION:-1.22.0}"
+# Default x64 so CI (windows-latest, x64-only) keeps working unchanged.
+# tauri-windows.ps1 sets this to 'arm64' when building for aarch64 hosts.
+ORT_TARGET_ARCH="${ORT_TARGET_ARCH:-x64}"
+case "${ORT_TARGET_ARCH}" in
+  x64|arm64) ;;
+  *)
+    echo "Unsupported ORT_TARGET_ARCH '${ORT_TARGET_ARCH}'. Use 'x64' or 'arm64'." >&2
+    exit 1
+    ;;
+esac
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/onnxruntime-pins.sh"
 
 TAURI_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-ORT_ROOT="${TAURI_DIR}/onnxruntime-windows"
-ORT_DIR="${ORT_ROOT}/onnxruntime-win-x64-${ORT_VERSION}"
-ORT_ARCHIVE="onnxruntime-win-x64-${ORT_VERSION}.zip"
+# Arch-suffixed root so a dev who toggles between native arm64 and arm64_amd64
+# cross-builds doesn't re-download every switch (and so both can coexist).
+ORT_ROOT="${TAURI_DIR}/onnxruntime-windows-${ORT_TARGET_ARCH}"
+ORT_DIR="${ORT_ROOT}/onnxruntime-win-${ORT_TARGET_ARCH}-${ORT_VERSION}"
+ORT_ARCHIVE="onnxruntime-win-${ORT_TARGET_ARCH}-${ORT_VERSION}.zip"
 ORT_URL="https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/${ORT_ARCHIVE}"
 ORT_DLL="${ORT_DIR}/lib/onnxruntime.dll"
-ORT_ARCHIVE_SHA256="$(onnxruntime_windows_x64_archive_sha256_for_version "${ORT_VERSION}")"
-ORT_DLL_SHA256="$(onnxruntime_windows_x64_dll_sha256_for_version "${ORT_VERSION}")"
+ORT_ARCHIVE_SHA256="$(onnxruntime_windows_${ORT_TARGET_ARCH}_archive_sha256_for_version "${ORT_VERSION}")"
+ORT_DLL_SHA256="$(onnxruntime_windows_${ORT_TARGET_ARCH}_dll_sha256_for_version "${ORT_VERSION}")"
 
 sha256_file() {
   local path="$1"

@@ -2,6 +2,11 @@
 set dotenv-path := "frontend/.env.local"
 set dotenv-required := false
 
+# On Windows, default to cmd.exe instead of `sh` (which isn't on PATH unless
+# Git Bash's usr/bin is added). Recipes guarded by [windows] are single
+# powershell invocations -- cmd /c is enough and avoids a PS-inside-PS hop.
+set windows-shell := ["cmd.exe", "/c"]
+
 # List available commands
 default:
     @just --list
@@ -74,6 +79,19 @@ desktop-build-no-cc:
 # Build Tauri desktop debug (with CC unset for compatibility)
 desktop-build-debug-no-cc:
     cd frontend && unset CC && bun tauri build --debug
+
+# Build Tauri desktop release for Windows. Wraps vcvarsall.bat + ONNX Runtime
+# setup so you don't need a Developer Shell open. Pass arch (default arm64
+# native; arm64_amd64 for x64 cross-build from ARM host; x64 for native x64).
+[windows]
+windows-build arch="arm64":
+    powershell -ExecutionPolicy Bypass -File scripts/tauri-windows.ps1 -Command build -Arch {{arch}}
+
+# Tauri dev server for Windows (Vite hot-reload). Same vcvars/arch handling
+# as windows-build.
+[windows]
+windows-dev arch="arm64":
+    powershell -ExecutionPolicy Bypass -File scripts/tauri-windows.ps1 -Command dev -Arch {{arch}}
 
 # Format Rust code
 rust-fmt:

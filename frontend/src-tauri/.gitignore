@@ -10,5 +10,9 @@
 # ONNX Runtime Linux (downloaded for bundling)
 /onnxruntime-linux/
 
+# ONNX Runtime Windows (downloaded for bundling; arch-suffixed by
+# provide-windows-onnxruntime.sh so x64 + arm64 can coexist).
+/onnxruntime-windows-*/
+
 # Generated cargo config for iOS builds
 /.cargo/
