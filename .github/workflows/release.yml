@@ -1,4 +1,5 @@
 name: Release
+
 on:
   release:
     types: [created]
@@ -12,34 +13,29 @@ jobs:
     permissions:
       contents: read
     outputs:
-      release_id: ${{ steps.get_version.outputs.version }}
+      version: ${{ steps.get_version.outputs.version }}
 
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # was v4
         with:
           persist-credentials: false
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@f4d14e03ff726c06358e5557344e1da148b56cf7 # was v1
-        with:
-          bun-version: 1.3.5
-
       - name: Validate release tag
         id: get_version
         env:
           RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
-          if [ -z "$RELEASE_TAG" ] || [ "$RELEASE_TAG" != "${GITHUB_REF#refs/tags/}" ]; then
+          if [ -z "${RELEASE_TAG}" ] || [ "${RELEASE_TAG}" != "${GITHUB_REF#refs/tags/}" ]; then
             echo "Release tag does not match GITHUB_REF" >&2
             exit 1
           fi
 
-          if [[ ! "$RELEASE_TAG" =~ ^v?[0-9]+[.][0-9]+[.][0-9]+(-[0-9A-Za-z.-]+)?([+][0-9A-Za-z.-]+)?$ ]]; then
-            echo "Refusing to build unexpected release tag: $RELEASE_TAG" >&2
+          if [[ ! "${RELEASE_TAG}" =~ ^v?[0-9]+[.][0-9]+[.][0-9]+(-[0-9A-Za-z.-]+)?([+][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Refusing to build unexpected release tag: ${RELEASE_TAG}" >&2
             exit 1
           fi
 
-          echo "version=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${RELEASE_TAG}" >> "${GITHUB_OUTPUT}"
 
   build-tauri:
     needs: create-release
@@ -52,10 +48,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: macos-latest-xlarge
-            args: --target universal-apple-darwin
+          - platform: macos-26-xlarge
+            nix_shell: ci
+            artifact_prefix: macos
           - platform: ubuntu-latest-8-cores
-            args: --verbose
+            nix_shell: ci
+            artifact_prefix: linux
 
     runs-on: ${{ matrix.platform }}
     steps:
@@ -63,108 +61,45 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@f4d14e03ff726c06358e5557344e1da148b56cf7 # was v1
-        with:
-          bun-version: 1.3.5
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # was stable
-        with:
-          toolchain: 1.95.0
-          targets: ${{ matrix.platform == 'macos-latest-xlarge' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
-
-      - name: Cache Homebrew
-        if: matrix.platform == 'macos-latest-xlarge'
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # was v4
-        with:
-          path: |
-            ~/Library/Caches/Homebrew
-            /opt/homebrew/Cellar/openssl@3
-          key: ${{ runner.os }}-brew-${{ hashFiles('.github/workflows/release.yml') }}
-
-      - name: Install sccache (macOS)
-        if: matrix.platform == 'macos-latest-xlarge'
+      # Xcode 26.5 is temporarily exposed as a beta app on macos-26 runners: https://github.com/actions/runner-images/issues/14108
+      - name: Select Xcode 26.5
+        if: startsWith(matrix.platform, 'macos-26')
         run: |
-          SCCACHE_VERSION=0.8.2
-          case "$(uname -m)" in
-            arm64)
-              SCCACHE_TARGET="aarch64-apple-darwin"
-              SCCACHE_SHA256="32604da614ce679623a8de0d38eab91b87431d59f3344c5523c82e1b6e85ffc4"
-              ;;
-            x86_64)
-              SCCACHE_TARGET="x86_64-apple-darwin"
-              SCCACHE_SHA256="fcbe1b76356f7183cee0b5bc150c0583abc01a5c42e9b2be94e9d17ed7dca3a4"
-              ;;
-            *)
-              echo "Unsupported macOS architecture: $(uname -m)" >&2
-              exit 1
-              ;;
-          esac
-          SCCACHE_ARCHIVE="sccache-v${SCCACHE_VERSION}-${SCCACHE_TARGET}.tar.gz"
-          SCCACHE_URL="https://github.com/mozilla/sccache/releases/download/v${SCCACHE_VERSION}/${SCCACHE_ARCHIVE}"
-          curl --fail --location --show-error --silent "$SCCACHE_URL" --output "$SCCACHE_ARCHIVE"
-          echo "${SCCACHE_SHA256}  ${SCCACHE_ARCHIVE}" | shasum -a 256 -c -
-          tar xzf "$SCCACHE_ARCHIVE"
-          sudo mv "sccache-v${SCCACHE_VERSION}-${SCCACHE_TARGET}/sccache" /usr/local/bin/
-          chmod +x /usr/local/bin/sccache
-          sccache --version
+          set -euo pipefail
+          for xcode_app in \
+            /Applications/Xcode_26.5.0.app \
+            /Applications/Xcode_26.5_beta_2.app \
+            /Applications/Xcode_26.5_beta.app
+          do
+            if [ -x "${xcode_app}/Contents/Developer/usr/bin/xcodebuild" ]; then
+              sudo xcode-select -s "${xcode_app}/Contents/Developer"
+              xcodebuild -version
+              exit 0
+            fi
+          done
+          echo "Xcode 26.5 is not installed on this runner." >&2
+          ls -1 /Applications/Xcode*.app >&2 || true
+          exit 1
 
-      - name: Install sccache (Linux)
-        if: matrix.platform == 'ubuntu-latest-8-cores'
-        run: |
-          SCCACHE_VERSION=0.8.2
-          SCCACHE_SHA256="ecda4ddc89a49f1ec6f35bdce5ecbf6f205b399a680d11119d4ce9f6d962104e"
-          SCCACHE_ARCHIVE="sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl.tar.gz"
-          SCCACHE_URL="https://github.com/mozilla/sccache/releases/download/v${SCCACHE_VERSION}/${SCCACHE_ARCHIVE}"
-          curl --fail --location --show-error --silent "$SCCACHE_URL" --output "$SCCACHE_ARCHIVE"
-          echo "${SCCACHE_SHA256}  ${SCCACHE_ARCHIVE}" | sha256sum --check -
-          tar xzf "$SCCACHE_ARCHIVE"
-          sudo mv sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl/sccache /usr/local/bin/
-          chmod +x /usr/local/bin/sccache
-          sccache --version
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # was v22
+        with:
+          github-token: ""
 
       - name: Cache sccache
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # was v4
         with:
-          path: ${{ matrix.platform == 'macos-latest-xlarge' && '~/Library/Caches/Mozilla.sccache' || '~/.cache/sccache' }}
+          path: ${{ startsWith(matrix.platform, 'macos') && '~/Library/Caches/Mozilla.sccache' || '~/.cache/sccache' }}
           key: ${{ runner.os }}-sccache-release-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-sccache-release-
             ${{ runner.os }}-sccache-
 
-      - name: Install dependencies (Linux)
-        if: matrix.platform == 'ubuntu-latest-8-cores'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev \
-              libssl-dev \
-              libgtk-3-dev \
-              libayatana-appindicator3-dev \
-              librsvg2-dev
-
-      - name: Provide ONNX Runtime (Linux)
-        if: matrix.platform == 'ubuntu-latest-8-cores'
-        run: |
-          ./frontend/src-tauri/scripts/provide-linux-onnxruntime.sh >> "$GITHUB_ENV"
-
-      - name: Install frontend dependencies
-        working-directory: ./frontend
-        run: bun install --frozen-lockfile --ignore-scripts
-
-      - name: Configure sccache
-        run: |
-          {
-            echo "RUSTC_WRAPPER=sccache"
-            echo "SCCACHE_CACHE_SIZE=2G"
-          } >> "$GITHUB_ENV"
-
-      - name: Build Tauri App
-        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # was v0
+      - name: Build Tauri desktop app
+        run: nix develop .#${{ matrix.nix_shell }} -c ./scripts/ci/desktop-release.sh
         env:
           APPIMAGE_EXTRACT_AND_RUN: ${{ matrix.platform == 'ubuntu-latest-8-cores' && '1' || '' }}
           NO_STRIP: ${{ matrix.platform == 'ubuntu-latest-8-cores' && 'true' || '' }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
@@ -172,46 +107,52 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          VITE_OPEN_SECRET_API_URL: https://enclave.trymaple.ai
-          VITE_MAPLE_BILLING_API_URL: https://billing.opensecret.cloud
-          VITE_CLIENT_ID: ba5a14b5-d915-47b1-b7b1-afda52bc5fc6
-        with:
-          projectPath: './frontend'
-          tagName: ${{ github.event.release.tag_name }}
-          releaseName: 'Maple v${{ github.event.release.tag_name }}'
-          releaseBody: 'See the assets to download this version and install.'
-          releaseDraft: true
-          prerelease: false
-          args: ${{ matrix.args }}
-          assetNamePattern: '[name]_[version]_[arch].[ext]'
 
-      - name: Record desktop release artifact checksums
+      - name: Show sccache stats
+        if: always()
+        run: nix develop .#${{ matrix.nix_shell }} -c sccache --show-stats
+
+      - name: Collect desktop release checksums
         run: |
-          hash_artifact() {
-            if command -v sha256sum >/dev/null 2>&1; then
-              sha256sum "$1"
-            else
-              shasum -a 256 "$1"
-            fi
-          }
-
-          find frontend/src-tauri/target -type f \( \
-              -name "*.dmg" -o \
-              -name "*.app.tar.gz" -o \
-              -name "*.app.tar.gz.sig" -o \
-              -name "*.AppImage" -o \
-              -name "*.AppImage.sig" -o \
-              -name "*.deb" \
-            \) -print | sort | while IFS= read -r artifact; do
-              hash_artifact "$artifact"
-            done > desktop-release-artifacts.sha256
-          test -s desktop-release-artifacts.sha256
+          nix develop .#${{ matrix.nix_shell }} -c ./scripts/ci/attestation-manifest.sh \
+            desktop-release-artifacts.sha256 \
+            frontend/src-tauri/target/reproducibility/desktop-release-${{ matrix.artifact_prefix }}-final.sha256 \
+            frontend/src-tauri/target/reproducibility/desktop-release-${{ matrix.artifact_prefix }}-*.sha256
           cat desktop-release-artifacts.sha256
 
       - name: Attest desktop release artifacts
         uses: actions/attest@281a49d4cbb0a72c9575a50d18f6deb515a11deb # was v4
         with:
           subject-checksums: desktop-release-artifacts.sha256
+
+      - name: Upload desktop release artifacts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          files=()
+          while IFS= read -r -d '' file; do
+            files+=("${file}")
+          done < <(find frontend/src-tauri/target -type f \( \
+            -name '*.dmg' -o \
+            -name '*.app.tar.gz' -o \
+            -name '*.app.tar.gz.sig' -o \
+            -name '*.AppImage' -o \
+            -name '*.AppImage.sig' -o \
+            -name '*.deb' -o \
+            -name '*.deb.sig' -o \
+            -name '*.rpm' -o \
+            -name '*.rpm.sig' -o \
+            -path '*/reproducibility/desktop-release-*.sha256' \
+          \) -print0 | LC_ALL=C sort -z)
+
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "No desktop release artifacts found." >&2
+            exit 1
+          fi
+
+          gh release upload "${RELEASE_TAG}" "${files[@]}" --clobber
 
   build-android:
     needs: create-release
@@ -226,19 +167,10 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Setup Java
-        uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # was v4
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # was v22
         with:
-          distribution: 'temurin'
-          java-version: '21.0.11'
-
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # was v3
-
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@f4d14e03ff726c06358e5557344e1da148b56cf7 # was v1
-        with:
-          bun-version: 1.3.5
+          github-token: ""
 
       - name: Cache Bun dependencies
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # was v4
@@ -246,20 +178,6 @@ jobs:
           path: |
             ~/.bun/install/cache
           key: ${{ runner.os }}-bun-${{ hashFiles('frontend/bun.lock') }}
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # was stable
-        with:
-          toolchain: 1.95.0
-          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android,i686-linux-android
-
-      - name: Setup Android NDK
-        uses: nttld/setup-ndk@afb4c9964b521afb97c864b7d40b11e6911bd410 # was v1.5.0
-        id: setup-ndk
-        with:
-          ndk-version: r27c
-          add-to-path: true
-          local-cache: true
 
       - name: Cache Gradle
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # was v4
@@ -271,19 +189,6 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-gradle-
 
-      - name: Install sccache
-        run: |
-          SCCACHE_VERSION=0.8.2
-          SCCACHE_SHA256="ecda4ddc89a49f1ec6f35bdce5ecbf6f205b399a680d11119d4ce9f6d962104e"
-          SCCACHE_ARCHIVE="sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl.tar.gz"
-          SCCACHE_URL="https://github.com/mozilla/sccache/releases/download/v${SCCACHE_VERSION}/${SCCACHE_ARCHIVE}"
-          curl --fail --location --show-error --silent "$SCCACHE_URL" --output "$SCCACHE_ARCHIVE"
-          echo "${SCCACHE_SHA256}  ${SCCACHE_ARCHIVE}" | sha256sum --check -
-          tar xzf "$SCCACHE_ARCHIVE"
-          sudo mv sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl/sccache /usr/local/bin/
-          chmod +x /usr/local/bin/sccache
-          sccache --version
-
       - name: Cache sccache
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # was v4
         with:
@@ -293,140 +198,23 @@ jobs:
             ${{ runner.os }}-sccache-android-release-
             ${{ runner.os }}-sccache-
 
-      - name: Cache Cargo bin (Tauri CLI)
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # was v4
-        with:
-          path: ~/.cargo/bin/
-          key: ${{ runner.os }}-cargo-bin-tauri-cli-2.11.1
-
-      - name: Install Linux dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libssl-dev
-
-      - name: Install frontend dependencies
-        working-directory: ./frontend
-        run: bun install --frozen-lockfile --ignore-scripts
-
-      - name: Install Tauri CLI
-        run: |
-          REQUIRED_TAURI_CLI_VERSION="2.11.1"
-          INSTALLED_TAURI_CLI_VERSION=""
-          if command -v cargo-tauri >/dev/null 2>&1; then
-            INSTALLED_TAURI_CLI_VERSION="$(cargo-tauri --version 2>/dev/null | awk '{print $2}')"
-          fi
-
-          if [ "$INSTALLED_TAURI_CLI_VERSION" != "$REQUIRED_TAURI_CLI_VERSION" ]; then
-            cargo install tauri-cli --version "$REQUIRED_TAURI_CLI_VERSION" --locked --force
-          else
-            echo "Tauri CLI $REQUIRED_TAURI_CLI_VERSION already installed"
-          fi
-        env:
-          CARGO_CFG_TARGET_OS: linux
-
-      - name: Setup Android signing
+      - name: Build Tauri Android App
+        run: nix develop .#android -c ./scripts/ci/android-release.sh
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+
+      - name: Show sccache stats
+        if: always()
+        run: nix develop .#android -c sccache --show-stats
+
+      - name: Collect Android release checksums
         run: |
-          cd frontend/src-tauri/gen/android
-          echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > $RUNNER_TEMP/keystore.jks
-          echo "keyAlias=$ANDROID_KEY_ALIAS" > keystore.properties
-          echo "password=$ANDROID_KEY_PASSWORD" >> keystore.properties
-          echo "storeFile=$RUNNER_TEMP/keystore.jks" >> keystore.properties
-
-      - name: Generate tauri.properties (Workaround for Tauri 2.9.x bug)
-        run: |
-          # Workaround for Tauri 2.9.x not generating tauri.properties correctly
-          # See: https://github.com/tauri-apps/tauri/issues/YOUR_ISSUE_NUMBER
-          VERSION=$(jq -r '.version' frontend/src-tauri/tauri.conf.json)
-          VERSION_CODE=$(jq -r '.bundle.android.versionCode' frontend/src-tauri/tauri.conf.json)
-          
-          mkdir -p frontend/src-tauri/gen/android/app
-          cat > frontend/src-tauri/gen/android/app/tauri.properties << EOF
-          // THIS IS AN AUTOGENERATED FILE. DO NOT EDIT THIS FILE DIRECTLY.
-          tauri.android.versionName=$VERSION
-          tauri.android.versionCode=$VERSION_CODE
-          EOF
-          
-          echo "Generated tauri.properties with version $VERSION and versionCode $VERSION_CODE"
-
-      - name: Configure sccache
-        run: |
-          {
-            echo "RUSTC_WRAPPER=sccache"
-            echo "SCCACHE_DIR=$HOME/.cache/sccache"
-            echo "SCCACHE_CACHE_SIZE=2G"
-          } >> "$GITHUB_ENV"
-
-      - name: Create cargo config for 16KB page size support
-        run: |
-          # Android 15+ requires 16KB page size alignment for native libraries
-          # https://developer.android.com/guide/practices/page-sizes
-          mkdir -p frontend/src-tauri/.cargo
-          cat > frontend/src-tauri/.cargo/config.toml << 'EOF'
-          [target.aarch64-linux-android]
-          rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
-
-          [target.armv7-linux-androideabi]
-          rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
-
-          [target.i686-linux-android]
-          rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
-
-          [target.x86_64-linux-android]
-          rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
-          EOF
-
-      - name: Build Tauri Android App (Signed Release)
-        working-directory: ./frontend
-        run: |
-          export ANDROID_HOME=$ANDROID_SDK_ROOT
-          export NDK_HOME=${{ steps.setup-ndk.outputs.ndk-path }}
-
-          # Set up Android NDK toolchain paths
-          export PATH=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH
-
-          # Set up cross-compilation environment variables for each target
-          export AR_aarch64_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
-          export CC_aarch64_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang
-          export CXX_aarch64_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang++
-          export RANLIB_aarch64_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib
-
-          export AR_armv7_linux_androideabi=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
-          export CC_armv7_linux_androideabi=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi24-clang
-          export CXX_armv7_linux_androideabi=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi24-clang++
-          export RANLIB_armv7_linux_androideabi=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib
-
-          export AR_x86_64_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
-          export CC_x86_64_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android24-clang
-          export CXX_x86_64_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android24-clang++
-          export RANLIB_x86_64_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib
-
-          export AR_i686_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
-          export CC_i686_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/i686-linux-android24-clang
-          export CXX_i686_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/i686-linux-android24-clang++
-          export RANLIB_i686_linux_android=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib
-
-          # Create symlinks for ranlib that OpenSSL expects
-          sudo ln -sf $NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib /usr/local/bin/aarch64-linux-android-ranlib
-          sudo ln -sf $NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib /usr/local/bin/armv7a-linux-androideabi-ranlib
-          sudo ln -sf $NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib /usr/local/bin/x86_64-linux-android-ranlib
-          sudo ln -sf $NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib /usr/local/bin/i686-linux-android-ranlib
-
-          cargo tauri android build
-        env:
-          VITE_OPEN_SECRET_API_URL: https://enclave.trymaple.ai
-          VITE_MAPLE_BILLING_API_URL: https://billing.opensecret.cloud
-          VITE_CLIENT_ID: ba5a14b5-d915-47b1-b7b1-afda52bc5fc6
-
-      - name: Record Android release artifact checksums
-        run: |
-          sha256sum \
-            frontend/src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk \
-            frontend/src-tauri/gen/android/app/build/outputs/bundle/universalRelease/app-universal-release.aab \
-            > android-release-artifacts.sha256
+          nix develop .#android -c ./scripts/ci/attestation-manifest.sh \
+            android-release-artifacts.sha256 \
+            frontend/src-tauri/target/reproducibility/android-release-final.sha256 \
+            frontend/src-tauri/target/reproducibility/android-release-*.sha256
           cat android-release-artifacts.sha256
 
       - name: Attest Android release artifacts
@@ -434,22 +222,182 @@ jobs:
         with:
           subject-checksums: android-release-artifacts.sha256
 
-      - name: Upload Android APK to Release
+      - name: Upload Android release artifacts
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
-          gh release upload "$RELEASE_TAG" \
-            frontend/src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk \
-            --clobber
+          set -euo pipefail
+          files=()
+          while IFS= read -r -d '' file; do
+            files+=("${file}")
+          done < <(find frontend/src-tauri -type f \( \
+            -name '*.apk' -o \
+            -name '*.aab' -o \
+            -path '*/reproducibility/android-release-*.sha256' \
+          \) -print0 | LC_ALL=C sort -z)
 
-      - name: Upload Android AAB to Release
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "No Android release artifacts found." >&2
+            exit 1
+          fi
+
+          gh release upload "${RELEASE_TAG}" "${files[@]}" --clobber
+
+  build-ios:
+    needs: create-release
+    runs-on: macos-26-xlarge
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # was v4
+        with:
+          persist-credentials: false
+
+      # Xcode 26.5 is temporarily exposed as a beta app on macos-26 runners: https://github.com/actions/runner-images/issues/14108
+      - name: Select Xcode 26.5
+        id: select_xcode
+        run: |
+          set -euo pipefail
+          for xcode_app in \
+            /Applications/Xcode_26.5.0.app \
+            /Applications/Xcode_26.5_beta_2.app \
+            /Applications/Xcode_26.5_beta.app
+          do
+            if [ -x "${xcode_app}/Contents/Developer/usr/bin/xcodebuild" ]; then
+              sudo xcode-select -s "${xcode_app}/Contents/Developer"
+              xcode_info="$(xcodebuild -version)"
+              printf '%s\n' "${xcode_info}"
+              printf 'version=%s\n' "$(printf '%s\n' "${xcode_info}" | awk '/^Xcode / { print $2; exit }')" >> "${GITHUB_OUTPUT}"
+              printf 'build=%s\n' "$(printf '%s\n' "${xcode_info}" | awk '/^Build version / { print $3; exit }')" >> "${GITHUB_OUTPUT}"
+              exit 0
+            fi
+          done
+          echo "Xcode 26.5 is not installed on this runner." >&2
+          ls -1 /Applications/Xcode*.app >&2 || true
+          exit 1
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # was v22
+        with:
+          github-token: ""
+
+      - name: Cache Xcode DerivedData and SourcePackages
+        uses: irgaly/xcode-cache@4141f139f00e335c6e1031fb93e667181f86146f # was v1
+        with:
+          key: xcode-cache-ios-xcode26.5-${{ steps.select_xcode.outputs.build }}-${{ github.workflow }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            xcode-cache-ios-xcode26.5-${{ steps.select_xcode.outputs.build }}-${{ github.workflow }}-
+            xcode-cache-ios-xcode26.5-${{ steps.select_xcode.outputs.build }}-
+
+      - name: Cache ONNX Runtime iOS artifact
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # was v4
+        with:
+          path: |
+            frontend/src-tauri/onnxruntime-ios
+          key: release-onnxruntime-ios-artifact-1.22.2-xcode26.5-${{ steps.select_xcode.outputs.build }}-${{ hashFiles('flake.lock', 'flake.nix', 'scripts/ci/_common.sh', 'scripts/ci/ios-onnxruntime.sh', 'frontend/src-tauri/scripts/build-ios-onnxruntime-all.sh', 'frontend/src-tauri/scripts/canonicalize-static-archive.py', 'frontend/src-tauri/scripts/onnxruntime-pins.sh') }}
+          restore-keys: |
+            release-onnxruntime-ios-artifact-1.22.2-xcode26.5-${{ steps.select_xcode.outputs.build }}-
+
+      - name: Prepare ONNX Runtime iOS artifact
+        run: nix develop .#apple -c ./scripts/ci/ios-onnxruntime.sh
+        timeout-minutes: 90
+
+      - name: Build Tauri iOS App
+        run: nix develop .#apple -c ./scripts/ci/ios-release.sh
+        env:
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+          APPLE_DEVELOPMENT_TEAM: ${{ secrets.APPLE_TEAM_ID }}
+        timeout-minutes: 90
+
+      - name: Collect iOS release checksums
+        run: |
+          nix develop .#apple -c ./scripts/ci/attestation-manifest.sh \
+            ios-release-artifacts.sha256 \
+            frontend/src-tauri/target/reproducibility/ios-release-final.sha256 \
+            frontend/src-tauri/target/reproducibility/ios-release-*.sha256 \
+            frontend/src-tauri/target/reproducibility/ios-onnxruntime-*.sha256
+          cat ios-release-artifacts.sha256
+
+      - name: Attest iOS release artifacts
+        uses: actions/attest@281a49d4cbb0a72c9575a50d18f6deb515a11deb # was v4
+        with:
+          subject-checksums: ios-release-artifacts.sha256
+
+      - name: Upload iOS release artifacts
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
-          gh release upload "$RELEASE_TAG" \
-            frontend/src-tauri/gen/android/app/build/outputs/bundle/universalRelease/app-universal-release.aab \
+          set -euo pipefail
+          files=()
+          while IFS= read -r -d '' file; do
+            files+=("${file}")
+          done < <(find frontend/src-tauri -type f \( \
+            -name '*.ipa' -o \
+            -path '*/reproducibility/ios-release-*.sha256' -o \
+            -path '*/reproducibility/ios-onnxruntime-*.sha256' \
+          \) -print0 | LC_ALL=C sort -z)
+
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "No iOS release artifacts found." >&2
+            exit 1
+          fi
+
+          gh release upload "${RELEASE_TAG}" "${files[@]}" --clobber
+
+  build-web:
+    needs: create-release
+    runs-on: ubuntu-latest-8-cores
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # was v4
+        with:
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # was v22
+        with:
+          github-token: ""
+
+      - name: Cache Bun dependencies
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # was v4
+        with:
+          path: |
+            ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('frontend/bun.lock') }}
+
+      - name: Build web artifact
+        run: nix develop .#ci -c ./scripts/ci/web.sh
+        env:
+          MAPLE_WEB_ENVIRONMENT: release
+
+      - name: Collect web release checksums
+        run: cat frontend/src-tauri/target/reproducibility/web-final.sha256
+
+      - name: Attest web release artifact
+        uses: actions/attest@281a49d4cbb0a72c9575a50d18f6deb515a11deb # was v4
+        with:
+          subject-checksums: frontend/src-tauri/target/reproducibility/web-final.sha256
+
+      - name: Upload web release artifact
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          gh release upload "${RELEASE_TAG}" \
+            frontend/src-tauri/target/reproducibility/maple-web-dist.tar.gz \
+            frontend/src-tauri/target/reproducibility/web-final.sha256 \
             --clobber
 
   update-latest-json:
@@ -465,62 +413,93 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # was v22
+        with:
+          github-token: ""
+
       - name: Download release artifacts
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
           mkdir -p artifacts
-          gh release download "$RELEASE_TAG" -D artifacts
+          gh release download "${RELEASE_TAG}" -D artifacts
 
       - name: Generate latest.json
-        id: generate-latest
         env:
           RELEASE_TAG: ${{ github.event.release.tag_name }}
-        run: |
-          VERSION="$RELEASE_TAG"
-          RELEASE_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+        run: nix develop .#ci -c ./scripts/ci/latest-json.sh artifacts latest.json
 
-          # Get signatures from the artifacts
-          # We build a single universal macOS binary that works on both Intel and Apple Silicon
-          # but Tauri updater requires entries for each architecture to work properly
-          MACOS_SIG=$(cat artifacts/*.app.tar.gz.sig)
-          LINUX_X64_SIG=$(cat artifacts/*.AppImage.sig)
-          
-          # Create latest.json for auto-updates
-          # Note: Even though we build one universal binary for macOS,
-          # we need separate entries for each architecture in the JSON
-          # to ensure the updater works correctly on all Macs
-          cat > latest.json << EOF
-          {
-            "version": "${VERSION#v}",
-            "notes": "See the release notes at https://github.com/OpenSecretCloud/Maple/releases/tag/${VERSION}",
-            "pub_date": "${RELEASE_DATE}",
-            "platforms": {
-              "darwin-x86_64": {
-                "signature": "${MACOS_SIG}",
-                "url": "https://github.com/OpenSecretCloud/Maple/releases/download/${VERSION}/Maple_${VERSION#v}_universal.app.tar.gz"
-              },
-              "darwin-aarch64": {
-                "signature": "${MACOS_SIG}",
-                "url": "https://github.com/OpenSecretCloud/Maple/releases/download/${VERSION}/Maple_${VERSION#v}_universal.app.tar.gz"
-              },
-              "linux-x86_64": {
-                "signature": "${LINUX_X64_SIG}",
-                "url": "https://github.com/OpenSecretCloud/Maple/releases/download/${VERSION}/Maple_${VERSION#v}_amd64.AppImage"
-              }
-            }
-          }
-          EOF
+      - name: Collect latest.json checksums
+        run: |
+          nix develop .#ci -c ./scripts/ci/attestation-manifest.sh \
+            latest-json-artifacts.sha256 \
+            frontend/src-tauri/target/reproducibility/latest-json-final.sha256 \
+            frontend/src-tauri/target/reproducibility/latest-json-final.sha256
+          cat latest-json-artifacts.sha256
 
       - name: Attest latest.json
         uses: actions/attest@281a49d4cbb0a72c9575a50d18f6deb515a11deb # was v4
         with:
-          subject-path: latest.json
+          subject-checksums: latest-json-artifacts.sha256
 
-      - name: Upload latest.json
+      - name: Upload latest.json and provenance
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
-          gh release upload "$RELEASE_TAG" latest.json --clobber
+          gh release upload "${RELEASE_TAG}" \
+            latest.json \
+            frontend/src-tauri/target/reproducibility/latest-json-final.sha256 \
+            --clobber
+
+  verify-release-artifacts:
+    needs:
+      - build-tauri
+      - build-android
+      - build-ios
+      - build-web
+      - update-latest-json
+    runs-on: macos-26-xlarge
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # was v4
+        with:
+          persist-credentials: false
+
+      # Xcode 26.5 is temporarily exposed as a beta app on macos-26 runners: https://github.com/actions/runner-images/issues/14108
+      - name: Select Xcode 26.5
+        run: |
+          set -euo pipefail
+          for xcode_app in \
+            /Applications/Xcode_26.5.0.app \
+            /Applications/Xcode_26.5_beta_2.app \
+            /Applications/Xcode_26.5_beta.app
+          do
+            if [ -x "${xcode_app}/Contents/Developer/usr/bin/xcodebuild" ]; then
+              sudo xcode-select -s "${xcode_app}/Contents/Developer"
+              xcodebuild -version
+              exit 0
+            fi
+          done
+          echo "Xcode 26.5 is not installed on this runner." >&2
+          ls -1 /Applications/Xcode*.app >&2 || true
+          exit 1
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # was v22
+        with:
+          github-token: ""
+
+      - name: Download release artifacts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          mkdir -p artifacts
+          gh release download "${RELEASE_TAG}" -D artifacts
+
+      - name: Verify release artifact reproducibility proofs
+        run: nix develop .#ci -c ./scripts/ci/verify-release-artifacts.sh artifacts all

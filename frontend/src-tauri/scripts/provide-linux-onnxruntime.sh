@@ -5,14 +5,31 @@ ORT_VERSION="${ORT_VERSION:-1.22.0}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/onnxruntime-pins.sh"
 
+case "$(uname -m)" in
+  x86_64 | amd64)
+    ORT_ARCH="x64"
+    ORT_ARCHIVE_SHA256_FUNC="onnxruntime_linux_x64_archive_sha256_for_version"
+    ORT_DYLIB_SHA256_FUNC="onnxruntime_linux_x64_dylib_sha256_for_version"
+    ;;
+  aarch64 | arm64)
+    ORT_ARCH="aarch64"
+    ORT_ARCHIVE_SHA256_FUNC="onnxruntime_linux_aarch64_archive_sha256_for_version"
+    ORT_DYLIB_SHA256_FUNC="onnxruntime_linux_aarch64_dylib_sha256_for_version"
+    ;;
+  *)
+    echo "Unsupported Linux ONNX Runtime architecture: $(uname -m)" >&2
+    exit 1
+    ;;
+esac
+
 TAURI_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 ORT_ROOT="${TAURI_DIR}/onnxruntime-linux"
-ORT_DIR="${ORT_ROOT}/onnxruntime-linux-x64-${ORT_VERSION}"
-ORT_ARCHIVE="onnxruntime-linux-x64-${ORT_VERSION}.tgz"
+ORT_DIR="${ORT_ROOT}/onnxruntime-linux-${ORT_ARCH}-${ORT_VERSION}"
+ORT_ARCHIVE="onnxruntime-linux-${ORT_ARCH}-${ORT_VERSION}.tgz"
 ORT_URL="https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/${ORT_ARCHIVE}"
 ORT_DYLIB="${ORT_DIR}/lib/libonnxruntime.so.${ORT_VERSION}"
-ORT_ARCHIVE_SHA256="$(onnxruntime_linux_x64_archive_sha256_for_version "${ORT_VERSION}")"
-ORT_DYLIB_SHA256="$(onnxruntime_linux_x64_dylib_sha256_for_version "${ORT_VERSION}")"
+ORT_ARCHIVE_SHA256="$("${ORT_ARCHIVE_SHA256_FUNC}" "${ORT_VERSION}")"
+ORT_DYLIB_SHA256="$("${ORT_DYLIB_SHA256_FUNC}" "${ORT_VERSION}")"
 
 sha256_file() {
   local path="$1"

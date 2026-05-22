@@ -63,8 +63,8 @@ checkout_onnxruntime_source() {
             git remote add origin https://github.com/microsoft/onnxruntime.git
         fi
         git fetch --depth 1 origin "${ORT_COMMIT}"
-        git checkout --detach FETCH_HEAD
-        git submodule update --init --recursive
+        git checkout --force --detach FETCH_HEAD
+        git submodule update --init --recursive --force
 
         local actual_commit
         actual_commit="$(git rev-parse HEAD)"
@@ -94,14 +94,78 @@ clone_with_retry
 
 cd onnxruntime
 
-# Common cmake defines
-CMAKE_EXTRA_DEFINES="CMAKE_POLICY_VERSION_MINIMUM=3.5"
+# ONNX Runtime embeds CMAKE_CXX_FLAGS in its public build-info string. Keep the
+# real compiler prefix maps, but canonicalize that generated string first.
+patch_reproducible_build_info() {
+    python3 - "$PWD/cmake/CMakeLists.txt" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text()
+old = 'string(APPEND ORT_BUILD_INFO ", cmake cxx flags: ${CMAKE_CXX_FLAGS}")'
+new = '''set(ORT_BUILD_INFO_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
+if(DEFINED ORT_REPRODUCIBLE_BUILD_ROOT AND DEFINED ORT_REPRODUCIBLE_BUILD_ROOT_CANONICAL AND DEFINED ORT_REPRODUCIBLE_SOURCE_ROOT_CANONICAL)
+  string(REPLACE "${ORT_REPRODUCIBLE_BUILD_ROOT}/onnxruntime" "${ORT_REPRODUCIBLE_SOURCE_ROOT_CANONICAL}" ORT_BUILD_INFO_CXX_FLAGS "${ORT_BUILD_INFO_CXX_FLAGS}")
+  string(REPLACE "${ORT_REPRODUCIBLE_BUILD_ROOT}" "${ORT_REPRODUCIBLE_BUILD_ROOT_CANONICAL}" ORT_BUILD_INFO_CXX_FLAGS "${ORT_BUILD_INFO_CXX_FLAGS}")
+endif()
+string(APPEND ORT_BUILD_INFO ", cmake cxx flags: ${ORT_BUILD_INFO_CXX_FLAGS}")'''
+old_commit = 'execute_process(COMMAND ${GIT_EXECUTABLE} log -1 --format=%h'
+new_commit = 'execute_process(COMMAND ${GIT_EXECUTABLE} log -1 --format=%H'
+
+changed = False
+if old_commit in text:
+    text = text.replace(old_commit, new_commit, 1)
+    changed = True
+
+if new not in text:
+    if old not in text:
+        sys.exit("Could not patch ONNX Runtime build info generation.")
+    text = text.replace(old, new, 1)
+    changed = True
+
+if changed:
+    path.write_text(text)
+PY
+}
+
+patch_reproducible_build_info
+
+# ONNX Runtime object files embed absolute source paths via __FILE__ in several
+# logging/status paths. Remap repo-specific build roots to stable prefixes before
+# hashing the produced static libraries.
+SOURCE_PREFIX_MAP_FLAGS=(
+    "-ffile-prefix-map=${BUILD_DIR}/onnxruntime=/maple/third_party/onnxruntime"
+    "-ffile-prefix-map=${BUILD_DIR}=/maple/build/onnxruntime"
+    "-fdebug-prefix-map=${BUILD_DIR}/onnxruntime=/maple/third_party/onnxruntime"
+    "-fdebug-prefix-map=${BUILD_DIR}=/maple/build/onnxruntime"
+    "-fmacro-prefix-map=${BUILD_DIR}/onnxruntime=/maple/third_party/onnxruntime"
+    "-fmacro-prefix-map=${BUILD_DIR}=/maple/build/onnxruntime"
+)
+SOURCE_PREFIX_MAP_CFLAGS="${SOURCE_PREFIX_MAP_FLAGS[*]}"
+
+# Common cmake defines. build.sh --skip_tests prevents test execution, but the
+# default CMake option still configures unit-test targets and looks for XCTest.
+CMAKE_EXTRA_DEFINES=(
+    "CMAKE_POLICY_VERSION_MINIMUM=3.5"
+    "onnxruntime_BUILD_UNIT_TESTS=OFF"
+    "onnxruntime_BUILD_BENCHMARKS=OFF"
+    "ORT_REPRODUCIBLE_BUILD_ROOT=${BUILD_DIR}"
+    "ORT_REPRODUCIBLE_BUILD_ROOT_CANONICAL=/maple/build/onnxruntime"
+    "ORT_REPRODUCIBLE_SOURCE_ROOT_CANONICAL=/maple/third_party/onnxruntime"
+    "CMAKE_ASM_FLAGS=${SOURCE_PREFIX_MAP_CFLAGS}"
+    "CMAKE_C_FLAGS=${SOURCE_PREFIX_MAP_CFLAGS}"
+    "CMAKE_CXX_FLAGS=${SOURCE_PREFIX_MAP_CFLAGS}"
+    "CMAKE_OBJC_FLAGS=${SOURCE_PREFIX_MAP_CFLAGS}"
+    "CMAKE_OBJCXX_FLAGS=${SOURCE_PREFIX_MAP_CFLAGS}"
+)
 
 # Function to build and combine libraries
 build_and_combine() {
     local SYSROOT=$1
     local OUTPUT_SUFFIX=$2
-    local EXTRA_CMAKE_DEFINES=$3
+    shift 2
+    local EXTRA_CMAKE_DEFINES=("$@")
     
     echo ""
     echo "========================================"
@@ -122,7 +186,7 @@ build_and_combine() {
         --parallel \
         --skip_tests \
         --compile_no_warning_as_error \
-        --cmake_extra_defines "${CMAKE_EXTRA_DEFINES} ${EXTRA_CMAKE_DEFINES}"
+        --cmake_extra_defines "${CMAKE_EXTRA_DEFINES[@]}" "${EXTRA_CMAKE_DEFINES[@]}"
     
     # Find and combine libraries
     local BUILD_OUTPUT_DIR="build/iOS/Release/Release-${SYSROOT}"
@@ -136,12 +200,17 @@ build_and_combine() {
         return 1
     fi
     
-    libtool -static -o "$COMBINED_LIB" $LIBS 2>&1 | grep -v "warning duplicate member" || true
+    libtool -static -D -o "$COMBINED_LIB" $LIBS 2>&1 | grep -v "warning duplicate member" || true
     
     if [ ! -f "$COMBINED_LIB" ]; then
         echo "Error: Failed to create combined library"
         return 1
     fi
+
+    local CANONICAL_LIB="${COMBINED_LIB}.canonical"
+    python3 "${SCRIPT_DIR}/canonicalize-static-archive.py" "$COMBINED_LIB" "$CANONICAL_LIB"
+    mv "$CANONICAL_LIB" "$COMBINED_LIB"
+    ranlib -D "$COMBINED_LIB"
     
     echo "Created: $COMBINED_LIB ($(du -h "$COMBINED_LIB" | cut -f1))"
     
@@ -155,19 +224,24 @@ mkdir -p "${OUTPUT_DIR}"
 mkdir -p "${XCFRAMEWORK_DIR}/Headers"
 
 # Build for device
-build_and_combine "iphoneos" "ios-arm64" ""
+build_and_combine "iphoneos" "ios-arm64"
 
 # Build for simulator
-# CMAKE_FIND_ROOT_PATH_MODE_LIBRARY=NEVER fixes the libiconv linking bug
-build_and_combine "iphonesimulator" "ios-arm64-simulator" "CMAKE_FIND_ROOT_PATH_MODE_LIBRARY=NEVER"
+build_and_combine "iphonesimulator" "ios-arm64-simulator"
 
 # Copy headers
-HEADER_DIR=$(find build -name "onnxruntime_c_api.h" -type f | head -n 1 | xargs dirname 2>/dev/null)
-if [ -n "$HEADER_DIR" ]; then
+HEADER_FILE=$(find build -name "onnxruntime_c_api.h" -type f | head -n 1 || true)
+if [ -n "$HEADER_FILE" ]; then
+    HEADER_DIR=$(dirname "$HEADER_FILE")
     cp "${HEADER_DIR}"/*.h "${XCFRAMEWORK_DIR}/Headers/" 2>/dev/null || true
 fi
 if [ -d "include/onnxruntime/core/session" ]; then
     cp include/onnxruntime/core/session/*.h "${XCFRAMEWORK_DIR}/Headers/" 2>/dev/null || true
+fi
+
+if [ ! -f "${XCFRAMEWORK_DIR}/Headers/onnxruntime_c_api.h" ]; then
+    echo "Error: failed to copy onnxruntime_c_api.h into ${XCFRAMEWORK_DIR}/Headers"
+    exit 1
 fi
 
 # Create Info.plist

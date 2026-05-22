@@ -1,0 +1,117 @@
+name: Web App Build
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+jobs:
+  build-web:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest-8-cores
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # was v4
+        with:
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # was v22
+        with:
+          github-token: ""
+
+      - name: Cache Bun dependencies
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # was v4
+        with:
+          path: |
+            ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('frontend/bun.lock') }}
+
+      - name: Build web artifact
+        run: nix develop .#ci -c ./scripts/ci/web.sh
+        env:
+          MAPLE_WEB_ENVIRONMENT: pr
+
+      - name: Upload web artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # was v4
+        with:
+          name: maple-web
+          path: |
+            frontend/src-tauri/target/reproducibility/maple-web-dist.tar.gz
+            frontend/src-tauri/target/reproducibility/web-final.sha256
+          retention-days: 5
+
+  build-web-master:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest-8-cores
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # was v4
+        with:
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # was v22
+        with:
+          github-token: ""
+
+      - name: Cache Bun dependencies
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # was v4
+        with:
+          path: |
+            ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('frontend/bun.lock') }}
+
+      - name: Build web artifact
+        run: nix develop .#ci -c ./scripts/ci/web.sh
+        env:
+          MAPLE_WEB_ENVIRONMENT: release
+
+      - name: Collect web checksums
+        run: cat frontend/src-tauri/target/reproducibility/web-final.sha256
+
+      - name: Attest web artifact
+        uses: actions/attest@281a49d4cbb0a72c9575a50d18f6deb515a11deb # was v4
+        with:
+          subject-checksums: frontend/src-tauri/target/reproducibility/web-final.sha256
+
+      - name: Upload web artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # was v4
+        with:
+          name: maple-web
+          path: |
+            frontend/src-tauri/target/reproducibility/maple-web-dist.tar.gz
+            frontend/src-tauri/target/reproducibility/web-final.sha256
+          retention-days: 5
+
+  verify-web-master-artifact:
+    if: github.event_name == 'push'
+    needs: build-web-master
+    runs-on: ubuntu-latest-8-cores
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # was v4
+        with:
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # was v22
+        with:
+          github-token: ""
+
+      - name: Download web artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # was v4
+        with:
+          name: maple-web
+          path: artifacts
+
+      - name: Verify web artifact reproducibility proof
+        run: nix develop .#ci -c ./scripts/ci/verify-release-artifacts.sh artifacts web

@@ -2,6 +2,9 @@ name: Desktop App CI
 
 permissions:
   contents: read
+  id-token: write
+  attestations: write
+  artifact-metadata: write
 
 on:
   push:
@@ -9,106 +12,49 @@ on:
 
 jobs:
   build-macos:
-    runs-on: macos-latest-xlarge
-    strategy:
-      matrix:
-        target: [universal-apple-darwin]
+    runs-on: macos-26-xlarge
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # was v4
         with:
           persist-credentials: false
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@f4d14e03ff726c06358e5557344e1da148b56cf7 # was v1
-        with:
-          bun-version: 1.3.5
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # was stable
-        with:
-          toolchain: 1.95.0
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
-
-      - name: Cache Homebrew
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # was v4
-        with:
-          path: |
-            ~/Library/Caches/Homebrew
-            /opt/homebrew/Cellar/openssl@3
-          key: ${{ runner.os }}-brew-${{ hashFiles('.github/workflows/desktop-build.yml') }}
-
-      - name: Install sccache
+      # Xcode 26.5 is temporarily exposed as a beta app on macos-26 runners: https://github.com/actions/runner-images/issues/14108
+      - name: Select Xcode 26.5
         run: |
-          SCCACHE_VERSION=0.8.2
-          case "$(uname -m)" in
-            arm64)
-              SCCACHE_TARGET="aarch64-apple-darwin"
-              SCCACHE_SHA256="32604da614ce679623a8de0d38eab91b87431d59f3344c5523c82e1b6e85ffc4"
-              ;;
-            x86_64)
-              SCCACHE_TARGET="x86_64-apple-darwin"
-              SCCACHE_SHA256="fcbe1b76356f7183cee0b5bc150c0583abc01a5c42e9b2be94e9d17ed7dca3a4"
-              ;;
-            *)
-              echo "Unsupported macOS architecture: $(uname -m)" >&2
-              exit 1
-              ;;
-          esac
-          SCCACHE_ARCHIVE="sccache-v${SCCACHE_VERSION}-${SCCACHE_TARGET}.tar.gz"
-          SCCACHE_URL="https://github.com/mozilla/sccache/releases/download/v${SCCACHE_VERSION}/${SCCACHE_ARCHIVE}"
-          curl --fail --location --show-error --silent "$SCCACHE_URL" --output "$SCCACHE_ARCHIVE"
-          echo "${SCCACHE_SHA256}  ${SCCACHE_ARCHIVE}" | shasum -a 256 -c -
-          tar xzf "$SCCACHE_ARCHIVE"
-          sudo mv "sccache-v${SCCACHE_VERSION}-${SCCACHE_TARGET}/sccache" /usr/local/bin/
-          chmod +x /usr/local/bin/sccache
-          sccache --version
+          set -euo pipefail
+          for xcode_app in \
+            /Applications/Xcode_26.5.0.app \
+            /Applications/Xcode_26.5_beta_2.app \
+            /Applications/Xcode_26.5_beta.app
+          do
+            if [ -x "${xcode_app}/Contents/Developer/usr/bin/xcodebuild" ]; then
+              sudo xcode-select -s "${xcode_app}/Contents/Developer"
+              xcodebuild -version
+              exit 0
+            fi
+          done
+          echo "Xcode 26.5 is not installed on this runner." >&2
+          ls -1 /Applications/Xcode*.app >&2 || true
+          exit 1
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # was v22
+        with:
+          github-token: ""
 
       - name: Cache sccache
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # was v4
         with:
           path: ~/Library/Caches/Mozilla.sccache
-          key: ${{ runner.os }}-sccache-macos-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-sccache-macos-release-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
+            ${{ runner.os }}-sccache-macos-release-
             ${{ runner.os }}-sccache-macos-
             ${{ runner.os }}-sccache-
 
-      - name: Install frontend dependencies
-        working-directory: ./frontend
-        run: bun install --frozen-lockfile --ignore-scripts
-
-      - name: Configure sccache
-        run: |
-          {
-            echo "RUSTC_WRAPPER=sccache"
-            echo "SCCACHE_CACHE_SIZE=2G"
-          } >> "$GITHUB_ENV"
-
-      - name: Import Apple Developer Certificate
+      - name: Build Tauri App (macOS, signed)
+        run: nix develop .#ci -c ./scripts/ci/desktop-release.sh
         env:
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
-        run: |
-          echo $APPLE_CERTIFICATE | base64 --decode > certificate.p12
-          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
-          security default-keychain -s build.keychain
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
-          security set-keychain-settings -t 3600 -u build.keychain
-          security import certificate.p12 -k build.keychain -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
-          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" build.keychain
-          security find-identity -v -p codesigning build.keychain
-
-      - name: Verify Certificate
-        run: |
-          CERT_INFO=$(security find-identity -v -p codesigning build.keychain | grep "Developer ID Application")
-          CERT_ID=$(echo "$CERT_INFO" | awk -F'"' '{print $2}')
-          echo "CERT_ID=$CERT_ID" >> "$GITHUB_ENV"
-          echo "Certificate imported."
-
-      - name: Build Tauri App (macOS)
-        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # was v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
@@ -116,16 +62,23 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_SIGNING_IDENTITY: ${{ env.CERT_ID }}
-          VITE_OPEN_SECRET_API_URL: https://enclave.trymaple.ai
-          VITE_MAPLE_BILLING_API_URL: https://billing.opensecret.cloud
-          VITE_CLIENT_ID: ba5a14b5-d915-47b1-b7b1-afda52bc5fc6
-        with:
-          projectPath: './frontend'
-          args: --target ${{ matrix.target }}
 
       - name: Show sccache stats
-        run: sccache --show-stats
+        if: always()
+        run: nix develop .#ci -c sccache --show-stats
+
+      - name: Collect macOS release checksums
+        run: |
+          nix develop .#ci -c ./scripts/ci/attestation-manifest.sh \
+            desktop-macos-artifacts.sha256 \
+            frontend/src-tauri/target/reproducibility/desktop-release-macos-final.sha256 \
+            frontend/src-tauri/target/reproducibility/desktop-release-macos-*.sha256
+          cat desktop-macos-artifacts.sha256
+
+      - name: Attest macOS release artifacts
+        uses: actions/attest@281a49d4cbb0a72c9575a50d18f6deb515a11deb # was v4
+        with:
+          subject-checksums: desktop-macos-artifacts.sha256
 
       - name: Upload macOS Build
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # was v4
@@ -134,6 +87,9 @@ jobs:
           path: |
             frontend/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
             frontend/src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app
+            frontend/src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz
+            frontend/src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz.sig
+            frontend/src-tauri/target/reproducibility/*.sha256
           retention-days: 5
 
   build-linux:
@@ -143,99 +99,45 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@f4d14e03ff726c06358e5557344e1da148b56cf7 # was v1
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # was v22
         with:
-          bun-version: 1.3.5
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # was stable
-        with:
-          toolchain: 1.95.0
-
-      - name: Install sccache
-        run: |
-          SCCACHE_VERSION=0.8.2
-          SCCACHE_SHA256="ecda4ddc89a49f1ec6f35bdce5ecbf6f205b399a680d11119d4ce9f6d962104e"
-          SCCACHE_ARCHIVE="sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl.tar.gz"
-          SCCACHE_URL="https://github.com/mozilla/sccache/releases/download/v${SCCACHE_VERSION}/${SCCACHE_ARCHIVE}"
-          curl --fail --location --show-error --silent "$SCCACHE_URL" --output "$SCCACHE_ARCHIVE"
-          echo "${SCCACHE_SHA256}  ${SCCACHE_ARCHIVE}" | sha256sum --check -
-          tar xzf "$SCCACHE_ARCHIVE"
-          sudo mv sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl/sccache /usr/local/bin/
-          chmod +x /usr/local/bin/sccache
-          sccache --version
+          github-token: ""
 
       - name: Cache sccache
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # was v4
         with:
           path: ~/.cache/sccache
-          key: ${{ runner.os }}-sccache-linux-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-sccache-linux-release-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
+            ${{ runner.os }}-sccache-linux-release-
             ${{ runner.os }}-sccache-linux-
             ${{ runner.os }}-sccache-
 
-      - name: Cache Cargo bin (Tauri CLI)
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # was v4
-        with:
-          path: ~/.cargo/bin/
-          key: ${{ runner.os }}-cargo-bin-tauri-cli-2.11.1
-
-      - name: Install Linux dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev \
-              libssl-dev \
-              libgtk-3-dev \
-              libayatana-appindicator3-dev \
-              librsvg2-dev
-
-      - name: Provide ONNX Runtime (Linux)
-        run: |
-          ./frontend/src-tauri/scripts/provide-linux-onnxruntime.sh >> "$GITHUB_ENV"
-
-      - name: Install frontend dependencies
-        working-directory: ./frontend
-        run: bun install --frozen-lockfile --ignore-scripts
-
-      - name: Install Tauri CLI
-        run: |
-          REQUIRED_TAURI_CLI_VERSION="2.11.1"
-          INSTALLED_TAURI_CLI_VERSION=""
-          if command -v cargo-tauri >/dev/null 2>&1; then
-            INSTALLED_TAURI_CLI_VERSION="$(cargo-tauri --version 2>/dev/null | awk '{print $2}')"
-          fi
-
-          if [ "$INSTALLED_TAURI_CLI_VERSION" != "$REQUIRED_TAURI_CLI_VERSION" ]; then
-            cargo install tauri-cli --version "$REQUIRED_TAURI_CLI_VERSION" --locked --force
-          else
-            echo "Tauri CLI $REQUIRED_TAURI_CLI_VERSION already installed"
-          fi
-        env:
-          CARGO_CFG_TARGET_OS: linux
-
-      - name: Configure sccache
-        run: |
-          {
-            echo "RUSTC_WRAPPER=sccache"
-            echo "SCCACHE_DIR=$HOME/.cache/sccache"
-            echo "SCCACHE_CACHE_SIZE=2G"
-          } >> "$GITHUB_ENV"
-
-      - name: Build Tauri App (Linux)
-        working-directory: ./frontend
-        run: cargo tauri build --verbose
+      - name: Build Tauri App (Linux, signed updater)
+        run: nix develop .#ci -c ./scripts/ci/desktop-release.sh
         env:
           APPIMAGE_EXTRACT_AND_RUN: "1"
-          NO_STRIP: true
+          NO_STRIP: "true"
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          VITE_OPEN_SECRET_API_URL: https://enclave.trymaple.ai
-          VITE_MAPLE_BILLING_API_URL: https://billing.opensecret.cloud
-          VITE_CLIENT_ID: ba5a14b5-d915-47b1-b7b1-afda52bc5fc6
 
       - name: Show sccache stats
-        run: sccache --show-stats
+        if: always()
+        run: nix develop .#ci -c sccache --show-stats
+
+      - name: Collect Linux release checksums
+        run: |
+          nix develop .#ci -c ./scripts/ci/attestation-manifest.sh \
+            desktop-linux-artifacts.sha256 \
+            frontend/src-tauri/target/reproducibility/desktop-release-linux-final.sha256 \
+            frontend/src-tauri/target/reproducibility/desktop-release-linux-*.sha256
+          cat desktop-linux-artifacts.sha256
+
+      - name: Attest Linux release artifacts
+        uses: actions/attest@281a49d4cbb0a72c9575a50d18f6deb515a11deb # was v4
+        with:
+          subject-checksums: desktop-linux-artifacts.sha256
 
       - name: Upload Linux Builds
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # was v4
@@ -243,5 +145,35 @@ jobs:
           name: maple-linux
           path: |
             frontend/src-tauri/target/release/bundle/appimage/*.AppImage
+            frontend/src-tauri/target/release/bundle/appimage/*.AppImage.sig
             frontend/src-tauri/target/release/bundle/deb/*.deb
+            frontend/src-tauri/target/release/bundle/deb/*.deb.sig
+            frontend/src-tauri/target/release/bundle/rpm/*.rpm
+            frontend/src-tauri/target/release/bundle/rpm/*.rpm.sig
+            frontend/src-tauri/target/reproducibility/*.sha256
           retention-days: 5
+
+  verify-desktop-artifacts:
+    needs:
+      - build-macos
+      - build-linux
+    runs-on: macos-26-xlarge
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # was v4
+        with:
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # was v22
+        with:
+          github-token: ""
+
+      - name: Download desktop artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # was v4
+        with:
+          path: artifacts
+
+      - name: Verify desktop artifact reproducibility proofs
+        run: nix develop .#ci -c ./scripts/ci/verify-release-artifacts.sh artifacts linux macos
