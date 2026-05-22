@@ -34,10 +34,7 @@ jobs:
         with:
           path: |
             ~/.bun/install/cache
-            frontend/node_modules
           key: ${{ runner.os }}-bun-${{ hashFiles('frontend/bun.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-bun-
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # was stable
@@ -90,14 +87,11 @@ jobs:
         with:
           path: ~/.cargo/bin/
           key: ${{ runner.os }}-cargo-bin-tauri-cli-2.11.1
-          restore-keys: |
-            ${{ runner.os }}-cargo-bin-tauri-cli-
-            ${{ runner.os }}-cargo-bin-
 
       - name: Install Linux dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libssl-dev
+          sudo apt-get install -y --no-install-recommends libssl-dev
 
       - name: Install frontend dependencies
         working-directory: ./frontend

@@ -27,10 +27,7 @@ jobs:
         with:
           path: |
             ~/.bun/install/cache
-            frontend/node_modules
           key: ${{ runner.os }}-bun-${{ hashFiles('frontend/bun.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-bun-
 
       - name: Install dependencies
         working-directory: ./frontend
