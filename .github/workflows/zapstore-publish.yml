@@ -10,7 +10,10 @@ permissions:
 
 jobs:
   publish:
-    if: github.event.workflow_run.conclusion == 'success'
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'release' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # was v4
@@ -25,6 +28,10 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ github.event.workflow_run.head_branch }}
         run: |
+          if [[ ! "$RELEASE_TAG" =~ ^v?[0-9]+[.][0-9]+[.][0-9]+(-[0-9A-Za-z.-]+)?([+][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Refusing to publish from unexpected release tag: $RELEASE_TAG" >&2
+            exit 1
+          fi
           echo "Downloading APK from release $RELEASE_TAG"
           gh release download "$RELEASE_TAG" \
             --pattern "app-universal-release.apk" \
@@ -36,6 +43,8 @@ jobs:
           go-version: "1.22.12"
 
       - name: Install zsp
+        env:
+          GOTOOLCHAIN: local
         run: |
           go install "github.com/zapstore/zsp@v0.4.5"
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
@@ -44,9 +53,15 @@ jobs:
         env:
           SIGN_WITH: ${{ secrets.ZAPSTORE_SIGN_WITH }}
           COMMIT_SHA: ${{ github.event.workflow_run.head_sha }}
+          GOTOOLCHAIN: local
         run: |
           if [ -z "${SIGN_WITH}" ]; then
             echo "Missing required secret: ZAPSTORE_SIGN_WITH" >&2
+            exit 1
+          fi
+
+          if [[ ! "$COMMIT_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Refusing to publish with unexpected commit SHA: $COMMIT_SHA" >&2
             exit 1
           fi
 
