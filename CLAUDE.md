@@ -32,6 +32,8 @@ Maple is a **Tauri-based AI chat application** that runs on desktop (macOS, Linu
 ## Environment
 The user typically runs `nix develop` (using `flake.nix`) before starting Claude. This means you're usually in a Nix shell with all required tools (bun, cargo, rustc, etc.) already available.
 
+`frontend/.env.local` must exist for any local build (mac/linux/windows). CI sets these values via GitHub env, but local devs need the file or Vite bakes empty strings into the bundle and the app launches to a silent white-screen. Copy `frontend/.env.local.template` to `frontend/.env.local` if it's missing. On Windows, `scripts/setup-windows.ps1` creates it automatically. See `docs/windows-build.md` for the Windows dev workflow.
+
 ## Build & Development Commands
 Use justfile for all commands (`just --list` to see all):
 

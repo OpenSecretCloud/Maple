@@ -39,6 +39,16 @@ sudo apt install libwebkit2gtk-4.1-dev \
     librsvg2-dev
 ```
 
+### Windows
+A bootstrap script handles VS Build Tools, Rust, Node, and `.env.local`.
+Run from an elevated PowerShell in the repo root:
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/setup-windows.ps1
+```
+See [docs/windows-build.md](docs/windows-build.md) for end-to-end VM
+setup, the `just windows-build` / `just windows-dev` workflow, and the
+ARM64/x64 cross-build matrix.
+
 4. Add required Rust targets for universal macOS builds:
 ```bash
 rustup target add aarch64-apple-darwin x86_64-apple-darwin
@@ -243,6 +253,28 @@ The GitHub Actions workflow will automatically:
 ## Updating PCR0 values
 
 If there's a new version of the enclave pushed to staging or prod, append the new PCR0 value to the `pcr0Values` or `pcr0DevValues` arrays in `frontend/src/app.tsx`.
+
+## Windows Development
+
+After running `scripts/setup-windows.ps1` once, both build and dev are
+single-command `just` recipes:
+
+```powershell
+# Native ARM64 build (default):
+just windows-build
+
+# Tauri dev server (Vite hot-reload):
+just windows-dev
+
+# Cross-build to x64 from an ARM64 host:
+just windows-build arm64_amd64
+```
+
+The recipes wrap `vcvarsall.bat` so you don't need a Developer PowerShell
+open, point `CARGO_TARGET_DIR` off the source tree (Parallels-safe), and
+apply the `tauri.windows.conf.json` overlay (swaps `bun` for `npm` since
+bun has no Windows ARM64 binary). Full guide:
+[docs/windows-build.md](docs/windows-build.md).
 
 ## iOS Development
 
