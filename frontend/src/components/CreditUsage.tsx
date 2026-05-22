@@ -21,9 +21,7 @@ type CreditUsageViewProps = {
 
 function CreditUsageView(p: CreditUsageViewProps) {
   const hasUsageMeter =
-    p.percentUsed !== undefined &&
-    p.roundedUsed !== undefined &&
-    p.used !== undefined;
+    p.percentUsed !== undefined && p.roundedUsed !== undefined && p.used !== undefined;
 
   return (
     <div
