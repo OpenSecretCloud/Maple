@@ -71,7 +71,7 @@ function CreditUsageView(p: CreditUsageViewProps) {
             <div className="min-h-0 overflow-hidden">
               <div className="pt-1.5 text-[9.5px] leading-none text-muted-foreground">
                 <span className="min-w-0 truncate tabular-nums">
-                  {p.formatCredits(p.tokensRemaining!)} left of {p.formatCredits(p.total!)} tokens
+                  {p.formatCredits(p.tokensRemaining!)} left of {p.formatCredits(p.total!)} credits
                   {p.hasApiCredits && (
                     <span className="ml-1 text-[hsl(var(--maple-success))]">
                       +{p.formatCredits(p.apiBalance ?? 0)}
