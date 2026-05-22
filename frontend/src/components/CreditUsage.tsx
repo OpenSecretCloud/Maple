@@ -50,7 +50,7 @@ function CreditUsageView(p: CreditUsageViewProps) {
         ) : null}
       </div>
       {hasUsageMeter ? (
-        <div className="group/creditbar mt-1.5 min-h-0 cursor-default rounded-sm py-1.5">
+        <div className="mt-1.5 min-h-0 rounded-sm py-1.5">
           <div className="h-[4px] w-full overflow-hidden rounded-full bg-[hsl(var(--sidebar-chrome-hover))]">
             <div
               className="h-full rounded-full transition-[width] duration-500 ease-out"
@@ -62,14 +62,10 @@ function CreditUsageView(p: CreditUsageViewProps) {
             />
           </div>
           {p.hasApiCredits && (
-            <div className="grid grid-rows-[0fr] transition-[grid-template-rows] duration-200 ease-out group-hover/creditbar:grid-rows-[1fr] group-focus-visible/credit-link:grid-rows-[1fr] [@media(hover:none)]:grid-rows-[1fr]">
-              <div className="min-h-0 overflow-hidden">
-                <div className="pt-1.5 text-[9.5px] leading-none text-muted-foreground">
-                  <span className="min-w-0 truncate tabular-nums text-[hsl(var(--maple-success))]">
-                    +{p.formatCredits(p.apiBalance ?? 0)} credits
-                  </span>
-                </div>
-              </div>
+            <div className="pt-1.5 text-[9.5px] leading-none text-muted-foreground">
+              <span className="min-w-0 truncate tabular-nums text-[hsl(var(--maple-success))]">
+                +{p.formatCredits(p.apiBalance ?? 0)} credits
+              </span>
             </div>
           )}
         </div>
