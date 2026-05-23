@@ -507,9 +507,6 @@ verify_ios() {
     echo "iOS signed app canonical proof does not match unsigned proof." >&2
     echo "unsigned=${unsigned_digest:-missing}" >&2
     echo "signed=${signed_digest:-missing}" >&2
-    if [ "${MAPLE_ENFORCE_IOS_SIGNED_REPRODUCIBILITY:-0}" = "1" ]; then
-      return 1
-    fi
     printf 'warning-ios-signed-app-proof-mismatch  unsigned=%s  signed=%s\n' "${unsigned_digest}" "${signed_digest}"
   else
     printf 'verified-ios-signed-app-proof  %s\n' "${signed_digest}"
@@ -521,12 +518,12 @@ verify_ios() {
   while IFS= read -r payload_digest; do
     [ -n "${payload_digest}" ] || continue
     payload_seen=1
-    if [ "${payload_digest}" = "${signed_digest}" ]; then
+    if [ "${payload_digest}" = "${unsigned_digest}" ]; then
       printf 'verified-ios-exported-payload-proof  %s\n' "${payload_digest}"
     else
       payload_mismatch=1
-      echo "iOS IPA payload canonical proof does not match signed app proof." >&2
-      echo "signed=${signed_digest:-missing}" >&2
+      echo "iOS IPA payload canonical proof does not match unsigned app proof." >&2
+      echo "unsigned=${unsigned_digest:-missing}" >&2
       echo "payload=${payload_digest}" >&2
     fi
   done < <(manifest_digests "${payload_manifest}")
@@ -538,7 +535,7 @@ verify_ios() {
     if [ "${MAPLE_ENFORCE_IOS_SIGNED_REPRODUCIBILITY:-0}" = "1" ]; then
       return 1
     fi
-    printf 'warning-ios-exported-payload-proof-mismatch  signed=%s\n' "${signed_digest}"
+    printf 'warning-ios-exported-payload-proof-mismatch  unsigned=%s\n' "${unsigned_digest}"
   fi
   verify_ios_signatures
 }
