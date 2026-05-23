@@ -211,7 +211,9 @@ verify_android_payload_equivalence() {
 }
 
 verify_android_signatures_optional() {
-  local artifact
+  local artifact require_signatures
+
+  require_signatures="${MAPLE_REQUIRE_ANDROID_SIGNATURE_VERIFICATION:-0}"
 
   while IFS= read -r -d '' artifact; do
     case "${artifact}" in
@@ -219,6 +221,9 @@ verify_android_signatures_optional() {
         if command -v apksigner >/dev/null 2>&1; then
           apksigner verify --verbose "${artifact}" >/dev/null
           printf 'verified-android-apk-signature  %s\n' "$(basename "${artifact}")"
+        elif [ "${require_signatures}" = "1" ]; then
+          echo "apksigner is required to verify Android APK signatures." >&2
+          return 1
         else
           printf 'skipped-android-apk-signature  missing-apksigner  %s\n' "$(basename "${artifact}")"
         fi
@@ -227,6 +232,9 @@ verify_android_signatures_optional() {
         if command -v jarsigner >/dev/null 2>&1; then
           jarsigner -verify "${artifact}" >/dev/null
           printf 'verified-android-aab-signature  %s\n' "$(basename "${artifact}")"
+        elif [ "${require_signatures}" = "1" ]; then
+          echo "jarsigner is required to verify Android AAB signatures." >&2
+          return 1
         else
           printf 'skipped-android-aab-signature  missing-jarsigner  %s\n' "$(basename "${artifact}")"
         fi
