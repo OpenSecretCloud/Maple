@@ -534,7 +534,7 @@ verify_web() {
 
 verify_latest_json() {
   local final_manifest latest_json
-  local platform url signature basename sig_file sig_content
+  local platform url signature basename artifact sig_file sig_content
 
   final_manifest="$(proof_file_required latest-json-final.sha256)"
   verify_file_manifest "${final_manifest}"
@@ -550,6 +550,7 @@ verify_latest_json() {
     url="$(jq -er --arg platform "${platform}" '.platforms[$platform].url' "${latest_json}")"
     signature="$(jq -er --arg platform "${platform}" '.platforms[$platform].signature' "${latest_json}")"
     basename="$(basename "${url}")"
+    artifact="$(artifact_for_label "${basename}")"
     sig_file="$(artifact_for_label "${basename}.sig")"
     sig_content="$(cat "${sig_file}")"
 
@@ -558,6 +559,7 @@ verify_latest_json() {
       return 1
     fi
 
+    verify_tauri_updater_signature "${artifact}" "${sig_file}" "latest.json:${platform}:${basename}"
     printf 'verified-latest-json-signature-entry  %s  %s\n' "${platform}" "${basename}.sig"
   done
 }
