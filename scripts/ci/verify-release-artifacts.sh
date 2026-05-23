@@ -5,11 +5,15 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
 
 usage() {
   cat >&2 <<'EOF'
-usage: verify-release-artifacts.sh <artifacts-dir> [all|linux|macos|android|ios|web|latest-json ...]
+usage: verify-release-artifacts.sh <artifacts-dir> [all|present|linux|macos|android|ios|web|latest-json ...]
 
 Verifies downloaded release artifacts against their reproducibility proof files.
 The verifier recomputes final file hashes, canonical signed payload hashes, and
 Tauri updater signatures where the current host has the required platform tools.
+
+The all target requires every release proof class. The present target verifies
+only the proof classes found in the artifact directory, which is useful for
+partial PR artifact bundles.
 
 Set MAPLE_VERIFY_ALLOW_PLATFORM_SKIPS=1 to skip host-specific Apple container
 checks, such as DMG or IPA canonicalization on non-macOS hosts.
@@ -270,13 +274,9 @@ verify_tauri_signatures_in_artifacts() {
   done < <(find "${artifacts_dir}" -type f -name '*.sig' -print0 | LC_ALL=C sort -z)
 }
 
-verify_linux() {
-  local final_manifest fake_pub_manifest
-
-  final_manifest="$(proof_file_optional desktop-release-linux-final.sha256)"
-  if [ -z "${final_manifest}" ]; then
-    final_manifest="$(proof_file_required desktop-pr-linux-fake-signing-final.sha256)"
-  fi
+verify_linux_manifest() {
+  local final_manifest="$1"
+  local fake_pub_manifest
 
   fake_pub_manifest="$(proof_file_optional desktop-pr-linux-fake-updater-public-key.sha256)"
   if [ -n "${fake_pub_manifest}" ]; then
@@ -285,6 +285,24 @@ verify_linux() {
 
   verify_file_manifest "${final_manifest}"
   verify_tauri_signatures_in_artifacts
+}
+
+verify_linux() {
+  local final_manifest
+
+  final_manifest="$(proof_file_required desktop-release-linux-final.sha256)"
+  verify_linux_manifest "${final_manifest}"
+}
+
+verify_linux_present() {
+  local final_manifest
+
+  final_manifest="$(proof_file_optional desktop-release-linux-final.sha256)"
+  if [ -z "${final_manifest}" ]; then
+    final_manifest="$(proof_file_required desktop-pr-linux-fake-signing-final.sha256)"
+  fi
+
+  verify_linux_manifest "${final_manifest}"
 }
 
 verify_canonical_apple_manifest() {
@@ -569,19 +587,34 @@ target_present() {
   [ -n "$(proof_file_optional "${pattern}")" ]
 }
 
-verify_all_present() {
-  target_present desktop-release-linux-final.sha256 && verify_linux
+verify_present() {
+  if target_present desktop-release-linux-final.sha256 || target_present desktop-pr-linux-fake-signing-final.sha256; then
+    verify_linux_present
+  fi
   target_present desktop-release-macos-final.sha256 && verify_macos
   target_present android-release-final.sha256 && verify_android
   target_present ios-release-final.sha256 && verify_ios
   target_present web-final.sha256 && verify_web
   target_present latest-json-final.sha256 && verify_latest_json
+  return 0
+}
+
+verify_all() {
+  verify_linux
+  verify_macos
+  verify_android
+  verify_ios
+  verify_web
+  verify_latest_json
 }
 
 for target in "$@"; do
   case "${target}" in
     all)
-      verify_all_present
+      verify_all
+      ;;
+    present)
+      verify_present
       ;;
     linux)
       verify_linux
