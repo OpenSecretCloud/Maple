@@ -115,4 +115,6 @@ jobs:
           path: artifacts
 
       - name: Verify Android artifact reproducibility proofs
+        env:
+          MAPLE_REQUIRE_ANDROID_SIGNATURE_VERIFICATION: "1"
         run: nix develop .#android -c ./scripts/ci/verify-release-artifacts.sh artifacts android

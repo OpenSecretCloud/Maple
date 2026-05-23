@@ -423,6 +423,34 @@ jobs:
             frontend/src-tauri/target/reproducibility/web-final.sha256 \
             --clobber
 
+  verify-android-release-artifacts:
+    needs: build-android
+    runs-on: ubuntu-latest-8-cores
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # was v4
+        with:
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # was v22
+        with:
+          github-token: ""
+
+      - name: Download release artifacts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          mkdir -p artifacts
+          gh release download "${RELEASE_TAG}" -D artifacts
+
+      - name: Verify Android release artifact reproducibility proofs
+        env:
+          MAPLE_REQUIRE_ANDROID_SIGNATURE_VERIFICATION: "1"
+        run: nix develop .#android -c ./scripts/ci/verify-release-artifacts.sh artifacts android
+
   update-latest-json:
     needs: build-tauri
     runs-on: ubuntu-latest
@@ -482,10 +510,10 @@ jobs:
   verify-release-artifacts:
     needs:
       - build-tauri
-      - build-android
       - build-ios
       - build-web
       - update-latest-json
+      - verify-android-release-artifacts
     runs-on: macos-26-xlarge
     permissions:
       contents: read
@@ -527,4 +555,4 @@ jobs:
           gh release download "${RELEASE_TAG}" -D artifacts
 
       - name: Verify release artifact reproducibility proofs
-        run: nix develop .#ci -c ./scripts/ci/verify-release-artifacts.sh artifacts all
+        run: nix develop .#ci -c ./scripts/ci/verify-release-artifacts.sh artifacts linux macos ios web latest-json
