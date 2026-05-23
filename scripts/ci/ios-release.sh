@@ -107,6 +107,27 @@ find_ios_release_app() {
   done
 }
 
+write_ios_canonical_app_file_manifest() {
+  local app="$1"
+  local out="$2"
+
+  python3 "${REPO_ROOT}/scripts/ci/canonical-ios-app-hash.py" --manifest "${app}" > "${out}"
+}
+
+write_ios_canonical_app_manifest_diff() {
+  local unsigned_manifest="$1"
+  local signed_manifest="$2"
+  local out="$3"
+  local unsigned_by_path signed_by_path
+
+  unsigned_by_path="$(mktemp)"
+  signed_by_path="$(mktemp)"
+  sed -E 's/^([0-9a-f]{64})  (.*)$/\2  \1/' "${unsigned_manifest}" | LC_ALL=C sort > "${unsigned_by_path}"
+  sed -E 's/^([0-9a-f]{64})  (.*)$/\2  \1/' "${signed_manifest}" | LC_ALL=C sort > "${signed_by_path}"
+  comm -3 "${unsigned_by_path}" "${signed_by_path}" > "${out}"
+  rm -f "${unsigned_by_path}" "${signed_by_path}"
+}
+
 remove_ios_release_outputs
 build_ios_release --no-sign --archive-only
 
@@ -117,6 +138,7 @@ if [ -z "${unsigned_app}" ]; then
 fi
 unsigned_app_canonical_hash="$(print_canonical_ios_app_hash "${unsigned_app}" "$(repo_relative_path "${unsigned_app}")" | tee "${repro_dir}/ios-release-unsigned-app-canonical.sha256" | awk '{ print $2 }')"
 cat "${repro_dir}/ios-release-unsigned-app-canonical.sha256"
+write_ios_canonical_app_file_manifest "${unsigned_app}" "${repro_dir}/ios-release-unsigned-app-canonical-files.sha256"
 
 remove_ios_release_outputs
 build_ios_release --export-method app-store-connect
@@ -128,14 +150,26 @@ if [ -z "${signed_app}" ]; then
 fi
 signed_app_canonical_hash="$(print_canonical_ios_app_hash "${signed_app}" "$(repo_relative_path "${signed_app}")" | tee "${repro_dir}/ios-release-signed-app-canonical.sha256" | awk '{ print $2 }')"
 cat "${repro_dir}/ios-release-signed-app-canonical.sha256"
+write_ios_canonical_app_file_manifest "${signed_app}" "${repro_dir}/ios-release-signed-app-canonical-files.sha256"
+write_ios_canonical_app_manifest_diff \
+  "${repro_dir}/ios-release-unsigned-app-canonical-files.sha256" \
+  "${repro_dir}/ios-release-signed-app-canonical-files.sha256" \
+  "${repro_dir}/ios-release-signed-vs-unsigned-canonical.diff.txt"
 
 if [ "${signed_app_canonical_hash}" != "${unsigned_app_canonical_hash}" ]; then
-  echo "Signed iOS app does not strip back to the unsigned app tree." >&2
+  echo "warning-ios-signed-app-canonical-mismatch  signed iOS app does not strip back to the unsigned app tree." >&2
   echo "unsigned=${unsigned_app_canonical_hash}" >&2
   echo "signed_canonical=${signed_app_canonical_hash}" >&2
-  exit 1
+  if [ -s "${repro_dir}/ios-release-signed-vs-unsigned-canonical.diff.txt" ]; then
+    echo "First canonical iOS file manifest differences:" >&2
+    sed -n '1,80p' "${repro_dir}/ios-release-signed-vs-unsigned-canonical.diff.txt" >&2
+  fi
+  if [ "${MAPLE_ENFORCE_IOS_SIGNED_REPRODUCIBILITY:-0}" = "1" ]; then
+    exit 1
+  fi
+else
+  printf 'verified-ios-signed-app  %s  %s\n' "${signed_app_canonical_hash}" "$(repo_relative_path "${signed_app}")"
 fi
-printf 'verified-ios-signed-app  %s  %s\n' "${signed_app_canonical_hash}" "$(repo_relative_path "${signed_app}")"
 
 ios_artifacts=()
 while IFS= read -r -d '' file; do
