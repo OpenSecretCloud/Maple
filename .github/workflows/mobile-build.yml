@@ -159,6 +159,24 @@ jobs:
           name: maple-ios
           path: artifacts
 
+      - name: Prepare App Store Connect API key
+        env:
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${APPLE_API_KEY}" ] || [ -z "${APPLE_API_PRIVATE_KEY}" ]; then
+            echo "APPLE_API_KEY and APPLE_API_PRIVATE_KEY are required to submit to TestFlight." >&2
+            exit 1
+          fi
+
+          mkdir -p "${HOME}/.private_keys"
+          key_path="${HOME}/.private_keys/AuthKey_${APPLE_API_KEY}.p8"
+          if ! printf '%s' "${APPLE_API_PRIVATE_KEY}" | base64 --decode > "${key_path}" 2>/dev/null; then
+            printf '%s' "${APPLE_API_PRIVATE_KEY}" | base64 -D > "${key_path}"
+          fi
+          chmod 600 "${key_path}"
+
       - name: Submit verified IPA to TestFlight
         run: |
           set -euo pipefail
