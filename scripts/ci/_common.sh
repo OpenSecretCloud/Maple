@@ -855,12 +855,23 @@ EOF
 extract_appimage_tool() {
   local appimage="$1"
   local out="$2"
-  local tmp
+  local offset tmp
+
+  command -v unsquashfs >/dev/null 2>&1 || {
+    echo "unsquashfs is required to extract AppImage tools without executing their runtime." >&2
+    return 1
+  }
+
+  offset="$(LC_ALL=C grep -abo -m1 'hsqs' "${appimage}" | awk -F: '{ print $1 }' || true)"
+  if [ -z "${offset}" ]; then
+    echo "Could not locate embedded SquashFS payload in AppImage: ${appimage}" >&2
+    return 1
+  fi
 
   tmp="$(mktemp -d)"
   rm -rf "${out}"
 
-  if ! (cd "${tmp}" && "${appimage}" --appimage-extract >/dev/null); then
+  if ! unsquashfs -d "${tmp}/squashfs-root" -o "${offset}" "${appimage}" >/dev/null; then
     rm -rf "${tmp}"
     return 1
   fi
