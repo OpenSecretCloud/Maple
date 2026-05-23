@@ -742,26 +742,58 @@ prepare_tauri_linuxdeploy_tools_cache() {
     return 1
   fi
 
-  local arch linuxdeploy_arch tools cache wrapper
+  local arch linuxdeploy_arch tools cache bash_path linuxdeploy_wrapper appimage_wrapper
   arch="$(linuxdeploy_tools_arch)"
   linuxdeploy_arch="${arch}"
   tools="${MAPLE_NIX_TAURI_LINUXDEPLOY_TOOLS}"
   cache="${TAURI_DIR}/target/.tauri"
-  wrapper="${cache}/linuxdeploy-plugin-appimage.AppImage"
+  bash_path="$(command -v bash)"
+  linuxdeploy_wrapper="${cache}/linuxdeploy-${linuxdeploy_arch}.AppImage"
+  appimage_wrapper="${cache}/linuxdeploy-plugin-appimage.AppImage"
 
   mkdir -p "${cache}"
   install -m 0755 "${tools}/AppRun-${arch}" "${cache}/AppRun-${arch}"
-  install -m 0755 "${tools}/linuxdeploy-${linuxdeploy_arch}.AppImage" "${cache}/linuxdeploy-${linuxdeploy_arch}.AppImage"
+  install -m 0755 "${tools}/linuxdeploy-${linuxdeploy_arch}.AppImage" "${cache}/linuxdeploy-${linuxdeploy_arch}.real.AppImage"
   install -m 0755 "${tools}/linuxdeploy-plugin-appimage.real.AppImage" "${cache}/linuxdeploy-plugin-appimage.real.AppImage"
   install -m 0755 "${tools}/linuxdeploy-plugin-gtk.sh" "${cache}/linuxdeploy-plugin-gtk.sh"
   install -m 0755 "${tools}/linuxdeploy-plugin-gstreamer.sh" "${cache}/linuxdeploy-plugin-gstreamer.sh"
 
-  cat > "${wrapper}" <<'EOF'
-#!/usr/bin/env bash
+  extract_appimage_tool "${cache}/linuxdeploy-${linuxdeploy_arch}.real.AppImage" "${cache}/linuxdeploy-${linuxdeploy_arch}.AppDir"
+  extract_appimage_tool "${cache}/linuxdeploy-plugin-appimage.real.AppImage" "${cache}/linuxdeploy-plugin-appimage.AppDir"
+
+  cat > "${linuxdeploy_wrapper}" <<EOF
+#!${bash_path}
 set -euo pipefail
 
-for arg in "$@"; do
-  case "${arg}" in
+script_dir="\$(CDPATH= cd -- "\$(dirname -- "\$0")" && pwd)"
+app_run="\${script_dir}/linuxdeploy-${linuxdeploy_arch}.AppDir/AppRun"
+
+if [ ! -x "\${app_run}" ]; then
+  echo "Missing extracted linuxdeploy AppRun at \${app_run}" >&2
+  exit 1
+fi
+
+args=()
+for arg in "\$@"; do
+  case "\${arg}" in
+    --appimage-extract-and-run)
+      ;;
+    *)
+      args+=("\${arg}")
+      ;;
+  esac
+done
+
+exec "\${app_run}" "\${args[@]}"
+EOF
+  chmod +x "${linuxdeploy_wrapper}"
+
+  cat > "${appimage_wrapper}" <<EOF
+#!${bash_path}
+set -euo pipefail
+
+for arg in "\$@"; do
+  case "\${arg}" in
     --plugin-type)
       printf '%s\n' output
       exit 0
@@ -775,16 +807,16 @@ done
 
 appdir=""
 previous=""
-for arg in "$@"; do
-  if [ "${previous}" = "--appdir" ]; then
-    appdir="${arg}"
+for arg in "\$@"; do
+  if [ "\${previous}" = "--appdir" ]; then
+    appdir="\${arg}"
     previous=""
     continue
   fi
 
-  case "${arg}" in
+  case "\${arg}" in
     --appdir=*)
-      appdir="${arg#--appdir=}"
+      appdir="\${arg#--appdir=}"
       ;;
     --appdir)
       previous="--appdir"
@@ -792,29 +824,56 @@ for arg in "$@"; do
   esac
 done
 
-if [ -n "${appdir}" ]; then
-  rm -f "${appdir}/.DirIcon"
+if [ -n "\${appdir}" ]; then
+  rm -f "\${appdir}/.DirIcon"
 fi
 
-script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
-real_plugin="${script_dir}/linuxdeploy-plugin-appimage.real.AppImage"
+script_dir="\$(CDPATH= cd -- "\$(dirname -- "\$0")" && pwd)"
+real_plugin="\${script_dir}/linuxdeploy-plugin-appimage.AppDir/AppRun"
 
-if [ ! -x "${real_plugin}" ]; then
-  echo "Missing real linuxdeploy AppImage plugin at ${real_plugin}" >&2
+if [ ! -x "\${real_plugin}" ]; then
+  echo "Missing extracted linuxdeploy AppImage plugin at \${real_plugin}" >&2
   exit 1
 fi
 
-APPIMAGE_EXTRACT_AND_RUN=1 exec "${real_plugin}" --appimage-extract-and-run "$@"
+exec "\${real_plugin}" "\$@"
 EOF
-  chmod +x "${wrapper}"
+  chmod +x "${appimage_wrapper}"
 
   print_file_hashes \
     "${cache}/AppRun-${arch}" \
+    "${cache}/linuxdeploy-${linuxdeploy_arch}.real.AppImage" \
     "${cache}/linuxdeploy-${linuxdeploy_arch}.AppImage" \
+    "${cache}/linuxdeploy-${linuxdeploy_arch}.AppDir/AppRun" \
     "${cache}/linuxdeploy-plugin-appimage.real.AppImage" \
     "${cache}/linuxdeploy-plugin-appimage.AppImage" \
+    "${cache}/linuxdeploy-plugin-appimage.AppDir/AppRun" \
     "${cache}/linuxdeploy-plugin-gtk.sh" \
     "${cache}/linuxdeploy-plugin-gstreamer.sh"
+}
+
+extract_appimage_tool() {
+  local appimage="$1"
+  local out="$2"
+  local tmp
+
+  tmp="$(mktemp -d)"
+  rm -rf "${out}"
+
+  if ! (cd "${tmp}" && "${appimage}" --appimage-extract >/dev/null); then
+    rm -rf "${tmp}"
+    return 1
+  fi
+
+  if [ ! -x "${tmp}/squashfs-root/AppRun" ]; then
+    echo "Extracted AppImage is missing AppRun: ${appimage}" >&2
+    rm -rf "${tmp}"
+    return 1
+  fi
+
+  mv "${tmp}/squashfs-root" "${out}"
+  chmod -R u+w "${out}" 2>/dev/null || true
+  rm -rf "${tmp}"
 }
 
 print_tree_hash() {
