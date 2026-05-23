@@ -19,6 +19,7 @@ case "$(host_os)" in
     prepare_linux_onnxruntime
     export APPIMAGE_EXTRACT_AND_RUN="${APPIMAGE_EXTRACT_AND_RUN:-1}"
     export NO_STRIP="${NO_STRIP:-true}"
+    run_with_nix_usr_bin pkg-config --modversion glib-2.0
     bun tauri build --verbose --no-sign --config "$(linux_tauri_pr_config)"
     normalize_linux_desktop_packages
 

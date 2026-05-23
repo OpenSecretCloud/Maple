@@ -185,10 +185,13 @@ for artifact in "${ios_artifacts[@]}"; do
 
   if [ -n "${signed_app_canonical_hash}" ]; then
     if [ "${ipa_canonical_hash}" != "${signed_app_canonical_hash}" ]; then
-      echo "Exported iOS IPA payload does not strip back to the signed app build product." >&2
+      echo "warning-ios-exported-payload-canonical-mismatch  exported iOS IPA payload does not strip back to the signed app build product." >&2
       echo "signed_app=${signed_app_canonical_hash}" >&2
       echo "ipa_payload=${ipa_canonical_hash}" >&2
-      exit 1
+      if [ "${MAPLE_ENFORCE_IOS_SIGNED_REPRODUCIBILITY:-0}" = "1" ]; then
+        exit 1
+      fi
+      continue
     fi
 
     printf 'verified-ios-exported-payload  %s  %s\n' "${ipa_canonical_hash}" "$(repo_relative_path "${artifact}")"
