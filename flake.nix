@@ -212,6 +212,7 @@
             patchelf
             desktop-file-utils
             rpm
+            squashfsTools
             webkitgtk_4_1
             xdg-utils
           ];
