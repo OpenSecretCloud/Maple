@@ -862,7 +862,7 @@ extract_appimage_tool() {
     return 1
   }
 
-  offset="$(LC_ALL=C grep -abo -m1 'hsqs' "${appimage}" | awk -F: '{ print $1 }' || true)"
+  offset="$(appimage_squashfs_offset "${appimage}")"
   if [ -z "${offset}" ]; then
     echo "Could not locate embedded SquashFS payload in AppImage: ${appimage}" >&2
     return 1
@@ -885,6 +885,20 @@ extract_appimage_tool() {
   mv "${tmp}/squashfs-root" "${out}"
   chmod -R u+w "${out}" 2>/dev/null || true
   rm -rf "${tmp}"
+}
+
+appimage_squashfs_offset() {
+  local appimage="$1"
+  local offset _
+
+  while IFS=: read -r offset _; do
+    if unsquashfs -s -o "${offset}" "${appimage}" >/dev/null 2>&1; then
+      printf '%s\n' "${offset}"
+      return 0
+    fi
+  done < <(LC_ALL=C grep -abo 'hsqs' "${appimage}" || true)
+
+  return 1
 }
 
 print_tree_hash() {
