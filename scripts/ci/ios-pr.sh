@@ -30,15 +30,21 @@ configure_reproducible_build_metadata
 build_frontend_dist
 
 ios_project_state_dir=""
+ios_info_plist_present=0
+ios_entitlements_present=0
 restore_ios_build_state() {
   remove_generated_ios_cargo_config
 
   if [ -n "${ios_project_state_dir}" ] && [ -d "${ios_project_state_dir}" ]; then
     if [ -f "${ios_project_state_dir}/Info.plist" ]; then
       cp "${ios_project_state_dir}/Info.plist" "${TAURI_DIR}/gen/apple/maple_iOS/Info.plist"
+    elif [ "${ios_info_plist_present}" = "0" ]; then
+      rm -f "${TAURI_DIR}/gen/apple/maple_iOS/Info.plist"
     fi
     if [ -f "${ios_project_state_dir}/maple_iOS.entitlements" ]; then
       cp "${ios_project_state_dir}/maple_iOS.entitlements" "${TAURI_DIR}/gen/apple/maple_iOS/maple_iOS.entitlements"
+    elif [ "${ios_entitlements_present}" = "0" ]; then
+      rm -f "${TAURI_DIR}/gen/apple/maple_iOS/maple_iOS.entitlements"
     fi
     rm -rf "${ios_project_state_dir}"
   fi
@@ -46,9 +52,15 @@ restore_ios_build_state() {
 
 cd "${TAURI_DIR}"
 ios_project_state_dir="$(mktemp -d)"
-cp "${TAURI_DIR}/gen/apple/maple_iOS/Info.plist" "${ios_project_state_dir}/Info.plist"
-cp "${TAURI_DIR}/gen/apple/maple_iOS/maple_iOS.entitlements" "${ios_project_state_dir}/maple_iOS.entitlements"
 trap restore_ios_build_state EXIT
+if [ -f "${TAURI_DIR}/gen/apple/maple_iOS/Info.plist" ]; then
+  ios_info_plist_present=1
+  cp "${TAURI_DIR}/gen/apple/maple_iOS/Info.plist" "${ios_project_state_dir}/Info.plist"
+fi
+if [ -f "${TAURI_DIR}/gen/apple/maple_iOS/maple_iOS.entitlements" ]; then
+  ios_entitlements_present=1
+  cp "${TAURI_DIR}/gen/apple/maple_iOS/maple_iOS.entitlements" "${ios_project_state_dir}/maple_iOS.entitlements"
+fi
 
 verify_ios_onnxruntime_manifest
 print_ios_onnxruntime_hashes

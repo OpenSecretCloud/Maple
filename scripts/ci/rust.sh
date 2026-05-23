@@ -9,4 +9,4 @@ configure_sccache
 prepare_linux_onnxruntime
 
 cd "${TAURI_DIR}"
-cargo test --all-targets
+cargo test --all-targets --locked

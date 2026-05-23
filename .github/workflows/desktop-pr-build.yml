@@ -113,6 +113,8 @@ jobs:
         with:
           name: maple-linux-pr
           path: |
+            frontend/src-tauri/target/release/bundle/appimage/*.AppImage
+            frontend/src-tauri/target/release/bundle/appimage/*.AppImage.sig
             frontend/src-tauri/target/release/bundle/deb/*.deb
             frontend/src-tauri/target/release/bundle/deb/*.deb.sig
             frontend/src-tauri/target/release/bundle/rpm/*.rpm

@@ -44,7 +44,15 @@ use_pr_environment
 configure_reproducible_build_metadata
 build_frontend_dist
 
-toolchain_prebuilt="$(find "${NDK_HOME}/toolchains/llvm/prebuilt" -mindepth 1 -maxdepth 1 -type d | sort | head -n 1)"
+toolchain_prebuilt="$(
+  find "${NDK_HOME}/toolchains/llvm/prebuilt" -mindepth 1 -maxdepth 1 -type d 2>/dev/null \
+    | LC_ALL=C sort \
+    | head -n 1 || true
+)"
+if [ -z "${toolchain_prebuilt}" ] || [ ! -d "${toolchain_prebuilt}/bin" ]; then
+  echo "Could not find Android NDK LLVM prebuilt toolchain under NDK_HOME=${NDK_HOME}" >&2
+  exit 1
+fi
 export PATH="${toolchain_prebuilt}/bin:${PATH}"
 
 tmp_toolchain_bin="$(mktemp -d)"

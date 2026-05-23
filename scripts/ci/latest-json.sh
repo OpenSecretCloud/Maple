@@ -20,6 +20,7 @@ if [ ! -d "${artifacts_dir}" ]; then
 fi
 
 configure_reproducible_build_metadata
+pub_date="${MAPLE_LATEST_JSON_PUB_DATE:-$(source_date_rfc3339)}"
 
 find_one_artifact() {
   local pattern="$1"
@@ -49,7 +50,7 @@ tmp="$(mktemp)"
 jq -S -n \
   --arg version "${release_tag#v}" \
   --arg notes "See the release notes at https://github.com/OpenSecretCloud/Maple/releases/tag/${release_tag}" \
-  --arg pub_date "$(source_date_rfc3339)" \
+  --arg pub_date "${pub_date}" \
   --arg macos_sig "${macos_sig_content}" \
   --arg linux_sig "${linux_sig_content}" \
   --arg macos_url "${macos_url}" \

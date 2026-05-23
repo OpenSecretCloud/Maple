@@ -127,7 +127,12 @@
                   while [ "''${#}" -gt 0 ]; do
                     case "''${1}" in
                       --toolchain | -t)
-                        shift 2
+                        shift
+                        if [ "''${#}" -eq 0 ]; then
+                          echo "rustup is shimmed by the Nix shell and --toolchain requires a value." >&2
+                          exit 1
+                        fi
+                        shift
                         ;;
                       --*)
                         shift
@@ -217,6 +222,38 @@
             xdg-utils
           ];
 
+        linuxdeploySupportPackages =
+          with pkgs;
+          lib.optionals stdenv.isLinux (
+            [
+              bash
+              binutils
+              coreutils
+              desktop-file-utils
+              diffutils
+              file
+              findutils
+              gawk
+              gdk-pixbuf
+              gdk-pixbuf.dev
+              glib
+              glib.dev
+              glibc.bin
+              gnugrep
+              gnused
+              gnutar
+              gzip
+              gtk3
+              patchelf
+              pkg-config
+              squashfsTools
+              util-linux
+              which
+              xdg-utils
+            ]
+            ++ linuxTauriPackages
+          );
+
         linuxRuntimeClosure =
           if pkgs.stdenv.isLinux then
             pkgs.closureInfo {
@@ -246,6 +283,10 @@
             aarch64 = "sha256-Ak4f3LJchgv9hSN5I6lO0VubrAwCqQ/xCpCcsIdmxfU=";
             x86_64 = "sha256-Egjmp7HiZG4/sAbeqQC3K9hI7IYyS5l5t8lD8hHGacg=";
           };
+          appimageRuntime = {
+            aarch64 = "sha256-fyeowVvyCi5GNC6kqXcEemnYtNZKEj/gteI7IP0pDIU=";
+            x86_64 = "sha256-okGdzkdWg5WuecAf+ppaNB3TOVgTUv8QTQc1J1Qxd+U=";
+          };
           gtkPlugin = "sha256-yzefmwcz6a2fi9ePjC+gOK7yR4Uju31MjmT/ah6jUBo=";
           gstreamerPlugin = "sha256-wQe0nYTtv/xqsibtEAfgYmpPeqLDo2t3gr72I1HUnpQ=";
         };
@@ -267,6 +308,10 @@
                 url = "https://github.com/linuxdeploy/linuxdeploy-plugin-appimage/releases/download/continuous/linuxdeploy-plugin-appimage-${arch}.AppImage";
                 hash = linuxTauriToolHashes.appimagePlugin.${arch};
               };
+              appimageRuntime = pkgs.fetchurl {
+                url = "https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-${arch}";
+                hash = linuxTauriToolHashes.appimageRuntime.${arch};
+              };
               gtkPlugin = pkgs.fetchurl {
                 url = "https://raw.githubusercontent.com/tauri-apps/linuxdeploy-plugin-gtk/master/linuxdeploy-plugin-gtk.sh";
                 hash = linuxTauriToolHashes.gtkPlugin;
@@ -275,12 +320,161 @@
                 url = "https://raw.githubusercontent.com/tauri-apps/linuxdeploy-plugin-gstreamer/master/linuxdeploy-plugin-gstreamer.sh";
                 hash = linuxTauriToolHashes.gstreamerPlugin;
               };
+              linuxdeployWrapperSource = pkgs.writeText "maple-linuxdeploy-wrapper.c" ''
+                #include <errno.h>
+                #include <stdio.h>
+                #include <stdlib.h>
+                #include <string.h>
+                #include <unistd.h>
+
+                #ifndef LINUXDEPLOY_ARCH
+                #error "LINUXDEPLOY_ARCH is required"
+                #endif
+
+                static char *wrapper_dir(const char *argv0) {
+                  const char *slash = strrchr(argv0, '/');
+
+                  if (slash == NULL) {
+                    char *cwd = getcwd(NULL, 0);
+                    if (cwd == NULL) {
+                      perror("getcwd");
+                    }
+                    return cwd;
+                  }
+
+                  size_t len = (size_t)(slash - argv0);
+                  if (len == 0) {
+                    len = 1;
+                  }
+
+                  char *dir = malloc(len + 1);
+                  if (dir == NULL) {
+                    perror("malloc");
+                    return NULL;
+                  }
+
+                  memcpy(dir, argv0, len);
+                  dir[len] = '\0';
+                  return dir;
+                }
+
+                int main(int argc, char **argv) {
+                  char *dir = wrapper_dir(argv[0]);
+                  if (dir == NULL) {
+                    return 127;
+                  }
+
+                  char app_dir[8192];
+                  int written = snprintf(
+                    app_dir,
+                    sizeof(app_dir),
+                    "%s/linuxdeploy-%s.AppDir",
+                    dir,
+                    LINUXDEPLOY_ARCH
+                  );
+
+                  if (written < 0 || (size_t)written >= sizeof(app_dir)) {
+                    free(dir);
+                    fprintf(stderr, "linuxdeploy AppDir path is too long\n");
+                    return 127;
+                  }
+
+                  char app_run[8192];
+                  written = snprintf(app_run, sizeof(app_run), "%s/AppRun", app_dir);
+                  if (written < 0 || (size_t)written >= sizeof(app_run)) {
+                    free(dir);
+                    fprintf(stderr, "linuxdeploy AppRun path is too long\n");
+                    return 127;
+                  }
+
+                  char plugin_path[16384];
+                  char plugin_bin[8192];
+                  char support_bin[8192];
+                  written = snprintf(
+                    plugin_bin,
+                    sizeof(plugin_bin),
+                    "%s/maple-linuxdeploy-tools/plugins",
+                    dir
+                  );
+                  if (written < 0 || (size_t)written >= sizeof(plugin_bin)) {
+                    free(dir);
+                    fprintf(stderr, "linuxdeploy plugin bin path is too long\n");
+                    return 127;
+                  }
+
+                  written = snprintf(
+                    support_bin,
+                    sizeof(support_bin),
+                    "%s/maple-linuxdeploy-tools/bin",
+                    dir
+                  );
+                  if (written < 0 || (size_t)written >= sizeof(support_bin)) {
+                    free(dir);
+                    fprintf(stderr, "linuxdeploy support bin path is too long\n");
+                    return 127;
+                  }
+
+                  written = snprintf(
+                    plugin_path,
+                    sizeof(plugin_path),
+                    "%s:%s",
+                    plugin_bin,
+                    support_bin
+                  );
+                  if (written < 0 || (size_t)written >= sizeof(plugin_path)) {
+                    free(dir);
+                    fprintf(stderr, "linuxdeploy PATH is too long\n");
+                    return 127;
+                  }
+
+                  free(dir);
+
+                  if (setenv("APPDIR", app_dir, 1) != 0) {
+                    perror("setenv APPDIR");
+                    return 127;
+                  }
+
+                  if (setenv("PATH", plugin_path, 1) != 0) {
+                    perror("setenv PATH");
+                    return 127;
+                  }
+
+                  unsetenv("APPIMAGE");
+                  unsetenv("APPIMAGE_EXTRACT_AND_RUN");
+                  unsetenv("ARGV0");
+
+                  char **args = calloc((size_t)argc + 1, sizeof(char *));
+                  if (args == NULL) {
+                    perror("calloc");
+                    return 127;
+                  }
+
+                  int out = 0;
+                  args[out++] = app_run;
+                  for (int i = 1; i < argc; i++) {
+                    if (strcmp(argv[i], "--appimage-extract-and-run") == 0) {
+                      continue;
+                    }
+                    args[out++] = argv[i];
+                  }
+                  args[out] = NULL;
+
+                  execv(app_run, args);
+                  fprintf(stderr, "failed to exec %s: %s\n", app_run, strerror(errno));
+                  return 127;
+                }
+              '';
             in
             pkgs.runCommand "maple-tauri-linuxdeploy-tools-${arch}" { } ''
               mkdir -p "$out"
+              ${pkgs.stdenv.cc}/bin/cc -O2 -Wall -Wextra \
+                -DLINUXDEPLOY_ARCH='"${linuxdeployArch}"' \
+                ${linuxdeployWrapperSource} \
+                -o "$out/linuxdeploy-${linuxdeployArch}.wrapper"
               install -m 0755 ${appRun} "$out/AppRun-${arch}"
               install -m 0755 ${linuxdeploy} "$out/linuxdeploy-${linuxdeployArch}.AppImage"
               install -m 0755 ${appimagePlugin} "$out/linuxdeploy-plugin-appimage.real.AppImage"
+              install -m 0755 ${appimageRuntime} "$out/appimage-runtime-${arch}"
               install -m 0755 ${gtkPlugin} "$out/linuxdeploy-plugin-gtk.sh"
               install -m 0755 ${gstreamerPlugin} "$out/linuxdeploy-plugin-gstreamer.sh"
             ''
@@ -340,6 +534,7 @@
           export MAPLE_NIX_GLIB_SCHEMAS=${pkgs.glib.dev}/share/glib-2.0/schemas
           export MAPLE_NIX_GTK_LIB=${pkgs.gtk3}/lib
           export MAPLE_NIX_LINUX_CLOSURE_INFO=${linuxRuntimeClosure}
+          export MAPLE_NIX_LINUXDEPLOY_SUPPORT_PATH=${lib.makeBinPath linuxdeploySupportPackages}
           ${lib.optionalString (tauriLinuxdeployTools != null) "export MAPLE_NIX_TAURI_LINUXDEPLOY_TOOLS=${tauriLinuxdeployTools}"}
           ${lib.optionalString (linuxTauriToolsArch != null) "export MAPLE_NIX_TAURI_LINUXDEPLOY_ARCH=${linuxTauriToolsArch}"}
           export GSTREAMER_PLUGINS_DIR=${gstreamerPlugins}/lib/gstreamer-1.0

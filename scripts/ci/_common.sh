@@ -199,10 +199,38 @@ append_env_word_once() {
   esac
 }
 
+append_env_words_once() {
+  local var_name="$1"
+  local words="$2"
+  local current
+
+  if [ -z "${words}" ]; then
+    return 0
+  fi
+
+  current="${!var_name:-}"
+  case " ${current} " in
+    *" ${words} "*)
+      ;;
+    *)
+      printf -v "${var_name}" '%s' "${current:+${current} }${words}"
+      export "${var_name}"
+      ;;
+  esac
+}
+
 append_rustflag_once() {
   local flag="$1"
+  local var_name
 
   append_env_word_once RUSTFLAGS "${flag}"
+  for var_name in \
+    CARGO_TARGET_AARCH64_APPLE_DARWIN_RUSTFLAGS \
+    CARGO_TARGET_X86_64_APPLE_DARWIN_RUSTFLAGS; do
+    if [ -n "${!var_name:-}" ]; then
+      append_env_word_once "${var_name}" "${flag}"
+    fi
+  done
 }
 
 append_rust_remap_path_prefix() {
@@ -287,7 +315,7 @@ generate_fake_tauri_updater_keypair() {
 
   (
     cd "${FRONTEND_DIR}"
-    bun tauri signer generate \
+    env -u LD_LIBRARY_PATH bun tauri signer generate \
       --ci \
       --password "${password}" \
       --write-keys "${private_key}" \
@@ -303,7 +331,13 @@ generate_fake_tauri_updater_keypair() {
 }
 
 source_date_rfc3339() {
-  date -u -d "@${SOURCE_DATE_EPOCH:?SOURCE_DATE_EPOCH is required}" +"%Y-%m-%dT%H:%M:%SZ"
+  local epoch="${SOURCE_DATE_EPOCH:?SOURCE_DATE_EPOCH is required}"
+
+  if date -u -d "@${epoch}" +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null; then
+    return 0
+  fi
+
+  date -u -r "${epoch}" +"%Y-%m-%dT%H:%M:%SZ"
 }
 
 is_valid_xcode_developer_dir() {
@@ -409,8 +443,10 @@ use_xcode_toolchain() {
   export CARGO_TARGET_X86_64_APPLE_DARWIN_LINKER="${CC}"
   export CARGO_TARGET_AARCH64_APPLE_IOS_LINKER="${CC}"
   export CARGO_TARGET_AARCH64_APPLE_IOS_SIM_LINKER="${CC}"
-  export CARGO_TARGET_AARCH64_APPLE_DARWIN_RUSTFLAGS="${CARGO_TARGET_AARCH64_APPLE_DARWIN_RUSTFLAGS:+${CARGO_TARGET_AARCH64_APPLE_DARWIN_RUSTFLAGS} }${macos_link_flags}"
-  export CARGO_TARGET_X86_64_APPLE_DARWIN_RUSTFLAGS="${CARGO_TARGET_X86_64_APPLE_DARWIN_RUSTFLAGS:+${CARGO_TARGET_X86_64_APPLE_DARWIN_RUSTFLAGS} }${macos_link_flags}"
+  append_env_words_once CARGO_TARGET_AARCH64_APPLE_DARWIN_RUSTFLAGS "${RUSTFLAGS:-}"
+  append_env_words_once CARGO_TARGET_X86_64_APPLE_DARWIN_RUSTFLAGS "${RUSTFLAGS:-}"
+  append_env_words_once CARGO_TARGET_AARCH64_APPLE_DARWIN_RUSTFLAGS "${macos_link_flags}"
+  append_env_words_once CARGO_TARGET_X86_64_APPLE_DARWIN_RUSTFLAGS "${macos_link_flags}"
 
   export CC_aarch64_apple_darwin="${CC}"
   export CXX_aarch64_apple_darwin="${CXX}"
@@ -586,7 +622,7 @@ encode_base64_file_to_string() {
 
 repo_relative_path() {
   local path="$1"
-  printf '%s\n' "${path#${REPO_ROOT}/}"
+  printf '%s\n' "${path#"${REPO_ROOT}/"}"
 }
 
 print_file_hashes() {
@@ -713,8 +749,36 @@ prepend_linux_runtime_library_path() {
   library_path="$(linux_runtime_library_path)"
 
   if [ -n "${library_path}" ]; then
+    if [ "${MAPLE_LINUX_RUNTIME_LIBRARY_PATH_ACTIVE:-0}" = "1" ]; then
+      return 0
+    fi
+
+    if [ "${LD_LIBRARY_PATH+x}" = "x" ]; then
+      export MAPLE_LINUX_RUNTIME_ORIGINAL_LD_LIBRARY_PATH="${LD_LIBRARY_PATH}"
+      export MAPLE_LINUX_RUNTIME_ORIGINAL_LD_LIBRARY_PATH_SET=1
+    else
+      unset MAPLE_LINUX_RUNTIME_ORIGINAL_LD_LIBRARY_PATH
+      export MAPLE_LINUX_RUNTIME_ORIGINAL_LD_LIBRARY_PATH_SET=0
+    fi
+    export MAPLE_LINUX_RUNTIME_LIBRARY_PATH_ACTIVE=1
     export LD_LIBRARY_PATH="${library_path}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
   fi
+}
+
+restore_linux_runtime_library_path() {
+  if [ "${MAPLE_LINUX_RUNTIME_LIBRARY_PATH_ACTIVE:-0}" != "1" ]; then
+    return 0
+  fi
+
+  if [ "${MAPLE_LINUX_RUNTIME_ORIGINAL_LD_LIBRARY_PATH_SET:-0}" = "1" ]; then
+    export LD_LIBRARY_PATH="${MAPLE_LINUX_RUNTIME_ORIGINAL_LD_LIBRARY_PATH}"
+  else
+    unset LD_LIBRARY_PATH
+  fi
+
+  unset MAPLE_LINUX_RUNTIME_LIBRARY_PATH_ACTIVE
+  unset MAPLE_LINUX_RUNTIME_ORIGINAL_LD_LIBRARY_PATH
+  unset MAPLE_LINUX_RUNTIME_ORIGINAL_LD_LIBRARY_PATH_SET
 }
 
 linuxdeploy_tools_arch() {
@@ -732,6 +796,174 @@ linuxdeploy_tools_arch() {
   esac
 }
 
+write_chmod_patchelf_wrapper() {
+  local wrapper="$1"
+  local real_patchelf="$2"
+  local bash_path
+
+  bash_path="/bin/bash"
+  cat > "${wrapper}" <<EOF
+#!${bash_path}
+for arg in "\$@"; do
+  if [ -f "\${arg}" ]; then
+    chmod u+w "\${arg}" 2>/dev/null || true
+  fi
+done
+exec "${real_patchelf}" "\$@"
+EOF
+  chmod +x "${wrapper}"
+}
+
+wrap_linuxdeploy_appdir_patchelf() {
+  local appdir_bin="$1"
+  local patchelf_path real_patchelf
+
+  patchelf_path="${appdir_bin}/patchelf"
+  real_patchelf="${appdir_bin}/patchelf.real"
+  if [ ! -x "${patchelf_path}" ]; then
+    return 0
+  fi
+
+  mv "${patchelf_path}" "${real_patchelf}"
+  write_chmod_patchelf_wrapper "${patchelf_path}" "${real_patchelf}"
+}
+
+prepare_linuxdeploy_support_bin() {
+  local support_bin="$1"
+  local bash_path path_dir entry name target real_pkg_config real_patchelf support_path
+  local -a path_dirs=()
+
+  rm -rf "${support_bin}"
+  mkdir -p "${support_bin}"
+
+  support_path="${MAPLE_NIX_LINUXDEPLOY_SUPPORT_PATH:-}"
+  if [ -z "${support_path}" ]; then
+    echo "MAPLE_NIX_LINUXDEPLOY_SUPPORT_PATH is required for reproducible linuxdeploy support tooling." >&2
+    return 1
+  fi
+
+  # This path is exported by flake.nix and contains only pinned Nix package bins.
+  IFS=':' read -r -a path_dirs <<< "${support_path}"
+  for path_dir in "${path_dirs[@]}"; do
+    if [ -z "${path_dir}" ] || [ ! -d "${path_dir}" ] || [ "${path_dir}" = "${support_bin}" ]; then
+      continue
+    fi
+
+    while IFS= read -r -d '' entry; do
+      name="$(basename "${entry}")"
+      case "${name}" in
+        linuxdeploy-plugin-*)
+          continue
+          ;;
+      esac
+
+      if [ -e "${support_bin}/${name}" ] || [ -L "${support_bin}/${name}" ]; then
+        continue
+      fi
+
+      target="$(readlink -f "${entry}" 2>/dev/null || true)"
+      if [ -z "${target}" ] || [ ! -x "${target}" ]; then
+        continue
+      fi
+
+      ln -s "${target}" "${support_bin}/${name}" 2>/dev/null || true
+    done < <(find "${path_dir}" -maxdepth 1 \( -type f -o -type l \) -perm /111 -print0 2>/dev/null | LC_ALL=C sort -z)
+  done
+
+  bash_path="/bin/bash"
+  real_pkg_config="$(resolve_bwrap_visible_command pkg-config pkgconf || true)"
+  if [ -n "${real_pkg_config}" ]; then
+    rm -f "${support_bin}/pkgconf" "${support_bin}/pkg-config"
+    cat > "${support_bin}/pkgconf" <<EOF
+#!${bash_path}
+set -euo pipefail
+if [ "\${1:-}" = "--variable=schemasdir" ] && [ "\${2:-}" = "gio-2.0" ] && [ -n "\${MAPLE_NIX_GLIB_SCHEMAS:-}" ]; then
+  printf '%s\n' "/usr/share/glib-2.0/schemas"
+  exit 0
+fi
+if [ "\${1:-}" = "--variable=exec_prefix" ] && [ "\${2:-}" = "gtk+-3.0" ] && [ -n "\${MAPLE_NIX_GTK_LIB:-}" ]; then
+  printf '%s\n' "/usr"
+  exit 0
+fi
+if [ "\${1:-}" = "--variable=libdir" ] && [ "\${2:-}" = "gtk+-3.0" ] && [ -n "\${MAPLE_NIX_GTK_LIB:-}" ]; then
+  printf '%s\n' "/usr/lib"
+  exit 0
+fi
+case "\${2:-}" in
+  gobject-2.0 | gio-2.0 | librsvg-2.0 | pango | pangocairo | pangoft2)
+    if [ "\${1:-}" = "--variable=libdir" ] && [ -n "\${MAPLE_NIX_LINUX_CLOSURE_INFO:-}" ]; then
+      printf '%s\n' "/usr/lib"
+      exit 0
+    fi
+    ;;
+esac
+if [ "\${2:-}" = "gdk-pixbuf-2.0" ] && [ -n "\${MAPLE_NIX_GDK_PIXBUF_BINARYDIR:-}" ]; then
+  case "\${1:-}" in
+    --variable=libdir)
+      printf '%s\n' "/usr/lib"
+      exit 0
+      ;;
+    --variable=gdk_pixbuf_binarydir)
+      printf '%s\n' "/usr/lib/gdk-pixbuf-2.0/2.10.0"
+      exit 0
+      ;;
+    --variable=gdk_pixbuf_cache_file)
+      printf '%s\n' "/usr/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache"
+      exit 0
+      ;;
+    --variable=gdk_pixbuf_moduledir)
+      printf '%s\n' "/usr/lib/gdk-pixbuf-2.0/2.10.0/loaders"
+      exit 0
+      ;;
+  esac
+fi
+exec "${real_pkg_config}" "\$@"
+EOF
+    chmod +x "${support_bin}/pkgconf"
+    ln -s "${support_bin}/pkgconf" "${support_bin}/pkg-config"
+  fi
+
+  real_patchelf="$(resolve_bwrap_visible_command patchelf || true)"
+  if [ -n "${real_patchelf}" ]; then
+    rm -f "${support_bin}/patchelf"
+    write_chmod_patchelf_wrapper "${support_bin}/patchelf" "${real_patchelf}"
+  fi
+}
+
+write_linuxdeploy_input_plugin_wrapper() {
+  local wrapper="$1"
+  local real_plugin_relative="$2"
+
+  cat > "${wrapper}" <<EOF
+#!/bin/bash
+set -euo pipefail
+
+for arg in "\$@"; do
+  case "\${arg}" in
+    --plugin-type)
+      printf '%s\n' input
+      exit 0
+      ;;
+    --plugin-api-version)
+      printf '%s\n' 0
+      exit 0
+      ;;
+  esac
+done
+
+script_dir="\$(CDPATH= cd -- "\$(dirname -- "\$0")" && pwd)"
+real_plugin="\${script_dir}/${real_plugin_relative}"
+
+if [ ! -x "\${real_plugin}" ]; then
+  echo "Missing extracted linuxdeploy input plugin at \${real_plugin}" >&2
+  exit 1
+fi
+
+exec "\${real_plugin}" "\$@"
+EOF
+  chmod +x "${wrapper}"
+}
+
 prepare_tauri_linuxdeploy_tools_cache() {
   if [ "$(host_os)" != "linux" ]; then
     return 0
@@ -742,59 +974,129 @@ prepare_tauri_linuxdeploy_tools_cache() {
     return 1
   fi
 
-  local arch linuxdeploy_arch tools cache bash_path linuxdeploy_wrapper appimage_wrapper linuxdeploy_appdir_bin
+  local arch linuxdeploy_arch tools cache internal linuxdeploy_wrapper appimage_wrapper linuxdeploy_appdir_bin plugin_bin runtime_file appimage_real_appimage appimage_appdir gtk_real_plugin gstreamer_real_plugin
   arch="$(linuxdeploy_tools_arch)"
   linuxdeploy_arch="${arch}"
   tools="${MAPLE_NIX_TAURI_LINUXDEPLOY_TOOLS}"
   cache="${TAURI_DIR}/target/.tauri"
-  bash_path="$(command -v bash)"
+  internal="${cache}/maple-linuxdeploy-tools"
   linuxdeploy_wrapper="${cache}/linuxdeploy-${linuxdeploy_arch}.AppImage"
   appimage_wrapper="${cache}/linuxdeploy-plugin-appimage.AppImage"
   linuxdeploy_appdir_bin="${cache}/linuxdeploy-${linuxdeploy_arch}.AppDir/usr/bin"
+  plugin_bin="${internal}/plugins"
+  runtime_file="${internal}/appimage-runtime-${arch}"
+  appimage_real_appimage="${internal}/linuxdeploy-plugin-appimage.real.AppImage"
+  appimage_appdir="${internal}/linuxdeploy-plugin-appimage.AppDir"
+  gtk_real_plugin="${internal}/linuxdeploy-plugin-gtk.real.sh"
+  gstreamer_real_plugin="${internal}/linuxdeploy-plugin-gstreamer.real.sh"
 
-  mkdir -p "${cache}"
+  mkdir -p "${cache}" "${internal}"
+  prepare_linuxdeploy_support_bin "${internal}/bin"
+  rm -rf "${plugin_bin}"
+  mkdir -p "${plugin_bin}"
+  rm -f "${cache}/linuxdeploy-plugin-appimage.real.AppImage"
+  rm -rf "${cache}/linuxdeploy-plugin-appimage.AppDir"
   install -m 0755 "${tools}/AppRun-${arch}" "${cache}/AppRun-${arch}"
+  install -m 0755 "${tools}/linuxdeploy-${linuxdeploy_arch}.wrapper" "${linuxdeploy_wrapper}"
   install -m 0755 "${tools}/linuxdeploy-${linuxdeploy_arch}.AppImage" "${cache}/linuxdeploy-${linuxdeploy_arch}.real.AppImage"
-  install -m 0755 "${tools}/linuxdeploy-plugin-appimage.real.AppImage" "${cache}/linuxdeploy-plugin-appimage.real.AppImage"
-  install -m 0755 "${tools}/linuxdeploy-plugin-gtk.sh" "${cache}/linuxdeploy-plugin-gtk.sh"
-  install -m 0755 "${tools}/linuxdeploy-plugin-gstreamer.sh" "${cache}/linuxdeploy-plugin-gstreamer.sh"
+  install -m 0755 "${tools}/linuxdeploy-plugin-appimage.real.AppImage" "${appimage_real_appimage}"
+  install -m 0755 "${tools}/appimage-runtime-${arch}" "${runtime_file}"
+  install -m 0755 "${tools}/linuxdeploy-plugin-gtk.sh" "${gtk_real_plugin}"
+  install -m 0755 "${tools}/linuxdeploy-plugin-gstreamer.sh" "${gstreamer_real_plugin}"
 
   extract_appimage_tool "${cache}/linuxdeploy-${linuxdeploy_arch}.real.AppImage" "${cache}/linuxdeploy-${linuxdeploy_arch}.AppDir"
-  extract_appimage_tool "${cache}/linuxdeploy-plugin-appimage.real.AppImage" "${cache}/linuxdeploy-plugin-appimage.AppDir"
+  extract_appimage_tool "${appimage_real_appimage}" "${appimage_appdir}"
+  wrap_linuxdeploy_appdir_patchelf "${linuxdeploy_appdir_bin}"
 
-  install -m 0755 "${cache}/linuxdeploy-plugin-gtk.sh" "${linuxdeploy_appdir_bin}/linuxdeploy-plugin-gtk"
-  install -m 0755 "${cache}/linuxdeploy-plugin-gstreamer.sh" "${linuxdeploy_appdir_bin}/linuxdeploy-plugin-gstreamer"
-
-  cat > "${linuxdeploy_wrapper}" <<EOF
-#!${bash_path}
-set -euo pipefail
-
-script_dir="\$(CDPATH= cd -- "\$(dirname -- "\$0")" && pwd)"
-app_run="\${script_dir}/linuxdeploy-${linuxdeploy_arch}.AppDir/AppRun"
-
-if [ ! -x "\${app_run}" ]; then
-  echo "Missing extracted linuxdeploy AppRun at \${app_run}" >&2
-  exit 1
-fi
-
-args=()
-for arg in "\$@"; do
-  case "\${arg}" in
-    --appimage-extract-and-run)
-      ;;
-    *)
-      args+=("\${arg}")
-      ;;
-  esac
-done
-
-exec "\${app_run}" "\${args[@]}"
-EOF
-  chmod +x "${linuxdeploy_wrapper}"
+  rm -f "${linuxdeploy_appdir_bin}"/linuxdeploy-plugin-*
+  write_linuxdeploy_input_plugin_wrapper "${cache}/linuxdeploy-plugin-gtk.sh" "maple-linuxdeploy-tools/linuxdeploy-plugin-gtk.real.sh"
+  write_linuxdeploy_input_plugin_wrapper "${cache}/linuxdeploy-plugin-gstreamer.sh" "maple-linuxdeploy-tools/linuxdeploy-plugin-gstreamer.real.sh"
+  write_linuxdeploy_input_plugin_wrapper "${plugin_bin}/linuxdeploy-plugin-gtk" "../linuxdeploy-plugin-gtk.real.sh"
+  write_linuxdeploy_input_plugin_wrapper "${plugin_bin}/linuxdeploy-plugin-gstreamer" "../linuxdeploy-plugin-gstreamer.real.sh"
 
   cat > "${appimage_wrapper}" <<EOF
-#!${bash_path}
+#!/bin/bash
 set -euo pipefail
+
+stage_appdir_for_appimage() {
+  local mode="\${MAPLE_STAGE_APPDIR_FOR_APPIMAGE:-auto}"
+  local root="\$1"
+
+  case "\${mode}" in
+    1 | true | yes)
+      return 0
+      ;;
+    0 | false | no)
+      return 1
+      ;;
+    auto)
+      case "\$(uname -s):\${root}" in
+        Linux:/Users/*)
+          return 0
+          ;;
+        *)
+          return 1
+          ;;
+      esac
+      ;;
+    *)
+      echo "Unsupported MAPLE_STAGE_APPDIR_FOR_APPIMAGE=\${mode}; expected auto, 1, or 0." >&2
+      return 1
+      ;;
+  esac
+}
+
+run_appimage_plugin() {
+  local tmp_dir="" tmp_appdir="" output_parent="" status file previous arg
+  local -a plugin_args=()
+
+  if [ -z "\${appdir}" ] || ! stage_appdir_for_appimage "\${appdir}"; then
+    exec "\${real_plugin}" "\$@"
+  fi
+
+  output_parent="\$(CDPATH= cd -- "\$(dirname -- "\${appdir}")" && pwd)"
+  tmp_dir="\$(mktemp -d)"
+  trap 'rm -rf "\${tmp_dir}"' EXIT
+  tmp_appdir="\${tmp_dir}/\$(basename -- "\${appdir}")"
+  cp -a --no-preserve=xattr "\${appdir}" "\${tmp_appdir}"
+
+  previous=""
+  for arg in "\$@"; do
+    if [ "\${previous}" = "--appdir" ]; then
+      plugin_args+=("\${tmp_appdir}")
+      previous=""
+      continue
+    fi
+
+    case "\${arg}" in
+      --appdir=*)
+        plugin_args+=("--appdir=\${tmp_appdir}")
+        ;;
+      --appdir)
+        plugin_args+=("--appdir")
+        previous="--appdir"
+        ;;
+      *)
+        plugin_args+=("\${arg}")
+        ;;
+    esac
+  done
+
+  set +e
+  "\${real_plugin}" "\${plugin_args[@]}"
+  status="\$?"
+  set -e
+
+  if [ "\${status}" -eq 0 ]; then
+    while IFS= read -r -d '' file; do
+      mv -f "\${file}" "\${output_parent}/\$(basename -- "\${file}")"
+    done < <(find "\${tmp_dir}" -maxdepth 1 -type f -name '*.AppImage' -print0)
+  fi
+
+  rm -rf "\${tmp_dir}"
+  trap - EXIT
+  exit "\${status}"
+}
 
 for arg in "\$@"; do
   case "\${arg}" in
@@ -833,21 +1135,102 @@ if [ -n "\${appdir}" ]; then
 fi
 
 script_dir="\$(CDPATH= cd -- "\$(dirname -- "\$0")" && pwd)"
-real_plugin="\${script_dir}/linuxdeploy-plugin-appimage.AppDir/AppRun"
+real_plugin="\${script_dir}/maple-linuxdeploy-tools/linuxdeploy-plugin-appimage.AppDir/AppRun"
+export LDAI_RUNTIME_FILE="\${script_dir}/maple-linuxdeploy-tools/appimage-runtime-${arch}"
 
 if [ ! -x "\${real_plugin}" ]; then
   echo "Missing extracted linuxdeploy AppImage plugin at \${real_plugin}" >&2
   exit 1
 fi
 
-exec "\${real_plugin}" "\$@"
+run_appimage_plugin "\$@"
 EOF
   chmod +x "${appimage_wrapper}"
 
-  rm -f "${linuxdeploy_appdir_bin}/linuxdeploy-plugin-appimage"
-  cat > "${linuxdeploy_appdir_bin}/linuxdeploy-plugin-appimage" <<EOF
-#!${bash_path}
+  rm -f "${plugin_bin}/linuxdeploy-plugin-appimage"
+  cat > "${plugin_bin}/linuxdeploy-plugin-appimage" <<EOF
+#!/bin/bash
 set -euo pipefail
+
+stage_appdir_for_appimage() {
+  local mode="\${MAPLE_STAGE_APPDIR_FOR_APPIMAGE:-auto}"
+  local root="\$1"
+
+  case "\${mode}" in
+    1 | true | yes)
+      return 0
+      ;;
+    0 | false | no)
+      return 1
+      ;;
+    auto)
+      case "\$(uname -s):\${root}" in
+        Linux:/Users/*)
+          return 0
+          ;;
+        *)
+          return 1
+          ;;
+      esac
+      ;;
+    *)
+      echo "Unsupported MAPLE_STAGE_APPDIR_FOR_APPIMAGE=\${mode}; expected auto, 1, or 0." >&2
+      return 1
+      ;;
+  esac
+}
+
+run_appimage_plugin() {
+  local tmp_dir="" tmp_appdir="" output_parent="" status file previous arg
+  local -a plugin_args=()
+
+  if [ -z "\${appdir}" ] || ! stage_appdir_for_appimage "\${appdir}"; then
+    exec "\${real_plugin}" "\$@"
+  fi
+
+  output_parent="\$(CDPATH= cd -- "\$(dirname -- "\${appdir}")" && pwd)"
+  tmp_dir="\$(mktemp -d)"
+  trap 'rm -rf "\${tmp_dir}"' EXIT
+  tmp_appdir="\${tmp_dir}/\$(basename -- "\${appdir}")"
+  cp -a --no-preserve=xattr "\${appdir}" "\${tmp_appdir}"
+
+  previous=""
+  for arg in "\$@"; do
+    if [ "\${previous}" = "--appdir" ]; then
+      plugin_args+=("\${tmp_appdir}")
+      previous=""
+      continue
+    fi
+
+    case "\${arg}" in
+      --appdir=*)
+        plugin_args+=("--appdir=\${tmp_appdir}")
+        ;;
+      --appdir)
+        plugin_args+=("--appdir")
+        previous="--appdir"
+        ;;
+      *)
+        plugin_args+=("\${arg}")
+        ;;
+    esac
+  done
+
+  set +e
+  "\${real_plugin}" "\${plugin_args[@]}"
+  status="\$?"
+  set -e
+
+  if [ "\${status}" -eq 0 ]; then
+    while IFS= read -r -d '' file; do
+      mv -f "\${file}" "\${output_parent}/\$(basename -- "\${file}")"
+    done < <(find "\${tmp_dir}" -maxdepth 1 -type f -name '*.AppImage' -print0)
+  fi
+
+  rm -rf "\${tmp_dir}"
+  trap - EXIT
+  exit "\${status}"
+}
 
 for arg in "\$@"; do
   case "\${arg}" in
@@ -885,30 +1268,69 @@ if [ -n "\${appdir}" ]; then
   rm -f "\${appdir}/.DirIcon"
 fi
 
-real_plugin="$(printf '%q' "${cache}/linuxdeploy-plugin-appimage.AppDir/AppRun")"
+script_dir="\$(CDPATH= cd -- "\$(dirname -- "\$0")" && pwd)"
+real_plugin="\${script_dir}/../linuxdeploy-plugin-appimage.AppDir/AppRun"
+export LDAI_RUNTIME_FILE="\${script_dir}/../appimage-runtime-${arch}"
 
 if [ ! -x "\${real_plugin}" ]; then
   echo "Missing extracted linuxdeploy AppImage plugin at \${real_plugin}" >&2
   exit 1
 fi
 
-exec "\${real_plugin}" "\$@"
+run_appimage_plugin "\$@"
 EOF
-  chmod +x "${linuxdeploy_appdir_bin}/linuxdeploy-plugin-appimage"
+  chmod +x "${plugin_bin}/linuxdeploy-plugin-appimage"
 
   print_file_hashes \
     "${cache}/AppRun-${arch}" \
     "${cache}/linuxdeploy-${linuxdeploy_arch}.real.AppImage" \
     "${cache}/linuxdeploy-${linuxdeploy_arch}.AppImage" \
     "${cache}/linuxdeploy-${linuxdeploy_arch}.AppDir/AppRun" \
-    "${linuxdeploy_appdir_bin}/linuxdeploy-plugin-appimage" \
-    "${linuxdeploy_appdir_bin}/linuxdeploy-plugin-gtk" \
-    "${linuxdeploy_appdir_bin}/linuxdeploy-plugin-gstreamer" \
-    "${cache}/linuxdeploy-plugin-appimage.real.AppImage" \
+    "${plugin_bin}/linuxdeploy-plugin-appimage" \
+    "${plugin_bin}/linuxdeploy-plugin-gtk" \
+    "${plugin_bin}/linuxdeploy-plugin-gstreamer" \
+    "${appimage_real_appimage}" \
     "${cache}/linuxdeploy-plugin-appimage.AppImage" \
-    "${cache}/linuxdeploy-plugin-appimage.AppDir/AppRun" \
+    "${appimage_appdir}/AppRun" \
+    "${runtime_file}" \
     "${cache}/linuxdeploy-plugin-gtk.sh" \
     "${cache}/linuxdeploy-plugin-gstreamer.sh"
+}
+
+verify_linuxdeploy_plugin_metadata() {
+  if [ "$(host_os)" != "linux" ]; then
+    return 0
+  fi
+
+  local plugin api_version plugin_type
+  for plugin in "${TAURI_DIR}/target/.tauri/maple-linuxdeploy-tools/plugins"/linuxdeploy-plugin-*; do
+    if [ ! -e "${plugin}" ]; then
+      continue
+    fi
+    if [ ! -x "${plugin}" ]; then
+      echo "linuxdeploy plugin is not executable: $(repo_relative_path "${plugin}")" >&2
+      return 1
+    fi
+
+    api_version="$(run_with_nix_usr_bin "${plugin}" --plugin-api-version)"
+    plugin_type="$(run_with_nix_usr_bin "${plugin}" --plugin-type)"
+
+    if [ "${api_version}" != "0" ]; then
+      echo "linuxdeploy plugin reported unsupported API ${api_version}: $(repo_relative_path "${plugin}")" >&2
+      return 1
+    fi
+
+    case "${plugin_type}" in
+      input | output)
+        ;;
+      *)
+        echo "linuxdeploy plugin reported unsupported type ${plugin_type}: $(repo_relative_path "${plugin}")" >&2
+        return 1
+        ;;
+    esac
+
+    printf 'verified-linuxdeploy-plugin  type=%s  api=%s  %s\n' "${plugin_type}" "${api_version}" "$(repo_relative_path "${plugin}")"
+  done
 }
 
 extract_appimage_tool() {
@@ -921,8 +1343,7 @@ extract_appimage_tool() {
     return 1
   }
 
-  offset="$(appimage_squashfs_offset "${appimage}")"
-  if [ -z "${offset}" ]; then
+  if ! offset="$(appimage_squashfs_offset "${appimage}")"; then
     echo "Could not locate embedded SquashFS payload in AppImage: ${appimage}" >&2
     return 1
   fi
@@ -1311,7 +1732,7 @@ verify_tauri_updater_signature() {
   tauri_updater_public_key_file "${pubkey}"
   decode_base64_file_to_file "${signature}" "${decoded_signature}"
 
-  if ! minisign -Vm "${artifact}" -p "${pubkey}" -x "${decoded_signature}" -q; then
+  if ! env -u LD_LIBRARY_PATH minisign -Vm "${artifact}" -p "${pubkey}" -x "${decoded_signature}" -q; then
     rm -rf "${tmp}"
     return 1
   fi
@@ -1337,7 +1758,7 @@ sign_tauri_updater_artifact() {
 
   (
     cd "${FRONTEND_DIR}"
-    bun tauri signer sign "${artifact}" >/dev/null
+    env -u LD_LIBRARY_PATH bun tauri signer sign "${artifact}" >/dev/null
   )
 }
 
@@ -1406,6 +1827,33 @@ resolve_bwrap_visible_command() {
   return 1
 }
 
+install_bwrap_command_link() {
+  local dest_dir="$1"
+  local name="$2"
+  local source_path="$3"
+  local resolved
+
+  if [ -z "${source_path}" ]; then
+    return 0
+  fi
+
+  resolved="$(readlink -f "${source_path}" 2>/dev/null || printf '%s\n' "${source_path}")"
+  if [ ! -x "${resolved}" ]; then
+    return 0
+  fi
+
+  rm -f "${dest_dir}/${name}"
+  case "${resolved}" in
+    /bin/* | /usr/*)
+      cp -L "${resolved}" "${dest_dir}/${name}"
+      chmod +x "${dest_dir}/${name}"
+      ;;
+    *)
+      ln -s "${resolved}" "${dest_dir}/${name}"
+      ;;
+  esac
+}
+
 run_with_nix_usr_bin() {
   if [ "$(host_os)" != "linux" ]; then
     "$@"
@@ -1423,7 +1871,7 @@ run_with_nix_usr_bin() {
   }
 
   local bash_path bin_dir tool_bin usr_root tool tool_path
-  bash_path="$(command -v bash)"
+  bash_path="/bin/bash"
   bin_dir="$(mktemp -d)"
   tool_bin="$(mktemp -d)"
   usr_root="$(mktemp -d)"
@@ -1431,16 +1879,13 @@ run_with_nix_usr_bin() {
 
   for tool in bash sh; do
     tool_path="$(command -v "${tool}" 2>/dev/null || true)"
-    if [ -n "${tool_path}" ]; then
-      ln -s "${tool_path}" "${bin_dir}/${tool}"
-    fi
+    install_bwrap_command_link "${bin_dir}" "${tool}" "${tool_path}"
+    install_bwrap_command_link "${usr_root}/bin" "${tool}" "${tool_path}"
   done
 
   for tool in env xdg-mime xdg-open update-desktop-database; do
     tool_path="$(command -v "${tool}" 2>/dev/null || true)"
-    if [ -n "${tool_path}" ]; then
-      ln -s "${tool_path}" "${usr_root}/bin/${tool}"
-    fi
+    install_bwrap_command_link "${usr_root}/bin" "${tool}" "${tool_path}"
   done
 
   local paths_file="${MAPLE_NIX_LINUX_CLOSURE_INFO:-}/store-paths"
@@ -1845,12 +2290,13 @@ rebuild_rpm_package_from_payload() {
   local rpm="$1"
   local payload="$2"
   local topdir spec built_rpm
-  local version release arch
+  local version release arch rpm_build_shell
 
   command -v rpmbuild >/dev/null 2>&1 || {
     echo "rpmbuild is required to normalize RPM packages. Run through the flake CI shell." >&2
     return 1
   }
+  rpm_build_shell="$(command -v bash)"
 
   version="$(jq -r '.version' "${TAURI_DIR}/tauri.conf.json")"
   release="$(jq -r '.bundle.linux.rpm.release // "1"' "${TAURI_DIR}/tauri.conf.json")"
@@ -1859,7 +2305,7 @@ rebuild_rpm_package_from_payload() {
   spec="${topdir}/SPECS/maple.spec"
 
   touch_tree_to_source_date_epoch "${payload}"
-  mkdir -p "${topdir}/BUILD" "${topdir}/BUILDROOT" "${topdir}/RPMS" "${topdir}/SOURCES" "${topdir}/SPECS" "${topdir}/SRPMS"
+  mkdir -p "${topdir}/BUILD" "${topdir}/BUILDROOT" "${topdir}/RPMS" "${topdir}/SOURCES" "${topdir}/SPECS" "${topdir}/SRPMS" "${topdir}/tmp"
 
   cat > "${spec}" <<EOF
 Name: maple
@@ -1894,8 +2340,10 @@ EOF
       | sed 's#^\./#/#'
   ) >> "${spec}"
 
-  SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH}" rpmbuild -bb "${spec}" \
+  env -u LD_LIBRARY_PATH SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH}" rpmbuild -bb "${spec}" \
     --define "_topdir ${topdir}" \
+    --define "_tmppath ${topdir}/tmp" \
+    --define "_buildshell ${rpm_build_shell}" \
     --define "_dbpath ${topdir}/rpmdb" \
     --define "_buildhost (none)" \
     --define "use_source_date_epoch_as_buildtime 1" \
@@ -1961,7 +2409,8 @@ linux_tauri_pr_config() {
     },
     bundle: {
       createUpdaterArtifacts: false,
-      targets: ["deb", "rpm"],
+      useLocalToolsDir: true,
+      targets: ["appimage", "deb", "rpm"],
       linux: {
         appimage: {
           bundleMediaFramework: true,

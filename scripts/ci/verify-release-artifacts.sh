@@ -90,6 +90,11 @@ manifest_single_digest() {
   awk 'NF >= 3 && $1 ~ /^sha256-/ { print $2; exit }' "${manifest}"
 }
 
+manifest_digests() {
+  local manifest="$1"
+  awk 'NF >= 3 && $1 ~ /^sha256-/ { print $2 }' "${manifest}"
+}
+
 verify_file_manifest() {
   local manifest="$1"
   local digest label file actual
@@ -454,7 +459,7 @@ verify_macos() {
 
 verify_ios() {
   local final_manifest unsigned_manifest signed_manifest payload_manifest
-  local unsigned_digest signed_digest payload_digest
+  local unsigned_digest signed_digest payload_digest payload_seen payload_mismatch
 
   final_manifest="$(proof_file_required ios-release-final.sha256)"
   unsigned_manifest="$(proof_file_required ios-release-unsigned-app-canonical.sha256)"
@@ -485,21 +490,29 @@ verify_ios() {
   fi
 
   verify_canonical_apple_manifest "${payload_manifest}"
-  payload_digest="$(manifest_single_digest "${payload_manifest}")"
-  if [ -z "${payload_digest}" ]; then
+  payload_seen=0
+  payload_mismatch=0
+  while IFS= read -r payload_digest; do
+    [ -n "${payload_digest}" ] || continue
+    payload_seen=1
+    if [ "${payload_digest}" = "${signed_digest}" ]; then
+      printf 'verified-ios-exported-payload-proof  %s\n' "${payload_digest}"
+    else
+      payload_mismatch=1
+      echo "iOS IPA payload canonical proof does not match signed app proof." >&2
+      echo "signed=${signed_digest:-missing}" >&2
+      echo "payload=${payload_digest}" >&2
+    fi
+  done < <(manifest_digests "${payload_manifest}")
+  if [ "${payload_seen}" -eq 0 ]; then
     echo "iOS IPA payload canonical proof is missing." >&2
     return 1
   fi
-  if [ "${payload_digest}" != "${signed_digest}" ]; then
-    echo "iOS IPA payload canonical proof does not match signed app proof." >&2
-    echo "signed=${signed_digest:-missing}" >&2
-    echo "payload=${payload_digest:-missing}" >&2
+  if [ "${payload_mismatch}" -ne 0 ]; then
     if [ "${MAPLE_ENFORCE_IOS_SIGNED_REPRODUCIBILITY:-0}" = "1" ]; then
       return 1
     fi
-    printf 'warning-ios-exported-payload-proof-mismatch  signed=%s  payload=%s\n' "${signed_digest}" "${payload_digest}"
-  else
-    printf 'verified-ios-exported-payload-proof  %s\n' "${payload_digest}"
+    printf 'warning-ios-exported-payload-proof-mismatch  signed=%s\n' "${signed_digest}"
   fi
   verify_ios_signatures
 }
