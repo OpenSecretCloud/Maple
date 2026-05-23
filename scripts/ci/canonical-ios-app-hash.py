@@ -14,7 +14,10 @@ VOLATILE_INFO_PLIST_KEYS = {
     "BuildMachineOSBuild",
     "DTCompiler",
     "DTPlatformBuild",
+    "DTPlatformName",
+    "DTPlatformVersion",
     "DTSDKBuild",
+    "DTSDKName",
     "DTXcode",
     "DTXcodeBuild",
 }
@@ -75,6 +78,21 @@ def canonical_info_plist(path):
         value = plistlib.load(f)
     for key in VOLATILE_INFO_PLIST_KEYS:
         value.pop(key, None)
+    if "iPhoneOS" in value.get("CFBundleSupportedPlatforms", []):
+        # App Store Connect export can rewrite this; the final IPA hash still covers it.
+        value.pop("CFBundleVersion", None)
+    url_types = value.get("CFBundleURLTypes")
+    if isinstance(url_types, list):
+        # Xcode export can add empty URL type entries, which do not register a scheme.
+        url_types = [
+            entry
+            for entry in url_types
+            if not isinstance(entry, dict) or entry.get("CFBundleURLSchemes")
+        ]
+        if url_types:
+            value["CFBundleURLTypes"] = url_types
+        else:
+            value.pop("CFBundleURLTypes", None)
     return plistlib.dumps(value, fmt=plistlib.FMT_XML, sort_keys=True)
 
 

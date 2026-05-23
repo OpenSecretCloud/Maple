@@ -556,3 +556,5 @@ jobs:
 
       - name: Verify release artifact reproducibility proofs
         run: nix develop .#ci -c ./scripts/ci/verify-release-artifacts.sh artifacts linux macos ios web latest-json
+        env:
+          MAPLE_ENFORCE_IOS_SIGNED_REPRODUCIBILITY: "1"

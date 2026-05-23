@@ -128,6 +128,8 @@ jobs:
 
       - name: Verify iOS artifact reproducibility proofs
         run: nix develop .#ci -c ./scripts/ci/verify-release-artifacts.sh artifacts ios
+        env:
+          MAPLE_ENFORCE_IOS_SIGNED_REPRODUCIBILITY: "1"
 
   submit-ios-testflight:
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'

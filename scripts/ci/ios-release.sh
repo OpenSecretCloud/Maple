@@ -126,6 +126,25 @@ write_ios_canonical_app_file_manifest() {
   python3 "${REPO_ROOT}/scripts/ci/canonical-ios-app-hash.py" --manifest "${app}" > "${out}"
 }
 
+write_ios_ipa_payload_canonical_file_manifest() {
+  local ipa="$1"
+  local out="$2"
+  local tmp app
+
+  tmp="$(mktemp -d)"
+  unzip -qq "${ipa}" -d "${tmp}"
+  app="$(find "${tmp}/Payload" -mindepth 1 -maxdepth 1 -type d -name '*.app' 2>/dev/null | LC_ALL=C sort | head -n 1)"
+  if [ -z "${app}" ]; then
+    rm -rf "${tmp}"
+    echo "Could not find a Payload/*.app bundle in ${ipa}" >&2
+    return 1
+  fi
+
+  remove_apple_signing_metadata "${app}"
+  write_ios_canonical_app_file_manifest "${app}" "${out}"
+  rm -rf "${tmp}"
+}
+
 write_ios_canonical_app_manifest_diff() {
   local unsigned_manifest="$1"
   local signed_manifest="$2"
@@ -176,9 +195,6 @@ if [ "${signed_app_canonical_hash}" != "${unsigned_app_canonical_hash}" ]; then
     echo "First canonical iOS file manifest differences:" >&2
     sed -n '1,80p' "${repro_dir}/ios-release-signed-vs-unsigned-canonical.diff.txt" >&2
   fi
-  if [ "${MAPLE_ENFORCE_IOS_SIGNED_REPRODUCIBILITY:-0}" = "1" ]; then
-    exit 1
-  fi
 else
   printf 'verified-ios-signed-app  %s  %s\n' "${signed_app_canonical_hash}" "$(repo_relative_path "${signed_app}")"
 fi
@@ -191,23 +207,38 @@ done < <(find "${TAURI_DIR}/gen/apple/build" -type f -name '*.ipa' -print0 | LC_
 write_sha256_manifest "${repro_dir}/ios-release-final.sha256" "${ios_artifacts[@]}"
 print_file_hashes "${ios_artifacts[@]}"
 
+if [ "${#ios_artifacts[@]}" -ne 1 ]; then
+  echo "Expected exactly one iOS IPA artifact, found ${#ios_artifacts[@]}." >&2
+  exit 1
+fi
+
 : > "${repro_dir}/ios-release-canonical-payload.sha256"
 for artifact in "${ios_artifacts[@]}"; do
+  payload_file_manifest="${repro_dir}/ios-release-ipa-payload-canonical-files.sha256"
+  payload_diff="${repro_dir}/ios-release-ipa-vs-unsigned-canonical.diff.txt"
+
   ipa_canonical_hash="$(print_canonical_ipa_payload_hash "${artifact}" "$(repo_relative_path "${artifact}")" | tee -a "${repro_dir}/ios-release-canonical-payload.sha256" | awk '{ print $2 }')"
+  write_ios_ipa_payload_canonical_file_manifest "${artifact}" "${payload_file_manifest}"
+  write_ios_canonical_app_manifest_diff \
+    "${repro_dir}/ios-release-unsigned-app-canonical-files.sha256" \
+    "${payload_file_manifest}" \
+    "${payload_diff}"
 
-  if [ -n "${signed_app_canonical_hash}" ]; then
-    if [ "${ipa_canonical_hash}" != "${signed_app_canonical_hash}" ]; then
-      echo "warning-ios-exported-payload-canonical-mismatch  exported iOS IPA payload does not strip back to the signed app build product." >&2
-      echo "signed_app=${signed_app_canonical_hash}" >&2
-      echo "ipa_payload=${ipa_canonical_hash}" >&2
-      if [ "${MAPLE_ENFORCE_IOS_SIGNED_REPRODUCIBILITY:-0}" = "1" ]; then
-        exit 1
-      fi
-      continue
+  if [ "${ipa_canonical_hash}" != "${unsigned_app_canonical_hash}" ]; then
+    echo "warning-ios-exported-payload-canonical-mismatch  exported iOS IPA payload does not strip back to the unsigned app build product." >&2
+    echo "unsigned=${unsigned_app_canonical_hash}" >&2
+    echo "ipa_payload=${ipa_canonical_hash}" >&2
+    if [ -s "${payload_diff}" ]; then
+      echo "First canonical iOS IPA payload differences:" >&2
+      sed -n '1,80p' "${payload_diff}" >&2
     fi
-
-    printf 'verified-ios-exported-payload  %s  %s\n' "${ipa_canonical_hash}" "$(repo_relative_path "${artifact}")"
+    if [ "${MAPLE_ENFORCE_IOS_SIGNED_REPRODUCIBILITY:-0}" = "1" ]; then
+      exit 1
+    fi
+    continue
   fi
+
+  printf 'verified-ios-exported-payload  %s  %s\n' "${ipa_canonical_hash}" "$(repo_relative_path "${artifact}")"
 done
 
 verify_frontend_dist_unchanged
