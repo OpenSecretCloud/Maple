@@ -12,6 +12,18 @@ onnxruntime_linux_x64_archive_sha256_for_version() {
   esac
 }
 
+onnxruntime_linux_aarch64_archive_sha256_for_version() {
+  case "$1" in
+    1.22.0)
+      printf '%s\n' "bb76395092d150b52c7092dc6b8f2fe4d80f0f3bf0416d2f269193e347e24702"
+      ;;
+    *)
+      echo "No pinned Linux aarch64 ONNX Runtime archive SHA-256 for version '$1'." >&2
+      return 1
+      ;;
+  esac
+}
+
 onnxruntime_linux_x64_dylib_sha256_for_version() {
   case "$1" in
     1.22.0)
@@ -24,6 +36,18 @@ onnxruntime_linux_x64_dylib_sha256_for_version() {
   esac
 }
 
+onnxruntime_linux_aarch64_dylib_sha256_for_version() {
+  case "$1" in
+    1.22.0)
+      printf '%s\n' "0afd69a0ae38c5099fd0e8604dda398ac43dee67cd9c6394b5142b19e82528de"
+      ;;
+    *)
+      echo "No pinned Linux aarch64 ONNX Runtime shared-library SHA-256 for version '$1'." >&2
+      return 1
+      ;;
+  esac
+}
+
 onnxruntime_ios_commit_for_version() {
   case "$1" in
     1.22.2)
@@ -31,6 +55,57 @@ onnxruntime_ios_commit_for_version() {
       ;;
     *)
       echo "No pinned ONNX Runtime iOS source commit for version '$1'." >&2
+      return 1
+      ;;
+  esac
+}
+
+onnxruntime_ios_device_lib_sha256_for_version() {
+  local xcode_build="${2:-${MAPLE_XCODE_BUILD_VERSION:-17F42}}"
+
+  case "$1:${xcode_build}" in
+    1.22.2:17F42)
+      printf '%s\n' "d202f35d0567b0f8d5cf14192ab6034dd17be481af58153c5eedbefcb9084fc7"
+      ;;
+    1.22.2:17F5022i)
+      printf '%s\n' "d202f35d0567b0f8d5cf14192ab6034dd17be481af58153c5eedbefcb9084fc7"
+      ;;
+    *)
+      echo "No pinned ONNX Runtime iOS device library SHA-256 for version '$1' and Xcode build '${xcode_build}'." >&2
+      return 1
+      ;;
+  esac
+}
+
+onnxruntime_ios_simulator_lib_sha256_for_version() {
+  local xcode_build="${2:-${MAPLE_XCODE_BUILD_VERSION:-17F42}}"
+
+  case "$1:${xcode_build}" in
+    1.22.2:17F42)
+      printf '%s\n' "a24992c2e26049eb8b1aaf90e7dbf03fe24ed140e7b365b5c2880e3f0953baa9"
+      ;;
+    1.22.2:17F5022i)
+      printf '%s\n' "a24992c2e26049eb8b1aaf90e7dbf03fe24ed140e7b365b5c2880e3f0953baa9"
+      ;;
+    *)
+      echo "No pinned ONNX Runtime iOS simulator library SHA-256 for version '$1' and Xcode build '${xcode_build}'." >&2
+      return 1
+      ;;
+  esac
+}
+
+onnxruntime_ios_xcframework_sha256_for_version() {
+  local xcode_build="${2:-${MAPLE_XCODE_BUILD_VERSION:-17F42}}"
+
+  case "$1:${xcode_build}" in
+    1.22.2:17F42)
+      printf '%s\n' "718e3c6e70702b82e87bc3ea1b035b00ac8451130f5922d682eaf7885c648c12"
+      ;;
+    1.22.2:17F5022i)
+      printf '%s\n' "718e3c6e70702b82e87bc3ea1b035b00ac8451130f5922d682eaf7885c648c12"
+      ;;
+    *)
+      echo "No pinned ONNX Runtime iOS xcframework SHA-256 for version '$1' and Xcode build '${xcode_build}'." >&2
       return 1
       ;;
   esac

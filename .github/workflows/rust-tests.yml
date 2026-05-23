@@ -17,23 +17,10 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # was stable
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # was v22
         with:
-          toolchain: 1.95.0
-
-      - name: Install sccache
-        run: |
-          SCCACHE_VERSION=0.8.2
-          SCCACHE_SHA256="ecda4ddc89a49f1ec6f35bdce5ecbf6f205b399a680d11119d4ce9f6d962104e"
-          SCCACHE_ARCHIVE="sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl.tar.gz"
-          SCCACHE_URL="https://github.com/mozilla/sccache/releases/download/v${SCCACHE_VERSION}/${SCCACHE_ARCHIVE}"
-          curl --fail --location --show-error --silent "$SCCACHE_URL" --output "$SCCACHE_ARCHIVE"
-          echo "${SCCACHE_SHA256}  ${SCCACHE_ARCHIVE}" | sha256sum --check -
-          tar xzf "$SCCACHE_ARCHIVE"
-          sudo mv sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl/sccache /usr/local/bin/
-          chmod +x /usr/local/bin/sccache
-          sccache --version
+          github-token: ""
 
       - name: Cache sccache
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # was v4
@@ -44,32 +31,9 @@ jobs:
             ${{ runner.os }}-sccache-rust-tests-
             ${{ runner.os }}-sccache-
 
-      - name: Install Linux dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libssl-dev \
-            libgtk-3-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            pkg-config
-
-      - name: Provide ONNX Runtime (Linux)
-        run: |
-          ./frontend/src-tauri/scripts/provide-linux-onnxruntime.sh >> "$GITHUB_ENV"
-
-      - name: Configure sccache
-        run: |
-          {
-            echo "RUSTC_WRAPPER=sccache"
-            echo "SCCACHE_DIR=$HOME/.cache/sccache"
-            echo "SCCACHE_CACHE_SIZE=2G"
-          } >> "$GITHUB_ENV"
-
-      - name: Run unit tests
-        working-directory: ./frontend/src-tauri
-        run: cargo test --all-targets
+      - name: Run Rust unit tests
+        run: nix develop .#ci -c ./scripts/ci/rust.sh
 
       - name: Show sccache stats
-        run: sccache --show-stats
+        if: always()
+        run: nix develop .#ci -c sccache --show-stats

@@ -15,128 +15,60 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@f4d14e03ff726c06358e5557344e1da148b56cf7 # was v1
-        with:
-          bun-version: 1.3.5
+      # Xcode 26.5 is temporarily exposed as a beta app on macos-26 runners: https://github.com/actions/runner-images/issues/14108
+      - name: Select Xcode 26.5
+        id: select_xcode
+        run: |
+          set -euo pipefail
+          for xcode_app in \
+            /Applications/Xcode_26.5.0.app \
+            /Applications/Xcode_26.5_beta_2.app \
+            /Applications/Xcode_26.5_beta.app
+          do
+            if [ -x "${xcode_app}/Contents/Developer/usr/bin/xcodebuild" ]; then
+              sudo xcode-select -s "${xcode_app}/Contents/Developer"
+              xcode_info="$(xcodebuild -version)"
+              printf '%s\n' "${xcode_info}"
+              printf 'version=%s\n' "$(printf '%s\n' "${xcode_info}" | awk '/^Xcode / { print $2; exit }')" >> "${GITHUB_OUTPUT}"
+              printf 'build=%s\n' "$(printf '%s\n' "${xcode_info}" | awk '/^Build version / { print $3; exit }')" >> "${GITHUB_OUTPUT}"
+              exit 0
+            fi
+          done
+          echo "Xcode 26.5 is not installed on this runner." >&2
+          ls -1 /Applications/Xcode*.app >&2 || true
+          exit 1
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # was stable
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # was v22
         with:
-          toolchain: 1.95.0
-          targets: aarch64-apple-ios-sim
-
-      - name: Setup Xcode
-        uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # was v1
-        with:
-          xcode-version: '26.2'
-
-      - name: Cache Homebrew
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # was v4
-        with:
-          path: |
-            ~/Library/Caches/Homebrew
-            /opt/homebrew/Cellar/openssl@3
-          key: ${{ runner.os }}-brew-${{ hashFiles('.github/workflows/mobile-build.yml') }}
+          github-token: ""
 
       - name: Cache Xcode DerivedData and SourcePackages
         uses: irgaly/xcode-cache@4141f139f00e335c6e1031fb93e667181f86146f # was v1
         with:
-          key: xcode-cache-ios-xcode26.2-${{ github.workflow }}-${{ hashFiles('**/Cargo.lock') }}
+          key: xcode-cache-ios-xcode26.5-${{ steps.select_xcode.outputs.build }}-${{ github.workflow }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            xcode-cache-ios-xcode26.2-${{ github.workflow }}-
-            xcode-cache-ios-xcode26.2-
+            xcode-cache-ios-xcode26.5-${{ steps.select_xcode.outputs.build }}-${{ github.workflow }}-
+            xcode-cache-ios-xcode26.5-${{ steps.select_xcode.outputs.build }}-
 
-      - name: Cache Cargo bin (Tauri CLI)
+      - name: Cache ONNX Runtime iOS artifact
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # was v4
-        with:
-          path: ~/.cargo/bin/
-          key: ${{ runner.os }}-cargo-bin-tauri-cli-2.11.1
-
-      - name: Install frontend dependencies
-        working-directory: ./frontend
-        run: bun install --frozen-lockfile --ignore-scripts
-
-      - name: Cache ONNX Runtime iOS build
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # was v4
-        id: cache-onnxruntime
         with:
           path: |
             frontend/src-tauri/onnxruntime-ios
-            frontend/src-tauri/onnxruntime-build
-          key: pr-onnxruntime-ios-simulator-built-1.22.2-xcode26.2-v1
+          key: pr-onnxruntime-ios-artifact-1.22.2-xcode26.5-${{ steps.select_xcode.outputs.build }}-${{ hashFiles('flake.lock', 'flake.nix', 'scripts/ci/_common.sh', 'scripts/ci/ios-onnxruntime.sh', 'frontend/src-tauri/scripts/build-ios-onnxruntime-all.sh', 'frontend/src-tauri/scripts/canonicalize-static-archive.py', 'frontend/src-tauri/scripts/onnxruntime-pins.sh') }}
           restore-keys: |
-            pr-onnxruntime-ios-simulator-built-1.22.2-xcode26.2-
+            pr-onnxruntime-ios-artifact-1.22.2-xcode26.5-${{ steps.select_xcode.outputs.build }}-
 
-      - name: Build ONNX Runtime for iOS from source
-        if: steps.cache-onnxruntime.outputs.cache-hit != 'true'
-        working-directory: ./frontend/src-tauri
-        run: |
-          chmod +x scripts/build-ios-onnxruntime-all.sh
-          ./scripts/build-ios-onnxruntime-all.sh 1.22.2
+      - name: Prepare ONNX Runtime iOS artifact
+        run: nix develop .#apple -c ./scripts/ci/ios-onnxruntime.sh
         timeout-minutes: 90
 
-      - name: Verify ONNX Runtime files
-        run: |
-          echo "Checking ONNX Runtime xcframework..."
-          ls -la ${{ github.workspace }}/frontend/src-tauri/onnxruntime-ios/onnxruntime.xcframework/
-          ls -la ${{ github.workspace }}/frontend/src-tauri/onnxruntime-ios/onnxruntime.xcframework/ios-arm64-simulator/
-          echo ""
-          echo "Library info:"
-          file ${{ github.workspace }}/frontend/src-tauri/onnxruntime-ios/onnxruntime.xcframework/ios-arm64-simulator/libonnxruntime.a
-          echo ""
-          echo "Checking for Abseil symbols (should be included):"
-          nm ${{ github.workspace }}/frontend/src-tauri/onnxruntime-ios/onnxruntime.xcframework/ios-arm64-simulator/libonnxruntime.a 2>/dev/null | grep -i "absl" | head -20 || echo "No abseil symbols found (they may be internal)"
-
-      - name: Configure Cargo for iOS ONNX Runtime
-        run: |
-          WORKSPACE="${{ github.workspace }}"
-          mkdir -p "${WORKSPACE}/frontend/src-tauri/.cargo"
-          cat > "${WORKSPACE}/frontend/src-tauri/.cargo/config.toml" << EOF
-          # Auto-generated cargo config for iOS ONNX Runtime linking
-          # Uses absolute paths because xcodebuild may run cargo from different directories
-
-          [target.aarch64-apple-ios.onnxruntime]
-          rustc-link-search = ["${WORKSPACE}/frontend/src-tauri/onnxruntime-ios/onnxruntime.xcframework/ios-arm64"]
-          # Also link libc++ since ONNX Runtime is C++; overriding ort-sys link metadata
-          # suppresses the build script's cargo:rustc-link-lib=c++
-          rustc-link-lib = ["static=onnxruntime", "c++"]
-
-          [target.aarch64-apple-ios-sim.onnxruntime]
-          rustc-link-search = ["${WORKSPACE}/frontend/src-tauri/onnxruntime-ios/onnxruntime.xcframework/ios-arm64-simulator"]
-          rustc-link-lib = ["static=onnxruntime", "c++"]
-          EOF
-
-          echo "Generated cargo config:"
-          cat "${WORKSPACE}/frontend/src-tauri/.cargo/config.toml"
-
-      - name: Install Tauri CLI
-        run: |
-          REQUIRED_TAURI_CLI_VERSION="2.11.1"
-          INSTALLED_TAURI_CLI_VERSION=""
-          if command -v cargo-tauri >/dev/null 2>&1; then
-            INSTALLED_TAURI_CLI_VERSION="$(cargo-tauri --version 2>/dev/null | awk '{print $2}')"
-          fi
-
-          if [ "$INSTALLED_TAURI_CLI_VERSION" != "$REQUIRED_TAURI_CLI_VERSION" ]; then
-            cargo install tauri-cli --version "$REQUIRED_TAURI_CLI_VERSION" --locked --force
-          else
-            echo "Tauri CLI $REQUIRED_TAURI_CLI_VERSION already installed"
-          fi
-        env:
-          CARGO_CFG_TARGET_OS: macos
-
       - name: Build Tauri iOS App (simulator)
-        working-directory: ./frontend
-        run: |
-          bun tauri ios build --debug --target aarch64-sim --ci
+        run: nix develop .#apple -c ./scripts/ci/ios-pr.sh
         env:
-          VITE_OPEN_SECRET_API_URL: https://enclave.secretgpt.ai
-          VITE_MAPLE_BILLING_API_URL: https://billing-dev.opensecret.cloud
-          VITE_CLIENT_ID: ba5a14b5-d915-47b1-b7b1-afda52bc5fc6
-          ORT_LIB_LOCATION: ${{ github.workspace }}/frontend/src-tauri/onnxruntime-ios/onnxruntime.xcframework/ios-arm64-simulator
-          ORT_SKIP_DOWNLOAD: "true"
-          IPHONEOS_DEPLOYMENT_TARGET: '16.0'
+          MAPLE_IOS_DOWNLOAD_SIMULATOR_RUNTIME: "1"
+        timeout-minutes: 90
 
       - name: Upload iOS PR Simulator App
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # was v4
@@ -144,4 +76,5 @@ jobs:
           name: maple-ios-simulator-pr
           path: |
             frontend/src-tauri/gen/apple/build/**/*.app
+            frontend/src-tauri/target/reproducibility/ios-*.sha256
           retention-days: 5

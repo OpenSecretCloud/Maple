@@ -12,6 +12,9 @@ val tauriProperties = Properties().apply {
         propFile.inputStream().use { load(it) }
     }
 }
+val mapleUnsignedRelease = providers.gradleProperty("mapleUnsignedRelease")
+    .map { it.toBoolean() }
+    .orElse(false)
 
 android {
     compileSdk = 35
@@ -56,7 +59,9 @@ android {
                     .plus(getDefaultProguardFile("proguard-android-optimize.txt"))
                     .toList().toTypedArray()
             )
-            signingConfig = signingConfigs.getByName("release")
+            if (!mapleUnsignedRelease.get()) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
     kotlinOptions {
