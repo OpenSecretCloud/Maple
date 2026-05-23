@@ -84,6 +84,7 @@ jobs:
             ios-release-artifacts.sha256 \
             frontend/src-tauri/target/reproducibility/ios-release-final.sha256 \
             frontend/src-tauri/target/reproducibility/ios-release-*.sha256 \
+            frontend/src-tauri/target/reproducibility/ios-release-*.txt \
             frontend/src-tauri/target/reproducibility/ios-onnxruntime-*.sha256
           cat ios-release-artifacts.sha256
 
@@ -99,6 +100,7 @@ jobs:
           path: |
             frontend/src-tauri/gen/apple/build/arm64/*.ipa
             frontend/src-tauri/target/reproducibility/*.sha256
+            frontend/src-tauri/target/reproducibility/*.txt
           retention-days: 5
 
   verify-ios-artifacts:

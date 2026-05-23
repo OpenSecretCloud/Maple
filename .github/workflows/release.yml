@@ -95,6 +95,19 @@ jobs:
             ${{ runner.os }}-sccache-release-
             ${{ runner.os }}-sccache-
 
+      # Ubuntu 24.04 restricts unprivileged user namespaces by default; linuxdeploy/AppImage
+      # packaging uses bubblewrap and otherwise fails with "bwrap: setting up uid map: Permission denied".
+      - name: Allow bubblewrap user namespaces
+        if: matrix.platform == 'ubuntu-latest-8-cores'
+        run: |
+          set -euo pipefail
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          if [ -e /proc/sys/kernel/unprivileged_userns_clone ]; then
+            sudo sysctl -w kernel.unprivileged_userns_clone=1
+          fi
+
       - name: Build Tauri desktop app
         run: nix develop .#${{ matrix.nix_shell }} -c ./scripts/ci/desktop-release.sh
         env:
@@ -321,6 +334,7 @@ jobs:
             ios-release-artifacts.sha256 \
             frontend/src-tauri/target/reproducibility/ios-release-final.sha256 \
             frontend/src-tauri/target/reproducibility/ios-release-*.sha256 \
+            frontend/src-tauri/target/reproducibility/ios-release-*.txt \
             frontend/src-tauri/target/reproducibility/ios-onnxruntime-*.sha256
           cat ios-release-artifacts.sha256
 
@@ -341,6 +355,7 @@ jobs:
           done < <(find frontend/src-tauri -type f \( \
             -name '*.ipa' -o \
             -path '*/reproducibility/ios-release-*.sha256' -o \
+            -path '*/reproducibility/ios-release-*.txt' -o \
             -path '*/reproducibility/ios-onnxruntime-*.sha256' \
           \) -print0 | LC_ALL=C sort -z)
 
