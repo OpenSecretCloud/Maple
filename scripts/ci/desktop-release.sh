@@ -39,6 +39,8 @@ case "$(host_os)" in
     export NO_STRIP="${NO_STRIP:-true}"
     prepend_linux_runtime_library_path
     prepare_tauri_linuxdeploy_tools_cache
+    verify_linuxdeploy_plugin_metadata
+    run_with_nix_usr_bin "${TAURI_DIR}/target/.tauri/linuxdeploy-$(linuxdeploy_tools_arch).AppImage" --appimage-extract-and-run --list-plugins
 
     remove_build_tree "${TAURI_DIR}/target/release/bundle/appimage"
     remove_build_tree "${TAURI_DIR}/target/release/bundle/deb"
@@ -48,6 +50,7 @@ case "$(host_os)" in
     run_with_nix_usr_bin pkg-config --modversion glib-2.0
     (cd "${TAURI_DIR}" && cargo build --bins --features tauri/custom-protocol --release)
     run_with_nix_usr_bin bun tauri build --verbose --config "${release_config}"
+    restore_linux_runtime_library_path
     normalize_linux_desktop_packages
 
     normalized_linux_packages=()

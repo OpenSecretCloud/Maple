@@ -19,14 +19,22 @@ case "$(host_os)" in
     prepare_linux_onnxruntime
     export APPIMAGE_EXTRACT_AND_RUN="${APPIMAGE_EXTRACT_AND_RUN:-1}"
     export NO_STRIP="${NO_STRIP:-true}"
+    prepend_linux_runtime_library_path
+    prepare_tauri_linuxdeploy_tools_cache
+    verify_linuxdeploy_plugin_metadata
+    run_with_nix_usr_bin "${TAURI_DIR}/target/.tauri/linuxdeploy-$(linuxdeploy_tools_arch).AppImage" --appimage-extract-and-run --list-plugins
     run_with_nix_usr_bin pkg-config --modversion glib-2.0
-    bun tauri build --verbose --no-sign --config "$(linux_tauri_pr_config)"
+    remove_build_tree "${TAURI_DIR}/target/release/bundle/appimage"
+    remove_build_tree "${TAURI_DIR}/target/release/bundle/deb"
+    remove_build_tree "${TAURI_DIR}/target/release/bundle/rpm"
+    run_with_nix_usr_bin bun tauri build --verbose --no-sign --config "$(linux_tauri_pr_config)"
+    restore_linux_runtime_library_path
     normalize_linux_desktop_packages
 
     desktop_artifacts=()
     while IFS= read -r -d '' file; do
       desktop_artifacts+=("${file}")
-    done < <(find "${TAURI_DIR}/target/release/bundle" -type f \( -name '*.deb' -o -name '*.rpm' \) -print0 | LC_ALL=C sort -z)
+    done < <(find "${TAURI_DIR}/target/release/bundle" -type f \( -name '*.AppImage' -o -name '*.deb' -o -name '*.rpm' \) -print0 | LC_ALL=C sort -z)
     repro_dir="${TAURI_DIR}/target/reproducibility"
     write_sha256_manifest "${repro_dir}/desktop-pr-linux-final.sha256" "${desktop_artifacts[@]}" "${TAURI_DIR}/target/release/maple"
     print_file_hashes "${desktop_artifacts[@]}"
@@ -43,7 +51,7 @@ case "$(host_os)" in
       fake_signature_artifacts=()
       while IFS= read -r -d '' file; do
         fake_signature_artifacts+=("${file}")
-      done < <(find "${TAURI_DIR}/target/release/bundle" -type f \( -name '*.deb.sig' -o -name '*.rpm.sig' \) -print0 | LC_ALL=C sort -z)
+      done < <(find "${TAURI_DIR}/target/release/bundle" -type f \( -name '*.AppImage.sig' -o -name '*.deb.sig' -o -name '*.rpm.sig' \) -print0 | LC_ALL=C sort -z)
 
       if [ "${#fake_signature_artifacts[@]}" -eq 0 ]; then
         echo "No fake Linux updater signature artifacts were created." >&2
