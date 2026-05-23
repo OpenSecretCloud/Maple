@@ -1227,6 +1227,42 @@ verify_tauri_updater_signature_files() {
   done
 }
 
+resolve_bwrap_visible_tool() {
+  local candidate resolved
+
+  for candidate in "$@"; do
+    if [ -z "${candidate}" ]; then
+      continue
+    fi
+
+    resolved="$(readlink -f "${candidate}" 2>/dev/null || printf '%s\n' "${candidate}")"
+    case "${resolved}" in
+      /usr/* | /bin/*)
+        continue
+        ;;
+    esac
+
+    printf '%s\n' "${resolved}"
+    return 0
+  done
+
+  return 1
+}
+
+resolve_bwrap_visible_command() {
+  local candidate name
+
+  for name in "$@"; do
+    while IFS= read -r candidate; do
+      if resolve_bwrap_visible_tool "${candidate}"; then
+        return 0
+      fi
+    done < <(type -a -P "${name}" 2>/dev/null || true)
+  done
+
+  return 1
+}
+
 run_with_nix_usr_bin() {
   if [ "$(host_os)" != "linux" ]; then
     "$@"
@@ -1243,7 +1279,8 @@ run_with_nix_usr_bin() {
     return 1
   }
 
-  local bin_dir tool_bin usr_root tool tool_path
+  local bash_path bin_dir tool_bin usr_root tool tool_path
+  bash_path="$(command -v bash)"
   bin_dir="$(mktemp -d)"
   tool_bin="$(mktemp -d)"
   usr_root="$(mktemp -d)"
@@ -1302,10 +1339,10 @@ run_with_nix_usr_bin() {
   fi
 
   local real_pkg_config
-  real_pkg_config="$(command -v pkgconf 2>/dev/null || command -v pkg-config 2>/dev/null || true)"
+  real_pkg_config="$(resolve_bwrap_visible_command pkg-config pkgconf || true)"
   if [ -n "${real_pkg_config}" ]; then
     cat > "${tool_bin}/pkgconf" <<EOF
-#!/usr/bin/env bash
+#!${bash_path}
 set -euo pipefail
 if [ "\${1:-}" = "--variable=schemasdir" ] && [ "\${2:-}" = "gio-2.0" ] && [ -n "\${MAPLE_NIX_GLIB_SCHEMAS:-}" ]; then
   printf '%s\n' "/usr/share/glib-2.0/schemas"
@@ -1354,10 +1391,10 @@ EOF
   fi
 
   local real_patchelf
-  real_patchelf="$(command -v patchelf 2>/dev/null || true)"
+  real_patchelf="$(resolve_bwrap_visible_command patchelf || true)"
   if [ -n "${real_patchelf}" ]; then
     cat > "${tool_bin}/patchelf" <<EOF
-#!/usr/bin/env bash
+#!${bash_path}
 for arg in "\$@"; do
   if [ -f "\${arg}" ]; then
     chmod u+w "\${arg}" 2>/dev/null || true

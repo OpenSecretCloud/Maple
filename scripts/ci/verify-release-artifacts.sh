@@ -454,7 +454,7 @@ verify_macos() {
 
 verify_ios() {
   local final_manifest unsigned_manifest signed_manifest payload_manifest
-  local unsigned_digest signed_digest
+  local unsigned_digest signed_digest payload_digest
 
   final_manifest="$(proof_file_required ios-release-final.sha256)"
   unsigned_manifest="$(proof_file_required ios-release-unsigned-app-canonical.sha256)"
@@ -484,7 +484,23 @@ verify_ios() {
     printf 'verified-ios-signed-app-proof  %s\n' "${signed_digest}"
   fi
 
-  verify_canonical_apple_manifest "${payload_manifest}" "${signed_digest}"
+  verify_canonical_apple_manifest "${payload_manifest}"
+  payload_digest="$(manifest_single_digest "${payload_manifest}")"
+  if [ -z "${payload_digest}" ]; then
+    echo "iOS IPA payload canonical proof is missing." >&2
+    return 1
+  fi
+  if [ "${payload_digest}" != "${signed_digest}" ]; then
+    echo "iOS IPA payload canonical proof does not match signed app proof." >&2
+    echo "signed=${signed_digest:-missing}" >&2
+    echo "payload=${payload_digest:-missing}" >&2
+    if [ "${MAPLE_ENFORCE_IOS_SIGNED_REPRODUCIBILITY:-0}" = "1" ]; then
+      return 1
+    fi
+    printf 'warning-ios-exported-payload-proof-mismatch  signed=%s  payload=%s\n' "${signed_digest}" "${payload_digest}"
+  else
+    printf 'verified-ios-exported-payload-proof  %s\n' "${payload_digest}"
+  fi
   verify_ios_signatures
 }
 

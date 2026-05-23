@@ -45,6 +45,8 @@ case "$(host_os)" in
     remove_build_tree "${TAURI_DIR}/target/release/bundle/rpm"
 
     release_config="$(linux_tauri_release_config)"
+    run_with_nix_usr_bin pkg-config --modversion glib-2.0
+    (cd "${TAURI_DIR}" && cargo build --bins --features tauri/custom-protocol --release)
     run_with_nix_usr_bin bun tauri build --verbose --config "${release_config}"
     normalize_linux_desktop_packages
 
