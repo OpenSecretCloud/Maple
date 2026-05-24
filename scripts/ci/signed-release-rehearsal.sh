@@ -155,6 +155,7 @@ run_ios_rehearsal() {
     return 1
   fi
 
+  export MAPLE_ENFORCE_IOS_SIGNED_REPRODUCIBILITY="${MAPLE_ENFORCE_IOS_SIGNED_REPRODUCIBILITY:-1}"
   "${script_dir}/ios-onnxruntime.sh"
   "${script_dir}/ios-release.sh"
 }
