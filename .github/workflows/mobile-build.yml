@@ -76,6 +76,7 @@ jobs:
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
           APPLE_DEVELOPMENT_TEAM: ${{ secrets.APPLE_TEAM_ID }}
+          MAPLE_ENFORCE_IOS_SIGNED_REPRODUCIBILITY: "1"
         timeout-minutes: 90
 
       - name: Collect iOS release checksums
