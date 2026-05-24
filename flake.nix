@@ -662,6 +662,15 @@
               zapstore-publish.yml
             touch "$out"
           '';
+
+          release-metadata = pkgs.runCommand "maple-release-metadata-check" {
+            nativeBuildInputs = commonPackages;
+            src = ./.;
+          } ''
+            cd "$src"
+            bash ./scripts/ci/validate-release-version.sh >/dev/null
+            touch "$out"
+          '';
         };
 
         apps = {
