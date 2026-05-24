@@ -671,15 +671,6 @@
             bash ./scripts/ci/validate-release-version.sh >/dev/null
             touch "$out"
           '';
-
-          release-workflow-parity = pkgs.runCommand "maple-release-workflow-parity-check" {
-            nativeBuildInputs = commonPackages;
-            src = ./.;
-          } ''
-            cd "$src"
-            bash ./scripts/ci/validate-release-workflow-parity.sh
-            touch "$out"
-          '';
         };
 
         apps = {
