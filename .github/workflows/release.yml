@@ -30,12 +30,8 @@ jobs:
             exit 1
           fi
 
-          if [[ ! "${RELEASE_TAG}" =~ ^v?[0-9]+[.][0-9]+[.][0-9]+(-[0-9A-Za-z.-]+)?([+][0-9A-Za-z.-]+)?$ ]]; then
-            echo "Refusing to build unexpected release tag: ${RELEASE_TAG}" >&2
-            exit 1
-          fi
-
-          echo "version=${RELEASE_TAG}" >> "${GITHUB_OUTPUT}"
+          version="$(./scripts/ci/validate-release-version.sh "${RELEASE_TAG}")"
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
 
   build-tauri:
     needs: create-release
