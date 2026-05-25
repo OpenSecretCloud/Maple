@@ -22,6 +22,8 @@ export function TTSDownloadDialog({ open, onOpenChange }: TTSDownloadDialogProps
     downloadProgress,
     downloadDetail,
     totalSizeMB,
+    upgradeAvailable,
+    modelVersion,
     startDownload,
     deleteModels
   } = useTTS();
@@ -41,6 +43,7 @@ export function TTSDownloadDialog({ open, onOpenChange }: TTSDownloadDialogProps
   const isReady = status === "ready";
   const hasError = status === "error";
   const isNotAvailable = status === "not_available";
+  const isUpgradeAvailable = status === "upgrade_available" || upgradeAvailable;
   const isProcessing = isChecking || isDownloading || isLoading || isDeleting;
 
   return (
@@ -56,13 +59,17 @@ export function TTSDownloadDialog({ open, onOpenChange }: TTSDownloadDialogProps
           <DialogDescription className="text-base">
             {isNotAvailable
               ? "TTS is only available in the desktop app."
-              : isReady
-                ? "TTS is ready! You can now listen to assistant messages."
-                : hasError
-                  ? "There was an error setting up TTS."
-                  : isProcessing
-                    ? "Setting up TTS. Please keep this window open."
-                    : `Listen to assistant messages with natural-sounding speech. This requires a one-time download of ~${Math.round(totalSizeMB)} MB.`}
+              : isReady && isUpgradeAvailable
+                ? "TTS is ready with your current local model. Supertonic 3 is available if you want to upgrade."
+                : isReady
+                  ? "TTS is ready! You can now listen to assistant messages."
+                  : hasError
+                    ? "There was an error setting up TTS."
+                    : isProcessing
+                      ? "Setting up TTS. Please keep this window open."
+                      : isUpgradeAvailable
+                        ? `Supertonic 3 is available. Delete your current local TTS models, then download the new ~${Math.round(totalSizeMB)} MB model set.`
+                        : `Listen to assistant messages with natural-sounding speech. This requires a one-time download of ~${Math.round(totalSizeMB)} MB.`}
           </DialogDescription>
         </DialogHeader>
 
@@ -87,6 +94,30 @@ export function TTSDownloadDialog({ open, onOpenChange }: TTSDownloadDialogProps
                 <p className="text-sm font-medium">Setup Failed</p>
                 <p className="text-sm opacity-90">{error}</p>
               </div>
+            </div>
+          )}
+
+          {isUpgradeAvailable && !isReady && (
+            <div className="space-y-3 rounded-lg border p-3">
+              <div className="flex items-start gap-3">
+                <AlertCircle className="h-5 w-5 mt-0.5 shrink-0 text-primary" />
+                <div className="space-y-1">
+                  <p className="text-sm font-medium">Supertonic 3 Upgrade Available</p>
+                  <p className="text-sm text-muted-foreground">
+                    Your current local TTS files are from an older model. Delete them here to keep
+                    using local read-aloud with Supertonic 3.
+                  </p>
+                </div>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleDelete}
+                className="text-destructive hover:text-destructive"
+              >
+                <Trash2 className="h-4 w-4 mr-2" />
+                Delete Old Models
+              </Button>
             </div>
           )}
 
@@ -134,25 +165,50 @@ export function TTSDownloadDialog({ open, onOpenChange }: TTSDownloadDialogProps
                   TTS is ready! Click the speaker icon on any assistant message to listen.
                 </p>
               </div>
-              <div className="border-t pt-4">
-                <p className="text-sm text-muted-foreground mb-3">
-                  Models are stored locally (~{Math.round(totalSizeMB)} MB). You can delete them to
-                  free up space.
-                </p>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={handleDelete}
-                  className="text-destructive hover:text-destructive"
-                >
-                  <Trash2 className="h-4 w-4 mr-2" />
-                  Delete TTS Models
-                </Button>
-              </div>
+              {isUpgradeAvailable && modelVersion === "legacy" && (
+                <div className="space-y-3 rounded-lg border p-3">
+                  <div className="flex items-start gap-3">
+                    <AlertCircle className="h-5 w-5 mt-0.5 shrink-0 text-primary" />
+                    <div className="space-y-1">
+                      <p className="text-sm font-medium">Supertonic 3 Upgrade Available</p>
+                      <p className="text-sm text-muted-foreground">
+                        Your current Supertonic model will keep working. Delete it here when you are
+                        ready to download the new ~{Math.round(totalSizeMB)} MB Supertonic 3 model
+                        set.
+                      </p>
+                    </div>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleDelete}
+                    className="text-destructive hover:text-destructive"
+                  >
+                    <Trash2 className="h-4 w-4 mr-2" />
+                    Delete Current Models
+                  </Button>
+                </div>
+              )}
+              {!isUpgradeAvailable && (
+                <div className="border-t pt-4">
+                  <p className="text-sm text-muted-foreground mb-3">
+                    Models are stored locally. You can delete them to free up space.
+                  </p>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleDelete}
+                    className="text-destructive hover:text-destructive"
+                  >
+                    <Trash2 className="h-4 w-4 mr-2" />
+                    Delete TTS Models
+                  </Button>
+                </div>
+              )}
             </div>
           )}
 
-          {!isProcessing && !isReady && !isNotAvailable && !hasError && (
+          {!isProcessing && !isReady && !isNotAvailable && !hasError && !isUpgradeAvailable && (
             <div className="space-y-3">
               <div className="text-sm text-muted-foreground space-y-2">
                 <p className="font-medium">What you need to know:</p>
@@ -182,6 +238,10 @@ export function TTSDownloadDialog({ open, onOpenChange }: TTSDownloadDialogProps
                     : "Downloading..."}
             </Button>
           ) : isNotAvailable ? (
+            <Button variant="outline" onClick={() => onOpenChange(false)}>
+              Close
+            </Button>
+          ) : isUpgradeAvailable ? (
             <Button variant="outline" onClick={() => onOpenChange(false)}>
               Close
             </Button>

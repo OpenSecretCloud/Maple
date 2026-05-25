@@ -772,7 +772,7 @@ function TTSButton({
   }
 
   const handleClick = async () => {
-    if (status === "not_downloaded" || status === "error") {
+    if (status === "not_downloaded" || status === "upgrade_available" || status === "error") {
       onNeedsSetup();
       return;
     }

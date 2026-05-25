@@ -15,6 +15,7 @@ export type TTSStatus =
   | "not_available"
   | "checking"
   | "not_downloaded"
+  | "upgrade_available"
   | "downloading"
   | "loading"
   | "ready"
@@ -24,6 +25,9 @@ export type TTSStatus =
 interface TTSStatusResponse {
   models_downloaded: boolean;
   models_loaded: boolean;
+  models_present_but_incompatible: boolean;
+  upgrade_available: boolean;
+  model_version: "supertonic3" | "legacy" | null;
   total_size_mb: number;
 }
 
@@ -47,6 +51,8 @@ interface TTSContextValue {
   downloadProgress: number;
   downloadDetail: string;
   totalSizeMB: number;
+  upgradeAvailable: boolean;
+  modelVersion: "supertonic3" | "legacy" | null;
   isPlaying: boolean;
   currentPlayingId: string | null;
   isTauriEnv: boolean;
@@ -70,7 +76,9 @@ export function TTSProvider({ children }: { children: ReactNode }) {
   const [error, setError] = useState<string | null>(null);
   const [downloadProgress, setDownloadProgress] = useState(0);
   const [downloadDetail, setDownloadDetail] = useState("");
-  const [totalSizeMB, setTotalSizeMB] = useState(264);
+  const [totalSizeMB, setTotalSizeMB] = useState(383);
+  const [upgradeAvailable, setUpgradeAvailable] = useState(false);
+  const [modelVersion, setModelVersion] = useState<"supertonic3" | "legacy" | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentPlayingId, setCurrentPlayingId] = useState<string | null>(null);
   const [playbackError, setPlaybackError] = useState<string | null>(null);
@@ -102,6 +110,8 @@ export function TTSProvider({ children }: { children: ReactNode }) {
     try {
       const result = await invoke<TTSStatusResponse>("tts_get_status");
       setTotalSizeMB(result.total_size_mb);
+      setUpgradeAvailable(result.upgrade_available);
+      setModelVersion(result.model_version);
 
       if (result.models_loaded) {
         setStatus("ready");
@@ -110,12 +120,16 @@ export function TTSProvider({ children }: { children: ReactNode }) {
         setStatus("loading");
         try {
           await invoke("tts_load_models");
+          setUpgradeAvailable(result.upgrade_available);
+          setModelVersion(result.model_version);
           setStatus("ready");
         } catch (loadErr) {
           console.error("Failed to load TTS models:", loadErr);
           setStatus("error");
           setError(loadErr instanceof Error ? loadErr.message : "Failed to load TTS models");
         }
+      } else if (result.models_present_but_incompatible) {
+        setStatus("upgrade_available");
       } else {
         setStatus("not_downloaded");
       }
@@ -160,6 +174,8 @@ export function TTSProvider({ children }: { children: ReactNode }) {
       setDownloadDetail("Loading models...");
       await invoke("tts_load_models");
 
+      setUpgradeAvailable(false);
+      setModelVersion("supertonic3");
       setStatus("ready");
       setDownloadDetail("");
     } catch (err) {
@@ -230,6 +246,8 @@ export function TTSProvider({ children }: { children: ReactNode }) {
       stop();
 
       await invoke("tts_delete_models");
+      setUpgradeAvailable(false);
+      setModelVersion(null);
       setStatus("not_downloaded");
     } catch (err) {
       console.error("Failed to delete TTS models:", err);
@@ -451,6 +469,8 @@ export function TTSProvider({ children }: { children: ReactNode }) {
         downloadProgress,
         downloadDetail,
         totalSizeMB,
+        upgradeAvailable,
+        modelVersion,
         isPlaying,
         currentPlayingId,
         isTauriEnv,
