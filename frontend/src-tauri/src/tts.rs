@@ -999,12 +999,6 @@ pub async fn tts_download_models(app: AppHandle) -> Result<(), String> {
     fs::create_dir_all(&models_dir)
         .map_err(|e| format!("Failed to create models directory: {e}"))?;
 
-    fs::write(
-        models_dir.join(MODEL_REVISION_FILE),
-        format!("{HUGGINGFACE_REVISION}\n"),
-    )
-    .map_err(|e| format!("Failed to write TTS model revision marker: {e}"))?;
-
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(300))
         .connect_timeout(Duration::from_secs(30))

@@ -28,14 +28,6 @@ export function TTSDownloadDialog({ open, onOpenChange }: TTSDownloadDialogProps
     deleteModels
   } = useTTS();
 
-  const handleDownload = async () => {
-    await startDownload();
-  };
-
-  const handleDelete = async () => {
-    await deleteModels();
-  };
-
   const isChecking = status === "checking";
   const isDownloading = status === "downloading";
   const isLoading = status === "loading";
@@ -45,6 +37,15 @@ export function TTSDownloadDialog({ open, onOpenChange }: TTSDownloadDialogProps
   const isNotAvailable = status === "not_available";
   const isUpgradeAvailable = status === "upgrade_available" || upgradeAvailable;
   const isProcessing = isChecking || isDownloading || isLoading || isDeleting;
+
+  const handleDownload = async () => {
+    await startDownload();
+  };
+
+  const handleDelete = async () => {
+    if (isDeleting) return;
+    await deleteModels();
+  };
 
   return (
     <Dialog open={open} onOpenChange={isProcessing ? undefined : onOpenChange}>
@@ -113,6 +114,7 @@ export function TTSDownloadDialog({ open, onOpenChange }: TTSDownloadDialogProps
                 variant="outline"
                 size="sm"
                 onClick={handleDelete}
+                disabled={isDeleting}
                 className="text-destructive hover:text-destructive"
               >
                 <Trash2 className="h-4 w-4 mr-2" />
@@ -182,6 +184,7 @@ export function TTSDownloadDialog({ open, onOpenChange }: TTSDownloadDialogProps
                     variant="outline"
                     size="sm"
                     onClick={handleDelete}
+                    disabled={isDeleting}
                     className="text-destructive hover:text-destructive"
                   >
                     <Trash2 className="h-4 w-4 mr-2" />
@@ -198,6 +201,7 @@ export function TTSDownloadDialog({ open, onOpenChange }: TTSDownloadDialogProps
                     variant="outline"
                     size="sm"
                     onClick={handleDelete}
+                    disabled={isDeleting}
                     className="text-destructive hover:text-destructive"
                   >
                     <Trash2 className="h-4 w-4 mr-2" />
