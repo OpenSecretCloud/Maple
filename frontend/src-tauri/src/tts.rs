@@ -84,6 +84,9 @@ const MODEL_REVISION_FILE: &str = "supertonic_revision.txt";
 const SUPERTONIC3_CACHE_DIR: &str = "supertonic-3";
 const DEFAULT_TTS_LANGUAGE: &str = "en";
 const DEFAULT_VOICE_STYLE: &str = "F2.json";
+const TTS_TOTAL_STEPS: usize = 10;
+const SUPERTONIC3_TTS_SPEED: f32 = 1.0;
+const LEGACY_TTS_SPEED: f32 = 1.2;
 
 const AVAILABLE_LANGS: &[&str] = &[
     "en", "ko", "ja", "ar", "bg", "cs", "da", "de", "el", "es", "et", "fi", "fr", "hi", "hr", "hu",
@@ -213,6 +216,13 @@ const LEGACY_MODEL_FILES: &[(&str, u64)] = &[
 pub enum ModelVersion {
     Supertonic3,
     Legacy,
+}
+
+fn default_tts_speed(model_version: ModelVersion) -> f32 {
+    match model_version {
+        ModelVersion::Supertonic3 => SUPERTONIC3_TTS_SPEED,
+        ModelVersion::Legacy => LEGACY_TTS_SPEED,
+    }
 }
 
 fn bytes_to_hex(bytes: &[u8]) -> String {
@@ -1192,13 +1202,14 @@ pub async fn tts_synthesize(
         .ok_or("Voice style not loaded")?
         .clone();
     let tts = guard.tts.as_mut().ok_or("TTS engine not loaded")?;
+    let speed = default_tts_speed(tts.model_version);
 
     if text.trim().is_empty() {
         return Err("No text to synthesize".to_string());
     }
 
     let audio = tts
-        .synthesize(&text, &style, 10, 1.2)
+        .synthesize(&text, &style, TTS_TOTAL_STEPS, speed)
         .map_err(|e| format!("TTS synthesis failed: {e}"))?;
 
     if audio.is_empty() {
@@ -1300,9 +1311,22 @@ mod tests {
 
         let mut tts = load_tts_engine(&models_dir, ModelVersion::Supertonic3).unwrap();
         let style = load_voice_style(&models_dir).unwrap();
-        let audio = tts.synthesize("Hello from Maple.", &style, 2, 1.2).unwrap();
+        let audio = tts
+            .synthesize(
+                "Hello from Maple.",
+                &style,
+                TTS_TOTAL_STEPS,
+                default_tts_speed(ModelVersion::Supertonic3),
+            )
+            .unwrap();
 
         assert!(!audio.is_empty());
+    }
+
+    #[test]
+    fn default_tts_speed_keeps_legacy_speed_but_uses_normal_for_supertonic3() {
+        assert_eq!(default_tts_speed(ModelVersion::Supertonic3), 1.0);
+        assert_eq!(default_tts_speed(ModelVersion::Legacy), 1.2);
     }
 
     #[test]
