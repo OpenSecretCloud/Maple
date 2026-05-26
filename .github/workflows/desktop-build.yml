@@ -279,4 +279,6 @@ jobs:
           name: maple-windows-x64
           path: |
             frontend/src-tauri/target/release/bundle/nsis/*.exe
+            frontend/src-tauri/target/release/bundle/nsis/*.nsis.zip
+            frontend/src-tauri/target/release/bundle/nsis/*.nsis.zip.sig
           retention-days: 5
