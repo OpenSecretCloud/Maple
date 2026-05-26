@@ -4,7 +4,7 @@ use futures_util::StreamExt;
 use hound::{SampleFormat, WavSpec, WavWriter};
 use ndarray::{Array, Array3};
 use once_cell::sync::Lazy;
-use ort::{session::Session, value::Value};
+use ort::{logging::LogLevel, session::Session, value::Value};
 use rand::thread_rng;
 use rand_distr::{Distribution, Normal};
 use regex::Regex;
@@ -14,6 +14,7 @@ use std::fs::{self, File};
 use std::io::{BufReader, Cursor, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::Instant;
 use tauri::{AppHandle, Emitter};
 use unicode_normalization::UnicodeNormalization;
 
@@ -85,6 +86,7 @@ const SUPERTONIC3_CACHE_DIR: &str = "supertonic-3";
 const DEFAULT_TTS_LANGUAGE: &str = "en";
 const DEFAULT_VOICE_STYLE: &str = "F2.json";
 const TTS_TOTAL_STEPS: usize = 10;
+const TTS_CHUNK_MAX_CHARS: usize = 450;
 const SUPERTONIC3_TTS_SPEED: f32 = 1.0;
 const LEGACY_TTS_SPEED: f32 = 1.2;
 
@@ -223,6 +225,17 @@ fn default_tts_speed(model_version: ModelVersion) -> f32 {
         ModelVersion::Supertonic3 => SUPERTONIC3_TTS_SPEED,
         ModelVersion::Legacy => LEGACY_TTS_SPEED,
     }
+}
+
+fn tts_trace_enabled() -> bool {
+    std::env::var("MAPLE_TTS_TRACE")
+        .map(|value| {
+            matches!(
+                value.to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
 }
 
 fn bytes_to_hex(bytes: &[u8]) -> String {
@@ -492,75 +505,65 @@ fn chunk_text(text: &str, max_len: usize) -> Vec<String> {
     }
 
     static RE_PARA: Lazy<Regex> = Lazy::new(|| Regex::new(r"\n\s*\n").unwrap());
-    let paragraphs: Vec<&str> = RE_PARA.split(text).collect();
     let mut chunks = Vec::new();
+    let mut current = String::new();
 
-    for para in paragraphs {
+    fn push_unit(chunks: &mut Vec<String>, current: &mut String, unit: &str, max_len: usize) {
+        let unit = unit.trim();
+        if unit.is_empty() {
+            return;
+        }
+
+        if unit.len() > max_len {
+            for part in split_by_words(unit, max_len) {
+                push_unit(chunks, current, &part, max_len);
+            }
+            return;
+        }
+
+        if current.is_empty() {
+            current.push_str(unit);
+            return;
+        }
+
+        if current.len() + 1 + unit.len() <= max_len {
+            current.push(' ');
+            current.push_str(unit);
+        } else {
+            chunks.push(current.trim().to_string());
+            current.clear();
+            current.push_str(unit);
+        }
+    }
+
+    for para in RE_PARA.split(text) {
         let para = para.trim();
         if para.is_empty() {
             continue;
         }
 
         if para.len() <= max_len {
-            chunks.push(para.to_string());
+            push_unit(&mut chunks, &mut current, para, max_len);
             continue;
         }
 
         // Split by sentence boundaries, keeping punctuation
-        let mut current = String::new();
         let mut last_end = 0;
 
         for m in RE_SENTENCE.find_iter(para) {
             let sentence = para[last_end..m.start() + 1].trim(); // +1 to include punctuation
             last_end = m.end();
 
-            if sentence.is_empty() {
-                continue;
-            }
-
-            // If single sentence exceeds max_len, split by words
-            if sentence.len() > max_len {
-                if !current.is_empty() {
-                    chunks.push(current.trim().to_string());
-                    current.clear();
-                }
-                chunks.extend(split_by_words(sentence, max_len));
-                continue;
-            }
-
-            if current.len() + sentence.len() + 1 > max_len && !current.is_empty() {
-                chunks.push(current.trim().to_string());
-                current.clear();
-            }
-
-            if !current.is_empty() {
-                current.push(' ');
-            }
-            current.push_str(sentence);
+            push_unit(&mut chunks, &mut current, sentence, max_len);
         }
 
         // Remaining text after last sentence boundary
         let remaining = para[last_end..].trim();
-        if !remaining.is_empty() {
-            // If remaining exceeds max_len, split by words
-            if remaining.len() > max_len {
-                if !current.is_empty() {
-                    chunks.push(current.trim().to_string());
-                }
-                chunks.extend(split_by_words(remaining, max_len));
-            } else if current.len() + remaining.len() + 1 > max_len && !current.is_empty() {
-                chunks.push(current.trim().to_string());
-                chunks.push(remaining.to_string());
-            } else {
-                if !current.is_empty() {
-                    current.push(' ');
-                }
-                current.push_str(remaining);
-                chunks.push(current.trim().to_string());
-            }
-        } else if !current.is_empty() {
-            chunks.push(current.trim().to_string());
-        }
+        push_unit(&mut chunks, &mut current, remaining, max_len);
+    }
+
+    if !current.is_empty() {
+        chunks.push(current.trim().to_string());
     }
 
     if chunks.is_empty() {
@@ -604,36 +607,102 @@ impl TextToSpeech {
         style: &Style,
         total_step: usize,
         speed: f32,
+        trace: bool,
     ) -> Result<Vec<f32>> {
-        let chunks = chunk_text(text, 300);
+        let chunks = chunk_text(text, TTS_CHUNK_MAX_CHARS);
         let mut wav_cat: Vec<f32> = Vec::new();
         let silence_duration = 0.05;
+
+        log::info!(
+            "TTS chunk plan: model={:?}, input_chars={}, chunks={}, max_chunk_chars={}",
+            self.model_version,
+            text.chars().count(),
+            chunks.len(),
+            TTS_CHUNK_MAX_CHARS
+        );
 
         for (i, chunk) in chunks.iter().enumerate() {
             if chunk.is_empty() {
                 continue;
             }
 
-            let processed_chunk = match self.model_version {
-                ModelVersion::Supertonic3 => preprocess_text(chunk, DEFAULT_TTS_LANGUAGE)?,
-                ModelVersion::Legacy => normalize_text_for_tts(chunk),
-            };
-            if processed_chunk.trim().is_empty() {
+            let wav_chunk =
+                self.synthesize_chunk(chunk, style, total_step, speed, trace, i + 1, chunks.len())?;
+            if wav_chunk.is_empty() {
                 continue;
             }
 
-            let (wav, duration) = self.infer(&[processed_chunk], style, total_step, speed)?;
-            let dur = duration[0];
-            let wav_len = (self.sample_rate as f32 * dur) as usize;
-            let wav_chunk = &wav[..wav_len.min(wav.len())];
-
-            if i > 0 {
+            if !wav_cat.is_empty() {
                 let silence_len = (silence_duration * self.sample_rate as f32) as usize;
                 wav_cat.extend(vec![0.0f32; silence_len]);
             }
-            wav_cat.extend_from_slice(wav_chunk);
+            wav_cat.extend_from_slice(&wav_chunk);
         }
         Ok(wav_cat)
+    }
+
+    fn synthesize_chunk(
+        &mut self,
+        chunk: &str,
+        style: &Style,
+        total_step: usize,
+        speed: f32,
+        trace: bool,
+        chunk_index: usize,
+        chunk_count: usize,
+    ) -> Result<Vec<f32>> {
+        let chunk_started = Instant::now();
+        let processed_chunk = match self.model_version {
+            ModelVersion::Supertonic3 => preprocess_text(chunk, DEFAULT_TTS_LANGUAGE)?,
+            ModelVersion::Legacy => normalize_text_for_tts(chunk),
+        };
+        if processed_chunk.trim().is_empty() {
+            if trace {
+                log::info!(
+                    "TTS chunk {}/{} skipped after preprocessing: raw_chars={}",
+                    chunk_index,
+                    chunk_count,
+                    chunk.chars().count()
+                );
+            }
+            return Ok(Vec::new());
+        }
+
+        if trace {
+            log::info!(
+                "TTS chunk {}/{} start: raw_chars={}, processed_chars={}",
+                chunk_index,
+                chunk_count,
+                chunk.chars().count(),
+                processed_chunk.chars().count()
+            );
+        }
+
+        let (wav, duration) = self.infer(
+            &[processed_chunk],
+            style,
+            total_step,
+            speed,
+            trace,
+            chunk_index,
+            chunk_count,
+        )?;
+        let dur = duration[0];
+        let wav_len = (self.sample_rate as f32 * dur) as usize;
+        let wav_chunk = wav[..wav_len.min(wav.len())].to_vec();
+
+        if trace {
+            log::info!(
+                "TTS chunk {}/{} complete: predicted_seconds={:.2}, wav_samples={}, used_samples={}, elapsed_ms={}",
+                chunk_index,
+                chunk_count,
+                dur,
+                wav.len(),
+                wav_chunk.len(),
+                chunk_started.elapsed().as_millis()
+            );
+        }
+        Ok(wav_chunk)
     }
 
     fn infer(
@@ -642,12 +711,25 @@ impl TextToSpeech {
         style: &Style,
         total_step: usize,
         speed: f32,
+        trace: bool,
+        chunk_index: usize,
+        chunk_count: usize,
     ) -> Result<(Vec<f32>, Vec<f32>)> {
         let bsz = text_list.len();
         let (text_ids, text_mask) = self.text_processor.call(text_list);
 
         if text_ids.is_empty() || text_ids[0].is_empty() {
             return Err(anyhow::anyhow!("Empty text input"));
+        }
+
+        if trace {
+            log::info!(
+                "TTS infer {}/{} tokenized: batch={}, tokens={}",
+                chunk_index,
+                chunk_count,
+                bsz,
+                text_ids[0].len()
+            );
         }
 
         let text_ids_array = {
@@ -661,6 +743,14 @@ impl TextToSpeech {
         let style_dp_value = Value::from_array(style.dp.clone())?;
 
         // Predict duration
+        let stage_started = Instant::now();
+        if trace {
+            log::info!(
+                "TTS infer {}/{} duration_predictor start",
+                chunk_index,
+                chunk_count
+            );
+        }
         let dp_outputs = self.dp_ort.run(ort::inputs! {
             "text_ids" => &text_ids_value,
             "style_dp" => &style_dp_value,
@@ -672,9 +762,26 @@ impl TextToSpeech {
         for dur in duration.iter_mut() {
             *dur /= speed;
         }
+        if trace {
+            log::info!(
+                "TTS infer {}/{} duration_predictor done: durations={:?}, elapsed_ms={}",
+                chunk_index,
+                chunk_count,
+                duration,
+                stage_started.elapsed().as_millis()
+            );
+        }
 
         // Encode text
         let style_ttl_value = Value::from_array(style.ttl.clone())?;
+        let stage_started = Instant::now();
+        if trace {
+            log::info!(
+                "TTS infer {}/{} text_encoder start",
+                chunk_index,
+                chunk_count
+            );
+        }
         let text_enc_outputs = self.text_enc_ort.run(ort::inputs! {
             "text_ids" => &text_ids_value,
             "style_ttl" => &style_ttl_value,
@@ -683,6 +790,15 @@ impl TextToSpeech {
 
         let (text_emb_shape, text_emb_data) =
             text_enc_outputs["text_emb"].try_extract_tensor::<f32>()?;
+        if trace {
+            log::info!(
+                "TTS infer {}/{} text_encoder done: shape={:?}, elapsed_ms={}",
+                chunk_index,
+                chunk_count,
+                text_emb_shape,
+                stage_started.elapsed().as_millis()
+            );
+        }
         let text_emb = Array3::from_shape_vec(
             (
                 text_emb_shape[0] as usize,
@@ -694,6 +810,7 @@ impl TextToSpeech {
         let text_emb_value = Value::from_array(text_emb)?;
 
         // Sample noisy latent
+        let stage_started = Instant::now();
         let (mut xt, latent_mask) = sample_noisy_latent(
             &duration,
             self.sample_rate,
@@ -701,6 +818,15 @@ impl TextToSpeech {
             self.cfgs.ttl.chunk_compress_factor,
             self.cfgs.ttl.latent_dim,
         );
+        if trace {
+            log::info!(
+                "TTS infer {}/{} sampled latent: shape={:?}, elapsed_ms={}",
+                chunk_index,
+                chunk_count,
+                xt.dim(),
+                stage_started.elapsed().as_millis()
+            );
+        }
         let latent_mask_value = Value::from_array(latent_mask)?;
 
         let total_step_array = Array::from_elem(bsz, total_step as f32);
@@ -708,10 +834,22 @@ impl TextToSpeech {
 
         // Denoising loop
         for step in 0..total_step {
+            let stage_started = Instant::now();
             let current_step_array = Array::from_elem(bsz, step as f32);
+            let latent_shape = xt.dim();
             let xt_value = Value::from_array(xt)?;
             let current_step_value = Value::from_array(current_step_array)?;
 
+            if trace {
+                log::info!(
+                    "TTS infer {}/{} vector_estimator step {}/{} start: latent_shape={:?}",
+                    chunk_index,
+                    chunk_count,
+                    step + 1,
+                    total_step,
+                    latent_shape
+                );
+            }
             let vector_est_outputs = self.vector_est_ort.run(ort::inputs! {
                 "noisy_latent" => &xt_value,
                 "text_emb" => &text_emb_value,
@@ -732,15 +870,39 @@ impl TextToSpeech {
                 ),
                 denoised_data.to_vec(),
             )?;
+            if trace {
+                log::info!(
+                    "TTS infer {}/{} vector_estimator step {}/{} done: shape={:?}, elapsed_ms={}",
+                    chunk_index,
+                    chunk_count,
+                    step + 1,
+                    total_step,
+                    denoised_shape,
+                    stage_started.elapsed().as_millis()
+                );
+            }
         }
 
         // Generate waveform
         let final_latent_value = Value::from_array(xt)?;
+        let stage_started = Instant::now();
+        if trace {
+            log::info!("TTS infer {}/{} vocoder start", chunk_index, chunk_count);
+        }
         let vocoder_outputs = self.vocoder_ort.run(ort::inputs! {
             "latent" => &final_latent_value
         })?;
 
         let (_, wav_data) = vocoder_outputs["wav_tts"].try_extract_tensor::<f32>()?;
+        if trace {
+            log::info!(
+                "TTS infer {}/{} vocoder done: wav_samples={}, elapsed_ms={}",
+                chunk_index,
+                chunk_count,
+                wav_data.len(),
+                stage_started.elapsed().as_millis()
+            );
+        }
         Ok((wav_data.to_vec(), duration))
     }
 }
@@ -814,6 +976,8 @@ fn load_tts_engine(models_dir: &Path, model_version: ModelVersion) -> Result<Tex
         .as_ref()
         .map_err(|e| anyhow::anyhow!(e.clone()))?;
 
+    ort::environment::get_environment()?.set_log_level(LogLevel::Warning);
+
     let cfg_path = models_dir.join("tts.json");
     let file = File::open(&cfg_path)?;
     let reader = BufReader::new(file);
@@ -829,13 +993,10 @@ fn load_tts_engine(models_dir: &Path, model_version: ModelVersion) -> Result<Tex
     };
     let text_processor = UnicodeProcessor::new(indexer, unknown_token_id);
 
-    let dp_ort =
-        Session::builder()?.commit_from_file(models_dir.join("duration_predictor.onnx"))?;
-    let text_enc_ort =
-        Session::builder()?.commit_from_file(models_dir.join("text_encoder.onnx"))?;
-    let vector_est_ort =
-        Session::builder()?.commit_from_file(models_dir.join("vector_estimator.onnx"))?;
-    let vocoder_ort = Session::builder()?.commit_from_file(models_dir.join("vocoder.onnx"))?;
+    let dp_ort = load_onnx_session(&models_dir.join("duration_predictor.onnx"))?;
+    let text_enc_ort = load_onnx_session(&models_dir.join("text_encoder.onnx"))?;
+    let vector_est_ort = load_onnx_session(&models_dir.join("vector_estimator.onnx"))?;
+    let vocoder_ort = load_onnx_session(&models_dir.join("vocoder.onnx"))?;
 
     let sample_rate = cfgs.ae.sample_rate;
     Ok(TextToSpeech {
@@ -848,6 +1009,12 @@ fn load_tts_engine(models_dir: &Path, model_version: ModelVersion) -> Result<Tex
         sample_rate,
         model_version,
     })
+}
+
+fn load_onnx_session(model_path: &Path) -> Result<Session> {
+    Ok(Session::builder()?
+        .with_log_level(LogLevel::Warning)?
+        .commit_from_file(model_path)?)
 }
 
 fn wav_to_base64(audio_data: &[f32], sample_rate: i32) -> Result<String> {
@@ -1182,10 +1349,36 @@ pub async fn tts_load_models(state: tauri::State<'_, Mutex<TTSState>>) -> Result
 }
 
 #[derive(Serialize)]
+pub struct TTSChunkTextResponse {
+    pub chunks: Vec<String>,
+}
+
+#[derive(Serialize)]
 pub struct TTSSynthesizeResponse {
     pub audio_base64: String,
     pub sample_rate: i32,
     pub duration_seconds: f32,
+}
+
+#[tauri::command]
+pub async fn tts_chunk_text(text: String) -> Result<TTSChunkTextResponse, String> {
+    let chunks: Vec<String> = chunk_text(&text, TTS_CHUNK_MAX_CHARS)
+        .into_iter()
+        .filter(|chunk| !chunk.trim().is_empty())
+        .collect();
+
+    if chunks.is_empty() {
+        return Err("No text to synthesize".to_string());
+    }
+
+    log::info!(
+        "TTS chunked text: input_chars={}, chunks={}, max_chunk_chars={}",
+        text.chars().count(),
+        chunks.len(),
+        TTS_CHUNK_MAX_CHARS
+    );
+
+    Ok(TTSChunkTextResponse { chunks })
 }
 
 #[tauri::command]
@@ -1203,29 +1396,123 @@ pub async fn tts_synthesize(
         .clone();
     let tts = guard.tts.as_mut().ok_or("TTS engine not loaded")?;
     let speed = default_tts_speed(tts.model_version);
+    let model_version = tts.model_version;
+    let sample_rate = tts.sample_rate;
+    let trace = tts_trace_enabled();
 
     if text.trim().is_empty() {
         return Err("No text to synthesize".to_string());
     }
 
+    let synth_started = Instant::now();
+    log::info!(
+        "TTS synthesis request: model={model_version:?}, input_chars={}, total_steps={TTS_TOTAL_STEPS}, speed={speed:.2}, trace={trace}",
+        text.chars().count()
+    );
+
     let audio = tts
-        .synthesize(&text, &style, TTS_TOTAL_STEPS, speed)
+        .synthesize(&text, &style, TTS_TOTAL_STEPS, speed, trace)
         .map_err(|e| format!("TTS synthesis failed: {e}"))?;
 
     if audio.is_empty() {
         return Err("No speakable text after preprocessing".to_string());
     }
 
-    let sample_rate = tts.sample_rate;
     let duration_seconds = audio.len() as f32 / sample_rate as f32;
+    let synth_elapsed_ms = synth_started.elapsed().as_millis();
+    log::info!(
+        "TTS synthesis generated audio: samples={}, sample_rate={}, audio_seconds={duration_seconds:.2}, elapsed_ms={synth_elapsed_ms}",
+        audio.len(),
+        sample_rate
+    );
 
     // Drop the guard before encoding to release the lock
     drop(guard);
 
+    let encode_started = Instant::now();
     let audio_base64 =
         wav_to_base64(&audio, sample_rate).map_err(|e| format!("Failed to encode audio: {e}"))?;
 
-    log::info!("TTS synthesis complete: {duration_seconds:.2}s audio");
+    log::info!(
+        "TTS synthesis complete: audio_seconds={duration_seconds:.2}, base64_chars={}, encode_elapsed_ms={}, total_elapsed_ms={}",
+        audio_base64.len(),
+        encode_started.elapsed().as_millis(),
+        synth_started.elapsed().as_millis()
+    );
+
+    Ok(TTSSynthesizeResponse {
+        audio_base64,
+        sample_rate,
+        duration_seconds,
+    })
+}
+
+#[tauri::command]
+pub async fn tts_synthesize_chunk(
+    text: String,
+    chunk_index: usize,
+    chunk_count: usize,
+    state: tauri::State<'_, Mutex<TTSState>>,
+) -> Result<TTSSynthesizeResponse, String> {
+    let mut guard = state.lock().map_err(|e| e.to_string())?;
+
+    let style = guard
+        .style
+        .as_ref()
+        .ok_or("Voice style not loaded")?
+        .clone();
+    let tts = guard.tts.as_mut().ok_or("TTS engine not loaded")?;
+    let speed = default_tts_speed(tts.model_version);
+    let model_version = tts.model_version;
+    let sample_rate = tts.sample_rate;
+    let trace = tts_trace_enabled();
+
+    if text.trim().is_empty() {
+        return Err("No text to synthesize".to_string());
+    }
+
+    let synth_started = Instant::now();
+    log::info!(
+        "TTS synthesis chunk request: model={model_version:?}, chunk={chunk_index}/{chunk_count}, input_chars={}, total_steps={TTS_TOTAL_STEPS}, speed={speed:.2}, trace={trace}",
+        text.chars().count()
+    );
+
+    let audio = tts
+        .synthesize_chunk(
+            &text,
+            &style,
+            TTS_TOTAL_STEPS,
+            speed,
+            trace,
+            chunk_index,
+            chunk_count,
+        )
+        .map_err(|e| format!("TTS synthesis failed: {e}"))?;
+
+    if audio.is_empty() {
+        return Err("No speakable text after preprocessing".to_string());
+    }
+
+    let duration_seconds = audio.len() as f32 / sample_rate as f32;
+    let synth_elapsed_ms = synth_started.elapsed().as_millis();
+    log::info!(
+        "TTS synthesis chunk generated audio: chunk={chunk_index}/{chunk_count}, samples={}, sample_rate={}, audio_seconds={duration_seconds:.2}, elapsed_ms={synth_elapsed_ms}",
+        audio.len(),
+        sample_rate
+    );
+
+    drop(guard);
+
+    let encode_started = Instant::now();
+    let audio_base64 =
+        wav_to_base64(&audio, sample_rate).map_err(|e| format!("Failed to encode audio: {e}"))?;
+
+    log::info!(
+        "TTS synthesis chunk complete: chunk={chunk_index}/{chunk_count}, audio_seconds={duration_seconds:.2}, base64_chars={}, encode_elapsed_ms={}, total_elapsed_ms={}",
+        audio_base64.len(),
+        encode_started.elapsed().as_millis(),
+        synth_started.elapsed().as_millis()
+    );
 
     Ok(TTSSynthesizeResponse {
         audio_base64,
@@ -1317,6 +1604,7 @@ mod tests {
                 &style,
                 TTS_TOTAL_STEPS,
                 default_tts_speed(ModelVersion::Supertonic3),
+                false,
             )
             .unwrap();
 
@@ -1340,6 +1628,12 @@ mod tests {
                 "Bye.".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn chunk_text_packs_short_paragraphs_up_to_limit() {
+        let chunks = chunk_text("One.\n\nTwo. Three.", 20);
+        assert_eq!(chunks, vec!["One. Two. Three.".to_string()]);
     }
 
     #[test]
