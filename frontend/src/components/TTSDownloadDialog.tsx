@@ -7,12 +7,21 @@ import {
   DialogTitle
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { Volume2, Download, AlertCircle, Loader2, Check, Trash2 } from "lucide-react";
-import { useTTS } from "@/services/tts/TTSContext";
+import { Volume2, Download, AlertCircle, Loader2, Check, Trash2, RotateCcw } from "lucide-react";
+import {
+  useTTS,
+  TTS_MIN_PLAYBACK_SPEED,
+  TTS_MAX_PLAYBACK_SPEED,
+  TTS_PLAYBACK_SPEED_STEP
+} from "@/services/tts/TTSContext";
 
 interface TTSDownloadDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+}
+
+function formatPlaybackSpeed(speed: number): string {
+  return `${speed.toFixed(1)}x`;
 }
 
 export function TTSDownloadDialog({ open, onOpenChange }: TTSDownloadDialogProps) {
@@ -24,6 +33,10 @@ export function TTSDownloadDialog({ open, onOpenChange }: TTSDownloadDialogProps
     totalSizeMB,
     upgradeAvailable,
     modelVersion,
+    playbackSpeed,
+    hasCustomPlaybackSpeed,
+    setPlaybackSpeed,
+    resetPlaybackSpeed,
     startDownload,
     deleteModels
   } = useTTS();
@@ -166,6 +179,40 @@ export function TTSDownloadDialog({ open, onOpenChange }: TTSDownloadDialogProps
                 <p className="text-sm">
                   TTS is ready! Click the speaker icon on any assistant message to listen.
                 </p>
+              </div>
+              <div className="space-y-3 rounded-lg border p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-sm font-medium">Speech speed</p>
+                  <span className="text-sm tabular-nums text-muted-foreground">
+                    {formatPlaybackSpeed(playbackSpeed)}
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min={TTS_MIN_PLAYBACK_SPEED}
+                  max={TTS_MAX_PLAYBACK_SPEED}
+                  step={TTS_PLAYBACK_SPEED_STEP}
+                  value={playbackSpeed}
+                  onChange={(event) => setPlaybackSpeed(Number(event.currentTarget.value))}
+                  className="h-2 w-full cursor-pointer accent-primary"
+                  aria-label="Speech speed"
+                />
+                <div className="flex items-center justify-between text-xs text-muted-foreground">
+                  <span>{formatPlaybackSpeed(TTS_MIN_PLAYBACK_SPEED)}</span>
+                  <span>{formatPlaybackSpeed(TTS_MAX_PLAYBACK_SPEED)}</span>
+                </div>
+                <div className="flex justify-end">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={resetPlaybackSpeed}
+                    disabled={!hasCustomPlaybackSpeed}
+                    className="gap-2"
+                  >
+                    <RotateCcw className="h-4 w-4" />
+                    Reset
+                  </Button>
+                </div>
               </div>
               {isUpgradeAvailable && modelVersion === "legacy" && (
                 <div className="space-y-3 rounded-lg border p-3">

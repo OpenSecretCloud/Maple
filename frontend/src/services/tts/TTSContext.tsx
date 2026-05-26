@@ -53,6 +53,14 @@ interface DownloadProgress {
   percent: number;
 }
 
+export const TTS_MIN_PLAYBACK_SPEED = 0.5;
+export const TTS_MAX_PLAYBACK_SPEED = 2.0;
+export const TTS_PLAYBACK_SPEED_STEP = 0.1;
+
+const SUPERTONIC3_DEFAULT_PLAYBACK_SPEED = 1.0;
+const LEGACY_DEFAULT_PLAYBACK_SPEED = 1.2;
+const TTS_PLAYBACK_SPEED_STORAGE_KEY = "ttsPlaybackSpeed";
+
 interface TTSContextValue {
   status: TTSStatus;
   error: string | null;
@@ -65,6 +73,8 @@ interface TTSContextValue {
   isPreparing: boolean;
   isPlaying: boolean;
   currentPlayingId: string | null;
+  playbackSpeed: number;
+  hasCustomPlaybackSpeed: boolean;
   isTauriEnv: boolean;
 
   checkStatus: () => Promise<void>;
@@ -72,6 +82,8 @@ interface TTSContextValue {
   deleteModels: () => Promise<void>;
   speak: (text: string, messageId: string) => Promise<void>;
   stop: () => void;
+  setPlaybackSpeed: (speed: number) => void;
+  resetPlaybackSpeed: () => void;
   clearPlaybackError: () => void;
 }
 
@@ -101,6 +113,38 @@ function errorMessage(err: unknown, fallback: string): string {
   return fallback;
 }
 
+function clampPlaybackSpeed(speed: number): number {
+  if (!Number.isFinite(speed)) {
+    return SUPERTONIC3_DEFAULT_PLAYBACK_SPEED;
+  }
+  const clamped = Math.min(TTS_MAX_PLAYBACK_SPEED, Math.max(TTS_MIN_PLAYBACK_SPEED, speed));
+  return Number(clamped.toFixed(2));
+}
+
+function readPlaybackSpeedOverride(): number | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  try {
+    const stored = window.localStorage.getItem(TTS_PLAYBACK_SPEED_STORAGE_KEY);
+    if (!stored) {
+      return null;
+    }
+
+    const speed = Number(stored);
+    return Number.isFinite(speed) ? clampPlaybackSpeed(speed) : null;
+  } catch {
+    return null;
+  }
+}
+
+function defaultPlaybackSpeedForModel(modelVersion: "supertonic3" | "legacy" | null): number {
+  return modelVersion === "legacy"
+    ? LEGACY_DEFAULT_PLAYBACK_SPEED
+    : SUPERTONIC3_DEFAULT_PLAYBACK_SPEED;
+}
+
 export function TTSProvider({ children }: { children: ReactNode }) {
   // Check Tauri environment - TTS is available on desktop and iOS (not Android)
   const isTauriEnv = isTauriDesktop() || (isTauri() && isIOS());
@@ -117,6 +161,12 @@ export function TTSProvider({ children }: { children: ReactNode }) {
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentPlayingId, setCurrentPlayingId] = useState<string | null>(null);
   const [playbackError, setPlaybackError] = useState<string | null>(null);
+  const [playbackSpeedOverride, setPlaybackSpeedOverride] = useState<number | null>(() =>
+    readPlaybackSpeedOverride()
+  );
+  const playbackSpeed =
+    playbackSpeedOverride ?? clampPlaybackSpeed(defaultPlaybackSpeedForModel(modelVersion));
+  const hasCustomPlaybackSpeed = playbackSpeedOverride !== null;
 
   const requestIdRef = useRef(0);
   const synthesisInFlightRef = useRef(false);
@@ -134,6 +184,35 @@ export function TTSProvider({ children }: { children: ReactNode }) {
     if (unlistenRef.current) {
       unlistenRef.current();
       unlistenRef.current = null;
+    }
+  }, []);
+
+  const setPlaybackSpeed = useCallback((speed: number) => {
+    const clamped = clampPlaybackSpeed(speed);
+    setPlaybackSpeedOverride(clamped);
+
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    try {
+      window.localStorage.setItem(TTS_PLAYBACK_SPEED_STORAGE_KEY, clamped.toString());
+    } catch {
+      // Ignore
+    }
+  }, []);
+
+  const resetPlaybackSpeed = useCallback(() => {
+    setPlaybackSpeedOverride(null);
+
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    try {
+      window.localStorage.removeItem(TTS_PLAYBACK_SPEED_STORAGE_KEY);
+    } catch {
+      // Ignore
     }
   }, []);
 
@@ -330,11 +409,13 @@ export function TTSProvider({ children }: { children: ReactNode }) {
       const requestId = requestIdRef.current + 1;
       requestIdRef.current = requestId;
       const startedAt = performance.now();
+      const speed = playbackSpeed;
       try {
         debugTTS("speak start", {
           messageId,
           rawChars: text.length,
-          processedChars: processedText.length
+          processedChars: processedText.length,
+          speed
         });
         synthesisInFlightRef.current = true;
         setIsPreparing(true);
@@ -467,7 +548,8 @@ export function TTSProvider({ children }: { children: ReactNode }) {
           const result = await invoke<TTSSynthesizeResponse>("tts_synthesize_chunk", {
             text: chunks[chunkIndex],
             chunkIndex: chunkIndex + 1,
-            chunkCount: chunks.length
+            chunkCount: chunks.length,
+            speed
           });
 
           if (requestIdRef.current !== requestId) {
@@ -621,7 +703,7 @@ export function TTSProvider({ children }: { children: ReactNode }) {
         stop();
       }
     },
-    [isTauriEnv, status, stop]
+    [isTauriEnv, playbackSpeed, status, stop]
   );
 
   const clearPlaybackError = useCallback(() => {
@@ -697,12 +779,16 @@ export function TTSProvider({ children }: { children: ReactNode }) {
         isPreparing,
         isPlaying,
         currentPlayingId,
+        playbackSpeed,
+        hasCustomPlaybackSpeed,
         isTauriEnv,
         checkStatus,
         startDownload,
         deleteModels,
         speak,
         stop,
+        setPlaybackSpeed,
+        resetPlaybackSpeed,
         clearPlaybackError
       }}
     >

@@ -89,6 +89,8 @@ const TTS_TOTAL_STEPS: usize = 10;
 const TTS_CHUNK_MAX_CHARS: usize = 450;
 const SUPERTONIC3_TTS_SPEED: f32 = 1.0;
 const LEGACY_TTS_SPEED: f32 = 1.2;
+const MIN_TTS_SPEED: f32 = 0.5;
+const MAX_TTS_SPEED: f32 = 2.0;
 
 const AVAILABLE_LANGS: &[&str] = &[
     "en", "ko", "ja", "ar", "bg", "cs", "da", "de", "el", "es", "et", "fi", "fr", "hi", "hr", "hu",
@@ -225,6 +227,20 @@ fn default_tts_speed(model_version: ModelVersion) -> f32 {
         ModelVersion::Supertonic3 => SUPERTONIC3_TTS_SPEED,
         ModelVersion::Legacy => LEGACY_TTS_SPEED,
     }
+}
+
+fn sanitize_tts_speed(speed: f32) -> f32 {
+    if speed.is_finite() {
+        speed.clamp(MIN_TTS_SPEED, MAX_TTS_SPEED)
+    } else {
+        SUPERTONIC3_TTS_SPEED
+    }
+}
+
+fn resolve_tts_speed(model_version: ModelVersion, requested_speed: Option<f32>) -> f32 {
+    requested_speed
+        .map(sanitize_tts_speed)
+        .unwrap_or_else(|| default_tts_speed(model_version))
 }
 
 fn tts_trace_enabled() -> bool {
@@ -1384,6 +1400,7 @@ pub async fn tts_chunk_text(text: String) -> Result<TTSChunkTextResponse, String
 #[tauri::command]
 pub async fn tts_synthesize(
     text: String,
+    speed: Option<f32>,
     state: tauri::State<'_, Mutex<TTSState>>,
 ) -> Result<TTSSynthesizeResponse, String> {
     let mut guard = state.lock().map_err(|e| e.to_string())?;
@@ -1395,7 +1412,7 @@ pub async fn tts_synthesize(
         .ok_or("Voice style not loaded")?
         .clone();
     let tts = guard.tts.as_mut().ok_or("TTS engine not loaded")?;
-    let speed = default_tts_speed(tts.model_version);
+    let speed = resolve_tts_speed(tts.model_version, speed);
     let model_version = tts.model_version;
     let sample_rate = tts.sample_rate;
     let trace = tts_trace_enabled();
@@ -1452,6 +1469,7 @@ pub async fn tts_synthesize_chunk(
     text: String,
     chunk_index: usize,
     chunk_count: usize,
+    speed: Option<f32>,
     state: tauri::State<'_, Mutex<TTSState>>,
 ) -> Result<TTSSynthesizeResponse, String> {
     let mut guard = state.lock().map_err(|e| e.to_string())?;
@@ -1462,7 +1480,7 @@ pub async fn tts_synthesize_chunk(
         .ok_or("Voice style not loaded")?
         .clone();
     let tts = guard.tts.as_mut().ok_or("TTS engine not loaded")?;
-    let speed = default_tts_speed(tts.model_version);
+    let speed = resolve_tts_speed(tts.model_version, speed);
     let model_version = tts.model_version;
     let sample_rate = tts.sample_rate;
     let trace = tts_trace_enabled();
@@ -1615,6 +1633,23 @@ mod tests {
     fn default_tts_speed_keeps_legacy_speed_but_uses_normal_for_supertonic3() {
         assert_eq!(default_tts_speed(ModelVersion::Supertonic3), 1.0);
         assert_eq!(default_tts_speed(ModelVersion::Legacy), 1.2);
+    }
+
+    #[test]
+    fn resolve_tts_speed_clamps_user_preference() {
+        assert_eq!(resolve_tts_speed(ModelVersion::Supertonic3, Some(0.1)), 0.5);
+        assert_eq!(resolve_tts_speed(ModelVersion::Supertonic3, Some(1.4)), 1.4);
+        assert_eq!(resolve_tts_speed(ModelVersion::Supertonic3, Some(3.0)), 2.0);
+        assert_eq!(
+            resolve_tts_speed(ModelVersion::Supertonic3, Some(f32::NAN)),
+            1.0
+        );
+    }
+
+    #[test]
+    fn resolve_tts_speed_uses_model_default_without_user_preference() {
+        assert_eq!(resolve_tts_speed(ModelVersion::Supertonic3, None), 1.0);
+        assert_eq!(resolve_tts_speed(ModelVersion::Legacy, None), 1.2);
     }
 
     #[test]
