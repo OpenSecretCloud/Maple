@@ -62,6 +62,70 @@ impl ProxyState {
     }
 }
 
+// On Windows the proxy config lives in the roaming %APPDATA% profile, so a
+// plaintext api_key could sync across machines in a domain/AAD environment.
+// Store it in Windows Credential Manager instead and keep it out of the JSON.
+// macOS/Linux keep their local plaintext-with-0o600 behavior unchanged.
+#[cfg(target_os = "windows")]
+const KEYRING_SERVICE: &str = "cloud.opensecret.maple";
+#[cfg(target_os = "windows")]
+const KEYRING_USER: &str = "proxy_api_key";
+
+/// Persist the API key in Windows Credential Manager. An empty key clears the
+/// entry. Returns `Ok(true)` when the key was stored (or cleared), `Ok(false)`
+/// when no secure storage is available (caller keeps the plaintext fallback).
+#[cfg(target_os = "windows")]
+fn store_api_key(key: &str) -> Result<bool> {
+    let entry = match keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER) {
+        Ok(entry) => entry,
+        Err(e) => {
+            log::warn!("Credential Manager unavailable, keeping plaintext config: {e}");
+            return Ok(false);
+        }
+    };
+
+    if key.is_empty() {
+        match entry.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => {}
+            Err(e) => log::warn!("Failed to clear Credential Manager entry: {e}"),
+        }
+        return Ok(true);
+    }
+
+    match entry.set_password(key) {
+        Ok(()) => Ok(true),
+        Err(keyring::Error::PlatformFailure(_)) | Err(keyring::Error::NoStorageAccess(_)) => {
+            log::warn!("No secure credential storage available; keeping plaintext config");
+            Ok(false)
+        }
+        Err(e) => Err(anyhow!(
+            "Failed to store API key in Credential Manager: {e}"
+        )),
+    }
+}
+
+/// Load the API key from Windows Credential Manager.
+/// - `Ok(Some(key))` — Credential Manager is available (`key` may be empty).
+/// - `Ok(None)` — unavailable; caller should fall back to the JSON value.
+#[cfg(target_os = "windows")]
+fn load_api_key() -> Result<Option<String>> {
+    let entry = match keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER) {
+        Ok(entry) => entry,
+        Err(_) => return Ok(None),
+    };
+
+    match entry.get_password() {
+        Ok(key) => Ok(Some(key)),
+        Err(keyring::Error::NoEntry) => Ok(Some(String::new())),
+        Err(keyring::Error::PlatformFailure(_)) | Err(keyring::Error::NoStorageAccess(_)) => {
+            Ok(None)
+        }
+        Err(e) => Err(anyhow!(
+            "Failed to read API key from Credential Manager: {e}"
+        )),
+    }
+}
+
 #[tauri::command]
 pub async fn start_proxy(
     app_handle: AppHandle,
@@ -216,9 +280,9 @@ pub async fn test_proxy_port(host: String, port: u16) -> Result<bool, String> {
 }
 
 // Helper functions for config persistence.
-// Epic 2 (PR 3) will unify all platforms onto app_config_dir() and add atomic
-// migration + keyring-backed secret storage. This minimal arm just unblocks
-// Windows compile + launch.
+// Windows uses the Tauri-managed app_config_dir() (%APPDATA%); macOS/Linux keep
+// the historical ~/.config/maple/ location. The Windows API key is additionally
+// stored in Credential Manager rather than plaintext (see store/load_api_key).
 async fn get_config_path(app_handle: &AppHandle) -> Result<PathBuf> {
     let app_dir = if cfg!(target_os = "windows") {
         // Resolves to %APPDATA%\cloud.opensecret.maple\ (Roaming).
@@ -242,6 +306,26 @@ async fn get_config_path(app_handle: &AppHandle) -> Result<PathBuf> {
 
 async fn save_proxy_config(app_handle: &AppHandle, config: &ProxyConfig) -> Result<()> {
     let path = get_config_path(app_handle).await?;
+
+    // On Windows, move the API key into Credential Manager and scrub it from
+    // the JSON (the config dir is the roaming profile). Other platforms keep
+    // the existing plaintext-in-JSON behavior unchanged.
+    #[cfg(target_os = "windows")]
+    let json = {
+        let scrubbed = match store_api_key(&config.api_key) {
+            Ok(true) => ProxyConfig {
+                api_key: String::new(),
+                ..config.clone()
+            },
+            Ok(false) => config.clone(),
+            Err(e) => {
+                log::warn!("{e}");
+                config.clone()
+            }
+        };
+        serde_json::to_string_pretty(&scrubbed)?
+    };
+    #[cfg(not(target_os = "windows"))]
     let json = serde_json::to_string_pretty(config)?;
 
     // Write the config file
@@ -266,7 +350,18 @@ async fn load_saved_proxy_config(app_handle: &AppHandle) -> Result<ProxyConfig> 
     }
 
     let json = tokio::fs::read_to_string(path).await?;
-    let config: ProxyConfig = serde_json::from_str(&json)?;
+    #[cfg_attr(not(target_os = "windows"), allow(unused_mut))]
+    let mut config: ProxyConfig = serde_json::from_str(&json)?;
+
+    // On Windows, prefer the API key from Credential Manager; fall back to any
+    // plaintext value still in the JSON if it's unavailable.
+    #[cfg(target_os = "windows")]
+    if let Some(key) = load_api_key()? {
+        if !key.is_empty() {
+            config.api_key = key;
+        }
+    }
+
     Ok(config)
 }
 

@@ -90,6 +90,11 @@ sha2 = "0.10"
 [target.'cfg(target_os = "android")'.dependencies]
 openssl = { version = "0.10.80", default-features = false, features = ["vendored"] }
 
+[target.'cfg(target_os = "windows")'.dependencies]
+# Store the proxy API key in Windows Credential Manager rather than as
+# plaintext in the roaming %APPDATA% config (which can sync across machines).
+keyring = { version = "3", features = ["windows-native"] }
+
 [patch.crates-io]
 # Local patch for tao 0.35.2 Android intent crashes:
 # https://github.com/tauri-apps/tao/issues/1217
