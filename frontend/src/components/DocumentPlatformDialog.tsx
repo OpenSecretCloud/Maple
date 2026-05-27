@@ -55,7 +55,7 @@ export function DocumentPlatformDialog({
             <div className="flex flex-col items-center p-4 rounded-lg border bg-card">
               <Monitor className="h-8 w-8 mb-2 text-muted-foreground" />
               <span className="font-medium">Desktop</span>
-              <span className="text-xs text-muted-foreground">macOS • Linux</span>
+              <span className="text-xs text-muted-foreground">macOS • Linux • Windows</span>
             </div>
             <div className="flex flex-col items-center p-4 rounded-lg border bg-card">
               <Smartphone className="h-8 w-8 mb-2 text-muted-foreground" />
