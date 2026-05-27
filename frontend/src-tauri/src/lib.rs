@@ -84,6 +84,19 @@ pub fn run() {
             if let Err(e) = app.deep_link().register("cloud.opensecret.maple") {
                 log::error!("[Deep Link] Failed to register scheme: {e}");
             }
+            // Windows startup diagnostic: confirm the OS has our custom scheme
+            // pointed at the running exe. Most "OAuth callback does nothing"
+            // reports trace back to a missing/stale
+            // HKCU\Software\Classes\cloud.opensecret.maple key (no installer run,
+            // a deleted dev build, or a stale path), so log it once at startup.
+            #[cfg(target_os = "windows")]
+            match app.deep_link().is_registered("cloud.opensecret.maple") {
+                Ok(true) => log::info!("[Deep Link] scheme 'cloud.opensecret.maple' is registered"),
+                Ok(false) => log::warn!(
+                    "[Deep Link] scheme 'cloud.opensecret.maple' is NOT registered; OAuth/payment deep links will not reach the app"
+                ),
+                Err(e) => log::error!("[Deep Link] is_registered check failed: {e}"),
+            }
             // Create the application menu with update options
             #[cfg(desktop)]
             {
