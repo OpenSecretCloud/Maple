@@ -246,6 +246,36 @@ jobs:
         run: |
           ./frontend/src-tauri/scripts/provide-windows-onnxruntime.sh >> "$GITHUB_ENV"
 
+      - name: Stage Windows runtime DLLs for bundling
+        shell: pwsh
+        run: |
+          # maple.exe links onnxruntime.dll by ordinal; without these next to the
+          # exe the loader binds to the OS Windows-ML onnxruntime.dll (v1.17) and
+          # TTS hangs at Session::builder. See resources/windows/README.md.
+          $dest = "frontend/src-tauri/resources/windows"
+          New-Item -ItemType Directory -Force -Path $dest | Out-Null
+          # ONNX Runtime 1.22.0 (already downloaded + SHA-verified; path in env)
+          Copy-Item "$env:ORT_DYLIB_PATH" (Join-Path $dest "onnxruntime.dll") -Force
+          # MSVC C++ runtime DLLs onnxruntime.dll depends on. Find a source dir
+          # holding all four, independent of the runner's VS year/edition: prefer
+          # the versioned redist (located via vswhere), fall back to System32.
+          $crtDlls = 'VCRUNTIME140.dll','VCRUNTIME140_1.dll','MSVCP140.dll','MSVCP140_1.dll'
+          $candidates = @()
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (Test-Path $vswhere) {
+            $vs = & $vswhere -latest -products * -property installationPath
+            if ($vs) {
+              $candidates += Get-ChildItem (Join-Path $vs 'VC\Redist\MSVC\*\x64') -Directory -ErrorAction SilentlyContinue |
+                             Where-Object { $_.Name -match '^Microsoft\.VC\d+\.CRT$' } | ForEach-Object FullName
+            }
+          }
+          $candidates += "$env:WINDIR\System32"
+          $src = $candidates | Where-Object { $d = $_; -not ($crtDlls | Where-Object { -not (Test-Path (Join-Path $d $_)) }) } | Select-Object -First 1
+          if (-not $src) { throw "No directory has all CRT DLLs. Searched: $($candidates -join '; ')" }
+          Write-Host "CRT source: $src"
+          foreach ($dll in $crtDlls) { Copy-Item (Join-Path $src $dll) (Join-Path $dest $dll) -Force }
+          Get-ChildItem $dest | Select-Object Name, Length
+
       - name: Install frontend dependencies
         working-directory: ./frontend
         run: bun install --frozen-lockfile --ignore-scripts

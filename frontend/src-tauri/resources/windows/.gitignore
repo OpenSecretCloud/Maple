@@ -1,0 +1,4 @@
+# The Windows runtime DLLs are staged here at build time by CI (see README.md).
+# They are large redistributable binaries with their own provenance, so they are
+# not committed to the repo.
+*.dll
