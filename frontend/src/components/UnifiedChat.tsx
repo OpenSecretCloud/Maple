@@ -1073,6 +1073,8 @@ const MessageList = memo(
     onTTSSetupOpen: () => void;
     onTTSManage: () => void;
   }) => {
+    const isMobile = useIsMobile();
+
     const toolCallsByCallId = useMemo(() => {
       const toolCalls = new Map<string, ToolCallItem>();
 
@@ -1280,6 +1282,16 @@ const MessageList = memo(
       return renderedItems;
     };
 
+    // Get text content from a user message for the copy button
+    const getUserMessageText = (message: ExtendedMessage) => {
+      return (
+        message.content
+          ?.filter((p) => "text" in p && p.text)
+          .map((p) => ("text" in p ? p.text : ""))
+          .join("\n") || ""
+      );
+    };
+
     // Get all text content from an assistant group for the copy button
     const getAssistantGroupText = (items: Message[]) => {
       return items
@@ -1316,11 +1328,13 @@ const MessageList = memo(
             const message = group.message;
             if (!message.content || message.content.length === 0) return null;
 
+            const userText = getUserMessageText(message);
+
             return (
               <div
                 key={group.id}
                 ref={groupIndex === 0 ? firstMessageRef : undefined}
-                className="group flex justify-end py-4 landscape-short:py-1.5"
+                className="group/user flex flex-col items-end py-4 landscape-short:py-1.5"
               >
                 <div className="max-w-[min(100%,42rem)] rounded-2xl border border-border bg-muted px-4 py-3 landscape-short:px-3 landscape-short:py-2 backdrop-blur-lg dark:bg-card">
                   <div className="prose prose-sm max-w-none text-left dark:prose-invert">
@@ -1356,6 +1370,13 @@ const MessageList = memo(
                     </div>
                   </div>
                 </div>
+                {userText && (
+                  <div
+                    className={`flex justify-end pr-1 pt-1 ${isMobile ? "opacity-100" : "opacity-0 group-hover/user:opacity-100"} transition-opacity`}
+                  >
+                    <CopyButton text={userText} />
+                  </div>
+                )}
               </div>
             );
           }

@@ -50,14 +50,41 @@ function renderContent(content: ArchivedMessage["content"], chatId: string) {
   );
 }
 
+function getArchivedMessageText(content: ArchivedMessage["content"]): string {
+  if (typeof content === "string") return content;
+  return content
+    .filter((p) => p.type === "text" && p.text)
+    .map((p) => p.text || "")
+    .join("\n");
+}
+
 function UserMessage({ message, chatId }: { message: ArchivedMessage; chatId: string }) {
+  const isMobile = useIsMobile();
+  const text = getArchivedMessageText(message.content);
+  const { isCopied, handleCopy } = useCopyToClipboard(text);
+
   return (
-    <div className="flex justify-end">
+    <div className="group/user flex flex-col items-end">
       <div className="max-w-[min(100%,42rem)] rounded-2xl border border-border bg-muted px-4 py-3 backdrop-blur-lg dark:bg-card">
         <div className="prose prose-sm min-w-0 max-w-none overflow-hidden text-left dark:prose-invert">
           {renderContent(message.content, chatId)}
         </div>
       </div>
+      {text && (
+        <div
+          className={`flex justify-end pr-1 pt-1 ${isMobile ? "opacity-100" : "opacity-0 group-hover/user:opacity-100"} transition-opacity`}
+        >
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 w-7 p-0 text-muted-foreground hover:text-foreground"
+            onClick={handleCopy}
+            aria-label={isCopied ? "Copied" : "Copy to clipboard"}
+          >
+            {isCopied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+          </Button>
+        </div>
+      )}
     </div>
   );
 }
