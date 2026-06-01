@@ -1,5 +1,7 @@
 # Maple AI Frontend
 
+<!-- CI input drift probe. -->
+
 Uses [bun](https://bun.sh/) for development and [Tauri](https://tauri.app/) for desktop app builds.
 
 ## Prerequisites
