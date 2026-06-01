@@ -129,7 +129,7 @@ jobs:
           fi
 
       - name: Build Tauri App (Linux, signed updater)
-        run: nix develop .#ci -c ./scripts/ci/desktop-release.sh
+        run: nix develop .#desktop-linux -c ./scripts/ci/desktop-release.sh
         env:
           APPIMAGE_EXTRACT_AND_RUN: "1"
           NO_STRIP: "true"
@@ -138,11 +138,11 @@ jobs:
 
       - name: Show sccache stats
         if: always()
-        run: nix develop .#ci -c sccache --show-stats
+        run: nix develop .#desktop-linux -c sccache --show-stats
 
       - name: Collect Linux release checksums
         run: |
-          nix develop .#ci -c ./scripts/ci/attestation-manifest.sh \
+          nix develop .#desktop-linux -c ./scripts/ci/attestation-manifest.sh \
             desktop-linux-artifacts.sha256 \
             frontend/src-tauri/target/reproducibility/desktop-release-linux-final.sha256 \
             frontend/src-tauri/target/reproducibility/desktop-release-linux-*.sha256

@@ -48,7 +48,7 @@ jobs:
             nix_shell: ci
             artifact_prefix: macos
           - platform: ubuntu-latest-8-cores
-            nix_shell: ci
+            nix_shell: desktop-linux
             artifact_prefix: linux
 
     runs-on: ${{ matrix.platform }}
