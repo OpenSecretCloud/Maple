@@ -73,7 +73,9 @@ const KEYRING_USER: &str = "proxy_api_key";
 
 /// Persist the API key in Windows Credential Manager. An empty key clears the
 /// entry. Returns `Ok(true)` when the key was stored (or cleared), `Ok(false)`
-/// when no secure storage is available (caller keeps the plaintext fallback).
+/// when no secure storage is available (caller keeps the plaintext fallback),
+/// and `Err` when a clear was requested but the stale credential could not be
+/// removed (caller must not scrub the JSON, or the old key would be resurrected).
 #[cfg(target_os = "windows")]
 fn store_api_key(key: &str) -> Result<bool> {
     let entry = match keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER) {
@@ -85,11 +87,15 @@ fn store_api_key(key: &str) -> Result<bool> {
     };
 
     if key.is_empty() {
-        match entry.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => {}
-            Err(e) => log::warn!("Failed to clear Credential Manager entry: {e}"),
-        }
-        return Ok(true);
+        return match entry.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(true),
+            // A hard delete failure leaves the old credential in place. Surface
+            // it instead of reporting success: the caller must not scrub the
+            // JSON, or the stale key would be resurrected on the next load.
+            Err(e) => Err(anyhow!(
+                "Failed to clear API key from Credential Manager: {e}"
+            )),
+        };
     }
 
     match entry.set_password(key) {
@@ -318,6 +324,12 @@ async fn save_proxy_config(app_handle: &AppHandle, config: &ProxyConfig) -> Resu
                 ..config.clone()
             },
             Ok(false) => config.clone(),
+            // Clearing the key failed: don't scrub the JSON and report success,
+            // since the stale credential survives and would be resurrected on
+            // the next load. Propagate so the failure is visible.
+            Err(e) if config.api_key.is_empty() => return Err(e),
+            // Storing failed for another reason: fall back to persisting the key
+            // in plaintext JSON so it isn't lost.
             Err(e) => {
                 log::warn!("{e}");
                 config.clone()
