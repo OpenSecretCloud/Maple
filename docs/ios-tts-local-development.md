@@ -163,4 +163,3 @@ rm -rf frontend/src-tauri/onnxruntime-build frontend/src-tauri/onnxruntime-ios
 ## Related Documentation
 
 - [troubleshooting-ios-build.md](./troubleshooting-ios-build.md) - arm64-sim architecture fix
-- [tts-research.md](./tts-research.md) - TTS implementation details
