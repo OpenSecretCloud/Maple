@@ -802,6 +802,16 @@ struct DownloadProgress {
 
 #[tauri::command]
 pub async fn tts_download_models(app: AppHandle) -> Result<(), String> {
+    // Log the exact cause of any failure (each error string names the file and
+    // the underlying error). Without this, a failed download produced no log
+    // line after "Downloading TTS model: ...", and the frontend swallowed the
+    // plain-string error behind a generic message. See PR #520 review.
+    tts_download_models_impl(&app).await.inspect_err(|e| {
+        log::error!("TTS model download failed: {e}");
+    })
+}
+
+async fn tts_download_models_impl(app: &AppHandle) -> Result<(), String> {
     use std::time::Duration;
 
     let models_dir = get_tts_models_dir().map_err(|e| e.to_string())?;
@@ -851,12 +861,13 @@ pub async fn tts_download_models(app: AppHandle) -> Result<(), String> {
             .get(&url)
             .send()
             .await
-            .map_err(|e| format!("Failed to download {file_name}: {e}"))?;
+            .map_err(|e| format!("Failed to download {file_name} from {url}: {e}"))?;
 
         if !response.status().is_success() {
             return Err(format!(
-                "Failed to download {}: HTTP {}",
+                "Failed to download {} from {}: HTTP {}",
                 file_name,
+                url,
                 response.status()
             ));
         }
