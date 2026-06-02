@@ -300,24 +300,38 @@
                 url = "https://github.com/tauri-apps/binary-releases/releases/download/apprun-old/AppRun-${arch}";
                 hash = linuxTauriToolHashes.appRun.${arch};
               };
+              appimagePluginSources = {
+                aarch64 = ./nix/vendor/linuxdeploy-plugin-appimage/linuxdeploy-plugin-appimage-aarch64.AppImage;
+                x86_64 = ./nix/vendor/linuxdeploy-plugin-appimage/linuxdeploy-plugin-appimage-x86_64.AppImage;
+              };
+              appimageRuntimeSources = {
+                aarch64 = ./nix/vendor/appimage-type2-runtime/runtime-aarch64;
+                x86_64 = ./nix/vendor/appimage-type2-runtime/runtime-x86_64;
+              };
               linuxdeploy = pkgs.fetchurl {
                 url = "https://github.com/tauri-apps/binary-releases/releases/download/linuxdeploy/linuxdeploy-${linuxdeployArch}.AppImage";
                 hash = linuxTauriToolHashes.linuxdeploy.${linuxdeployArch};
               };
-              appimagePlugin = pkgs.fetchurl {
-                url = "https://github.com/linuxdeploy/linuxdeploy-plugin-appimage/releases/download/continuous/linuxdeploy-plugin-appimage-${arch}.AppImage";
-                hash = linuxTauriToolHashes.appimagePlugin.${arch};
-              };
-              appimageRuntime = pkgs.fetchurl {
-                url = "https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-${arch}";
-                hash = linuxTauriToolHashes.appimageRuntime.${arch};
-              };
+              appimagePlugin = pkgs.runCommand "linuxdeploy-plugin-appimage-${arch}.AppImage" {
+                outputHashAlgo = "sha256";
+                outputHashMode = "flat";
+                outputHash = linuxTauriToolHashes.appimagePlugin.${arch};
+              } ''
+                install -m 0644 ${appimagePluginSources.${arch}} "$out"
+              '';
+              appimageRuntime = pkgs.runCommand "appimage-runtime-${arch}" {
+                outputHashAlgo = "sha256";
+                outputHashMode = "flat";
+                outputHash = linuxTauriToolHashes.appimageRuntime.${arch};
+              } ''
+                install -m 0644 ${appimageRuntimeSources.${arch}} "$out"
+              '';
               gtkPlugin = pkgs.fetchurl {
-                url = "https://raw.githubusercontent.com/tauri-apps/linuxdeploy-plugin-gtk/master/linuxdeploy-plugin-gtk.sh";
+                url = "https://raw.githubusercontent.com/tauri-apps/linuxdeploy-plugin-gtk/b5eb8d05b4c0ed40107fe2158c5d8527f94568ef/linuxdeploy-plugin-gtk.sh";
                 hash = linuxTauriToolHashes.gtkPlugin;
               };
               gstreamerPlugin = pkgs.fetchurl {
-                url = "https://raw.githubusercontent.com/tauri-apps/linuxdeploy-plugin-gstreamer/master/linuxdeploy-plugin-gstreamer.sh";
+                url = "https://raw.githubusercontent.com/tauri-apps/linuxdeploy-plugin-gstreamer/2a2e67491c32995a3f279ad0ecbe77abd512b42a/linuxdeploy-plugin-gstreamer.sh";
                 hash = linuxTauriToolHashes.gstreamerPlugin;
               };
               linuxdeployWrapperSource = pkgs.writeText "maple-linuxdeploy-wrapper.c" ''
@@ -535,8 +549,6 @@
           export MAPLE_NIX_GTK_LIB=${pkgs.gtk3}/lib
           export MAPLE_NIX_LINUX_CLOSURE_INFO=${linuxRuntimeClosure}
           export MAPLE_NIX_LINUXDEPLOY_SUPPORT_PATH=${lib.makeBinPath linuxdeploySupportPackages}
-          ${lib.optionalString (tauriLinuxdeployTools != null) "export MAPLE_NIX_TAURI_LINUXDEPLOY_TOOLS=${tauriLinuxdeployTools}"}
-          ${lib.optionalString (linuxTauriToolsArch != null) "export MAPLE_NIX_TAURI_LINUXDEPLOY_ARCH=${linuxTauriToolsArch}"}
           export GSTREAMER_PLUGINS_DIR=${gstreamerPlugins}/lib/gstreamer-1.0
           export GSTREAMER_HELPERS_DIR=${pkgs.gst_all_1.gstreamer.out}/libexec/gstreamer-1.0
           export __EGL_VENDOR_LIBRARY_FILENAMES=${pkgs.mesa}/share/glvnd/egl_vendor.d/50_mesa.json
@@ -545,6 +557,11 @@
           export WEBKIT_DISABLE_COMPOSITING_MODE=1
           export WEBKIT_DISABLE_DMABUF_RENDERER=1
           export GIO_MODULE_DIR=${pkgs.glib-networking}/lib/gio/modules
+        '';
+
+        linuxDesktopShellHook = lib.optionalString pkgs.stdenv.isLinux ''
+          ${lib.optionalString (tauriLinuxdeployTools != null) "export MAPLE_NIX_TAURI_LINUXDEPLOY_TOOLS=${tauriLinuxdeployTools}"}
+          ${lib.optionalString (linuxTauriToolsArch != null) "export MAPLE_NIX_TAURI_LINUXDEPLOY_ARCH=${linuxTauriToolsArch}"}
         '';
 
         androidShellHook = lib.optionalString supportsAndroidHost ''
@@ -593,6 +610,8 @@
           }) // {
             meta.description = "Run ${script} through nix develop .#${shell}";
           };
+
+        desktopCiShell = if pkgs.stdenv.isLinux then "desktop-linux" else "ci";
       in
       {
         devShells = {
@@ -602,7 +621,7 @@
             in
             mkShellForHost {
               packages = shellPackages;
-              shellHook = pathShellHook shellPackages + commonShellHook + linuxShellHook;
+              shellHook = pathShellHook shellPackages + commonShellHook + linuxShellHook + linuxDesktopShellHook;
             };
 
           ci =
@@ -615,6 +634,15 @@
             };
         }
         // lib.optionalAttrs pkgs.stdenv.isLinux {
+          desktop-linux =
+            let
+              shellPackages = ciPackages ++ [ jdk ] ++ linuxTauriPackages;
+            in
+            mkShellForHost {
+              packages = shellPackages;
+              shellHook = pathShellHook shellPackages + commonShellHook + linuxShellHook + linuxDesktopShellHook;
+            };
+
           android =
             let
               shellPackages = ciPackages ++ androidPackages;
@@ -676,9 +704,9 @@
         apps = {
           ci-frontend = mkNixApp "maple-ci-frontend" "ci" "./scripts/ci/frontend.sh";
           ci-rust = mkNixApp "maple-ci-rust" "ci" "./scripts/ci/rust.sh";
-          ci-desktop-pr = mkNixApp "maple-ci-desktop-pr" "ci" "./scripts/ci/desktop-pr.sh";
-          ci-desktop-release = mkNixApp "maple-ci-desktop-release" "ci" "./scripts/ci/desktop-release.sh";
-          ci-signed-desktop-release-rehearsal = mkNixApp "maple-ci-signed-desktop-release-rehearsal" "ci" "./scripts/ci/signed-release-rehearsal.sh desktop";
+          ci-desktop-pr = mkNixApp "maple-ci-desktop-pr" desktopCiShell "./scripts/ci/desktop-pr.sh";
+          ci-desktop-release = mkNixApp "maple-ci-desktop-release" desktopCiShell "./scripts/ci/desktop-release.sh";
+          ci-signed-desktop-release-rehearsal = mkNixApp "maple-ci-signed-desktop-release-rehearsal" desktopCiShell "./scripts/ci/signed-release-rehearsal.sh desktop";
           ci-latest-json = mkNixApp "maple-ci-latest-json" "ci" "./scripts/ci/latest-json.sh";
           ci-verify-release-artifacts = mkNixApp "maple-ci-verify-release-artifacts" "ci" "./scripts/ci/verify-release-artifacts.sh";
         }
