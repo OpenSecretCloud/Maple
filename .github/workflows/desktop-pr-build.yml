@@ -122,3 +122,117 @@ jobs:
             frontend/src-tauri/target/reproducibility/desktop-pr-linux-fake-updater.pub
             frontend/src-tauri/target/reproducibility/desktop-pr-linux-*.sha256
           retention-days: 5
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # was v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@f4d14e03ff726c06358e5557344e1da148b56cf7 # was v1
+        with:
+          bun-version: 1.3.5
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # was stable
+        with:
+          toolchain: 1.95.0
+
+      - name: Install sccache
+        shell: bash
+        run: |
+          SCCACHE_VERSION=0.8.2
+          SCCACHE_SHA256="de5e9f66bb8a6bbdf0e28cb8a086a8d12699af796bf70bcd9dc40d80715bf9b8"
+          SCCACHE_ARCHIVE="sccache-v${SCCACHE_VERSION}-x86_64-pc-windows-msvc.tar.gz"
+          SCCACHE_URL="https://github.com/mozilla/sccache/releases/download/v${SCCACHE_VERSION}/${SCCACHE_ARCHIVE}"
+          # Run download/verify/extract inside a subshell cd'd to RUNNER_TEMP so
+          # the archive and target dir are referenced by relative names. MSYS2 tar
+          # mangles Windows paths like D:\a when given absolute -C/-f arguments
+          # (even with --force-local); relative paths sidestep that.
+          (
+            cd "$RUNNER_TEMP"
+            curl --fail --location --show-error --silent "$SCCACHE_URL" --output "$SCCACHE_ARCHIVE"
+            echo "${SCCACHE_SHA256}  ${SCCACHE_ARCHIVE}" | sha256sum --check -
+            tar xzf "$SCCACHE_ARCHIVE"
+          )
+          SCCACHE_BIN_DIR="$RUNNER_TEMP/sccache-v${SCCACHE_VERSION}-x86_64-pc-windows-msvc"
+          echo "$SCCACHE_BIN_DIR" >> "$GITHUB_PATH"
+          "$SCCACHE_BIN_DIR/sccache.exe" --version
+
+      - name: Cache sccache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # was v4
+        with:
+          path: ~\AppData\Local\Mozilla\sccache
+          key: ${{ runner.os }}-sccache-windows-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-sccache-windows-
+            ${{ runner.os }}-sccache-
+
+      - name: Provide ONNX Runtime (Windows)
+        shell: bash
+        run: |
+          ./frontend/src-tauri/scripts/provide-windows-onnxruntime.sh >> "$GITHUB_ENV"
+
+      - name: Stage Windows runtime DLLs for bundling
+        shell: pwsh
+        run: |
+          # maple.exe links onnxruntime.dll by ordinal; without these next to the
+          # exe the loader binds to the OS Windows-ML onnxruntime.dll (v1.17) and
+          # TTS hangs at Session::builder. See resources/windows/README.md.
+          $dest = "frontend/src-tauri/resources/windows"
+          New-Item -ItemType Directory -Force -Path $dest | Out-Null
+          # ONNX Runtime 1.22.0 (already downloaded + SHA-verified; path in env)
+          Copy-Item "$env:ORT_DYLIB_PATH" (Join-Path $dest "onnxruntime.dll") -Force
+          # MSVC C++ runtime DLLs onnxruntime.dll depends on. Find a source dir
+          # holding all four, independent of the runner's VS year/edition: prefer
+          # the versioned redist (located via vswhere), fall back to System32.
+          $crtDlls = 'VCRUNTIME140.dll','VCRUNTIME140_1.dll','MSVCP140.dll','MSVCP140_1.dll'
+          $candidates = @()
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (Test-Path $vswhere) {
+            $vs = & $vswhere -latest -products * -property installationPath
+            if ($vs) {
+              $candidates += Get-ChildItem (Join-Path $vs 'VC\Redist\MSVC\*\x64') -Directory -ErrorAction SilentlyContinue |
+                             Where-Object { $_.Name -match '^Microsoft\.VC\d+\.CRT$' } | ForEach-Object FullName
+            }
+          }
+          $candidates += "$env:WINDIR\System32"
+          $src = $candidates | Where-Object { $d = $_; -not ($crtDlls | Where-Object { -not (Test-Path (Join-Path $d $_)) }) } | Select-Object -First 1
+          if (-not $src) { throw "No directory has all CRT DLLs. Searched: $($candidates -join '; ')" }
+          Write-Host "CRT source: $src"
+          foreach ($dll in $crtDlls) { Copy-Item (Join-Path $src $dll) (Join-Path $dest $dll) -Force }
+          Get-ChildItem $dest | Select-Object Name, Length
+
+      - name: Install frontend dependencies
+        working-directory: ./frontend
+        run: bun install --frozen-lockfile --ignore-scripts
+
+      - name: Configure sccache
+        shell: bash
+        run: |
+          {
+            echo "RUSTC_WRAPPER=sccache"
+            echo "SCCACHE_CACHE_SIZE=2G"
+          } >> "$GITHUB_ENV"
+
+      - name: Build Tauri App (Windows, unsigned)
+        working-directory: ./frontend
+        shell: bash
+        run: bun tauri build --no-sign --config '{"bundle":{"createUpdaterArtifacts":false}}'
+        env:
+          VITE_OPEN_SECRET_API_URL: https://enclave.secretgpt.ai
+          VITE_MAPLE_BILLING_API_URL: https://billing-dev.opensecret.cloud
+          VITE_CLIENT_ID: ba5a14b5-d915-47b1-b7b1-afda52bc5fc6
+
+      - name: Show sccache stats
+        run: sccache --show-stats
+
+      - name: Upload Windows PR Build
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # was v4
+        with:
+          name: maple-windows-x64-pr
+          path: |
+            frontend/src-tauri/target/release/bundle/nsis/*.exe
+          retention-days: 5

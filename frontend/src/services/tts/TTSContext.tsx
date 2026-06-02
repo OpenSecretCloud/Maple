@@ -165,7 +165,16 @@ export function TTSProvider({ children }: { children: ReactNode }) {
     } catch (err) {
       console.error("TTS download failed:", err);
       setStatus("error");
-      setError(err instanceof Error ? err.message : "Failed to download TTS models");
+      // Tauri commands returning Result<_, String> reject with a plain string,
+      // so `err instanceof Error` is false — surface the string directly instead
+      // of hiding the real cause behind a generic message. See PR #520 review.
+      let message = "Failed to download TTS models";
+      if (typeof err === "string") {
+        message = err;
+      } else if (err instanceof Error) {
+        message = err.message;
+      }
+      setError(message);
     } finally {
       cleanupDownloadListener();
     }

@@ -84,6 +84,19 @@ pub fn run() {
             if let Err(e) = app.deep_link().register("cloud.opensecret.maple") {
                 log::error!("[Deep Link] Failed to register scheme: {e}");
             }
+            // Windows startup diagnostic: confirm the OS has our custom scheme
+            // pointed at the running exe. Most "OAuth callback does nothing"
+            // reports trace back to a missing/stale
+            // HKCU\Software\Classes\cloud.opensecret.maple key (no installer run,
+            // a deleted dev build, or a stale path), so log it once at startup.
+            #[cfg(target_os = "windows")]
+            match app.deep_link().is_registered("cloud.opensecret.maple") {
+                Ok(true) => log::info!("[Deep Link] scheme 'cloud.opensecret.maple' is registered"),
+                Ok(false) => log::warn!(
+                    "[Deep Link] scheme 'cloud.opensecret.maple' is NOT registered; OAuth/payment deep links will not reach the app"
+                ),
+                Err(e) => log::error!("[Deep Link] is_registered check failed: {e}"),
+            }
             // Create the application menu with update options
             #[cfg(desktop)]
             {
@@ -119,13 +132,17 @@ pub fn run() {
                     });
                 });
 
-                // Create a native menu with a "Check for Updates" option
+                // Create the application menu (macOS only).
+                //
+                // On Windows/Linux this menu renders as an in-window bar at the top of
+                // the window. Its edit items (undo/redo/cut/copy/paste/select-all) are
+                // handled natively by the webview regardless of the menu, About lives in
+                // the in-app account menu, and updates are applied by the automatic check
+                // (startup + hourly, above). The bar adds only clutter, so we omit it
+                // entirely on those platforms for a cleaner window.
+                #[cfg(target_os = "macos")]
                 {
-                    #[cfg(target_os = "macos")]
                     use tauri::menu::{MenuBuilder, SubmenuBuilder};
-
-                    #[cfg(not(target_os = "macos"))]
-                    use tauri::menu::MenuBuilder;
 
                     // Define menu item ID for "Check for Updates"
                     let check_updates_id = "check-for-updates";
@@ -133,71 +150,42 @@ pub fn run() {
                     // Get app handle for menu operations
                     let handle = app.handle();
 
-                    // Build platform-specific menus
-                    #[cfg(target_os = "macos")]
-                    {
-                        // For macOS, we need to create a proper submenu structure
-                        // First create the app submenu (first submenu becomes the application menu)
-                        let app_submenu = SubmenuBuilder::new(handle, &app.package_info().name)
-                            // Add about menu item (standard macOS menu item)
-                            .about(None)
-                            // Add our update checker to the app menu
-                            .text(check_updates_id, "Check for Updates")
-                            .separator()
-                            .hide()
-                            .hide_others()
-                            .show_all()
-                            .separator()
-                            .quit()
-                            .build()?;
+                    // For macOS, we need to create a proper submenu structure
+                    // First create the app submenu (first submenu becomes the application menu)
+                    let app_submenu = SubmenuBuilder::new(handle, &app.package_info().name)
+                        // Add about menu item (standard macOS menu item)
+                        .about(None)
+                        // Add our update checker to the app menu
+                        .text(check_updates_id, "Check for Updates")
+                        .separator()
+                        .hide()
+                        .hide_others()
+                        .show_all()
+                        .separator()
+                        .quit()
+                        .build()?;
 
-                        // Create edit submenu with standard clipboard operations
-                        let edit_submenu = SubmenuBuilder::new(handle, "Edit")
-                            .undo()
-                            .redo()
-                            .separator()
-                            .cut()
-                            .copy()
-                            .paste()
-                            .separator()
-                            .select_all()
-                            .build()?;
+                    // Create edit submenu with standard clipboard operations
+                    let edit_submenu = SubmenuBuilder::new(handle, "Edit")
+                        .undo()
+                        .redo()
+                        .separator()
+                        .cut()
+                        .copy()
+                        .paste()
+                        .separator()
+                        .select_all()
+                        .build()?;
 
-                        // Create the main menu and add our app submenu and edit submenu
-                        let menu = MenuBuilder::new(handle).items(&[&app_submenu, &edit_submenu]).build()?;
+                    // Create the main menu and add our app submenu and edit submenu
+                    let menu = MenuBuilder::new(handle)
+                        .items(&[&app_submenu, &edit_submenu])
+                        .build()?;
 
-                        // Set as the application menu
-                        app.set_menu(menu)?;
+                    // Set as the application menu
+                    app.set_menu(menu)?;
 
-                        // Log that we're setting up the menu
-                        log::info!(
-                            "Setting up macOS menu with app submenu and edit submenu (copy/paste)"
-                        );
-                    }
-
-                    #[cfg(not(target_os = "macos"))]
-                    {
-                        // For Windows/Linux, we need to include edit functionality while keeping a simpler structure
-                        let menu = MenuBuilder::new(handle)
-                            .about(None)
-                            .text(check_updates_id, "Check for Updates")
-                            .separator()
-                            // Add standard edit operations
-                            .undo()
-                            .redo()
-                            .separator()
-                            .cut()
-                            .copy()
-                            .paste()
-                            .select_all()
-                            .separator()
-                            .quit()
-                            .build()?;
-
-                        app.set_menu(menu)?;
-
-                        log::info!("Setting up Windows/Linux menu with About, Check for Updates, and Edit options");
-                    }
+                    log::info!("Setting up macOS menu with app submenu and edit submenu (copy/paste)");
 
                     // Handle menu events
                     let app_handle_for_menu = app.handle().clone();

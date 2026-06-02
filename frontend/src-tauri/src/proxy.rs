@@ -62,8 +62,79 @@ impl ProxyState {
     }
 }
 
+// On Windows the proxy config lives in the roaming %APPDATA% profile, so a
+// plaintext api_key could sync across machines in a domain/AAD environment.
+// Store it in Windows Credential Manager instead and keep it out of the JSON.
+// macOS/Linux keep their local plaintext-with-0o600 behavior unchanged.
+#[cfg(target_os = "windows")]
+const KEYRING_SERVICE: &str = "cloud.opensecret.maple";
+#[cfg(target_os = "windows")]
+const KEYRING_USER: &str = "proxy_api_key";
+
+/// Persist the API key in Windows Credential Manager. An empty key clears the
+/// entry. Returns `Ok(true)` when the key was stored (or cleared), `Ok(false)`
+/// when no secure storage is available (caller keeps the plaintext fallback),
+/// and `Err` when a clear was requested but the stale credential could not be
+/// removed (caller must not scrub the JSON, or the old key would be resurrected).
+#[cfg(target_os = "windows")]
+fn store_api_key(key: &str) -> Result<bool> {
+    let entry = match keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER) {
+        Ok(entry) => entry,
+        Err(e) => {
+            log::warn!("Credential Manager unavailable, keeping plaintext config: {e}");
+            return Ok(false);
+        }
+    };
+
+    if key.is_empty() {
+        return match entry.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(true),
+            // A hard delete failure leaves the old credential in place. Surface
+            // it instead of reporting success: the caller must not scrub the
+            // JSON, or the stale key would be resurrected on the next load.
+            Err(e) => Err(anyhow!(
+                "Failed to clear API key from Credential Manager: {e}"
+            )),
+        };
+    }
+
+    match entry.set_password(key) {
+        Ok(()) => Ok(true),
+        Err(keyring::Error::PlatformFailure(_)) | Err(keyring::Error::NoStorageAccess(_)) => {
+            log::warn!("No secure credential storage available; keeping plaintext config");
+            Ok(false)
+        }
+        Err(e) => Err(anyhow!(
+            "Failed to store API key in Credential Manager: {e}"
+        )),
+    }
+}
+
+/// Load the API key from Windows Credential Manager.
+/// - `Ok(Some(key))` — Credential Manager is available (`key` may be empty).
+/// - `Ok(None)` — unavailable; caller should fall back to the JSON value.
+#[cfg(target_os = "windows")]
+fn load_api_key() -> Result<Option<String>> {
+    let entry = match keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER) {
+        Ok(entry) => entry,
+        Err(_) => return Ok(None),
+    };
+
+    match entry.get_password() {
+        Ok(key) => Ok(Some(key)),
+        Err(keyring::Error::NoEntry) => Ok(Some(String::new())),
+        Err(keyring::Error::PlatformFailure(_)) | Err(keyring::Error::NoStorageAccess(_)) => {
+            Ok(None)
+        }
+        Err(e) => Err(anyhow!(
+            "Failed to read API key from Credential Manager: {e}"
+        )),
+    }
+}
+
 #[tauri::command]
 pub async fn start_proxy(
+    app_handle: AppHandle,
     state: State<'_, ProxyState>,
     config: ProxyConfig,
 ) -> Result<ProxyStatus, String> {
@@ -132,7 +203,7 @@ pub async fn start_proxy(
     *running = true;
 
     // Save config to disk
-    if let Err(e) = save_proxy_config(&config).await {
+    if let Err(e) = save_proxy_config(&app_handle, &config).await {
         log::error!("Failed to save proxy config: {e}");
     }
 
@@ -185,15 +256,15 @@ pub async fn get_proxy_status(state: State<'_, ProxyState>) -> Result<ProxyStatu
 }
 
 #[tauri::command]
-pub async fn load_proxy_config() -> Result<ProxyConfig, String> {
-    load_saved_proxy_config()
+pub async fn load_proxy_config(app_handle: AppHandle) -> Result<ProxyConfig, String> {
+    load_saved_proxy_config(&app_handle)
         .await
         .map_err(|e| format!("Failed to load proxy config: {e}"))
 }
 
 #[tauri::command]
-pub async fn save_proxy_settings(config: ProxyConfig) -> Result<(), String> {
-    save_proxy_config(&config)
+pub async fn save_proxy_settings(app_handle: AppHandle, config: ProxyConfig) -> Result<(), String> {
+    save_proxy_config(&app_handle, &config)
         .await
         .map_err(|e| format!("Failed to save proxy config: {e}"))
 }
@@ -214,20 +285,24 @@ pub async fn test_proxy_port(host: String, port: u16) -> Result<bool, String> {
     }
 }
 
-// Helper functions for config persistence
-async fn get_config_path() -> Result<PathBuf> {
-    // Use a hardcoded app name for the data directory
-    let app_name = "maple";
-    let home_dir = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .map_err(|_| anyhow!("Failed to get home directory"))?;
-
-    // Note: We use ~/.config on all platforms for simplicity.
-    // This works well on Linux and macOS (our currently supported platforms).
-    // While macOS traditionally uses ~/Library/Application Support, many modern
-    // cross-platform tools use ~/.config on macOS as well.
-    // If Windows support is added in the future, consider using %APPDATA% instead.
-    let app_dir = PathBuf::from(home_dir).join(".config").join(app_name);
+// Helper functions for config persistence.
+// Windows uses the Tauri-managed app_config_dir() (%APPDATA%); macOS/Linux keep
+// the historical ~/.config/maple/ location. The Windows API key is additionally
+// stored in Credential Manager rather than plaintext (see store/load_api_key).
+async fn get_config_path(app_handle: &AppHandle) -> Result<PathBuf> {
+    let app_dir = if cfg!(target_os = "windows") {
+        // Resolves to %APPDATA%\cloud.opensecret.maple\ (Roaming).
+        app_handle
+            .path()
+            .app_config_dir()
+            .map_err(|e| anyhow!("Failed to resolve app config dir: {e}"))?
+    } else {
+        // macOS/Linux: ~/.config/maple/ — unchanged for byte-identical behavior.
+        let app_name = "maple";
+        let home_dir =
+            std::env::var("HOME").map_err(|_| anyhow!("Failed to get home directory"))?;
+        PathBuf::from(home_dir).join(".config").join(app_name)
+    };
 
     // Ensure directory exists
     tokio::fs::create_dir_all(&app_dir).await?;
@@ -235,8 +310,34 @@ async fn get_config_path() -> Result<PathBuf> {
     Ok(app_dir.join("proxy_config.json"))
 }
 
-async fn save_proxy_config(config: &ProxyConfig) -> Result<()> {
-    let path = get_config_path().await?;
+async fn save_proxy_config(app_handle: &AppHandle, config: &ProxyConfig) -> Result<()> {
+    let path = get_config_path(app_handle).await?;
+
+    // On Windows, move the API key into Credential Manager and scrub it from
+    // the JSON (the config dir is the roaming profile). Other platforms keep
+    // the existing plaintext-in-JSON behavior unchanged.
+    #[cfg(target_os = "windows")]
+    let json = {
+        let scrubbed = match store_api_key(&config.api_key) {
+            Ok(true) => ProxyConfig {
+                api_key: String::new(),
+                ..config.clone()
+            },
+            Ok(false) => config.clone(),
+            // Clearing the key failed: don't scrub the JSON and report success,
+            // since the stale credential survives and would be resurrected on
+            // the next load. Propagate so the failure is visible.
+            Err(e) if config.api_key.is_empty() => return Err(e),
+            // Storing failed for another reason: fall back to persisting the key
+            // in plaintext JSON so it isn't lost.
+            Err(e) => {
+                log::warn!("{e}");
+                config.clone()
+            }
+        };
+        serde_json::to_string_pretty(&scrubbed)?
+    };
+    #[cfg(not(target_os = "windows"))]
     let json = serde_json::to_string_pretty(config)?;
 
     // Write the config file
@@ -253,22 +354,33 @@ async fn save_proxy_config(config: &ProxyConfig) -> Result<()> {
     Ok(())
 }
 
-async fn load_saved_proxy_config() -> Result<ProxyConfig> {
-    let path = get_config_path().await?;
+async fn load_saved_proxy_config(app_handle: &AppHandle) -> Result<ProxyConfig> {
+    let path = get_config_path(app_handle).await?;
 
     if !path.exists() {
         return Ok(ProxyConfig::default());
     }
 
     let json = tokio::fs::read_to_string(path).await?;
-    let config: ProxyConfig = serde_json::from_str(&json)?;
+    #[cfg_attr(not(target_os = "windows"), allow(unused_mut))]
+    let mut config: ProxyConfig = serde_json::from_str(&json)?;
+
+    // On Windows, prefer the API key from Credential Manager; fall back to any
+    // plaintext value still in the JSON if it's unavailable.
+    #[cfg(target_os = "windows")]
+    if let Some(key) = load_api_key()? {
+        if !key.is_empty() {
+            config.api_key = key;
+        }
+    }
+
     Ok(config)
 }
 
 // Initialize proxy on app startup if auto_start is enabled
 pub async fn init_proxy_on_startup_simple(app_handle: AppHandle) -> Result<()> {
     // Load saved config
-    let config = load_saved_proxy_config().await?;
+    let config = load_saved_proxy_config(&app_handle).await?;
 
     // Check if auto-start is enabled and we have an API key
     if config.auto_start && !config.api_key.is_empty() {
@@ -278,7 +390,7 @@ pub async fn init_proxy_on_startup_simple(app_handle: AppHandle) -> Result<()> {
         let proxy_state: tauri::State<ProxyState> = app_handle.state();
 
         // Try to start the proxy
-        match start_proxy(proxy_state, config.clone()).await {
+        match start_proxy(app_handle.clone(), proxy_state, config.clone()).await {
             Ok(_) => {
                 log::info!(
                     "Proxy auto-started successfully on {}:{}",

@@ -48,6 +48,30 @@ onnxruntime_linux_aarch64_dylib_sha256_for_version() {
   esac
 }
 
+onnxruntime_windows_x64_archive_sha256_for_version() {
+  case "$1" in
+    1.22.0)
+      printf '%s\n' "174c616efc0271194488642a72f1a514e01487da4dfe84c49296d66e40ebe0da"
+      ;;
+    *)
+      echo "No pinned Windows x64 ONNX Runtime archive SHA-256 for version '$1'." >&2
+      return 1
+      ;;
+  esac
+}
+
+onnxruntime_windows_x64_dll_sha256_for_version() {
+  case "$1" in
+    1.22.0)
+      printf '%s\n' "579b636403983254346a5c1d80bd28f1519cd1e284cd204f8d4ff41f8d711559"
+      ;;
+    *)
+      echo "No pinned Windows x64 ONNX Runtime DLL SHA-256 for version '$1'." >&2
+      return 1
+      ;;
+  esac
+}
+
 onnxruntime_ios_commit_for_version() {
   case "$1" in
     1.22.2)
