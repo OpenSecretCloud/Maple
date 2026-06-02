@@ -280,12 +280,12 @@
             x86_64 = "sha256-52K+qFyOsNSzUI1G5cHwN/cX0PkwOuO0qvyLBJkfoe8=";
           };
           appimagePlugin = {
-            aarch64 = "sha256-Ak4f3LJchgv9hSN5I6lO0VubrAwCqQ/xCpCcsIdmxfU=";
-            x86_64 = "sha256-Egjmp7HiZG4/sAbeqQC3K9hI7IYyS5l5t8lD8hHGacg=";
+            aarch64 = "sha256-g8KSFJJ0llqGXc1EwTXPyouijGt94+tijUuLXySK8Xw=";
+            x86_64 = "sha256-mS1QKiSOFKsYVEjd9vbn0lVYy4TUYjw1TDrzUMJfzLM=";
           };
           appimageRuntime = {
-            aarch64 = "sha256-fyeowVvyCi5GNC6kqXcEemnYtNZKEj/gteI7IP0pDIU=";
-            x86_64 = "sha256-okGdzkdWg5WuecAf+ppaNB3TOVgTUv8QTQc1J1Qxd+U=";
+            aarch64 = "sha256-AMvfz5F8xsD/bTNH1Z4Moff0Wm3xpCig1tinhmTYdEQ=";
+            x86_64 = "sha256-L8qLRDySUQ8Ug6iD9gBhrQm0a5eLJjHIB82HOkfsJg0=";
           };
           gtkPlugin = "sha256-yzefmwcz6a2fi9ePjC+gOK7yR4Uju31MjmT/ah6jUBo=";
           gstreamerPlugin = "sha256-wQe0nYTtv/xqsibtEAfgYmpPeqLDo2t3gr72I1HUnpQ=";
@@ -300,32 +300,18 @@
                 url = "https://github.com/tauri-apps/binary-releases/releases/download/apprun-old/AppRun-${arch}";
                 hash = linuxTauriToolHashes.appRun.${arch};
               };
-              appimagePluginSources = {
-                aarch64 = ./nix/vendor/linuxdeploy-plugin-appimage/linuxdeploy-plugin-appimage-aarch64.AppImage;
-                x86_64 = ./nix/vendor/linuxdeploy-plugin-appimage/linuxdeploy-plugin-appimage-x86_64.AppImage;
-              };
-              appimageRuntimeSources = {
-                aarch64 = ./nix/vendor/appimage-type2-runtime/runtime-aarch64;
-                x86_64 = ./nix/vendor/appimage-type2-runtime/runtime-x86_64;
-              };
               linuxdeploy = pkgs.fetchurl {
                 url = "https://github.com/tauri-apps/binary-releases/releases/download/linuxdeploy/linuxdeploy-${linuxdeployArch}.AppImage";
                 hash = linuxTauriToolHashes.linuxdeploy.${linuxdeployArch};
               };
-              appimagePlugin = pkgs.runCommand "linuxdeploy-plugin-appimage-${arch}.AppImage" {
-                outputHashAlgo = "sha256";
-                outputHashMode = "flat";
-                outputHash = linuxTauriToolHashes.appimagePlugin.${arch};
-              } ''
-                install -m 0644 ${appimagePluginSources.${arch}} "$out"
-              '';
-              appimageRuntime = pkgs.runCommand "appimage-runtime-${arch}" {
-                outputHashAlgo = "sha256";
-                outputHashMode = "flat";
-                outputHash = linuxTauriToolHashes.appimageRuntime.${arch};
-              } ''
-                install -m 0644 ${appimageRuntimeSources.${arch}} "$out"
-              '';
+              appimagePlugin = pkgs.fetchurl {
+                url = "https://github.com/linuxdeploy/linuxdeploy-plugin-appimage/releases/download/1-alpha-20250213-1/linuxdeploy-plugin-appimage-${arch}.AppImage";
+                hash = linuxTauriToolHashes.appimagePlugin.${arch};
+              };
+              appimageRuntime = pkgs.fetchurl {
+                url = "https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-${arch}";
+                hash = linuxTauriToolHashes.appimageRuntime.${arch};
+              };
               gtkPlugin = pkgs.fetchurl {
                 url = "https://raw.githubusercontent.com/tauri-apps/linuxdeploy-plugin-gtk/b5eb8d05b4c0ed40107fe2158c5d8527f94568ef/linuxdeploy-plugin-gtk.sh";
                 hash = linuxTauriToolHashes.gtkPlugin;
