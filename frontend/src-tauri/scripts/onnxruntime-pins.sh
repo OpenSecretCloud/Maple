@@ -72,6 +72,62 @@ onnxruntime_windows_x64_dll_sha256_for_version() {
   esac
 }
 
+windows_vc_redist_x64_version() {
+  printf '%s\n' "14.44.35211"
+}
+
+windows_vc_redist_x64_url_for_version() {
+  case "$1" in
+    14.44.35211)
+      printf '%s\n' "https://download.visualstudio.microsoft.com/download/pr/7ebf5fdb-36dc-4145-b0a0-90d3d5990a61/CC0FF0EB1DC3F5188AE6300FAEF32BF5BEEBA4BDD6E8E445A9184072096B713B/VC_redist.x64.exe"
+      ;;
+    *)
+      echo "No pinned Windows x64 VC++ Redistributable URL for version '$1'." >&2
+      return 1
+      ;;
+  esac
+}
+
+windows_vc_redist_x64_archive_sha256_for_version() {
+  case "$1" in
+    14.44.35211)
+      printf '%s\n' "cc0ff0eb1dc3f5188ae6300faef32bf5beeba4bdd6e8e445a9184072096b713b"
+      ;;
+    *)
+      echo "No pinned Windows x64 VC++ Redistributable SHA-256 for version '$1'." >&2
+      return 1
+      ;;
+  esac
+}
+
+windows_wix_cli_version() {
+  printf '%s\n' "6.0.2"
+}
+
+windows_wix_cli_url_for_version() {
+  case "$1" in
+    6.0.2)
+      printf '%s\n' "https://www.nuget.org/api/v2/package/wix/6.0.2"
+      ;;
+    *)
+      echo "No pinned WiX CLI NuGet package URL for version '$1'." >&2
+      return 1
+      ;;
+  esac
+}
+
+windows_wix_cli_archive_sha256_for_version() {
+  case "$1" in
+    6.0.2)
+      printf '%s\n' "13caed0aa86898c9952eb8ba82c6ac6b43d1575bb731ac848e5edf5490a10428"
+      ;;
+    *)
+      echo "No pinned WiX CLI NuGet package SHA-256 for version '$1'." >&2
+      return 1
+      ;;
+  esac
+}
+
 onnxruntime_ios_commit_for_version() {
   case "$1" in
     1.22.2)
