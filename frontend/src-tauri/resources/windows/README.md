@@ -45,39 +45,29 @@ must be staged here **before `bun tauri build`** on Windows.
 
 ## CI staging
 
-The Windows CI workflows (`desktop-pr-build.yml`, `desktop-build.yml`) stage
-these automatically in the **"Stage Windows runtime DLLs for bundling"** step,
-which runs after "Provide ONNX Runtime (Windows)" and before the Tauri build.
+The Windows PR workflow stages these automatically through
+`scripts/ci/desktop-windows-pr.sh` before the Tauri build. That script uses:
+
+- SHA-verified ONNX Runtime from `scripts/provide-windows-onnxruntime.sh`.
+- A SHA-verified, versioned Microsoft `VC_redist.x64.exe` URL pinned in
+  `frontend/src-tauri/scripts/onnxruntime-pins.sh`.
+- A SHA-verified WiX CLI NuGet package, used only to extract the VC++ redist
+  bootstrapper payload reproducibly.
+
+The build emits `target/reproducibility/desktop-pr-windows-*.sha256` proof
+manifests, and CI verifies those manifests from uploaded artifacts.
 
 For a **local** Windows build, run `scripts/provide-windows-onnxruntime.sh`
-first (it exports `ORT_DYLIB_PATH`), then stage the same five files:
+first (it exports `ORT_DYLIB_PATH`), then run the same staging helper:
 
-1. **`onnxruntime.dll`** — from the SHA-verified ONNX Runtime download:
-
-   ```bash
-   cp "$ORT_DYLIB_PATH" frontend/src-tauri/resources/windows/onnxruntime.dll
-   ```
-
-2. **The 4 MSVC CRT DLLs** — from the Visual Studio redist on the machine,
-   located via `vswhere` so it's independent of the VS year/edition (the
-   `^Microsoft\.VC\d+\.CRT$` filter avoids the neighbouring `DebugCRT`/`OPENMP`
-   folders); falls back to `System32`:
-
-   ```powershell
-   $crtDlls = 'VCRUNTIME140.dll','VCRUNTIME140_1.dll','MSVCP140.dll','MSVCP140_1.dll'
-   $candidates = @()
-   $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-   if (Test-Path $vswhere) {
-     $vs = & $vswhere -latest -products * -property installationPath
-     if ($vs) {
-       $candidates += Get-ChildItem (Join-Path $vs 'VC\Redist\MSVC\*\x64') -Directory -ErrorAction SilentlyContinue |
-                      Where-Object { $_.Name -match '^Microsoft\.VC\d+\.CRT$' } | ForEach-Object FullName
-     }
-   }
-   $candidates += "$env:WINDIR\System32"
-   $src = $candidates | Where-Object { $d = $_; -not ($crtDlls | Where-Object { -not (Test-Path (Join-Path $d $_)) }) } | Select-Object -First 1
-   $crtDlls | ForEach-Object { Copy-Item (Join-Path $src $_) frontend\src-tauri\resources\windows\ }
-   ```
+```powershell
+$env:MAPLE_WINDOWS_VC_REDIST_VERSION = "14.44.35211"
+$env:MAPLE_WINDOWS_VC_REDIST_URL = "<pinned URL from frontend/src-tauri/scripts/onnxruntime-pins.sh>"
+$env:MAPLE_WINDOWS_VC_REDIST_SHA256 = "<pinned SHA-256 from frontend/src-tauri/scripts/onnxruntime-pins.sh>"
+.\frontend\src-tauri\scripts\stage-windows-runtime-dlls.ps1 `
+  -OrtDllPath "$env:ORT_DYLIB_PATH" `
+  -Destination .\frontend\src-tauri\resources\windows
+```
 
 The hook reads these files at makensis compile time, so they must be present
 here before the build runs (the CI staging step guarantees that); a missing

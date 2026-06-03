@@ -5,7 +5,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
 
 usage() {
   cat >&2 <<'EOF'
-usage: verify-release-artifacts.sh <artifacts-dir> [all|present|linux|macos|android|ios|web|latest-json ...]
+usage: verify-release-artifacts.sh <artifacts-dir> [all|present|linux|macos|windows|android|ios|web|latest-json ...]
 
 Verifies downloaded release artifacts against their reproducibility proof files.
 The verifier recomputes final file hashes, canonical signed payload hashes, and
@@ -305,6 +305,16 @@ verify_linux_present() {
   verify_linux_manifest "${final_manifest}"
 }
 
+verify_windows() {
+  local final_manifest runtime_manifest
+
+  final_manifest="$(proof_file_required desktop-pr-windows-final.sha256)"
+  runtime_manifest="$(proof_file_required desktop-pr-windows-runtime-dlls.sha256)"
+
+  verify_file_manifest "${final_manifest}"
+  verify_file_manifest "${runtime_manifest}"
+}
+
 verify_canonical_apple_manifest() {
   local manifest="$1"
   local expected_digest="${2:-}"
@@ -589,6 +599,7 @@ verify_present() {
     verify_linux_present
   fi
   target_present desktop-release-macos-final.sha256 && verify_macos
+  target_present desktop-pr-windows-final.sha256 && verify_windows
   target_present android-release-final.sha256 && verify_android
   target_present ios-release-final.sha256 && verify_ios
   target_present web-final.sha256 && verify_web
@@ -618,6 +629,9 @@ for target in "$@"; do
       ;;
     macos)
       verify_macos
+      ;;
+    windows)
+      verify_windows
       ;;
     android)
       verify_android

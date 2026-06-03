@@ -102,18 +102,28 @@ configure_sccache() {
   if command -v sccache >/dev/null 2>&1; then
     local os socket_root
     os="$(host_os)"
-    socket_root="${TMPDIR:-/tmp}"
 
     export RUSTC_WRAPPER="${RUSTC_WRAPPER:-sccache}"
     export SCCACHE_CACHE_SIZE="${SCCACHE_CACHE_SIZE:-2G}"
-    export SCCACHE_SERVER_UDS="${SCCACHE_SERVER_UDS:-${socket_root%/}/maple-sccache-${os}.sock}"
     export CARGO_CACHE_RUSTC_INFO="${CARGO_CACHE_RUSTC_INFO:-0}"
 
     case "${os}" in
       darwin)
+        socket_root="${TMPDIR:-/tmp}"
+        export SCCACHE_SERVER_UDS="${SCCACHE_SERVER_UDS:-${socket_root%/}/maple-sccache-${os}.sock}"
         export SCCACHE_DIR="${SCCACHE_DIR:-${HOME}/Library/Caches/Mozilla.sccache}"
         ;;
+      mingw* | msys* | cygwin*)
+        unset SCCACHE_SERVER_UDS
+        if [ -n "${LOCALAPPDATA:-}" ]; then
+          export SCCACHE_DIR="${SCCACHE_DIR:-${LOCALAPPDATA}\\Mozilla\\sccache}"
+        else
+          export SCCACHE_DIR="${SCCACHE_DIR:-${HOME}/AppData/Local/Mozilla/sccache}"
+        fi
+        ;;
       *)
+        socket_root="${TMPDIR:-/tmp}"
+        export SCCACHE_SERVER_UDS="${SCCACHE_SERVER_UDS:-${socket_root%/}/maple-sccache-${os}.sock}"
         export SCCACHE_DIR="${SCCACHE_DIR:-${HOME}/.cache/sccache}"
         ;;
     esac
