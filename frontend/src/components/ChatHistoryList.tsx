@@ -12,7 +12,8 @@ import {
   FolderPlus,
   FolderInput,
   Pin,
-  PinOff
+  PinOff,
+  SquarePen
 } from "lucide-react";
 import {
   DropdownMenu,
@@ -958,6 +959,24 @@ export function ChatHistoryList({
     [router, setSelectedProjectId]
   );
 
+  const handleNewChatInProject = useCallback(
+    async (projectId: string) => {
+      setSelectedProjectId(projectId);
+
+      if (window.location.pathname !== "/") {
+        await router.navigate({ to: "/" });
+      }
+
+      const params = new URLSearchParams(window.location.search);
+      params.delete("conversation_id");
+      params.delete("project_id");
+      window.history.replaceState({}, "", params.toString() ? `/?${params.toString()}` : "/");
+      window.dispatchEvent(new CustomEvent("newchat", { detail: { projectId } }));
+      setTimeout(() => document.getElementById("message")?.focus(), 0);
+    },
+    [router, setSelectedProjectId]
+  );
+
   const handleCreateProject = useCallback(
     async (name: string) => {
       const project = await opensecret.createConversationProject({ name });
@@ -1389,6 +1408,10 @@ export function ChatHistoryList({
                           </button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent>
+                          <DropdownMenuItem onClick={() => void handleNewChatInProject(project.id)}>
+                            <SquarePen className="mr-2 h-4 w-4" strokeWidth={ICON_STROKE} />
+                            New Chat in Project
+                          </DropdownMenuItem>
                           <DropdownMenuItem onClick={() => void handleViewProject(project.id)}>
                             <Folder className="mr-2 h-4 w-4" strokeWidth={ICON_STROKE} />
                             View Project
