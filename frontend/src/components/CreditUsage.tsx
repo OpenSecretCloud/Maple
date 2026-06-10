@@ -86,8 +86,7 @@ export function CreditUsage() {
   const used = hasUsageData ? Math.max(0, usedLive!) : undefined;
   const percentUsed = hasUsageData ? Math.min(100, Math.max(0, (used! / totalLive!) * 100)) : 0;
 
-  const isMaxPlan = productName?.toLowerCase().includes("max") ?? false;
-  const shouldShowUsageMeter = hasUsageData && (!isMaxPlan || percentUsed >= 90);
+  const shouldShowUsageMeter = hasUsageData;
 
   const hasApiCredits = apiBalance !== undefined && apiBalance > 0;
 
