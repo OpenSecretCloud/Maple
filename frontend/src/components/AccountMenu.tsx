@@ -73,6 +73,10 @@ function ConfirmDeleteDialog() {
 
     // Always refresh UI and navigate home
     queryClient.invalidateQueries({ queryKey: ["conversations"] });
+    queryClient.invalidateQueries({ queryKey: ["pinnedConversations"] });
+    queryClient.invalidateQueries({ queryKey: ["projectConversations"] });
+    queryClient.invalidateQueries({ queryKey: ["conversationProjects"] });
+    queryClient.invalidateQueries({ queryKey: ["conversationProject"] });
     navigate({ to: "/" });
   }
 

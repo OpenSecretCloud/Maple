@@ -12,11 +12,11 @@ Maple is a **Tauri-based AI chat application** that runs on desktop (macOS, Linu
 ### Frontend
 - `src/app.tsx` - App entry, sets up all providers (OpenSecret, QueryClient, etc.)
 - `src/components/UnifiedChat.tsx` - **Main chat interface** (the logged-in experience)
-- `src/state/LocalStateContext.tsx` - Global state (chats, models, billing status)
+- `src/state/LocalStateContext.tsx` - Global UI, model, and billing state
 - `src/ai/OpenAIContext.tsx` - OpenAI API integration
 - `src/utils/platform.ts` - Platform detection (iOS/Android/macOS/desktop/web)
 - `src/billing/billingApi.ts` - Subscription and billing logic
-- `src/routes/` - TanStack Router file-based routing (`_auth.*` routes require login)
+- `src/routes/` - TanStack Router file-based routing
 
 ### Rust (src-tauri)
 - `src/lib.rs` - Tauri entry point, plugin setup, command handlers
