@@ -70,13 +70,6 @@ interface ChatHistoryListProps {
   containerRef?: React.RefObject<HTMLElement>;
 }
 
-interface ArchivedChat {
-  id: string;
-  title: string;
-  updated_at: number;
-  created_at: number;
-}
-
 export function ChatHistoryList({
   currentChatId,
   searchQuery = "",
@@ -105,7 +98,6 @@ export function ChatHistoryList({
   const [selectedChat, setSelectedChat] = useState<{ id: string; title: string } | null>(null);
   const [selectedProject, setSelectedProject] = useState<ConversationProjectListItem | null>(null);
   const [expandedProjectId, setExpandedProjectId] = useState<string | null>(selectedProjectId);
-  const [isArchivedExpanded, setIsArchivedExpanded] = useState(false);
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Pagination states
@@ -509,30 +501,6 @@ export function ChatHistoryList({
     };
   }, [hasMoreConversations, isLoadingMore, loadMoreConversations]);
 
-  // Fetch archived chats from KV store
-  const { data: archivedChats } = useQuery({
-    queryKey: ["archivedChats"],
-    queryFn: async () => {
-      if (!opensecret?.get) return [];
-
-      try {
-        const historyListStr = await opensecret.get("history_list");
-        if (!historyListStr) return [];
-
-        const historyList = JSON.parse(historyListStr) as ArchivedChat[];
-        if (!Array.isArray(historyList)) return [];
-
-        // Sort by updated_at descending (most recent first)
-        return historyList.sort((a, b) => (b.updated_at || 0) - (a.updated_at || 0));
-      } catch (error) {
-        console.error("Error loading archived chats:", error);
-        return [];
-      }
-    },
-    enabled: !!opensecret?.get,
-    retry: false
-  });
-
   const { data: conversationProjects = [] } = useQuery({
     queryKey: ["conversationProjects", userId],
     queryFn: () => listAllConversationProjects(opensecret),
@@ -639,21 +607,6 @@ export function ChatHistoryList({
     );
   }, [conversations, getConversationTitle, normalizedQuery]);
 
-  // Filter archived chats based on search query
-  const filteredArchivedChats = useMemo(() => {
-    if (!archivedChats) return [];
-    if (!normalizedQuery) return archivedChats;
-
-    return archivedChats.filter((chat) => chat.title.toLowerCase().includes(normalizedQuery));
-  }, [archivedChats, normalizedQuery]);
-
-  // Auto-expand archived section when searching with results
-  useEffect(() => {
-    if (normalizedQuery && filteredArchivedChats.length > 0) {
-      setIsArchivedExpanded(true);
-    }
-  }, [normalizedQuery, filteredArchivedChats.length]);
-
   const dispatchConversationMetadataUpdated = useCallback(
     (conversationId: string, updates: Record<string, unknown>) => {
       window.dispatchEvent(
@@ -668,48 +621,22 @@ export function ChatHistoryList({
   // Handle conversation deletion via API
   const handleDeleteConversation = useCallback(
     async (conversationId: string) => {
-      const isArchived = archivedChats?.some((chat) => chat.id === conversationId);
+      try {
+        await opensecret.deleteConversation(conversationId);
+        setConversations((prev) => prev.filter((conv) => conv.id !== conversationId));
+        await invalidateConversationData();
 
-      if (isArchived) {
-        if (!localState?.deleteChat) return;
-        try {
-          await localState.deleteChat(conversationId);
-          await queryClient.invalidateQueries({ queryKey: ["archivedChats"] });
-
-          if (conversationId === currentChatId) {
-            router.navigate({ to: "/" });
-            setSelectedProjectId(null);
-          }
-        } catch (error) {
-          console.error("Error deleting archived chat:", error);
+        if (conversationId === currentChatId) {
+          const params = new URLSearchParams(window.location.search);
+          params.delete("conversation_id");
+          window.history.replaceState({}, "", params.toString() ? `/?${params}` : "/");
+          window.dispatchEvent(new Event("newchat"));
         }
-      } else {
-        try {
-          await opensecret.deleteConversation(conversationId);
-          setConversations((prev) => prev.filter((conv) => conv.id !== conversationId));
-          await invalidateConversationData();
-
-          if (conversationId === currentChatId) {
-            const params = new URLSearchParams(window.location.search);
-            params.delete("conversation_id");
-            window.history.replaceState({}, "", params.toString() ? `/?${params}` : "/");
-            window.dispatchEvent(new Event("newchat"));
-          }
-        } catch (error) {
-          console.error("Error deleting conversation:", error);
-        }
+      } catch (error) {
+        console.error("Error deleting conversation:", error);
       }
     },
-    [
-      archivedChats,
-      currentChatId,
-      invalidateConversationData,
-      localState,
-      opensecret,
-      queryClient,
-      router,
-      setSelectedProjectId
-    ]
+    [currentChatId, invalidateConversationData, opensecret]
   );
 
   const MAX_SELECTION = 20;
@@ -740,33 +667,14 @@ export function ChatHistoryList({
     try {
       const idsToDelete = Array.from(selectedIds);
 
-      // Separate archived chats from API conversations
-      const archivedIds = idsToDelete.filter((id) => archivedChats?.some((chat) => chat.id === id));
-      const conversationIds = idsToDelete.filter(
-        (id) => !archivedChats?.some((chat) => chat.id === id)
-      );
-
-      // Delete API conversations using batch delete
-      if (conversationIds.length > 0 && opensecret) {
-        const result = await opensecret.batchDeleteConversations(conversationIds);
+      if (opensecret) {
+        const result = await opensecret.batchDeleteConversations(idsToDelete);
 
         const deletedIds = new Set(
           result.data.filter((item) => item.deleted).map((item) => item.id)
         );
         setConversations((prev) => prev.filter((conv) => !deletedIds.has(conv.id)));
         await invalidateConversationData();
-      }
-
-      // Delete archived chats individually
-      for (const id of archivedIds) {
-        if (localState?.deleteChat) {
-          await localState.deleteChat(id);
-        }
-      }
-
-      // Refresh archived chats if any were deleted
-      if (archivedIds.length > 0) {
-        queryClient.invalidateQueries({ queryKey: ["archivedChats"] });
       }
 
       // If current chat was deleted, navigate to home
@@ -788,11 +696,8 @@ export function ChatHistoryList({
     }
   }, [
     selectedIds,
-    archivedChats,
     opensecret,
     invalidateConversationData,
-    localState,
-    queryClient,
     currentChatId,
     onSelectionChange,
     onExitSelectionMode
@@ -1017,11 +922,6 @@ export function ChatHistoryList({
     [getConversationTitle]
   );
 
-  const handleOpenRenameDialogArchived = useCallback((chat: ArchivedChat) => {
-    setSelectedChat({ id: chat.id, title: chat.title });
-    setIsRenameDialogOpen(true);
-  }, []);
-
   const handleOpenDeleteDialog = useCallback(
     (conv: Conversation) => {
       setSelectedChat({ id: conv.id, title: getConversationTitle(conv) });
@@ -1029,11 +929,6 @@ export function ChatHistoryList({
     },
     [getConversationTitle]
   );
-
-  const handleOpenDeleteDialogArchived = useCallback((chat: ArchivedChat) => {
-    setSelectedChat({ id: chat.id, title: chat.title });
-    setIsDeleteDialogOpen(true);
-  }, []);
 
   const handleOpenCreateProjectDialog = useCallback(() => {
     setSelectedProject(null);
@@ -1055,45 +950,25 @@ export function ChatHistoryList({
   // Handle conversation renaming via API
   const handleRenameConversation = useCallback(
     async (conversationId: string, newTitle: string) => {
-      const isArchived = archivedChats?.some((chat) => chat.id === conversationId);
-
-      if (isArchived) {
-        if (!localState?.renameChat) return;
-        try {
-          await localState.renameChat(conversationId, newTitle);
-          await queryClient.invalidateQueries({ queryKey: ["archivedChats"] });
-        } catch (error) {
-          console.error("Error renaming archived chat:", error);
-          throw error;
-        }
-      } else {
-        try {
-          await opensecret.updateConversation(conversationId, { title: newTitle });
-          setConversations((prev) =>
-            prev.map((conv) =>
-              conv.id === conversationId
-                ? { ...conv, metadata: { ...(conv.metadata ?? {}), title: newTitle } }
-                : conv
-            )
-          );
-          await invalidateConversationData();
-          dispatchConversationMetadataUpdated(conversationId, {
-            metadata: { title: newTitle }
-          });
-        } catch (error) {
-          console.error("Error renaming conversation:", error);
-          throw error;
-        }
+      try {
+        await opensecret.updateConversation(conversationId, { title: newTitle });
+        setConversations((prev) =>
+          prev.map((conv) =>
+            conv.id === conversationId
+              ? { ...conv, metadata: { ...(conv.metadata ?? {}), title: newTitle } }
+              : conv
+          )
+        );
+        await invalidateConversationData();
+        dispatchConversationMetadataUpdated(conversationId, {
+          metadata: { title: newTitle }
+        });
+      } catch (error) {
+        console.error("Error renaming conversation:", error);
+        throw error;
       }
     },
-    [
-      archivedChats,
-      dispatchConversationMetadataUpdated,
-      invalidateConversationData,
-      localState,
-      opensecret,
-      queryClient
-    ]
+    [dispatchConversationMetadataUpdated, invalidateConversationData, opensecret]
   );
 
   // Handle conversation selection
@@ -1145,8 +1020,7 @@ export function ChatHistoryList({
     filteredProjects.length === 0 &&
     filteredExpandedProjectConversations.length === 0 &&
     filteredPinnedConversations.length === 0 &&
-    filteredRecentConversations.length === 0 &&
-    filteredArchivedChats.length === 0
+    filteredRecentConversations.length === 0
   ) {
     return (
       <div className="text-muted-foreground text-center py-4">
@@ -1447,92 +1321,6 @@ export function ChatHistoryList({
               <div className="w-2 h-2 bg-foreground/60 rounded-full animate-pulse delay-75" />
               <div className="w-2 h-2 bg-foreground/60 rounded-full animate-pulse delay-150" />
             </div>
-          </div>
-        )}
-
-        {filteredArchivedChats && filteredArchivedChats.length > 0 && (
-          <div className="mt-1">
-            <button
-              onClick={() => setIsArchivedExpanded(!isArchivedExpanded)}
-              className="mb-2 flex w-full items-center gap-2 text-xs font-medium uppercase tracking-wider text-muted-foreground transition-colors hover:text-foreground"
-            >
-              {isArchivedExpanded ? (
-                <ChevronDown className="h-3.5 w-3.5" strokeWidth={ICON_STROKE} />
-              ) : (
-                <ChevronRight className="h-3.5 w-3.5" strokeWidth={ICON_STROKE} />
-              )}
-              <span>Archived ({filteredArchivedChats.length})</span>
-            </button>
-
-            {isArchivedExpanded && (
-              <div className="flex flex-col gap-2">
-                {filteredArchivedChats.map((chat) => {
-                  const isActive = chat.id === currentChatId;
-                  const archivedTitlePaddingClass = "pr-8";
-                  return (
-                    <div
-                      key={chat.id}
-                      className="group relative isolate flex w-full min-w-0 select-none items-stretch gap-0.5 rounded-2xl"
-                    >
-                      <div
-                        onClick={() => {
-                          setSelectedProjectId(null);
-                          router.navigate({ to: "/chat/$chatId", params: { chatId: chat.id } });
-                        }}
-                        className={`relative ${ROW_CONTENT_Z} min-w-0 flex-1 cursor-pointer py-1 pl-0 pr-2 ${
-                          isActive
-                            ? "font-bold text-foreground"
-                            : "text-foreground/95 group-hover:text-foreground"
-                        }`}
-                      >
-                        <div
-                          className={`relative flex min-w-0 items-center ${archivedTitlePaddingClass}`}
-                        >
-                          <div className="relative z-0 min-w-0 flex-1 overflow-hidden whitespace-nowrap">
-                            {chat.title}
-                          </div>
-                        </div>
-                        <div className="mt-0.5 hidden text-[10px] opacity-50">
-                          {new Date(chat.updated_at || chat.created_at).toLocaleDateString()}
-                        </div>
-                      </div>
-                      <div className={sidebarEllipsisTriggerRowClass(isMobile)}>
-                        <div className={SIDEBAR_ELLIPSIS_FADE} aria-hidden="true" />
-                        <div className="flex items-center">
-                          <DropdownMenu>
-                            <DropdownMenuTrigger asChild>
-                              <button
-                                className={SIDEBAR_ELLIPSIS_BTN}
-                                onClick={(e) => {
-                                  e.preventDefault();
-                                  e.stopPropagation();
-                                }}
-                              >
-                                <MoreHorizontal className="h-4 w-4" strokeWidth={ICON_STROKE} />
-                              </button>
-                            </DropdownMenuTrigger>
-                            <DropdownMenuContent>
-                              <DropdownMenuItem
-                                onClick={() => handleOpenRenameDialogArchived(chat)}
-                              >
-                                <Pencil className="mr-2 h-4 w-4" strokeWidth={ICON_STROKE} />
-                                <span>Rename Chat</span>
-                              </DropdownMenuItem>
-                              <DropdownMenuItem
-                                onClick={() => handleOpenDeleteDialogArchived(chat)}
-                              >
-                                <Trash className="mr-2 h-4 w-4" strokeWidth={ICON_STROKE} />
-                                <span>Delete Chat</span>
-                              </DropdownMenuItem>
-                            </DropdownMenuContent>
-                          </DropdownMenu>
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
           </div>
         )}
 
