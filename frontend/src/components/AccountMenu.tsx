@@ -56,24 +56,12 @@ import packageJson from "../../package.json";
 import { SIDEBAR_ACCOUNT_MENU_WIDTH_CLASS, SIDEBAR_LAYOUT_STYLE } from "@/constants/layout";
 
 function ConfirmDeleteDialog() {
-  const { clearHistory } = useLocalState();
   const os = useOpenSecret();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
 
   async function handleDeleteHistory() {
-    // 1. Delete archived chats (KV)
     try {
-      await clearHistory();
-      console.log("History (KV) cleared");
-    } catch (error) {
-      console.error("Error clearing history:", error);
-      // Continue to delete server conversations even if this fails
-    }
-
-    // 2. Delete server conversations (API) if any exist
-    try {
-      // Check if we have any conversations to delete
       const conversations = await os.listConversations({ limit: 1 });
       if (conversations.data && conversations.data.length > 0) {
         await os.deleteConversations();
@@ -84,10 +72,13 @@ function ConfirmDeleteDialog() {
     }
 
     // Always refresh UI and navigate home
-    queryClient.invalidateQueries({ queryKey: ["chatHistory"] });
     queryClient.invalidateQueries({ queryKey: ["conversations"] });
-    queryClient.invalidateQueries({ queryKey: ["archivedChats"] });
+    queryClient.invalidateQueries({ queryKey: ["pinnedConversations"] });
+    queryClient.invalidateQueries({ queryKey: ["projectConversations"] });
+    queryClient.invalidateQueries({ queryKey: ["conversationProjects"] });
+    queryClient.invalidateQueries({ queryKey: ["conversationProject"] });
     navigate({ to: "/" });
+    window.dispatchEvent(new CustomEvent("newchat", { detail: { projectId: null } }));
   }
 
   return (

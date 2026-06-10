@@ -23,13 +23,11 @@ import { Route as LoginRouteImport } from './routes/login'
 import { Route as DownloadsRouteImport } from './routes/downloads'
 import { Route as DesktopAuthRouteImport } from './routes/desktop-auth'
 import { Route as AboutRouteImport } from './routes/about'
-import { Route as AuthRouteImport } from './routes/_auth'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as VerifyCodeRouteImport } from './routes/verify.$code'
 import { Route as PasswordResetConfirmRouteImport } from './routes/password-reset.confirm'
 import { Route as TeamInviteInviteIdRouteImport } from './routes/team.invite.$inviteId'
 import { Route as AuthProviderCallbackRouteImport } from './routes/auth.$provider.callback'
-import { Route as AuthChatChatIdRouteImport } from './routes/_auth.chat.$chatId'
 
 const TermsRoute = TermsRouteImport.update({
   id: '/terms',
@@ -101,10 +99,6 @@ const AboutRoute = AboutRouteImport.update({
   path: '/about',
   getParentRoute: () => rootRouteImport,
 } as any)
-const AuthRoute = AuthRouteImport.update({
-  id: '/_auth',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
@@ -130,11 +124,6 @@ const AuthProviderCallbackRoute = AuthProviderCallbackRouteImport.update({
   path: '/auth/$provider/callback',
   getParentRoute: () => rootRouteImport,
 } as any)
-const AuthChatChatIdRoute = AuthChatChatIdRouteImport.update({
-  id: '/chat/$chatId',
-  path: '/chat/$chatId',
-  getParentRoute: () => AuthRoute,
-} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -154,7 +143,6 @@ export interface FileRoutesByFullPath {
   '/terms': typeof TermsRoute
   '/password-reset/confirm': typeof PasswordResetConfirmRoute
   '/verify/$code': typeof VerifyCodeRoute
-  '/chat/$chatId': typeof AuthChatChatIdRoute
   '/auth/$provider/callback': typeof AuthProviderCallbackRoute
   '/team/invite/$inviteId': typeof TeamInviteInviteIdRoute
 }
@@ -176,14 +164,12 @@ export interface FileRoutesByTo {
   '/terms': typeof TermsRoute
   '/password-reset/confirm': typeof PasswordResetConfirmRoute
   '/verify/$code': typeof VerifyCodeRoute
-  '/chat/$chatId': typeof AuthChatChatIdRoute
   '/auth/$provider/callback': typeof AuthProviderCallbackRoute
   '/team/invite/$inviteId': typeof TeamInviteInviteIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
-  '/_auth': typeof AuthRouteWithChildren
   '/about': typeof AboutRoute
   '/desktop-auth': typeof DesktopAuthRoute
   '/downloads': typeof DownloadsRoute
@@ -200,7 +186,6 @@ export interface FileRoutesById {
   '/terms': typeof TermsRoute
   '/password-reset/confirm': typeof PasswordResetConfirmRoute
   '/verify/$code': typeof VerifyCodeRoute
-  '/_auth/chat/$chatId': typeof AuthChatChatIdRoute
   '/auth/$provider/callback': typeof AuthProviderCallbackRoute
   '/team/invite/$inviteId': typeof TeamInviteInviteIdRoute
 }
@@ -224,7 +209,6 @@ export interface FileRouteTypes {
     | '/terms'
     | '/password-reset/confirm'
     | '/verify/$code'
-    | '/chat/$chatId'
     | '/auth/$provider/callback'
     | '/team/invite/$inviteId'
   fileRoutesByTo: FileRoutesByTo
@@ -246,13 +230,11 @@ export interface FileRouteTypes {
     | '/terms'
     | '/password-reset/confirm'
     | '/verify/$code'
-    | '/chat/$chatId'
     | '/auth/$provider/callback'
     | '/team/invite/$inviteId'
   id:
     | '__root__'
     | '/'
-    | '/_auth'
     | '/about'
     | '/desktop-auth'
     | '/downloads'
@@ -269,14 +251,12 @@ export interface FileRouteTypes {
     | '/terms'
     | '/password-reset/confirm'
     | '/verify/$code'
-    | '/_auth/chat/$chatId'
     | '/auth/$provider/callback'
     | '/team/invite/$inviteId'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
-  AuthRoute: typeof AuthRouteWithChildren
   AboutRoute: typeof AboutRoute
   DesktopAuthRoute: typeof DesktopAuthRoute
   DownloadsRoute: typeof DownloadsRoute
@@ -396,13 +376,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AboutRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/_auth': {
-      id: '/_auth'
-      path: ''
-      fullPath: '/'
-      preLoaderRoute: typeof AuthRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/': {
       id: '/'
       path: '/'
@@ -438,25 +411,8 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthProviderCallbackRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/_auth/chat/$chatId': {
-      id: '/_auth/chat/$chatId'
-      path: '/chat/$chatId'
-      fullPath: '/chat/$chatId'
-      preLoaderRoute: typeof AuthChatChatIdRouteImport
-      parentRoute: typeof AuthRoute
-    }
   }
 }
-
-interface AuthRouteChildren {
-  AuthChatChatIdRoute: typeof AuthChatChatIdRoute
-}
-
-const AuthRouteChildren: AuthRouteChildren = {
-  AuthChatChatIdRoute: AuthChatChatIdRoute,
-}
-
-const AuthRouteWithChildren = AuthRoute._addFileChildren(AuthRouteChildren)
 
 interface PasswordResetRouteChildren {
   PasswordResetConfirmRoute: typeof PasswordResetConfirmRoute
@@ -472,7 +428,6 @@ const PasswordResetRouteWithChildren = PasswordResetRoute._addFileChildren(
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
-  AuthRoute: AuthRouteWithChildren,
   AboutRoute: AboutRoute,
   DesktopAuthRoute: DesktopAuthRoute,
   DownloadsRoute: DownloadsRoute,

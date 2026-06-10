@@ -1,25 +1,3 @@
-/**
- * UnifiedChat Component
- *
- * This is the main chat interface that replaced the old ChatBox component.
- * It uses the OpenAI Conversations/Responses API instead of localStorage.
- *
- * Recent changes (2025-01-25):
- * - Simplified type system to use OpenAI's native types directly
- * - Content is always an array of proper OpenAI content types (no more string | array)
- * - Uses ConversationContent union for all message content
- * - ModelSelector refactored to just take hasImages boolean instead of full messages
- *
- * Old files to handle:
- * - DELETE: frontend/src/components/ChatBox.tsx (replaced by this component)
- * - DELETE: frontend/src/hooks/useChatSession.ts (old localStorage chat management)
- * - DELETE: frontend/src/routes/index.backup.tsx (just a backup)
- * - SIMPLIFY: frontend/src/routes/_auth.chat.$chatId.tsx
- *   - Make read-only for viewing old localStorage chats
- *   - Remove all interaction code
- *   - Add "archived chat" banner
- *   - Keep for backwards compatibility with chat history
- */
 import { useState, useRef, useEffect, useCallback, memo, useMemo } from "react";
 import { flushSync } from "react-dom";
 import {
