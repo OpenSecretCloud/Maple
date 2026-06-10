@@ -666,19 +666,18 @@ export function ChatHistoryList({
     setIsBulkDeleting(true);
     try {
       const idsToDelete = Array.from(selectedIds);
+      const deletedIds = new Set<string>();
 
       if (opensecret) {
         const result = await opensecret.batchDeleteConversations(idsToDelete);
 
-        const deletedIds = new Set(
-          result.data.filter((item) => item.deleted).map((item) => item.id)
-        );
+        result.data.filter((item) => item.deleted).forEach((item) => deletedIds.add(item.id));
         setConversations((prev) => prev.filter((conv) => !deletedIds.has(conv.id)));
         await invalidateConversationData();
       }
 
       // If current chat was deleted, navigate to home
-      if (selectedIds.has(currentChatId || "")) {
+      if (currentChatId && deletedIds.has(currentChatId)) {
         const params = new URLSearchParams(window.location.search);
         params.delete("conversation_id");
         window.history.replaceState({}, "", params.toString() ? `/?${params}` : "/");
