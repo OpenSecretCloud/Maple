@@ -2301,6 +2301,61 @@ export function UnifiedChat() {
     [imageUrls, localState]
   );
 
+  const handlePaste = useCallback(
+    (e: React.ClipboardEvent) => {
+      const items = e.clipboardData?.items;
+      if (!items) return;
+
+      const imageFiles: File[] = [];
+      for (let i = 0; i < items.length; i++) {
+        if (items[i].type.startsWith("image/")) {
+          const file = items[i].getAsFile();
+          if (file) imageFiles.push(file);
+        }
+      }
+
+      if (imageFiles.length === 0) return;
+
+      // Prevent the default paste behavior for images
+      e.preventDefault();
+
+      if (!canUseImages) {
+        setUpgradeFeature("image");
+        setUpgradeDialogOpen(true);
+        return;
+      }
+
+      const supportedTypes = ["image/jpeg", "image/jpg", "image/png", "image/webp"];
+      const maxSizeInBytes = 10 * 1024 * 1024; // 10MB
+
+      const validFiles = imageFiles.filter((file) => {
+        if (!supportedTypes.includes(file.type.toLowerCase())) {
+          setAttachmentError("Only JPEG, PNG, and WebP images are supported");
+          setTimeout(() => setAttachmentError(null), 5000);
+          return false;
+        }
+        if (file.size > maxSizeInBytes) {
+          setAttachmentError("Image too large (max 10MB)");
+          setTimeout(() => setAttachmentError(null), 5000);
+          return false;
+        }
+        return true;
+      });
+
+      if (validFiles.length === 0) return;
+
+      const newUrlMap = new Map(imageUrls);
+      validFiles.forEach((file) => {
+        if (!newUrlMap.has(file)) {
+          newUrlMap.set(file, URL.createObjectURL(file));
+        }
+      });
+      setImageUrls(newUrlMap);
+      setDraftImages((prev) => [...prev, ...validFiles]);
+    },
+    [canUseImages, imageUrls]
+  );
+
   const removeImage = useCallback(
     (idx: number) => {
       setDraftImages((prev) => {
@@ -3480,6 +3535,7 @@ export function UnifiedChat() {
                         value={input}
                         onChange={(e) => setInput(e.target.value)}
                         onKeyDown={handleKeyDown}
+                        onPaste={handlePaste}
                         placeholder="Message Maple..."
                         disabled={isGenerating || isRecording}
                         className={`resize-none border-0 bg-transparent pl-4 pr-8 text-base leading-6 focus-visible:ring-0 focus-visible:ring-offset-0 placeholder:text-muted-foreground/60 ${
@@ -3693,6 +3749,7 @@ export function UnifiedChat() {
                       value={input}
                       onChange={(e) => setInput(e.target.value)}
                       onKeyDown={handleKeyDown}
+                      onPaste={handlePaste}
                       placeholder="Message Maple..."
                       disabled={isGenerating || isRecording}
                       className="w-full min-h-[52px] landscape-short:min-h-[40px] max-h-[200px] landscape-short:max-h-[100px] resize-none border-0 bg-transparent py-3.5 landscape-short:py-2 pl-4 pr-2 leading-6 focus-visible:ring-0 focus-visible:ring-offset-0 placeholder:text-muted-foreground/60"
