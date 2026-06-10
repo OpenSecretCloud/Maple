@@ -78,6 +78,7 @@ function ConfirmDeleteDialog() {
     queryClient.invalidateQueries({ queryKey: ["conversationProjects"] });
     queryClient.invalidateQueries({ queryKey: ["conversationProject"] });
     navigate({ to: "/" });
+    window.dispatchEvent(new CustomEvent("newchat", { detail: { projectId: null } }));
   }
 
   return (
