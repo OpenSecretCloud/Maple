@@ -98,8 +98,15 @@ bun run dev
 bun tauri dev
 ```
 
-Expects a `VITE_OPEN_SECRET_API_URL` environment variable to be set. The public
-OpenSecret client id defaults to Maple's project id
+Expects a `VITE_OPEN_SECRET_API_URL` environment variable to be set. For local
+OpenSecret development, copy `frontend/.env.example` to `frontend/.env.local`
+and point it at the local API:
+
+```bash
+VITE_OPEN_SECRET_API_URL=http://127.0.0.1:3000
+```
+
+The public OpenSecret client id defaults to Maple's project id
 `ba5a14b5-d915-47b1-b7b1-afda52bc5fc6`, so `VITE_CLIENT_ID` is only needed to
 override the default. (See `.env.example`)
 
