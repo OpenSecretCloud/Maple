@@ -731,7 +731,8 @@ function TTSButton({
   onNeedsSetup: () => void;
   onManage: () => void;
 }) {
-  const { status, isPlaying, currentPlayingId, speak, stop, isTauriEnv } = useTTS();
+  const { status, isPreparing, isPlaying, currentPlayingId, speak, stop, isTauriEnv } = useTTS();
+  const isThisPreparing = isPreparing && currentPlayingId === messageId;
   const isThisPlaying = isPlaying && currentPlayingId === messageId;
   const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -750,15 +751,15 @@ function TTSButton({
   }
 
   const handleClick = async () => {
-    if (status === "not_downloaded" || status === "error") {
+    if (status === "not_downloaded" || status === "upgrade_available" || status === "error") {
       onNeedsSetup();
       return;
     }
 
     if (status === "ready") {
-      if (isThisPlaying) {
+      if (isThisPlaying || isThisPreparing) {
         stop();
-      } else {
+      } else if (!isPreparing) {
         await speak(text, messageId);
       }
     }
@@ -781,8 +782,14 @@ function TTSButton({
     status === "checking" ||
     status === "downloading" ||
     status === "loading" ||
+    status === "deleting" ||
+    (isPreparing && !isThisPreparing);
+  const showSpinner =
+    isThisPreparing ||
+    status === "checking" ||
+    status === "downloading" ||
+    status === "loading" ||
     status === "deleting";
-  const showSpinner = isDisabled;
 
   return (
     <Button
@@ -794,7 +801,9 @@ function TTSButton({
       onPointerUp={handlePointerUp}
       onPointerLeave={handlePointerUp}
       disabled={isDisabled}
-      aria-label={isThisPlaying ? "Stop speaking" : "Read aloud"}
+      aria-label={
+        isThisPreparing ? "Preparing speech" : isThisPlaying ? "Stop speaking" : "Read aloud"
+      }
     >
       {showSpinner ? (
         <Loader2 className="h-3.5 w-3.5 animate-spin" />
