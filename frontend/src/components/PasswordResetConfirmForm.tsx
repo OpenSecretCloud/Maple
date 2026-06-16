@@ -6,7 +6,8 @@ import { AlertDestructive } from "@/components/AlertDestructive";
 import { useOpenSecret } from "@opensecret/react";
 import { useNavigate } from "@tanstack/react-router";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Loader2 } from "lucide-react";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Info, Loader2 } from "lucide-react";
 
 interface PasswordResetConfirmFormProps {
   email: string;
@@ -21,6 +22,7 @@ export function PasswordResetConfirmForm({ email, secret }: PasswordResetConfirm
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
   const [redirecting, setRedirecting] = useState(false);
+  const [showCodeHelp, setShowCodeHelp] = useState(false);
   const navigate = useNavigate();
   const os = useOpenSecret();
 
@@ -33,6 +35,19 @@ export function PasswordResetConfirmForm({ email, secret }: PasswordResetConfirm
       return () => clearTimeout(timer);
     }
   }, [success, navigate]);
+
+  useEffect(() => {
+    if (success || code) {
+      setShowCodeHelp(false);
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      setShowCodeHelp(true);
+    }, 30000);
+
+    return () => clearTimeout(timer);
+  }, [success, code]);
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -86,6 +101,17 @@ export function PasswordResetConfirmForm({ email, secret }: PasswordResetConfirm
       <CardContent>
         <form onSubmit={handleSubmit}>
           <div className="grid gap-4">
+            {showCodeHelp && (
+              <Alert>
+                <Info className="h-4 w-4" aria-hidden="true" />
+                <AlertTitle>No code yet?</AlertTitle>
+                <AlertDescription>
+                  If no code arrives after a few minutes, this account might not use password login.
+                  Try signing in with Apple, Google, or GitHub, or check spam before requesting
+                  another reset.
+                </AlertDescription>
+              </Alert>
+            )}
             <div className="grid gap-2">
               <Label htmlFor="code">Reset Code</Label>
               <Input
