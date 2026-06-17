@@ -635,3 +635,63 @@ jobs:
         run: nix develop .#ci -c ./scripts/ci/verify-release-artifacts.sh artifacts macos ios web latest-json
         env:
           MAPLE_ENFORCE_IOS_SIGNED_REPRODUCIBILITY: "1"
+
+  publish-release-verification-guide:
+    needs: verify-release-artifacts
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # was v4
+        with:
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # was v22
+        with:
+          github-token: ""
+
+      - name: Download release artifacts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          mkdir -p artifacts
+          gh release download "${RELEASE_TAG}" -D artifacts
+          rm -f \
+            artifacts/MAPLE_RELEASE_VERIFICATION.md \
+            artifacts/MAPLE_RELEASE_VERIFICATION.md.sha256
+
+      - name: Generate release verification guide
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          nix develop .#ci -c ./scripts/ci/release-verification-guide.sh \
+            artifacts \
+            MAPLE_RELEASE_VERIFICATION.md
+          sha256sum MAPLE_RELEASE_VERIFICATION.md > MAPLE_RELEASE_VERIFICATION.md.sha256
+          sha256sum \
+            MAPLE_RELEASE_VERIFICATION.md \
+            MAPLE_RELEASE_VERIFICATION.md.sha256 \
+            > release-verification-guide-artifacts.sha256
+          cat release-verification-guide-artifacts.sha256
+
+      - name: Attest release verification guide
+        # Keep the guide upload running if GitHub token policy rejects artifact attestation.
+        continue-on-error: true
+        uses: actions/attest@281a49d4cbb0a72c9575a50d18f6deb515a11deb # was v4
+        with:
+          subject-checksums: release-verification-guide-artifacts.sha256
+
+      - name: Upload release verification guide
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          gh release upload "${RELEASE_TAG}" \
+            MAPLE_RELEASE_VERIFICATION.md \
+            MAPLE_RELEASE_VERIFICATION.md.sha256 \
+            --clobber
