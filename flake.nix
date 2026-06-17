@@ -528,6 +528,7 @@
         mkShellForHost = if pkgs.stdenv.isDarwin && pkgs ? mkShellNoCC then pkgs.mkShellNoCC else pkgs.mkShell;
 
         linuxShellHook = lib.optionalString pkgs.stdenv.isLinux ''
+          export MAPLE_NIX_CC=${pkgs.stdenv.cc}/bin/cc
           export MAPLE_NIX_GCC_LIB=${pkgs.stdenv.cc.cc.lib}
           export MAPLE_NIX_GDK_PIXBUF_BINARYDIR=${pkgs.gdk-pixbuf}/lib/gdk-pixbuf-2.0/2.10.0
           export MAPLE_NIX_GDK_PIXBUF_MODULEDIR=${pkgs.gdk-pixbuf}/lib/gdk-pixbuf-2.0/2.10.0/loaders

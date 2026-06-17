@@ -2358,7 +2358,7 @@ linux_runtime_closure_store_paths_file() {
 
 linux_runtime_closure_library_for_soname() {
   local soname="$1"
-  local store_paths root candidate
+  local store_paths root candidate lib_root
 
   store_paths="$(linux_runtime_closure_store_paths_file)"
   while IFS= read -r root; do
@@ -2367,6 +2367,14 @@ linux_runtime_closure_library_for_soname() {
         printf '%s\n' "${candidate}"
         return 0
       fi
+    done
+
+    for lib_root in "${root}/lib" "${root}/lib64"; do
+      [ -d "${lib_root}" ] || continue
+      while IFS= read -r -d '' candidate; do
+        printf '%s\n' "${candidate}"
+        return 0
+      done < <(find "${lib_root}" -mindepth 2 -maxdepth 3 \( -type f -o -type l \) -name "${soname}" -print0 | LC_ALL=C sort -z)
     done
   done < "${store_paths}"
 
@@ -2421,6 +2429,396 @@ copy_linux_runtime_library_to_appdir() {
     touch -h -d "@${SOURCE_DATE_EPOCH}" "${dest}"
     printf 'staged-linux-appimage-runtime-lib  %s  %s\n' "${soname}" "${source}"
   fi
+}
+
+linux_runtime_closure_webkitgtk_store_path() {
+  local store_paths root
+
+  store_paths="$(linux_runtime_closure_store_paths_file)"
+  while IFS= read -r root; do
+    if [ -e "${root}/lib/libwebkit2gtk-4.1.so.0" ] &&
+      [ -x "${root}/libexec/webkit2gtk-4.1/WebKitNetworkProcess" ]; then
+      printf '%s\n' "${root}"
+      return 0
+    fi
+  done < "${store_paths}"
+
+  return 1
+}
+
+linux_runtime_closure_executable_named() {
+  local name="$1"
+  local store_paths root candidate
+
+  store_paths="$(linux_runtime_closure_store_paths_file)"
+  while IFS= read -r root; do
+    for candidate in "${root}/bin/${name}" "${root}/libexec/${name}"; do
+      if [ -x "${candidate}" ]; then
+        printf '%s\n' "${candidate}"
+        return 0
+      fi
+    done
+  done < "${store_paths}"
+
+  return 1
+}
+
+copy_linux_appdir_tree() {
+  local source="$1"
+  local dest="$2"
+
+  mkdir -p "${dest}"
+  cp -aL "${source}/." "${dest}/"
+  chmod -R u+w "${dest}" 2>/dev/null || true
+  touch_tree_to_source_date_epoch "${dest}"
+}
+
+sanitize_linux_appdir_executables_under() {
+  local root="$1"
+  local exe
+
+  if [ ! -d "${root}" ]; then
+    return 0
+  fi
+
+  while IFS= read -r -d '' exe; do
+    if patchelf --print-interpreter "${exe}" >/dev/null 2>&1; then
+      chmod u+w "${exe}" 2>/dev/null || true
+      sanitize_linux_package_executable "${exe}"
+      touch -h -d "@${SOURCE_DATE_EPOCH}" "${exe}"
+    fi
+  done < <(find "${root}" -type f -perm /111 -print0)
+}
+
+set_linux_appdir_rpath_under() {
+  local root="$1"
+  local rpath="$2"
+  local elf
+
+  if [ ! -d "${root}" ]; then
+    return 0
+  fi
+
+  while IFS= read -r -d '' elf; do
+    if patchelf --print-needed "${elf}" >/dev/null 2>&1; then
+      chmod u+w "${elf}" 2>/dev/null || true
+      patchelf --set-rpath "${rpath}" "${elf}" 2>/dev/null || true
+      touch -h -d "@${SOURCE_DATE_EPOCH}" "${elf}"
+    fi
+  done < <(find "${root}" -type f -print0)
+}
+
+install_linux_appimage_string_patcher() {
+  local appdir="$1"
+  local runtime_dir source patcher compiler
+
+  runtime_dir="${appdir}/usr/libexec/maple-webkit-runtime"
+  patcher="${runtime_dir}/maple-replace-strings"
+  source="$(mktemp)"
+  compiler="${MAPLE_NIX_CC:-${CC:-cc}}"
+
+  mkdir -p "${runtime_dir}"
+
+  cat > "${source}" <<'EOF'
+#include <errno.h>
+#include <fcntl.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+static int replace_all(unsigned char *data, size_t size, const char *needle, const char *replacement) {
+  size_t needle_len = strlen(needle);
+  size_t replacement_len = strlen(replacement);
+  size_t index;
+  int replacements = 0;
+
+  if (needle_len == 0) {
+    fprintf(stderr, "empty replacement needle\n");
+    return 1;
+  }
+
+  if (replacement_len > needle_len) {
+    fprintf(stderr, "replacement is longer than needle\nneedle=%s\nreplacement=%s\n", needle, replacement);
+    return 1;
+  }
+
+  for (index = 0; index + needle_len <= size; index++) {
+    if (memcmp(data + index, needle, needle_len) == 0) {
+      memcpy(data + index, replacement, replacement_len);
+      memset(data + index + replacement_len, 0, needle_len - replacement_len);
+      replacements++;
+      index += needle_len - 1;
+    }
+  }
+
+  if (replacements == 0) {
+    fprintf(stderr, "replacement needle not found: %s\n", needle);
+    return 1;
+  }
+
+  return 0;
+}
+
+int main(int argc, char **argv) {
+  int fd;
+  struct stat st;
+  unsigned char *data;
+  int arg;
+  int status = 0;
+
+  if (argc < 4 || ((argc - 2) % 2) != 0) {
+    fprintf(stderr, "usage: %s FILE NEEDLE REPLACEMENT [NEEDLE REPLACEMENT ...]\n", argv[0]);
+    return 2;
+  }
+
+  fd = open(argv[1], O_RDWR);
+  if (fd < 0) {
+    fprintf(stderr, "open %s: %s\n", argv[1], strerror(errno));
+    return 1;
+  }
+
+  if (fstat(fd, &st) != 0) {
+    fprintf(stderr, "stat %s: %s\n", argv[1], strerror(errno));
+    close(fd);
+    return 1;
+  }
+
+  if (st.st_size <= 0) {
+    fprintf(stderr, "file is empty: %s\n", argv[1]);
+    close(fd);
+    return 1;
+  }
+
+  data = mmap(NULL, (size_t)st.st_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+  if (data == MAP_FAILED) {
+    fprintf(stderr, "mmap %s: %s\n", argv[1], strerror(errno));
+    close(fd);
+    return 1;
+  }
+
+  for (arg = 2; arg < argc; arg += 2) {
+    if (replace_all(data, (size_t)st.st_size, argv[arg], argv[arg + 1]) != 0) {
+      status = 1;
+    }
+  }
+
+  if (msync(data, (size_t)st.st_size, MS_SYNC) != 0) {
+    fprintf(stderr, "msync %s: %s\n", argv[1], strerror(errno));
+    status = 1;
+  }
+
+  munmap(data, (size_t)st.st_size);
+  close(fd);
+  return status;
+}
+EOF
+
+  "${compiler}" -x c -O2 -Wall -Wextra "${source}" -o "${patcher}"
+  rm -f "${source}"
+  chmod 0755 "${patcher}"
+  sanitize_linux_package_executable "${patcher}"
+}
+
+write_linux_appimage_webkit_hook() {
+  local appdir="$1"
+  local webkit_store="$2"
+  local bwrap_source="$3"
+  local xdg_dbus_proxy_source="$4"
+  local hook libwebkit_hash
+
+  hook="${appdir}/apprun-hooks/maple-webkitgtk.sh"
+  libwebkit_hash="$(sha256_file "${appdir}/usr/lib/libwebkit2gtk-4.1.so.0" | awk '{ print $1 }')"
+  mkdir -p "$(dirname "${hook}")"
+
+  cat > "${hook}" <<EOF
+#! /usr/bin/env bash
+
+maple_webkit_orig_libexec="${webkit_store}/libexec/webkit2gtk-4.1"
+maple_webkit_orig_injected_bundle="${webkit_store}/lib/webkit2gtk-4.1/injected-bundle/"
+maple_webkit_orig_locale="${webkit_store}/share/locale"
+maple_webkit_orig_share="${webkit_store}/share"
+maple_webkit_orig_lib="${webkit_store}/lib"
+maple_webkit_orig_bwrap="${bwrap_source}"
+maple_webkit_orig_xdg_dbus_proxy="${xdg_dbus_proxy_source}"
+maple_webkit_runtime_id="${libwebkit_hash}"
+
+maple_webkit_path_fits() {
+  local root="\$1"
+  local libexec_path="\${root}/libexec/webkit2gtk-4.1"
+  local injected_bundle_path="\${root}/lib/webkit2gtk-4.1/injected-bundle/"
+  local locale_path="\${root}/share/locale"
+  local share_path="\${root}/share"
+  local lib_path="\${root}/lib"
+  local bwrap_path="\${root}/bin/bwrap"
+  local xdg_dbus_proxy_path="\${root}/bin/xdg-dbus-proxy"
+
+  [ \${#libexec_path} -le \${#maple_webkit_orig_libexec} ] &&
+    [ \${#injected_bundle_path} -le \${#maple_webkit_orig_injected_bundle} ] &&
+    [ \${#locale_path} -le \${#maple_webkit_orig_locale} ] &&
+    [ \${#share_path} -le \${#maple_webkit_orig_share} ] &&
+    [ \${#lib_path} -le \${#maple_webkit_orig_lib} ] &&
+    [ \${#bwrap_path} -le \${#maple_webkit_orig_bwrap} ] &&
+    [ \${#xdg_dbus_proxy_path} -le \${#maple_webkit_orig_xdg_dbus_proxy} ]
+}
+
+maple_webkit_select_runtime_root() {
+  local root
+
+  for root in \\
+    "\${XDG_RUNTIME_DIR:+\${XDG_RUNTIME_DIR%/}/maple-webkitgtk-4.1}" \\
+    "/tmp/maple-webkitgtk-4.1-\$(id -u)"; do
+    [ -n "\${root}" ] || continue
+    if maple_webkit_path_fits "\${root}"; then
+      printf '%s\n' "\${root}"
+      return 0
+    fi
+  done
+
+  echo "Maple AppImage cannot choose a short enough WebKit runtime path." >&2
+  return 1
+}
+
+maple_webkit_runtime_dir_is_safe() {
+  local root="\$1"
+  local owner
+
+  if [ -L "\${root}" ]; then
+    echo "Refusing to use symlinked WebKit runtime directory: \${root}" >&2
+    return 1
+  fi
+
+  if [ -d "\${root}" ]; then
+    owner="\$(stat -c '%u' "\${root}" 2>/dev/null || stat -f '%u' "\${root}" 2>/dev/null || printf unknown)"
+    if [ "\${owner}" != "\$(id -u)" ]; then
+      echo "Refusing to use WebKit runtime directory owned by another user: \${root}" >&2
+      return 1
+    fi
+  fi
+}
+
+maple_webkit_prepare_runtime() {
+  local appdir root patched_lib marker tmp_lib
+
+  appdir="\${APPDIR:-\${this_dir}}"
+  root="\$(maple_webkit_select_runtime_root)"
+  maple_webkit_runtime_dir_is_safe "\${root}"
+
+  mkdir -p "\${root}/bin" "\${root}/lib" "\${root}/libexec"
+  chmod 700 "\${root}"
+
+  ln -sfn "\${appdir}/usr/libexec/webkit2gtk-4.1" "\${root}/libexec/webkit2gtk-4.1"
+  ln -sfn "\${appdir}/usr/lib/webkit2gtk-4.1" "\${root}/lib/webkit2gtk-4.1"
+  ln -sfn "\${appdir}/usr/share" "\${root}/share"
+  ln -sfn "\${appdir}/usr/libexec/maple-webkit-runtime/bin/bwrap" "\${root}/bin/bwrap"
+  ln -sfn "\${appdir}/usr/libexec/maple-webkit-runtime/bin/xdg-dbus-proxy" "\${root}/bin/xdg-dbus-proxy"
+
+  patched_lib="\${root}/lib/libwebkit2gtk-4.1.so.0"
+  marker="\${patched_lib}.maple-id"
+  if [ ! -f "\${patched_lib}" ] || [ "\$(cat "\${marker}" 2>/dev/null || true)" != "\${maple_webkit_runtime_id}" ]; then
+    tmp_lib="\${patched_lib}.tmp.\$\$"
+    cp -f "\${appdir}/usr/lib/libwebkit2gtk-4.1.so.0" "\${tmp_lib}"
+    chmod u+w "\${tmp_lib}"
+    "\${appdir}/usr/libexec/maple-webkit-runtime/maple-replace-strings" "\${tmp_lib}" \\
+      "\${maple_webkit_orig_libexec}" "\${root}/libexec/webkit2gtk-4.1" \\
+      "\${maple_webkit_orig_injected_bundle}" "\${root}/lib/webkit2gtk-4.1/injected-bundle/" \\
+      "\${maple_webkit_orig_locale}" "\${root}/share/locale" \\
+      "\${maple_webkit_orig_share}" "\${root}/share" \\
+      "\${maple_webkit_orig_lib}" "\${root}/lib" \\
+      "\${maple_webkit_orig_bwrap}" "\${root}/bin/bwrap" \\
+      "\${maple_webkit_orig_xdg_dbus_proxy}" "\${root}/bin/xdg-dbus-proxy"
+    mv -f "\${tmp_lib}" "\${patched_lib}"
+    printf '%s\n' "\${maple_webkit_runtime_id}" > "\${marker}"
+  fi
+
+  export MAPLE_WEBKIT_LIBRARY_PATH="\${root}/lib"
+}
+
+maple_webkit_prepare_runtime
+EOF
+  chmod 0755 "${hook}"
+  touch -h -d "@${SOURCE_DATE_EPOCH}" "${hook}"
+}
+
+write_linux_appimage_maple_apprun() {
+  local appdir="$1"
+  local app_run="${appdir}/AppRun"
+
+  cat > "${app_run}" <<'EOF'
+#! /usr/bin/env bash
+
+set -e
+
+this_dir="$(readlink -f "$(dirname "$0")")"
+export APPDIR="${APPDIR:-${this_dir}}"
+
+source "$this_dir"/apprun-hooks/"linuxdeploy-plugin-gtk.sh"
+source "$this_dir"/apprun-hooks/"linuxdeploy-plugin-gstreamer.sh"
+source "$this_dir"/apprun-hooks/"maple-webkitgtk.sh"
+
+export PATH="$this_dir/usr/bin:$this_dir/usr/sbin:$this_dir/usr/games:$this_dir/bin:$this_dir/sbin:$PATH"
+export LD_LIBRARY_PATH="${MAPLE_WEBKIT_LIBRARY_PATH:+${MAPLE_WEBKIT_LIBRARY_PATH}:}$this_dir/usr/lib:$this_dir/usr/lib/i386-linux-gnu:$this_dir/usr/lib/x86_64-linux-gnu:$this_dir/usr/lib32:$this_dir/usr/lib64:$this_dir/lib:$this_dir/lib/i386-linux-gnu:$this_dir/lib/x86_64-linux-gnu:$this_dir/lib32:$this_dir/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export XDG_DATA_DIRS="$this_dir/usr/share:${XDG_DATA_DIRS:-/usr/local/share/:/usr/share/}"
+export GSETTINGS_SCHEMA_DIR="$this_dir/usr/share/glib-2.0/schemas${GSETTINGS_SCHEMA_DIR:+:$GSETTINGS_SCHEMA_DIR}"
+export PYTHONPATH="$this_dir/usr/share/pyshared${PYTHONPATH:+:$PYTHONPATH}"
+export PERLLIB="$this_dir/usr/share/perl5:$this_dir/usr/lib/perl5${PERLLIB:+:$PERLLIB}"
+export QT_PLUGIN_PATH="$this_dir/usr/lib/qt4/plugins:$this_dir/usr/lib/i386-linux-gnu/qt4/plugins:$this_dir/usr/lib/x86_64-linux-gnu/qt4/plugins:$this_dir/usr/lib32/qt4/plugins:$this_dir/usr/lib64/qt4/plugins:$this_dir/usr/lib/qt5/plugins:$this_dir/usr/lib/i386-linux-gnu/qt5/plugins:$this_dir/usr/lib/x86_64-linux-gnu/qt5/plugins:$this_dir/usr/lib32/qt5/plugins:$this_dir/usr/lib64/qt5/plugins${QT_PLUGIN_PATH:+:$QT_PLUGIN_PATH}"
+export GST_PLUGIN_SYSTEM_PATH="$this_dir/usr/lib/gstreamer${GST_PLUGIN_SYSTEM_PATH:+:$GST_PLUGIN_SYSTEM_PATH}"
+export GST_PLUGIN_SYSTEM_PATH_1_0="$this_dir/usr/lib/gstreamer-1.0${GST_PLUGIN_SYSTEM_PATH_1_0:+:$GST_PLUGIN_SYSTEM_PATH_1_0}"
+export PYTHONDONTWRITEBYTECODE=1
+
+exec "$this_dir/usr/bin/maple" "$@"
+EOF
+  chmod 0755 "${app_run}"
+  touch -h -d "@${SOURCE_DATE_EPOCH}" "${app_run}"
+}
+
+stage_linux_appdir_webkit_runtime() {
+  local appdir="$1"
+  local webkit_store bwrap_source xdg_dbus_proxy_source runtime_dir exe
+
+  if [ ! -e "${appdir}/usr/lib/libwebkit2gtk-4.1.so.0" ]; then
+    return 0
+  fi
+
+  webkit_store="$(linux_runtime_closure_webkitgtk_store_path)"
+  bwrap_source="$(linux_runtime_closure_executable_named bwrap)"
+  xdg_dbus_proxy_source="$(linux_runtime_closure_executable_named xdg-dbus-proxy)"
+  runtime_dir="${appdir}/usr/libexec/maple-webkit-runtime"
+
+  copy_linux_appdir_tree \
+    "${webkit_store}/libexec/webkit2gtk-4.1" \
+    "${appdir}/usr/libexec/webkit2gtk-4.1"
+  copy_linux_appdir_tree \
+    "${webkit_store}/lib/webkit2gtk-4.1" \
+    "${appdir}/usr/lib/webkit2gtk-4.1"
+  copy_linux_appdir_tree \
+    "${webkit_store}/share" \
+    "${appdir}/usr/share"
+
+  mkdir -p "${runtime_dir}/bin"
+  cp -L --preserve=mode,timestamps "${bwrap_source}" "${runtime_dir}/bin/bwrap"
+  cp -L --preserve=mode,timestamps "${xdg_dbus_proxy_source}" "${runtime_dir}/bin/xdg-dbus-proxy"
+
+  sanitize_linux_appdir_executables_under "${appdir}/usr/libexec/webkit2gtk-4.1"
+  sanitize_linux_appdir_executables_under "${runtime_dir}/bin"
+  set_linux_appdir_rpath_under "${appdir}/usr/lib/webkit2gtk-4.1" '$ORIGIN/../..'
+  install_linux_appimage_string_patcher "${appdir}"
+
+  for exe in "${runtime_dir}/bin/bwrap" "${runtime_dir}/bin/xdg-dbus-proxy"; do
+    touch -h -d "@${SOURCE_DATE_EPOCH}" "${exe}"
+  done
+
+  write_linux_appimage_webkit_hook \
+    "${appdir}" \
+    "${webkit_store}" \
+    "${bwrap_source}" \
+    "${xdg_dbus_proxy_source}"
+  write_linux_appimage_maple_apprun "${appdir}"
+
+  printf 'staged-linux-appimage-webkit-runtime  %s\n' "${webkit_store}"
 }
 
 repair_linux_appdir_runtime_closure() {
@@ -2533,6 +2931,66 @@ verify_linux_appdir_runtime_closure() {
   return "${status}"
 }
 
+verify_linux_appdir_webkit_runtime() {
+  local appdir="$1"
+  local status=0
+  local path
+  local required_paths=(
+    "apprun-hooks/maple-webkitgtk.sh"
+    "usr/lib/libwebkit2gtk-4.1.so.0"
+    "usr/libexec/webkit2gtk-4.1/WebKitNetworkProcess"
+    "usr/libexec/webkit2gtk-4.1/WebKitWebProcess"
+    "usr/libexec/webkit2gtk-4.1/WebKitGPUProcess"
+    "usr/lib/webkit2gtk-4.1/injected-bundle/libwebkit2gtkinjectedbundle.so"
+    "usr/libexec/maple-webkit-runtime/bin/bwrap"
+    "usr/libexec/maple-webkit-runtime/bin/xdg-dbus-proxy"
+    "usr/libexec/maple-webkit-runtime/maple-replace-strings"
+  )
+
+  if [ ! -e "${appdir}/usr/lib/libwebkit2gtk-4.1.so.0" ]; then
+    return 0
+  fi
+
+  for path in "${required_paths[@]}"; do
+    if [ ! -e "${appdir}/${path}" ]; then
+      echo "AppImage is missing WebKit runtime payload: ${path}" >&2
+      status=1
+    fi
+  done
+
+  if [ -f "${appdir}/AppRun" ]; then
+    if ! grep -Fq 'apprun-hooks/"maple-webkitgtk.sh"' "${appdir}/AppRun"; then
+      echo "AppImage AppRun does not source the Maple WebKit runtime hook." >&2
+      status=1
+    fi
+    if ! grep -Fq 'exec "$this_dir/usr/bin/maple" "$@"' "${appdir}/AppRun"; then
+      echo "AppImage AppRun does not launch Maple with the verified runtime environment." >&2
+      status=1
+    fi
+  else
+    echo "AppImage is missing AppRun." >&2
+    status=1
+  fi
+
+  for path in \
+    "${appdir}/usr/libexec/webkit2gtk-4.1/WebKitNetworkProcess" \
+    "${appdir}/usr/libexec/webkit2gtk-4.1/WebKitWebProcess" \
+    "${appdir}/usr/libexec/webkit2gtk-4.1/WebKitGPUProcess" \
+    "${appdir}/usr/libexec/maple-webkit-runtime/bin/bwrap" \
+    "${appdir}/usr/libexec/maple-webkit-runtime/bin/xdg-dbus-proxy" \
+    "${appdir}/usr/libexec/maple-webkit-runtime/maple-replace-strings"; do
+    if [ -f "${path}" ]; then
+      verify_linux_package_executable_metadata "${path}" || status=1
+    fi
+  done
+
+  if [ "${status}" -eq 0 ]; then
+    printf 'verified-linux-appimage-webkit-runtime  %s\n' "${appdir}"
+  fi
+
+  return "${status}"
+}
+
 prepare_linux_appdir_for_appimage() {
   local appdir="$1"
   local exe="${appdir}/usr/bin/maple"
@@ -2542,8 +3000,10 @@ prepare_linux_appdir_for_appimage() {
     sanitize_linux_package_executable "${exe}"
   fi
 
+  stage_linux_appdir_webkit_runtime "${appdir}"
   repair_linux_appdir_runtime_closure "${appdir}"
   verify_linux_appdir_runtime_closure "${appdir}"
+  verify_linux_appdir_webkit_runtime "${appdir}"
   touch_tree_to_source_date_epoch "${appdir}"
 }
 
@@ -2587,6 +3047,7 @@ sanitize_linux_package_executable() {
   local interpreter
 
   interpreter="$(linux_system_elf_interpreter_for_file "${exe}")"
+  chmod u+w "${exe}" 2>/dev/null || true
   patchelf --set-interpreter "${interpreter}" --remove-rpath "${exe}"
   verify_linux_package_executable_metadata "${exe}"
 }
@@ -2629,6 +3090,7 @@ verify_linux_appimage_executable_metadata() {
     extract_appimage_tool "${appimage}" "${tmp}/AppDir"
     verify_linux_package_executable_metadata "${tmp}/AppDir/usr/bin/maple"
     verify_linux_appdir_runtime_closure "${tmp}/AppDir"
+    verify_linux_appdir_webkit_runtime "${tmp}/AppDir"
   ) || status=$?
   rm -rf "${tmp}"
   return "${status}"
