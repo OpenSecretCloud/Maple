@@ -2704,10 +2704,21 @@ maple_webkit_prepare_runtime() {
 
   appdir="\${APPDIR:-\${this_dir}}"
   root="\$(maple_webkit_select_runtime_root)"
-  maple_webkit_runtime_dir_is_safe "\${root}"
 
-  mkdir -p "\${root}/bin" "\${root}/lib" "\${root}/libexec"
+  if [ -e "\${root}" ] || [ -L "\${root}" ]; then
+    maple_webkit_runtime_dir_is_safe "\${root}" || return 1
+  else
+    mkdir "\${root}" || return 1
+  fi
+  maple_webkit_runtime_dir_is_safe "\${root}" || return 1
   chmod 700 "\${root}"
+  for child in bin lib libexec; do
+    if [ -L "\${root}/\${child}" ]; then
+      echo "Refusing to use symlinked WebKit runtime subdirectory: \${root}/\${child}" >&2
+      return 1
+    fi
+  done
+  mkdir -p "\${root}/bin" "\${root}/lib" "\${root}/libexec"
 
   ln -sfn "\${appdir}/usr/libexec/webkit2gtk-4.1" "\${root}/libexec/webkit2gtk-4.1"
   ln -sfn "\${appdir}/usr/lib/webkit2gtk-4.1" "\${root}/lib/webkit2gtk-4.1"
