@@ -1172,8 +1172,8 @@ for arg in "\$@"; do
 done
 
 if [ -n "\${appdir}" ]; then
-  rm -f "\${appdir}/.DirIcon"
-  sanitize_appdir_executable "\${appdir}"
+  source "${SCRIPT_DIR}/_common.sh"
+  prepare_linux_appdir_for_appimage "\${appdir}"
 fi
 
 script_dir="\$(CDPATH= cd -- "\$(dirname -- "\$0")" && pwd)"
@@ -1338,8 +1338,8 @@ for arg in "\$@"; do
 done
 
 if [ -n "\${appdir}" ]; then
-  rm -f "\${appdir}/.DirIcon"
-  sanitize_appdir_executable "\${appdir}"
+  source "${SCRIPT_DIR}/_common.sh"
+  prepare_linux_appdir_for_appimage "\${appdir}"
 fi
 
 script_dir="\$(CDPATH= cd -- "\$(dirname -- "\$0")" && pwd)"
@@ -2322,6 +2322,231 @@ linux_system_elf_interpreter_for_file() {
   esac
 }
 
+linux_appimage_ignored_needed_library() {
+  case "$1" in
+    ld-linux-*.so.* | \
+      libc.so.* | \
+      libdl.so.* | \
+      libm.so.* | \
+      libmvec.so.* | \
+      libnss_*.so.* | \
+      libpthread.so.* | \
+      libresolv.so.* | \
+      librt.so.* | \
+      libutil.so.*)
+      return 0
+      ;;
+  esac
+
+  return 1
+}
+
+linux_appdir_lib_dir() {
+  printf '%s/usr/lib\n' "$1"
+}
+
+linux_runtime_closure_store_paths_file() {
+  local closure_info="${MAPLE_NIX_LINUX_CLOSURE_INFO:-}"
+
+  if [ -z "${closure_info}" ] || [ ! -f "${closure_info}/store-paths" ]; then
+    echo "MAPLE_NIX_LINUX_CLOSURE_INFO/store-paths is required for AppImage runtime closure repair." >&2
+    return 1
+  fi
+
+  printf '%s/store-paths\n' "${closure_info}"
+}
+
+linux_runtime_closure_library_for_soname() {
+  local soname="$1"
+  local store_paths root candidate
+
+  store_paths="$(linux_runtime_closure_store_paths_file)"
+  while IFS= read -r root; do
+    for candidate in "${root}/lib/${soname}" "${root}/lib64/${soname}"; do
+      if [ -e "${candidate}" ]; then
+        printf '%s\n' "${candidate}"
+        return 0
+      fi
+    done
+  done < "${store_paths}"
+
+  return 1
+}
+
+linux_appdir_path_resolves_inside_appdir() {
+  local appdir="$1"
+  local path="$2"
+  local appdir_real path_real
+
+  appdir_real="$(readlink -f "${appdir}")" || return 1
+  path_real="$(readlink -f "${path}" 2>/dev/null)" || return 1
+
+  case "${path_real}" in
+    "${appdir_real}"/*)
+      return 0
+      ;;
+  esac
+
+  return 1
+}
+
+linux_appdir_library_is_self_contained() {
+  local appdir="$1"
+  local library="$2"
+
+  [ -f "${library}" ] || return 1
+  [ ! -L "${library}" ] || linux_appdir_path_resolves_inside_appdir "${appdir}" "${library}"
+}
+
+copy_linux_runtime_library_to_appdir() {
+  local appdir="$1"
+  local source="$2"
+  local soname="$3"
+  local libdir dest
+
+  libdir="$(linux_appdir_lib_dir "${appdir}")"
+  dest="${libdir}/${soname}"
+  mkdir -p "${libdir}"
+
+  if [ -L "${dest}" ] && ! linux_appdir_path_resolves_inside_appdir "${appdir}" "${dest}"; then
+    rm -f "${dest}"
+  fi
+
+  if [ ! -e "${dest}" ]; then
+    cp -L --preserve=mode,timestamps "${source}" "${dest}"
+    chmod u+w "${dest}" 2>/dev/null || true
+    if patchelf --print-needed "${dest}" >/dev/null 2>&1; then
+      patchelf --set-rpath '$ORIGIN' "${dest}" 2>/dev/null || true
+    fi
+    touch -h -d "@${SOURCE_DATE_EPOCH}" "${dest}"
+    printf 'staged-linux-appimage-runtime-lib  %s  %s\n' "${soname}" "${source}"
+  fi
+}
+
+repair_linux_appdir_runtime_closure() {
+  local appdir="$1"
+  local libdir pass changed elf needed soname library_source
+
+  libdir="$(linux_appdir_lib_dir "${appdir}")"
+  mkdir -p "${libdir}"
+
+  for pass in $(seq 1 20); do
+    changed=0
+
+    while IFS= read -r -d '' elf; do
+      while IFS= read -r needed; do
+        [ -n "${needed}" ] || continue
+
+        case "${needed}" in
+          */*)
+            soname="$(basename "${needed}")"
+            if ! linux_appimage_ignored_needed_library "${soname}"; then
+              if library_source="$(linux_runtime_closure_library_for_soname "${soname}")"; then
+                copy_linux_runtime_library_to_appdir "${appdir}" "${library_source}" "${soname}"
+              else
+                library_source=""
+              fi
+            fi
+
+            if [ "${needed}" != "${soname}" ]; then
+              patchelf --replace-needed "${needed}" "${soname}" "${elf}"
+              touch -h -d "@${SOURCE_DATE_EPOCH}" "${elf}"
+              printf 'rewrote-linux-appimage-needed  %s  %s  %s\n' "${needed}" "${soname}" "${elf}"
+              changed=1
+            fi
+            continue
+            ;;
+          *)
+            soname="${needed}"
+            ;;
+        esac
+
+        if linux_appimage_ignored_needed_library "${soname}"; then
+          continue
+        fi
+
+        if linux_appdir_library_is_self_contained "${appdir}" "${libdir}/${soname}"; then
+          continue
+        fi
+
+        if library_source="$(linux_runtime_closure_library_for_soname "${soname}")"; then
+          copy_linux_runtime_library_to_appdir "${appdir}" "${library_source}" "${soname}"
+          changed=1
+        fi
+      done < <(patchelf --print-needed "${elf}" 2>/dev/null || true)
+    done < <(find "${appdir}" -type f -print0)
+
+    if [ "${changed}" -eq 0 ]; then
+      return 0
+    fi
+  done
+
+  echo "AppImage runtime closure repair did not converge." >&2
+  return 1
+}
+
+verify_linux_appdir_runtime_closure() {
+  local appdir="$1"
+  local libdir status elf needed soname library
+
+  libdir="$(linux_appdir_lib_dir "${appdir}")"
+  status=0
+
+  while IFS= read -r -d '' elf; do
+    while IFS= read -r needed; do
+      [ -n "${needed}" ] || continue
+
+      case "${needed}" in
+        */*)
+          echo "AppImage ELF contains an absolute DT_NEEDED path." >&2
+          echo "needed=${needed}" >&2
+          echo "file=${elf}" >&2
+          status=1
+          soname="$(basename "${needed}")"
+          ;;
+        *)
+          soname="${needed}"
+          ;;
+      esac
+
+      if linux_appimage_ignored_needed_library "${soname}"; then
+        continue
+      fi
+
+      library="${libdir}/${soname}"
+      if [ ! -f "${library}" ]; then
+        echo "AppImage is missing bundled runtime library ${soname} required by ${elf}." >&2
+        status=1
+      elif [ -L "${library}" ] && ! linux_appdir_path_resolves_inside_appdir "${appdir}" "${library}"; then
+        echo "AppImage runtime library ${soname} resolves outside the AppDir." >&2
+        echo "file=${library}" >&2
+        echo "target=$(readlink -f "${library}" 2>/dev/null || printf '<unresolved>')" >&2
+        status=1
+      fi
+    done < <(patchelf --print-needed "${elf}" 2>/dev/null || true)
+  done < <(find "${appdir}" -type f -print0)
+
+  if [ "${status}" -eq 0 ]; then
+    printf 'verified-linux-appimage-runtime-closure  %s\n' "${appdir}"
+  fi
+
+  return "${status}"
+}
+
+prepare_linux_appdir_for_appimage() {
+  local appdir="$1"
+  local exe="${appdir}/usr/bin/maple"
+
+  rm -f "${appdir}/.DirIcon"
+  if [ -f "${exe}" ]; then
+    sanitize_linux_package_executable "${exe}"
+  fi
+
+  repair_linux_appdir_runtime_closure "${appdir}"
+  verify_linux_appdir_runtime_closure "${appdir}"
+  touch_tree_to_source_date_epoch "${appdir}"
+}
+
 verify_linux_package_executable_metadata() {
   local exe="$1"
   local expected_interpreter actual_interpreter rpath
@@ -2380,6 +2605,7 @@ verify_linux_deb_package_executable_metadata() {
   local deb="$1"
   local tmp status
 
+  deb="$(cd "$(dirname "${deb}")" && pwd -P)/$(basename "${deb}")"
   tmp="$(mktemp -d)"
   status=0
   (
@@ -2402,6 +2628,7 @@ verify_linux_appimage_executable_metadata() {
   (
     extract_appimage_tool "${appimage}" "${tmp}/AppDir"
     verify_linux_package_executable_metadata "${tmp}/AppDir/usr/bin/maple"
+    verify_linux_appdir_runtime_closure "${tmp}/AppDir"
   ) || status=$?
   rm -rf "${tmp}"
   return "${status}"
