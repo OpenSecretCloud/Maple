@@ -49,6 +49,7 @@ case "$(host_os)" in
     release_config="$(linux_tauri_release_config)"
     run_with_nix_usr_bin pkg-config --modversion glib-2.0
     (cd "${TAURI_DIR}" && cargo build --bins --features tauri/custom-protocol --release)
+    sanitize_linux_target_release_executable
     run_with_nix_usr_bin bun tauri build --verbose --config "${release_config}"
     restore_linux_runtime_library_path
     normalize_linux_desktop_packages
@@ -63,14 +64,15 @@ case "$(host_os)" in
     while IFS= read -r -d '' file; do
       desktop_artifacts+=("${file}")
     done < <(find "${TAURI_DIR}/target/release/bundle" -type f \( \
-      -name '*.AppImage' -o \
-      -name '*.AppImage.sig' -o \
+      -name 'Maple_*.AppImage' -o \
+      -name 'Maple_*.AppImage.sig' -o \
       -name '*.deb' -o \
       -name '*.deb.sig' -o \
       -name '*.rpm' -o \
       -name '*.rpm.sig' \
     \) -print0 | LC_ALL=C sort -z)
 
+    verify_linux_desktop_package_metadata "${desktop_artifacts[@]}"
     verify_tauri_updater_signature_files "${desktop_artifacts[@]}"
     write_sha256_manifest "${repro_dir}/desktop-release-linux-final.sha256" "${desktop_artifacts[@]}"
     print_file_hashes "${desktop_artifacts[@]}"

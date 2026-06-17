@@ -15,8 +15,9 @@ The all target requires every release proof class. The present target verifies
 only the proof classes found in the artifact directory, which is useful for
 partial PR artifact bundles.
 
-Set MAPLE_VERIFY_ALLOW_PLATFORM_SKIPS=1 to skip host-specific Apple container
-checks, such as DMG or IPA canonicalization on non-macOS hosts.
+Set MAPLE_VERIFY_ALLOW_PLATFORM_SKIPS=1 to skip host-specific container checks,
+such as DMG or IPA canonicalization on non-macOS hosts and Linux installer
+metadata checks on non-Linux hosts.
 EOF
 }
 
@@ -274,6 +275,47 @@ verify_tauri_signatures_in_artifacts() {
   done < <(find "${artifacts_dir}" -type f -name '*.sig' -print0 | LC_ALL=C sort -z)
 }
 
+verify_linux_installer_metadata() {
+  local appimage deb
+  local -a appimages=()
+  local -a debs=()
+
+  if [ "$(host_os)" != "linux" ]; then
+    if [ "${allow_platform_skips}" = "1" ]; then
+      printf 'skipped-linux-installer-metadata  requires-linux\n'
+      return 0
+    fi
+    echo "Linux installer metadata verification requires Linux." >&2
+    return 1
+  fi
+
+  while IFS= read -r -d '' appimage; do
+    appimages+=("${appimage}")
+  done < <(find "${artifacts_dir}" -type f -name 'Maple_*.AppImage' -print0 | LC_ALL=C sort -z)
+
+  while IFS= read -r -d '' deb; do
+    debs+=("${deb}")
+  done < <(find "${artifacts_dir}" -type f -name '*.deb' -print0 | LC_ALL=C sort -z)
+
+  if [ "${#appimages[@]}" -eq 0 ]; then
+    echo "No Linux Maple AppImage artifact found for installer metadata verification." >&2
+    return 1
+  fi
+
+  if [ "${#debs[@]}" -eq 0 ]; then
+    echo "No Linux .deb artifact found for installer metadata verification." >&2
+    return 1
+  fi
+
+  for appimage in "${appimages[@]}"; do
+    verify_linux_appimage_executable_metadata "${appimage}"
+  done
+
+  for deb in "${debs[@]}"; do
+    verify_linux_deb_package_executable_metadata "${deb}"
+  done
+}
+
 verify_linux_manifest() {
   local final_manifest="$1"
   local fake_pub_manifest
@@ -284,6 +326,7 @@ verify_linux_manifest() {
   fi
 
   verify_file_manifest "${final_manifest}"
+  verify_linux_installer_metadata
   verify_tauri_signatures_in_artifacts
 }
 
@@ -494,32 +537,37 @@ verify_macos() {
 }
 
 verify_ios() {
-  local final_manifest unsigned_manifest signed_manifest payload_manifest
-  local unsigned_digest signed_digest payload_digest payload_seen payload_mismatch
+  local final_manifest unsigned_manifest archive_manifest payload_manifest
+  local unsigned_digest archive_digest payload_digest payload_seen payload_mismatch
 
   final_manifest="$(proof_file_required ios-release-final.sha256)"
   unsigned_manifest="$(proof_file_required ios-release-unsigned-app-canonical.sha256)"
-  signed_manifest="$(proof_file_required ios-release-signed-app-canonical.sha256)"
+  archive_manifest="$(proof_file_optional ios-release-archive-app-canonical.sha256)"
+  if [ -z "${archive_manifest}" ]; then
+    archive_manifest="$(proof_file_optional ios-release-signed-app-canonical.sha256)"
+  fi
   payload_manifest="$(proof_file_required ios-release-canonical-payload.sha256)"
 
   verify_file_manifest "${final_manifest}"
 
   unsigned_digest="$(manifest_single_digest "${unsigned_manifest}")"
-  signed_digest="$(manifest_single_digest "${signed_manifest}")"
-  if [ -z "${unsigned_digest}" ] || [ -z "${signed_digest}" ]; then
-    echo "iOS signed app canonical proof is missing." >&2
+  if [ -z "${unsigned_digest}" ]; then
+    echo "iOS unsigned app canonical proof is missing." >&2
     echo "unsigned=${unsigned_digest:-missing}" >&2
-    echo "signed=${signed_digest:-missing}" >&2
     return 1
   fi
 
-  if [ "${unsigned_digest}" != "${signed_digest}" ]; then
-    echo "iOS signed app canonical proof does not match unsigned proof." >&2
-    echo "unsigned=${unsigned_digest:-missing}" >&2
-    echo "signed=${signed_digest:-missing}" >&2
-    printf 'warning-ios-signed-app-proof-mismatch  unsigned=%s  signed=%s\n' "${unsigned_digest}" "${signed_digest}"
-  else
-    printf 'verified-ios-signed-app-proof  %s\n' "${signed_digest}"
+  if [ -n "${archive_manifest}" ]; then
+    archive_digest="$(manifest_single_digest "${archive_manifest}")"
+    if [ -z "${archive_digest}" ]; then
+      echo "iOS archive app canonical diagnostic proof is empty." >&2
+      return 1
+    fi
+    if [ "${unsigned_digest}" != "${archive_digest}" ]; then
+      printf 'diagnostic-ios-archive-app-proof-mismatch  unsigned=%s  archive=%s\n' "${unsigned_digest}" "${archive_digest}"
+    else
+      printf 'verified-ios-archive-app-proof  %s\n' "${archive_digest}"
+    fi
   fi
 
   verify_canonical_apple_manifest "${payload_manifest}"

@@ -122,8 +122,13 @@ find_ios_release_app() {
 write_ios_canonical_app_file_manifest() {
   local app="$1"
   local out="$2"
+  local tmp
 
-  python3 "${REPO_ROOT}/scripts/ci/canonical-ios-app-hash.py" --manifest "${app}" > "${out}"
+  tmp="$(mktemp -d)"
+  cp -a "${app}" "${tmp}/app"
+  remove_apple_signing_metadata "${tmp}/app"
+  python3 "${REPO_ROOT}/scripts/ci/canonical-ios-app-hash.py" --manifest "${tmp}/app" > "${out}"
+  rm -rf "${tmp}"
 }
 
 write_ios_ipa_payload_canonical_file_manifest() {
@@ -156,6 +161,9 @@ write_ios_canonical_app_manifest_diff() {
   sed -E 's/^([0-9a-f]{64})  (.*)$/\2  \1/' "${unsigned_manifest}" | LC_ALL=C sort > "${unsigned_by_path}"
   sed -E 's/^([0-9a-f]{64})  (.*)$/\2  \1/' "${signed_manifest}" | LC_ALL=C sort > "${signed_by_path}"
   comm -3 "${unsigned_by_path}" "${signed_by_path}" > "${out}"
+  if [ ! -s "${out}" ]; then
+    printf 'No canonical file manifest differences after stripping Apple signing metadata.\n' > "${out}"
+  fi
   rm -f "${unsigned_by_path}" "${signed_by_path}"
 }
 
@@ -179,24 +187,22 @@ if [ -z "${signed_app}" ]; then
   echo "Could not find signed iOS app build product under ${TAURI_DIR}/gen/apple/build." >&2
   exit 1
 fi
-signed_app_canonical_hash="$(print_canonical_ios_app_hash "${signed_app}" "$(repo_relative_path "${signed_app}")" | tee "${repro_dir}/ios-release-signed-app-canonical.sha256" | awk '{ print $2 }')"
-cat "${repro_dir}/ios-release-signed-app-canonical.sha256"
-write_ios_canonical_app_file_manifest "${signed_app}" "${repro_dir}/ios-release-signed-app-canonical-files.sha256"
+signed_app_canonical_hash="$(print_canonical_ios_app_hash "${signed_app}" "$(repo_relative_path "${signed_app}")" | tee "${repro_dir}/ios-release-archive-app-canonical.sha256" | awk '{ print $2 }')"
+cat "${repro_dir}/ios-release-archive-app-canonical.sha256"
+write_ios_canonical_app_file_manifest "${signed_app}" "${repro_dir}/ios-release-archive-app-canonical-files.sha256"
 write_ios_canonical_app_manifest_diff \
   "${repro_dir}/ios-release-unsigned-app-canonical-files.sha256" \
-  "${repro_dir}/ios-release-signed-app-canonical-files.sha256" \
-  "${repro_dir}/ios-release-signed-vs-unsigned-canonical.diff.txt"
+  "${repro_dir}/ios-release-archive-app-canonical-files.sha256" \
+  "${repro_dir}/ios-release-archive-app-vs-unsigned-canonical.diff.txt"
 
 if [ "${signed_app_canonical_hash}" != "${unsigned_app_canonical_hash}" ]; then
-  echo "warning-ios-signed-app-canonical-mismatch  signed iOS app does not strip back to the unsigned app tree." >&2
+  echo "diagnostic-ios-archive-app-canonical-mismatch  archived iOS app does not strip back to the unsigned app tree." >&2
   echo "unsigned=${unsigned_app_canonical_hash}" >&2
-  echo "signed_canonical=${signed_app_canonical_hash}" >&2
-  if [ -s "${repro_dir}/ios-release-signed-vs-unsigned-canonical.diff.txt" ]; then
-    echo "First canonical iOS file manifest differences:" >&2
-    sed -n '1,80p' "${repro_dir}/ios-release-signed-vs-unsigned-canonical.diff.txt" >&2
-  fi
+  echo "archive_canonical=${signed_app_canonical_hash}" >&2
+  echo "Canonical iOS archive app file manifest diff diagnostic:" >&2
+  sed -n '1,80p' "${repro_dir}/ios-release-archive-app-vs-unsigned-canonical.diff.txt" >&2
 else
-  printf 'verified-ios-signed-app  %s  %s\n' "${signed_app_canonical_hash}" "$(repo_relative_path "${signed_app}")"
+  printf 'verified-ios-archive-app  %s  %s\n' "${signed_app_canonical_hash}" "$(repo_relative_path "${signed_app}")"
 fi
 
 ios_artifacts=()
@@ -228,10 +234,8 @@ for artifact in "${ios_artifacts[@]}"; do
     echo "warning-ios-exported-payload-canonical-mismatch  exported iOS IPA payload does not strip back to the unsigned app build product." >&2
     echo "unsigned=${unsigned_app_canonical_hash}" >&2
     echo "ipa_payload=${ipa_canonical_hash}" >&2
-    if [ -s "${payload_diff}" ]; then
-      echo "First canonical iOS IPA payload differences:" >&2
-      sed -n '1,80p' "${payload_diff}" >&2
-    fi
+    echo "Canonical iOS IPA payload file manifest diff diagnostic:" >&2
+    sed -n '1,80p' "${payload_diff}" >&2
     if [ "${MAPLE_ENFORCE_IOS_SIGNED_REPRODUCIBILITY:-0}" = "1" ]; then
       exit 1
     fi
