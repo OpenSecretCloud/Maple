@@ -673,7 +673,7 @@ print_canonical_ios_app_hash() {
     return 0
   fi
 
-  digest="$(python3 "${REPO_ROOT}/scripts/ci/canonical-ios-app-hash.py" "${bundle}")"
+  digest="$(canonical_apple_bundle_hash_from_path_digest "${bundle}")"
   printf 'sha256-ios-app-canonical  %s  %s\n' "${digest}" "${label}"
 }
 
@@ -1056,6 +1056,37 @@ stage_appdir_for_appimage() {
   esac
 }
 
+sanitize_appdir_executable() {
+  local appdir="\$1"
+  local exe="\${appdir}/usr/bin/maple"
+  local description interpreter rpath
+
+  if [ ! -f "\${exe}" ]; then
+    return 0
+  fi
+
+  description="\$(LC_ALL=C file "\${exe}")"
+  case "\${description}" in
+    *"x86-64"*)
+      interpreter="/lib64/ld-linux-x86-64.so.2"
+      ;;
+    *"aarch64"*)
+      interpreter="/lib/ld-linux-aarch64.so.1"
+      ;;
+    *)
+      echo "Unsupported AppImage ELF architecture: \${description}" >&2
+      return 1
+      ;;
+  esac
+
+  patchelf --set-interpreter "\${interpreter}" --remove-rpath "\${exe}"
+  rpath="\$(patchelf --print-rpath "\${exe}" 2>/dev/null || true)"
+  printf 'verified-linux-appimage-appdir-elf  interpreter=%s  rpath=%s  %s\n' \
+    "\${interpreter}" \
+    "\${rpath:-<empty>}" \
+    "\${exe}"
+}
+
 run_appimage_plugin() {
   local tmp_dir="" tmp_appdir="" output_parent="" status file previous arg
   local -a plugin_args=()
@@ -1142,6 +1173,7 @@ done
 
 if [ -n "\${appdir}" ]; then
   rm -f "\${appdir}/.DirIcon"
+  sanitize_appdir_executable "\${appdir}"
 fi
 
 script_dir="\$(CDPATH= cd -- "\$(dirname -- "\$0")" && pwd)"
@@ -1190,6 +1222,37 @@ stage_appdir_for_appimage() {
   esac
 }
 
+sanitize_appdir_executable() {
+  local appdir="\$1"
+  local exe="\${appdir}/usr/bin/maple"
+  local description interpreter rpath
+
+  if [ ! -f "\${exe}" ]; then
+    return 0
+  fi
+
+  description="\$(LC_ALL=C file "\${exe}")"
+  case "\${description}" in
+    *"x86-64"*)
+      interpreter="/lib64/ld-linux-x86-64.so.2"
+      ;;
+    *"aarch64"*)
+      interpreter="/lib/ld-linux-aarch64.so.1"
+      ;;
+    *)
+      echo "Unsupported AppImage ELF architecture: \${description}" >&2
+      return 1
+      ;;
+  esac
+
+  patchelf --set-interpreter "\${interpreter}" --remove-rpath "\${exe}"
+  rpath="\$(patchelf --print-rpath "\${exe}" 2>/dev/null || true)"
+  printf 'verified-linux-appimage-appdir-elf  interpreter=%s  rpath=%s  %s\n' \
+    "\${interpreter}" \
+    "\${rpath:-<empty>}" \
+    "\${exe}"
+}
+
 run_appimage_plugin() {
   local tmp_dir="" tmp_appdir="" output_parent="" status file previous arg
   local -a plugin_args=()
@@ -1276,6 +1339,7 @@ done
 
 if [ -n "\${appdir}" ]; then
   rm -f "\${appdir}/.DirIcon"
+  sanitize_appdir_executable "\${appdir}"
 fi
 
 script_dir="\$(CDPATH= cd -- "\$(dirname -- "\$0")" && pwd)"
@@ -2239,6 +2303,125 @@ archive_tree_as_root_tar_gz() {
   ) | "${gzip_cmd}" -n > "${out}"
 }
 
+linux_system_elf_interpreter_for_file() {
+  local elf="$1"
+  local description
+
+  description="$(LC_ALL=C file "${elf}")"
+  case "${description}" in
+    *"x86-64"*)
+      printf '%s\n' "/lib64/ld-linux-x86-64.so.2"
+      ;;
+    *"aarch64"*)
+      printf '%s\n' "/lib/ld-linux-aarch64.so.1"
+      ;;
+    *)
+      echo "Unsupported Linux ELF architecture for distributable package: ${description}" >&2
+      return 1
+      ;;
+  esac
+}
+
+verify_linux_package_executable_metadata() {
+  local exe="$1"
+  local expected_interpreter actual_interpreter rpath
+
+  if [ ! -f "${exe}" ]; then
+    echo "Missing Linux package executable: ${exe}" >&2
+    return 1
+  fi
+
+  expected_interpreter="$(linux_system_elf_interpreter_for_file "${exe}")"
+  actual_interpreter="$(patchelf --print-interpreter "${exe}")"
+  if [ "${actual_interpreter}" != "${expected_interpreter}" ]; then
+    echo "Linux package executable uses a non-distributable ELF interpreter." >&2
+    echo "expected=${expected_interpreter}" >&2
+    echo "actual=${actual_interpreter}" >&2
+    echo "file=${exe}" >&2
+    return 1
+  fi
+
+  rpath="$(patchelf --print-rpath "${exe}" 2>/dev/null || true)"
+  case "${rpath}" in
+    *"/nix/store/"* | *"/home/runner/work/"* | *"/Users/runner/work/"*)
+      echo "Linux package executable contains build-host paths in RPATH/RUNPATH." >&2
+      echo "rpath=${rpath}" >&2
+      echo "file=${exe}" >&2
+      return 1
+      ;;
+  esac
+
+  printf 'verified-linux-package-elf  interpreter=%s  rpath=%s  %s\n' \
+    "${actual_interpreter}" \
+    "${rpath:-<empty>}" \
+    "${exe}"
+}
+
+sanitize_linux_package_executable() {
+  local exe="$1"
+  local interpreter
+
+  interpreter="$(linux_system_elf_interpreter_for_file "${exe}")"
+  patchelf --set-interpreter "${interpreter}" --remove-rpath "${exe}"
+  verify_linux_package_executable_metadata "${exe}"
+}
+
+sanitize_linux_deb_payload() {
+  local payload="$1"
+
+  sanitize_linux_package_executable "${payload}/usr/bin/maple"
+}
+
+sanitize_linux_target_release_executable() {
+  sanitize_linux_package_executable "${TAURI_DIR}/target/release/maple"
+}
+
+verify_linux_deb_package_executable_metadata() {
+  local deb="$1"
+  local tmp status
+
+  tmp="$(mktemp -d)"
+  status=0
+  (
+    cd "${tmp}"
+    ar x "${deb}"
+    mkdir data
+    tar -xzf data.tar.gz -C data
+    verify_linux_package_executable_metadata "${tmp}/data/usr/bin/maple"
+  ) || status=$?
+  rm -rf "${tmp}"
+  return "${status}"
+}
+
+verify_linux_appimage_executable_metadata() {
+  local appimage="$1"
+  local tmp status
+
+  tmp="$(mktemp -d)"
+  status=0
+  (
+    extract_appimage_tool "${appimage}" "${tmp}/AppDir"
+    verify_linux_package_executable_metadata "${tmp}/AppDir/usr/bin/maple"
+  ) || status=$?
+  rm -rf "${tmp}"
+  return "${status}"
+}
+
+verify_linux_desktop_package_metadata() {
+  local artifact
+
+  for artifact in "$@"; do
+    case "${artifact}" in
+      *Maple_*.AppImage)
+        verify_linux_appimage_executable_metadata "${artifact}"
+        ;;
+      *.deb)
+        verify_linux_deb_package_executable_metadata "${artifact}"
+        ;;
+    esac
+  done
+}
+
 normalize_deb_package() {
   local deb="$1"
   local tmp
@@ -2250,6 +2433,7 @@ normalize_deb_package() {
     mkdir control data
     tar -xzf control.tar.gz -C control
     tar -xzf data.tar.gz -C data
+    sanitize_linux_deb_payload "${tmp}/data"
     archive_tree_as_root_tar_gz "${tmp}/control" "${tmp}/control.tar.gz"
     archive_tree_as_root_tar_gz "${tmp}/data" "${tmp}/data.tar.gz"
     printf '2.0\n' > debian-binary

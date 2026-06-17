@@ -27,6 +27,8 @@ case "$(host_os)" in
     remove_build_tree "${TAURI_DIR}/target/release/bundle/appimage"
     remove_build_tree "${TAURI_DIR}/target/release/bundle/deb"
     remove_build_tree "${TAURI_DIR}/target/release/bundle/rpm"
+    (cd "${TAURI_DIR}" && cargo build --bins --features tauri/custom-protocol --release)
+    sanitize_linux_target_release_executable
     run_with_nix_usr_bin bun tauri build --verbose --no-sign --config "$(linux_tauri_pr_config)"
     restore_linux_runtime_library_path
     normalize_linux_desktop_packages
@@ -34,7 +36,9 @@ case "$(host_os)" in
     desktop_artifacts=()
     while IFS= read -r -d '' file; do
       desktop_artifacts+=("${file}")
-    done < <(find "${TAURI_DIR}/target/release/bundle" -type f \( -name '*.AppImage' -o -name '*.deb' -o -name '*.rpm' \) -print0 | LC_ALL=C sort -z)
+    done < <(find "${TAURI_DIR}/target/release/bundle" -type f \( -name 'Maple_*.AppImage' -o -name '*.deb' -o -name '*.rpm' \) -print0 | LC_ALL=C sort -z)
+    verify_linux_desktop_package_metadata "${desktop_artifacts[@]}"
+
     repro_dir="${TAURI_DIR}/target/reproducibility"
     write_sha256_manifest "${repro_dir}/desktop-pr-linux-final.sha256" "${desktop_artifacts[@]}" "${TAURI_DIR}/target/release/maple"
     print_file_hashes "${desktop_artifacts[@]}"
