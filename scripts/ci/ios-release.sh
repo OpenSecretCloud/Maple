@@ -162,7 +162,8 @@ write_ios_canonical_app_manifest_diff() {
   sed -E 's/^([0-9a-f]{64})  (.*)$/\2  \1/' "${signed_manifest}" | LC_ALL=C sort > "${signed_by_path}"
   comm -3 "${unsigned_by_path}" "${signed_by_path}" > "${out}"
   if [ ! -s "${out}" ]; then
-    printf 'No canonical file manifest differences after stripping Apple signing metadata.\n' > "${out}"
+    rm -f "${out}"
+    printf 'verified-ios-canonical-file-manifest-no-diff  %s  %s\n' "$(basename "${unsigned_manifest}")" "$(basename "${signed_manifest}")"
   fi
   rm -f "${unsigned_by_path}" "${signed_by_path}"
 }
@@ -200,7 +201,11 @@ if [ "${signed_app_canonical_hash}" != "${unsigned_app_canonical_hash}" ]; then
   echo "unsigned=${unsigned_app_canonical_hash}" >&2
   echo "archive_canonical=${signed_app_canonical_hash}" >&2
   echo "Canonical iOS archive app file manifest diff diagnostic:" >&2
-  sed -n '1,80p' "${repro_dir}/ios-release-archive-app-vs-unsigned-canonical.diff.txt" >&2
+  if [ -s "${repro_dir}/ios-release-archive-app-vs-unsigned-canonical.diff.txt" ]; then
+    sed -n '1,80p' "${repro_dir}/ios-release-archive-app-vs-unsigned-canonical.diff.txt" >&2
+  else
+    echo "No canonical iOS archive app file manifest diff was produced." >&2
+  fi
 else
   printf 'verified-ios-archive-app  %s  %s\n' "${signed_app_canonical_hash}" "$(repo_relative_path "${signed_app}")"
 fi
@@ -235,7 +240,11 @@ for artifact in "${ios_artifacts[@]}"; do
     echo "unsigned=${unsigned_app_canonical_hash}" >&2
     echo "ipa_payload=${ipa_canonical_hash}" >&2
     echo "Canonical iOS IPA payload file manifest diff diagnostic:" >&2
-    sed -n '1,80p' "${payload_diff}" >&2
+    if [ -s "${payload_diff}" ]; then
+      sed -n '1,80p' "${payload_diff}" >&2
+    else
+      echo "No canonical iOS IPA payload file manifest diff was produced." >&2
+    fi
     if [ "${MAPLE_ENFORCE_IOS_SIGNED_REPRODUCIBILITY:-0}" = "1" ]; then
       exit 1
     fi
