@@ -351,11 +351,18 @@ verify_linux_present() {
 verify_windows() {
   local final_manifest runtime_manifest
 
-  final_manifest="$(proof_file_required desktop-pr-windows-final.sha256)"
-  runtime_manifest="$(proof_file_required desktop-pr-windows-runtime-dlls.sha256)"
+  final_manifest="$(proof_file_optional desktop-release-windows-final.sha256)"
+  runtime_manifest="$(proof_file_optional desktop-release-windows-runtime-dlls.sha256)"
+  if [ -z "${final_manifest}" ]; then
+    final_manifest="$(proof_file_required desktop-pr-windows-final.sha256)"
+    runtime_manifest="$(proof_file_required desktop-pr-windows-runtime-dlls.sha256)"
+  fi
 
   verify_file_manifest "${final_manifest}"
-  verify_file_manifest "${runtime_manifest}"
+  if [ -n "${runtime_manifest}" ]; then
+    verify_file_manifest "${runtime_manifest}"
+  fi
+  verify_tauri_signatures_in_artifacts
 }
 
 verify_canonical_apple_manifest() {
@@ -647,7 +654,9 @@ verify_present() {
     verify_linux_present
   fi
   target_present desktop-release-macos-final.sha256 && verify_macos
-  target_present desktop-pr-windows-final.sha256 && verify_windows
+  if target_present desktop-release-windows-final.sha256 || target_present desktop-pr-windows-final.sha256; then
+    verify_windows
+  fi
   target_present android-release-final.sha256 && verify_android
   target_present ios-release-final.sha256 && verify_ios
   target_present web-final.sha256 && verify_web

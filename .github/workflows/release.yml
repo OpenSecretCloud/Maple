@@ -448,7 +448,33 @@ jobs:
           MAPLE_REQUIRE_ANDROID_SIGNATURE_VERIFICATION: "1"
         run: nix develop .#android -c ./scripts/ci/verify-release-artifacts.sh artifacts android
 
-  verify-desktop-release-artifacts:
+  verify-linux-desktop-release-artifacts:
+    needs: build-tauri
+    runs-on: ubuntu-latest-8-cores
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # was v4
+        with:
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # was v22
+        with:
+          github-token: ""
+
+      - name: Download release artifacts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          mkdir -p artifacts
+          gh release download "${RELEASE_TAG}" -D artifacts
+
+      - name: Verify Linux desktop release artifact reproducibility proofs
+        run: nix develop .#desktop-linux -c ./scripts/ci/verify-release-artifacts.sh artifacts linux
+
+  verify-macos-desktop-release-artifacts:
     needs: build-tauri
     runs-on: macos-26-xlarge
     permissions:
@@ -490,8 +516,17 @@ jobs:
           mkdir -p artifacts
           gh release download "${RELEASE_TAG}" -D artifacts
 
-      - name: Verify desktop release artifact reproducibility proofs
-        run: nix develop .#ci -c ./scripts/ci/verify-release-artifacts.sh artifacts linux macos
+      - name: Verify macOS desktop release artifact reproducibility proofs
+        run: nix develop .#ci -c ./scripts/ci/verify-release-artifacts.sh artifacts macos
+
+  verify-desktop-release-artifacts:
+    needs:
+      - verify-linux-desktop-release-artifacts
+      - verify-macos-desktop-release-artifacts
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify desktop release artifact checks completed
+        run: echo "Desktop release artifact verification completed for Linux and macOS."
 
   update-latest-json:
     needs: verify-desktop-release-artifacts
@@ -597,6 +632,6 @@ jobs:
           gh release download "${RELEASE_TAG}" -D artifacts
 
       - name: Verify release artifact reproducibility proofs
-        run: nix develop .#ci -c ./scripts/ci/verify-release-artifacts.sh artifacts linux macos ios web latest-json
+        run: nix develop .#ci -c ./scripts/ci/verify-release-artifacts.sh artifacts macos ios web latest-json
         env:
           MAPLE_ENFORCE_IOS_SIGNED_REPRODUCIBILITY: "1"
