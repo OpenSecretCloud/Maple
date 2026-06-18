@@ -2532,10 +2532,21 @@ sanitize_linux_appdir_library_rpaths() {
 
 remove_linux_appdir_nix_xdg_wrappers() {
   local appdir="$1"
-  local tool path
+  local tool path target
 
   for tool in xdg-open xdg-mime; do
     path="${appdir}/usr/bin/${tool}"
+    if [ -L "${path}" ]; then
+      target="$(readlink -f "${path}" 2>/dev/null || true)"
+      case "${target}" in
+        /nix/store/*)
+          rm -f "${path}"
+          printf 'removed-linux-appimage-nix-xdg-wrapper  %s\n' "${path}"
+          continue
+          ;;
+      esac
+    fi
+
     if [ -f "${path}" ] && grep -a -q '/nix/store' "${path}"; then
       rm -f "${path}"
       printf 'removed-linux-appimage-nix-xdg-wrapper  %s\n' "${path}"
@@ -2735,7 +2746,7 @@ maple_webkit_runtime_dir_is_safe() {
 }
 
 maple_webkit_prepare_runtime() {
-  local appdir root patched_lib marker tmp_lib
+  local appdir root patched_lib marker tmp_lib leaf
 
   appdir="\${APPDIR:-\${this_dir}}"
   root="\$(maple_webkit_select_runtime_root)"
@@ -2754,6 +2765,17 @@ maple_webkit_prepare_runtime() {
     fi
   done
   mkdir -p "\${root}/bin" "\${root}/lib" "\${root}/libexec"
+
+  for leaf in \\
+    "\${root}/libexec/webkit2gtk-4.1" \\
+    "\${root}/lib/webkit2gtk-4.1" \\
+    "\${root}/share" \\
+    "\${root}/bin/bwrap" \\
+    "\${root}/bin/xdg-dbus-proxy"; do
+    if [ -e "\${leaf}" ] || [ -L "\${leaf}" ]; then
+      rm -rf -- "\${leaf}"
+    fi
+  done
 
   ln -sfn "\${appdir}/usr/libexec/webkit2gtk-4.1" "\${root}/libexec/webkit2gtk-4.1"
   ln -sfn "\${appdir}/usr/lib/webkit2gtk-4.1" "\${root}/lib/webkit2gtk-4.1"
@@ -2980,7 +3002,7 @@ verify_linux_appdir_runtime_closure() {
 verify_linux_appdir_portable_runtime_paths() {
   local appdir="$1"
   local status=0
-  local path rpath
+  local path rpath target
 
   while IFS= read -r -d '' path; do
     rpath="$(patchelf --print-rpath "${path}" 2>/dev/null || true)"
@@ -2995,6 +3017,19 @@ verify_linux_appdir_portable_runtime_paths() {
   done < <(find "${appdir}" -type f -print0)
 
   for path in "${appdir}/usr/bin/xdg-open" "${appdir}/usr/bin/xdg-mime"; do
+    if [ -L "${path}" ]; then
+      target="$(readlink -f "${path}" 2>/dev/null || true)"
+      case "${target}" in
+        /nix/store/*)
+          echo "AppImage bundles a Nix-resolved xdg-utils symlink." >&2
+          echo "file=${path}" >&2
+          echo "target=${target}" >&2
+          status=1
+          continue
+          ;;
+      esac
+    fi
+
     if [ -f "${path}" ] && grep -a -q '/nix/store' "${path}"; then
       echo "AppImage bundles a Nix-resolved xdg-utils wrapper." >&2
       echo "file=${path}" >&2
@@ -3171,6 +3206,7 @@ verify_linux_appimage_executable_metadata() {
     extract_appimage_tool "${appimage}" "${tmp}/AppDir"
     verify_linux_package_executable_metadata "${tmp}/AppDir/usr/bin/maple"
     verify_linux_appdir_runtime_closure "${tmp}/AppDir"
+    verify_linux_appdir_portable_runtime_paths "${tmp}/AppDir"
     verify_linux_appdir_webkit_runtime "${tmp}/AppDir"
   ) || status=$?
   rm -rf "${tmp}"
