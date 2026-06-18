@@ -2508,6 +2508,41 @@ set_linux_appdir_rpath_under() {
   done < <(find "${root}" -type f -print0)
 }
 
+linux_appdir_portable_library_rpath() {
+  printf '%s\n' '$ORIGIN:$ORIGIN/..:$ORIGIN/../..:$ORIGIN/../../..:$ORIGIN/../../../..'
+}
+
+sanitize_linux_appdir_library_rpaths() {
+  local appdir="$1"
+  local rpath elf
+
+  rpath="$(linux_appdir_portable_library_rpath)"
+  if [ ! -d "${appdir}/usr/lib" ]; then
+    return 0
+  fi
+
+  while IFS= read -r -d '' elf; do
+    if patchelf --print-rpath "${elf}" >/dev/null 2>&1; then
+      chmod u+w "${elf}" 2>/dev/null || true
+      patchelf --set-rpath "${rpath}" "${elf}"
+      touch -h -d "@${SOURCE_DATE_EPOCH}" "${elf}"
+    fi
+  done < <(find "${appdir}/usr/lib" -type f -print0)
+}
+
+remove_linux_appdir_nix_xdg_wrappers() {
+  local appdir="$1"
+  local tool path
+
+  for tool in xdg-open xdg-mime; do
+    path="${appdir}/usr/bin/${tool}"
+    if [ -f "${path}" ] && grep -a -q '/nix/store' "${path}"; then
+      rm -f "${path}"
+      printf 'removed-linux-appimage-nix-xdg-wrapper  %s\n' "${path}"
+    fi
+  done
+}
+
 install_linux_appimage_string_patcher() {
   local appdir="$1"
   local runtime_dir source patcher compiler
@@ -2942,6 +2977,38 @@ verify_linux_appdir_runtime_closure() {
   return "${status}"
 }
 
+verify_linux_appdir_portable_runtime_paths() {
+  local appdir="$1"
+  local status=0
+  local path rpath
+
+  while IFS= read -r -d '' path; do
+    rpath="$(patchelf --print-rpath "${path}" 2>/dev/null || true)"
+    case "${rpath}" in
+      *"/nix/store/"* | *"/home/runner/work/"* | *"/Users/runner/work/"* | *"/Users/tony/"*)
+        echo "AppImage ELF contains build-host paths in RPATH/RUNPATH." >&2
+        echo "rpath=${rpath}" >&2
+        echo "file=${path}" >&2
+        status=1
+        ;;
+    esac
+  done < <(find "${appdir}" -type f -print0)
+
+  for path in "${appdir}/usr/bin/xdg-open" "${appdir}/usr/bin/xdg-mime"; do
+    if [ -f "${path}" ] && grep -a -q '/nix/store' "${path}"; then
+      echo "AppImage bundles a Nix-resolved xdg-utils wrapper." >&2
+      echo "file=${path}" >&2
+      status=1
+    fi
+  done
+
+  if [ "${status}" -eq 0 ]; then
+    printf 'verified-linux-appimage-portable-runtime-paths  %s\n' "${appdir}"
+  fi
+
+  return "${status}"
+}
+
 verify_linux_appdir_webkit_runtime() {
   local appdir="$1"
   local status=0
@@ -3013,7 +3080,10 @@ prepare_linux_appdir_for_appimage() {
 
   stage_linux_appdir_webkit_runtime "${appdir}"
   repair_linux_appdir_runtime_closure "${appdir}"
+  sanitize_linux_appdir_library_rpaths "${appdir}"
+  remove_linux_appdir_nix_xdg_wrappers "${appdir}"
   verify_linux_appdir_runtime_closure "${appdir}"
+  verify_linux_appdir_portable_runtime_paths "${appdir}"
   verify_linux_appdir_webkit_runtime "${appdir}"
   touch_tree_to_source_date_epoch "${appdir}"
 }
