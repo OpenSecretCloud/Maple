@@ -27,8 +27,7 @@ const AI_MODELS = [
     alt: "Moonshot",
     labels: ["Kimi K2.6"]
   },
-  { src: "/badge-zai-logo.png", alt: "Z.ai", labels: ["GLM 5.1"] },
-  { src: "/badge-qwen-logo.png", alt: "Qwen", labels: ["Qwen3-VL"] },
+  { src: "/badge-zai-logo.png", alt: "Z.ai", labels: ["GLM 5.2"] },
   { src: "/badge-meta-logo.png", alt: "Meta", labels: ["Meta Llama"] }
 ];
 
