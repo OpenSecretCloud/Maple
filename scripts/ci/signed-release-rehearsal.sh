@@ -23,6 +23,11 @@ Fake signing:
   APK/AAB signing without live keys. Apple release signing still requires real
   Apple credentials.
 
+Windows:
+  Windows Authenticode release signing is exercised in the protected Windows CI
+  workflow through Azure Artifact Signing. This local rehearsal helper does not
+  attempt a Windows release build or cloud signing flow.
+
 No .env files are loaded implicitly.
 EOF
 }

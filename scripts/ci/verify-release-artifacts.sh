@@ -626,7 +626,7 @@ verify_latest_json() {
     and (.platforms | type == "object")
   ' "${latest_json}" >/dev/null
 
-  for platform in darwin-aarch64 darwin-x86_64 linux-x86_64; do
+  for platform in darwin-aarch64 darwin-x86_64 linux-x86_64 windows-x86_64; do
     url="$(jq -er --arg platform "${platform}" '.platforms[$platform].url' "${latest_json}")"
     signature="$(jq -er --arg platform "${platform}" '.platforms[$platform].signature' "${latest_json}")"
     basename="$(basename "${url}")"
@@ -667,6 +667,7 @@ verify_present() {
 verify_all() {
   verify_linux
   verify_macos
+  verify_windows
   verify_android
   verify_ios
   verify_web

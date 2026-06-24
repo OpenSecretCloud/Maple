@@ -200,6 +200,69 @@ For proper macOS builds and notarization, you need to set up the following GitHu
 5. `APPLE_PASSWORD` - Your Apple Developer account password or app-specific password
 6. `APPLE_TEAM_ID` - Your Apple Developer team ID
 
+#### Azure Artifact Signing (for Windows builds)
+Windows release builds use Microsoft Azure Artifact Signing through GitHub
+Actions OIDC. No Azure client secret is required.
+
+Add these GitHub Actions secrets:
+
+| GitHub secret | Source |
+|---------------|--------|
+| `AZURE_CLIENT_ID` | Microsoft Entra app registration "Application (client) ID". |
+| `AZURE_TENANT_ID` | Microsoft Entra "Directory (tenant) ID". |
+| `AZURE_SUBSCRIPTION_ID` | Azure subscription ID that contains the Artifact Signing account. |
+| `AZURE_ARTIFACT_SIGNING_ENDPOINT` | Artifact Signing account endpoint. |
+| `AZURE_ARTIFACT_SIGNING_ACCOUNT_NAME` | Artifact Signing account name. |
+| `AZURE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE_NAME` | Certificate profile name under the Artifact Signing account. |
+| `AZURE_ARTIFACT_SIGNING_EXPECTED_SUBJECT` | Expected signer certificate Subject DN for that certificate profile. |
+
+The Entra application must also have a federated credential for this GitHub
+environment:
+
+```text
+repo:OpenSecretCloud/Maple:environment:windows-signing
+```
+
+In the Azure portal, add it under Microsoft Entra ID -> App registrations ->
+the CI application -> Certificates & secrets -> Federated credentials. Use:
+
+- Organization: `OpenSecretCloud`
+- Repository: `Maple`
+- Entity type: `Environment`
+- Environment name: `windows-signing`
+- Audience: `api://AzureADTokenExchange`
+
+If the portal asks for raw values instead of GitHub-specific fields, use:
+
+- Issuer: `https://token.actions.githubusercontent.com`
+- Subject: `repo:OpenSecretCloud/Maple:environment:windows-signing`
+- Audience: `api://AzureADTokenExchange`
+
+Assign the same Entra application/service principal the `Artifact Signing
+Certificate Profile Signer` role on the Artifact Signing account, resource
+group, or subscription. The role assignment is what authorizes the OIDC-auth'd
+GitHub runner to sign with the certificate profile.
+
+The expected signer subject should match the X.509 signer certificate subject
+reported by `Get-AuthenticodeSignature`. It is usually visible on the Artifact
+Signing certificate profile as the Subject DN derived from the completed identity
+validation, for example `CN=Example Corp, O=Example Corp, L=City, S=State, C=US`.
+Do not pin the leaf certificate thumbprint for this check; Artifact Signing
+manages certificate lifecycle and can issue rotated certificates for the same
+profile identity.
+
+The Windows release job builds `maple.exe` first, Authenticode-signs it, bundles
+the NSIS installer from that signed executable, Authenticode-signs the installer,
+then creates the Tauri updater `.sig` for the final signed installer bytes. This
+ordering is required because Authenticode signing changes the file being signed;
+the Tauri updater signature must be generated after the final Windows installer
+signature is applied.
+
+Windows release verification currently checks the final signed installer bytes,
+the final Tauri updater signature, and the pinned runtime DLL proofs. It does not
+yet try to canonicalize Authenticode-signed Windows binaries back to an unsigned
+baseline.
+
 ### To Create a Release
 
 #### Version Management

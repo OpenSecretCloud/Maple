@@ -165,6 +165,171 @@ jobs:
 
           gh release upload "${RELEASE_TAG}" "${files[@]}" --clobber
 
+  build-windows:
+    needs: create-release
+    runs-on: windows-2025
+    environment: windows-signing
+    env:
+      MAPLE_WINDOWS_AUTHENTICODE_SUBJECT: ${{ secrets.AZURE_ARTIFACT_SIGNING_EXPECTED_SUBJECT }}
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # was v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@f4d14e03ff726c06358e5557344e1da148b56cf7 # was v1
+        with:
+          bun-version: 1.3.5
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # was stable
+        with:
+          toolchain: 1.88.0
+
+      - name: Install sccache
+        shell: bash
+        run: |
+          SCCACHE_VERSION=0.8.2
+          SCCACHE_SHA256="de5e9f66bb8a6bbdf0e28cb8a086a8d12699af796bf70bcd9dc40d80715bf9b8"
+          SCCACHE_ARCHIVE="sccache-v${SCCACHE_VERSION}-x86_64-pc-windows-msvc.tar.gz"
+          SCCACHE_URL="https://github.com/mozilla/sccache/releases/download/v${SCCACHE_VERSION}/${SCCACHE_ARCHIVE}"
+          (
+            cd "$RUNNER_TEMP"
+            curl --fail --location --show-error --silent "$SCCACHE_URL" --output "$SCCACHE_ARCHIVE"
+            echo "${SCCACHE_SHA256}  ${SCCACHE_ARCHIVE}" | sha256sum --check -
+            tar xzf "$SCCACHE_ARCHIVE"
+          )
+          SCCACHE_BIN_DIR="$RUNNER_TEMP/sccache-v${SCCACHE_VERSION}-x86_64-pc-windows-msvc"
+          echo "$SCCACHE_BIN_DIR" >> "$GITHUB_PATH"
+          "$SCCACHE_BIN_DIR/sccache.exe" --version
+
+      - name: Cache sccache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # was v4
+        with:
+          path: ~\AppData\Local\Mozilla\sccache
+          key: ${{ runner.os }}-sccache-windows-release-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-sccache-windows-release-
+
+      - name: Build Windows app executable
+        shell: bash
+        run: ./scripts/ci/desktop-windows-release.sh build
+
+      - name: Azure login for Artifact Signing
+        uses: azure/login@2dd0bbf4064d5a1812889dc200bb8eed2597f82a # was v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Sign Windows app executable
+        uses: Azure/artifact-signing-action@c0ae2c1d0c1847ab81ac0ab8521bee597cfedd30 # was v2
+        with:
+          endpoint: ${{ secrets.AZURE_ARTIFACT_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ secrets.AZURE_ARTIFACT_SIGNING_ACCOUNT_NAME }}
+          certificate-profile-name: ${{ secrets.AZURE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE_NAME }}
+          files: ${{ github.workspace }}\frontend\src-tauri\target\release\maple.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          exclude-environment-credential: true
+          exclude-workload-identity-credential: true
+          exclude-managed-identity-credential: true
+          exclude-shared-token-cache-credential: true
+          exclude-visual-studio-credential: true
+          exclude-visual-studio-code-credential: true
+          exclude-azure-cli-credential: false
+          exclude-azure-powershell-credential: true
+          exclude-azure-developer-cli-credential: true
+          exclude-interactive-browser-credential: true
+
+      - name: Bundle Windows installer
+        shell: bash
+        run: ./scripts/ci/desktop-windows-release.sh bundle
+
+      - name: Resolve Windows installer paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          source scripts/ci/_common.sh
+          setup_exe="$(windows_release_setup_exe_required)"
+          echo "MAPLE_WINDOWS_SETUP_EXE_REL=$(repo_relative_path "${setup_exe}")" >> "${GITHUB_ENV}"
+          echo "MAPLE_WINDOWS_SETUP_EXE_WIN=$(to_windows_path "${setup_exe}")" >> "${GITHUB_ENV}"
+
+      - name: Sign Windows installer
+        uses: Azure/artifact-signing-action@c0ae2c1d0c1847ab81ac0ab8521bee597cfedd30 # was v2
+        with:
+          endpoint: ${{ secrets.AZURE_ARTIFACT_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ secrets.AZURE_ARTIFACT_SIGNING_ACCOUNT_NAME }}
+          certificate-profile-name: ${{ secrets.AZURE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE_NAME }}
+          files: ${{ env.MAPLE_WINDOWS_SETUP_EXE_WIN }}
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          exclude-environment-credential: true
+          exclude-workload-identity-credential: true
+          exclude-managed-identity-credential: true
+          exclude-shared-token-cache-credential: true
+          exclude-visual-studio-credential: true
+          exclude-visual-studio-code-credential: true
+          exclude-azure-cli-credential: false
+          exclude-azure-powershell-credential: true
+          exclude-azure-developer-cli-credential: true
+          exclude-interactive-browser-credential: true
+
+      - name: Finalize Windows updater signatures and checksums
+        shell: bash
+        run: ./scripts/ci/desktop-windows-release.sh finalize
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+      - name: Show sccache stats
+        if: always()
+        run: sccache --show-stats
+
+      - name: Collect Windows release checksums
+        shell: bash
+        run: |
+          ./scripts/ci/attestation-manifest.sh \
+            windows-release-artifacts.sha256 \
+            frontend/src-tauri/target/reproducibility/desktop-release-windows-final.sha256 \
+            frontend/src-tauri/target/reproducibility/desktop-release-windows-runtime-dlls.sha256
+          cat windows-release-artifacts.sha256
+
+      - name: Attest Windows release artifacts
+        # Keep release uploads running if GitHub token policy rejects artifact attestation.
+        continue-on-error: true
+        uses: actions/attest@281a49d4cbb0a72c9575a50d18f6deb515a11deb # was v4
+        with:
+          subject-checksums: windows-release-artifacts.sha256
+
+      - name: Upload Windows release artifacts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          files=("${MAPLE_WINDOWS_SETUP_EXE_REL}" "${MAPLE_WINDOWS_SETUP_EXE_REL}.sig")
+          while IFS= read -r -d '' file; do
+            files+=("${file}")
+          done < <(find frontend/src-tauri -type f \( \
+            -path '*/target/reproducibility/desktop-release-windows-*.sha256' \
+          \) -print0 | LC_ALL=C sort -z)
+
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "No Windows release artifacts found." >&2
+            exit 1
+          fi
+
+          gh release upload "${RELEASE_TAG}" "${files[@]}" --clobber
+
   build-android:
     needs: create-release
     runs-on: ubuntu-latest-8-cores
@@ -519,14 +684,41 @@ jobs:
       - name: Verify macOS desktop release artifact reproducibility proofs
         run: nix develop .#ci -c ./scripts/ci/verify-release-artifacts.sh artifacts macos
 
+  verify-windows-desktop-release-artifacts:
+    needs: build-windows
+    runs-on: ubuntu-latest-8-cores
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # was v4
+        with:
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # was v22
+        with:
+          github-token: ""
+
+      - name: Download release artifacts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          mkdir -p artifacts
+          gh release download "${RELEASE_TAG}" -D artifacts
+
+      - name: Verify Windows desktop release artifact reproducibility proofs
+        run: nix develop .#ci -c ./scripts/ci/verify-release-artifacts.sh artifacts windows
+
   verify-desktop-release-artifacts:
     needs:
       - verify-linux-desktop-release-artifacts
       - verify-macos-desktop-release-artifacts
+      - verify-windows-desktop-release-artifacts
     runs-on: ubuntu-latest
     steps:
       - name: Verify desktop release artifact checks completed
-        run: echo "Desktop release artifact verification completed for Linux and macOS."
+        run: echo "Desktop release artifact verification completed for Linux, macOS, and Windows."
 
   update-latest-json:
     needs: verify-desktop-release-artifacts
@@ -632,7 +824,7 @@ jobs:
           gh release download "${RELEASE_TAG}" -D artifacts
 
       - name: Verify release artifact reproducibility proofs
-        run: nix develop .#ci -c ./scripts/ci/verify-release-artifacts.sh artifacts macos ios web latest-json
+        run: nix develop .#ci -c ./scripts/ci/verify-release-artifacts.sh artifacts macos windows ios web latest-json
         env:
           MAPLE_ENFORCE_IOS_SIGNED_REPRODUCIBILITY: "1"
 
