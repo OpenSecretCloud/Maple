@@ -12,13 +12,14 @@ build
   stage pinned runtime DLLs, and compile maple.exe without bundling.
 
 bundle
-  Verify maple.exe is Authenticode-signed, then generate the NSIS installer
-  from that signed app executable. The installer itself is not signed here.
+  Generate the NSIS installer. Tauri patches and signs maple.exe through
+  bundle.windows.signCommand during bundling, signs the installer, then restores
+  target/release/maple.exe to its original unsigned/unpatched bytes.
 
 finalize
-  Verify Authenticode signatures on maple.exe and the NSIS installer, create
-  the final Tauri updater signature for the signed installer, and emit release
-  reproducibility manifests.
+  Verify Authenticode signatures on the NSIS installer, create the final Tauri
+  updater signature for the signed installer, and emit release reproducibility
+  manifests.
 EOF
 }
 
@@ -74,7 +75,10 @@ run_bundle_phase() {
   configure_reproducible_build_metadata
 
   app_exe="$(windows_release_app_exe)"
-  verify_windows_authenticode_signatures "${app_exe}"
+  if [ ! -f "${app_exe}" ]; then
+    echo "Windows app executable is missing before bundling: ${app_exe}" >&2
+    exit 1
+  fi
 
   cd "${FRONTEND_DIR}"
   remove_build_tree "${TAURI_DIR}/target/release/bundle/nsis"
@@ -83,21 +87,24 @@ run_bundle_phase() {
   bun tauri bundle --verbose --bundles nsis --config "$(windows_tauri_release_bundle_config)"
 
   setup_exe="$(windows_release_setup_exe_required)"
+  # Tauri restores target/release/maple.exe after bundling. The durable signed
+  # artifact at this point is the NSIS installer; installed-payload verification
+  # should inspect an extracted installer payload, not the restored build output.
+  verify_windows_authenticode_signatures "${setup_exe}"
   print_file_hashes "${setup_exe}"
   verify_frontend_dist_unchanged
 }
 
 run_finalize_phase() {
-  local app_exe setup_exe repro_dir
+  local setup_exe repro_dir
   local windows_runtime_dlls=()
 
   print_source_provenance
   configure_reproducible_build_metadata
   configure_tauri_updater_signing_key
 
-  app_exe="$(windows_release_app_exe)"
   setup_exe="$(windows_release_setup_exe_required)"
-  verify_windows_authenticode_signatures "${app_exe}" "${setup_exe}"
+  verify_windows_authenticode_signatures "${setup_exe}"
 
   rm -f "${setup_exe}.sig"
   sign_tauri_updater_artifacts "${setup_exe}"
