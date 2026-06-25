@@ -15,6 +15,8 @@
 		621A96F6B965E600E714FB6C /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = B0EAFEFF59AA7CFEF57FA63C /* LaunchScreen.storyboard */; };
 		8F9EDB5679AB5E12D6F1E071 /* UIKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = DACD0B6B9FB86AFF47366EB2 /* UIKit.framework */; };
 		90DEA2E2EC5F95784C9D8B00 /* CoreGraphics.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 898D6E7ABC92C3B9A7970DAE /* CoreGraphics.framework */; };
+		2D89A02AB4037DD41362092E /* AppIntents.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 698D4D15D8E334AE8D9AE3B1 /* AppIntents.framework */; };
+		9524D27D9A417C8D5954772C /* MapleAppIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = D178FC7D7B36774EB2FB1724 /* MapleAppIntents.swift */; };
 		9F3ED7EA97AFC22E0B4A6EAF /* main.mm in Sources */ = {isa = PBXBuildFile; fileRef = CE20E8A9C4CF149CA9CA485A /* main.mm */; };
 		A120CF155DE2B343CEFFB77C /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 6BF4C7EB12DBD2E253B2741E /* Assets.xcassets */; };
 		B79EC8A2A1A869B9F38906ED /* assets in Resources */ = {isa = PBXBuildFile; fileRef = AF5DA3546C7B12BA141E9508 /* assets */; };
@@ -36,6 +38,8 @@
 		C072EB8E1CCC1094712EA7F7 /* Metal.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Metal.framework; path = System/Library/Frameworks/Metal.framework; sourceTree = SDKROOT; };
 		C0A332F21EB65CD4B83229DF /* main.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = main.rs; sourceTree = "<group>"; };
 		CE20E8A9C4CF149CA9CA485A /* main.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = main.mm; sourceTree = "<group>"; };
+		D178FC7D7B36774EB2FB1724 /* MapleAppIntents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MapleAppIntents.swift; sourceTree = "<group>"; };
+		698D4D15D8E334AE8D9AE3B1 /* AppIntents.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AppIntents.framework; path = System/Library/Frameworks/AppIntents.framework; sourceTree = SDKROOT; };
 		D6F6085362AF0C062EDB5810 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		DACD0B6B9FB86AFF47366EB2 /* UIKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UIKit.framework; path = System/Library/Frameworks/UIKit.framework; sourceTree = SDKROOT; };
 		E996CAD20B045EF299247BEF /* WebKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WebKit.framework; path = System/Library/Frameworks/WebKit.framework; sourceTree = SDKROOT; };
@@ -48,6 +52,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				4E14944735CA89389849E430 /* libapp.a in Frameworks */,
+				2D89A02AB4037DD41362092E /* AppIntents.framework in Frameworks */,
 				90DEA2E2EC5F95784C9D8B00 /* CoreGraphics.framework in Frameworks */,
 				FB98D58EAB479A32F7CA66CA /* Metal.framework in Frameworks */,
 				23D760C25DBAAA96DF52F98C /* MetalKit.framework in Frameworks */,
@@ -88,6 +93,7 @@
 		B58B2AB62FA5D8F41C3A031C /* Frameworks */ = {
 			isa = PBXGroup;
 			children = (
+				698D4D15D8E334AE8D9AE3B1 /* AppIntents.framework */,
 				898D6E7ABC92C3B9A7970DAE /* CoreGraphics.framework */,
 				F27A6FC4AB3E06D481B1E137 /* libapp.a */,
 				C072EB8E1CCC1094712EA7F7 /* Metal.framework */,
@@ -127,6 +133,7 @@
 			isa = PBXGroup;
 			children = (
 				CE20E8A9C4CF149CA9CA485A /* main.mm */,
+				D178FC7D7B36774EB2FB1724 /* MapleAppIntents.swift */,
 				F9E1B0C7AF484C8F6312F2C8 /* bindings */,
 			);
 			path = maple;
@@ -240,6 +247,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				9524D27D9A417C8D5954772C /* MapleAppIntents.swift in Sources */,
 				9F3ED7EA97AFC22E0B4A6EAF /* main.mm in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
