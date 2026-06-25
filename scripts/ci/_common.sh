@@ -3548,13 +3548,31 @@ windows_tauri_release_build_config() {
 }
 
 windows_tauri_release_bundle_config() {
-  jq -cn '{
+  local sign_script
+
+  sign_script="$(to_windows_path "${REPO_ROOT}/scripts/ci/windows-artifact-sign.ps1")"
+
+  jq -cn --arg signScript "${sign_script}" '{
     build: {
       beforeBuildCommand: null
     },
     bundle: {
       createUpdaterArtifacts: false,
-      targets: ["nsis"]
+      targets: ["nsis"],
+      windows: {
+        signCommand: {
+          cmd: "pwsh",
+          args: [
+            "-NoLogo",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            $signScript,
+            "%1"
+          ]
+        }
+      }
     }
   }'
 }
