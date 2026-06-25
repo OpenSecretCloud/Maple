@@ -554,6 +554,25 @@ host_os() {
   uname -s | tr '[:upper:]' '[:lower:]'
 }
 
+require_windows_host() {
+  case "$(host_os)" in
+    mingw* | msys* | cygwin*)
+      ;;
+    *)
+      echo "$1 must run on Windows under Git Bash/MSYS." >&2
+      return 1
+      ;;
+  esac
+}
+
+to_windows_path() {
+  if command -v cygpath >/dev/null 2>&1; then
+    cygpath -w "$1"
+  else
+    printf '%s\n' "$1"
+  fi
+}
+
 linux_ort_arch() {
   case "$(uname -m)" in
     x86_64 | amd64)
@@ -586,6 +605,47 @@ prepare_linux_onnxruntime() {
         ;;
     esac
   done <<< "${ort_env}"
+}
+
+prepare_windows_onnxruntime() {
+  require_windows_host "prepare_windows_onnxruntime"
+
+  local ort_env key value
+  ort_env="$("${TAURI_DIR}/scripts/provide-windows-onnxruntime.sh")"
+  printf '%s\n' "${ort_env}"
+
+  while IFS='=' read -r key value; do
+    case "${key}" in
+      ORT_LIB_LOCATION | ORT_SKIP_DOWNLOAD | ORT_DYLIB_PATH)
+        export "${key}=${value}"
+        ;;
+    esac
+  done <<< "${ort_env}"
+}
+
+stage_windows_runtime_dlls() {
+  require_windows_host "stage_windows_runtime_dlls"
+
+  local vc_redist_version wix_cli_version
+
+  vc_redist_version="$(windows_vc_redist_x64_version)"
+  export MAPLE_WINDOWS_VC_REDIST_VERSION="${vc_redist_version}"
+  export MAPLE_WINDOWS_VC_REDIST_URL
+  export MAPLE_WINDOWS_VC_REDIST_SHA256
+  MAPLE_WINDOWS_VC_REDIST_URL="$(windows_vc_redist_x64_url_for_version "${vc_redist_version}")"
+  MAPLE_WINDOWS_VC_REDIST_SHA256="$(windows_vc_redist_x64_archive_sha256_for_version "${vc_redist_version}")"
+
+  wix_cli_version="$(windows_wix_cli_version)"
+  export MAPLE_WINDOWS_WIX_CLI_VERSION="${wix_cli_version}"
+  export MAPLE_WINDOWS_WIX_CLI_URL
+  export MAPLE_WINDOWS_WIX_CLI_SHA256
+  MAPLE_WINDOWS_WIX_CLI_URL="$(windows_wix_cli_url_for_version "${wix_cli_version}")"
+  MAPLE_WINDOWS_WIX_CLI_SHA256="$(windows_wix_cli_archive_sha256_for_version "${wix_cli_version}")"
+
+  pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass \
+    -File "$(to_windows_path "${TAURI_DIR}/scripts/stage-windows-runtime-dlls.ps1")" \
+    -OrtDllPath "$(to_windows_path "${ORT_DYLIB_PATH:?ORT_DYLIB_PATH is required}")" \
+    -Destination "$(to_windows_path "${TAURI_DIR}/resources/windows")"
 }
 
 sha256_file() {
@@ -3473,6 +3533,125 @@ linux_tauri_release_config() {
       }
     }
   }'
+}
+
+windows_tauri_release_build_config() {
+  jq -cn '{
+    build: {
+      beforeBuildCommand: null
+    },
+    bundle: {
+      createUpdaterArtifacts: false,
+      targets: ["nsis"]
+    }
+  }'
+}
+
+windows_tauri_release_bundle_config() {
+  jq -cn '{
+    build: {
+      beforeBuildCommand: null
+    },
+    bundle: {
+      createUpdaterArtifacts: false,
+      targets: ["nsis"]
+    }
+  }'
+}
+
+windows_release_app_exe() {
+  printf '%s\n' "${TAURI_DIR}/target/release/maple.exe"
+}
+
+windows_release_product_name() {
+  jq -er '.productName' "${TAURI_DIR}/tauri.conf.json"
+}
+
+windows_release_version() {
+  jq -er '.version' "${TAURI_DIR}/tauri.conf.json"
+}
+
+windows_release_setup_exe_basename_for_version() {
+  local version="$1"
+  printf '%s_%s_x64-setup.exe\n' "$(windows_release_product_name)" "${version}"
+}
+
+windows_release_setup_exe_basename() {
+  windows_release_setup_exe_basename_for_version "$(windows_release_version)"
+}
+
+windows_release_setup_exe_path() {
+  printf '%s\n' "${TAURI_DIR}/target/release/bundle/nsis/$(windows_release_setup_exe_basename)"
+}
+
+windows_release_setup_sig_path() {
+  printf '%s.sig\n' "$(windows_release_setup_exe_path)"
+}
+
+windows_release_setup_exes_found() {
+  local nsis_dir="${TAURI_DIR}/target/release/bundle/nsis"
+  if [ ! -d "${nsis_dir}" ]; then
+    return 0
+  fi
+  find "${nsis_dir}" -maxdepth 1 -type f -name '*_x64-setup.exe' -print | LC_ALL=C sort
+}
+
+windows_release_setup_exe_required() {
+  local setup
+  setup="$(windows_release_setup_exe_path)"
+  if [ ! -f "${setup}" ]; then
+    echo "Expected Windows NSIS setup executable was not found: ${setup}" >&2
+    echo "Found Windows NSIS setup candidates:" >&2
+    windows_release_setup_exes_found | sed 's/^/  /' >&2
+    return 1
+  fi
+  printf '%s\n' "${setup}"
+}
+
+verify_windows_authenticode_signatures() {
+  require_windows_host "verify_windows_authenticode_signatures"
+
+  if [ "$#" -eq 0 ]; then
+    echo "verify_windows_authenticode_signatures requires at least one file." >&2
+    return 1
+  fi
+
+  if [ -z "${MAPLE_WINDOWS_AUTHENTICODE_SUBJECT:-}" ]; then
+    echo "MAPLE_WINDOWS_AUTHENTICODE_SUBJECT is required to verify the Windows signer identity." >&2
+    return 1
+  fi
+
+  local ps_args=()
+  local file
+  for file in "$@"; do
+    if [ ! -f "${file}" ]; then
+      echo "Missing Windows signed artifact: ${file}" >&2
+      return 1
+    fi
+    ps_args+=("$(to_windows_path "${file}")")
+  done
+
+  # shellcheck disable=SC2016
+  pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -Command '
+    $ErrorActionPreference = "Stop"
+    $expectedSubject = $args[0]
+    foreach ($file in $args[1..($args.Count - 1)]) {
+      $signature = Get-AuthenticodeSignature -LiteralPath $file
+      if ($signature.Status -ne "Valid") {
+        throw "Authenticode signature is not valid for $file. Status=$($signature.Status) Message=$($signature.StatusMessage)"
+      }
+      $subject = ""
+      $issuer = ""
+      if ($null -ne $signature.SignerCertificate) {
+        $subject = $signature.SignerCertificate.Subject
+        $issuer = $signature.SignerCertificate.Issuer
+      }
+      if ($subject -ne $expectedSubject) {
+        throw "Authenticode signer subject mismatch for $file. Expected=$expectedSubject Actual=$subject Issuer=$issuer"
+      }
+      Write-Host ("verified-windows-authenticode  {0}  subject={1}  issuer={2}" -f $file, $subject, $issuer)
+    }
+  ' "${MAPLE_WINDOWS_AUTHENTICODE_SUBJECT}" "${ps_args[@]}"
 }
 
 import_apple_developer_certificate() {

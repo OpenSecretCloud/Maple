@@ -220,7 +220,10 @@ jobs:
         run: nix develop .#ci -c ./scripts/ci/verify-release-artifacts.sh artifacts macos
 
   build-windows:
-    runs-on: windows-latest
+    runs-on: windows-2025
+    environment: windows-signing
+    env:
+      MAPLE_WINDOWS_AUTHENTICODE_SUBJECT: ${{ secrets.AZURE_ARTIFACT_SIGNING_EXPECTED_SUBJECT }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # was v4
         with:
@@ -234,7 +237,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # was stable
         with:
-          toolchain: 1.95.0
+          toolchain: 1.88.0
 
       - name: Install sccache
         shell: bash
@@ -266,102 +269,106 @@ jobs:
             ${{ runner.os }}-sccache-windows-
             ${{ runner.os }}-sccache-
 
-      - name: Provide ONNX Runtime (Windows)
+      - name: Build Windows app executable
+        shell: bash
+        run: ./scripts/ci/desktop-windows-release.sh build
+
+      - name: Azure login for Artifact Signing
+        uses: azure/login@2dd0bbf4064d5a1812889dc200bb8eed2597f82a # was v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Sign Windows app executable
+        uses: Azure/artifact-signing-action@c0ae2c1d0c1847ab81ac0ab8521bee597cfedd30 # was v2
+        with:
+          endpoint: ${{ secrets.AZURE_ARTIFACT_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ secrets.AZURE_ARTIFACT_SIGNING_ACCOUNT_NAME }}
+          certificate-profile-name: ${{ secrets.AZURE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE_NAME }}
+          files: ${{ github.workspace }}\frontend\src-tauri\target\release\maple.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          exclude-environment-credential: true
+          exclude-workload-identity-credential: true
+          exclude-managed-identity-credential: true
+          exclude-shared-token-cache-credential: true
+          exclude-visual-studio-credential: true
+          exclude-visual-studio-code-credential: true
+          exclude-azure-cli-credential: false
+          exclude-azure-powershell-credential: true
+          exclude-azure-developer-cli-credential: true
+          exclude-interactive-browser-credential: true
+
+      - name: Bundle Windows installer
+        shell: bash
+        run: ./scripts/ci/desktop-windows-release.sh bundle
+
+      - name: Resolve Windows installer paths
         shell: bash
         run: |
-          ./frontend/src-tauri/scripts/provide-windows-onnxruntime.sh >> "$GITHUB_ENV"
+          set -euo pipefail
+          source scripts/ci/_common.sh
+          setup_exe="$(windows_release_setup_exe_required)"
+          echo "MAPLE_WINDOWS_SETUP_EXE_REL=$(repo_relative_path "${setup_exe}")" >> "${GITHUB_ENV}"
+          echo "MAPLE_WINDOWS_SETUP_EXE_WIN=$(to_windows_path "${setup_exe}")" >> "${GITHUB_ENV}"
 
-      - name: Stage Windows runtime DLLs for bundling
-        shell: pwsh
-        run: |
-          # maple.exe links onnxruntime.dll by ordinal; without these next to the
-          # exe the loader binds to the OS Windows-ML onnxruntime.dll (v1.17) and
-          # TTS hangs at Session::builder. See resources/windows/README.md.
-          $dest = "frontend/src-tauri/resources/windows"
-          New-Item -ItemType Directory -Force -Path $dest | Out-Null
-          # ONNX Runtime 1.22.0 (already downloaded + SHA-verified; path in env)
-          Copy-Item "$env:ORT_DYLIB_PATH" (Join-Path $dest "onnxruntime.dll") -Force
-          # MSVC C++ runtime DLLs onnxruntime.dll depends on. Find a source dir
-          # holding all four, independent of the runner's VS year/edition: prefer
-          # the versioned redist (located via vswhere), fall back to System32.
-          $crtDlls = 'VCRUNTIME140.dll','VCRUNTIME140_1.dll','MSVCP140.dll','MSVCP140_1.dll'
-          $candidates = @()
-          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          if (Test-Path $vswhere) {
-            $vs = & $vswhere -latest -products * -property installationPath
-            if ($vs) {
-              $candidates += Get-ChildItem (Join-Path $vs 'VC\Redist\MSVC\*\x64') -Directory -ErrorAction SilentlyContinue |
-                             Where-Object { $_.Name -match '^Microsoft\.VC\d+\.CRT$' } | ForEach-Object FullName
-            }
-          }
-          $candidates += "$env:WINDIR\System32"
-          $src = $candidates | Where-Object { $d = $_; -not ($crtDlls | Where-Object { -not (Test-Path (Join-Path $d $_)) }) } | Select-Object -First 1
-          if (-not $src) { throw "No directory has all CRT DLLs. Searched: $($candidates -join '; ')" }
-          Write-Host "CRT source: $src"
-          foreach ($dll in $crtDlls) { Copy-Item (Join-Path $src $dll) (Join-Path $dest $dll) -Force }
-          Get-ChildItem $dest | Select-Object Name, Length
+      - name: Sign Windows installer
+        uses: Azure/artifact-signing-action@c0ae2c1d0c1847ab81ac0ab8521bee597cfedd30 # was v2
+        with:
+          endpoint: ${{ secrets.AZURE_ARTIFACT_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ secrets.AZURE_ARTIFACT_SIGNING_ACCOUNT_NAME }}
+          certificate-profile-name: ${{ secrets.AZURE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE_NAME }}
+          files: ${{ env.MAPLE_WINDOWS_SETUP_EXE_WIN }}
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          exclude-environment-credential: true
+          exclude-workload-identity-credential: true
+          exclude-managed-identity-credential: true
+          exclude-shared-token-cache-credential: true
+          exclude-visual-studio-credential: true
+          exclude-visual-studio-code-credential: true
+          exclude-azure-cli-credential: false
+          exclude-azure-powershell-credential: true
+          exclude-azure-developer-cli-credential: true
+          exclude-interactive-browser-credential: true
 
-      - name: Install frontend dependencies
-        working-directory: ./frontend
-        run: bun install --frozen-lockfile --ignore-scripts
-
-      - name: Configure sccache
+      - name: Finalize Windows updater signatures and checksums
         shell: bash
-        run: |
-          {
-            echo "RUSTC_WRAPPER=sccache"
-            echo "SCCACHE_CACHE_SIZE=2G"
-          } >> "$GITHUB_ENV"
-
-      - name: Build Tauri App (Windows)
-        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # was v0
+        run: ./scripts/ci/desktop-windows-release.sh finalize
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          VITE_OPEN_SECRET_API_URL: https://enclave.trymaple.ai
-          VITE_MAPLE_BILLING_API_URL: https://billing.opensecret.cloud
-          VITE_CLIENT_ID: ba5a14b5-d915-47b1-b7b1-afda52bc5fc6
-        with:
-          projectPath: './frontend'
 
       - name: Show sccache stats
+        if: always()
         run: sccache --show-stats
 
       - name: Collect Windows release checksums
         shell: bash
         run: |
-          set -euo pipefail
-          source scripts/ci/_common.sh
+          ./scripts/ci/attestation-manifest.sh \
+            desktop-windows-artifacts.sha256 \
+            frontend/src-tauri/target/reproducibility/desktop-release-windows-final.sha256 \
+            frontend/src-tauri/target/reproducibility/desktop-release-windows-runtime-dlls.sha256
+          cat desktop-windows-artifacts.sha256
 
-          repro_dir="${TAURI_DIR}/target/reproducibility"
-          mkdir -p "${repro_dir}"
-
-          windows_artifacts=()
-          while IFS= read -r -d '' file; do
-            windows_artifacts+=("${file}")
-          done < <(find "${TAURI_DIR}/target/release/bundle/nsis" -type f \( \
-            -name '*.exe' -o \
-            -name '*.nsis.zip' -o \
-            -name '*.nsis.zip.sig' \
-          \) -print0 | LC_ALL=C sort -z)
-
-          if [ "${#windows_artifacts[@]}" -eq 0 ]; then
-            echo "No Windows desktop artifacts found." >&2
-            exit 1
-          fi
-
-          write_sha256_manifest "${repro_dir}/desktop-release-windows-final.sha256" "${windows_artifacts[@]}"
-          print_file_hashes "${windows_artifacts[@]}"
+      - name: Attest Windows release artifacts
+        # Keep uploads/verifiers running if GitHub token policy rejects artifact attestation.
+        continue-on-error: true
+        uses: actions/attest@281a49d4cbb0a72c9575a50d18f6deb515a11deb # was v4
+        with:
+          subject-checksums: desktop-windows-artifacts.sha256
 
       - name: Upload Windows Build
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # was v4
         with:
           name: maple-windows-x64
           path: |
-            frontend/src-tauri/target/release/bundle/nsis/*.exe
-            frontend/src-tauri/target/release/bundle/nsis/*.nsis.zip
-            frontend/src-tauri/target/release/bundle/nsis/*.nsis.zip.sig
+            ${{ env.MAPLE_WINDOWS_SETUP_EXE_REL }}
+            ${{ env.MAPLE_WINDOWS_SETUP_EXE_REL }}.sig
             frontend/src-tauri/target/reproducibility/desktop-release-windows-*.sha256
           retention-days: 5
 

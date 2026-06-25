@@ -45,8 +45,9 @@ must be staged here **before `bun tauri build`** on Windows.
 
 ## CI staging
 
-The Windows PR workflow stages these automatically through
-`scripts/ci/desktop-windows-pr.sh` before the Tauri build. That script uses:
+The Windows PR and signed release workflows stage these automatically through
+`scripts/ci/desktop-windows-pr.sh` and `scripts/ci/desktop-windows-release.sh`
+before the Tauri build. Those scripts use:
 
 - SHA-verified ONNX Runtime from `scripts/provide-windows-onnxruntime.sh`.
 - A SHA-verified, versioned Microsoft `VC_redist.x64.exe` URL pinned in
@@ -54,8 +55,11 @@ The Windows PR workflow stages these automatically through
 - A SHA-verified WiX CLI NuGet package, used only to extract the VC++ redist
   bootstrapper payload reproducibly.
 
-The build emits `target/reproducibility/desktop-pr-windows-*.sha256` proof
-manifests, and CI verifies those manifests from uploaded artifacts.
+The PR build emits `target/reproducibility/desktop-pr-windows-*.sha256` proof
+manifests. The signed release build emits
+`target/reproducibility/desktop-release-windows-*.sha256` proof manifests after
+the installer is Authenticode-signed and the final Tauri updater `.sig` is
+generated. CI verifies those manifests from uploaded artifacts.
 
 For a **local** Windows build, run `scripts/provide-windows-onnxruntime.sh`
 first (it exports `ORT_DYLIB_PATH`), then run the same staging helper:
