@@ -3631,11 +3631,16 @@ verify_windows_authenticode_signatures() {
     ps_args+=("$(to_windows_path "${file}")")
   done
 
+  # Keep the expected subject in the environment. Passing it as a positional
+  # argument through Git Bash into pwsh can split values that contain spaces.
   # shellcheck disable=SC2016
   pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -Command '
     $ErrorActionPreference = "Stop"
-    $expectedSubject = $args[0]
-    foreach ($file in $args[1..($args.Count - 1)]) {
+    $expectedSubject = $env:MAPLE_WINDOWS_AUTHENTICODE_SUBJECT
+    if ([string]::IsNullOrWhiteSpace($expectedSubject)) {
+      throw "MAPLE_WINDOWS_AUTHENTICODE_SUBJECT is required to verify the Windows signer identity."
+    }
+    foreach ($file in $args) {
       $signature = Get-AuthenticodeSignature -LiteralPath $file
       if ($signature.Status -ne "Valid") {
         throw "Authenticode signature is not valid for $file. Status=$($signature.Status) Message=$($signature.StatusMessage)"
@@ -3651,7 +3656,7 @@ verify_windows_authenticode_signatures() {
       }
       Write-Host ("verified-windows-authenticode  {0}  subject={1}  issuer={2}" -f $file, $subject, $issuer)
     }
-  ' "${MAPLE_WINDOWS_AUTHENTICODE_SUBJECT}" "${ps_args[@]}"
+  ' "${ps_args[@]}"
 }
 
 import_apple_developer_certificate() {
