@@ -2,6 +2,11 @@ import { useEffect } from "react";
 import { isTauri } from "@/utils/platform";
 import { listen } from "@tauri-apps/api/event";
 import { getSafeInternalRedirect } from "@/utils/internalRedirect";
+import {
+  NEW_CHAT_INTENT_EVENT,
+  parseNewChatDeepLink,
+  stashNewChatIntent
+} from "@/utils/newChatIntent";
 
 // For direct deep link handling, we'll listen to our custom event
 // If we had the types installed, we would use:
@@ -24,6 +29,27 @@ export function DeepLinkHandler() {
             try {
               // Parse the URL to extract parameters
               const urlObj = new URL(url);
+
+              // Quick-open-chat shortcut (Siri/etc): new-chat?folder=&web_search=&message=
+              // Checked first because its host/path can be empty, which would
+              // otherwise fall into the auth branch below.
+              const newChatIntent = parseNewChatDeepLink(urlObj);
+              if (newChatIntent) {
+                console.log("[Deep Link] New chat intent:", newChatIntent);
+                // Stash so the chat view can apply it once mounted (cold launch),
+                stashNewChatIntent(newChatIntent);
+                if (window.location.pathname === "/") {
+                  // Warm: chat view is already mounted — apply immediately.
+                  window.dispatchEvent(
+                    new CustomEvent(NEW_CHAT_INTENT_EVENT, { detail: newChatIntent })
+                  );
+                } else {
+                  // Otherwise load the chat view, which consumes the stash on mount.
+                  window.location.href = "/";
+                }
+                return;
+              }
+
               // The URL path structure will be: cloud.opensecret.maple://path?params
               const pathParts = urlObj.pathname.split("/").filter(Boolean);
               const firstPathPart = pathParts[0] || "";

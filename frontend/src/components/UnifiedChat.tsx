@@ -78,6 +78,12 @@ import {
   DropdownMenuTrigger
 } from "@/components/ui/dropdown-menu";
 import { isLinux, isMacOS, isTauri } from "@/utils/platform";
+import { listAllConversationProjects } from "@/utils/paginatedLists";
+import {
+  consumeNewChatIntent,
+  NEW_CHAT_INTENT_EVENT,
+  type NewChatIntent
+} from "@/utils/newChatIntent";
 import { ConversationProjectPicker } from "@/components/ConversationProjectPicker";
 import {
   CHAT_HISTORY_TOP_MARGIN_PX,
@@ -2584,6 +2590,59 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
       window.removeEventListener("popstate", handlePopState);
     };
   }, [chatId, runtimeStore, selectConversationRuntime, selectFreshDraftRuntime, selectedProjectId]);
+
+  // Apply a "quick open chat" deep-link intent (Siri Shortcut and friends).
+  // Reuses the existing `newchat` reset, then layers folder / web-search /
+  // prefilled text on top. Omitted fields keep the user's persisted defaults.
+  const applyNewChatIntent = useCallback(
+    async (intent: NewChatIntent) => {
+      // Resolve a folder name to a project id (case-insensitive; unknown => none).
+      let projectId: string | null = null;
+      if (intent.folder) {
+        try {
+          const projects = await listAllConversationProjects(os);
+          const wanted = intent.folder.trim().toLowerCase();
+          projectId = projects.find((p) => p.name.trim().toLowerCase() === wanted)?.id ?? null;
+          if (!projectId) {
+            console.warn(`[new-chat] Unknown folder "${intent.folder}" — opening with no folder`);
+          }
+        } catch (error) {
+          console.error("[new-chat] Failed to resolve folder:", error);
+        }
+      }
+
+      // Reset to a fresh chat in the target folder (handled synchronously above).
+      window.dispatchEvent(new CustomEvent("newchat", { detail: { projectId } }));
+
+      if (intent.webSearch !== undefined) {
+        setIsWebSearchEnabled(intent.webSearch);
+        localStorage.setItem("webSearchEnabled", intent.webSearch.toString());
+      }
+
+      if (intent.message) {
+        setInput(intent.message);
+        // Focus the composer so the user can review and send right away.
+        requestAnimationFrame(() => textareaRef.current?.focus());
+      }
+    },
+    [os]
+  );
+
+  // Warm path: chat view already mounted when the deep link arrives.
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const intent = (event as CustomEvent<NewChatIntent>).detail;
+      if (intent) void applyNewChatIntent(intent);
+    };
+    window.addEventListener(NEW_CHAT_INTENT_EVENT, handler);
+    return () => window.removeEventListener(NEW_CHAT_INTENT_EVENT, handler);
+  }, [applyNewChatIntent]);
+
+  // Cold path: an intent was stashed before the chat view mounted (app launch).
+  useEffect(() => {
+    const intent = consumeNewChatIntent();
+    if (intent) void applyNewChatIntent(intent);
+  }, [applyNewChatIntent]);
 
   // Cancel the current response
   const handleCancelResponse = useCallback(async () => {
