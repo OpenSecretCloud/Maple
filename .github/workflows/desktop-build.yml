@@ -299,6 +299,10 @@ jobs:
           setup_exe="$(windows_release_setup_exe_required)"
           echo "MAPLE_WINDOWS_SETUP_EXE_REL=$(repo_relative_path "${setup_exe}")" >> "${GITHUB_ENV}"
 
+      - name: Install minisign
+        shell: pwsh
+        run: ./scripts/ci/install-windows-minisign.ps1
+
       - name: Finalize Windows updater signatures and checksums
         shell: bash
         run: ./scripts/ci/desktop-windows-release.sh finalize
