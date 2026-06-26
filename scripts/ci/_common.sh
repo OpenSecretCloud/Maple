@@ -3653,12 +3653,14 @@ verify_windows_authenticode_signatures() {
 
   # Keep the expected identity fields and file list in the environment. Passing
   # them as positional args through Git Bash into pwsh can split values that
-  # contain spaces. The issuer default is Microsoft Trusted Signing's current
-  # ID-verified code-signing CA; override it if Microsoft rotates the CA.
+  # contain spaces. Microsoft Trusted Signing can issue from multiple numbered
+  # ID-verified code-signing CAs, so the default verifies the issuer family
+  # instead of pinning one rotating CA number.
   # shellcheck disable=SC2016
   if ! MAPLE_WINDOWS_AUTHENTICODE_FILES="$(to_windows_path "${files_manifest}")" \
     MAPLE_WINDOWS_AUTHENTICODE_EXPECTED_CN="${MAPLE_WINDOWS_ARTIFACT_SIGNING_CERTIFICATE_PROFILE_NAME}" \
-    MAPLE_WINDOWS_AUTHENTICODE_EXPECTED_ISSUER="${MAPLE_WINDOWS_AUTHENTICODE_EXPECTED_ISSUER:-CN=Microsoft ID Verified CS AOC CA 03, O=Microsoft Corporation, C=US}" \
+    MAPLE_WINDOWS_AUTHENTICODE_EXPECTED_ISSUER="${MAPLE_WINDOWS_AUTHENTICODE_EXPECTED_ISSUER:-}" \
+    MAPLE_WINDOWS_AUTHENTICODE_EXPECTED_ISSUER_PATTERN="${MAPLE_WINDOWS_AUTHENTICODE_EXPECTED_ISSUER_PATTERN:-^CN=Microsoft ID Verified CS AOC CA [0-9]+,\s*O=Microsoft Corporation,\s*C=US$}" \
     pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -Command '
     $ErrorActionPreference = "Stop"
     $expectedCn = $env:MAPLE_WINDOWS_AUTHENTICODE_EXPECTED_CN
@@ -3666,8 +3668,9 @@ verify_windows_authenticode_signatures() {
       throw "MAPLE_WINDOWS_AUTHENTICODE_EXPECTED_CN is required to verify the Windows signer identity."
     }
     $expectedIssuer = $env:MAPLE_WINDOWS_AUTHENTICODE_EXPECTED_ISSUER
-    if ([string]::IsNullOrWhiteSpace($expectedIssuer)) {
-      throw "MAPLE_WINDOWS_AUTHENTICODE_EXPECTED_ISSUER is required to verify the Windows signer identity."
+    $expectedIssuerPattern = $env:MAPLE_WINDOWS_AUTHENTICODE_EXPECTED_ISSUER_PATTERN
+    if ([string]::IsNullOrWhiteSpace($expectedIssuer) -and [string]::IsNullOrWhiteSpace($expectedIssuerPattern)) {
+      throw "MAPLE_WINDOWS_AUTHENTICODE_EXPECTED_ISSUER or MAPLE_WINDOWS_AUTHENTICODE_EXPECTED_ISSUER_PATTERN is required to verify the Windows signer identity."
     }
     $filesManifest = $env:MAPLE_WINDOWS_AUTHENTICODE_FILES
     if ([string]::IsNullOrWhiteSpace($filesManifest)) {
@@ -3688,8 +3691,11 @@ verify_windows_authenticode_signatures() {
         $subject = $signature.SignerCertificate.Subject
         $issuer = $signature.SignerCertificate.Issuer
       }
-      if ($issuer -ne $expectedIssuer) {
+      if (-not [string]::IsNullOrWhiteSpace($expectedIssuer) -and $issuer -ne $expectedIssuer) {
         throw "Authenticode signer issuer mismatch for $file. ActualIssuer=$issuer Subject=$subject"
+      }
+      if ([string]::IsNullOrWhiteSpace($expectedIssuer) -and -not [regex]::IsMatch($issuer, $expectedIssuerPattern)) {
+        throw "Authenticode signer issuer pattern mismatch for $file. ActualIssuer=$issuer Subject=$subject"
       }
       $expectedCnPattern = "(^|,\s*)CN=$([regex]::Escape($expectedCn))(\s*,|$)"
       if (-not [regex]::IsMatch($subject, $expectedCnPattern)) {
