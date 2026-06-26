@@ -3634,13 +3634,10 @@ verify_windows_authenticode_signatures() {
     return 1
   fi
 
-  if [ -z "${MAPLE_WINDOWS_ARTIFACT_SIGNING_CERTIFICATE_PROFILE_NAME:-}" ]; then
-    echo "MAPLE_WINDOWS_ARTIFACT_SIGNING_CERTIFICATE_PROFILE_NAME is required to verify the Windows signer identity." >&2
-    return 1
-  fi
-
   local files_manifest
   local file
+  local expected_cn
+  expected_cn="${MAPLE_WINDOWS_AUTHENTICODE_EXPECTED_CN:-Mutiny Wallet Inc. dba OpenSecret}"
   files_manifest="$(mktemp)"
   for file in "$@"; do
     if [ ! -f "${file}" ]; then
@@ -3658,7 +3655,7 @@ verify_windows_authenticode_signatures() {
   # instead of pinning one rotating CA number.
   # shellcheck disable=SC2016
   if ! MAPLE_WINDOWS_AUTHENTICODE_FILES="$(to_windows_path "${files_manifest}")" \
-    MAPLE_WINDOWS_AUTHENTICODE_EXPECTED_CN="${MAPLE_WINDOWS_ARTIFACT_SIGNING_CERTIFICATE_PROFILE_NAME}" \
+    MAPLE_WINDOWS_AUTHENTICODE_EXPECTED_CN="${expected_cn}" \
     MAPLE_WINDOWS_AUTHENTICODE_EXPECTED_ISSUER="${MAPLE_WINDOWS_AUTHENTICODE_EXPECTED_ISSUER:-}" \
     MAPLE_WINDOWS_AUTHENTICODE_EXPECTED_ISSUER_PATTERN="${MAPLE_WINDOWS_AUTHENTICODE_EXPECTED_ISSUER_PATTERN:-^CN=Microsoft ID Verified CS AOC CA [0-9]+,\s*O=Microsoft Corporation,\s*C=US$}" \
     pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -Command '
