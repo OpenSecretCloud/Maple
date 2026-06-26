@@ -3639,26 +3639,38 @@ verify_windows_authenticode_signatures() {
     return 1
   fi
 
-  local ps_args=()
+  local files_manifest
   local file
+  files_manifest="$(mktemp)"
   for file in "$@"; do
     if [ ! -f "${file}" ]; then
       echo "Missing Windows signed artifact: ${file}" >&2
+      rm -f "${files_manifest}"
       return 1
     fi
-    ps_args+=("$(to_windows_path "${file}")")
+    printf '%s\n' "$(to_windows_path "${file}")" >> "${files_manifest}"
   done
 
-  # Keep the expected subject in the environment. Passing it as a positional
-  # argument through Git Bash into pwsh can split values that contain spaces.
+  # Keep the expected subject and file list in the environment. Passing them as
+  # positional args through Git Bash into pwsh can split values that contain spaces.
   # shellcheck disable=SC2016
-  pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -Command '
+  if ! MAPLE_WINDOWS_AUTHENTICODE_FILES="$(to_windows_path "${files_manifest}")" \
+    MAPLE_WINDOWS_AUTHENTICODE_SUBJECT="${MAPLE_WINDOWS_AUTHENTICODE_SUBJECT}" \
+    pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -Command '
     $ErrorActionPreference = "Stop"
     $expectedSubject = $env:MAPLE_WINDOWS_AUTHENTICODE_SUBJECT
     if ([string]::IsNullOrWhiteSpace($expectedSubject)) {
       throw "MAPLE_WINDOWS_AUTHENTICODE_SUBJECT is required to verify the Windows signer identity."
     }
-    foreach ($file in $args) {
+    $filesManifest = $env:MAPLE_WINDOWS_AUTHENTICODE_FILES
+    if ([string]::IsNullOrWhiteSpace($filesManifest)) {
+      throw "MAPLE_WINDOWS_AUTHENTICODE_FILES is required to verify Windows signed artifacts."
+    }
+    $files = @(Get-Content -LiteralPath $filesManifest | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    if ($files.Count -eq 0) {
+      throw "No Windows signed artifacts were provided to Authenticode verification."
+    }
+    foreach ($file in $files) {
       $signature = Get-AuthenticodeSignature -LiteralPath $file
       if ($signature.Status -ne "Valid") {
         throw "Authenticode signature is not valid for $file. Status=$($signature.Status) Message=$($signature.StatusMessage)"
@@ -3672,9 +3684,14 @@ verify_windows_authenticode_signatures() {
       if ($subject -ne $expectedSubject) {
         throw "Authenticode signer subject mismatch for $file. Actual=$subject Issuer=$issuer"
       }
-      Write-Host ("verified-windows-authenticode  {0}  thumbprint={1}" -f $file, $signature.SignerCertificate.Thumbprint)
+      Write-Output ("verified-windows-authenticode  {0}  thumbprint={1}" -f $file, $signature.SignerCertificate.Thumbprint)
     }
-  ' "${ps_args[@]}"
+  '; then
+    rm -f "${files_manifest}"
+    return 1
+  fi
+
+  rm -f "${files_manifest}"
 }
 
 import_apple_developer_certificate() {
