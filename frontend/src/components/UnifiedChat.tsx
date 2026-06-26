@@ -2591,6 +2591,12 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
     };
   }, [chatId, runtimeStore, selectConversationRuntime, selectFreshDraftRuntime, selectedProjectId]);
 
+  // Voice / auto-send from a new-chat intent run only AFTER the chat resets to a
+  // fresh conversation (see the effect below), so they target the new chat.
+  const [pendingChatAction, setPendingChatAction] = useState<
+    { type: "voice" } | { type: "autoSend"; text: string } | null
+  >(null);
+
   // Apply a "quick open chat" deep-link intent (Siri Shortcut and friends).
   // Reuses the existing `newchat` reset, then layers folder / web-search /
   // prefilled text on top. Omitted fields keep the user's persisted defaults.
@@ -2619,7 +2625,13 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
         localStorage.setItem("webSearchEnabled", intent.webSearch.toString());
       }
 
-      if (intent.message) {
+      // Voice takes precedence (the user will speak the message); otherwise
+      // auto-send the message if requested; otherwise just prefill the composer.
+      if (intent.voice) {
+        setPendingChatAction({ type: "voice" });
+      } else if (intent.autoSend && intent.message) {
+        setPendingChatAction({ type: "autoSend", text: intent.message });
+      } else if (intent.message) {
         setInput(intent.message);
         // Focus the composer so the user can review and send right away.
         requestAnimationFrame(() => textareaRef.current?.focus());
@@ -5014,6 +5026,28 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
       selectedProjectId
     ]
   );
+
+  // Run a pending voice/auto-send action from a new-chat intent, but only once
+  // the `newchat` reset has taken effect (chatId === undefined), so auto-send
+  // targets the freshly created chat rather than whatever was open before.
+  useEffect(() => {
+    if (!pendingChatAction || chatId !== undefined) return;
+
+    if (pendingChatAction.type === "voice") {
+      setPendingChatAction(null);
+      void startRecording();
+      return;
+    }
+
+    // Auto-send: wait until the API client is ready and nothing is generating.
+    if (!openai || isGenerating) return;
+    const { text } = pendingChatAction;
+    setPendingChatAction(null);
+    void handleSendMessage(undefined, text);
+    // startRecording is intentionally omitted; its behavior doesn't depend on
+    // changing state and including it would re-subscribe this effect each render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingChatAction, chatId, openai, isGenerating, handleSendMessage]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // On desktop: Enter submits, Shift+Enter for new line

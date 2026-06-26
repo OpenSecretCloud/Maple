@@ -30,6 +30,12 @@ struct OpenChatIntent: AppIntent {
     @Parameter(title: "Web Search", description: "Turn web search on or off for this chat.")
     var webSearch: Bool?
 
+    @Parameter(title: "Send Immediately", description: "Send the message right away instead of leaving it in the composer.")
+    var autoSend: Bool?
+
+    @Parameter(title: "Start Voice Recording", description: "Begin recording a voice message as soon as the chat opens.")
+    var voice: Bool?
+
     @MainActor
     func perform() async throws -> some IntentResult {
         var components = URLComponents()
@@ -45,6 +51,12 @@ struct OpenChatIntent: AppIntent {
         }
         if let message, !message.isEmpty {
             queryItems.append(URLQueryItem(name: "message", value: message))
+        }
+        if let autoSend {
+            queryItems.append(URLQueryItem(name: "auto_send", value: autoSend ? "on" : "off"))
+        }
+        if let voice {
+            queryItems.append(URLQueryItem(name: "voice", value: voice ? "on" : "off"))
         }
         if !queryItems.isEmpty {
             components.queryItems = queryItems

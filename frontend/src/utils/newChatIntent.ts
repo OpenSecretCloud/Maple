@@ -3,7 +3,7 @@
 // Any platform's shortcut mechanism (iOS Siri App Intent today; Android App
 // Shortcuts / macOS Shortcuts / desktop later) fires the same deep link:
 //
-//   cloud.opensecret.maple://new-chat?folder=<name>&web_search=on|off&message=<text>
+//   cloud.opensecret.maple://new-chat?folder=<name>&web_search=on|off&message=<text>&auto_send=on|off&voice=on|off
 //
 // Every parameter is optional. Omitted parameters fall back to the user's
 // persisted defaults (e.g. last-used model and web-search state), so a bare
@@ -25,8 +25,12 @@ export interface NewChatIntent {
   folder?: string;
   /** Initial web-search toggle. Omitted => keep the user's persisted default. */
   webSearch?: boolean;
-  /** Text to prefill the composer with (not auto-sent — the user reviews and sends). */
+  /** Text to prefill the composer with. Sent immediately only when `autoSend` is set. */
   message?: string;
+  /** Auto-submit `message` on open instead of just prefilling it. Requires `message`. */
+  autoSend?: boolean;
+  /** Start voice recording as soon as the chat opens. Takes precedence over `autoSend`. */
+  voice?: boolean;
 }
 
 function parseBool(value: string | null): boolean | undefined {
@@ -52,7 +56,9 @@ export function parseNewChatDeepLink(url: URL): NewChatIntent | null {
   return {
     folder: url.searchParams.get("folder")?.trim() || undefined,
     webSearch: parseBool(url.searchParams.get("web_search")),
-    message: url.searchParams.get("message") || undefined
+    message: url.searchParams.get("message") || undefined,
+    autoSend: parseBool(url.searchParams.get("auto_send")),
+    voice: parseBool(url.searchParams.get("voice"))
   };
 }
 
