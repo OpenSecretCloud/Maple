@@ -1661,6 +1661,20 @@ remove_apple_signing_metadata() {
   scrub_host_metadata_files "${root}"
 }
 
+python3_runner() {
+  local candidate
+
+  for candidate in python3 python py; do
+    if command -v "${candidate}" >/dev/null 2>&1; then
+      printf '%s\n' "${candidate}"
+      return 0
+    fi
+  done
+
+  echo "Python 3 is required but python3, python, and py were not found." >&2
+  return 1
+}
+
 print_canonical_apple_bundle_hash() {
   local bundle="$1"
   local label="${2:-$(repo_relative_path "${bundle}")}"
@@ -1690,7 +1704,7 @@ canonical_apple_bundle_hash_from_path_digest() {
 
 canonical_apple_bundle_hash_digest() {
   local bundle="$1"
-  python3 "${REPO_ROOT}/scripts/ci/canonical-ios-app-hash.py" "${bundle}"
+  "$(python3_runner)" "${REPO_ROOT}/scripts/ci/canonical-ios-app-hash.py" "${bundle}"
 }
 
 find_canonical_app_bundle_under_dir() {
@@ -1785,6 +1799,41 @@ print_canonical_ipa_payload_hash() {
   rm -rf "${tmp}"
 
   printf 'sha256-ios-unsigned-app-tree  %s  %s::Payload/*.app\n' "${digest}" "${label}"
+}
+
+print_canonical_windows_nsis_payload_hash() {
+  local installer="$1"
+  local label="${2:-$(repo_relative_path "${installer}")}"
+
+  "$(python3_runner)" "${REPO_ROOT}/scripts/ci/canonical-windows-nsis-payload-hash.py" \
+    "${installer}" \
+    "${label}"
+}
+
+write_windows_signed_canonical_manifest() {
+  local manifest="$1"
+  local signed_installer="$2"
+  local unsigned_installer="$3"
+  local signed_label unsigned_label output
+
+  signed_label="$(repo_relative_path "${signed_installer}")"
+  unsigned_label="$(repo_relative_path "${unsigned_installer}")"
+
+  output="$(
+    "$(python3_runner)" "${REPO_ROOT}/scripts/ci/canonical-windows-nsis-payload-hash.py" \
+      --compare \
+      "${signed_installer}" \
+      "${unsigned_installer}" \
+      "${signed_label}" \
+      "${unsigned_label}"
+  )"
+  printf '%s\n' "${output}"
+  printf '%s\n' "${output}" | awk '$1 == "sha256-windows-nsis-payload-canonical" { print }' > "${manifest}"
+
+  if [ ! -s "${manifest}" ]; then
+    echo "Windows signed canonical manifest was not written: ${manifest}" >&2
+    return 1
+  fi
 }
 
 tauri_updater_public_key_file() {
@@ -3604,6 +3653,10 @@ windows_release_setup_exe_path() {
 
 windows_release_setup_sig_path() {
   printf '%s.sig\n' "$(windows_release_setup_exe_path)"
+}
+
+windows_release_unsigned_setup_exe_path() {
+  printf '%s\n' "${TAURI_DIR}/target/reproducibility/windows-unsigned/$(windows_release_setup_exe_basename)"
 }
 
 windows_release_setup_exes_found() {

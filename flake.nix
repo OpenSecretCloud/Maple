@@ -185,6 +185,7 @@
           just
           minisign
           openssl
+          p7zip
           pkg-config
           python3
           sccache

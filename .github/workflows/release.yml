@@ -222,6 +222,10 @@ jobs:
         shell: bash
         run: ./scripts/ci/desktop-windows-release.sh build
 
+      - name: Bundle Windows unsigned installer baseline
+        shell: bash
+        run: ./scripts/ci/desktop-windows-release.sh unsigned-bundle
+
       - name: Azure login for Artifact Signing
         uses: azure/login@2dd0bbf4064d5a1812889dc200bb8eed2597f82a # was v3
         with:
@@ -266,6 +270,7 @@ jobs:
           ./scripts/ci/attestation-manifest.sh \
             windows-release-artifacts.sha256 \
             frontend/src-tauri/target/reproducibility/desktop-release-windows-final.sha256 \
+            frontend/src-tauri/target/reproducibility/desktop-release-windows-signed-canonical.sha256 \
             frontend/src-tauri/target/reproducibility/desktop-release-windows-runtime-dlls.sha256
           cat windows-release-artifacts.sha256
 
