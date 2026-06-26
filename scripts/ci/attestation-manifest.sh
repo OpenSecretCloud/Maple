@@ -48,4 +48,14 @@ if [ "${#proof_files[@]}" -gt 0 ]; then
       done >> "${out}"
 fi
 
+# actions/attest@v4 splits checksum files on the runner platform EOL.
+# Windows runners need CRLF here even when Git Bash generated the file.
+case "$(host_os)" in
+  mingw* | msys* | cygwin*)
+    tmp="$(mktemp)"
+    awk '{ sub(/\r$/, ""); printf "%s\r\n", $0 }' "${out}" > "${tmp}"
+    mv "${tmp}" "${out}"
+    ;;
+esac
+
 cat "${out}"

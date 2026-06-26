@@ -3670,9 +3670,9 @@ verify_windows_authenticode_signatures() {
         $issuer = $signature.SignerCertificate.Issuer
       }
       if ($subject -ne $expectedSubject) {
-        throw "Authenticode signer subject mismatch for $file. Expected=$expectedSubject Actual=$subject Issuer=$issuer"
+        throw "Authenticode signer subject mismatch for $file. Actual=$subject Issuer=$issuer"
       }
-      Write-Host ("verified-windows-authenticode  {0}  subject={1}  issuer={2}" -f $file, $subject, $issuer)
+      Write-Host ("verified-windows-authenticode  {0}  thumbprint={1}" -f $file, $signature.SignerCertificate.Thumbprint)
     }
   ' "${ps_args[@]}"
 }
