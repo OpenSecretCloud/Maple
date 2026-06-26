@@ -125,6 +125,65 @@ verify_file_manifest() {
   done < "${manifest}"
 }
 
+verify_windows_runtime_manifest() {
+  local manifest="$1"
+  local digest label path expected_path
+  local count=0
+  local expected_paths=(
+    "frontend/src-tauri/resources/windows/MSVCP140.dll"
+    "frontend/src-tauri/resources/windows/MSVCP140_1.dll"
+    "frontend/src-tauri/resources/windows/onnxruntime.dll"
+    "frontend/src-tauri/resources/windows/VCRUNTIME140.dll"
+    "frontend/src-tauri/resources/windows/VCRUNTIME140_1.dll"
+  )
+  declare -A seen=()
+
+  for expected_path in "${expected_paths[@]}"; do
+    seen["${expected_path}"]=0
+  done
+
+  while read -r digest label _; do
+    [ -n "${digest:-}" ] || continue
+
+    if ! [[ "${digest}" =~ ^[0-9a-fA-F]{64}$ ]]; then
+      echo "Invalid Windows runtime manifest line in ${manifest}: ${digest} ${label:-}" >&2
+      return 1
+    fi
+
+    if [ -z "${label:-}" ]; then
+      echo "Missing Windows runtime manifest label in ${manifest}." >&2
+      return 1
+    fi
+
+    path="$(manifest_label_path "${label}")"
+    if [ -z "${seen[${path}]+x}" ]; then
+      echo "Unexpected Windows runtime DLL proof in ${manifest}: ${path}" >&2
+      return 1
+    fi
+
+    if [ "${seen[${path}]}" = "1" ]; then
+      echo "Duplicate Windows runtime DLL proof in ${manifest}: ${path}" >&2
+      return 1
+    fi
+
+    seen["${path}"]=1
+    count=$((count + 1))
+    printf 'verified-windows-runtime-dll-proof  %s  %s\n' "${digest}" "${label}"
+  done < "${manifest}"
+
+  for expected_path in "${expected_paths[@]}"; do
+    if [ "${seen[${expected_path}]}" != "1" ]; then
+      echo "Missing Windows runtime DLL proof in ${manifest}: ${expected_path}" >&2
+      return 1
+    fi
+  done
+
+  if [ "${count}" -ne "${#expected_paths[@]}" ]; then
+    echo "Unexpected Windows runtime DLL proof count in ${manifest}: ${count}" >&2
+    return 1
+  fi
+}
+
 verify_proof_file_hash() {
   local manifest="$1"
   local digest label file actual
@@ -360,7 +419,7 @@ verify_windows() {
 
   verify_file_manifest "${final_manifest}"
   if [ -n "${runtime_manifest}" ]; then
-    verify_file_manifest "${runtime_manifest}"
+    verify_windows_runtime_manifest "${runtime_manifest}"
   fi
   verify_tauri_signatures_in_artifacts
 }
