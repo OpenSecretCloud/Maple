@@ -5,16 +5,21 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
 
 usage() {
   cat >&2 <<'EOF'
-usage: desktop-windows-release.sh <build|bundle|finalize>
+usage: desktop-windows-release.sh <build|unsigned-bundle|bundle|finalize>
 
 build
   Prepare the reproducible Windows release environment, build frontend assets,
   stage pinned runtime DLLs, and compile maple.exe without bundling.
 
+unsigned-bundle
+  Generate an unsigned release-environment NSIS installer from the built app and
+  save it under target/reproducibility as the signed-build comparison baseline.
+
 bundle
   Generate the NSIS installer. Tauri patches and signs maple.exe through
   bundle.windows.signCommand during bundling, signs the installer, then restores
-  target/release/maple.exe to its original unsigned/unpatched bytes.
+  target/release/maple.exe to its original unsigned/unpatched bytes. The signed
+  installer's canonical payload is compared against the unsigned-bundle baseline.
 
 finalize
   Verify Authenticode signatures on the NSIS installer, create the final Tauri
@@ -25,7 +30,7 @@ EOF
 
 mode="${1:-}"
 case "${mode}" in
-  build | bundle | finalize)
+  build | unsigned-bundle | bundle | finalize)
     ;;
   -h | --help | help)
     usage
@@ -67,7 +72,7 @@ run_build_phase() {
 }
 
 run_bundle_phase() {
-  local app_exe setup_exe
+  local app_exe setup_exe unsigned_setup
 
   print_source_provenance
   configure_sccache
@@ -77,6 +82,13 @@ run_bundle_phase() {
   app_exe="$(windows_release_app_exe)"
   if [ ! -f "${app_exe}" ]; then
     echo "Windows app executable is missing before bundling: ${app_exe}" >&2
+    exit 1
+  fi
+
+  unsigned_setup="$(windows_release_unsigned_setup_exe_path)"
+  if [ ! -f "${unsigned_setup}" ]; then
+    echo "Windows unsigned release baseline is missing: ${unsigned_setup}" >&2
+    echo "Run desktop-windows-release.sh unsigned-bundle before bundle." >&2
     exit 1
   fi
 
@@ -91,7 +103,54 @@ run_bundle_phase() {
   # artifact at this point is the NSIS installer; installed-payload verification
   # should inspect an extracted installer payload, not the restored build output.
   verify_windows_authenticode_signatures "${setup_exe}"
+  write_windows_signed_canonical_manifest \
+    "${TAURI_DIR}/target/reproducibility/desktop-release-windows-signed-canonical.sha256" \
+    "${setup_exe}" \
+    "${unsigned_setup}"
   print_file_hashes "${setup_exe}"
+  verify_frontend_dist_unchanged
+}
+
+run_unsigned_bundle_phase() {
+  local app_exe setup_exe unsigned_setup unsigned_dir app_backup
+
+  print_source_provenance
+  configure_sccache
+  use_release_environment
+  configure_reproducible_build_metadata
+
+  app_exe="$(windows_release_app_exe)"
+  if [ ! -f "${app_exe}" ]; then
+    echo "Windows app executable is missing before unsigned bundling: ${app_exe}" >&2
+    exit 1
+  fi
+
+  cd "${FRONTEND_DIR}"
+  remove_build_tree "${TAURI_DIR}/target/release/bundle/nsis"
+  remove_build_tree "${TAURI_DIR}/target/release/bundle/msi"
+
+  app_backup="$(mktemp)"
+  cp -f "${app_exe}" "${app_backup}"
+  restore_unsigned_bundle_app_exe() {
+    if [ -n "${app_backup:-}" ] && [ -f "${app_backup}" ]; then
+      cp -f "${app_backup}" "${app_exe}"
+      rm -f "${app_backup}"
+    fi
+  }
+  trap restore_unsigned_bundle_app_exe EXIT HUP INT TERM
+
+  bun tauri bundle --verbose --bundles nsis --no-sign --config "$(windows_tauri_release_build_config)"
+  cp -f "${app_backup}" "${app_exe}"
+  rm -f "${app_backup}"
+  trap - EXIT HUP INT TERM
+
+  setup_exe="$(windows_release_setup_exe_required)"
+  unsigned_setup="$(windows_release_unsigned_setup_exe_path)"
+  unsigned_dir="$(dirname "${unsigned_setup}")"
+  mkdir -p "${unsigned_dir}"
+  cp -f "${setup_exe}" "${unsigned_setup}"
+
+  print_file_hashes "${setup_exe}" "${unsigned_setup}"
   verify_frontend_dist_unchanged
 }
 
@@ -136,6 +195,9 @@ run_finalize_phase() {
 case "${mode}" in
   build)
     run_build_phase
+    ;;
+  unsigned-bundle)
+    run_unsigned_bundle_phase
     ;;
   bundle)
     run_bundle_phase

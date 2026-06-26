@@ -184,6 +184,36 @@ verify_windows_runtime_manifest() {
   fi
 }
 
+verify_windows_canonical_manifest() {
+  local manifest="$1"
+  local kind digest label artifact actual
+
+  while read -r kind digest label _; do
+    [ -n "${kind:-}" ] || continue
+
+    if [ "${kind}" != "sha256-windows-nsis-payload-canonical" ]; then
+      echo "Invalid Windows canonical manifest line in ${manifest}: ${kind} ${digest:-} ${label:-}" >&2
+      return 1
+    fi
+
+    if ! [[ "${digest}" =~ ^[0-9a-fA-F]{64}$ ]]; then
+      echo "Invalid Windows canonical digest in ${manifest}: ${digest}" >&2
+      return 1
+    fi
+
+    artifact="$(artifact_for_label "${label}")"
+    actual="$(print_canonical_windows_nsis_payload_hash "${artifact}" "${label}" | awk '{ print $2 }')"
+    if [ "${actual}" != "${digest}" ]; then
+      echo "Windows canonical NSIS payload hash mismatch for ${label}." >&2
+      echo "expected=${digest}" >&2
+      echo "actual=${actual}" >&2
+      return 1
+    fi
+
+    printf 'verified-windows-canonical-payload  %s  %s\n' "${actual}" "${label}"
+  done < "${manifest}"
+}
+
 verify_proof_file_hash() {
   local manifest="$1"
   local digest label file actual
@@ -408,18 +438,24 @@ verify_linux_present() {
 }
 
 verify_windows() {
-  local final_manifest runtime_manifest
+  local final_manifest runtime_manifest canonical_manifest
 
   final_manifest="$(proof_file_optional desktop-release-windows-final.sha256)"
   runtime_manifest="$(proof_file_optional desktop-release-windows-runtime-dlls.sha256)"
-  if [ -z "${final_manifest}" ]; then
+  if [ -n "${final_manifest}" ]; then
+    canonical_manifest="$(proof_file_required desktop-release-windows-signed-canonical.sha256)"
+  else
     final_manifest="$(proof_file_required desktop-pr-windows-final.sha256)"
     runtime_manifest="$(proof_file_required desktop-pr-windows-runtime-dlls.sha256)"
+    canonical_manifest=""
   fi
 
   verify_file_manifest "${final_manifest}"
   if [ -n "${runtime_manifest}" ]; then
     verify_windows_runtime_manifest "${runtime_manifest}"
+  fi
+  if [ -n "${canonical_manifest}" ]; then
+    verify_windows_canonical_manifest "${canonical_manifest}"
   fi
   verify_tauri_signatures_in_artifacts
 }
