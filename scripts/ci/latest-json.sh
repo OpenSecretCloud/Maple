@@ -47,8 +47,8 @@ find_one_artifact() {
 
 macos_bundle="$(find_one_artifact '*.app.tar.gz')"
 macos_sig="$(find_one_artifact '*.app.tar.gz.sig')"
-linux_bundle="$(find_one_artifact '*.AppImage')"
-linux_sig="$(find_one_artifact '*.AppImage.sig')"
+linux_bundle="$(find_one_artifact 'Maple_*.AppImage')"
+linux_sig="$(find_one_artifact 'Maple_*.AppImage.sig')"
 windows_bundle_basename="$(windows_release_setup_exe_basename_for_version "${release_tag#v}")"
 windows_bundle="$(find_one_artifact "${windows_bundle_basename}")"
 windows_sig="$(find_one_artifact "${windows_bundle_basename}.sig")"
