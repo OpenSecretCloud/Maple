@@ -149,8 +149,8 @@ jobs:
             -name '*.dmg' -o \
             -name '*.app.tar.gz' -o \
             -name '*.app.tar.gz.sig' -o \
-            -name '*.AppImage' -o \
-            -name '*.AppImage.sig' -o \
+            -name 'Maple_*.AppImage' -o \
+            -name 'Maple_*.AppImage.sig' -o \
             -name '*.deb' -o \
             -name '*.deb.sig' -o \
             -name '*.rpm' -o \
