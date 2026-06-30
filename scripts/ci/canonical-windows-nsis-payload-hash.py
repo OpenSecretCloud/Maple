@@ -10,6 +10,15 @@ import tempfile
 
 
 PE_CERTIFICATE_DIRECTORY_INDEX = 4
+PE_MACHINE_AMD64 = 0x8664
+WINDOWS_RUNTIME_PAYLOAD_FILES = (
+    "maple.exe",
+    "onnxruntime.dll",
+    "MSVCP140.dll",
+    "MSVCP140_1.dll",
+    "VCRUNTIME140.dll",
+    "VCRUNTIME140_1.dll",
+)
 
 
 def sha256_bytes(data):
@@ -42,6 +51,23 @@ def is_pe(data):
         return pe_offset + 4 <= len(data) and data[pe_offset : pe_offset + 4] == b"PE\0\0"
     except ValueError:
         return False
+
+
+def pe_machine(data, label):
+    if not is_pe(data):
+        raise ValueError(f"not a PE file: {label}")
+
+    pe_offset = read_u32(data, 0x3C)
+    return read_u16(data, pe_offset + 4)
+
+
+def has_arm64ec_markers(data):
+    lowered = data.lower()
+    return (
+        b"arm64ec" in lowered
+        or b"arm64ret" in lowered
+        or b".arm64.pdb" in lowered
+    )
 
 
 def canonical_pe_bytes(data, label):
@@ -129,6 +155,45 @@ def canonical_tree_entries(root):
     return entries
 
 
+def payload_file(root, name):
+    matches = []
+    for current_root, _, files in os.walk(root):
+        for filename in files:
+            if filename.lower() == name.lower():
+                matches.append(os.path.join(current_root, filename))
+
+    if len(matches) != 1:
+        raise ValueError(
+            f"expected exactly one Windows payload file named {name}, found {len(matches)}"
+        )
+
+    return matches[0]
+
+
+def verify_windows_runtime_payload(installer, label):
+    with tempfile.TemporaryDirectory() as tmp:
+        extract_installer(installer, tmp)
+
+        for name in WINDOWS_RUNTIME_PAYLOAD_FILES:
+            path = payload_file(tmp, name)
+            with open(path, "rb") as f:
+                data = f.read()
+
+            machine = pe_machine(data, name)
+            if machine != PE_MACHINE_AMD64:
+                raise ValueError(
+                    f"Windows payload file is not native AMD64: {name} machine=0x{machine:04x}"
+                )
+
+            if has_arm64ec_markers(data):
+                raise ValueError(
+                    f"Windows payload file is ARM64EC, not native AMD64: {name}"
+                )
+
+            digest = sha256_bytes(data)
+            print(f"verified-windows-runtime-native-amd64  {digest}  {label}::{name}")
+
+
 def canonical_tree_hash(installer):
     with tempfile.TemporaryDirectory() as tmp:
         extract_installer(installer, tmp)
@@ -182,11 +247,25 @@ def main():
     parser = argparse.ArgumentParser(
         description="Compute or compare canonical NSIS payload hashes for Windows installers."
     )
-    parser.add_argument("--compare", action="store_true", help="compare signed and unsigned installers")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--compare", action="store_true", help="compare signed and unsigned installers")
+    mode.add_argument(
+        "--verify-runtime-dlls",
+        action="store_true",
+        help="verify installed Windows payload files are native AMD64, not ARM64EC",
+    )
     parser.add_argument("paths", nargs="+")
     args = parser.parse_args()
 
     try:
+        if args.verify_runtime_dlls:
+            if len(args.paths) not in {1, 2}:
+                parser.error("--verify-runtime-dlls requires installer [label]")
+            installer = args.paths[0]
+            label = args.paths[1] if len(args.paths) == 2 else installer
+            verify_windows_runtime_payload(installer, label)
+            return 0
+
         if args.compare:
             if len(args.paths) not in {2, 4}:
                 parser.error("--compare requires signed unsigned [signed-label unsigned-label]")

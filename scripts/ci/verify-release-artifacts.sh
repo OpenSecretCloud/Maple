@@ -184,6 +184,29 @@ verify_windows_runtime_manifest() {
   fi
 }
 
+windows_setup_label_from_manifest() {
+  local manifest="$1"
+
+  awk '$2 ~ /_x64-setup\.exe$/ { print $2; exit }' "${manifest}"
+}
+
+verify_windows_installer_runtime_payload() {
+  local final_manifest="$1"
+  local label installer
+
+  label="$(windows_setup_label_from_manifest "${final_manifest}")"
+  if [ -z "${label}" ]; then
+    echo "Could not find Windows setup executable in ${final_manifest}." >&2
+    return 1
+  fi
+
+  installer="$(artifact_for_label "${label}")"
+  "$(python3_runner)" "${REPO_ROOT}/scripts/ci/canonical-windows-nsis-payload-hash.py" \
+    --verify-runtime-dlls \
+    "${installer}" \
+    "${label}"
+}
+
 verify_windows_canonical_manifest() {
   local manifest="$1"
   local kind digest label artifact actual
@@ -451,6 +474,7 @@ verify_windows() {
   fi
 
   verify_file_manifest "${final_manifest}"
+  verify_windows_installer_runtime_payload "${final_manifest}"
   if [ -n "${runtime_manifest}" ]; then
     verify_windows_runtime_manifest "${runtime_manifest}"
   fi
