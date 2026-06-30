@@ -169,6 +169,82 @@ function Test-PortableExecutableMachineAmd64 {
   }
 }
 
+function Test-FileContainsAscii {
+  param(
+    [Parameter(Mandatory = $true)][string] $Path,
+    [Parameter(Mandatory = $true)][string] $Needle
+  )
+
+  $bytes = [IO.File]::ReadAllBytes($Path)
+  $needleBytes = [Text.Encoding]::ASCII.GetBytes($Needle)
+
+  if (($needleBytes.Length -eq 0) -or ($bytes.Length -lt $needleBytes.Length)) {
+    return $false
+  }
+
+  $lastStart = $bytes.Length - $needleBytes.Length
+  for ($i = 0; $i -le $lastStart; $i++) {
+    $matched = $true
+    for ($j = 0; $j -lt $needleBytes.Length; $j++) {
+      $actual = $bytes[$i + $j]
+      $expected = $needleBytes[$j]
+
+      if (($actual -ge 0x41) -and ($actual -le 0x5A)) {
+        $actual += 0x20
+      }
+
+      if (($expected -ge 0x41) -and ($expected -le 0x5A)) {
+        $expected += 0x20
+      }
+
+      if ($actual -ne $expected) {
+        $matched = $false
+        break
+      }
+    }
+
+    if ($matched) {
+      return $true
+    }
+  }
+
+  return $false
+}
+
+function Test-PortableExecutableArm64Ec {
+  param([Parameter(Mandatory = $true)][string] $Path)
+
+  return `
+    (Test-FileContainsAscii -Path $Path -Needle "arm64ec") -or `
+    (Test-FileContainsAscii -Path $Path -Needle "arm64ret") -or `
+    (Test-FileContainsAscii -Path $Path -Needle ".arm64.pdb")
+}
+
+function Test-PortableExecutableNativeAmd64 {
+  param([Parameter(Mandatory = $true)][string] $Path)
+
+  if (!(Test-PortableExecutableMachineAmd64 -Path $Path)) {
+    return $false
+  }
+
+  return !(Test-PortableExecutableArm64Ec -Path $Path)
+}
+
+function Assert-PortableExecutableNativeAmd64 {
+  param(
+    [Parameter(Mandatory = $true)][string] $Label,
+    [Parameter(Mandatory = $true)][string] $Path
+  )
+
+  if (!(Test-PortableExecutableMachineAmd64 -Path $Path)) {
+    throw "$Label is not an AMD64 portable executable: $Path"
+  }
+
+  if (Test-PortableExecutableArm64Ec -Path $Path) {
+    throw "$Label is ARM64EC, not native AMD64: $Path"
+  }
+}
+
 function Expand-VcRedist {
   param(
     [Parameter(Mandatory = $true)][string] $ExePath,
@@ -256,17 +332,24 @@ function Find-RequiredDll {
   }
 
   $x64Files = @($files | Where-Object { Test-PortableExecutableMachineAmd64 -Path $_.FullName })
+  $arm64EcFiles = @($x64Files | Where-Object { Test-PortableExecutableArm64Ec -Path $_.FullName })
+  $nativeAmd64Files = @($x64Files | Where-Object { !(Test-PortableExecutableArm64Ec -Path $_.FullName) })
 
-  $match = $x64Files |
+  foreach ($file in ($arm64EcFiles | Sort-Object FullName)) {
+    Write-Host ("skipped-windows-runtime-arm64ec  {0}  {1}" -f $Name, $file.FullName)
+  }
+
+  $match = $nativeAmd64Files |
     Where-Object { $_.Name -ieq $Name } |
     Sort-Object FullName |
     Select-Object -First 1
 
   if ($null -ne $match) {
+    Write-Host ("selected-windows-runtime-dll  {0}  {1}" -f $Name, $match.FullName)
     return $match.FullName
   }
 
-  foreach ($file in ($x64Files | Sort-Object FullName)) {
+  foreach ($file in ($nativeAmd64Files | Sort-Object FullName)) {
     $versionInfo = $null
     try {
       $versionInfo = $file.VersionInfo
@@ -295,12 +378,16 @@ function Find-RequiredDll {
     ForEach-Object {
       $originalFilename = ""
       $internalName = ""
+      $isAmd64 = $false
+      $isArm64Ec = $false
       try {
         $originalFilename = $_.VersionInfo.OriginalFilename
         $internalName = $_.VersionInfo.InternalName
+        $isAmd64 = Test-PortableExecutableMachineAmd64 -Path $_.FullName
+        $isArm64Ec = $isAmd64 -and (Test-PortableExecutableArm64Ec -Path $_.FullName)
       } catch {
       }
-      Write-Host ("  {0}  len={1}  original={2}  internal={3}" -f $_.FullName, $_.Length, $originalFilename, $internalName)
+      Write-Host ("  {0}  len={1}  amd64={2}  arm64ec={3}  original={4}  internal={5}" -f $_.FullName, $_.Length, $isAmd64, $isArm64Ec, $originalFilename, $internalName)
     }
 
   throw "Could not find $Name in extracted VC++ Redistributable payload roots: $($Roots -join '; ')"
@@ -358,11 +445,16 @@ Assert-Sha256 -Label "VC++ Redistributable $vcRedistVersion" -Path $redistExe -E
 $wixExe = Get-WixExe -CacheRoot $cacheDir
 $payloadRoots = Expand-VcRedist -ExePath $redistExe -WixExe $wixExe -OutDir $redistDir
 
-Copy-Item -LiteralPath $OrtDllPath -Destination (Join-Path $Destination "onnxruntime.dll") -Force
+$stagedOrtDll = Join-Path $Destination "onnxruntime.dll"
+Copy-Item -LiteralPath $OrtDllPath -Destination $stagedOrtDll -Force
+Assert-PortableExecutableNativeAmd64 -Label "ONNX Runtime DLL" -Path $stagedOrtDll
 
 foreach ($dllName in $dllNames) {
   $source = Find-RequiredDll -Name $dllName -Roots $payloadRoots
-  Copy-Item -LiteralPath $source -Destination (Join-Path $Destination $dllName) -Force
+  Assert-PortableExecutableNativeAmd64 -Label $dllName -Path $source
+  $destinationDll = Join-Path $Destination $dllName
+  Copy-Item -LiteralPath $source -Destination $destinationDll -Force
+  Assert-PortableExecutableNativeAmd64 -Label $dllName -Path $destinationDll
 }
 
 Get-ChildItem -LiteralPath $Destination -Filter "*.dll" -File |

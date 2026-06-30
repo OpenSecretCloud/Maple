@@ -55,6 +55,10 @@ before the Tauri build. Those scripts use:
 - A SHA-verified WiX CLI NuGet package, used only to extract the VC++ redist
   bootstrapper payload reproducibly.
 
+The VC++ redist contains ARM64EC payloads that report `AMD64` in the PE Machine
+field. The staging script therefore rejects ARM64EC markers and only copies
+native AMD64 runtime DLLs into the installer payload.
+
 The PR build emits `target/reproducibility/desktop-pr-windows-*.sha256` proof
 manifests. The signed release build emits
 `target/reproducibility/desktop-release-windows-*.sha256` proof manifests after
