@@ -3701,26 +3701,18 @@ verify_windows_authenticode_signatures() {
     printf '%s\n' "$(to_windows_path "${file}")" >> "${files_manifest}"
   done
 
-  # Keep the expected identity fields and file list in the environment. Passing
+  # Keep the expected identity field and file list in the environment. Passing
   # them as positional args through Git Bash into pwsh can split values that
-  # contain spaces. Microsoft Trusted Signing can issue from multiple numbered
-  # ID-verified code-signing CAs, so the default verifies the issuer family
-  # instead of pinning one rotating CA number.
+  # contain spaces. Get-AuthenticodeSignature validates the certificate chain;
+  # this check only asserts that the trusted signer identity is ours.
   # shellcheck disable=SC2016
   if ! MAPLE_WINDOWS_AUTHENTICODE_FILES="$(to_windows_path "${files_manifest}")" \
     MAPLE_WINDOWS_AUTHENTICODE_EXPECTED_CN="${expected_cn}" \
-    MAPLE_WINDOWS_AUTHENTICODE_EXPECTED_ISSUER="${MAPLE_WINDOWS_AUTHENTICODE_EXPECTED_ISSUER:-}" \
-    MAPLE_WINDOWS_AUTHENTICODE_EXPECTED_ISSUER_PATTERN="${MAPLE_WINDOWS_AUTHENTICODE_EXPECTED_ISSUER_PATTERN:-^CN=Microsoft ID Verified CS AOC CA [0-9]+,\s*O=Microsoft Corporation,\s*C=US$}" \
     pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -Command '
     $ErrorActionPreference = "Stop"
     $expectedCn = $env:MAPLE_WINDOWS_AUTHENTICODE_EXPECTED_CN
     if ([string]::IsNullOrWhiteSpace($expectedCn)) {
       throw "MAPLE_WINDOWS_AUTHENTICODE_EXPECTED_CN is required to verify the Windows signer identity."
-    }
-    $expectedIssuer = $env:MAPLE_WINDOWS_AUTHENTICODE_EXPECTED_ISSUER
-    $expectedIssuerPattern = $env:MAPLE_WINDOWS_AUTHENTICODE_EXPECTED_ISSUER_PATTERN
-    if ([string]::IsNullOrWhiteSpace($expectedIssuer) -and [string]::IsNullOrWhiteSpace($expectedIssuerPattern)) {
-      throw "MAPLE_WINDOWS_AUTHENTICODE_EXPECTED_ISSUER or MAPLE_WINDOWS_AUTHENTICODE_EXPECTED_ISSUER_PATTERN is required to verify the Windows signer identity."
     }
     $filesManifest = $env:MAPLE_WINDOWS_AUTHENTICODE_FILES
     if ([string]::IsNullOrWhiteSpace($filesManifest)) {
@@ -3735,23 +3727,16 @@ verify_windows_authenticode_signatures() {
       if ($signature.Status -ne "Valid") {
         throw "Authenticode signature is not valid for $file. Status=$($signature.Status) Message=$($signature.StatusMessage)"
       }
-      $subject = ""
-      $issuer = ""
-      if ($null -ne $signature.SignerCertificate) {
-        $subject = $signature.SignerCertificate.Subject
-        $issuer = $signature.SignerCertificate.Issuer
+      if ($null -eq $signature.SignerCertificate) {
+        throw "Authenticode signature is valid but no signer certificate was returned for $file."
       }
-      if (-not [string]::IsNullOrWhiteSpace($expectedIssuer) -and $issuer -ne $expectedIssuer) {
-        throw "Authenticode signer issuer mismatch for $file. ActualIssuer=$issuer Subject=$subject"
-      }
-      if ([string]::IsNullOrWhiteSpace($expectedIssuer) -and -not [regex]::IsMatch($issuer, $expectedIssuerPattern)) {
-        throw "Authenticode signer issuer pattern mismatch for $file. ActualIssuer=$issuer Subject=$subject"
-      }
+      $subject = $signature.SignerCertificate.Subject
+      $issuer = $signature.SignerCertificate.Issuer
       $expectedCnPattern = "(^|,\s*)CN=$([regex]::Escape($expectedCn))(\s*,|$)"
       if (-not [regex]::IsMatch($subject, $expectedCnPattern)) {
         throw "Authenticode signer subject CN mismatch for $file. Actual=$subject Issuer=$issuer"
       }
-      Write-Output ("verified-windows-authenticode  {0}  thumbprint={1}" -f $file, $signature.SignerCertificate.Thumbprint)
+      Write-Output ("verified-windows-authenticode  {0}  subject={1}  issuer={2}  thumbprint={3}" -f $file, $subject, $issuer, $signature.SignerCertificate.Thumbprint)
     }
   '; then
     rm -f "${files_manifest}"
