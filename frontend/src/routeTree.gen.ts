@@ -10,7 +10,6 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as TermsRouteImport } from './routes/terms'
-import { Route as TeamsRouteImport } from './routes/teams'
 import { Route as SignupRouteImport } from './routes/signup'
 import { Route as RedeemRouteImport } from './routes/redeem'
 import { Route as ProofRouteImport } from './routes/proof'
@@ -32,11 +31,6 @@ import { Route as AuthProviderCallbackRouteImport } from './routes/auth.$provide
 const TermsRoute = TermsRouteImport.update({
   id: '/terms',
   path: '/terms',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const TeamsRoute = TeamsRouteImport.update({
-  id: '/teams',
-  path: '/teams',
   getParentRoute: () => rootRouteImport,
 } as any)
 const SignupRoute = SignupRouteImport.update({
@@ -139,7 +133,6 @@ export interface FileRoutesByFullPath {
   '/proof': typeof ProofRoute
   '/redeem': typeof RedeemRoute
   '/signup': typeof SignupRoute
-  '/teams': typeof TeamsRoute
   '/terms': typeof TermsRoute
   '/password-reset/confirm': typeof PasswordResetConfirmRoute
   '/verify/$code': typeof VerifyCodeRoute
@@ -160,7 +153,6 @@ export interface FileRoutesByTo {
   '/proof': typeof ProofRoute
   '/redeem': typeof RedeemRoute
   '/signup': typeof SignupRoute
-  '/teams': typeof TeamsRoute
   '/terms': typeof TermsRoute
   '/password-reset/confirm': typeof PasswordResetConfirmRoute
   '/verify/$code': typeof VerifyCodeRoute
@@ -182,7 +174,6 @@ export interface FileRoutesById {
   '/proof': typeof ProofRoute
   '/redeem': typeof RedeemRoute
   '/signup': typeof SignupRoute
-  '/teams': typeof TeamsRoute
   '/terms': typeof TermsRoute
   '/password-reset/confirm': typeof PasswordResetConfirmRoute
   '/verify/$code': typeof VerifyCodeRoute
@@ -205,7 +196,6 @@ export interface FileRouteTypes {
     | '/proof'
     | '/redeem'
     | '/signup'
-    | '/teams'
     | '/terms'
     | '/password-reset/confirm'
     | '/verify/$code'
@@ -226,7 +216,6 @@ export interface FileRouteTypes {
     | '/proof'
     | '/redeem'
     | '/signup'
-    | '/teams'
     | '/terms'
     | '/password-reset/confirm'
     | '/verify/$code'
@@ -247,7 +236,6 @@ export interface FileRouteTypes {
     | '/proof'
     | '/redeem'
     | '/signup'
-    | '/teams'
     | '/terms'
     | '/password-reset/confirm'
     | '/verify/$code'
@@ -269,7 +257,6 @@ export interface RootRouteChildren {
   ProofRoute: typeof ProofRoute
   RedeemRoute: typeof RedeemRoute
   SignupRoute: typeof SignupRoute
-  TeamsRoute: typeof TeamsRoute
   TermsRoute: typeof TermsRoute
   VerifyCodeRoute: typeof VerifyCodeRoute
   AuthProviderCallbackRoute: typeof AuthProviderCallbackRoute
@@ -283,13 +270,6 @@ declare module '@tanstack/react-router' {
       path: '/terms'
       fullPath: '/terms'
       preLoaderRoute: typeof TermsRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/teams': {
-      id: '/teams'
-      path: '/teams'
-      fullPath: '/teams'
-      preLoaderRoute: typeof TeamsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/signup': {
@@ -440,7 +420,6 @@ const rootRouteChildren: RootRouteChildren = {
   ProofRoute: ProofRoute,
   RedeemRoute: RedeemRoute,
   SignupRoute: SignupRoute,
-  TeamsRoute: TeamsRoute,
   TermsRoute: TermsRoute,
   VerifyCodeRoute: VerifyCodeRoute,
   AuthProviderCallbackRoute: AuthProviderCallbackRoute,

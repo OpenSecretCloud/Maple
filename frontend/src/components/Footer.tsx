@@ -74,12 +74,6 @@ export function Footer() {
             >
               Security Proof
             </Link>
-            <Link
-              to="/teams"
-              className="text-[hsl(var(--marketing-text-muted))] hover:text-foreground transition-colors"
-            >
-              Teams
-            </Link>
           </div>
 
           <div className="flex flex-col gap-4">
