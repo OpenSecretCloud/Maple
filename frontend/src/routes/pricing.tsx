@@ -1,12 +1,19 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, type ReactNode } from "react";
 import { useOpenSecret } from "@opensecret/react";
-import { TopNav } from "@/components/TopNav";
 import { FullPageMain } from "@/components/FullPageMain";
 import { getBillingService } from "@/billing/billingService";
 import { useQuery } from "@tanstack/react-query";
-import { MarketingHeader } from "@/components/MarketingHeader";
-import { Loader2, Check, AlertTriangle, AlertCircle, Bitcoin, Tag } from "lucide-react";
+import {
+  Loader2,
+  Check,
+  AlertTriangle,
+  AlertCircle,
+  Bitcoin,
+  Tag,
+  ChevronDown,
+  ArrowLeft
+} from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import type { DiscountResponse } from "@/billing/billingApi";
 import { Badge } from "@/components/ui/badge";
@@ -17,11 +24,14 @@ import { PRICING_PLANS } from "@/config/pricingConfig";
 import { VerificationModal } from "@/components/VerificationModal";
 import { TeamSeatDialog } from "@/components/TeamSeatDialog";
 import { isIOS, isAndroid, isMobile, isTauri } from "@/utils/platform";
+import { cn } from "@/utils/utils";
 import packageJson from "../../package.json";
 
 // File type constants for upload features
 const SUPPORTED_IMAGE_FORMATS = [".jpg", ".png", ".webp"];
 const SUPPORTED_DOCUMENT_FORMATS = [".pdf", ".txt", ".md"];
+const pricingPageClassName =
+  "min-h-dvh bg-[#e2e2e2] py-12 pt-10 text-[#221a18] dark:bg-background dark:text-foreground sm:pt-14";
 
 type PricingSearchParams = {
   selected_plan?: string;
@@ -42,33 +52,83 @@ interface Product {
 
 function PricingSkeletonCard() {
   return (
-    <div className="flex flex-col border-[hsl(var(--marketing-card-border))] bg-[hsl(var(--marketing-card))]/75 text-foreground p-4 sm:p-6 md:p-8 border rounded-lg relative overflow-hidden">
-      <div className="absolute inset-0 -translate-x-full animate-[shimmer_2s_infinite] bg-gradient-to-r from-transparent via-foreground/5 to-transparent"></div>
-      <div className="grid grid-rows-[auto_1fr_auto_auto] h-full gap-4 sm:gap-6 md:gap-8">
-        <div className="h-6 sm:h-8 bg-foreground/10 rounded-md w-1/2"></div>
-        <div className="space-y-2 sm:space-y-3">
-          <div className="h-4 bg-foreground/10 rounded-md w-3/4"></div>
-          <div className="h-4 bg-foreground/10 rounded-md w-5/6"></div>
-          <div className="h-4 bg-foreground/10 rounded-md w-2/3"></div>
+    <div className="relative flex min-h-[28rem] flex-col overflow-hidden rounded-lg border border-neutral-900/10 bg-white/70 p-5 text-[#221a18] shadow-sm backdrop-blur dark:border-white/10 dark:bg-neutral-900/70 dark:text-foreground sm:p-6">
+      <div className="absolute inset-0 -translate-x-full animate-[shimmer_2s_infinite] bg-gradient-to-r from-transparent via-white/40 to-transparent dark:via-white/5"></div>
+      <div className="flex h-full flex-col gap-5">
+        <div className="h-6 w-1/2 rounded-md bg-neutral-900/10 dark:bg-white/10"></div>
+        <div className="space-y-3">
+          <div className="h-4 w-3/4 rounded-md bg-neutral-900/10 dark:bg-white/10"></div>
+          <div className="h-4 w-5/6 rounded-md bg-neutral-900/10 dark:bg-white/10"></div>
+          <div className="h-4 w-2/3 rounded-md bg-neutral-900/10 dark:bg-white/10"></div>
         </div>
-        <div className="h-6 sm:h-8 bg-foreground/10 rounded-md w-1/3"></div>
-        <div className="h-12 sm:h-14 bg-foreground/10 rounded-lg w-full"></div>
+        <div className="mt-auto h-8 w-1/3 rounded-md bg-neutral-900/10 dark:bg-white/10"></div>
+        <div className="h-12 w-full rounded-md bg-neutral-900/10 dark:bg-white/10"></div>
       </div>
     </div>
   );
 }
 
+function PricingHero() {
+  return (
+    <section className="mx-auto flex w-full max-w-4xl flex-col items-center gap-5 px-4 pt-4 text-center sm:px-6 lg:px-8">
+      <img src="/maple-research-icon.svg" alt="" className="h-14 w-14 rounded-[12px] shadow-sm" />
+      <div className="space-y-4">
+        <h1 className="font-displayWide text-4xl font-normal leading-tight text-[#221a18] dark:text-foreground">
+          Simple, <span className="brand-gradient-text">Transparent</span> Pricing
+        </h1>
+        <div className="mx-auto max-w-2xl space-y-1 text-base leading-7 text-[#747474] dark:text-muted-foreground">
+          <p>Start with our free tier and upgrade as you grow.</p>
+          <p>All plans include end-to-end encrypted AI chat.</p>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function PricingReturnButton({
+  isLoggedIn,
+  onClick
+}: {
+  isLoggedIn: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <div className="mx-auto flex w-full max-w-7xl px-4 sm:px-6 lg:px-8">
+      <Button
+        type="button"
+        variant="ghost"
+        onClick={onClick}
+        className="h-9 gap-2 rounded-md bg-white/45 px-3 text-sm font-semibold text-[#747474] shadow-sm transition hover:bg-white/70 hover:text-[#221a18] dark:bg-white/[0.04] dark:text-muted-foreground dark:hover:bg-white/[0.08] dark:hover:text-foreground"
+      >
+        <ArrowLeft className="h-4 w-4" />
+        {isLoggedIn ? "Chat" : "Home"}
+      </Button>
+    </div>
+  );
+}
+
+function FAQItem({ question, children }: { question: string; children: ReactNode }) {
+  return (
+    <details className="group rounded-lg border border-neutral-900/10 bg-white/55 p-4 shadow-sm transition-colors open:bg-white/75 dark:border-white/10 dark:bg-neutral-900/55 dark:open:bg-neutral-900/75">
+      <summary className="flex cursor-pointer list-none items-center justify-between gap-4 text-base font-semibold text-[#221a18] transition-colors hover:text-[hsl(var(--maple-primary-strong))] dark:text-foreground dark:hover:text-[hsl(var(--maple-primary))] [&::-webkit-details-marker]:hidden">
+        <span>{question}</span>
+        <ChevronDown className="h-4 w-4 shrink-0 text-[#747474] transition-transform group-open:rotate-180 dark:text-muted-foreground" />
+      </summary>
+      <div className="mt-4 text-sm leading-6 text-[#747474] dark:text-muted-foreground">
+        {children}
+      </div>
+    </details>
+  );
+}
+
 function PricingFAQ() {
   return (
-    <div className="flex flex-col gap-8 border-[hsl(var(--marketing-card-border))] bg-[hsl(var(--marketing-card))]/75 text-foreground p-6 sm:p-8 border rounded-lg mt-8 max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8">
-      <h3 className="text-2xl font-medium">FAQ</h3>
+    <section className="mx-auto mt-8 flex w-full max-w-5xl flex-col gap-6 rounded-lg border border-neutral-900/10 bg-white/65 p-5 text-[#221a18] shadow-sm backdrop-blur dark:border-white/10 dark:bg-neutral-900/65 dark:text-foreground sm:p-6">
+      <h2 className="font-display text-3xl font-normal">FAQ</h2>
 
       <div className="flex flex-col gap-4">
-        <details className="group">
-          <summary className="cursor-pointer text-lg font-medium hover:text-foreground/80">
-            What is the difference between the plans?
-          </summary>
-          <div className="mt-4 text-[hsl(var(--marketing-text-muted))] space-y-2">
+        <FAQItem question="What is the difference between the plans?">
+          <div className="space-y-2">
             <p>The plans are sized to grow with your needs.</p>
             <ul className="list-disc list-inside space-y-1 ml-4">
               <li>
@@ -81,57 +141,42 @@ function PricingFAQ() {
               <li>Enterprise: Message us at support@trymaple.ai</li>
             </ul>
           </div>
-        </details>
+        </FAQItem>
 
-        <details className="group">
-          <summary className="cursor-pointer text-lg font-medium hover:text-foreground/80">
-            How private is Maple?
-          </summary>
-          <p className="mt-4 text-[hsl(var(--marketing-text-muted))]">
+        <FAQItem question="How private is Maple?">
+          <p>
             Encrypted end to end. Maple uses confidential computing to secure the code that access
             user data and LLM data. Your account has its own private key that encrypts your chats
             and the responses from the AI model. Every user has their own personal data vault that
             can't be read by anyone else, not even us.
           </p>
-        </details>
+        </FAQItem>
 
-        <details className="group">
-          <summary className="cursor-pointer text-lg font-medium hover:text-foreground/80">
-            How do you synchronize my chat history across devices?
-          </summary>
-          <p className="mt-4 text-[hsl(var(--marketing-text-muted))]">
+        <FAQItem question="How do you synchronize my chat history across devices?">
+          <p>
             We use a secure synchronization protocol that ensures your encrypted chat history is
             synced across all your devices. This means that you can start a conversation on one
             device and pick it up where you left off on another device, without compromising your
             security or privacy.
           </p>
-        </details>
+        </FAQItem>
 
-        <details className="group">
-          <summary className="cursor-pointer text-lg font-medium hover:text-foreground/80">
-            Is this safe to use with my company's confidential information?
-          </summary>
-          <p className="mt-4 text-[hsl(var(--marketing-text-muted))]">
+        <FAQItem question="Is this safe to use with my company's confidential information?">
+          <p>
             The service is encrypted end-to-end, so your confidential information is private between
             you and the AI. Consult your company's security policy.
           </p>
-        </details>
+        </FAQItem>
 
-        <details className="group">
-          <summary className="cursor-pointer text-lg font-medium hover:text-foreground/80">
-            Can companies use my data to train their AI models?
-          </summary>
-          <p className="mt-4 text-[hsl(var(--marketing-text-muted))]">
+        <FAQItem question="Can companies use my data to train their AI models?">
+          <p>
             No. When you chat with AI in Maple, nobody knows what is being said back and forth. Thus
             data is not able to be used for training new AI models by any company.
           </p>
-        </details>
+        </FAQItem>
 
-        <details className="group">
-          <summary className="cursor-pointer text-lg font-medium hover:text-foreground/80">
-            Which file types are supported for document and image upload?
-          </summary>
-          <div className="mt-4 text-[hsl(var(--marketing-text-muted))] space-y-4">
+        <FAQItem question="Which file types are supported for document and image upload?">
+          <div className="space-y-4">
             <p>We support a range of file types for both images and documents.</p>
             <div>
               <strong>Images:</strong>
@@ -155,13 +200,10 @@ function PricingFAQ() {
             </div>
             <p>There is a 1 file limit per chat prompt with a 10MB file size limit per file.</p>
           </div>
-        </details>
+        </FAQItem>
 
-        <details className="group">
-          <summary className="cursor-pointer text-lg font-medium hover:text-foreground/80">
-            Can I use my subscription for API access?
-          </summary>
-          <div className="mt-4 text-[hsl(var(--marketing-text-muted))] space-y-2">
+        <FAQItem question="Can I use my subscription for API access?">
+          <div className="space-y-2">
             <p>
               Yes! Pro, Max, and Team plans include API access. Your subscription credits work
               seamlessly with the API.
@@ -172,17 +214,14 @@ function PricingFAQ() {
               <li>Purchase extra credits to extend your usage anytime</li>
             </ul>
           </div>
-        </details>
+        </FAQItem>
 
-        <details className="group">
-          <summary className="cursor-pointer text-lg font-medium hover:text-foreground/80">
-            How did you build this?
-          </summary>
-          <p className="mt-4 text-[hsl(var(--marketing-text-muted))]">
+        <FAQItem question="How did you build this?">
+          <p>
             Maple is made using{" "}
             <a
               href="https://opensecret.cloud"
-              className="text-foreground hover:text-foreground/80 underline"
+              className="text-[hsl(var(--maple-primary-strong))] underline underline-offset-4 hover:text-[hsl(var(--maple-primary))] dark:text-[hsl(var(--maple-primary))]"
             >
               OpenSecret
             </a>
@@ -191,9 +230,9 @@ function PricingFAQ() {
             privacy to users by turning on encryption by default. If you're a developer, go see how
             easy it is to build with.
           </p>
-        </details>
+        </FAQItem>
       </div>
-    </div>
+    </section>
   );
 }
 
@@ -684,23 +723,11 @@ function PricingPage() {
   if (productsLoading || (isLoggedIn && isBillingStatusLoading)) {
     return (
       <>
-        <TopNav />
-        <FullPageMain>
-          <MarketingHeader
-            title={
-              <h2 className="text-6xl font-light mb-0">
-                Simple, <span className="text-[hsl(var(--purple))]">Transparent</span> Pricing
-              </h2>
-            }
-            subtitle={
-              <div className="space-y-2">
-                <p>Start with our free tier and upgrade as you grow.</p>
-                <p>All plans include end-to-end encrypted AI chat.</p>
-              </div>
-            }
-          />
+        <FullPageMain className={pricingPageClassName}>
+          <PricingReturnButton isLoggedIn={isLoggedIn} onClick={() => navigate({ to: "/" })} />
+          <PricingHero />
 
-          <div className="pt-8 w-full max-w-7xl mx-auto grid grid-cols-1 md:grid-cols-4 gap-4 md:gap-4 lg:gap-6 px-4 sm:px-6 lg:px-8">
+          <div className="mx-auto grid w-full max-w-7xl grid-cols-1 gap-5 px-4 pt-6 sm:px-6 md:grid-cols-4 lg:px-8">
             <PricingSkeletonCard />
             <PricingSkeletonCard />
             <PricingSkeletonCard />
@@ -721,28 +748,24 @@ function PricingPage() {
 
     return (
       <>
-        <TopNav />
-        <FullPageMain>
-          <MarketingHeader title="Pricing" subtitle="Choose the plan that's right for you." />
+        <FullPageMain className={pricingPageClassName}>
+          <PricingReturnButton isLoggedIn={isLoggedIn} onClick={() => navigate({ to: "/" })} />
+          <PricingHero />
 
-          <div className="pt-8 w-full grid grid-cols-1 md:grid-cols-3 gap-4 md:gap-4 lg:gap-6 px-4 sm:px-6 lg:px-8">
-            <div className="flex flex-col border-[hsl(var(--marketing-card-border))] bg-[hsl(var(--marketing-card))]/75 text-foreground p-8 border rounded-lg col-span-full">
+          <div className="mx-auto grid w-full max-w-5xl grid-cols-1 px-4 pt-6 sm:px-6 lg:px-8">
+            <div className="col-span-full flex flex-col rounded-lg border border-neutral-900/10 bg-white/70 p-8 text-[#221a18] shadow-sm backdrop-blur dark:border-white/10 dark:bg-neutral-900/70 dark:text-foreground">
               <div className="flex flex-col items-center text-center gap-4">
-                <div className="rounded-full bg-red-500/10 p-3">
-                  <AlertTriangle className="w-6 h-6 text-red-500" />
+                <div className="rounded-full bg-maple-error/10 p-3">
+                  <AlertTriangle className="w-6 h-6 text-maple-error" />
                 </div>
                 <div className="space-y-2">
                   <h3 className="text-xl font-medium">Unable to Load Pricing</h3>
-                  <p className="text-[hsl(var(--marketing-text-muted))]">{errorMessage}</p>
+                  <p className="text-[#747474] dark:text-muted-foreground">{errorMessage}</p>
                 </div>
                 <Button
+                  variant="primary"
                   onClick={() => window.location.reload()}
-                  className="mt-4 
-                    dark:bg-white/90 dark:text-black dark:hover:bg-[hsl(var(--purple))]/80 dark:hover:text-[hsl(var(--foreground))] dark:active:bg-white/80
-                    bg-background text-foreground hover:bg-[hsl(var(--purple))] hover:text-[hsl(var(--foreground))] active:bg-background/80 
-                    border border-[hsl(var(--purple))]/30 hover:border-[hsl(var(--purple))]
-                    px-8 py-4 rounded-lg text-xl font-light transition-all duration-300 
-                    shadow-[0_0_15px_rgba(var(--purple-rgb),0.2)] hover:shadow-[0_0_25px_rgba(var(--purple-rgb),0.3)]"
+                  className="mt-4 h-11 px-8 text-base"
                 >
                   Retry
                 </Button>
@@ -758,28 +781,16 @@ function PricingPage() {
 
   return (
     <>
-      <TopNav />
-      <FullPageMain>
-        <MarketingHeader
-          title={
-            <h2 className="text-6xl font-light mb-0">
-              Simple, <span className="text-[hsl(var(--purple))]">Transparent</span> Pricing
-            </h2>
-          }
-          subtitle={
-            <div className="space-y-2">
-              <p>Start with our free tier and upgrade as you grow.</p>
-              <p>All plans include end-to-end encrypted AI chat.</p>
-            </div>
-          }
-        />
+      <FullPageMain className={pricingPageClassName}>
+        <PricingReturnButton isLoggedIn={isLoggedIn} onClick={() => navigate({ to: "/" })} />
+        <PricingHero />
 
         {/* Payment Callback Status Messages */}
         {success && (
           <div className="w-full max-w-7xl mx-auto mt-4 px-4 sm:px-6 lg:px-8">
-            <div className="bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-900/50 text-green-800 dark:text-green-100 rounded-lg p-4 flex items-center gap-3">
-              <div className="rounded-full bg-green-100 dark:bg-green-800 p-1">
-                <Check className="w-5 h-5 text-green-600 dark:text-green-200" />
+            <div className="flex items-center gap-3 rounded-lg border border-maple-success/30 bg-maple-success/10 p-4 text-maple-success">
+              <div className="rounded-full bg-maple-success/10 p-1">
+                <Check className="w-5 h-5" />
               </div>
               <p>Payment successful! Your subscription has been updated.</p>
             </div>
@@ -788,9 +799,9 @@ function PricingPage() {
 
         {canceled && (
           <div className="w-full max-w-7xl mx-auto mt-4 px-4 sm:px-6 lg:px-8">
-            <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-900/50 text-amber-800 dark:text-amber-100 rounded-lg p-4 flex items-center gap-3">
-              <div className="rounded-full bg-amber-100 dark:bg-amber-800 p-1">
-                <AlertTriangle className="w-5 h-5 text-amber-600 dark:text-amber-200" />
+            <div className="flex items-center gap-3 rounded-lg border border-maple-warning/35 bg-maple-warning/10 p-4 text-maple-warning">
+              <div className="rounded-full bg-maple-warning/10 p-1">
+                <AlertTriangle className="w-5 h-5" />
               </div>
               <p>Payment canceled. Your subscription remains unchanged.</p>
             </div>
@@ -810,17 +821,17 @@ function PricingPage() {
         {/* Promotion Banner */}
         {discount?.active && (
           <div className="w-full max-w-7xl mx-auto mt-4 px-4 sm:px-6 lg:px-8">
-            <div className="bg-gradient-to-r from-pink-500/10 to-orange-500/10 border border-pink-500/30 rounded-lg p-4 flex items-center gap-3">
-              <div className="rounded-full bg-gradient-to-r from-pink-500 to-orange-500 p-2">
-                <Tag className="w-5 h-5 text-white" />
+            <div className="flex items-center gap-3 rounded-lg border border-[hsl(var(--maple-primary))]/25 bg-gradient-to-r from-[hsl(var(--maple-primary))]/10 to-[hsl(var(--maple-primary-strong))]/10 p-4">
+              <div className="rounded-full bg-gradient-to-b from-[hsl(var(--maple-primary))] to-[hsl(var(--maple-primary-strong))] p-2">
+                <Tag className="w-5 h-5 text-[hsl(var(--maple-on-primary))]" />
               </div>
               <div className="flex-1">
-                <p className="font-medium text-foreground">{discount.name}</p>
-                <p className="text-sm text-[hsl(var(--marketing-text-muted))]">
+                <p className="font-medium text-[#221a18] dark:text-foreground">{discount.name}</p>
+                <p className="text-sm text-[#747474] dark:text-muted-foreground">
                   {discount.description}
                 </p>
               </div>
-              <Badge className="bg-gradient-to-r from-pink-500 to-orange-500 text-white text-lg px-3 py-1">
+              <Badge className="bg-gradient-to-b from-[hsl(var(--maple-primary))] to-[hsl(var(--maple-primary-strong))] text-[hsl(var(--maple-on-primary))] text-base px-3 py-1">
                 {discount.percent_off}% OFF
               </Badge>
             </div>
@@ -844,7 +855,7 @@ function PricingPage() {
 
           return (
             <div
-              className={`pt-8 w-full max-w-7xl mx-auto grid grid-cols-1 ${gridColumns} gap-4 md:gap-4 lg:gap-6 px-4 sm:px-6 lg:px-8`}
+              className={`mx-auto grid w-full max-w-7xl grid-cols-1 ${gridColumns} gap-5 px-4 pt-6 sm:px-6 lg:px-8`}
             >
               {filteredPlans.map((plan) => {
                 // Find the matching product from server data
@@ -916,58 +927,71 @@ function PricingPage() {
                 return (
                   <div
                     key={plan.name}
-                    className={`flex flex-col ${
+                    className={cn(
+                      "relative flex min-h-[31rem] flex-col overflow-hidden rounded-lg border bg-white/70 p-5 text-[#221a18] shadow-sm backdrop-blur transition-all duration-200 hover:border-[hsl(var(--maple-primary))]/40 hover:shadow-md dark:bg-neutral-900/70 dark:text-foreground sm:p-6",
                       plan.popular && !isCurrentPlan
-                        ? "border-2 border-[hsl(var(--purple))] bg-gradient-to-b from-[hsl(var(--marketing-card))] to-[hsl(var(--marketing-card))]/80 relative shadow-[0_0_30px_rgba(var(--purple-rgb),0.2)]"
-                        : "border border-[hsl(var(--marketing-card-border))] bg-[hsl(var(--marketing-card))]/75"
-                    } text-foreground p-4 sm:p-6 md:p-8 rounded-lg relative group transition-all duration-300 hover:border-foreground/30 ${
-                      isCurrentPlan ? "ring-2 ring-foreground" : ""
-                    } ${useBitcoin && isTeamPlan ? "opacity-50 cursor-not-allowed" : ""}`}
+                        ? "border-[hsl(var(--maple-primary))]/60 shadow-[0_14px_40px_rgba(var(--maple-primary-rgb),0.16)]"
+                        : "border-neutral-900/10 dark:border-white/10",
+                      isCurrentPlan && "ring-2 ring-[hsl(var(--maple-primary))]",
+                      useBitcoin && isTeamPlan && "cursor-not-allowed opacity-55"
+                    )}
                   >
                     {plan.popular && !isCurrentPlan && (
-                      <div className="absolute -top-4 left-1/2 transform -translate-x-1/2 bg-[hsl(var(--purple))] text-[hsl(var(--marketing-card))] px-4 py-1 rounded-full text-sm font-medium text-center min-w-[110px] whitespace-normal">
-                        Most Popular
+                      <div className="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-[hsl(var(--maple-primary))] to-[hsl(var(--maple-primary-strong))]" />
+                    )}
+                    <div className="flex h-full flex-col gap-5">
+                      <div className="flex min-h-7 flex-wrap items-center gap-2">
+                        {plan.popular && !isCurrentPlan && (
+                          <Badge className="bg-gradient-to-b from-[hsl(var(--maple-primary))] to-[hsl(var(--maple-primary-strong))] text-[hsl(var(--maple-on-primary))]">
+                            Most Popular
+                          </Badge>
+                        )}
+                        {isCurrentPlan && (
+                          <Badge className="bg-[hsl(var(--maple-tertiary-container))] text-[hsl(var(--maple-tertiary))]">
+                            Current Plan
+                          </Badge>
+                        )}
+                        {showPromoBadge && (
+                          <Badge className="bg-[hsl(var(--maple-primary-container))] text-[hsl(var(--maple-primary-strong))] dark:bg-[hsl(var(--maple-primary))]/20 dark:text-[hsl(var(--maple-primary))]">
+                            {promoDiscountPercent}% OFF
+                          </Badge>
+                        )}
+                        {showBitcoinBadge && (
+                          <Badge className="bg-[hsl(var(--maple-primary-container))] text-[hsl(var(--maple-primary-strong))] dark:bg-[hsl(var(--maple-primary))]/20 dark:text-[hsl(var(--maple-primary))]">
+                            {bitcoinYearlyDiscountPercent}% OFF
+                          </Badge>
+                        )}
                       </div>
-                    )}
-                    {isCurrentPlan && (
-                      <Badge className="absolute -top-3 left-1/2 -translate-x-1/2 bg-foreground text-background font-medium">
-                        Current Plan
-                      </Badge>
-                    )}
-                    {showPromoBadge && (
-                      <Badge className="absolute -top-3 right-4 bg-gradient-to-r from-pink-500 to-orange-500 text-white">
-                        {promoDiscountPercent}% OFF
-                      </Badge>
-                    )}
-                    {showBitcoinBadge && (
-                      <Badge className="absolute -top-3 right-4 bg-gradient-to-r from-pink-500 to-orange-500 text-white">
-                        {bitcoinYearlyDiscountPercent}% OFF
-                      </Badge>
-                    )}
-                    <div className="grid grid-rows-[auto_auto_1fr_auto_auto] h-full gap-4 sm:gap-6 md:gap-8">
-                      <h3 className="text-xl sm:text-2xl font-medium flex items-center gap-2">
-                        {plan.name}
-                        {useBitcoin && !isFreeplan && !isTeamPlan ? " (Yearly)" : ""}
-                        {isCurrentPlan && <Check className="w-5 h-5 text-green-500" />}
-                      </h3>
 
-                      <p className="text-base sm:text-lg font-light text-[hsl(var(--marketing-text-muted))] break-words">
-                        {isTeamPlan && useBitcoin
-                          ? "Team plan is not available with Bitcoin payment."
-                          : plan.description}
-                      </p>
+                      <div className="space-y-3">
+                        <h3 className="flex items-center gap-2 font-display text-3xl font-normal leading-none">
+                          {plan.name}
+                          {useBitcoin && !isFreeplan && !isTeamPlan ? " (Yearly)" : ""}
+                          {isCurrentPlan && <Check className="w-5 h-5 text-maple-success" />}
+                        </h3>
+
+                        <p className="text-sm leading-6 text-[#747474] dark:text-muted-foreground">
+                          {isTeamPlan && useBitcoin
+                            ? "Team plan is not available with Bitcoin payment."
+                            : plan.description}
+                        </p>
+                      </div>
 
                       {/* Features List */}
-                      <div className="flex flex-col gap-2">
+                      <div className="flex flex-1 flex-col gap-2.5">
                         {plan.features.map((feature, index) => (
-                          <div key={index} className="flex items-start gap-2 text-sm">
+                          <div key={index} className="flex items-start gap-2 text-sm leading-5">
                             {feature.text !== "" &&
                               (feature.icon ||
                                 (feature.included ? (
-                                  <Check className="w-4 h-4 text-green-500 mt-0.5 flex-shrink-0" />
+                                  <Check className="w-4 h-4 text-maple-success mt-0.5 flex-shrink-0" />
                                 ) : null))}
                             <span
-                              className={`${feature.included ? "text-foreground/80" : "text-foreground/50"}`}
+                              className={
+                                feature.included
+                                  ? "text-[#221a18]/80 dark:text-foreground/80"
+                                  : "text-[#747474] dark:text-muted-foreground"
+                              }
                             >
                               {feature.text}
                             </span>
@@ -979,46 +1003,40 @@ function PricingPage() {
                         {!isFreeplan ? (
                           <>
                             <div className="flex flex-wrap items-center gap-2">
-                              <span className="text-2xl sm:text-3xl font-bold">
-                                ${displayPrice}
-                              </span>
+                              <span className="text-3xl font-semibold">${displayPrice}</span>
                               {(showBitcoinBadge || showPromoBadge) && (
-                                <span className="text-lg sm:text-xl line-through text-foreground/50">
+                                <span className="text-lg line-through text-[#747474] dark:text-muted-foreground">
                                   ${monthlyOriginalPrice}
                                 </span>
                               )}
-                              <div className="flex flex-col text-[hsl(var(--marketing-text-muted))]">
-                                <span className="text-base sm:text-lg font-light">
-                                  {isTeamPlan ? "per user" : ""}
-                                </span>
-                                <span className="text-base sm:text-lg font-light -mt-1">
-                                  per month
-                                </span>
+                              <div className="flex flex-col text-sm leading-5 text-[#747474] dark:text-muted-foreground">
+                                <span>{isTeamPlan ? "per user" : ""}</span>
+                                <span>per month</span>
                               </div>
                             </div>
-                            <div className="space-y-0.5 sm:space-y-1 mt-1">
+                            <div className="mt-1 space-y-1">
                               {showBitcoinBadge && (
                                 <>
-                                  <p className="text-sm sm:text-base text-foreground/90 font-medium">
+                                  <p className="text-sm font-medium text-[#221a18]/90 dark:text-foreground/90">
                                     Billed yearly at ${yearlyDiscountedPrice}
                                   </p>
-                                  <p className="text-xs sm:text-sm text-foreground/50">
+                                  <p className="text-xs text-[#747474] dark:text-muted-foreground">
                                     Save {bitcoinYearlyDiscountPercent}% with annual billing
                                   </p>
                                 </>
                               )}
                               {showPromoBadge && useBitcoin && !isTeamPlan && (
                                 <>
-                                  <p className="text-sm sm:text-base text-foreground/90 font-medium">
+                                  <p className="text-sm font-medium text-[#221a18]/90 dark:text-foreground/90">
                                     Billed yearly at ${yearlyDiscountedPrice}
                                   </p>
-                                  <p className="text-xs sm:text-sm text-foreground/50">
+                                  <p className="text-xs text-[#747474] dark:text-muted-foreground">
                                     Save {promoDiscountPercent}% with annual billing
                                   </p>
                                 </>
                               )}
                               {showPromoBadge && !useBitcoin && (
-                                <p className="text-xs sm:text-sm text-foreground/50">
+                                <p className="text-xs text-[#747474] dark:text-muted-foreground">
                                   {promoDiscountPercent}% off
                                   {promoDurationMonths
                                     ? ` for first ${promoDurationMonths} month${promoDurationMonths > 1 ? "s" : ""}`
@@ -1029,15 +1047,17 @@ function PricingPage() {
                           </>
                         ) : (
                           <div className="flex flex-wrap items-center gap-2">
-                            <span className="text-2xl sm:text-3xl font-bold">${monthlyPrice}</span>
-                            <span className="text-base sm:text-lg font-light text-[hsl(var(--marketing-text-muted))]">
+                            <span className="text-3xl font-semibold">${monthlyPrice}</span>
+                            <span className="text-sm text-[#747474] dark:text-muted-foreground">
                               per month
                             </span>
                           </div>
                         )}
                       </div>
 
-                      <button
+                      <Button
+                        type="button"
+                        variant={plan.popular && !isCurrentPlan ? "primary" : "outline"}
                         onClick={() =>
                           handleButtonClick(
                             product || {
@@ -1062,15 +1082,11 @@ function PricingPage() {
                           (useBitcoin && isTeamPlan) ||
                           (isIOSPlatform && !isFreeplan && product?.is_available === false)
                         }
-                        className={`w-full 
-                      dark:bg-white/90 dark:text-black dark:hover:bg-[hsl(var(--purple))]/80 dark:hover:text-[hsl(var(--foreground))] dark:active:bg-white/80
-                      bg-background text-foreground hover:bg-[hsl(var(--purple))] hover:text-[hsl(var(--foreground))] active:bg-background/80 
-                      border border-[hsl(var(--purple))]/30 hover:border-[hsl(var(--purple))]
-                      px-4 sm:px-8 py-3 sm:py-4 rounded-lg text-lg sm:text-xl font-light 
-                      transition-all duration-300 shadow-[0_0_15px_rgba(var(--purple-rgb),0.2)] 
-                      hover:shadow-[0_0_25px_rgba(var(--purple-rgb),0.3)] disabled:opacity-50 
-                      disabled:cursor-not-allowed flex items-center justify-center gap-2 
-                      group-hover:bg-[hsl(var(--purple))] group-hover:text-[hsl(var(--foreground))] dark:group-hover:text-[hsl(var(--foreground))] dark:group-hover:bg-[hsl(var(--purple))]/80`}
+                        className={cn(
+                          "h-12 w-full gap-2 text-base",
+                          !(plan.popular && !isCurrentPlan) && "bg-white/40 dark:bg-white/0",
+                          useBitcoin && isTeamPlan && "cursor-not-allowed"
+                        )}
                       >
                         {useBitcoin && isTeamPlan
                           ? "Not Available"
@@ -1091,7 +1107,7 @@ function PricingPage() {
                                 }
                               }
                             )}
-                      </button>
+                      </Button>
                     </div>
                   </div>
                 );
@@ -1100,19 +1116,19 @@ function PricingPage() {
           );
         })()}
 
-        <div className="w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col items-center gap-6 mt-8">
+        <div className="mx-auto mt-8 flex w-full max-w-7xl flex-col items-center gap-6 px-4 sm:px-6 lg:px-8">
           {!isIOSPlatform && (
             <button
               onClick={() => navigate({ to: "/redeem" })}
-              className="text-base text-foreground/70 hover:text-foreground transition-colors underline underline-offset-4 decoration-foreground/30 hover:decoration-foreground"
+              className="text-sm font-medium text-[#747474] underline underline-offset-4 decoration-neutral-900/20 transition-colors hover:text-[hsl(var(--maple-primary-strong))] hover:decoration-[hsl(var(--maple-primary-strong))] dark:text-muted-foreground dark:decoration-white/20 dark:hover:text-[hsl(var(--maple-primary))] dark:hover:decoration-[hsl(var(--maple-primary))]"
             >
               Have a subscription pass code?
             </button>
           )}
           <div className="flex flex-col items-center gap-3">
-            <div className="inline-flex items-center gap-4 px-6 py-2.5 rounded-full bg-[hsl(var(--marketing-card))]/50 backdrop-blur-sm border border-[hsl(var(--marketing-card-border))]">
-              <div className="flex items-center gap-2 text-[hsl(var(--bitcoin))] text-base font-light">
-                <Bitcoin className="w-4.5 h-4.5" />
+            <div className="inline-flex items-center gap-4 rounded-lg border border-neutral-900/10 bg-white/65 px-5 py-2.5 shadow-sm backdrop-blur dark:border-white/10 dark:bg-neutral-900/65">
+              <div className="flex items-center gap-2 text-[hsl(var(--bitcoin))] text-sm font-medium">
+                <Bitcoin className="h-4 w-4" />
                 <span>Pay with Bitcoin</span>
               </div>
               <Switch
@@ -1120,11 +1136,11 @@ function PricingPage() {
                 checked={useBitcoin}
                 onCheckedChange={setUseBitcoin}
                 disabled={isGuestUser}
-                className="data-[state=checked]:bg-[hsl(var(--bitcoin))] data-[state=unchecked]:border-foreground/30 scale-100"
+                className="scale-100 data-[state=checked]:bg-[hsl(var(--bitcoin))] data-[state=unchecked]:border-neutral-900/30 dark:data-[state=unchecked]:border-white/30"
               />
             </div>
             {isGuestUser && (
-              <div className="text-sm text-amber-600 dark:text-amber-500 font-medium">
+              <div className="text-sm font-medium text-maple-warning">
                 Anonymous accounts must pay with Bitcoin (yearly only)
               </div>
             )}
