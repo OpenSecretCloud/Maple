@@ -19,6 +19,11 @@ WINDOWS_RUNTIME_PAYLOAD_FILES = (
     "VCRUNTIME140.dll",
     "VCRUNTIME140_1.dll",
 )
+GENERATED_NSIS_PAYLOAD_FILES = frozenset(
+    {
+        "uninstall.exe",
+    }
+)
 
 
 def sha256_bytes(data):
@@ -149,6 +154,11 @@ def canonical_tree_entries(root):
         for name in sorted(files):
             path = os.path.join(current_root, name)
             rel = os.path.relpath(path, root).replace(os.sep, "/")
+            # makensis generates uninstall.exe from a temporary helper during
+            # packaging and signs that helper in signed builds. It is not part
+            # of Maple's reproducible app/runtime payload.
+            if rel.lower() in GENERATED_NSIS_PAYLOAD_FILES:
+                continue
             with open(path, "rb") as f:
                 canonical = canonical_pe_bytes(f.read(), rel)
             entries.append((rel, len(canonical), sha256_bytes(canonical)))
