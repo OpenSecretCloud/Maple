@@ -495,6 +495,15 @@ use_xcode_toolchain() {
   done < <(env)
 
   configure_reproducible_native_paths
+
+  export SDKROOT="${SDKROOT:-${macos_sdkroot}}"
+  export CMAKE_OSX_SYSROOT="${CMAKE_OSX_SYSROOT:-${macos_sdkroot}}"
+  for name in \
+    CFLAGS CXXFLAGS OBJCFLAGS OBJCXXFLAGS \
+    CFLAGS_aarch64_apple_darwin CXXFLAGS_aarch64_apple_darwin \
+    CFLAGS_x86_64_apple_darwin CXXFLAGS_x86_64_apple_darwin; do
+    append_env_words_once "${name}" "-isysroot ${macos_sdkroot}"
+  done
 }
 
 require_ios_simulator_runtime_for_xcode() {
