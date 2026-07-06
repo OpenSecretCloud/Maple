@@ -170,7 +170,7 @@ export const PRICING_PLANS: PricingPlan[] = [
         icon: <Check className="w-4 h-4 text-maple-success" />
       },
       {
-        text: "20x more usage than Pro",
+        text: "200,000 monthly credits (10x Pro)",
         included: true,
         icon: <Check className="w-4 h-4 text-maple-success" />
       },
