@@ -55,6 +55,8 @@ cleanup_android_release() {
   if [ -n "${fake_android_keystore_dir:-}" ]; then
     rm -rf "${fake_android_keystore_dir}"
   fi
+
+  restore_desktop_goose_cargo_dependencies
 }
 trap cleanup_android_release EXIT
 
@@ -186,6 +188,7 @@ remove_android_outputs() {
 
 build_android_release_outputs() {
   cd "${FRONTEND_DIR}"
+  disable_desktop_goose_cargo_dependencies
   bun tauri android build --apk --aab --ci --config "${android_build_config}"
 }
 

@@ -39,6 +39,7 @@ ios_info_plist_present=0
 ios_entitlements_present=0
 restore_ios_build_state() {
   remove_generated_ios_cargo_config
+  restore_desktop_goose_cargo_dependencies
 
   if [ -n "${ios_project_state_dir}" ] && [ -d "${ios_project_state_dir}" ]; then
     if [ -f "${ios_project_state_dir}/Info.plist" ]; then
@@ -97,6 +98,7 @@ remove_ios_release_outputs() {
 
 build_ios_release() {
   cd "${FRONTEND_DIR}"
+  disable_desktop_goose_cargo_dependencies
   bun tauri ios build --target aarch64 --ci --config "${ios_build_config}" "$@"
 }
 

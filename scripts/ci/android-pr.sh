@@ -56,7 +56,11 @@ fi
 export PATH="${toolchain_prebuilt}/bin:${PATH}"
 
 tmp_toolchain_bin="$(mktemp -d)"
-trap 'rm -rf "${tmp_toolchain_bin}"' EXIT
+cleanup_android_pr() {
+  rm -rf "${tmp_toolchain_bin}"
+  restore_desktop_goose_cargo_dependencies
+}
+trap cleanup_android_pr EXIT
 
 ln -sf "${toolchain_prebuilt}/bin/llvm-ranlib" "${tmp_toolchain_bin}/aarch64-linux-android-ranlib"
 ln -sf "${toolchain_prebuilt}/bin/llvm-ranlib" "${tmp_toolchain_bin}/armv7a-linux-androideabi-ranlib"
@@ -100,6 +104,7 @@ tauri.android.versionCode=${version_code}
 EOF
 
 cd "${FRONTEND_DIR}"
+disable_desktop_goose_cargo_dependencies
 bun tauri android build --debug --apk --config '{"build":{"beforeBuildCommand":null}}'
 
 android_artifacts=()

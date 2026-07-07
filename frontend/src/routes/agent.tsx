@@ -1,9 +1,14 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { lazy, Suspense } from "react";
+import { Navigate, createFileRoute } from "@tanstack/react-router";
 import { useOpenSecret } from "@opensecret/react";
-import { AgentMode } from "@/components/AgentMode";
 import { AppEntryPage } from "@/components/AppEntryPage";
 import { useRouteMeta } from "@/utils/routeMeta";
 import { appUrl } from "@/config/domains";
+import { isTauriDesktop } from "@/utils/platform";
+
+const AgentMode = lazy(() =>
+  import("@/components/AgentMode").then((module) => ({ default: module.AgentMode }))
+);
 
 export const Route = createFileRoute("/agent")({
   component: AgentRoute
@@ -11,16 +16,28 @@ export const Route = createFileRoute("/agent")({
 
 function AgentRoute() {
   const os = useOpenSecret();
+  const agentModeAvailable = isTauriDesktop();
 
   useRouteMeta({
-    title: os.auth.user ? "Maple Agent Mode" : "Maple Research | Private AI Workspace",
+    title:
+      agentModeAvailable && os.auth.user
+        ? "Maple Agent Mode"
+        : "Maple Research | Private AI Workspace",
     description: "Maple Agent Mode.",
     canonicalUrl: appUrl("/agent")
   });
+
+  if (!agentModeAvailable) {
+    return <Navigate to="/" replace />;
+  }
 
   if (!os.auth.user) {
     return <AppEntryPage />;
   }
 
-  return <AgentMode />;
+  return (
+    <Suspense fallback={null}>
+      <AgentMode />
+    </Suspense>
+  );
 }

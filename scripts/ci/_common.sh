@@ -2391,6 +2391,32 @@ remove_generated_ios_cargo_config() {
   fi
 }
 
+DESKTOP_GOOSE_CARGO_MANIFEST_BACKUP=""
+
+disable_desktop_goose_cargo_dependencies() {
+  local manifest="${TAURI_DIR}/Cargo.toml"
+
+  if ! grep -q "# BEGIN MAPLE_DESKTOP_GOOSE_DEPENDENCIES" "${manifest}"; then
+    return 0
+  fi
+
+  if [ -z "${DESKTOP_GOOSE_CARGO_MANIFEST_BACKUP}" ]; then
+    DESKTOP_GOOSE_CARGO_MANIFEST_BACKUP="$(mktemp)"
+    cp "${manifest}" "${DESKTOP_GOOSE_CARGO_MANIFEST_BACKUP}"
+  fi
+
+  perl -0pi -e 's/\n# BEGIN MAPLE_DESKTOP_GOOSE_DEPENDENCIES\n.*?\n# END MAPLE_DESKTOP_GOOSE_DEPENDENCIES\n/\n/s' "${manifest}"
+  echo "disabled-desktop-goose-cargo-dependencies  $(repo_relative_path "${manifest}")"
+}
+
+restore_desktop_goose_cargo_dependencies() {
+  if [ -n "${DESKTOP_GOOSE_CARGO_MANIFEST_BACKUP}" ] && [ -f "${DESKTOP_GOOSE_CARGO_MANIFEST_BACKUP}" ]; then
+    cp "${DESKTOP_GOOSE_CARGO_MANIFEST_BACKUP}" "${TAURI_DIR}/Cargo.toml"
+    rm -f "${DESKTOP_GOOSE_CARGO_MANIFEST_BACKUP}"
+    DESKTOP_GOOSE_CARGO_MANIFEST_BACKUP=""
+  fi
+}
+
 archive_tree_as_root_tar_gz() {
   local root="$1"
   local out="$2"

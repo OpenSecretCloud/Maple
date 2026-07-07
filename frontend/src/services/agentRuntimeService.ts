@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { isTauriDesktop } from "@/utils/platform";
 
 export interface AgentConfig {
   defaultProjectRoot?: string | null;
@@ -40,40 +40,52 @@ export interface RecentProjectRoot {
 
 class AgentRuntimeService {
   async getRuntimeStatus(): Promise<AgentRuntimeStatus> {
-    return await invoke<AgentRuntimeStatus>("agent_get_runtime_status");
+    return await invokeAgent<AgentRuntimeStatus>("agent_get_runtime_status");
   }
 
   async startRuntime(request?: AgentStartRequest): Promise<AgentRuntimeStatus> {
-    return await invoke<AgentRuntimeStatus>("agent_start_runtime", { request: request ?? null });
+    return await invokeAgent<AgentRuntimeStatus>("agent_start_runtime", {
+      request: request ?? null
+    });
   }
 
   async stopRuntime(): Promise<AgentRuntimeStatus> {
-    return await invoke<AgentRuntimeStatus>("agent_stop_runtime");
+    return await invokeAgent<AgentRuntimeStatus>("agent_stop_runtime");
   }
 
   async restartRuntime(request?: AgentStartRequest): Promise<AgentRuntimeStatus> {
-    return await invoke<AgentRuntimeStatus>("agent_restart_runtime", { request: request ?? null });
+    return await invokeAgent<AgentRuntimeStatus>("agent_restart_runtime", {
+      request: request ?? null
+    });
   }
 
   async loadConfig(): Promise<AgentConfig> {
-    return await invoke<AgentConfig>("agent_load_config");
+    return await invokeAgent<AgentConfig>("agent_load_config");
   }
 
   async saveConfig(config: AgentConfig): Promise<void> {
-    await invoke("agent_save_config", { config });
+    await invokeAgent("agent_save_config", { config });
   }
 
   async listRecentProjectRoots(): Promise<RecentProjectRoot[]> {
-    return await invoke<RecentProjectRoot[]>("agent_list_recent_project_roots");
+    return await invokeAgent<RecentProjectRoot[]>("agent_list_recent_project_roots");
   }
 
   async saveRecentProjectRoot(path: string): Promise<RecentProjectRoot[]> {
-    return await invoke<RecentProjectRoot[]>("agent_save_recent_project_root", { path });
+    return await invokeAgent<RecentProjectRoot[]>("agent_save_recent_project_root", { path });
   }
 
   async appendSessionEvent(sessionId: string, event: unknown): Promise<void> {
-    await invoke("agent_append_session_event", { sessionId, event });
+    await invokeAgent("agent_append_session_event", { sessionId, event });
   }
+}
+
+async function invokeAgent<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+  if (!isTauriDesktop()) {
+    throw new Error("Agent Mode is available in Maple Desktop.");
+  }
+  const { invoke } = await import("@tauri-apps/api/core");
+  return await invoke<T>(command, args);
 }
 
 export const agentRuntimeService = new AgentRuntimeService();

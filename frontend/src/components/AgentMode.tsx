@@ -45,12 +45,9 @@ import {
   type AgentRuntimeStatus,
   type RecentProjectRoot
 } from "@/services/agentRuntimeService";
-import {
-  SIDEBAR_GRID_COLUMNS_CLASS,
-  getSidebarLayoutStyle
-} from "@/constants/layout";
+import { SIDEBAR_GRID_COLUMNS_CLASS, getSidebarLayoutStyle } from "@/constants/layout";
 import { cn, useIsLandscapeMobile, useIsMobile } from "@/utils/utils";
-import { isDesktop } from "@/utils/platform";
+import { isTauriDesktop } from "@/utils/platform";
 
 type AgentMessageRole = "user" | "assistant" | "thought" | "system";
 
@@ -102,7 +99,7 @@ export function AgentMode() {
   useEffect(() => {
     let cancelled = false;
     async function loadInitialState() {
-      if (!isDesktop()) return;
+      if (!isTauriDesktop()) return;
       try {
         const [status, config, roots] = await Promise.all([
           agentRuntimeService.getRuntimeStatus(),
@@ -190,12 +187,13 @@ export function AgentMode() {
   }, [handleSessionUpdate]);
 
   const refreshRuntimeStatus = useCallback(async () => {
-    if (!isDesktop()) return;
+    if (!isTauriDesktop()) return;
     const status = await agentRuntimeService.getRuntimeStatus();
     setRuntimeStatus(status);
   }, []);
 
   const chooseProjectRoot = useCallback(async () => {
+    if (!isTauriDesktop()) return;
     try {
       const { open } = await import("@tauri-apps/plugin-dialog");
       const selected = await open({
@@ -378,7 +376,7 @@ export function AgentMode() {
 
   const sidebarLayoutStyle = getSidebarLayoutStyle({ offsetContent: isSidebarOpen });
 
-  if (!isDesktop()) {
+  if (!isTauriDesktop()) {
     return (
       <div className="flex h-dvh items-center justify-center bg-background p-6 text-center">
         <div className="max-w-sm space-y-3">
@@ -451,7 +449,11 @@ export function AgentMode() {
                 disabled={isStarting || !projectRoot}
                 aria-label="Start agent runtime"
               >
-                {isStarting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+                {isStarting ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Play className="h-4 w-4" />
+                )}
               </Button>
             )}
           </div>
@@ -541,7 +543,11 @@ export function AgentMode() {
     </div>
   );
 
-  function appendMessageChunk(role: AgentMessageRole, messageId: string | null | undefined, text: string) {
+  function appendMessageChunk(
+    role: AgentMessageRole,
+    messageId: string | null | undefined,
+    text: string
+  ) {
     if (!text) return;
     const id = messageId || `${role}-${crypto.randomUUID()}`;
     setMessages((current) => {
@@ -655,7 +661,11 @@ function AgentComposer({
           disabled={isStarting}
           aria-label="Restart agent runtime"
         >
-          {isStarting ? <Loader2 className="h-4 w-4 animate-spin" /> : <RotateCcw className="h-4 w-4" />}
+          {isStarting ? (
+            <Loader2 className="h-4 w-4 animate-spin" />
+          ) : (
+            <RotateCcw className="h-4 w-4" />
+          )}
         </Button>
       </div>
       <div className="flex items-end gap-2 p-2">
@@ -687,7 +697,11 @@ function AgentComposer({
             disabled={!input.trim() || isStarting || !projectRoot}
             aria-label="Send agent message"
           >
-            {isStarting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+            {isStarting ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Send className="h-4 w-4" />
+            )}
           </Button>
         )}
       </div>
@@ -713,7 +727,8 @@ function MessageTranscript({ messages }: { messages: AgentMessage[] }) {
               message.role === "user"
                 ? "bg-[hsl(var(--maple-primary))] text-primary-foreground"
                 : "border border-border/45 bg-muted/45 text-foreground",
-              message.role === "system" && "border-destructive/30 bg-destructive/5 text-destructive",
+              message.role === "system" &&
+                "border-destructive/30 bg-destructive/5 text-destructive",
               message.role === "thought" && "text-muted-foreground"
             )}
           >
@@ -776,7 +791,10 @@ function PermissionList({
             <div className="min-w-0">
               <p className="text-sm font-medium">{permission.request.toolCall.title}</p>
               <p className="mt-1 break-words text-xs text-muted-foreground">
-                {permission.request.toolCall.content?.map(toolContentText).filter(Boolean).join(" ")}
+                {permission.request.toolCall.content
+                  ?.map(toolContentText)
+                  .filter(Boolean)
+                  .join(" ")}
               </p>
             </div>
             <Button
@@ -820,7 +838,9 @@ function PlanList({ entries }: { entries: PlanEntry[] }) {
         {entries.map((entry, index) => (
           <div key={`${entry.content}-${index}`} className="flex items-start gap-2 text-sm">
             <Circle className="mt-1.5 h-2 w-2 shrink-0 fill-muted-foreground text-muted-foreground" />
-            <span className={entry.status === "completed" ? "text-muted-foreground line-through" : ""}>
+            <span
+              className={entry.status === "completed" ? "text-muted-foreground line-through" : ""}
+            >
               {entry.content}
             </span>
           </div>
@@ -840,7 +860,10 @@ function UsageLine({ usage }: { usage: UsageUpdate }) {
 
 function RuntimeBadge({ running }: { running: boolean }) {
   return (
-    <Badge variant={running ? "default" : "secondary"} className="h-5 rounded-md px-1.5 text-[11px]">
+    <Badge
+      variant={running ? "default" : "secondary"}
+      className="h-5 rounded-md px-1.5 text-[11px]"
+    >
       {running ? "running" : "stopped"}
     </Badge>
   );
