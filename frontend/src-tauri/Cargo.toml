@@ -43,9 +43,9 @@ anyhow = "1.0"
 axum = "0.8"
 pdf-extract = "0.7"
 base64 = "0.22"
-goose = { git = "https://github.com/aaif-goose/goose.git", tag = "v1.41.0", default-features = false }
+goose = { path = "../../ThirdParties/goose/crates/goose", default-features = false }
 # Goose v1.41.0 declares `rmcp = "1.4"` in its workspace, but it does not
-# compile against the current 1.x API when embedded outside that lockfile.
+# compile against the current 1.x API when embedded outside Goose's lockfile.
 rmcp = { version = "=1.4.0", default-features = false }
 
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
