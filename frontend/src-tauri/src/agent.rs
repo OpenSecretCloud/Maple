@@ -1,4 +1,5 @@
 use crate::proxy;
+use axum::http::HeaderValue;
 use goose::acp::server_factory::{AcpServer, AcpServerFactoryConfig};
 use goose::acp::transport::create_router as create_goose_acp_router;
 use goose::agents::GoosePlatform;
@@ -192,6 +193,7 @@ pub async fn agent_start_runtime(
         mode: None,
     });
 
+    log::info!("Agent Mode requested embedded Goose runtime start");
     let proxy_status = proxy::ensure_proxy_running(app_handle.clone(), proxy_state).await?;
     let proxy_config = proxy_status.config;
     let proxy_host = if proxy_config.host == "0.0.0.0" {
@@ -228,6 +230,12 @@ pub async fn agent_start_runtime(
     let status_url = format!("{http_base_url}/status");
     let acp_url = format!("ws://127.0.0.1:{port}/acp?token={token}");
     let redacted_acp_url = format!("ws://127.0.0.1:{port}/acp?token=REDACTED");
+    let allowed_origins = tauri_acp_allowed_origins();
+    let allowed_origin_log = allowed_origins
+        .iter()
+        .filter_map(|origin| origin.to_str().ok())
+        .collect::<Vec<_>>()
+        .join(", ");
 
     configure_embedded_goose(
         &goose_path_root,
@@ -248,20 +256,24 @@ pub async fn agent_start_runtime(
         additional_source_roots: Vec::new(),
         scheduler: None,
     }));
-    let router = create_goose_acp_router(acp_server, token, true, Vec::new());
+    let router = create_goose_acp_router(acp_server, token, true, allowed_origins);
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
 
     log::info!(
-        "Starting embedded Goose ACP runtime in {} on {}",
+        "Starting embedded Goose ACP runtime in {} on {} with allowed origins: {}",
         project_root.display(),
-        redacted_acp_url
+        redacted_acp_url,
+        allowed_origin_log
     );
     append_runtime_log(
         &log_path,
         &format!(
-            "starting embedded Goose ACP runtime: project_root={}, acp={}",
+            "starting embedded Goose ACP runtime: project_root={}, acp={}, proxy=http://{}:{}, allowed_origins={}",
             project_root.display(),
-            redacted_acp_url
+            redacted_acp_url,
+            proxy_host,
+            proxy_config.port,
+            allowed_origin_log
         ),
     );
 
@@ -275,10 +287,20 @@ pub async fn agent_start_runtime(
     });
 
     if let Err(e) = wait_for_goose_ready(&status_url).await {
+        append_runtime_log(
+            &log_path,
+            &format!("embedded Goose ACP runtime readiness failed: {e}"),
+        );
         let _ = shutdown_tx.send(());
         server_task.abort();
         return Err(format!("{e}. See {}", log_path.display()));
     }
+
+    append_runtime_log(
+        &log_path,
+        &format!("embedded Goose ACP runtime ready: status={status_url}, acp={redacted_acp_url}"),
+    );
+    log::info!("Embedded Goose ACP runtime ready on {redacted_acp_url}");
 
     let runtime = AgentRuntime {
         shutdown: Some(shutdown_tx),
@@ -367,6 +389,20 @@ pub async fn agent_append_session_event(
 ) -> Result<(), String> {
     let _guard = state.session_log.lock().await;
     append_session_event_inner(&app_handle, &session_id, event).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn agent_append_runtime_log(
+    app_handle: AppHandle,
+    message: String,
+) -> Result<(), String> {
+    let log_path = agent_config_dir(&app_handle)
+        .map_err(|e| e.to_string())?
+        .join("logs")
+        .join("goose-embedded.log");
+    log::info!("[Agent Mode] {message}");
+    append_runtime_log(&log_path, &format!("frontend {}", message));
+    Ok(())
 }
 
 async fn clear_exited_runtime(state: &State<'_, AgentRuntimeState>) {
@@ -527,6 +563,36 @@ fn secure_token() -> String {
     let mut bytes = [0u8; 32];
     OsRng.fill_bytes(&mut bytes);
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn tauri_acp_allowed_origins() -> Vec<HeaderValue> {
+    let mut origins = vec![
+        HeaderValue::from_static("http://localhost:5173"),
+        HeaderValue::from_static("http://127.0.0.1:5173"),
+        HeaderValue::from_static("http://tauri.localhost"),
+        HeaderValue::from_static("https://tauri.localhost"),
+        HeaderValue::from_static("tauri://localhost"),
+        HeaderValue::from_static("null"),
+        HeaderValue::from_static("file://"),
+    ];
+
+    if let Ok(extra_origins) = std::env::var("MAPLE_GOOSE_ACP_ALLOWED_ORIGINS") {
+        for origin in extra_origins
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            match HeaderValue::from_str(origin) {
+                Ok(header) if !origins.contains(&header) => origins.push(header),
+                Ok(_) => {}
+                Err(error) => {
+                    log::warn!("Ignoring invalid MAPLE_GOOSE_ACP_ALLOWED_ORIGINS entry {origin:?}: {error}");
+                }
+            }
+        }
+    }
+
+    origins
 }
 
 fn agent_config_dir(app_handle: &AppHandle) -> Result<PathBuf, anyhow::Error> {

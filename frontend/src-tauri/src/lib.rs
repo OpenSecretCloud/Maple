@@ -52,6 +52,7 @@ pub fn run() {
             agent::agent_list_recent_project_roots,
             agent::agent_save_recent_project_root,
             agent::agent_append_session_event,
+            agent::agent_append_runtime_log,
             proxy::start_proxy,
             proxy::stop_proxy,
             proxy::get_proxy_status,

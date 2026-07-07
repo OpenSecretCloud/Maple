@@ -384,6 +384,11 @@ pub async fn ensure_proxy_running(
 ) -> Result<ProxyStatus, String> {
     let current = state.status().await;
     if current.running {
+        log::info!(
+            "Maple proxy already running on {}:{}",
+            current.config.host,
+            current.config.port
+        );
         return Ok(current);
     }
 
@@ -392,9 +397,15 @@ pub async fn ensure_proxy_running(
         .map_err(|e| format!("Failed to load proxy config: {e}"))?;
 
     if config.api_key.trim().is_empty() {
+        log::warn!("Maple proxy cannot auto-start because saved config has no API key");
         return Err("Maple proxy is not configured with an API key yet".to_string());
     }
 
+    log::info!(
+        "Starting Maple proxy from saved config on {}:{}",
+        config.host,
+        config.port
+    );
     start_proxy(app_handle, state, config).await
 }
 

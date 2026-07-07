@@ -16,10 +16,20 @@ export interface ProxyStatus {
   error?: string;
 }
 
+export type CreateProxyApiKey = (name: string) => Promise<string>;
+
 class ProxyService {
+  private ensureReadyPromise: Promise<ProxyStatus> | null = null;
+
   private validatePort(port: number): void {
     if (!Number.isInteger(port) || port < 0 || port > 65535) {
       throw new Error(`Port must be a valid u16 integer (0-65535), got: ${port}`);
+    }
+  }
+
+  private validateAgentPort(port: number): void {
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      throw new Error(`Port must be a valid TCP port (1-65535), got: ${port}`);
     }
   }
 
@@ -74,6 +84,58 @@ class ProxyService {
       console.error("Failed to save proxy settings:", error);
       throw error;
     }
+  }
+
+  async ensureProxyReady(createApiKey: CreateProxyApiKey): Promise<ProxyStatus> {
+    if (!this.ensureReadyPromise) {
+      this.ensureReadyPromise = this.ensureProxyReadyInner(createApiKey).finally(() => {
+        this.ensureReadyPromise = null;
+      });
+    }
+
+    return await this.ensureReadyPromise;
+  }
+
+  private async ensureProxyReadyInner(createApiKey: CreateProxyApiKey): Promise<ProxyStatus> {
+    const status = await this.getProxyStatus();
+    if (status.running && status.config.api_key.trim()) {
+      return status;
+    }
+
+    const savedConfig = status.running ? status.config : await this.loadProxyConfig();
+    let apiKey = savedConfig.api_key.trim();
+    let createdApiKey = false;
+
+    if (!apiKey) {
+      apiKey = await createApiKey(createAgentProxyKeyName());
+      createdApiKey = true;
+    }
+
+    const backendUrl =
+      savedConfig.backend_url ||
+      import.meta.env.VITE_OPEN_SECRET_API_URL ||
+      "https://enclave.trymaple.ai";
+    const port = Number(savedConfig.port || 8080);
+    this.validateAgentPort(port);
+
+    const nextConfig: ProxyConfig = {
+      ...savedConfig,
+      host: savedConfig.host || "127.0.0.1",
+      port,
+      api_key: apiKey,
+      enabled: true,
+      enable_cors: savedConfig.enable_cors ?? true,
+      backend_url: backendUrl,
+      auto_start: savedConfig.auto_start ?? false
+    };
+
+    if (status.running) {
+      await this.stopProxy();
+    } else if (createdApiKey) {
+      await this.saveProxySettings({ ...nextConfig, enabled: false });
+    }
+
+    return await this.startProxy(nextConfig);
   }
 
   async testProxyPort(host: string, port: number): Promise<boolean> {
@@ -131,6 +193,15 @@ class ProxyService {
       return false;
     }
   }
+}
+
+function createAgentProxyKeyName(): string {
+  const date = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+  const random =
+    typeof crypto !== "undefined" && "randomUUID" in crypto
+      ? crypto.randomUUID().slice(0, 8)
+      : Math.random().toString(36).slice(2, 10);
+  return `maple-agent-${date}-${random}`;
 }
 
 export const proxyService = new ProxyService();

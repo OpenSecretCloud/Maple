@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useOpenSecret } from "@opensecret/react";
 import {
   AlertCircle,
   Bot,
@@ -45,6 +46,7 @@ import {
   type AgentRuntimeStatus,
   type RecentProjectRoot
 } from "@/services/agentRuntimeService";
+import { proxyService } from "@/services/proxyService";
 import { SIDEBAR_GRID_COLUMNS_CLASS, getSidebarLayoutStyle } from "@/constants/layout";
 import { cn, useIsLandscapeMobile, useIsMobile } from "@/utils/utils";
 import { isTauriDesktop } from "@/utils/platform";
@@ -70,6 +72,7 @@ interface AgentToolState {
 const DEFAULT_MODEL = "auto:powerful";
 
 export function AgentMode() {
+  const { createApiKey } = useOpenSecret();
   const isMobile = useIsMobile();
   const isLandscapeMobile = useIsLandscapeMobile();
   const isCompactLayout = isMobile || isLandscapeMobile;
@@ -90,11 +93,47 @@ export function AgentMode() {
   const [isSending, setIsSending] = useState(false);
   const clientRef = useRef<AgentAcpClient | null>(null);
   const sessionIdRef = useRef<string | null>(null);
+  const didRunInitialProxyInitRef = useRef(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     setIsSidebarOpen(!isCompactLayout);
   }, [isCompactLayout]);
+
+  useEffect(() => {
+    sessionIdRef.current = sessionId;
+  }, [sessionId]);
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ block: "end" });
+  }, [messages, tools, pendingPermissions, planEntries]);
+
+  const activeRootLabel = useMemo(() => {
+    if (!projectRoot) return "Select folder";
+    return recentRoots.find((root) => root.path === projectRoot)?.name || basename(projectRoot);
+  }, [projectRoot, recentRoots]);
+
+  const toggleSidebar = useCallback(() => setIsSidebarOpen((prev) => !prev), []);
+
+  const appendRuntimeLog = useCallback((message: string) => {
+    if (!isTauriDesktop()) return;
+    void agentRuntimeService.appendRuntimeLog(message).catch(() => {
+      // Logging must never block Agent Mode interaction.
+    });
+  }, []);
+
+  const ensureMapleProxyReady = useCallback(async () => {
+    appendRuntimeLog("Ensuring Maple proxy is ready for Agent Mode");
+    const status = await proxyService.ensureProxyReady(async (name) => {
+      appendRuntimeLog(`Creating Agent Mode proxy API key ${name}`);
+      const response = await createApiKey(name);
+      return response.key;
+    });
+    appendRuntimeLog(
+      `Maple proxy ready for Agent Mode on ${status.config.host}:${status.config.port}`
+    );
+    return status;
+  }, [appendRuntimeLog, createApiKey]);
 
   useEffect(() => {
     let cancelled = false;
@@ -112,6 +151,11 @@ export function AgentMode() {
         const root = status.projectRoot || config.defaultProjectRoot || roots[0]?.path || "";
         setProjectRoot(root);
         setModel(status.model || config.defaultModel || DEFAULT_MODEL);
+
+        if (!didRunInitialProxyInitRef.current) {
+          didRunInitialProxyInitRef.current = true;
+          await ensureMapleProxyReady();
+        }
       } catch (loadError) {
         if (!cancelled) setError(errorMessage(loadError));
       }
@@ -122,22 +166,7 @@ export function AgentMode() {
       clientRef.current?.close();
       clientRef.current = null;
     };
-  }, []);
-
-  useEffect(() => {
-    sessionIdRef.current = sessionId;
-  }, [sessionId]);
-
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ block: "end" });
-  }, [messages, tools, pendingPermissions, planEntries]);
-
-  const activeRootLabel = useMemo(() => {
-    if (!projectRoot) return "Select folder";
-    return recentRoots.find((root) => root.path === projectRoot)?.name || basename(projectRoot);
-  }, [projectRoot, recentRoots]);
-
-  const toggleSidebar = useCallback(() => setIsSidebarOpen((prev) => !prev), []);
+  }, [ensureMapleProxyReady]);
 
   const handleSessionUpdate = useCallback((notification: SessionNotification) => {
     const update = notification.update;
@@ -180,11 +209,14 @@ export function AgentMode() {
       onPermissionRequest: (request) => {
         setPendingPermissions((current) => [...current, request]);
       },
+      onDiagnostic: (diagnostic) => {
+        appendRuntimeLog(`[ACP ${diagnostic.phase}] ${diagnostic.message}`);
+      },
       onClosed: () => {
         clientRef.current = null;
       }
     });
-  }, [handleSessionUpdate]);
+  }, [appendRuntimeLog, handleSessionUpdate]);
 
   const refreshRuntimeStatus = useCallback(async () => {
     if (!isTauriDesktop()) return;
@@ -216,17 +248,22 @@ export function AgentMode() {
       throw new Error("Select a project folder first");
     }
 
+    await ensureMapleProxyReady();
+
     let status = await agentRuntimeService.getRuntimeStatus();
     if (!status.running || !status.acpUrl) {
       setIsStarting(true);
-      status = await agentRuntimeService.startRuntime({
-        projectRoot,
-        model: model || DEFAULT_MODEL,
-        mode: "approve"
-      });
-      setRuntimeStatus(status);
-      setRecentRoots(await agentRuntimeService.listRecentProjectRoots());
-      setIsStarting(false);
+      try {
+        status = await agentRuntimeService.startRuntime({
+          projectRoot,
+          model: model || DEFAULT_MODEL,
+          mode: "approve"
+        });
+        setRuntimeStatus(status);
+        setRecentRoots(await agentRuntimeService.listRecentProjectRoots());
+      } finally {
+        setIsStarting(false);
+      }
     }
 
     if (!status.acpUrl) {
@@ -252,7 +289,7 @@ export function AgentMode() {
     }
 
     return { client: clientRef.current, sessionId: activeSessionId };
-  }, [createClient, model, projectRoot]);
+  }, [createClient, ensureMapleProxyReady, model, projectRoot]);
 
   const startRuntime = useCallback(async () => {
     setError(null);
@@ -261,6 +298,7 @@ export function AgentMode() {
       if (!projectRoot) {
         throw new Error("Select a project folder first");
       }
+      await ensureMapleProxyReady();
       const status = await agentRuntimeService.startRuntime({
         projectRoot: projectRoot || null,
         model: model || DEFAULT_MODEL,
@@ -275,7 +313,7 @@ export function AgentMode() {
     } finally {
       setIsStarting(false);
     }
-  }, [model, projectRoot]);
+  }, [ensureMapleProxyReady, model, projectRoot]);
 
   const restartRuntime = useCallback(async () => {
     setError(null);
@@ -288,6 +326,7 @@ export function AgentMode() {
     setUsage(null);
     setPendingPermissions([]);
     try {
+      await ensureMapleProxyReady();
       const status = await agentRuntimeService.restartRuntime({
         projectRoot: projectRoot || null,
         model: model || DEFAULT_MODEL,
@@ -301,7 +340,7 @@ export function AgentMode() {
     } finally {
       setIsStarting(false);
     }
-  }, [model, projectRoot]);
+  }, [ensureMapleProxyReady, model, projectRoot]);
 
   const stopRuntime = useCallback(async () => {
     clientRef.current?.close();

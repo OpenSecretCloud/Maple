@@ -78,6 +78,10 @@ class AgentRuntimeService {
   async appendSessionEvent(sessionId: string, event: unknown): Promise<void> {
     await invokeAgent("agent_append_session_event", { sessionId, event });
   }
+
+  async appendRuntimeLog(message: string): Promise<void> {
+    await invokeAgent("agent_append_runtime_log", { message });
+  }
 }
 
 async function invokeAgent<T>(command: string, args?: Record<string, unknown>): Promise<T> {
