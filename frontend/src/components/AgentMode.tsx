@@ -3,6 +3,7 @@ import { useOpenSecret } from "@opensecret/react";
 import {
   AlertCircle,
   Bot,
+  ChevronRight,
   Check,
   Circle,
   FolderOpen,
@@ -20,6 +21,7 @@ import {
   type SessionNotification,
   type ToolCall,
   type ToolCallContent,
+  type ToolCallLocation,
   type ToolCallUpdate,
   type UsageUpdate
 } from "@agentclientprotocol/sdk";
@@ -67,6 +69,8 @@ interface AgentToolState {
   input?: unknown;
   output?: unknown;
   content?: ToolCallContent[];
+  locations?: ToolCallLocation[];
+  meta?: Record<string, unknown> | null;
 }
 
 const DEFAULT_MODEL = "auto:powerful";
@@ -168,40 +172,54 @@ export function AgentMode() {
     };
   }, [ensureMapleProxyReady]);
 
-  const handleSessionUpdate = useCallback((notification: SessionNotification) => {
-    const update = notification.update;
-    void agentRuntimeService.appendSessionEvent(notification.sessionId, {
-      type: "sessionUpdate",
-      update
-    });
+  const handleSessionUpdate = useCallback(
+    (notification: SessionNotification) => {
+      const update = notification.update;
+      void agentRuntimeService.appendSessionEvent(notification.sessionId, {
+        type: "sessionUpdate",
+        update
+      });
 
-    switch (update.sessionUpdate) {
-      case "agent_message_chunk":
-        appendMessageChunk("assistant", update.messageId, contentBlockText(update.content));
-        break;
-      case "agent_thought_chunk":
-        appendMessageChunk("thought", update.messageId, contentBlockText(update.content));
-        break;
-      case "tool_call":
-        mergeToolCall(update);
-        break;
-      case "tool_call_update":
-        mergeToolCall(update);
-        break;
-      case "plan":
-        setPlanEntries(update.entries);
-        break;
-      case "usage_update":
-        setUsage(update);
-        break;
-      case "user_message_chunk":
-      case "available_commands_update":
-      case "current_mode_update":
-      case "config_option_update":
-      case "session_info_update":
-        break;
-    }
-  }, []);
+      switch (update.sessionUpdate) {
+        case "agent_message_chunk":
+          appendMessageChunk(
+            "assistant",
+            messageIdFromUpdate(update),
+            contentBlockText(update.content)
+          );
+          break;
+        case "agent_thought_chunk":
+          appendMessageChunk(
+            "thought",
+            messageIdFromUpdate(update),
+            contentBlockText(update.content)
+          );
+          break;
+        case "tool_call":
+          mergeToolCall(update);
+          break;
+        case "tool_call_update":
+          mergeToolCall(update);
+          if (update.status === "failed") {
+            appendRuntimeLog(`[ACP tool failed] ${toolFailureSummary(update)}`);
+          }
+          break;
+        case "plan":
+          setPlanEntries(update.entries);
+          break;
+        case "usage_update":
+          setUsage(update);
+          break;
+        case "user_message_chunk":
+        case "available_commands_update":
+        case "current_mode_update":
+        case "config_option_update":
+        case "session_info_update":
+          break;
+      }
+    },
+    [appendRuntimeLog]
+  );
 
   const createClient = useCallback(() => {
     return new AgentAcpClient({
@@ -357,6 +375,10 @@ export function AgentMode() {
     setError(null);
     setInput("");
     setIsSending(true);
+    setTools([]);
+    setPlanEntries([]);
+    setUsage(null);
+    setPendingPermissions([]);
     const userMessage: AgentMessage = { id: crypto.randomUUID(), role: "user", text };
     setMessages((current) => [...current, userMessage]);
 
@@ -588,15 +610,20 @@ export function AgentMode() {
     text: string
   ) {
     if (!text) return;
-    const id = messageId || `${role}-${crypto.randomUUID()}`;
     setMessages((current) => {
-      const index = current.findIndex((message) => message.id === id);
+      const index = messageId
+        ? current.findIndex((message) => message.id === messageId)
+        : current.length - 1;
+      const existing = index >= 0 ? current[index] : null;
+      if (!messageId && existing?.role !== role) {
+        return [...current, { id: `${role}-${crypto.randomUUID()}`, role, text }];
+      }
       if (index >= 0) {
         const next = [...current];
         next[index] = { ...next[index], text: next[index].text + text };
         return next;
       }
-      return [...current, { id, role, text }];
+      return [...current, { id: messageId || `${role}-${crypto.randomUUID()}`, role, text }];
     });
   }
 
@@ -611,7 +638,9 @@ export function AgentMode() {
         status: update.status ?? previous?.status,
         input: update.rawInput ?? previous?.input,
         output: update.rawOutput ?? previous?.output,
-        content: update.content ?? previous?.content
+        content: update.content ?? previous?.content,
+        locations: update.locations ?? previous?.locations,
+        meta: update._meta ?? previous?.meta
       };
 
       if (index >= 0) {
@@ -751,31 +780,42 @@ function AgentComposer({
 function MessageTranscript({ messages }: { messages: AgentMessage[] }) {
   return (
     <div className="flex flex-col gap-3">
-      {messages.map((message) => (
-        <div
-          key={message.id}
-          className={cn(
-            "flex",
-            message.role === "user" ? "justify-end" : "justify-start",
-            message.role === "thought" && "opacity-80"
-          )}
-        >
+      {messages.map((message) =>
+        message.role === "thought" ? (
+          <ThinkingMessage key={message.id} text={message.text} />
+        ) : (
           <div
-            className={cn(
-              "max-w-[82%] rounded-lg px-3 py-2 text-sm leading-6",
-              message.role === "user"
-                ? "bg-[hsl(var(--maple-primary))] text-primary-foreground"
-                : "border border-border/45 bg-muted/45 text-foreground",
-              message.role === "system" &&
-                "border-destructive/30 bg-destructive/5 text-destructive",
-              message.role === "thought" && "text-muted-foreground"
-            )}
+            key={message.id}
+            className={cn("flex", message.role === "user" ? "justify-end" : "justify-start")}
           >
-            <div className="whitespace-pre-wrap break-words">{message.text}</div>
+            <div
+              className={cn(
+                "max-w-[82%] rounded-lg px-3 py-2 text-sm leading-6",
+                message.role === "user"
+                  ? "bg-[hsl(var(--maple-primary))] text-primary-foreground"
+                  : "border border-border/45 bg-muted/45 text-foreground",
+                message.role === "system" &&
+                  "border-destructive/30 bg-destructive/5 text-destructive"
+              )}
+            >
+              <div className="whitespace-pre-wrap break-words">{message.text}</div>
+            </div>
           </div>
-        </div>
-      ))}
+        )
+      )}
     </div>
+  );
+}
+
+function ThinkingMessage({ text }: { text: string }) {
+  return (
+    <details className="group max-w-[82%] rounded-lg border border-border/35 bg-muted/25 px-3 py-2 text-sm text-muted-foreground">
+      <summary className="flex cursor-pointer list-none items-center gap-2 font-medium text-foreground/80">
+        <ChevronRight className="h-4 w-4 transition-transform group-open:rotate-90" />
+        Thinking
+      </summary>
+      <div className="mt-2 whitespace-pre-wrap break-words text-xs leading-5">{text}</div>
+    </details>
   );
 }
 
@@ -783,29 +823,63 @@ function ToolCallList({ tools }: { tools: AgentToolState[] }) {
   return (
     <div className="space-y-2">
       {tools.map((tool) => (
-        <div key={tool.id} className="rounded-lg border border-border/45 bg-muted/30 px-3 py-2">
-          <div className="flex items-center justify-between gap-3">
+        <details
+          key={tool.id}
+          open={tool.status === "failed"}
+          className={cn(
+            "group rounded-lg border bg-muted/30 px-3 py-2",
+            tool.status === "failed" ? "border-destructive/35" : "border-border/45"
+          )}
+        >
+          <summary className="flex cursor-pointer list-none items-center justify-between gap-3">
             <div className="flex min-w-0 items-center gap-2">
+              <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-90" />
               <Terminal className="h-4 w-4 shrink-0 text-muted-foreground" />
               <span className="truncate text-sm font-medium">{tool.title}</span>
             </div>
-            <Badge variant="secondary" className="shrink-0 capitalize">
+            <Badge
+              variant={tool.status === "failed" ? "destructive" : "secondary"}
+              className="shrink-0 capitalize"
+            >
               {tool.status || "pending"}
             </Badge>
+          </summary>
+          <div className="mt-2 space-y-2 pl-6">
+            {tool.kind && <p className="text-xs text-muted-foreground">{tool.kind}</p>}
+            {tool.locations?.length ? (
+              <ToolDetail
+                label="Locations"
+                value={tool.locations.map((item) => item.path).join("\n")}
+              />
+            ) : null}
+            {tool.content?.length ? (
+              <ToolDetail
+                label="Content"
+                value={tool.content.map(toolContentText).filter(Boolean).join("\n")}
+              />
+            ) : null}
+            {tool.input !== undefined ? (
+              <ToolDetail label="Input" value={formatUnknown(tool.input)} />
+            ) : null}
+            {tool.output !== undefined ? (
+              <ToolDetail label="Output" value={formatUnknown(tool.output)} />
+            ) : null}
+            {tool.meta ? <ToolDetail label="Metadata" value={formatUnknown(tool.meta)} /> : null}
           </div>
-          {tool.kind && <p className="mt-1 text-xs text-muted-foreground">{tool.kind}</p>}
-          {tool.content?.length ? (
-            <div className="mt-2 whitespace-pre-wrap rounded-md bg-background/70 px-2 py-1.5 text-xs text-muted-foreground">
-              {tool.content.map(toolContentText).filter(Boolean).join("\n")}
-            </div>
-          ) : null}
-          {tool.output !== undefined ? (
-            <pre className="mt-2 max-h-56 overflow-auto rounded-md bg-background/70 px-2 py-1.5 text-xs text-muted-foreground">
-              {formatUnknown(tool.output)}
-            </pre>
-          ) : null}
-        </div>
+        </details>
       ))}
+    </div>
+  );
+}
+
+function ToolDetail({ label, value }: { label: string; value: string }) {
+  if (!value.trim()) return null;
+  return (
+    <div>
+      <p className="mb-1 text-[11px] font-medium uppercase text-muted-foreground">{label}</p>
+      <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-md bg-background/70 px-2 py-1.5 text-xs text-muted-foreground">
+        {value}
+      </pre>
     </div>
   );
 }
@@ -952,4 +1026,35 @@ function formatPermission(value: string): string {
 function errorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
   return String(error);
+}
+
+function messageIdFromUpdate(update: { messageId?: string | null; _meta?: unknown }) {
+  if (update.messageId) return update.messageId;
+  const goose = gooseMeta(update);
+  return typeof goose?.messageId === "string" ? goose.messageId : undefined;
+}
+
+function toolFailureSummary(update: ToolCallUpdate): string {
+  const output =
+    typeof update.rawOutput === "string" && update.rawOutput.trim()
+      ? update.rawOutput.trim()
+      : update.content?.map(toolContentText).filter(Boolean).join(" ").trim() || "";
+  return [
+    `id=${update.toolCallId}`,
+    update.title ? `title=${update.title}` : null,
+    update.kind ? `kind=${update.kind}` : null,
+    output ? `output=${truncate(output, 500)}` : null
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
+function gooseMeta(update: { _meta?: unknown }): Record<string, unknown> | null {
+  if (!update._meta || typeof update._meta !== "object") return null;
+  const goose = (update._meta as Record<string, unknown>).goose;
+  return goose && typeof goose === "object" ? (goose as Record<string, unknown>) : null;
+}
+
+function truncate(value: string, maxLength: number): string {
+  return value.length > maxLength ? `${value.slice(0, maxLength)}...` : value;
 }
