@@ -157,9 +157,6 @@ export class AgentAcpClient {
       },
       extNotification: async (method, params) => {
         this.callbacks.onExtensionNotification?.(method, params);
-        if (method === "_goose/unstable/session/update" && isSessionNotification(params)) {
-          this.callbacks.onSessionUpdate(params);
-        }
       }
     };
   }
@@ -186,12 +183,6 @@ export class AgentAcpClient {
       });
     });
   }
-}
-
-function isSessionNotification(value: unknown): value is SessionNotification {
-  if (!value || typeof value !== "object") return false;
-  const candidate = value as { sessionId?: unknown; update?: unknown };
-  return typeof candidate.sessionId === "string" && typeof candidate.update === "object";
 }
 
 function createWebSocketStream(

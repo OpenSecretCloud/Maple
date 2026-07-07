@@ -55,13 +55,15 @@ import { isTauriDesktop } from "@/utils/platform";
 
 type AgentMessageRole = "user" | "assistant" | "thought" | "system";
 
-interface AgentMessage {
+interface AgentMessageItem {
+  type: "message";
   id: string;
   role: AgentMessageRole;
   text: string;
 }
 
-interface AgentToolState {
+interface AgentToolItem {
+  type: "tool";
   id: string;
   title: string;
   kind?: string;
@@ -72,6 +74,8 @@ interface AgentToolState {
   locations?: ToolCallLocation[];
   meta?: Record<string, unknown> | null;
 }
+
+type AgentTimelineItem = AgentMessageItem | AgentToolItem;
 
 const DEFAULT_MODEL = "auto:powerful";
 
@@ -86,8 +90,7 @@ export function AgentMode() {
   const [projectRoot, setProjectRoot] = useState("");
   const [model, setModel] = useState(DEFAULT_MODEL);
   const [sessionId, setSessionId] = useState<string | null>(null);
-  const [messages, setMessages] = useState<AgentMessage[]>([]);
-  const [tools, setTools] = useState<AgentToolState[]>([]);
+  const [timelineItems, setTimelineItems] = useState<AgentTimelineItem[]>([]);
   const [planEntries, setPlanEntries] = useState<PlanEntry[]>([]);
   const [usage, setUsage] = useState<UsageUpdate | null>(null);
   const [pendingPermissions, setPendingPermissions] = useState<PermissionRequestHandle[]>([]);
@@ -110,7 +113,7 @@ export function AgentMode() {
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ block: "end" });
-  }, [messages, tools, pendingPermissions, planEntries]);
+  }, [timelineItems, pendingPermissions, planEntries]);
 
   const activeRootLabel = useMemo(() => {
     if (!projectRoot) return "Select folder";
@@ -339,7 +342,7 @@ export function AgentMode() {
     clientRef.current?.close();
     clientRef.current = null;
     setSessionId(null);
-    setTools([]);
+    setTimelineItems([]);
     setPlanEntries([]);
     setUsage(null);
     setPendingPermissions([]);
@@ -375,12 +378,16 @@ export function AgentMode() {
     setError(null);
     setInput("");
     setIsSending(true);
-    setTools([]);
     setPlanEntries([]);
     setUsage(null);
     setPendingPermissions([]);
-    const userMessage: AgentMessage = { id: crypto.randomUUID(), role: "user", text };
-    setMessages((current) => [...current, userMessage]);
+    const userMessage: AgentMessageItem = {
+      type: "message",
+      id: crypto.randomUUID(),
+      role: "user",
+      text
+    };
+    setTimelineItems((current) => [...current, userMessage]);
 
     try {
       const active = await ensureConnectedSession();
@@ -391,9 +398,14 @@ export function AgentMode() {
       await active.client.prompt(active.sessionId, text);
     } catch (sendError) {
       setError(errorMessage(sendError));
-      setMessages((current) => [
+      setTimelineItems((current) => [
         ...current,
-        { id: crypto.randomUUID(), role: "system", text: errorMessage(sendError) }
+        {
+          type: "message",
+          id: crypto.randomUUID(),
+          role: "system",
+          text: errorMessage(sendError)
+        }
       ]);
     } finally {
       setIsSending(false);
@@ -532,7 +544,7 @@ export function AgentMode() {
         <main className="flex min-h-0 flex-1 flex-col">
           <div className="min-h-0 flex-1 overflow-y-auto px-4 py-5">
             <div className="mx-auto flex w-full max-w-4xl flex-col gap-4">
-              {messages.length === 0 && tools.length === 0 ? (
+              {timelineItems.length === 0 ? (
                 <div className="flex min-h-[42vh] items-center justify-center">
                   <div className="flex w-full max-w-2xl flex-col items-center gap-5 text-center">
                     <h2 className="font-displayWide text-3xl font-normal brand-gradient-text">
@@ -559,9 +571,8 @@ export function AgentMode() {
                 </div>
               ) : (
                 <>
-                  <MessageTranscript messages={messages} />
+                  <AgentTimeline items={timelineItems} />
                   {planEntries.length > 0 && <PlanList entries={planEntries} />}
-                  {tools.length > 0 && <ToolCallList tools={tools} />}
                   {pendingPermissions.length > 0 && (
                     <PermissionList
                       requests={pendingPermissions}
@@ -576,7 +587,7 @@ export function AgentMode() {
             </div>
           </div>
 
-          {messages.length > 0 || tools.length > 0 ? (
+          {timelineItems.length > 0 ? (
             <div className="shrink-0 border-t border-border/35 bg-background px-4 py-3">
               <div className="mx-auto max-w-4xl">
                 <AgentComposer
@@ -610,37 +621,47 @@ export function AgentMode() {
     text: string
   ) {
     if (!text) return;
-    setMessages((current) => {
+    setTimelineItems((current) => {
       const index = messageId
-        ? current.findIndex((message) => message.id === messageId)
+        ? current.findIndex((item) => item.type === "message" && item.id === messageId)
         : current.length - 1;
       const existing = index >= 0 ? current[index] : null;
-      if (!messageId && existing?.role !== role) {
-        return [...current, { id: `${role}-${crypto.randomUUID()}`, role, text }];
+      if (!messageId && (existing?.type !== "message" || existing.role !== role)) {
+        return [...current, { type: "message", id: `${role}-${crypto.randomUUID()}`, role, text }];
       }
       if (index >= 0) {
         const next = [...current];
-        next[index] = { ...next[index], text: next[index].text + text };
+        const message = next[index];
+        if (message.type === "message") {
+          next[index] = { ...message, text: message.text + text };
+        }
         return next;
       }
-      return [...current, { id: messageId || `${role}-${crypto.randomUUID()}`, role, text }];
+      return [
+        ...current,
+        { type: "message", id: messageId || `${role}-${crypto.randomUUID()}`, role, text }
+      ];
     });
   }
 
   function mergeToolCall(update: (ToolCall | ToolCallUpdate) & { sessionUpdate: string }) {
-    setTools((current) => {
-      const index = current.findIndex((tool) => tool.id === update.toolCallId);
+    setTimelineItems((current) => {
+      const index = current.findIndex(
+        (item) => item.type === "tool" && item.id === update.toolCallId
+      );
       const previous = index >= 0 ? current[index] : null;
-      const nextTool: AgentToolState = {
+      const nextTool: AgentToolItem = {
+        type: "tool",
         id: update.toolCallId,
-        title: update.title ?? previous?.title ?? "Tool call",
-        kind: update.kind ?? previous?.kind,
-        status: update.status ?? previous?.status,
-        input: update.rawInput ?? previous?.input,
-        output: update.rawOutput ?? previous?.output,
-        content: update.content ?? previous?.content,
-        locations: update.locations ?? previous?.locations,
-        meta: update._meta ?? previous?.meta
+        title:
+          update.title ?? (previous?.type === "tool" ? previous.title : undefined) ?? "Tool call",
+        kind: update.kind ?? (previous?.type === "tool" ? previous.kind : undefined),
+        status: update.status ?? (previous?.type === "tool" ? previous.status : undefined),
+        input: update.rawInput ?? (previous?.type === "tool" ? previous.input : undefined),
+        output: update.rawOutput ?? (previous?.type === "tool" ? previous.output : undefined),
+        content: update.content ?? (previous?.type === "tool" ? previous.content : undefined),
+        locations: update.locations ?? (previous?.type === "tool" ? previous.locations : undefined),
+        meta: update._meta ?? (previous?.type === "tool" ? previous.meta : undefined)
       };
 
       if (index >= 0) {
@@ -777,32 +798,38 @@ function AgentComposer({
   );
 }
 
-function MessageTranscript({ messages }: { messages: AgentMessage[] }) {
+function AgentTimeline({ items }: { items: AgentTimelineItem[] }) {
   return (
     <div className="flex flex-col gap-3">
-      {messages.map((message) =>
-        message.role === "thought" ? (
-          <ThinkingMessage key={message.id} text={message.text} />
+      {items.map((item) =>
+        item.type === "message" ? (
+          <MessageBubble key={item.id} message={item} />
         ) : (
-          <div
-            key={message.id}
-            className={cn("flex", message.role === "user" ? "justify-end" : "justify-start")}
-          >
-            <div
-              className={cn(
-                "max-w-[82%] rounded-lg px-3 py-2 text-sm leading-6",
-                message.role === "user"
-                  ? "bg-[hsl(var(--maple-primary))] text-primary-foreground"
-                  : "border border-border/45 bg-muted/45 text-foreground",
-                message.role === "system" &&
-                  "border-destructive/30 bg-destructive/5 text-destructive"
-              )}
-            >
-              <div className="whitespace-pre-wrap break-words">{message.text}</div>
-            </div>
-          </div>
+          <ToolCallList key={item.id} tools={[item]} />
         )
       )}
+    </div>
+  );
+}
+
+function MessageBubble({ message }: { message: AgentMessageItem }) {
+  if (message.role === "thought") {
+    return <ThinkingMessage text={message.text} />;
+  }
+
+  return (
+    <div className={cn("flex", message.role === "user" ? "justify-end" : "justify-start")}>
+      <div
+        className={cn(
+          "max-w-[82%] rounded-lg px-3 py-2 text-sm leading-6",
+          message.role === "user"
+            ? "bg-[hsl(var(--maple-primary))] text-primary-foreground"
+            : "border border-border/45 bg-muted/45 text-foreground",
+          message.role === "system" && "border-destructive/30 bg-destructive/5 text-destructive"
+        )}
+      >
+        <div className="whitespace-pre-wrap break-words">{message.text}</div>
+      </div>
     </div>
   );
 }
@@ -819,55 +846,70 @@ function ThinkingMessage({ text }: { text: string }) {
   );
 }
 
-function ToolCallList({ tools }: { tools: AgentToolState[] }) {
+function ToolCallList({ tools }: { tools: AgentToolItem[] }) {
   return (
     <div className="space-y-2">
-      {tools.map((tool) => (
-        <details
-          key={tool.id}
-          open={tool.status === "failed"}
-          className={cn(
-            "group rounded-lg border bg-muted/30 px-3 py-2",
-            tool.status === "failed" ? "border-destructive/35" : "border-border/45"
-          )}
-        >
-          <summary className="flex cursor-pointer list-none items-center justify-between gap-3">
-            <div className="flex min-w-0 items-center gap-2">
-              <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-90" />
-              <Terminal className="h-4 w-4 shrink-0 text-muted-foreground" />
-              <span className="truncate text-sm font-medium">{tool.title}</span>
+      {tools.map((tool) => {
+        const isFailed = tool.status === "failed";
+        const hasDetails = toolHasDetails(tool);
+
+        return (
+          <details
+            key={tool.id}
+            open={isFailed}
+            className={cn(
+              "group rounded-lg border bg-muted/30 px-3 py-2",
+              isFailed ? "border-destructive/35" : "border-border/45"
+            )}
+          >
+            <summary className="flex cursor-pointer list-none items-center justify-between gap-3">
+              <div className="flex min-w-0 items-center gap-2">
+                <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-90" />
+                <Terminal className="h-4 w-4 shrink-0 text-muted-foreground" />
+                <span className="truncate text-sm font-medium">{tool.title}</span>
+              </div>
+              <Badge
+                variant="secondary"
+                className={cn(
+                  "shrink-0 capitalize",
+                  isFailed && "border-destructive/40 bg-destructive/15 text-destructive"
+                )}
+              >
+                {tool.status || "pending"}
+              </Badge>
+            </summary>
+            <div className="mt-2 space-y-2 pl-6">
+              <ToolDetail label="Summary" value={toolSummary(tool)} />
+              {tool.kind && <p className="text-xs text-muted-foreground">{tool.kind}</p>}
+              {tool.locations?.length ? (
+                <ToolDetail
+                  label="Locations"
+                  value={tool.locations.map((item) => item.path).join("\n")}
+                />
+              ) : null}
+              {tool.content?.length ? (
+                <ToolDetail
+                  label="Content"
+                  value={tool.content.map(toolContentText).filter(Boolean).join("\n")}
+                />
+              ) : null}
+              {tool.input !== undefined ? (
+                <ToolDetail label="Input" value={formatUnknown(tool.input)} />
+              ) : null}
+              {tool.output !== undefined ? (
+                <ToolDetail label="Output" value={formatUnknown(tool.output)} />
+              ) : null}
+              {tool.meta ? <ToolDetail label="Metadata" value={formatUnknown(tool.meta)} /> : null}
+              {!hasDetails && isFailed ? (
+                <ToolDetail
+                  label="Missing Details"
+                  value="ACP reported this tool call as failed but did not include input, output, content, locations, or metadata. Check the Agent Mode runtime log and session JSONL for the raw event."
+                />
+              ) : null}
             </div>
-            <Badge
-              variant={tool.status === "failed" ? "destructive" : "secondary"}
-              className="shrink-0 capitalize"
-            >
-              {tool.status || "pending"}
-            </Badge>
-          </summary>
-          <div className="mt-2 space-y-2 pl-6">
-            {tool.kind && <p className="text-xs text-muted-foreground">{tool.kind}</p>}
-            {tool.locations?.length ? (
-              <ToolDetail
-                label="Locations"
-                value={tool.locations.map((item) => item.path).join("\n")}
-              />
-            ) : null}
-            {tool.content?.length ? (
-              <ToolDetail
-                label="Content"
-                value={tool.content.map(toolContentText).filter(Boolean).join("\n")}
-              />
-            ) : null}
-            {tool.input !== undefined ? (
-              <ToolDetail label="Input" value={formatUnknown(tool.input)} />
-            ) : null}
-            {tool.output !== undefined ? (
-              <ToolDetail label="Output" value={formatUnknown(tool.output)} />
-            ) : null}
-            {tool.meta ? <ToolDetail label="Metadata" value={formatUnknown(tool.meta)} /> : null}
-          </div>
-        </details>
-      ))}
+          </details>
+        );
+      })}
     </div>
   );
 }
@@ -882,6 +924,34 @@ function ToolDetail({ label, value }: { label: string; value: string }) {
       </pre>
     </div>
   );
+}
+
+function toolHasDetails(tool: AgentToolItem): boolean {
+  return Boolean(
+    tool.kind ||
+    tool.input !== undefined ||
+    tool.output !== undefined ||
+    tool.content?.length ||
+    tool.locations?.length ||
+    tool.meta
+  );
+}
+
+function toolSummary(tool: AgentToolItem): string {
+  const parts = [`id: ${tool.id}`, `status: ${tool.status || "pending"}`];
+  const toolName = gooseToolName(tool.meta);
+  if (toolName) parts.push(`tool: ${toolName}`);
+  if (tool.kind) parts.push(`kind: ${tool.kind}`);
+  return parts.join("\n");
+}
+
+function gooseToolName(meta: Record<string, unknown> | null | undefined): string | null {
+  const goose = meta?.goose;
+  if (!goose || typeof goose !== "object") return null;
+  const toolCall = (goose as Record<string, unknown>).toolCall;
+  if (!toolCall || typeof toolCall !== "object") return null;
+  const name = (toolCall as Record<string, unknown>).toolName;
+  return typeof name === "string" ? name : null;
 }
 
 function PermissionList({
@@ -1036,14 +1106,14 @@ function messageIdFromUpdate(update: { messageId?: string | null; _meta?: unknow
 
 function toolFailureSummary(update: ToolCallUpdate): string {
   const output =
-    typeof update.rawOutput === "string" && update.rawOutput.trim()
-      ? update.rawOutput.trim()
+    update.rawOutput !== undefined
+      ? formatUnknown(update.rawOutput).trim()
       : update.content?.map(toolContentText).filter(Boolean).join(" ").trim() || "";
   return [
     `id=${update.toolCallId}`,
     update.title ? `title=${update.title}` : null,
     update.kind ? `kind=${update.kind}` : null,
-    output ? `output=${truncate(output, 500)}` : null
+    output ? `output=${truncate(output, 500)}` : "output=no ACP error details"
   ]
     .filter(Boolean)
     .join(" ");

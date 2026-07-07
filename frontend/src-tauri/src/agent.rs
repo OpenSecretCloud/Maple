@@ -3,6 +3,7 @@ use axum::http::HeaderValue;
 use goose::acp::server_factory::{AcpServer, AcpServerFactoryConfig};
 use goose::acp::transport::create_router as create_goose_acp_router;
 use goose::agents::GoosePlatform;
+use goose::config::ConfigError;
 use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -479,8 +480,10 @@ fn configure_embedded_goose(
 
     std::env::set_var("GOOSE_PATH_ROOT", goose_path_root);
     std::env::set_var("GOOSE_DISABLE_KEYRING", "true");
+    std::env::remove_var("GOOSE_MAX_TOKENS");
 
     let config = goose::config::Config::global();
+    delete_goose_config_key(config, "GOOSE_MAX_TOKENS")?;
     goose::config::set_active_provider(config, "openai", model)
         .map_err(|e| format!("Failed to configure Goose provider: {e}"))?;
     config
@@ -502,6 +505,13 @@ fn configure_embedded_goose(
     set_owner_only_permissions(&goose_path_root.join("config").join("config.yaml"));
     set_owner_only_permissions(&goose_path_root.join("config").join("secrets.yaml"));
     Ok(())
+}
+
+fn delete_goose_config_key(config: &goose::config::Config, key: &str) -> Result<(), String> {
+    match config.delete(key) {
+        Ok(()) | Err(ConfigError::NotFound(_)) => Ok(()),
+        Err(e) => Err(format!("Failed to clear Goose config key {key}: {e}")),
+    }
 }
 
 fn stopped_status(config_dir: PathBuf, error: Option<String>) -> AgentRuntimeStatus {
