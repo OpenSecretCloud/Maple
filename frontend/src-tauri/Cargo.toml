@@ -6,7 +6,7 @@ authors = ["tony@trymaple.ai"]
 license = "MIT"
 repository = "https://github.com/OpenSecretCloud/Maple"
 edition = "2021"
-rust-version = "1.88.0"
+rust-version = "1.91.1"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -43,6 +43,10 @@ anyhow = "1.0"
 axum = "0.8"
 pdf-extract = "0.7"
 base64 = "0.22"
+goose = { git = "https://github.com/aaif-goose/goose.git", tag = "v1.41.0", default-features = false }
+# Goose v1.41.0 declares `rmcp = "1.4"` in its workspace, but it does not
+# compile against the current 1.x API when embedded outside that lockfile.
+rmcp = { version = "=1.4.0", default-features = false }
 
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
 # TTS dependencies (Supertonic) - desktop only

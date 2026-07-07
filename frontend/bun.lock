@@ -5,7 +5,6 @@
     "": {
       "name": "maple",
       "dependencies": {
-        "@aaif/goose-sdk": "0.20.2",
         "@agentclientprotocol/sdk": "0.19.0",
         "@opensecret/react": "3.2.0",
         "@radix-ui/react-alert-dialog": "^1.1.15",
@@ -88,18 +87,6 @@
     "yaml": "^2.8.3",
   },
   "packages": {
-    "@aaif/goose-binary-darwin-arm64": ["@aaif/goose-binary-darwin-arm64@0.20.2", "", { "os": "darwin", "cpu": "arm64", "bin": { "goose": "bin/goose" } }, "sha512-0wv6UcYxg/dZXRuIUBTL+64Hz0D50PfUA2mJiUEBhWkBmiBCgS/Iymore0gYuayxVV7MzQhKrHqdDPBoo0lqIg=="],
-
-    "@aaif/goose-binary-darwin-x64": ["@aaif/goose-binary-darwin-x64@0.20.2", "", { "os": "darwin", "cpu": "x64", "bin": { "goose": "bin/goose" } }, "sha512-dZG6H1QF/lv/kVc1YmHVKRGJCZtoe9o0N2q4vgvDK0Lz+ZJp/ehKcIxUSqE/zebXDqLb4yWByDGelq5Ud2rnCw=="],
-
-    "@aaif/goose-binary-linux-arm64": ["@aaif/goose-binary-linux-arm64@0.20.2", "", { "os": "linux", "cpu": "arm64", "bin": { "goose": "bin/goose" } }, "sha512-DLbm8r21v4c39dGbLepjXDmXNLsdWw0PFFpRbQtBd2m5Q+xIBgYOx1jNm3EygDQT9yGV9R3WS6SW3LvMJLA3xw=="],
-
-    "@aaif/goose-binary-linux-x64": ["@aaif/goose-binary-linux-x64@0.20.2", "", { "os": "linux", "cpu": "x64", "bin": { "goose": "bin/goose" } }, "sha512-+TgB2+MKj18kbw5PBnDMAWvuy8ZijNxXQL4qRBeMebcx07W3dIf6zoy9xD5mSyce61ugG9vsLt9a+3Pm8qZaRw=="],
-
-    "@aaif/goose-binary-win32-x64": ["@aaif/goose-binary-win32-x64@0.20.2", "", { "os": "win32", "cpu": "x64", "bin": { "goose": "bin/goose.exe" } }, "sha512-P0GrtagS0U/98XW4VuzQ77Fy02bw4wFhzyRWWbR9LDVwY+lLG+AkE5m0Ml/KGKgDWS6gd8BtkAqRxdFw3PM9RQ=="],
-
-    "@aaif/goose-sdk": ["@aaif/goose-sdk@0.20.2", "", { "dependencies": { "@modelcontextprotocol/ext-apps": "^0.3.1", "@modelcontextprotocol/sdk": "^1.27.0", "zod": "^3.25.76" }, "optionalDependencies": { "@aaif/goose-binary-darwin-arm64": "0.20.2", "@aaif/goose-binary-darwin-x64": "0.20.2", "@aaif/goose-binary-linux-arm64": "0.20.2", "@aaif/goose-binary-linux-x64": "0.20.2", "@aaif/goose-binary-win32-x64": "0.20.2" }, "peerDependencies": { "@agentclientprotocol/sdk": "^0.19.0" } }, "sha512-HhsspN1OycRqgKgnUBWC/5xOpJ8zuKWmABax0Br0ZfND94AKKZbsBlya8e+pSM+CvztWLXHRz2KxPQuXYoGyBQ=="],
-
     "@agentclientprotocol/sdk": ["@agentclientprotocol/sdk@0.19.0", "", { "peerDependencies": { "zod": "^3.25.0 || ^4.0.0" } }, "sha512-U9I8ws9WTOk6jCBAWpXefGSDgVXn14/kV6HFzwWGcstQ02mOQgClMAROHmoIn9GqZbDBDEOkdIbP4P4TEMQdug=="],
 
     "@alloc/quick-lru": ["@alloc/quick-lru@5.2.0", "", {}, "sha512-UrcABB+4bUrFABwbluTIBErXwvbsU/V7TZWfmbgJfbkwiBuziS9gxdODUyuiecfdGQ85jglMW6juS3+z5TsKLw=="],
@@ -1403,8 +1390,6 @@
     "zod-to-json-schema": ["zod-to-json-schema@3.25.2", "", { "peerDependencies": { "zod": "^3.25.28 || ^4" } }, "sha512-O/PgfnpT1xKSDeQYSCfRI5Gy3hPf91mKVDuYLUHZJMiDFptvP41MSnWofm8dnCm0256ZNfZIM7DSzuSMAFnjHA=="],
 
     "zwitch": ["zwitch@2.0.4", "", {}, "sha512-bXE4cR/kVZhKZX/RjPEflHaKVhUVl85noU3v6b8apfQEc1x4A+zBxjZ4lN8LqGd6WZ3dl98pY4o717VFmoPp+A=="],
-
-    "@aaif/goose-sdk/zod": ["zod@3.25.76", "", {}, "sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ=="],
 
     "@agentclientprotocol/sdk/zod": ["zod@3.25.76", "", {}, "sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ=="],
 

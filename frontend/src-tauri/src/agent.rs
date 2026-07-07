@@ -1,20 +1,24 @@
 use crate::proxy;
+use goose::acp::server_factory::{AcpServer, AcpServerFactoryConfig};
+use goose::acp::transport::create_router as create_goose_acp_router;
+use goose::agents::GoosePlatform;
 use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Manager, State};
-use tokio::sync::Mutex;
+use tokio::sync::{oneshot, Mutex};
+use tokio::task::JoinHandle;
 
 const DEFAULT_AGENT_MODEL: &str = "auto:powerful";
 const DEFAULT_GOOSE_MODE: &str = "approve";
 const READINESS_TIMEOUT: Duration = Duration::from_secs(30);
 const READINESS_INTERVAL: Duration = Duration::from_millis(100);
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -47,6 +51,8 @@ impl Default for AgentConfig {
 pub struct AgentStartRequest {
     pub project_root: Option<String>,
     pub model: Option<String>,
+    // Kept so older frontend state or dev tools can pass the old field without
+    // breaking deserialization. Built-in Goose now runs in-process.
     pub goose_binary: Option<String>,
     pub mode: Option<String>,
 }
@@ -80,13 +86,13 @@ pub struct RecentProjectRoot {
 }
 
 struct AgentRuntime {
-    child: Child,
+    shutdown: Option<oneshot::Sender<()>>,
+    server_task: JoinHandle<Result<(), String>>,
     acp_url: String,
     redacted_acp_url: String,
     http_base_url: String,
     status_url: String,
     project_root: PathBuf,
-    goose_binary: PathBuf,
     model: String,
     mode: String,
     maple_proxy_base_url: String,
@@ -108,8 +114,8 @@ impl AgentRuntime {
             http_base_url: Some(self.http_base_url.clone()),
             status_url: Some(self.status_url.clone()),
             project_root: Some(path_string(&self.project_root)),
-            goose_binary: Some(path_string(&self.goose_binary)),
-            pid: Some(self.child.id()),
+            goose_binary: None,
+            pid: None,
             model: Some(self.model.clone()),
             mode: Some(self.mode.clone()),
             maple_proxy_base_url: Some(self.maple_proxy_base_url.clone()),
@@ -144,22 +150,19 @@ pub async fn agent_get_runtime_status(
     let mut runtime = state.inner.lock().await;
 
     if let Some(current) = runtime.as_mut() {
-        match current.child.try_wait() {
-            Ok(Some(exit_status)) => {
-                let status = current.status(
-                    false,
-                    Some(format!("Goose exited with status {exit_status}")),
-                );
-                *runtime = None;
-                return Ok(status);
-            }
-            Ok(None) => return Ok(current.status(true, None)),
-            Err(e) => {
-                let status = current.status(false, Some(format!("Failed to inspect Goose: {e}")));
-                *runtime = None;
-                return Ok(status);
-            }
+        if !current.server_task.is_finished() {
+            return Ok(current.status(true, None));
         }
+    }
+
+    if let Some(current) = runtime.take() {
+        drop(runtime);
+        let error = match current.server_task.await {
+            Ok(Ok(())) => Some("Goose ACP server stopped".to_string()),
+            Ok(Err(error)) => Some(error),
+            Err(error) => Some(format!("Goose ACP server task failed: {error}")),
+        };
+        return Ok(stopped_status(config_dir, error));
     }
 
     Ok(stopped_status(config_dir, None))
@@ -198,10 +201,8 @@ pub async fn agent_start_runtime(
     };
     let maple_proxy_base_url = format!("http://{}:{}", proxy_host, proxy_config.port);
 
-    let project_root =
-        resolve_project_root(request.project_root.as_deref(), &agent_config).map_err(|e| {
-            format!("Failed to resolve Agent Mode project root: {e}")
-        })?;
+    let project_root = resolve_project_root(request.project_root.as_deref(), &agent_config)
+        .map_err(|e| format!("Failed to resolve Agent Mode project root: {e}"))?;
     let model = request
         .model
         .or_else(|| std::env::var("MAPLE_GOOSE_MODEL").ok())
@@ -210,10 +211,6 @@ pub async fn agent_start_runtime(
         .mode
         .or_else(|| std::env::var("MAPLE_GOOSE_MODE").ok())
         .unwrap_or_else(|| DEFAULT_GOOSE_MODE.to_string());
-    let goose_binary =
-        resolve_goose_binary(&app_handle, request.goose_binary.as_deref()).map_err(|e| {
-            format!("Failed to resolve Goose binary: {e}")
-        })?;
 
     let config_dir = agent_config_dir(&app_handle).map_err(|e| e.to_string())?;
     let goose_path_root = std::env::var("MAPLE_GOOSE_PATH_ROOT")
@@ -223,7 +220,7 @@ pub async fn agent_start_runtime(
     fs::create_dir_all(&log_dir).map_err(|e| format!("Failed to create log dir: {e}"))?;
     fs::create_dir_all(&goose_path_root)
         .map_err(|e| format!("Failed to create Goose data dir: {e}"))?;
-    let log_path = log_dir.join("goose-serve.log");
+    let log_path = log_dir.join("goose-embedded.log");
 
     let port = find_available_port().map_err(|e| format!("Failed to allocate Goose port: {e}"))?;
     let token = secure_token();
@@ -232,68 +229,65 @@ pub async fn agent_start_runtime(
     let acp_url = format!("ws://127.0.0.1:{port}/acp?token={token}");
     let redacted_acp_url = format!("ws://127.0.0.1:{port}/acp?token=REDACTED");
 
-    let log_file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)
-        .map_err(|e| format!("Failed to open Goose log: {e}"))?;
-    set_owner_only_permissions(&log_path);
-    let stdout_file = log_file
-        .try_clone()
-        .map_err(|e| format!("Failed to clone Goose log handle: {e}"))?;
+    configure_embedded_goose(
+        &goose_path_root,
+        &model,
+        &mode,
+        &maple_proxy_base_url,
+        &proxy_config.api_key,
+    )?;
 
-    let mut command = Command::new(&goose_binary);
-    let port_arg = port.to_string();
-    command
-        .args([
-            "serve",
-            "--host",
-            "127.0.0.1",
-            "--port",
-            &port_arg,
-        ])
-        .current_dir(&project_root)
-        .env("GOOSE_SERVER__SECRET_KEY", &token)
-        .env("GOOSE_PROVIDER", "openai")
-        .env("GOOSE_MODEL", &model)
-        .env("GOOSE_FAST_MODEL", &model)
-        .env("GOOSE_MODE", &mode)
-        .env("GOOSE_DISABLE_KEYRING", "true")
-        .env("GOOSE_PATH_ROOT", &goose_path_root)
-        .env("OPENAI_BASE_URL", format!("{}/v1", maple_proxy_base_url))
-        .env("OPENAI_API_KEY", proxy_config.api_key)
-        .stdout(Stdio::from(stdout_file))
-        .stderr(Stdio::from(log_file));
-
-    if let Some(parent) = goose_binary.parent() {
-        prepend_path_env(&mut command, parent);
-    }
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
+        .await
+        .map_err(|e| format!("Failed to bind Goose ACP listener: {e}"))?;
+    let acp_server = Arc::new(AcpServer::new(AcpServerFactoryConfig {
+        builtins: vec!["developer".to_string()],
+        data_dir: goose_path_root.join("data"),
+        config_dir: goose_path_root.join("config"),
+        goose_platform: GoosePlatform::GooseDesktop,
+        additional_source_roots: Vec::new(),
+        scheduler: None,
+    }));
+    let router = create_goose_acp_router(acp_server, token, true, Vec::new());
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
 
     log::info!(
-        "Starting Goose ACP runtime from {} in {} on {}",
-        goose_binary.display(),
+        "Starting embedded Goose ACP runtime in {} on {}",
         project_root.display(),
         redacted_acp_url
     );
+    append_runtime_log(
+        &log_path,
+        &format!(
+            "starting embedded Goose ACP runtime: project_root={}, acp={}",
+            project_root.display(),
+            redacted_acp_url
+        ),
+    );
 
-    let mut child = command
-        .spawn()
-        .map_err(|e| format!("Failed to spawn Goose: {e}"))?;
+    let server_task = tokio::spawn(async move {
+        axum::serve(listener, router)
+            .with_graceful_shutdown(async {
+                let _ = shutdown_rx.await;
+            })
+            .await
+            .map_err(|e| format!("Goose ACP server stopped with error: {e}"))
+    });
 
-    if let Err(e) = wait_for_goose_ready(&status_url, &mut child).await {
-        let _ = child.kill();
-        let _ = child.wait();
+    if let Err(e) = wait_for_goose_ready(&status_url).await {
+        let _ = shutdown_tx.send(());
+        server_task.abort();
         return Err(format!("{e}. See {}", log_path.display()));
     }
 
     let runtime = AgentRuntime {
-        child,
+        shutdown: Some(shutdown_tx),
+        server_task,
         acp_url,
         redacted_acp_url,
         http_base_url,
         status_url,
         project_root: project_root.clone(),
-        goose_binary,
         model: model.clone(),
         mode,
         maple_proxy_base_url,
@@ -377,28 +371,43 @@ pub async fn agent_append_session_event(
 
 async fn clear_exited_runtime(state: &State<'_, AgentRuntimeState>) {
     let mut runtime = state.inner.lock().await;
-    if let Some(current) = runtime.as_mut() {
-        if matches!(current.child.try_wait(), Ok(Some(_)) | Err(_)) {
-            *runtime = None;
-        }
+    if runtime
+        .as_ref()
+        .map(|current| current.server_task.is_finished())
+        .unwrap_or(false)
+    {
+        *runtime = None;
     }
 }
 
 async fn stop_runtime_inner(state: &State<'_, AgentRuntimeState>) -> Result<(), String> {
     let mut runtime = state.inner.lock().await;
     if let Some(mut current) = runtime.take() {
-        log::info!("Stopping Goose ACP runtime");
-        if let Err(e) = current.child.kill() {
-            log::warn!("Failed to kill Goose runtime: {e}");
+        log::info!("Stopping embedded Goose ACP runtime");
+        append_runtime_log(&current.log_path, "stopping embedded Goose ACP runtime");
+        if let Some(shutdown) = current.shutdown.take() {
+            let _ = shutdown.send(());
         }
-        if let Err(e) = current.child.wait() {
-            log::warn!("Failed to wait for Goose runtime exit: {e}");
+        let mut server_task = current.server_task;
+        tokio::select! {
+            result = &mut server_task => {
+                match result {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => log::warn!("{error}"),
+                    Err(error) => log::warn!("Goose ACP server task failed: {error}"),
+                }
+            }
+            _ = tokio::time::sleep(SHUTDOWN_TIMEOUT) => {
+                server_task.abort();
+                let _ = server_task.await;
+                log::warn!("Timed out stopping Goose ACP server; aborted task");
+            }
         }
     }
     Ok(())
 }
 
-async fn wait_for_goose_ready(status_url: &str, child: &mut Child) -> Result<(), String> {
+async fn wait_for_goose_ready(status_url: &str) -> Result<(), String> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(1))
         .build()
@@ -406,14 +415,6 @@ async fn wait_for_goose_ready(status_url: &str, child: &mut Child) -> Result<(),
     let deadline = std::time::Instant::now() + READINESS_TIMEOUT;
 
     while std::time::Instant::now() < deadline {
-        match child.try_wait() {
-            Ok(Some(exit_status)) => {
-                return Err(format!("Goose exited before becoming ready: {exit_status}"));
-            }
-            Ok(None) => {}
-            Err(e) => return Err(format!("Failed to inspect Goose readiness: {e}")),
-        }
-
         if let Ok(response) = client.get(status_url).send().await {
             if response.status().is_success() {
                 return Ok(());
@@ -424,6 +425,47 @@ async fn wait_for_goose_ready(status_url: &str, child: &mut Child) -> Result<(),
     }
 
     Err(format!("Goose did not become ready on {status_url}"))
+}
+
+fn configure_embedded_goose(
+    goose_path_root: &Path,
+    model: &str,
+    mode: &str,
+    maple_proxy_base_url: &str,
+    proxy_api_key: &str,
+) -> Result<(), String> {
+    fs::create_dir_all(goose_path_root.join("config"))
+        .map_err(|e| format!("Failed to create Goose config dir: {e}"))?;
+    fs::create_dir_all(goose_path_root.join("data"))
+        .map_err(|e| format!("Failed to create Goose data dir: {e}"))?;
+    fs::create_dir_all(goose_path_root.join("state"))
+        .map_err(|e| format!("Failed to create Goose state dir: {e}"))?;
+
+    std::env::set_var("GOOSE_PATH_ROOT", goose_path_root);
+    std::env::set_var("GOOSE_DISABLE_KEYRING", "true");
+
+    let config = goose::config::Config::global();
+    goose::config::set_active_provider(config, "openai", model)
+        .map_err(|e| format!("Failed to configure Goose provider: {e}"))?;
+    config
+        .set_param("GOOSE_FAST_MODEL", model)
+        .map_err(|e| format!("Failed to configure Goose fast model: {e}"))?;
+    config
+        .set_param("GOOSE_MODE", mode)
+        .map_err(|e| format!("Failed to configure Goose mode: {e}"))?;
+    config
+        .set_param("OPENAI_BASE_URL", format!("{maple_proxy_base_url}/v1"))
+        .map_err(|e| format!("Failed to configure Goose OpenAI base URL: {e}"))?;
+    config
+        .set_param("GOOSE_DISABLE_KEYRING", true)
+        .map_err(|e| format!("Failed to configure Goose keyring mode: {e}"))?;
+    config
+        .set_secret("OPENAI_API_KEY", &proxy_api_key)
+        .map_err(|e| format!("Failed to configure Goose OpenAI API key: {e}"))?;
+
+    set_owner_only_permissions(&goose_path_root.join("config").join("config.yaml"));
+    set_owner_only_permissions(&goose_path_root.join("config").join("secrets.yaml"));
+    Ok(())
 }
 
 fn stopped_status(config_dir: PathBuf, error: Option<String>) -> AgentRuntimeStatus {
@@ -446,10 +488,7 @@ fn stopped_status(config_dir: PathBuf, error: Option<String>) -> AgentRuntimeSta
     }
 }
 
-fn resolve_project_root(
-    requested: Option<&str>,
-    config: &AgentConfig,
-) -> Result<PathBuf, String> {
+fn resolve_project_root(requested: Option<&str>, config: &AgentConfig) -> Result<PathBuf, String> {
     if let Some(path) = requested.filter(|value| !value.trim().is_empty()) {
         return normalize_project_root(Path::new(path));
     }
@@ -479,82 +518,6 @@ fn normalize_project_root(path: &Path) -> Result<PathBuf, String> {
     Ok(canonical)
 }
 
-fn resolve_goose_binary(app_handle: &AppHandle, requested: Option<&str>) -> Result<PathBuf, String> {
-    let mut candidates = Vec::new();
-
-    if let Some(path) = requested.filter(|value| !value.trim().is_empty()) {
-        candidates.push(PathBuf::from(path));
-    }
-
-    if let Ok(path) = std::env::var("MAPLE_GOOSE_BINARY") {
-        candidates.push(PathBuf::from(path));
-    }
-
-    if let Ok(path) = std::env::var("GOOSE_BINARY") {
-        candidates.push(PathBuf::from(path));
-    }
-
-    if let Ok(resource_dir) = app_handle.path().resource_dir() {
-        candidates.push(resource_dir.join("bin").join(goose_binary_name()));
-        candidates.push(resource_dir.join(goose_binary_name()));
-    }
-
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    candidates.push(
-        manifest_dir
-            .join("..")
-            .join("node_modules")
-            .join("@aaif")
-            .join(goose_binary_package_name())
-            .join("bin")
-            .join(goose_binary_name()),
-    );
-    candidates.push(
-        manifest_dir
-            .join("bin")
-            .join(goose_binary_name()),
-    );
-
-    if cfg!(debug_assertions) {
-        if let Some(path) = find_on_path(goose_binary_name()) {
-            candidates.push(path);
-        }
-    }
-
-    for candidate in candidates {
-        let candidate = expand_home(candidate);
-        if candidate.is_file() {
-            return Ok(candidate);
-        }
-    }
-
-    Err("Goose binary not found. Set MAPLE_GOOSE_BINARY in development or bundle bin/goose with Maple.".to_string())
-}
-
-fn goose_binary_name() -> &'static str {
-    if cfg!(target_os = "windows") {
-        "goose.exe"
-    } else {
-        "goose"
-    }
-}
-
-fn goose_binary_package_name() -> &'static str {
-    if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-        "goose-binary-darwin-arm64"
-    } else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
-        "goose-binary-darwin-x64"
-    } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
-        "goose-binary-linux-arm64"
-    } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
-        "goose-binary-linux-x64"
-    } else if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
-        "goose-binary-win32-x64"
-    } else {
-        "goose-binary-unsupported"
-    }
-}
-
 fn find_available_port() -> std::io::Result<u16> {
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
     Ok(listener.local_addr()?.port())
@@ -566,50 +529,6 @@ fn secure_token() -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-fn prepend_path_env(command: &mut Command, dir: &Path) {
-    let key = if cfg!(target_os = "windows") {
-        "Path"
-    } else {
-        "PATH"
-    };
-    let current = std::env::var_os(key).unwrap_or_default();
-    let mut paths = vec![dir.to_path_buf()];
-    paths.extend(std::env::split_paths(&current));
-    if let Ok(joined) = std::env::join_paths(paths) {
-        command.env(key, joined);
-    }
-}
-
-fn find_on_path(binary: &str) -> Option<PathBuf> {
-    let path_var = std::env::var_os(if cfg!(target_os = "windows") {
-        "Path"
-    } else {
-        "PATH"
-    })?;
-    std::env::split_paths(&path_var)
-        .map(|dir| dir.join(binary))
-        .find(|candidate| candidate.is_file())
-}
-
-fn expand_home(path: PathBuf) -> PathBuf {
-    let path_string = path.to_string_lossy();
-    if path_string == "~" {
-        return home_dir().unwrap_or(path);
-    }
-    if let Some(rest) = path_string.strip_prefix("~/") {
-        if let Some(home) = home_dir() {
-            return home.join(rest);
-        }
-    }
-    path
-}
-
-fn home_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from))
-}
-
 fn agent_config_dir(app_handle: &AppHandle) -> Result<PathBuf, anyhow::Error> {
     let base = if cfg!(target_os = "windows") {
         app_handle
@@ -617,8 +536,8 @@ fn agent_config_dir(app_handle: &AppHandle) -> Result<PathBuf, anyhow::Error> {
             .app_config_dir()
             .map_err(|e| anyhow::anyhow!("Failed to resolve app config dir: {e}"))?
     } else {
-        let home = std::env::var("HOME")
-            .map_err(|_| anyhow::anyhow!("Failed to get home directory"))?;
+        let home =
+            std::env::var("HOME").map_err(|_| anyhow::anyhow!("Failed to get home directory"))?;
         PathBuf::from(home).join(".config").join("maple")
     };
     let path = base.join("agent");
@@ -697,6 +616,21 @@ fn append_session_event_inner(
     serde_json::to_writer(&mut file, &row)?;
     file.write_all(b"\n")?;
     Ok(())
+}
+
+fn append_runtime_log(path: &Path, message: &str) {
+    let result = (|| -> Result<(), anyhow::Error> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+        set_owner_only_permissions(path);
+        writeln!(file, "{} {}", unix_ms(), message)?;
+        Ok(())
+    })();
+    if let Err(error) = result {
+        log::warn!("Failed to write Goose runtime log: {error}");
+    }
 }
 
 fn write_json_file<T: Serialize>(path: &Path, value: &T) -> Result<(), anyhow::Error> {

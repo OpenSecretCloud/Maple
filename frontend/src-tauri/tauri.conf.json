@@ -65,7 +65,6 @@
     "active": true,
     "targets": ["nsis", "deb", "appimage", "rpm", "dmg", "app"],
     "publisher": "OpenSecret",
-    "resources": ["bin/*"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

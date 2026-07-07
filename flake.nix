@@ -30,7 +30,7 @@
 
         versions = {
           bun = "1.3.5";
-          rust = "1.88.0";
+          rust = "1.91.1";
           jdk = "21";
           xcode = "26.5";
           android = {

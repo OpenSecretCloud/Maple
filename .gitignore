@@ -88,4 +88,3 @@ frontend/*.local
 
 # iOS build backups
 frontend/src-tauri/gen/apple/maple.xcodeproj/project.pbxproj.backup
-frontend/src-tauri/bin/goose*
