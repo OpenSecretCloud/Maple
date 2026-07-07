@@ -78,6 +78,8 @@ pub struct AgentRuntimeStatus {
     pub log_path: Option<String>,
     pub llm_log_dir: Option<String>,
     pub latest_llm_log_path: Option<String>,
+    pub proxy_llm_log_dir: Option<String>,
+    pub latest_proxy_llm_log_path: Option<String>,
     pub error: Option<String>,
 }
 
@@ -130,6 +132,8 @@ impl AgentRuntime {
             latest_llm_log_path: Some(path_string(&latest_goose_llm_log_path(
                 &self.goose_path_root,
             ))),
+            proxy_llm_log_dir: Some(path_string(&proxy_llm_log_dir(&self.config_dir))),
+            latest_proxy_llm_log_path: latest_proxy_llm_log_path(&self.config_dir),
             error,
         }
     }
@@ -232,6 +236,7 @@ pub async fn agent_start_runtime(
     let log_path = log_dir.join("goose-embedded.log");
     let llm_log_dir = goose_llm_log_dir(&goose_path_root);
     let latest_llm_log_path = latest_goose_llm_log_path(&goose_path_root);
+    let proxy_llm_log_dir = proxy_llm_log_dir(&config_dir);
 
     let port = find_available_port().map_err(|e| format!("Failed to allocate Goose port: {e}"))?;
     let token = secure_token();
@@ -277,13 +282,14 @@ pub async fn agent_start_runtime(
     append_runtime_log(
         &log_path,
         &format!(
-            "starting embedded Goose ACP runtime: project_root={}, acp={}, proxy=http://{}:{}, llm_log_dir={}, latest_llm_log={}, allowed_origins={}",
+            "starting embedded Goose ACP runtime: project_root={}, acp={}, proxy=http://{}:{}, llm_log_dir={}, latest_llm_log={}, proxy_llm_log_dir={}, allowed_origins={}",
             project_root.display(),
             redacted_acp_url,
             proxy_host,
             proxy_config.port,
             llm_log_dir.display(),
             latest_llm_log_path.display(),
+            proxy_llm_log_dir.display(),
             allowed_origin_log
         ),
     );
@@ -544,6 +550,8 @@ fn stopped_status(config_dir: PathBuf, error: Option<String>) -> AgentRuntimeSta
         log_path: None,
         llm_log_dir: None,
         latest_llm_log_path: None,
+        proxy_llm_log_dir: Some(path_string(&proxy_llm_log_dir(&config_dir))),
+        latest_proxy_llm_log_path: latest_proxy_llm_log_path(&config_dir),
         error,
     }
 }
@@ -554,6 +562,27 @@ fn goose_llm_log_dir(goose_path_root: &Path) -> PathBuf {
 
 fn latest_goose_llm_log_path(goose_path_root: &Path) -> PathBuf {
     goose_llm_log_dir(goose_path_root).join("llm_request.0.jsonl")
+}
+
+fn proxy_llm_log_dir(agent_config_dir: &Path) -> PathBuf {
+    agent_config_dir.join("proxy-llm-logs")
+}
+
+fn latest_proxy_llm_log_path(agent_config_dir: &Path) -> Option<String> {
+    let dir = proxy_llm_log_dir(agent_config_dir);
+    let entries = fs::read_dir(dir).ok()?;
+    entries
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            let path = entry.path();
+            if path.extension().and_then(|value| value.to_str()) != Some("jsonl") {
+                return None;
+            }
+            let modified = entry.metadata().ok()?.modified().ok()?;
+            Some((modified, path))
+        })
+        .max_by_key(|(modified, _)| *modified)
+        .map(|(_, path)| path_string(&path))
 }
 
 fn resolve_project_root(requested: Option<&str>, config: &AgentConfig) -> Result<PathBuf, String> {

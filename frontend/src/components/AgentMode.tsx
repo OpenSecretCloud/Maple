@@ -200,6 +200,9 @@ export function AgentMode() {
           break;
         case "tool_call":
           mergeToolCall(update);
+          if (update.status === "failed") {
+            appendRuntimeLog(`[ACP tool failed] ${toolFailureSummary(update)}`);
+          }
           break;
         case "tool_call_update":
           mergeToolCall(update);
@@ -1081,7 +1084,11 @@ function toolContentText(content: ToolCallContent): string {
 
 function formatUnknown(value: unknown): string {
   if (typeof value === "string") return value;
-  return JSON.stringify(value, null, 2);
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
 }
 
 function basename(path: string): string {
@@ -1094,8 +1101,22 @@ function formatPermission(value: string): string {
 }
 
 function errorMessage(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  return String(error);
+  const message = error instanceof Error ? error.message : String(error);
+  const details = errorDetails(error);
+  return details ? `${message}: ${details}` : message;
+}
+
+function errorDetails(error: unknown): string | null {
+  if (!error || typeof error !== "object") return null;
+  const record = error as Record<string, unknown>;
+  const parts: string[] = [];
+  if (typeof record.code === "number") {
+    parts.push(`code=${record.code}`);
+  }
+  if ("data" in record && record.data !== undefined) {
+    parts.push(`data=${formatUnknown(record.data)}`);
+  }
+  return parts.join(" ");
 }
 
 function messageIdFromUpdate(update: { messageId?: string | null; _meta?: unknown }) {
@@ -1104,7 +1125,8 @@ function messageIdFromUpdate(update: { messageId?: string | null; _meta?: unknow
   return typeof goose?.messageId === "string" ? goose.messageId : undefined;
 }
 
-function toolFailureSummary(update: ToolCallUpdate): string {
+function toolFailureSummary(update: ToolCall | ToolCallUpdate): string {
+  const input = update.rawInput !== undefined ? formatUnknown(update.rawInput).trim() : "";
   const output =
     update.rawOutput !== undefined
       ? formatUnknown(update.rawOutput).trim()
@@ -1113,6 +1135,7 @@ function toolFailureSummary(update: ToolCallUpdate): string {
     `id=${update.toolCallId}`,
     update.title ? `title=${update.title}` : null,
     update.kind ? `kind=${update.kind}` : null,
+    input ? `input=${truncate(input, 500)}` : null,
     output ? `output=${truncate(output, 500)}` : "output=no ACP error details"
   ]
     .filter(Boolean)

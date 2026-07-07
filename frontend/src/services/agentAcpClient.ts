@@ -26,6 +26,7 @@ export interface AgentAcpDiagnostic {
     | "connect:initialized"
     | "connect:error"
     | "connect:close"
+    | "request:error"
     | "message:malformed";
   message: string;
   url?: string;
@@ -118,18 +119,34 @@ export class AgentAcpClient {
 
   async newSession(cwd: string): Promise<string> {
     const connection = this.requireConnection();
-    const response = await connection.newSession({ cwd, mcpServers: [] });
-    return response.sessionId;
+    try {
+      const response = await connection.newSession({ cwd, mcpServers: [] });
+      return response.sessionId;
+    } catch (error) {
+      this.callbacks.onDiagnostic?.({
+        phase: "request:error",
+        message: `ACP session/new failed: ${errorMessage(error)}`
+      });
+      throw error;
+    }
   }
 
   async prompt(sessionId: string, text: string): Promise<void> {
     const connection = this.requireConnection();
     const prompt: ContentBlock[] = [{ type: "text", text }];
-    await connection.prompt({
-      sessionId,
-      messageId: crypto.randomUUID(),
-      prompt
-    });
+    try {
+      await connection.prompt({
+        sessionId,
+        messageId: crypto.randomUUID(),
+        prompt
+      });
+    } catch (error) {
+      this.callbacks.onDiagnostic?.({
+        phase: "request:error",
+        message: `ACP session/prompt failed: ${errorMessage(error)}`
+      });
+      throw error;
+    }
   }
 
   async cancel(sessionId: string): Promise<void> {
@@ -310,6 +327,29 @@ function redactAcpUrl(wsUrl: string): string {
 }
 
 function errorMessage(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  return String(error);
+  const message = error instanceof Error ? error.message : String(error);
+  const details = errorDetails(error);
+  return details ? `${message}: ${details}` : message;
+}
+
+function errorDetails(error: unknown): string | null {
+  if (!error || typeof error !== "object") return null;
+  const record = error as Record<string, unknown>;
+  const parts: string[] = [];
+  if (typeof record.code === "number") {
+    parts.push(`code=${record.code}`);
+  }
+  if ("data" in record && record.data !== undefined) {
+    parts.push(`data=${formatUnknown(record.data)}`);
+  }
+  return parts.join(" ");
+}
+
+function formatUnknown(value: unknown): string {
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
 }

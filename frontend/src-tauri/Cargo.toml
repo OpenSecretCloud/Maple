@@ -41,6 +41,7 @@ maple-proxy = "0.1.8"
 tauri-plugin-fs = "2.5.1"
 anyhow = "1.0"
 axum = "0.8"
+futures = "0.3"
 pdf-extract = "0.7"
 base64 = "0.22"
 

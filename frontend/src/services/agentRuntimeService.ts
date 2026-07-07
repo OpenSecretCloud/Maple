@@ -31,6 +31,8 @@ export interface AgentRuntimeStatus {
   logPath?: string | null;
   llmLogDir?: string | null;
   latestLlmLogPath?: string | null;
+  proxyLlmLogDir?: string | null;
+  latestProxyLlmLogPath?: string | null;
   error?: string | null;
 }
 
