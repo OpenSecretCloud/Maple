@@ -29,6 +29,8 @@ export interface AgentRuntimeStatus {
   configDir: string;
   goosePathRoot?: string | null;
   logPath?: string | null;
+  llmLogDir?: string | null;
+  latestLlmLogPath?: string | null;
   error?: string | null;
 }
 

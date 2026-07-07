@@ -76,6 +76,8 @@ pub struct AgentRuntimeStatus {
     pub config_dir: String,
     pub goose_path_root: Option<String>,
     pub log_path: Option<String>,
+    pub llm_log_dir: Option<String>,
+    pub latest_llm_log_path: Option<String>,
     pub error: Option<String>,
 }
 
@@ -124,6 +126,10 @@ impl AgentRuntime {
             config_dir: path_string(&self.config_dir),
             goose_path_root: Some(path_string(&self.goose_path_root)),
             log_path: Some(path_string(&self.log_path)),
+            llm_log_dir: Some(path_string(&goose_llm_log_dir(&self.goose_path_root))),
+            latest_llm_log_path: Some(path_string(&latest_goose_llm_log_path(
+                &self.goose_path_root,
+            ))),
             error,
         }
     }
@@ -224,6 +230,8 @@ pub async fn agent_start_runtime(
     fs::create_dir_all(&goose_path_root)
         .map_err(|e| format!("Failed to create Goose data dir: {e}"))?;
     let log_path = log_dir.join("goose-embedded.log");
+    let llm_log_dir = goose_llm_log_dir(&goose_path_root);
+    let latest_llm_log_path = latest_goose_llm_log_path(&goose_path_root);
 
     let port = find_available_port().map_err(|e| format!("Failed to allocate Goose port: {e}"))?;
     let token = secure_token();
@@ -269,11 +277,13 @@ pub async fn agent_start_runtime(
     append_runtime_log(
         &log_path,
         &format!(
-            "starting embedded Goose ACP runtime: project_root={}, acp={}, proxy=http://{}:{}, allowed_origins={}",
+            "starting embedded Goose ACP runtime: project_root={}, acp={}, proxy=http://{}:{}, llm_log_dir={}, latest_llm_log={}, allowed_origins={}",
             project_root.display(),
             redacted_acp_url,
             proxy_host,
             proxy_config.port,
+            llm_log_dir.display(),
+            latest_llm_log_path.display(),
             allowed_origin_log
         ),
     );
@@ -501,6 +511,8 @@ fn configure_embedded_goose(
     config
         .set_secret("OPENAI_API_KEY", &proxy_api_key)
         .map_err(|e| format!("Failed to configure Goose OpenAI API key: {e}"))?;
+    goose::providers::utils::init_goose_request_log()
+        .map_err(|e| format!("Failed to initialize Goose LLM request logging: {e}"))?;
 
     set_owner_only_permissions(&goose_path_root.join("config").join("config.yaml"));
     set_owner_only_permissions(&goose_path_root.join("config").join("secrets.yaml"));
@@ -530,8 +542,18 @@ fn stopped_status(config_dir: PathBuf, error: Option<String>) -> AgentRuntimeSta
         config_dir: path_string(&config_dir),
         goose_path_root: None,
         log_path: None,
+        llm_log_dir: None,
+        latest_llm_log_path: None,
         error,
     }
+}
+
+fn goose_llm_log_dir(goose_path_root: &Path) -> PathBuf {
+    goose_path_root.join("state").join("logs")
+}
+
+fn latest_goose_llm_log_path(goose_path_root: &Path) -> PathBuf {
+    goose_llm_log_dir(goose_path_root).join("llm_request.0.jsonl")
 }
 
 fn resolve_project_root(requested: Option<&str>, config: &AgentConfig) -> Result<PathBuf, String> {
