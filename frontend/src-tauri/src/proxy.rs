@@ -382,7 +382,7 @@ async fn log_chat_completion_traffic(
             "raw_has_max_completion_tokens": raw_body.get("max_completion_tokens").is_some(),
             "raw_has_max_output_tokens": raw_body.get("max_output_tokens").is_some(),
             "raw_body": raw_body,
-            "note": "Logged in Maple proxy middleware before maple-proxy parses the request; response_chunk rows are raw SSE/HTTP body bytes returned by maple-proxy to Goose.",
+            "note": "Logged in Maple proxy middleware before maple-proxy parses the request; response_chunk and response_error_body rows are raw SSE/HTTP body bytes returned by maple-proxy to Goose.",
         }),
     );
 
@@ -410,6 +410,44 @@ async fn log_chat_completion_traffic(
             "status": status.as_u16(),
         }),
     );
+
+    if !status.is_success() {
+        let error_body = match to_bytes(response_body, usize::MAX).await {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                append_proxy_llm_log_row(
+                    llm_log.as_ref(),
+                    serde_json::json!({
+                        "type": "response_body_error",
+                        "request_id": request_id,
+                        "ts": unix_ms(),
+                        "error": error.to_string(),
+                    }),
+                );
+                return Response::from_parts(response_parts, Body::empty());
+            }
+        };
+
+        append_proxy_llm_log_row(
+            llm_log.as_ref(),
+            serde_json::json!({
+                "type": "response_error_body",
+                "request_id": request_id,
+                "ts": unix_ms(),
+                "bytes_len": error_body.len(),
+                "body_utf8_lossy": String::from_utf8_lossy(&error_body),
+            }),
+        );
+        append_proxy_llm_log_row(
+            llm_log.as_ref(),
+            serde_json::json!({
+                "type": "response_done",
+                "request_id": request_id,
+                "ts": unix_ms(),
+            }),
+        );
+        return Response::from_parts(response_parts, Body::from(error_body));
+    }
 
     let response_stream = response_body.into_data_stream();
     let logged_stream = log_response_body_stream(response_stream, request_id, llm_log);
