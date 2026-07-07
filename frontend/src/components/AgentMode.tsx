@@ -28,6 +28,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
+import { Markdown } from "@/components/markdown";
 import {
   Select,
   SelectContent,
@@ -137,7 +138,7 @@ export function AgentMode() {
       return response.key;
     });
     appendRuntimeLog(
-      `Maple proxy ready for Agent Mode on ${status.config.host}:${status.config.port}`
+      `Maple proxy ready for Agent Mode on ${status.config.host}:${status.config.port} backend=${status.config.backend_url || "default"}`
     );
     return status;
   }, [appendRuntimeLog, createApiKey]);
@@ -625,8 +626,9 @@ export function AgentMode() {
   ) {
     if (!text) return;
     setTimelineItems((current) => {
+      const timelineMessageId = messageId ? `${messageId}:${role}` : undefined;
       const index = messageId
-        ? current.findIndex((item) => item.type === "message" && item.id === messageId)
+        ? current.findIndex((item) => item.type === "message" && item.id === timelineMessageId)
         : current.length - 1;
       const existing = index >= 0 ? current[index] : null;
       if (!messageId && (existing?.type !== "message" || existing.role !== role)) {
@@ -642,7 +644,12 @@ export function AgentMode() {
       }
       return [
         ...current,
-        { type: "message", id: messageId || `${role}-${crypto.randomUUID()}`, role, text }
+        {
+          type: "message",
+          id: timelineMessageId || `${role}-${crypto.randomUUID()}`,
+          role,
+          text
+        }
       ];
     });
   }
@@ -831,7 +838,11 @@ function MessageBubble({ message }: { message: AgentMessageItem }) {
           message.role === "system" && "border-destructive/30 bg-destructive/5 text-destructive"
         )}
       >
-        <div className="whitespace-pre-wrap break-words">{message.text}</div>
+        {message.role === "assistant" ? (
+          <Markdown content={message.text} />
+        ) : (
+          <div className="whitespace-pre-wrap break-words">{message.text}</div>
+        )}
       </div>
     </div>
   );

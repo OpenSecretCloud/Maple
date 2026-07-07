@@ -98,19 +98,45 @@ class ProxyService {
 
   private async ensureProxyReadyInner(createApiKey: CreateProxyApiKey): Promise<ProxyStatus> {
     const status = await this.getProxyStatus();
-    if (status.running && status.config.api_key.trim()) {
-      return status;
-    }
-
     const savedConfig = status.running ? status.config : await this.loadProxyConfig();
     let apiKey = savedConfig.api_key.trim();
-    let createdApiKey = false;
 
     if (!apiKey) {
       apiKey = await createApiKey(createAgentProxyKeyName());
-      createdApiKey = true;
     }
 
+    let nextConfig = this.buildAgentProxyConfig(savedConfig, apiKey);
+    let readyStatus = status;
+
+    if (!status.running || !status.config.api_key.trim()) {
+      if (status.running) {
+        await this.stopProxy();
+      } else if (!savedConfig.api_key.trim()) {
+        await this.saveProxySettings({ ...nextConfig, enabled: false });
+      }
+
+      readyStatus = await this.startProxy(nextConfig);
+    }
+
+    if ((await this.checkProxyBackendAuth(readyStatus)) === "auth_error") {
+      apiKey = await createApiKey(createAgentProxyKeyName());
+      nextConfig = this.buildAgentProxyConfig(readyStatus.config, apiKey);
+
+      if (readyStatus.running) {
+        await this.stopProxy();
+      }
+
+      readyStatus = await this.startProxy(nextConfig);
+
+      if ((await this.checkProxyBackendAuth(readyStatus)) === "auth_error") {
+        throw new Error("Maple proxy API key was refreshed but the backend still returned 401");
+      }
+    }
+
+    return readyStatus;
+  }
+
+  private buildAgentProxyConfig(savedConfig: ProxyConfig, apiKey: string): ProxyConfig {
     const backendUrl =
       savedConfig.backend_url ||
       import.meta.env.VITE_OPEN_SECRET_API_URL ||
@@ -118,7 +144,7 @@ class ProxyService {
     const port = Number(savedConfig.port || 8080);
     this.validateAgentPort(port);
 
-    const nextConfig: ProxyConfig = {
+    return {
       ...savedConfig,
       host: savedConfig.host || "127.0.0.1",
       port,
@@ -128,14 +154,33 @@ class ProxyService {
       backend_url: backendUrl,
       auto_start: savedConfig.auto_start ?? false
     };
+  }
 
-    if (status.running) {
-      await this.stopProxy();
-    } else if (createdApiKey) {
-      await this.saveProxySettings({ ...nextConfig, enabled: false });
+  private async checkProxyBackendAuth(
+    status: ProxyStatus
+  ): Promise<"ok" | "auth_error" | "unknown_error"> {
+    if (!status.running || !status.config.api_key.trim()) {
+      return "auth_error";
     }
 
-    return await this.startProxy(nextConfig);
+    const host = status.config.host === "0.0.0.0" ? "127.0.0.1" : status.config.host;
+    try {
+      const response = await fetch(`http://${host}:${status.config.port}/v1/models`);
+      if (response.ok) return "ok";
+
+      const body = await response.text();
+      if (
+        response.status === 401 ||
+        body.includes('"status":401') ||
+        body.toLowerCase().includes("unauthorized")
+      ) {
+        return "auth_error";
+      }
+
+      return "unknown_error";
+    } catch {
+      return "unknown_error";
+    }
   }
 
   async testProxyPort(host: string, port: number): Promise<boolean> {
