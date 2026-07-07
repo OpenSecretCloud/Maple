@@ -3,6 +3,8 @@ use tauri_plugin_deep_link::DeepLinkExt;
 
 mod pdf_extractor;
 mod proxy;
+#[cfg(desktop)]
+mod agent;
 // TTS is available on desktop and iOS (not Android)
 #[cfg(any(desktop, target_os = "ios"))]
 mod tts;
@@ -33,12 +35,23 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_log::Builder::default().level(log::LevelFilter::Info).build())
         .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_fs::init())
+        .manage(agent::AgentRuntimeState::new())
         .manage(proxy::ProxyState::new())
         .manage(tts::TTSState::new())
         .invoke_handler(tauri::generate_handler![
+            agent::agent_get_runtime_status,
+            agent::agent_start_runtime,
+            agent::agent_stop_runtime,
+            agent::agent_restart_runtime,
+            agent::agent_load_config,
+            agent::agent_save_config,
+            agent::agent_list_recent_project_roots,
+            agent::agent_save_recent_project_root,
+            agent::agent_append_session_event,
             proxy::start_proxy,
             proxy::stop_proxy,
             proxy::get_proxy_status,

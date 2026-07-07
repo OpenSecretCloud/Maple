@@ -58,13 +58,14 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; connect-src 'self' https://opensecret.cloud https://*.opensecret.cloud https://trymaple.ai https://*.trymaple.ai https://secretgpt.ai https://*.secretgpt.ai https://*.maple-ca8.pages.dev https://raw.githubusercontent.com localhost:* http://localhost:* http://0.0.0.0:* http://127.0.0.1:*; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; worker-src 'self' blob:; media-src 'self' blob: mediastream:"
+      "csp": "default-src 'self'; connect-src 'self' https://opensecret.cloud https://*.opensecret.cloud https://trymaple.ai https://*.trymaple.ai https://secretgpt.ai https://*.secretgpt.ai https://*.maple-ca8.pages.dev https://raw.githubusercontent.com localhost:* http://localhost:* http://0.0.0.0:* http://127.0.0.1:* ws://localhost:* ws://127.0.0.1:*; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; worker-src 'self' blob:; media-src 'self' blob: mediastream:"
     }
   },
   "bundle": {
     "active": true,
     "targets": ["nsis", "deb", "appimage", "rpm", "dmg", "app"],
     "publisher": "OpenSecret",
+    "resources": ["bin/*"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

@@ -31,6 +31,8 @@
     "yaml": "^2.8.3"
   },
   "dependencies": {
+    "@aaif/goose-sdk": "0.20.2",
+    "@agentclientprotocol/sdk": "0.19.0",
     "@opensecret/react": "3.2.0",
     "@radix-ui/react-alert-dialog": "^1.1.15",
     "@radix-ui/react-avatar": "^1.1.11",

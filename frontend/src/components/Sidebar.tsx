@@ -6,7 +6,8 @@ import {
   XCircle,
   Trash2,
   X,
-  FolderInput
+  FolderInput,
+  Bot
 } from "lucide-react";
 import { Button } from "./ui/button";
 import { useLocation, useRouter } from "@tanstack/react-router";
@@ -108,6 +109,18 @@ export function Sidebar({
       } catch (error) {
         console.error("Navigation failed:", error);
       }
+    }
+  }
+
+  async function openAgentMode() {
+    if (isOpen && isCompactLayout) {
+      onToggle();
+    }
+
+    try {
+      await router.navigate({ to: "/agent" });
+    } catch (error) {
+      console.error("Navigation failed:", error);
     }
   }
 
@@ -242,6 +255,19 @@ export function Sidebar({
             >
               <Search className="h-4 w-4" />
               Search
+            </button>
+            <button
+              type="button"
+              className={cn(
+                "flex w-full items-center justify-start gap-2 py-1.5 pr-1 pl-0 text-sm transition-colors",
+                location.pathname === "/agent"
+                  ? "text-[hsl(var(--maple-primary-strong))] dark:text-[hsl(var(--maple-primary))]"
+                  : "text-foreground hover:text-foreground/70"
+              )}
+              onClick={openAgentMode}
+            >
+              <Bot className="h-4 w-4" />
+              Agent Mode
             </button>
           </div>
         </div>

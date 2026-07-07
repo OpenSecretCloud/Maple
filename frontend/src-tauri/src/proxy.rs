@@ -60,6 +60,14 @@ impl ProxyState {
             running: Arc::new(Mutex::new(false)),
         }
     }
+
+    pub async fn status(&self) -> ProxyStatus {
+        ProxyStatus {
+            running: *self.running.lock().await,
+            config: self.config.lock().await.clone(),
+            error: None,
+        }
+    }
 }
 
 // On Windows the proxy config lives in the roaming %APPDATA% profile, so a
@@ -245,14 +253,7 @@ pub async fn stop_proxy(state: State<'_, ProxyState>) -> Result<ProxyStatus, Str
 
 #[tauri::command]
 pub async fn get_proxy_status(state: State<'_, ProxyState>) -> Result<ProxyStatus, String> {
-    let running = *state.running.lock().await;
-    let config = state.config.lock().await.clone();
-
-    Ok(ProxyStatus {
-        running,
-        config,
-        error: None,
-    })
+    Ok(state.status().await)
 }
 
 #[tauri::command]
@@ -354,7 +355,7 @@ async fn save_proxy_config(app_handle: &AppHandle, config: &ProxyConfig) -> Resu
     Ok(())
 }
 
-async fn load_saved_proxy_config(app_handle: &AppHandle) -> Result<ProxyConfig> {
+pub async fn load_saved_proxy_config(app_handle: &AppHandle) -> Result<ProxyConfig> {
     let path = get_config_path(app_handle).await?;
 
     if !path.exists() {
@@ -375,6 +376,26 @@ async fn load_saved_proxy_config(app_handle: &AppHandle) -> Result<ProxyConfig> 
     }
 
     Ok(config)
+}
+
+pub async fn ensure_proxy_running(
+    app_handle: AppHandle,
+    state: State<'_, ProxyState>,
+) -> Result<ProxyStatus, String> {
+    let current = state.status().await;
+    if current.running {
+        return Ok(current);
+    }
+
+    let config = load_saved_proxy_config(&app_handle)
+        .await
+        .map_err(|e| format!("Failed to load proxy config: {e}"))?;
+
+    if config.api_key.trim().is_empty() {
+        return Err("Maple proxy is not configured with an API key yet".to_string());
+    }
+
+    start_proxy(app_handle, state, config).await
 }
 
 // Initialize proxy on app startup if auto_start is enabled
