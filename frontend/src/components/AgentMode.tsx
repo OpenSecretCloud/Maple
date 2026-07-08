@@ -771,8 +771,6 @@ function AgentSidebarContent({
     });
 
     const rows = [...rootsByPath.values()].sort((a, b) => {
-      if (a.path === projectRoot) return -1;
-      if (b.path === projectRoot) return 1;
       return b.lastUsedMs - a.lastUsedMs;
     });
 
