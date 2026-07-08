@@ -263,16 +263,6 @@ export function Sidebar({
               <SquarePenIcon className="h-4 w-4 shrink-0" />
               New Chat
             </button>
-            {!isAgentMode && (
-              <button
-                className="flex w-full items-center justify-start gap-2 py-1.5 pr-1 pl-0 text-sm text-foreground hover:text-foreground/70 transition-colors"
-                onClick={toggleSearch}
-                aria-label={isSearchVisible ? "Hide search" : "Search chat history"}
-              >
-                <Search className="h-4 w-4" />
-                Search
-              </button>
-            )}
             {showAgentMode && (
               <button
                 type="button"
@@ -286,6 +276,16 @@ export function Sidebar({
               >
                 <Bot className="h-4 w-4" />
                 Agent Mode
+              </button>
+            )}
+            {!isAgentMode && (
+              <button
+                className="flex w-full items-center justify-start gap-2 py-1.5 pr-1 pl-0 text-sm text-foreground hover:text-foreground/70 transition-colors"
+                onClick={toggleSearch}
+                aria-label={isSearchVisible ? "Hide search" : "Search chat history"}
+              >
+                <Search className="h-4 w-4" />
+                Search
               </button>
             )}
           </div>
