@@ -114,7 +114,7 @@ export function Sidebar({
   }
 
   async function openAgentMode() {
-    if (isOpen && isCompactLayout) {
+    if (isOpen) {
       onToggle();
     }
 

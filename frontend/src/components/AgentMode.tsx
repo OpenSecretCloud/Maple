@@ -2,14 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useOpenSecret } from "@opensecret/react";
 import {
   AlertCircle,
-  Bot,
   Check,
   ChevronRight,
   Circle,
   FolderOpen,
   Loader2,
   MessageSquarePlus,
-  Play,
   RotateCcw,
   Send,
   Square,
@@ -52,7 +50,7 @@ export function AgentMode() {
   const isMobile = useIsMobile();
   const isLandscapeMobile = useIsLandscapeMobile();
   const isCompactLayout = isMobile || isLandscapeMobile;
-  const [isSidebarOpen, setIsSidebarOpen] = useState(!isCompactLayout);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [runtimeStatus, setRuntimeStatus] = useState<AgentRuntimeStatus | null>(null);
   const [recentRoots, setRecentRoots] = useState<RecentProjectRoot[]>([]);
   const [sessions, setSessions] = useState<AgentSessionSummary[]>([]);
@@ -70,7 +68,9 @@ export function AgentMode() {
   const activeSessionIdRef = useRef(activeSessionId);
 
   useEffect(() => {
-    setIsSidebarOpen(!isCompactLayout);
+    if (isCompactLayout) {
+      setIsSidebarOpen(false);
+    }
   }, [isCompactLayout]);
 
   useEffect(() => {
@@ -222,12 +222,6 @@ export function AgentMode() {
     },
     [ensureMapleProxyReady, model, projectRoot, refreshSessions]
   );
-
-  const stopRuntime = useCallback(async () => {
-    setActiveRunId(null);
-    setIsSending(false);
-    setRuntimeStatus(await agentRuntimeService.stopRuntime());
-  }, []);
 
   const ensureRuntimeAndSession = useCallback(async () => {
     if (!projectRoot) {
@@ -466,65 +460,12 @@ export function AgentMode() {
 
       <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         {!isSidebarOpen && (
-          <div className="fixed left-4 top-[9.5px] z-20 flex items-center gap-1.5">
+          <div className="fixed left-4 top-[9.5px] z-20">
             <SidebarToggle onToggle={toggleSidebar} />
-            <MapleWordmark className="h-4 w-auto" aria-hidden />
           </div>
         )}
 
-        <header className="flex h-14 shrink-0 items-center justify-between gap-3 border-b border-border/35 px-4">
-          <div className={cn("flex min-w-0 items-center gap-3", !isSidebarOpen && "pl-20")}>
-            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border/50 bg-muted/60">
-              <Bot className="h-4 w-4" />
-            </div>
-            <div className="min-w-0">
-              <div className="flex items-center gap-2">
-                <h1 className="truncate text-sm font-medium">Agent Mode</h1>
-                <RuntimeBadge running={runtimeStatus?.running ?? false} />
-              </div>
-              <p className="truncate text-xs text-muted-foreground">
-                {projectRoot ? projectRoot : "No project folder selected"}
-              </p>
-            </div>
-          </div>
-          <div className="flex shrink-0 items-center gap-2">
-            <Button
-              variant="outline"
-              size="icon"
-              className="h-8 w-8"
-              onClick={() => void refreshSessions()}
-              aria-label="Refresh agent sessions"
-            >
-              <RotateCcw className="h-4 w-4" />
-            </Button>
-            {runtimeStatus?.running ? (
-              <Button
-                variant="outline"
-                size="icon"
-                className="h-8 w-8"
-                onClick={() => void stopRuntime()}
-                aria-label="Stop agent runtime"
-              >
-                <Square className="h-3.5 w-3.5" />
-              </Button>
-            ) : (
-              <Button
-                variant="outline"
-                size="icon"
-                className="h-8 w-8"
-                onClick={() => void startRuntime(false)}
-                disabled={isStarting || !projectRoot}
-                aria-label="Start agent runtime"
-              >
-                {isStarting ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <Play className="h-4 w-4" />
-                )}
-              </Button>
-            )}
-          </div>
-        </header>
+        <header className="h-14 shrink-0 border-b border-border/35" aria-label="Agent Mode" />
 
         {error && (
           <div className="mx-auto mt-3 w-full max-w-6xl px-4">
@@ -1097,20 +1038,6 @@ function ToolDetail({ label, value }: { label: string; value: string }) {
         {value}
       </pre>
     </div>
-  );
-}
-
-function RuntimeBadge({ running }: { running: boolean }) {
-  return (
-    <Badge
-      variant={running ? "secondary" : "outline"}
-      className={cn(
-        "h-5 rounded-md px-1.5 text-[11px]",
-        running && "bg-foreground text-background hover:bg-foreground"
-      )}
-    >
-      {running ? "running" : "stopped"}
-    </Badge>
   );
 }
 
