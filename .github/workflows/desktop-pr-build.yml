@@ -5,7 +5,7 @@ permissions:
 
 on:
   pull_request:
-    branches: [ master ]
+    branches: [master]
 
 jobs:
   build-macos:
@@ -14,6 +14,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # was v4
         with:
           persist-credentials: false
+          submodules: recursive
 
       # Xcode 26.5 is temporarily exposed as a beta app on macos-26 runners: https://github.com/actions/runner-images/issues/14108
       - name: Select Xcode 26.5
@@ -72,6 +73,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # was v4
         with:
           persist-credentials: false
+          submodules: recursive
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # was v22
@@ -129,6 +131,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # was v4
         with:
           persist-credentials: false
+          submodules: recursive
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@f4d14e03ff726c06358e5557344e1da148b56cf7 # was v1
@@ -138,7 +141,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # was stable
         with:
-          toolchain: 1.88.0
+          toolchain: 1.91.1
 
       - name: Install sccache
         shell: bash

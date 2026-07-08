@@ -1,766 +1,618 @@
 # Agent Mode Direct Goose Product Plan
 
-This document captures the product direction, UX constraints, and technical
-planning decisions for Maple Agent Mode using direct Goose crates. It is a
-planning artifact only. It does not start implementation.
+This document records the product direction and implementation boundary for the
+direct Goose Agent Mode experiment in Maple.
 
-## Executive Decision
+It is not a final shipping commitment. It is the working decision record for the
+next experiment after the Goose-over-ACP proof of concept.
 
-Maple should build Agent Mode as a first-class product surface, not as normal
-chat with extra tools attached.
+## Inputs
 
-For the built-in Maple agent, the preferred runtime path is direct Goose through
-the Rust crates in the Goose submodule. ACP remains useful later as an optional
-adapter for external agents, but it should not be the default interface between
-Maple Desktop and its own bundled Goose-powered agent.
+This plan is based on:
 
-The product split is:
+- the working Maple Desktop + Goose + ACP proof of concept;
+- the direct-Goose workspace created at `/Users/admin/workspaces/goose-sdk/maple`;
+- the Codex screenshots showing a separate execution surface inside ChatGPT,
+  with filesystem projects, device/runtime context, and session lists grouped
+  under projects;
+- the Goose/GDK architecture direction from Spiral's July 7, 2026 post,
+  [Spiral x Goose: The Best is Yet to Honk](https://spiralxyz.substack.com/p/spiral-x-goose-the-best-is-yet-to);
+- the current state of Goose's published `goose-sdk` crates and internal parent
+  `goose` crate APIs.
+
+## Final Decision
+
+Maple should build Agent Mode as a first-class Maple product surface, not as a
+mode inside normal chat.
+
+For Maple's built-in desktop agent, the next experiment should use direct
+embedded Goose through Tauri-side Rust code.
+
+ACP should stay in the broader Agent Mode architecture, but not as the default
+path between Maple Desktop and its own built-in Goose runtime.
+
+The intended split is:
+
+```text
+V1 built-in Agent Mode
+  Maple UI
+    -> Maple-owned Tauri commands/events
+      -> direct embedded Goose
+        -> Maple local OpenAI-compatible proxy
+          -> Maple models
+
+Later external Agent Mode
+  Maple UI
+    -> Maple-owned Tauri commands/events
+      -> ACP adapter
+        -> Codex / Claude Code / external Goose / other ACP runtime
+```
+
+The frontend should speak Maple Agent Mode concepts only. It should not depend
+on Goose Rust types, ACP protocol objects, local runtime URLs, WebSockets, or
+Goose config files.
+
+## Discussion Decisions
+
+The discussion settled these product and architecture points:
+
+- Agent Mode should be a separate top-level Maple surface, similar in product
+  shape to Codex inside ChatGPT.
+- Normal Maple Chat and Agent Mode should not share the same chat/session
+  concepts. They can share visual components, but they are different products.
+- Agent projects are filesystem folders. This should be a first-class concept,
+  not hidden inside a prompt or model setting.
+- Agent sessions belong under projects and should eventually be browsable,
+  searchable, resumable, and distinguishable from normal Maple chat history.
+- The direct Goose path is the best fit for Maple's built-in agent because
+  Maple owns the desktop process, local proxy, folder picker, permissions, and
+  UI.
+- ACP remains strategically important, but it should be an adapter for external
+  runtimes rather than the default internal bridge to Maple's own embedded
+  Goose runtime.
+- The TypeScript frontend should talk to a Maple-owned Agent Mode command/event
+  API. Tauri should decide whether the active runtime is direct Goose, ACP, or
+  something else.
+- The first direct-Goose branch is an experiment and proof point, not a final
+  shipping commitment.
+- Before treating the integration as production architecture, Maple should
+  research the Goose internal crates and the Goose reference client in detail.
+
+## Product Thesis
+
+Agent Mode is Maple's local workspace execution surface.
+
+Normal Maple Chat remains the place for private conversation, explanation,
+server-side tools, and general AI chat. Agent Mode is the place where a user
+selects a local folder and asks Maple to inspect, edit, run, test, debug, and
+explain work on that machine.
+
+The closest product analogy is Codex inside ChatGPT:
+
+- same parent product;
+- separate top-level surface;
+- separate project and session model;
+- execution-oriented timeline;
+- local or device-aware runtime state;
+- chat-shaped composer, but not ordinary chat history.
+
+For Maple, the mental model should be:
 
 ```text
 Maple Chat
-  private conversational AI
+  private AI conversation
 
 Maple Agent Mode
-  private local workspace agent
-  runs on the user's desktop
-  works inside selected filesystem folders
-  powered by Maple's local proxy and embedded Goose
+  private local workspace execution
 ```
 
-The user-facing promise is not "Maple has Goose" or "Maple supports ACP." The
-promise is:
+The user-facing promise should not be "Maple supports Goose" or "Maple supports
+ACP." The promise should be:
 
 > Maple can safely act for me inside a selected local project folder, with clear
 > visibility into what it is doing.
 
-## Why Agent Mode Is A Good Product Bet
+## Why Agent Mode Should Be Separate
 
-Agent Mode moves Maple beyond generic chat without abandoning Maple's core
-identity. Maple already has:
+Agent Mode introduces concepts that do not fit cleanly into normal chat:
 
-- A desktop app.
-- A private AI chat UX.
-- A local OpenAI-compatible proxy.
-- Account, billing, and model access.
-- Existing project/chat organization concepts.
-- A privacy-oriented product story.
+- selected local filesystem folders;
+- active desktop runtime status;
+- resumable agent sessions;
+- tool execution timelines;
+- tool permissions;
+- shell/file output;
+- cancellation;
+- local logs and diagnostics;
+- possible future device routing and remote control.
 
-A local workspace agent fits that base. It gives Maple a high-value capability:
-the assistant can inspect, edit, run commands, test, and explain work inside a
-user-selected folder on the user's own machine.
+These concepts deserve a separate surface because they change the user's trust
+model. A normal chat message is conversational. An agent run may inspect files,
+execute commands, request permission, modify a workspace, and continue over
+multiple tool calls.
 
-This is similar to the ChatGPT/Codex split:
+Agent Mode should therefore have its own navigation item, project/session list,
+composer, runtime status, and timeline. It should not be a model selector or
+toggle inside the existing Maple chat page.
 
-```text
-ChatGPT
-  general conversation
+## Product Objects
 
-Codex inside ChatGPT
-  execution-oriented workspace agent
-```
+The Maple product model should use Maple-owned objects:
 
-Maple's version should be:
+- Agent project: a selected filesystem folder.
+- Agent session: a resumable thread of work scoped to an agent project.
+- Agent run: one user request and the agent/tool activity that follows.
+- Timeline item: assistant text, thinking, tool call, tool result, permission,
+  error, or usage event.
+- Permission request: a user decision point for a tool action.
+- Runtime: the local or external agent backend that executes the session.
+- Device: later, the desktop machine capable of executing a session.
 
-```text
-Maple Chat
-  private conversation
+These objects should remain stable even if the runtime changes from direct
+Goose to ACP, or if Goose later moves the needed APIs into a stable GDK crate.
 
-Maple Agent Mode
-  local private project/workspace agent
-```
+## V1 Scope
 
-The important product distinction is that Agent Mode is not merely a model
-choice or a chat setting. It is an execution surface.
+The first direct-Goose Agent Mode experiment should be intentionally local and
+desktop-only.
 
-## Codex UX Reference
+In scope:
 
-The Codex screenshots are useful as a product reference because they show a
-clear mental model:
+- Maple Desktop only.
+- User chooses a local project folder.
+- Tauri starts and owns the embedded Goose runtime.
+- Tauri starts Maple's local proxy when needed.
+- Tauri creates or reuses a local proxy API key automatically.
+- Goose uses Maple's local OpenAI-compatible proxy and Maple's selected model.
+- Goose developer tools can inspect and operate in the selected folder.
+- The UI shows thinking, assistant text, tool calls, tool results, permission
+  prompts, failures, runtime status, and enough diagnostics to debug failures.
+- Sessions can be listed, loaded, and resumed if Goose's session APIs make that
+  practical.
 
-- Codex has its own top-level tab.
-- Projects are filesystem folders.
-- Sessions are grouped under projects.
-- The active run view shows the project and device context.
+Out of scope for V1:
+
+- mobile remote control;
+- remote session sync;
+- enclave-backed agent state;
+- multiple desktop device coordination;
+- external ACP runtimes;
+- Goose configuration screens for normal users;
+- web, iOS, or Android Agent Mode;
+- merging agent sessions into normal Maple chat history.
+
+## UX Direction
+
+The Codex screenshots are useful as a structural reference, not as a visual
+style reference.
+
+Useful structural ideas:
+
+- Agent Mode has its own top-level tab.
+- Projects are folders.
+- Sessions/chats are grouped under projects.
+- Runtime/device context is visible.
 - The composer is scoped to the active project/session.
-- Device chips prepare the UX for remote desktop execution.
-- The session list is separate from normal chat recents.
+- Search and session navigation are part of the agent surface.
 
-Maple should use the same conceptual split, but not copy Codex's visual
-language. Maple should keep its existing styling, layout density, tokens,
-typography, dark theme, buttons, menus, dialogs, and chat surface feel.
+Things Maple should not copy:
 
-## Product Principles
+- Codex's exact visual design;
+- Codex's exact navigation layout;
+- Codex's session storage assumptions;
+- a generic developer-dashboard look.
 
-### Agent Mode Is A Separate Surface
+Maple Agent Mode should look and feel like Maple. It should reuse Maple's
+existing visual system where possible:
 
-Agent Mode should have its own sidebar entry and its own pages. It should not be
-folded into ordinary Maple chat history.
+- sidebar patterns;
+- row/list treatments;
+- composer style;
+- dialogs and dropdowns;
+- buttons and badges;
+- markdown rendering;
+- dark/light theme behavior;
+- spacing, typography, and interaction rhythm.
 
-Normal chat history and agent sessions are different artifacts:
+At the same time, Agent Mode should not overload existing chat objects. It is
+mostly a greenfield product area with reused Maple components.
 
-- Chat history is conversation state.
-- Agent session history is workspace execution state.
+## Maple UI Constraints
 
-They can look related, but they should not be stored, named, filtered, or routed
-as the same product object.
+The product should borrow structure from Codex and Goose Desktop, but the visual
+language should stay Maple-native.
 
-### Greenfield Concepts, Existing Maple Feel
+Keep:
 
-Agent Mode introduces new concepts:
+- Maple's existing sidebar density, typography, spacing, and color behavior.
+- Maple's existing chat composer feel where it fits the agent workflow.
+- Maple's existing button, badge, dropdown, dialog, and markdown treatments.
+- Maple's existing light/dark theme rules.
+- Maple's existing project-related visual vocabulary where it is useful.
 
-- Agent projects.
-- Local filesystem roots.
-- Agent sessions.
-- Active runs.
-- Tool timelines.
-- Permission prompts.
-- Runtime status.
-- Device context.
-- Session logs.
+Do not combine:
 
-Those concepts should be modeled cleanly rather than squeezed into existing
-Maple chat objects.
+- normal Maple chat sessions and agent sessions;
+- server-side Maple tools and local Goose/developer tools;
+- Maple cloud projects and local filesystem agent projects, unless a later
+  product design deliberately links them;
+- Maple chat model selection and Agent Mode runtime configuration;
+- normal chat message history and local execution timelines.
 
-At the same time, Agent Mode should reuse Maple's existing visual system:
+Do not copy:
 
-- Sidebar patterns from `frontend/src/components/Sidebar.tsx`.
-- Chat list grouping patterns from `frontend/src/components/ChatHistoryList.tsx`.
-- Project detail layout ideas from `frontend/src/components/ProjectDetailView.tsx`.
-- Composer/message styling ideas from `frontend/src/components/UnifiedChat.tsx`.
-- Shared primitives from `frontend/src/components/ui/*`.
-- Markdown rendering from `frontend/src/components/markdown.tsx`.
-- Global styling from `frontend/src/index.css` and `frontend/src/chat.css`.
+- Codex's exact visual style;
+- Goose Desktop's exact UI;
+- generic IDE or developer-dashboard patterns that clash with Maple.
 
-The rule is:
+The intended result is a new Maple section that feels like it belongs in the
+same app, while clearly signaling a different trust and execution model.
 
-> Copy Maple patterns first. Invent only where Agent Mode has a genuinely new
-> concept.
+## Suggested Page Shape
 
-### Do Not Combine Product Concepts
-
-We should keep these concepts separate:
-
-- Maple conversation project: existing server-side chat organization.
-- Agent project: local filesystem folder.
-- Maple chat conversation: normal AI chat session.
-- Agent session: local workspace execution timeline.
-- Agent run: one prompt execution inside an agent session.
-- Runtime adapter: Goose direct now, ACP later.
-
-The UI may reuse list rows, headers, dialogs, and composer styling, but the data
-model should keep these objects distinct.
-
-### Maple Owns The UX And Trust Layer
-
-Goose should be the harness/runtime. Maple should own the product surface around
-it:
-
-- Project picker.
-- Device/runtime status.
-- Model and effort selection.
-- Session browser.
-- Timeline rendering.
-- Tool-call display.
-- Permission prompts.
-- Logs and diagnostics access.
-- Stop/cancel/retry/resume controls.
-- Future encrypted sync and remote control.
-
-If Maple exposes Goose too directly, the product becomes a Goose skin. That is
-not the desired end state. Maple should use Goose as a strong embedded agent
-engine while keeping Maple's own app model.
-
-## Information Architecture
-
-The proposed top-level structure is:
-
-```text
-Maple
-  New Chat
-  Search
-  Agent Mode
-  Projects
-  Recents
-```
-
-Agent Mode should route to a separate agent area:
+A useful eventual information architecture is:
 
 ```text
 Agent Mode
-  Agent home / project browser
-  Agent project detail
-  Agent session detail
+  Home / project browser
+    device/runtime filters
+    filesystem projects
+    sessions grouped under projects
+    search
+
+  Project session view
+    project folder header
+    runtime status
+    session title
+    timeline
+    permission prompts
+    composer
+    model/mode controls
+
+  Diagnostics / logs
+    runtime logs
+    LLM request/response logs
+    tool call records
+    session JSONL
 ```
 
-### Agent Home / Project Browser
+V1 can open directly into the active project/session view if that is faster, but
+the data model should not block an eventual project/session browser.
 
-Purpose: let the user pick where the agent should work.
+## Timeline Model
 
-Core elements:
+The timeline is the core Agent Mode artifact. It should make the agent's work
+legible.
 
-- Header: "Agent Mode".
-- Runtime status: stopped, starting, running, failed.
-- Device identity: local desktop in V1.
-- Project list grouped by filesystem roots.
-- Session list under each project.
-- Search/filter for agent sessions.
-- New project/folder picker.
-- New agent session action.
+Timeline item types should include:
 
-V1 can be simple. It does not need remote devices or sync, but the shape should
-not block them.
+- user message;
+- assistant message;
+- thinking block, collapsed by default;
+- tool call;
+- tool result;
+- permission request;
+- error;
+- usage/runtime metadata.
 
-### Agent Project Detail
+Tool calls should appear in execution order, not grouped at the bottom. A tool
+row should show:
 
-Purpose: show all agent sessions for one local folder.
+- tool name;
+- human-readable summary;
+- status;
+- input;
+- output;
+- failure details;
+- raw diagnostic payload where available.
 
-Core elements:
-
-- Project name derived from folder basename.
-- Full root path.
-- Runtime/model status.
-- Recent sessions.
-- New session composer.
-- Folder actions: reveal in Finder, change folder, remove from list.
-- Optional project metadata: last opened, last run, runtime adapter.
-
-This is analogous to Maple's `ProjectDetailView`, but it is local and
-filesystem-backed rather than server-backed chat-project data.
-
-### Agent Session Detail
-
-Purpose: show the active execution timeline and prompt composer.
-
-Core elements:
-
-- Header with session title, project root, runtime status, model/effort.
-- Timeline of user prompts, assistant messages, thinking, tool calls, tool
-  results, errors, permission requests, usage, and final answers.
-- Composer scoped to the project root.
-- Stop/cancel button during active runs.
-- Retry/resume affordance after failures.
-- Logs/diagnostics entry point.
-
-The active session view should feel like Maple's chat page, but the content is
-an execution timeline, not a pure conversation transcript.
-
-## V1 Product Scope
-
-V1 should stay narrow:
-
-- Desktop only.
-- Local machine only.
-- One selected filesystem project root per session.
-- Goose direct runtime only.
-- Maple proxy auto-started.
-- Local proxy API key auto-created if missing.
-- No remote mobile control.
-- No encrypted cloud session sync.
-- No external ACP runtime selection.
-- No broad "control my whole computer" promise.
-
-The first reliable user workflow should be:
-
-1. User opens Maple Desktop.
-2. User selects Agent Mode.
-3. User picks a project folder.
-4. Maple initializes local proxy and embedded Goose.
-5. User asks the agent to work in that folder.
-6. Maple shows the run timeline with thinking, tools, results, and errors.
-7. User can stop the run.
-8. User can inspect what happened.
-9. User can resume or start another session later.
-
-This is enough to validate the product.
-
-## Later Product Direction
-
-The V1 architecture should leave room for:
-
-- Remote mobile-to-desktop control.
-- Enclave-mediated device relay.
-- Encrypted session backup/sync.
-- External ACP agents such as Codex or Claude Code.
-- Multiple local desktop devices.
-- Scheduled/background tasks.
-- Subagents and automation if Goose exposes them cleanly.
-
-The data model should include device/runtime fields early, even if V1 only has
-one local desktop.
-
-## Data Model
-
-Maple should define its own frontend/runtime-facing data model. These are Maple
-objects, not Goose objects.
-
-```ts
-type AgentRuntimeKind = "goose-direct" | "acp";
-
-interface AgentDevice {
-  id: string;
-  displayName: string;
-  kind: "local-desktop" | "remote-desktop";
-  status: "available" | "offline" | "unknown";
-}
-
-interface AgentProject {
-  id: string;
-  deviceId: string;
-  displayName: string;
-  rootPath: string;
-  runtimeKind: AgentRuntimeKind;
-  createdAt: string;
-  updatedAt: string;
-  lastOpenedAt?: string;
-}
-
-interface AgentSession {
-  id: string;
-  projectId: string;
-  deviceId: string;
-  runtimeKind: AgentRuntimeKind;
-  title: string;
-  status: "idle" | "running" | "cancelled" | "failed";
-  createdAt: string;
-  updatedAt: string;
-  lastRunAt?: string;
-}
-
-interface AgentRun {
-  id: string;
-  sessionId: string;
-  status: "running" | "completed" | "cancelled" | "failed";
-  startedAt: string;
-  completedAt?: string;
-}
-```
-
-The timeline should also be Maple-owned:
-
-```ts
-type AgentTimelineItem =
-  | AgentUserMessageItem
-  | AgentAssistantMessageItem
-  | AgentThinkingItem
-  | AgentToolCallItem
-  | AgentPermissionRequestItem
-  | AgentErrorItem
-  | AgentUsageItem;
-```
-
-Goose events should be mapped into this model on the Tauri side or in a thin
-frontend adapter. The rest of the UI should not depend on Goose internals.
+Thinking should be available but not visually dominant. It should be collapsed
+by default and expandable for debugging or power users.
 
 ## Runtime Boundary
 
-The desired architecture is:
+Tauri should own the runtime lifecycle.
+
+Responsibilities on the Tauri side:
+
+- start and stop embedded Goose;
+- configure Goose for the selected project root;
+- configure Goose to use Maple's local proxy;
+- ensure the local proxy is running;
+- ensure a local proxy API key exists;
+- create/list/load/delete sessions;
+- send prompts;
+- cancel active runs;
+- route permission requests and responses;
+- map Goose events into Maple events;
+- write runtime, session, tool, and LLM logs.
+
+Responsibilities on the TypeScript side:
+
+- render Maple Agent Mode UI;
+- call Maple-owned Tauri commands;
+- listen for Maple-owned events;
+- maintain optimistic UI state where appropriate;
+- keep normal web, iOS, and Android builds unaware of desktop-only runtime APIs.
+
+TypeScript should not:
+
+- open a WebSocket directly to a local Goose server for the built-in runtime;
+- know the local Goose port or URL;
+- read or write Goose config files;
+- depend on Goose Rust type names;
+- depend on ACP event shapes for the built-in path.
+
+## Direct Goose Versus ACP
+
+Direct Goose is the better default for Maple's built-in Agent Mode because Maple
+owns the desktop process, local proxy, selected folder, and UI. Embedding Goose
+lets Maple control startup, configuration, permissions, logging, cancellation,
+and event mapping without supervising a separate first-party daemon.
+
+ACP remains valuable when Maple does not own the runtime:
+
+- Codex;
+- Claude Code;
+- a user-installed Goose daemon;
+- future ACP-compatible tools;
+- possible remote/runtime interoperability cases.
+
+The product boundary should therefore be:
 
 ```text
-Maple frontend
-  <=> Tauri commands and emits
-    <=> Maple AgentRuntime trait
-      <=> GooseDirectRuntime
-        <=> goose::agents::Agent
+Maple Agent Mode API/events
+  Runtime adapter interface
+    Direct Goose adapter
+    ACP adapter later
 ```
 
-The frontend speaks Maple concepts:
+Both adapters should feed the same Maple timeline and session model.
 
-- start runtime
-- create project
-- list projects
-- create session
-- list sessions
-- load session
-- send prompt
-- cancel run
-- respond to permission request
-- open logs
+## Goose And GDK Direction
 
-The direct Goose adapter handles:
+Spiral's July 7, 2026 Goose/GDK announcement supports this direction. The post
+describes Goose evolving from a single application into a development platform
+for many agentic applications. It also describes two integration paths:
 
-- Goose config/root setup.
-- Provider setup for Maple proxy.
-- SessionManager calls.
-- AgentConfig and Agent construction.
-- Developer/platform tool setup.
-- Agent::reply stream consumption.
-- Goose event to Maple event conversion.
-- Cancellation tokens.
-- Permission confirmation routing.
-- Diagnostics/log collection.
+- ACP for daemon/process-style integrations.
+- A lower-level Rust API for embedded, fine-grained control.
 
-This keeps the door open for:
+That maps directly onto Maple's desired architecture:
 
 ```text
-Maple AgentRuntime
-  GooseDirectRuntime
-  AcpRuntime
-  FutureRuntime
+Built-in Maple Agent Mode
+  use embedded Rust/GDK-style control
+
+External agent support
+  use ACP
 ```
 
-ACP support can come back as an adapter without changing the Agent Mode UI.
+The announcement also frames the Goose desktop app as a reference client. For
+Maple, that means the Goose reference client is useful for API and interaction
+research, but it should not become Maple's visual design.
+
+## Goose Reference Client Research
+
+Goose's reference desktop/client implementation should be treated as a live
+example of how the Goose team expects GDK capabilities to be composed.
+
+Research it for:
+
+- how it constructs and owns agents;
+- how it configures providers and models;
+- how it initializes sessions and resumes them;
+- how it maps Goose messages into UI events;
+- how it represents tool calls, tool results, and failures;
+- how it handles permissions and confirmations;
+- how it stores and retrieves session history;
+- how it exposes logs and diagnostics;
+- how it separates runtime concerns from UI state.
+
+Do not treat it as:
+
+- Maple's design system;
+- Maple's information architecture;
+- the final answer for Maple's session model;
+- a reason to expose Goose-specific nouns to Maple users.
+
+The practical goal is to learn the cleanest internal Goose/GDK entrypoints and
+then hide them behind Maple's runtime adapter.
+
+## Current Goose API Reality
+
+The current published `goose-sdk` crate does not yet appear to expose the full
+agent/session/tool runtime Maple needs.
+
+The usable direct runtime surface is in the parent `goose` crate, including
+internal APIs around:
+
+- `goose::agents::Agent`;
+- `goose::agents::AgentConfig`;
+- `goose::agents::AgentEvent`;
+- `goose::agents::SessionConfig`;
+- `goose::session::SessionManager`;
+- `goose::config::permission::PermissionManager`;
+- providers and OpenAI-compatible provider configuration;
+- platform extensions and developer tools.
+
+For the experiment, using the Goose submodule and parent crate is acceptable.
+For a real shipping integration, Maple should push toward a stable GDK/Rust API
+surface that covers the same needs.
+
+The important constraint is isolation: direct Goose calls should live behind a
+Maple-owned Rust adapter so future Goose/GDK API changes do not leak into the
+frontend or product model.
 
 ## Goose Internal API Research Plan
 
-Because the current published `goose-sdk` crate does not yet expose the full
-agent runtime, this experiment uses the Goose submodule directly. We should
-research the internal APIs deliberately before wiring UI.
-
-### Agent Loop
-
-Research:
-
-- `goose::agents::Agent`
-- `goose::agents::AgentConfig`
-- `goose::agents::SessionConfig`
-- `goose::agents::AgentEvent`
-- `Agent::reply`
-- `Agent::update_provider`
-- `Agent::update_goose_mode`
-- `Agent::list_tools`
-- `Agent::add_extension`
-- `Agent::handle_confirmation`
-
-Questions:
-
-- Can one `Agent` safely serve multiple sessions?
-- Should Maple create one agent per session or one runtime agent per project?
-- Which calls rely on `Config::global()`?
-- How does cancellation behave mid-tool versus mid-model stream?
-
-### Sessions
-
-Research:
-
-- `goose::session::SessionManager`
-- session create/list/load/delete/export/import
-- session usage totals
-- session truncation
-- session naming
-- session working directory behavior
-
-Questions:
-
-- Can Maple use Goose session storage as the source of truth for Agent Mode?
-- Which fields are stable enough to show in the UI?
-- How should Maple map local folders to Goose sessions?
-- How should Maple handle deleted or moved project folders?
-
-### Provider Configuration
-
-Research:
-
-- `goose::providers::*`
-- OpenAI-compatible provider construction.
-- provider registry helpers.
-- model config helpers.
-- request logging hooks.
-- `Config::global()` dependencies.
-
-Questions:
-
-- Can Maple configure the local proxy without writing Goose secrets/config?
-- Can Maple pass provider credentials directly?
-- Can model/effort be changed per session?
-- Can Maple record raw request/response diagnostics in a supported way?
-
-### Developer Tools And Platform Extensions
-
-Research:
-
-- `goose::agents::platform_extensions::*`
-- developer tools implementation.
-- in-process platform extension registration.
-- working-directory context.
-- tool metadata and permission metadata.
-
-Questions:
-
-- Can Maple enable developer tools without spawning the Goose binary?
-- Can tools be scoped strictly to the selected project root?
-- Can Maple hide or disable tools per mode?
-- Which tools should V1 expose by default?
-
-### Permissions
-
-Research:
-
-- `goose::config::permission::PermissionManager`
-- `goose::permission::*`
-- `Agent::handle_confirmation`
-- action-required/elicitation content.
-- permission routing in providers/tools.
-
-Questions:
-
-- Can Maple pause a tool call and show native permission UI?
-- What data does Maple receive before tool execution?
-- Can Maple distinguish read-only from mutating operations?
-- Can Maple persist user allow/deny decisions per project?
-
-### Event Mapping
-
-Research:
-
-- `AgentEvent`
-- `Message`
-- `MessageContent`
-- `ToolRequest`
-- `ToolResponse`
-- `Thinking`
-- `SystemNotification`
-- `ActionRequired`
-- `HistoryReplaced`
-- `McpNotification`
-
-Questions:
-
-- Which events are deltas and which are full messages?
-- How do we keep tool calls in correct order?
-- How should thinking be grouped and collapsed?
-- How are errors represented?
-- What should be persisted by Maple versus read back from Goose?
-
-### Context And Compaction
-
-Research:
-
-- Goose context management APIs.
-- compaction behavior.
-- model context usage.
-- session truncation.
-
-Questions:
-
-- Can Maple show useful context/token usage?
-- Can Maple expose compaction events?
-- Can users recover or inspect pre-compaction history?
-
-### Logs And Diagnostics
-
-Research:
-
-- Goose tracing/logging setup.
-- request logs.
-- diagnostics generation.
-- session diagnostics.
-- parser/provider error surfaces.
-
-Questions:
-
-- Can Maple configure log directories directly?
-- Can Maple collect one diagnostic bundle per failed run?
-- Can Maple expose raw provider logs when debug mode is enabled?
-- Which logs might contain secrets and need redaction?
-
-### Goose Desktop Reference
-
-Reference paths:
-
-- `ThirdParties/goose/ui/desktop/src`
-- `ThirdParties/goose/ui/sdk/src`
-- `ThirdParties/goose/ui/text/src/tui.tsx`
-- `ThirdParties/goose/ui/text/src/toolcall.tsx`
-- `ThirdParties/goose/ui/desktop/src/sessions.ts`
-
-Use Goose Desktop as inspiration for:
-
-- session creation/resume behavior.
-- tool-call timeline behavior.
-- extension configuration flows.
-- provider/model configuration.
-- diagnostics and backend status handling.
-
-Do not import Goose Desktop's visual style into Maple. The reference value is
-API usage and interaction modeling.
-
-## Maple UI Reuse Plan
-
-Agent Mode should be new files and pages, but existing Maple components should
-guide the implementation.
-
-Likely new surfaces:
-
-- `AgentModePage`
-- `AgentProjectBrowser`
-- `AgentProjectDetail`
-- `AgentSessionView`
-- `AgentTimeline`
-- `AgentComposer`
-- `AgentToolCallRow`
-- `AgentThinkingBlock`
-- `AgentPermissionDialog`
-- `AgentRuntimeStatusBadge`
-- `AgentProjectPicker`
-
-Likely reused patterns/components:
-
-- `Sidebar` for top-level navigation.
-- `ChatHistoryList` for grouped lists and row actions.
-- `ProjectDetailView` for project detail layout ideas.
-- `UnifiedChat` for composer and message-flow references.
-- `ModelSelector` for model selection behavior.
-- `Button`, `Dialog`, `DropdownMenu`, `Tooltip`, `Badge`, `Textarea`,
-  `Select`, `Tabs`, and other shared UI primitives.
-
-Styling guidance:
-
-- Preserve Maple spacing, border radius, dark theme, and typography.
-- Keep tool rows compact and readable.
-- Use icons for tool actions and controls.
-- Do not use marketing-page composition.
-- Do not create a separate Goose/Codex-looking visual system.
-- Avoid nesting cards inside cards.
-- Keep the main session timeline scannable.
-- Treat errors and permission prompts as first-class timeline events, not
-  anonymous red banners.
-
-## Timeline UX
-
-The timeline is the core Agent Mode artifact. It should make the agent's work
-auditable.
-
-Recommended item order:
-
-1. User message.
-2. Thinking block, collapsed by default once there is meaningful output.
-3. Tool call row, in chronological order.
-4. Tool result summary.
-5. Assistant message.
-6. Error or permission request exactly where it happened.
-
-Tool call rows should show:
-
-- tool display title.
-- status: queued, running, completed, failed, cancelled.
-- concise input summary.
-- expandable raw input/output.
-- working directory if relevant.
-- file paths touched if available.
-- duration.
-- error details if failed.
-
-Thinking should be available but not noisy:
-
-- collapse by default after completion.
-- show active thinking while running if available.
-- do not render token fragments as separate messages.
-
-Errors should be actionable:
-
-- title that names the failing layer.
-- short explanation.
-- expandable raw details.
-- link/button to logs when useful.
-
-## Trust And Permission Model
-
-The trust model should be explicit in the UX.
-
-The user should always know:
-
-- which folder the agent is working in.
-- whether the runtime is local or remote.
-- which model/effort is selected.
-- whether the proxy is running.
-- whether a run is active.
-- which tools are enabled.
-- whether a tool is read-only or mutating.
-- what command/file operation is about to run.
-- how to stop the agent.
-
-Suggested V1 defaults:
-
-- Require an explicit project folder.
-- Scope developer tools to that folder where possible.
-- Prefer ask-first behavior for risky shell/file operations.
-- Always show tool calls in the timeline.
-- Always expose logs for failed runs.
-
-## Remote Future
-
-Remote is not V1, but the model should leave room for it.
-
-The likely future shape:
-
-```text
-Maple Mobile
-  sends prompt/session intent to enclave store or relay
-
-Maple Desktop
-  receives intent
-  executes against local Goose runtime
-  writes back session/run events
-
-Maple Mobile
-  reads assistant/tool/run updates
-```
-
-The desktop remains the execution environment. The enclave should route or store
-encrypted session state/events, not execute against the user's filesystem.
-
-The V1 data model should include `deviceId` and `runtimeKind` so mobile remote
-control does not require a full migration later.
-
-## Non-Goals
-
-For the first direct-Goose experiment:
-
-- Do not replace Maple Chat.
-- Do not merge Maple chat projects with agent filesystem projects.
-- Do not build remote mobile control.
-- Do not build encrypted cloud sync.
-- Do not build external ACP runtime selection.
-- Do not expose Goose internals to TypeScript.
-- Do not copy Goose Desktop styling.
-- Do not make Agent Mode available on web, iOS, or Android.
-- Do not ship submodule/internal APIs as final architecture without a follow-up
-  decision.
+Before treating direct Goose as production architecture, inspect and document
+the exact APIs Maple uses in these areas:
+
+- agent construction and lifecycle;
+- provider setup;
+- model selection;
+- local proxy configuration;
+- session creation, listing, loading, deletion, import, and export;
+- event streaming;
+- message/content mapping;
+- tool call lifecycle;
+- built-in developer tools;
+- permission manager and confirmation flow;
+- cancellation;
+- context management;
+- memory hooks;
+- logging and tracing;
+- error surfaces.
+
+For each area, record:
+
+- the specific Goose modules/types/functions used;
+- whether the API is public, semi-public, or internal;
+- whether it touches Goose global config or global state;
+- whether Maple can scope it to an app-owned config directory;
+- the Maple command/event shape that hides the detail;
+- the GDK ask that would make the integration cleaner.
+
+This research should be aimed at producing clear, actionable feedback for the
+Goose team.
+
+## Configuration Principles
+
+The default Maple-powered Agent Mode path should not expose Goose configuration
+ceremony to normal users.
+
+Entering Agent Mode should:
+
+- auto-start the Maple proxy if needed;
+- auto-create a local proxy API key if needed;
+- configure Goose to use the local Maple proxy;
+- select the requested Maple model;
+- scope execution to the selected project folder;
+- choose Maple-owned config, session, and log paths.
+
+Advanced users can eventually configure external runtimes or ACP providers, but
+that should be separate from the default built-in Maple runtime.
+
+## Logs And Diagnostics
+
+The ACP PoC showed that diagnostics are a product requirement, not a developer
+nice-to-have.
+
+Agent Mode should make it possible to debug:
+
+- runtime startup;
+- proxy startup;
+- local API key creation;
+- raw LLM requests;
+- raw LLM streaming responses;
+- tool call parsing;
+- tool execution;
+- permission decisions;
+- Goose session events;
+- frontend event mapping.
+
+Logs should be local, discoverable, and tied to session/run IDs where possible.
+If a tool call fails before execution, the UI and logs should make that clear.
+If a model emits malformed tool-call arguments, the raw upstream response should
+be recoverable.
+
+## Remote Control Later
+
+The direct-Goose V1 should not include remote mobile control, but it should not
+paint Maple into a corner.
+
+A later version could add:
+
+- encrypted session metadata sync through the enclave;
+- desktop device registration;
+- mobile-to-desktop message relay;
+- mobile readback of assistant/tool progress;
+- remote permission prompts;
+- remote cancellation.
+
+Possible future approaches:
+
+- encrypted KV/S3-style session backup;
+- dedicated backend tables for agent sessions/runs;
+- polling from desktop and mobile through the enclave;
+- an authenticated SSE/WebSocket relay between devices.
+
+This is deliberately out of scope for V1. The only V1 requirement is that the
+local product model can later be synchronized or mirrored.
+
+## Implementation Principles
+
+The experiment should follow these principles:
+
+- Keep Agent Mode separate from normal Maple chat.
+- Reuse Maple components and style, not chat data structures.
+- Keep desktop-only code behind platform guards.
+- Keep Goose behind a Rust adapter.
+- Keep TypeScript runtime-agnostic.
+- Auto-initialize the proxy and local proxy API key.
+- Prefer direct Goose for the built-in runtime.
+- Preserve ACP as a future external runtime adapter.
+- Use the Goose submodule only because the stable GDK surface is not ready yet.
+- Document every Goose internal API dependency.
+- Do not copy Codex or Goose Desktop visually.
+- Do not expose Goose config ceremony in the default flow.
 
 ## V1 Acceptance Criteria
 
-The first shippable-quality local experiment should prove:
+A successful first experiment should prove:
 
-- Agent Mode has its own top-level Maple surface.
-- User can add/select a filesystem project folder.
-- User can create/load/list agent sessions for that folder.
-- Maple initializes proxy/API key automatically.
-- Tauri starts a direct embedded Goose runtime without ACP.
-- User can send a prompt.
-- Goose can read files and run developer tools in the selected folder.
-- Timeline shows user message, thinking, tool calls, tool results, assistant
-  output, usage, and errors in order.
-- User can cancel an active run.
-- Failed runs expose useful diagnostics.
-- Frontend only consumes Maple-owned commands/events.
-- Existing Maple styling is preserved.
+- Agent Mode is visible only on Maple Desktop.
+- A user can select a local project folder.
+- Maple starts the local proxy automatically.
+- Maple creates or reuses a local proxy API key automatically.
+- Tauri starts embedded Goose without an external Goose binary.
+- Goose uses Maple's local proxy and model.
+- A user can send a prompt from the Maple UI.
+- Goose can inspect the selected project through developer tools.
+- Tool calls appear in order with useful summaries.
+- Permission prompts are shown in Maple UI and can be answered there.
+- Thinking is collapsed by default but inspectable.
+- The final assistant answer renders in Maple style.
+- Runtime, session, tool, and LLM logs are available locally.
+- Web, iOS, and Android builds do not load or render Agent Mode.
 
-## Questions To Resolve Before Coding
+## Open Questions
 
-1. Should V1 have an Agent Mode home page, or should clicking Agent Mode open
-   the last active project/session?
-2. Should the first project picker live in the page body, the composer, or both?
-3. Should agent sessions be persisted only in Goose storage, or should Maple
-   maintain a small local index for project/session browsing?
-4. What are the default tool permissions for V1?
-5. Should model/effort live per session, per project, or globally?
-6. How much raw tool input/output should be visible by default?
-7. What exact event model should Tauri emit to the frontend?
-8. What Goose global config touchpoints are acceptable for the experiment?
-9. What Goose-side API gaps should be shown to the Goose team before we code
-   around them permanently?
+These should be answered during the direct-Goose experiment:
+
+- Should clicking Agent Mode open a home/project browser or the last active
+  project session?
+- How should Maple derive session titles?
+- Should Goose session storage be the source of truth, or should Maple maintain
+  its own session index?
+- Which Goose APIs still require global config writes?
+- Can provider setup avoid persistent Goose secrets/config files?
+- Can developer tools be enabled fully in process without any Goose binary path?
+- What permission policy should be the default for Maple users?
+- What exact API surface should Maple ask the Goose/GDK team to stabilize?
+- How should diagnostics be exposed in the UI without overwhelming normal users?
 
 ## Conclusion
 
-The right product direction is:
+Agent Mode should be Maple's local project/workspace agent: a separate desktop
+surface, powered by embedded Goose, presented through Maple-owned UX, state
+objects, permissions, logs, and runtime controls.
 
-> Agent Mode is Maple's local project/workspace agent, powered by embedded
-> Goose, presented as a separate Maple surface with Maple-owned UX, state
-> mapping, trust controls, and diagnostics.
+Direct Goose is the right default path for the built-in Maple agent because it
+matches the product need for embedded control. ACP is still important, but as a
+future adapter for external runtimes rather than the core path for Maple's own
+desktop agent.
 
-The direct Goose crate experiment should validate this product shape while
-keeping the implementation isolated behind a Maple runtime boundary. The goal is
-not simply to make Goose respond from inside Tauri. The goal is to prove that
-Maple can offer a native, private, inspectable local agent experience that feels
-like Maple and can later grow into remote mobile control and external-agent
-interop without rewriting the frontend.
+The immediate goal is to validate the product boundary:
+
+```text
+Maple UX
+  -> Maple Agent Mode API/events
+    -> direct Goose adapter
+      -> Goose runtime
+        -> Maple proxy
+```
+
+If that boundary feels clean, the long-term work is to replace internal Goose
+submodule calls with the stable GDK/Rust API as it becomes available.

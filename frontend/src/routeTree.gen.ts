@@ -21,6 +21,7 @@ import { Route as PasswordResetRouteImport } from './routes/password-reset'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as DownloadsRouteImport } from './routes/downloads'
 import { Route as DesktopAuthRouteImport } from './routes/desktop-auth'
+import { Route as AgentRouteImport } from './routes/agent'
 import { Route as AboutRouteImport } from './routes/about'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as VerifyCodeRouteImport } from './routes/verify.$code'
@@ -88,6 +89,11 @@ const DesktopAuthRoute = DesktopAuthRouteImport.update({
   path: '/desktop-auth',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AgentRoute = AgentRouteImport.update({
+  id: '/agent',
+  path: '/agent',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const AboutRoute = AboutRouteImport.update({
   id: '/about',
   path: '/about',
@@ -122,6 +128,7 @@ const AuthProviderCallbackRoute = AuthProviderCallbackRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/about': typeof AboutRoute
+  '/agent': typeof AgentRoute
   '/desktop-auth': typeof DesktopAuthRoute
   '/downloads': typeof DownloadsRoute
   '/login': typeof LoginRoute
@@ -142,6 +149,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/about': typeof AboutRoute
+  '/agent': typeof AgentRoute
   '/desktop-auth': typeof DesktopAuthRoute
   '/downloads': typeof DownloadsRoute
   '/login': typeof LoginRoute
@@ -163,6 +171,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/about': typeof AboutRoute
+  '/agent': typeof AgentRoute
   '/desktop-auth': typeof DesktopAuthRoute
   '/downloads': typeof DownloadsRoute
   '/login': typeof LoginRoute
@@ -185,6 +194,7 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/about'
+    | '/agent'
     | '/desktop-auth'
     | '/downloads'
     | '/login'
@@ -205,6 +215,7 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/about'
+    | '/agent'
     | '/desktop-auth'
     | '/downloads'
     | '/login'
@@ -225,6 +236,7 @@ export interface FileRouteTypes {
     | '__root__'
     | '/'
     | '/about'
+    | '/agent'
     | '/desktop-auth'
     | '/downloads'
     | '/login'
@@ -246,6 +258,7 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AboutRoute: typeof AboutRoute
+  AgentRoute: typeof AgentRoute
   DesktopAuthRoute: typeof DesktopAuthRoute
   DownloadsRoute: typeof DownloadsRoute
   LoginRoute: typeof LoginRoute
@@ -349,6 +362,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof DesktopAuthRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/agent': {
+      id: '/agent'
+      path: '/agent'
+      fullPath: '/agent'
+      preLoaderRoute: typeof AgentRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/about': {
       id: '/about'
       path: '/about'
@@ -409,6 +429,7 @@ const PasswordResetRouteWithChildren = PasswordResetRoute._addFileChildren(
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AboutRoute: AboutRoute,
+  AgentRoute: AgentRoute,
   DesktopAuthRoute: DesktopAuthRoute,
   DownloadsRoute: DownloadsRoute,
   LoginRoute: LoginRoute,

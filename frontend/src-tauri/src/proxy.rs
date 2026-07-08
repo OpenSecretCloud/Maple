@@ -1,11 +1,28 @@
 use anyhow::{anyhow, Result};
+use axum::{
+    body::{to_bytes, Body, Bytes},
+    extract::{Request, State as AxumState},
+    http::{Method, StatusCode},
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
+    Router,
+};
+use futures::{Stream, StreamExt};
 use maple_proxy::{create_app, Config};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
-use std::sync::Arc;
+use serde_json::Value;
+use std::fs::{self, File, OpenOptions};
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::pin::Pin;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex as StdMutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
+
+static PROXY_LLM_LOG_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProxyConfig {
@@ -52,12 +69,32 @@ pub struct ProxyState {
     running: Arc<Mutex<bool>>,
 }
 
+#[derive(Clone)]
+struct LoggedProxyState {
+    llm_log_dir: PathBuf,
+}
+
+#[derive(Clone)]
+struct ProxyLlmLog {
+    request_id: String,
+    path: PathBuf,
+    file: Arc<StdMutex<File>>,
+}
+
 impl ProxyState {
     pub fn new() -> Self {
         Self {
             handle: Arc::new(Mutex::new(None)),
             config: Arc::new(Mutex::new(ProxyConfig::default())),
             running: Arc::new(Mutex::new(false)),
+        }
+    }
+
+    pub async fn status(&self) -> ProxyStatus {
+        ProxyStatus {
+            running: *self.running.lock().await,
+            config: self.config.lock().await.clone(),
+            error: None,
         }
     }
 }
@@ -184,8 +221,13 @@ pub async fn start_proxy(
         }
     };
 
-    // Create the app
-    let app = create_app(proxy_config);
+    let llm_log_dir = proxy_llm_log_dir(&app_handle)
+        .map_err(|e| format!("Failed to create proxy LLM log dir: {e}"))?;
+    log::info!("Maple proxy LLM logs enabled at {}", llm_log_dir.display());
+
+    // Create the app. This mirrors maple-proxy's OpenAI-compatible routes, but
+    // tees chat completion traffic into local JSONL logs before Goose parses it.
+    let app = create_logged_proxy_app(proxy_config, llm_log_dir);
 
     // Spawn the proxy server
     let handle = tokio::spawn(async move {
@@ -245,14 +287,7 @@ pub async fn stop_proxy(state: State<'_, ProxyState>) -> Result<ProxyStatus, Str
 
 #[tauri::command]
 pub async fn get_proxy_status(state: State<'_, ProxyState>) -> Result<ProxyStatus, String> {
-    let running = *state.running.lock().await;
-    let config = state.config.lock().await.clone();
-
-    Ok(ProxyStatus {
-        running,
-        config,
-        error: None,
-    })
+    Ok(state.status().await)
 }
 
 #[tauri::command]
@@ -283,6 +318,268 @@ pub async fn test_proxy_port(host: String, port: u16) -> Result<bool, String> {
             }
         }
     }
+}
+
+fn create_logged_proxy_app(config: Config, llm_log_dir: PathBuf) -> Router {
+    create_app(config).layer(middleware::from_fn_with_state(
+        Arc::new(LoggedProxyState { llm_log_dir }),
+        log_chat_completion_traffic,
+    ))
+}
+
+async fn log_chat_completion_traffic(
+    AxumState(state): AxumState<Arc<LoggedProxyState>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    if request.method() != Method::POST || request.uri().path() != "/v1/chat/completions" {
+        return next.run(request).await;
+    }
+
+    let request_id = next_proxy_llm_request_id();
+    let llm_log = create_proxy_llm_log(&state.llm_log_dir, &request_id);
+    let (parts, body) = request.into_parts();
+    let path = parts.uri.path().to_string();
+
+    let body_bytes = match to_bytes(body, usize::MAX).await {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            append_proxy_llm_log_row(
+                llm_log.as_ref(),
+                serde_json::json!({
+                    "type": "request_read_error",
+                    "request_id": request_id,
+                    "ts": unix_ms(),
+                    "path": path,
+                    "error": error.to_string(),
+                }),
+            );
+            return (StatusCode::BAD_REQUEST, "Failed to read proxy request body").into_response();
+        }
+    };
+
+    let raw_body = parse_body_json(&body_bytes);
+    let model = raw_body
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or("<missing>");
+    let is_streaming = raw_body
+        .get("stream")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+
+    append_proxy_llm_log_row(
+        llm_log.as_ref(),
+        serde_json::json!({
+            "type": "request",
+            "request_id": request_id,
+            "ts": unix_ms(),
+            "path": path,
+            "model": model,
+            "stream": is_streaming,
+            "tools_len": raw_body.get("tools").and_then(Value::as_array).map(|tools| tools.len()).unwrap_or(0),
+            "raw_has_max_tokens": raw_body.get("max_tokens").is_some(),
+            "raw_has_max_completion_tokens": raw_body.get("max_completion_tokens").is_some(),
+            "raw_has_max_output_tokens": raw_body.get("max_output_tokens").is_some(),
+            "raw_body": raw_body,
+            "note": "Logged in Maple proxy middleware before maple-proxy parses the request; response_chunk and response_error_body rows are raw SSE/HTTP body bytes returned by maple-proxy to Goose.",
+        }),
+    );
+
+    log::info!(
+        "Proxy LLM request {request_id} model={} stream={} log={}",
+        model,
+        is_streaming,
+        llm_log
+            .as_ref()
+            .map(|log| log.path.display().to_string())
+            .unwrap_or_else(|| "unavailable".to_string())
+    );
+
+    let request = Request::from_parts(parts, Body::from(body_bytes));
+    let response = next.run(request).await;
+    let (response_parts, response_body) = response.into_parts();
+    let status = response_parts.status;
+
+    append_proxy_llm_log_row(
+        llm_log.as_ref(),
+        serde_json::json!({
+            "type": "response_start",
+            "request_id": request_id,
+            "ts": unix_ms(),
+            "status": status.as_u16(),
+        }),
+    );
+
+    if !status.is_success() {
+        let error_body = match to_bytes(response_body, usize::MAX).await {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                append_proxy_llm_log_row(
+                    llm_log.as_ref(),
+                    serde_json::json!({
+                        "type": "response_body_error",
+                        "request_id": request_id,
+                        "ts": unix_ms(),
+                        "error": error.to_string(),
+                    }),
+                );
+                return Response::from_parts(response_parts, Body::empty());
+            }
+        };
+
+        append_proxy_llm_log_row(
+            llm_log.as_ref(),
+            serde_json::json!({
+                "type": "response_error_body",
+                "request_id": request_id,
+                "ts": unix_ms(),
+                "bytes_len": error_body.len(),
+                "body_utf8_lossy": String::from_utf8_lossy(&error_body),
+            }),
+        );
+        append_proxy_llm_log_row(
+            llm_log.as_ref(),
+            serde_json::json!({
+                "type": "response_done",
+                "request_id": request_id,
+                "ts": unix_ms(),
+            }),
+        );
+        return Response::from_parts(response_parts, Body::from(error_body));
+    }
+
+    let response_stream = response_body.into_data_stream();
+    let logged_stream = log_response_body_stream(response_stream, request_id, llm_log);
+    Response::from_parts(response_parts, Body::from_stream(logged_stream))
+}
+
+fn parse_body_json(body: &Bytes) -> Value {
+    serde_json::from_slice::<Value>(body).unwrap_or_else(|error| {
+        serde_json::json!({
+            "_parse_error": error.to_string(),
+            "_raw_utf8_lossy": String::from_utf8_lossy(body),
+        })
+    })
+}
+
+fn log_response_body_stream<S>(
+    stream: S,
+    request_id: String,
+    llm_log: Option<ProxyLlmLog>,
+) -> impl Stream<Item = Result<Bytes, axum::Error>> + Send
+where
+    S: Stream<Item = Result<Bytes, axum::Error>> + Send + 'static,
+{
+    type BoxedBodyStream = Pin<Box<dyn Stream<Item = Result<Bytes, axum::Error>> + Send>>;
+    let stream: BoxedBodyStream = Box::pin(stream);
+
+    futures::stream::unfold((stream, llm_log), move |(mut stream, llm_log)| {
+        let request_id = request_id.clone();
+        async move {
+            match stream.next().await {
+                Some(Ok(bytes)) => {
+                    append_proxy_llm_log_row(
+                        llm_log.as_ref(),
+                        serde_json::json!({
+                            "type": "response_chunk",
+                            "request_id": request_id,
+                            "ts": unix_ms(),
+                            "bytes_len": bytes.len(),
+                            "body_utf8_lossy": String::from_utf8_lossy(&bytes),
+                        }),
+                    );
+                    Some((Ok(bytes), (stream, llm_log)))
+                }
+                Some(Err(error)) => {
+                    append_proxy_llm_log_row(
+                        llm_log.as_ref(),
+                        serde_json::json!({
+                            "type": "response_body_error",
+                            "request_id": request_id,
+                            "ts": unix_ms(),
+                            "error": error.to_string(),
+                        }),
+                    );
+                    Some((Err(error), (stream, llm_log)))
+                }
+                None => {
+                    append_proxy_llm_log_row(
+                        llm_log.as_ref(),
+                        serde_json::json!({
+                            "type": "response_done",
+                            "request_id": request_id,
+                            "ts": unix_ms(),
+                        }),
+                    );
+                    None
+                }
+            }
+        }
+    })
+}
+
+fn create_proxy_llm_log(log_dir: &Path, request_id: &str) -> Option<ProxyLlmLog> {
+    let path = log_dir.join(format!("{request_id}.jsonl"));
+    match OpenOptions::new().create(true).append(true).open(&path) {
+        Ok(file) => {
+            set_owner_only_permissions(&path);
+            Some(ProxyLlmLog {
+                request_id: request_id.to_string(),
+                path,
+                file: Arc::new(StdMutex::new(file)),
+            })
+        }
+        Err(error) => {
+            log::warn!("Failed to create proxy LLM log {}: {error}", path.display());
+            None
+        }
+    }
+}
+
+fn append_proxy_llm_log_row(log: Option<&ProxyLlmLog>, mut row: Value) {
+    let Some(log) = log else {
+        return;
+    };
+    if let Value::Object(ref mut object) = row {
+        object
+            .entry("request_id")
+            .or_insert_with(|| Value::String(log.request_id.clone()));
+    }
+
+    let result = (|| -> Result<()> {
+        let mut file = log
+            .file
+            .lock()
+            .map_err(|_| anyhow!("proxy LLM log lock poisoned"))?;
+        serde_json::to_writer(&mut *file, &row)?;
+        file.write_all(b"\n")?;
+        file.flush()?;
+        Ok(())
+    })();
+
+    if let Err(error) = result {
+        log::warn!(
+            "Failed to write proxy LLM log {}: {error}",
+            log.path.display()
+        );
+    }
+}
+
+fn proxy_llm_log_dir(app_handle: &AppHandle) -> Result<PathBuf> {
+    let base = if cfg!(target_os = "windows") {
+        app_handle
+            .path()
+            .app_config_dir()
+            .map_err(|e| anyhow!("Failed to resolve app config dir: {e}"))?
+    } else {
+        let home = std::env::var("HOME").map_err(|_| anyhow!("Failed to get home directory"))?;
+        PathBuf::from(home).join(".config").join("maple")
+    };
+    let path = base.join("agent").join("proxy-llm-logs");
+    fs::create_dir_all(&path)?;
+    set_owner_only_dir_permissions(&path);
+    Ok(path)
 }
 
 // Helper functions for config persistence.
@@ -354,7 +651,7 @@ async fn save_proxy_config(app_handle: &AppHandle, config: &ProxyConfig) -> Resu
     Ok(())
 }
 
-async fn load_saved_proxy_config(app_handle: &AppHandle) -> Result<ProxyConfig> {
+pub async fn load_saved_proxy_config(app_handle: &AppHandle) -> Result<ProxyConfig> {
     let path = get_config_path(app_handle).await?;
 
     if !path.exists() {
@@ -375,6 +672,37 @@ async fn load_saved_proxy_config(app_handle: &AppHandle) -> Result<ProxyConfig> 
     }
 
     Ok(config)
+}
+
+pub async fn ensure_proxy_running(
+    app_handle: AppHandle,
+    state: State<'_, ProxyState>,
+) -> Result<ProxyStatus, String> {
+    let current = state.status().await;
+    if current.running {
+        log::info!(
+            "Maple proxy already running on {}:{}",
+            current.config.host,
+            current.config.port
+        );
+        return Ok(current);
+    }
+
+    let config = load_saved_proxy_config(&app_handle)
+        .await
+        .map_err(|e| format!("Failed to load proxy config: {e}"))?;
+
+    if config.api_key.trim().is_empty() {
+        log::warn!("Maple proxy cannot auto-start because saved config has no API key");
+        return Err("Maple proxy is not configured with an API key yet".to_string());
+    }
+
+    log::info!(
+        "Starting Maple proxy from saved config on {}:{}",
+        config.host,
+        config.port
+    );
+    start_proxy(app_handle, state, config).await
 }
 
 // Initialize proxy on app startup if auto_start is enabled
@@ -412,3 +740,33 @@ pub async fn init_proxy_on_startup_simple(app_handle: AppHandle) -> Result<()> {
 
     Ok(())
 }
+
+fn next_proxy_llm_request_id() -> String {
+    let counter = PROXY_LLM_LOG_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("proxy_llm_{}_{}", unix_ms(), counter)
+}
+
+fn unix_ms() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default()
+}
+
+#[cfg(unix)]
+fn set_owner_only_permissions(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+}
+
+#[cfg(not(unix))]
+fn set_owner_only_permissions(_path: &Path) {}
+
+#[cfg(unix)]
+fn set_owner_only_dir_permissions(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o700));
+}
+
+#[cfg(not(unix))]
+fn set_owner_only_dir_permissions(_path: &Path) {}

@@ -4,8 +4,10 @@ This workspace is for a direct Goose integration experiment that does not route
 Maple's built-in Agent Mode through ACP. The existing `goose` workspace should
 stay around for comparison against the ACP PoC.
 
-No Maple runtime wiring has been started in this branch yet. This note records
-the prep state and the direct-integration surface we found in upstream Goose.
+This note originally recorded the prep state and the direct-integration surface
+we found in upstream Goose before the direct runtime wiring began. The API
+observations still explain why the branch uses the Goose submodule and parent
+crate directly.
 
 ## Workspace State
 
@@ -13,12 +15,14 @@ the prep state and the direct-integration surface we found in upstream Goose.
 - Maple worktree: `/Users/admin/workspaces/goose-sdk/maple`
 - Maple branch: `codex-goose-sdk-maple`
 - Goose submodule path: `ThirdParties/goose`
-- Goose remote: `https://github.com/aaif-goose/goose.git`
-- Goose commit: `ce53dd5526c6935e538e81e47614a9b30cd2a137`
+- Goose remote: `https://github.com/AnthonyRonning/goose.git`
+- Goose commit: `1e03dbd4bea9eda111c661de0ed6a01460a6f4bf`
 
-The submodule intentionally points at upstream Goose, not the prior Maple Goose
-fork. That keeps this experiment focused on the current Goose/GDK direction and
-lets us identify which patches are still needed.
+The submodule points at the existing Maple Goose fork because the direct runtime
+still needs the OpenAI-compatible streaming tool-call delta parser fix from the
+ACP PoC. This commit is based on the Goose 1.41.0 line, includes the SDK crates,
+and keeps Goose's MSRV at Rust 1.91.1 instead of the newer upstream 1.94.1
+baseline that Maple's current Nix overlay cannot provide.
 
 ## What `goose-sdk` Currently Provides
 
@@ -176,7 +180,10 @@ Even with direct `Agent::with_config`, some Goose paths still use global config
 or global state. The experiment should keep a list of each global touchpoint so
 we can separate Maple-side cleanup from Goose-side GDK asks.
 
-## Non-Goals For The Prep Phase
+## Non-Goals For The Original Prep Phase
+
+These were the constraints for the initial reconnaissance pass. They are kept as
+historical context; the implementation branch can now move beyond them.
 
 - No Tauri command wiring yet.
 - No frontend changes yet.

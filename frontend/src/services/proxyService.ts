@@ -16,10 +16,20 @@ export interface ProxyStatus {
   error?: string;
 }
 
+export type CreateProxyApiKey = (name: string) => Promise<string>;
+
 class ProxyService {
+  private ensureReadyPromise: Promise<ProxyStatus> | null = null;
+
   private validatePort(port: number): void {
     if (!Number.isInteger(port) || port < 0 || port > 65535) {
       throw new Error(`Port must be a valid u16 integer (0-65535), got: ${port}`);
+    }
+  }
+
+  private validateAgentPort(port: number): void {
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      throw new Error(`Port must be a valid TCP port (1-65535), got: ${port}`);
     }
   }
 
@@ -73,6 +83,103 @@ class ProxyService {
     } catch (error) {
       console.error("Failed to save proxy settings:", error);
       throw error;
+    }
+  }
+
+  async ensureProxyReady(createApiKey: CreateProxyApiKey): Promise<ProxyStatus> {
+    if (!this.ensureReadyPromise) {
+      this.ensureReadyPromise = this.ensureProxyReadyInner(createApiKey).finally(() => {
+        this.ensureReadyPromise = null;
+      });
+    }
+
+    return await this.ensureReadyPromise;
+  }
+
+  private async ensureProxyReadyInner(createApiKey: CreateProxyApiKey): Promise<ProxyStatus> {
+    const status = await this.getProxyStatus();
+    const savedConfig = status.running ? status.config : await this.loadProxyConfig();
+    let apiKey = savedConfig.api_key.trim();
+
+    if (!apiKey) {
+      apiKey = await createApiKey(createAgentProxyKeyName());
+    }
+
+    let nextConfig = this.buildAgentProxyConfig(savedConfig, apiKey);
+    let readyStatus = status;
+
+    if (!status.running || !status.config.api_key.trim()) {
+      if (status.running) {
+        await this.stopProxy();
+      } else if (!savedConfig.api_key.trim()) {
+        await this.saveProxySettings({ ...nextConfig, enabled: false });
+      }
+
+      readyStatus = await this.startProxy(nextConfig);
+    }
+
+    if ((await this.checkProxyBackendAuth(readyStatus)) === "auth_error") {
+      apiKey = await createApiKey(createAgentProxyKeyName());
+      nextConfig = this.buildAgentProxyConfig(readyStatus.config, apiKey);
+
+      if (readyStatus.running) {
+        await this.stopProxy();
+      }
+
+      readyStatus = await this.startProxy(nextConfig);
+
+      if ((await this.checkProxyBackendAuth(readyStatus)) === "auth_error") {
+        throw new Error("Maple proxy API key was refreshed but the backend still returned 401");
+      }
+    }
+
+    return readyStatus;
+  }
+
+  private buildAgentProxyConfig(savedConfig: ProxyConfig, apiKey: string): ProxyConfig {
+    const backendUrl =
+      import.meta.env.VITE_OPEN_SECRET_API_URL ||
+      savedConfig.backend_url ||
+      "https://enclave.trymaple.ai";
+    const port = Number(savedConfig.port || 8080);
+    this.validateAgentPort(port);
+
+    return {
+      ...savedConfig,
+      host: savedConfig.host || "127.0.0.1",
+      port,
+      api_key: apiKey,
+      enabled: true,
+      enable_cors: savedConfig.enable_cors ?? true,
+      backend_url: backendUrl,
+      auto_start: savedConfig.auto_start ?? false
+    };
+  }
+
+  private async checkProxyBackendAuth(
+    status: ProxyStatus
+  ): Promise<"ok" | "auth_error" | "unknown_error"> {
+    if (!status.running || !status.config.api_key.trim()) {
+      return "auth_error";
+    }
+
+    const host = status.config.host === "0.0.0.0" ? "127.0.0.1" : status.config.host;
+    try {
+      const response = await fetch(`http://${host}:${status.config.port}/v1/models`);
+      if (response.ok) return "ok";
+
+      const body = await response.text();
+      if (
+        response.status === 401 ||
+        body.includes('"status":401') ||
+        body.toLowerCase().includes("unauthorized")
+      ) {
+        return "auth_error";
+      }
+
+      return "unknown_error";
+    } catch {
+      return "unknown_error";
     }
   }
 
@@ -131,6 +238,15 @@ class ProxyService {
       return false;
     }
   }
+}
+
+function createAgentProxyKeyName(): string {
+  const date = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+  const random =
+    typeof crypto !== "undefined" && "randomUUID" in crypto
+      ? crypto.randomUUID().slice(0, 8)
+      : Math.random().toString(36).slice(2, 10);
+  return `maple-agent-${date}-${random}`;
 }
 
 export const proxyService = new ProxyService();

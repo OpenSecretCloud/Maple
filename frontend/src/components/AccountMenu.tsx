@@ -99,7 +99,7 @@ export function AccountMenu() {
   const os = useOpenSecret();
   const queryClient = useQueryClient();
   const router = useRouter();
-  const { billingStatus } = useLocalState();
+  const { billingStatus, setBillingStatus } = useLocalState();
   const [isPortalLoading, setIsPortalLoading] = useState(false);
   const [isTeamDialogOpen, setIsTeamDialogOpen] = useState(false);
   const [isApiKeyDialogOpen, setIsApiKeyDialogOpen] = useState(false);
@@ -114,6 +114,19 @@ export function AccountMenu() {
   const isTeamPlan = productName.toLowerCase().includes("team");
   const showUpgrade = !isMax && !isTeamPlan;
   const showManage = (isPro || isMax || isStarter || isTeamPlan) && hasStripeAccount;
+
+  // Keep the shared sidebar billing badge current on every authenticated route,
+  // including Agent Mode. Some routes do not own a route-level billing refresh.
+  useQuery({
+    queryKey: ["billingStatus"],
+    queryFn: async () => {
+      const billingService = getBillingService();
+      const status = await billingService.getBillingStatus();
+      setBillingStatus(status);
+      return status;
+    },
+    enabled: !!os.auth.user
+  });
 
   // Fetch team status if user has team plan
   const { data: teamStatus } = useQuery<TeamStatus>({
