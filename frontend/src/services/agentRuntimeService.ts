@@ -26,6 +26,7 @@ export interface AgentRuntimeStatus {
   proxyLlmLogDir?: string | null;
   latestProxyLlmLogPath?: string | null;
   error?: string | null;
+  activeRuns?: Record<string, string>;
 }
 
 export interface RecentProjectRoot {

@@ -78,6 +78,7 @@ pub struct AgentRuntimeStatus {
     pub proxy_llm_log_dir: Option<String>,
     pub latest_proxy_llm_log_path: Option<String>,
     pub error: Option<String>,
+    pub active_runs: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -184,6 +185,7 @@ pub struct AgentEventEnvelope {
 
 struct ActiveAgentRun {
     token: CancellationToken,
+    session_id: String,
 }
 
 struct AgentRuntime {
@@ -217,6 +219,11 @@ impl AgentRuntime {
             proxy_llm_log_dir: Some(path_string(&proxy_llm_log_dir(&self.config_dir))),
             latest_proxy_llm_log_path: latest_proxy_llm_log_path(&self.config_dir),
             error,
+            active_runs: self
+                .active_runs
+                .iter()
+                .map(|(run_id, run)| (run.session_id.clone(), run_id.clone()))
+                .collect(),
         }
     }
 }
@@ -225,6 +232,7 @@ pub struct AgentRuntimeState {
     inner: Arc<Mutex<Option<AgentRuntime>>>,
     session_log: Arc<Mutex<()>>,
     pending_permissions: Arc<Mutex<HashMap<String, String>>>,
+    live_timelines: Arc<Mutex<HashMap<String, Vec<AgentTimelineItem>>>>,
 }
 
 impl AgentRuntimeState {
@@ -233,6 +241,7 @@ impl AgentRuntimeState {
             inner: Arc::new(Mutex::new(None)),
             session_log: Arc::new(Mutex::new(())),
             pending_permissions: Arc::new(Mutex::new(HashMap::new())),
+            live_timelines: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }
@@ -392,6 +401,7 @@ pub async fn agent_stop_runtime(
     }
     *runtime = None;
     state.pending_permissions.lock().await.clear();
+    state.live_timelines.lock().await.clear();
     Ok(stopped_status(config_dir, None))
 }
 
@@ -412,6 +422,7 @@ pub async fn agent_restart_runtime(
         *runtime = None;
     }
     state.pending_permissions.lock().await.clear();
+    state.live_timelines.lock().await.clear();
     agent_start_runtime(app_handle, state, proxy_state, request).await
 }
 
@@ -574,6 +585,7 @@ pub async fn agent_load_session(
             coalesce_timeline_items(items)
         })
         .unwrap_or_default();
+    let timeline = overlay_live_timeline(&state.live_timelines, &session_id, timeline).await;
 
     Ok(AgentSessionDetail {
         session: session_summary(&session),
@@ -594,6 +606,7 @@ pub async fn agent_send_message(
 
     let run_id = format!("run_{}", unix_ms());
     let cancel_token = CancellationToken::new();
+    let user_message = Message::user().with_text(text).with_generated_id();
     let (agent_manager, session_manager, log_path, model, mode) = {
         let runtime = state.inner.lock().await;
         let current = runtime
@@ -625,13 +638,16 @@ pub async fn agent_send_message(
     {
         let mut runtime = state.inner.lock().await;
         let Some(current) = runtime.as_mut() else {
-            agent_manager.unregister_cancel_token(&request.session_id).await;
+            agent_manager
+                .unregister_cancel_token(&request.session_id)
+                .await;
             return Err("Agent runtime is not running".to_string());
         };
         current.active_runs.insert(
             run_id.clone(),
             ActiveAgentRun {
                 token: cancel_token.clone(),
+                session_id: request.session_id.clone(),
             },
         );
     }
@@ -650,20 +666,18 @@ pub async fn agent_send_message(
         },
     );
 
-    let user_item = AgentTimelineItem {
-        id: format!("{run_id}-user"),
-        item_type: "message".to_string(),
-        role: Some("user".to_string()),
-        title: None,
-        text: Some(text.clone()),
-        status: None,
-        input: None,
-        output: None,
-        raw: None,
-        created_ms: unix_ms(),
-        merge: "replace".to_string(),
-    };
-    emit_timeline_item(&app_handle, &request.session_id, &run_id, user_item.clone());
+    let user_item = message_to_timeline_items(&user_message, false)
+        .into_iter()
+        .next()
+        .ok_or_else(|| "Failed to create user timeline item".to_string())?;
+    record_and_emit_timeline_item(
+        &app_handle,
+        &state.live_timelines,
+        &request.session_id,
+        &run_id,
+        user_item.clone(),
+    )
+    .await;
     append_session_event(
         &app_handle,
         &state,
@@ -680,19 +694,22 @@ pub async fn agent_send_message(
     let state_inner = Arc::clone(&state.inner);
     let session_log = Arc::clone(&state.session_log);
     let pending_permissions = Arc::clone(&state.pending_permissions);
+    let live_timelines = Arc::clone(&state.live_timelines);
     let session_id = request.session_id.clone();
     let task_run_id = run_id.clone();
     let task_agent_manager = Arc::clone(&agent_manager);
     let task_session_manager = Arc::clone(&session_manager);
+    let task_user_message = user_message.clone();
 
     tauri::async_runtime::spawn(async move {
         let result = run_agent_prompt(
             app_handle_for_task.clone(),
             agent,
             task_session_manager,
+            live_timelines.clone(),
             session_id.clone(),
             task_run_id.clone(),
-            text,
+            task_user_message,
             cancel_token.clone(),
             log_path.clone(),
             session_log,
@@ -700,13 +717,19 @@ pub async fn agent_send_message(
         )
         .await;
 
+        let should_clear_live_timeline = result.is_ok() && !cancel_token.is_cancelled();
         {
             let mut runtime = state_inner.lock().await;
             if let Some(current) = runtime.as_mut() {
                 current.active_runs.remove(&task_run_id);
             }
         }
-        task_agent_manager.unregister_cancel_token(&session_id).await;
+        task_agent_manager
+            .unregister_cancel_token(&session_id)
+            .await;
+        if should_clear_live_timeline {
+            live_timelines.lock().await.remove(&session_id);
+        }
 
         let (status, message) = match result {
             Ok(()) if cancel_token.is_cancelled() => ("cancelled", None),
@@ -715,13 +738,15 @@ pub async fn agent_send_message(
         };
         if let Some(error) = message.as_ref() {
             append_runtime_log(&log_path, &format!("run failed: {error}"));
+            let item = error_item(error.clone(), None);
+            record_timeline_item(&live_timelines, &session_id, item.clone()).await;
             emit_agent_event(
                 &app_handle_for_task,
                 AgentEventEnvelope {
                     event_type: "error".to_string(),
                     session_id: Some(session_id.clone()),
                     run_id: Some(task_run_id.clone()),
-                    item: Some(error_item(error.clone(), None)),
+                    item: Some(item),
                     status: None,
                     session: None,
                     message: Some(error.clone()),
@@ -764,6 +789,7 @@ pub async fn agent_cancel_run(
 
 #[tauri::command]
 pub async fn agent_permission_respond(
+    app_handle: AppHandle,
     state: State<'_, AgentRuntimeState>,
     response: AgentPermissionResponse,
 ) -> Result<(), String> {
@@ -787,7 +813,7 @@ pub async fn agent_permission_respond(
         (Arc::clone(&current.agent_manager), session_id)
     };
     let agent = agent_manager
-        .get_or_create_agent(session_id)
+        .get_or_create_agent(session_id.clone())
         .await
         .map_err(|e| format!("Failed to resolve Goose agent for permission response: {e}"))?;
     agent
@@ -799,6 +825,28 @@ pub async fn agent_permission_respond(
             },
         )
         .await;
+    if let Some(item) = update_live_permission_status(
+        &state.live_timelines,
+        &session_id,
+        &response.request_id,
+        &response.decision,
+    )
+    .await
+    {
+        emit_agent_event(
+            &app_handle,
+            AgentEventEnvelope {
+                event_type: "timelineItem".to_string(),
+                session_id: Some(session_id.clone()),
+                run_id: None,
+                item: Some(item),
+                status: None,
+                session: None,
+                message: None,
+                details: None,
+            },
+        );
+    }
     state
         .pending_permissions
         .lock()
@@ -825,9 +873,10 @@ async fn run_agent_prompt(
     app_handle: AppHandle,
     agent: Arc<Agent>,
     session_manager: Arc<SessionManager>,
+    live_timelines: Arc<Mutex<HashMap<String, Vec<AgentTimelineItem>>>>,
     session_id: String,
     run_id: String,
-    text: String,
+    user_message: Message,
     cancel_token: CancellationToken,
     log_path: PathBuf,
     session_log: Arc<Mutex<()>>,
@@ -843,7 +892,6 @@ async fn run_agent_prompt(
         max_turns: None,
         retry_config: None,
     };
-    let user_message = Message::user().with_text(text).with_generated_id();
     let mut stream = agent
         .reply(user_message, session_config, Some(cancel_token.clone()))
         .await
@@ -879,7 +927,14 @@ async fn run_agent_prompt(
                             .await
                             .insert(request_id, session_id.clone());
                     }
-                    emit_timeline_item(&app_handle, &session_id, &run_id, item.clone());
+                    record_and_emit_timeline_item(
+                        &app_handle,
+                        &live_timelines,
+                        &session_id,
+                        &run_id,
+                        item.clone(),
+                    )
+                    .await;
                     append_session_event_with_lock(
                         &app_handle,
                         Arc::clone(&session_log),
@@ -907,7 +962,14 @@ async fn run_agent_prompt(
                     created_ms: unix_ms(),
                     merge: "replace".to_string(),
                 };
-                emit_timeline_item(&app_handle, &session_id, &run_id, item.clone());
+                record_and_emit_timeline_item(
+                    &app_handle,
+                    &live_timelines,
+                    &session_id,
+                    &run_id,
+                    item.clone(),
+                )
+                .await;
                 append_session_event_with_lock(
                     &app_handle,
                     Arc::clone(&session_log),
@@ -934,9 +996,17 @@ async fn run_agent_prompt(
                     created_ms: unix_ms(),
                     merge: "replace".to_string(),
                 };
-                emit_timeline_item(&app_handle, &session_id, &run_id, item);
+                record_and_emit_timeline_item(
+                    &app_handle,
+                    &live_timelines,
+                    &session_id,
+                    &run_id,
+                    item,
+                )
+                .await;
             }
             Ok(AgentEvent::HistoryReplaced(conversation)) => {
+                live_timelines.lock().await.remove(&session_id);
                 emit_agent_event(
                     &app_handle,
                     AgentEventEnvelope {
@@ -1418,6 +1488,68 @@ fn emit_timeline_item(
     );
 }
 
+async fn record_and_emit_timeline_item(
+    app_handle: &AppHandle,
+    live_timelines: &Arc<Mutex<HashMap<String, Vec<AgentTimelineItem>>>>,
+    session_id: &str,
+    run_id: &str,
+    item: AgentTimelineItem,
+) {
+    record_timeline_item(live_timelines, session_id, item.clone()).await;
+    emit_timeline_item(app_handle, session_id, run_id, item);
+}
+
+async fn record_timeline_item(
+    live_timelines: &Arc<Mutex<HashMap<String, Vec<AgentTimelineItem>>>>,
+    session_id: &str,
+    item: AgentTimelineItem,
+) {
+    let mut timelines = live_timelines.lock().await;
+    let current = timelines.remove(session_id).unwrap_or_default();
+    timelines.insert(session_id.to_string(), merge_timeline_item(current, item));
+}
+
+async fn overlay_live_timeline(
+    live_timelines: &Arc<Mutex<HashMap<String, Vec<AgentTimelineItem>>>>,
+    session_id: &str,
+    timeline: Vec<AgentTimelineItem>,
+) -> Vec<AgentTimelineItem> {
+    let live_items = {
+        let timelines = live_timelines.lock().await;
+        timelines.get(session_id).cloned().unwrap_or_default()
+    };
+    if live_items.is_empty() {
+        return timeline;
+    }
+
+    coalesce_timeline_items(
+        timeline
+            .into_iter()
+            .chain(live_items.into_iter().map(live_overlay_item))
+            .collect(),
+    )
+}
+
+fn live_overlay_item(mut item: AgentTimelineItem) -> AgentTimelineItem {
+    item.merge = "replace".to_string();
+    item
+}
+
+async fn update_live_permission_status(
+    live_timelines: &Arc<Mutex<HashMap<String, Vec<AgentTimelineItem>>>>,
+    session_id: &str,
+    request_id: &str,
+    decision: &str,
+) -> Option<AgentTimelineItem> {
+    let permission_id = format!("permission-{request_id}");
+    let mut timelines = live_timelines.lock().await;
+    let items = timelines.get_mut(session_id)?;
+    let item = items.iter_mut().find(|item| item.id == permission_id)?;
+    item.status = Some(decision.to_string());
+    item.merge = "replace".to_string();
+    Some(item.clone())
+}
+
 fn emit_agent_event(app_handle: &AppHandle, event: AgentEventEnvelope) {
     if let Err(error) = app_handle.emit(AGENT_EVENT_NAME, event) {
         log::warn!("Failed to emit Agent Mode event: {error}");
@@ -1522,6 +1654,7 @@ fn stopped_status(config_dir: PathBuf, error: Option<String>) -> AgentRuntimeSta
         proxy_llm_log_dir: Some(path_string(&proxy_llm_log_dir(&config_dir))),
         latest_proxy_llm_log_path: latest_proxy_llm_log_path(&config_dir),
         error,
+        active_runs: HashMap::new(),
     }
 }
 

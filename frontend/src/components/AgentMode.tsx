@@ -140,6 +140,9 @@ export function AgentMode() {
   const [projectRoot, setProjectRoot] = useState("");
   const [model, setModel] = useState(DEFAULT_MODEL);
   const [timelineItems, setTimelineItems] = useState<AgentTimelineItem[]>([]);
+  const [timelineItemsBySession, setTimelineItemsBySession] = useState<
+    Record<string, AgentTimelineItem[]>
+  >({});
   const [input, setInput] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [isStarting, setIsStarting] = useState(false);
@@ -210,6 +213,31 @@ export function AgentMode() {
     });
   }, []);
 
+  const applyRuntimeStatus = useCallback((status: AgentRuntimeStatus) => {
+    setRuntimeStatus(status);
+    setActiveRunsBySession(status.activeRuns || {});
+  }, []);
+
+  const replaceSessionTimeline = useCallback((sessionId: string, items: AgentTimelineItem[]) => {
+    setTimelineItemsBySession((current) => ({
+      ...current,
+      [sessionId]: items
+    }));
+    if (activeSessionIdRef.current === sessionId) {
+      setTimelineItems(items);
+    }
+  }, []);
+
+  const mergeSessionTimelineItem = useCallback((sessionId: string, item: AgentTimelineItem) => {
+    setTimelineItemsBySession((current) => ({
+      ...current,
+      [sessionId]: mergeTimelineItem(current[sessionId] || [], item)
+    }));
+    if (activeSessionIdRef.current === sessionId) {
+      setTimelineItems((current) => mergeTimelineItem(current, item));
+    }
+  }, []);
+
   const ensureMapleProxyReady = useCallback(async () => {
     appendRuntimeLog("Ensuring Maple proxy is ready for direct Agent Mode");
     return await proxyService.ensureProxyReady(async (name) => {
@@ -222,14 +250,14 @@ export function AgentMode() {
   const refreshSessions = useCallback(async () => {
     if (!isTauriDesktop()) return;
     const status = await agentRuntimeService.getRuntimeStatus();
-    setRuntimeStatus(status);
+    applyRuntimeStatus(status);
     if (!status.running) {
       setSessions([]);
       return;
     }
     const nextSessions = await agentRuntimeService.listSessions(null);
     setSessions(nextSessions);
-  }, []);
+  }, [applyRuntimeStatus]);
 
   useEffect(() => {
     let cancelled = false;
@@ -243,7 +271,7 @@ export function AgentMode() {
         ]);
         if (cancelled) return;
 
-        setRuntimeStatus(status);
+        applyRuntimeStatus(status);
         setRecentRoots(roots);
         const root = status.projectRoot || config.defaultProjectRoot || roots[0]?.path || "";
         const nextModel = status.model || config.defaultModel || DEFAULT_MODEL;
@@ -260,7 +288,7 @@ export function AgentMode() {
             mode: DEFAULT_MODE
           });
           if (cancelled) return;
-          setRuntimeStatus(startedStatus);
+          applyRuntimeStatus(startedStatus);
           await refreshSessions();
         }
       } catch (loadError) {
@@ -271,7 +299,7 @@ export function AgentMode() {
     return () => {
       cancelled = true;
     };
-  }, [ensureMapleProxyReady, refreshSessions]);
+  }, [applyRuntimeStatus, ensureMapleProxyReady, refreshSessions]);
 
   const chooseProjectRoot = useCallback(async () => {
     if (!isTauriDesktop()) return;
@@ -320,7 +348,7 @@ export function AgentMode() {
         const status = restart
           ? await agentRuntimeService.restartRuntime(request)
           : await agentRuntimeService.startRuntime(request);
-        setRuntimeStatus(status);
+        applyRuntimeStatus(status);
         setProjectRoot(status.projectRoot || projectRoot);
         setModel(status.model || model || DEFAULT_MODEL);
         setRecentRoots(await agentRuntimeService.listRecentProjectRoots());
@@ -333,7 +361,7 @@ export function AgentMode() {
         setIsStarting(false);
       }
     },
-    [ensureMapleProxyReady, model, projectRoot, refreshSessions]
+    [applyRuntimeStatus, ensureMapleProxyReady, model, projectRoot, refreshSessions]
   );
 
   const ensureRuntimeAndSession = useCallback(async () => {
@@ -362,11 +390,11 @@ export function AgentMode() {
         detail.session,
         ...current.filter((item) => item.id !== sessionId)
       ]);
-      setTimelineItems(detail.timeline);
+      replaceSessionTimeline(sessionId, detail.timeline);
     }
 
     return sessionId;
-  }, [model, projectRoot, startRuntime]);
+  }, [model, projectRoot, replaceSessionTimeline, startRuntime]);
 
   const createSession = useCallback(async () => {
     setError(null);
@@ -387,25 +415,32 @@ export function AgentMode() {
         detail.session,
         ...current.filter((session) => session.id !== detail.session.id)
       ]);
-      setTimelineItems(detail.timeline);
+      replaceSessionTimeline(detail.session.id, detail.timeline);
     } catch (createError) {
       setError(errorMessage(createError));
     }
-  }, [model, projectRoot, runtimeStatus?.running, startRuntime]);
+  }, [model, projectRoot, replaceSessionTimeline, runtimeStatus?.running, startRuntime]);
 
-  const loadSession = useCallback(async (sessionId: string) => {
-    setError(null);
-    try {
-      const detail = await agentRuntimeService.loadSession(sessionId);
-      shouldAutoScrollRef.current = true;
-      activeSessionIdRef.current = detail.session.id;
-      setActiveSessionId(detail.session.id);
-      setProjectRoot(detail.session.projectRoot);
-      setTimelineItems(detail.timeline);
-    } catch (loadError) {
-      setError(errorMessage(loadError));
-    }
-  }, []);
+  const loadSession = useCallback(
+    async (sessionId: string) => {
+      setError(null);
+      activeSessionIdRef.current = sessionId;
+      setActiveSessionId(sessionId);
+      const cachedTimeline = timelineItemsBySession[sessionId];
+      setTimelineItems(cachedTimeline || []);
+      try {
+        const detail = await agentRuntimeService.loadSession(sessionId);
+        shouldAutoScrollRef.current = true;
+        activeSessionIdRef.current = detail.session.id;
+        setActiveSessionId(detail.session.id);
+        setProjectRoot(detail.session.projectRoot);
+        replaceSessionTimeline(detail.session.id, detail.timeline);
+      } catch (loadError) {
+        setError(errorMessage(loadError));
+      }
+    },
+    [replaceSessionTimeline, timelineItemsBySession]
+  );
 
   const sendMessage = useCallback(async () => {
     const text = input.trim();
@@ -432,9 +467,8 @@ export function AgentMode() {
     } catch (sendError) {
       const message = errorMessage(sendError);
       setError(message);
-      setTimelineItems((current) => [
-        ...current,
-        {
+      if (activeSessionIdRef.current) {
+        mergeSessionTimelineItem(activeSessionIdRef.current, {
           id: `error-${Date.now()}`,
           itemType: "error",
           role: "system",
@@ -443,11 +477,18 @@ export function AgentMode() {
           status: "failed",
           createdMs: Date.now(),
           merge: "replace"
-        }
-      ]);
+        });
+      }
       setIsSubmitting(false);
     }
-  }, [ensureRuntimeAndSession, input, isSending, model, scrollTimelineToBottom]);
+  }, [
+    ensureRuntimeAndSession,
+    input,
+    isSending,
+    mergeSessionTimelineItem,
+    model,
+    scrollTimelineToBottom
+  ]);
 
   const cancelPrompt = useCallback(async () => {
     if (!activeRunId) return;
@@ -470,16 +511,20 @@ export function AgentMode() {
     async (item: AgentTimelineItem, decision: AgentPermissionDecision) => {
       try {
         await agentRuntimeService.respondToPermission(permissionRequestId(item), decision);
-        setTimelineItems((current) =>
-          current.map((candidate) =>
-            candidate.id === item.id ? { ...candidate, status: decision } : candidate
-          )
-        );
+        if (activeSessionIdRef.current) {
+          replaceSessionTimeline(
+            activeSessionIdRef.current,
+            (timelineItemsBySession[activeSessionIdRef.current] || timelineItems).map(
+              (candidate) =>
+                candidate.id === item.id ? { ...candidate, status: decision } : candidate
+            )
+          );
+        }
       } catch (permissionError) {
         setError(errorMessage(permissionError));
       }
     },
-    []
+    [replaceSessionTimeline, timelineItems, timelineItemsBySession]
   );
 
   const handleKeyDown = useCallback(
@@ -509,7 +554,7 @@ export function AgentMode() {
     (event: AgentEventEnvelope) => {
       switch (event.eventType) {
         case "runtimeStatus":
-          if (event.status) setRuntimeStatus(event.status);
+          if (event.status) applyRuntimeStatus(event.status);
           break;
         case "sessionCreated":
           if (event.session) {
@@ -531,8 +576,8 @@ export function AgentMode() {
           setIsSubmitting(false);
           break;
         case "timelineItem":
-          if (event.item && event.sessionId === activeSessionIdRef.current) {
-            setTimelineItems((current) => mergeTimelineItem(current, event.item!));
+          if (event.item && event.sessionId) {
+            mergeSessionTimelineItem(event.sessionId, event.item);
           }
           break;
         case "runFinished":
@@ -545,6 +590,12 @@ export function AgentMode() {
           }
           setIsSubmitting(false);
           void refreshSessions().catch(() => {});
+          if (event.sessionId && event.message === "completed") {
+            void agentRuntimeService
+              .loadSession(event.sessionId)
+              .then((detail) => replaceSessionTimeline(event.sessionId!, detail.timeline))
+              .catch(() => {});
+          }
           break;
         case "error":
           if (event.sessionId) {
@@ -556,22 +607,27 @@ export function AgentMode() {
           }
           setIsSubmitting(false);
           if (event.message) setError(event.message);
-          if (event.item && event.sessionId === activeSessionIdRef.current) {
-            setTimelineItems((current) => mergeTimelineItem(current, event.item!));
+          if (event.item && event.sessionId) {
+            mergeSessionTimelineItem(event.sessionId, event.item);
           }
           break;
         case "historyReplaced":
           void (async () => {
             const id = event.sessionId || activeSessionIdRef.current;
-            if (event.sessionId && event.sessionId !== activeSessionIdRef.current) return;
             if (!id) return;
             const detail = await agentRuntimeService.loadSession(id);
-            setTimelineItems(detail.timeline);
+            replaceSessionTimeline(id, detail.timeline);
           })().catch((historyError) => setError(errorMessage(historyError)));
           break;
       }
     },
-    [refreshSessions, upsertSessionSummary]
+    [
+      applyRuntimeStatus,
+      mergeSessionTimelineItem,
+      refreshSessions,
+      replaceSessionTimeline,
+      upsertSessionSummary
+    ]
   );
 
   useEffect(() => {
