@@ -14,6 +14,9 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # was v4
         with:
           persist-credentials: false
+          # Cargo resolves path dependencies from the shared Tauri manifest
+          # before platform cfg removes desktop-only Agent Mode code.
+          submodules: recursive
 
       # Xcode 26.5 is temporarily exposed as a beta app on macos-26 runners: https://github.com/actions/runner-images/issues/14108
       - name: Select Xcode 26.5
