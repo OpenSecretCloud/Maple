@@ -5,6 +5,7 @@
   "windows": [
     "main"
   ],
+  "platforms": ["macOS", "windows", "linux"],
   "permissions": [
     "core:default",
     "updater:default",
