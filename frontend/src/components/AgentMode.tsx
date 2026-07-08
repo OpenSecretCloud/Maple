@@ -199,11 +199,6 @@ export function AgentMode() {
     return recentRoots.find((root) => root.path === projectRoot)?.name || basename(projectRoot);
   }, [projectRoot, recentRoots]);
 
-  const activeSession = useMemo(
-    () => sessions.find((session) => session.id === activeSessionId) ?? null,
-    [activeSessionId, sessions]
-  );
-
   const toggleSidebar = useCallback(() => setIsSidebarOpen((prev) => !prev), []);
 
   const appendRuntimeLog = useCallback((message: string) => {
@@ -631,7 +626,6 @@ export function AgentMode() {
                   />
                 ) : (
                   <>
-                    <SessionHeader session={activeSession} />
                     <AgentTimeline
                       items={timelineItems}
                       onPermissionDecision={respondToPermission}
@@ -787,23 +781,6 @@ function AgentProjectPanel({
         )}
       </div>
     </aside>
-  );
-}
-
-function SessionHeader({ session }: { session: AgentSessionSummary | null }) {
-  if (!session) return null;
-  return (
-    <div className="rounded-md border border-border/35 bg-muted/20 px-3 py-2">
-      <div className="flex items-center justify-between gap-3">
-        <div className="min-w-0">
-          <p className="truncate text-sm font-medium">{sessionTitle(session)}</p>
-          <p className="truncate text-xs text-muted-foreground">{session.projectRoot}</p>
-        </div>
-        <Badge variant="outline" className="shrink-0 rounded-md capitalize">
-          {session.mode}
-        </Badge>
-      </div>
-    </div>
   );
 }
 
