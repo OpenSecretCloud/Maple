@@ -69,6 +69,7 @@ import type {
 
 const DEFAULT_MODEL = POWERFUL_MODEL_ALIAS;
 const DEFAULT_MODE = "smart_approve";
+const AUTO_SCROLL_BOTTOM_THRESHOLD_PX = 100;
 
 const PRIMARY_AGENT_MODELS = [
   {
@@ -143,9 +144,10 @@ export function AgentMode() {
   const [isStarting, setIsStarting] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const chatContainerRef = useRef<HTMLDivElement>(null);
   const projectRootRef = useRef(projectRoot);
   const activeSessionIdRef = useRef(activeSessionId);
+  const shouldAutoScrollRef = useRef(true);
 
   useEffect(() => {
     if (isCompactLayout) {
@@ -161,9 +163,36 @@ export function AgentMode() {
     activeSessionIdRef.current = activeSessionId;
   }, [activeSessionId]);
 
+  const updateAutoScrollFromPosition = useCallback(() => {
+    const container = chatContainerRef.current;
+    if (!container) return;
+
+    const distanceFromBottom =
+      container.scrollHeight - container.scrollTop - container.clientHeight;
+    shouldAutoScrollRef.current = distanceFromBottom < AUTO_SCROLL_BOTTOM_THRESHOLD_PX;
+  }, []);
+
+  const scrollTimelineToBottom = useCallback((behavior: ScrollBehavior = "auto") => {
+    const container = chatContainerRef.current;
+    if (!container) return;
+
+    container.scrollTo({
+      top: container.scrollHeight,
+      behavior
+    });
+  }, []);
+
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ block: "end" });
-  }, [timelineItems]);
+    if (!shouldAutoScrollRef.current) return;
+
+    const frame = requestAnimationFrame(() => {
+      if (shouldAutoScrollRef.current) {
+        scrollTimelineToBottom("auto");
+      }
+    });
+
+    return () => cancelAnimationFrame(frame);
+  }, [scrollTimelineToBottom, timelineItems]);
 
   const activeRootLabel = useMemo(() => {
     if (!projectRoot) return "Select folder";
@@ -263,6 +292,7 @@ export function AgentMode() {
         title: "Select project folder"
       });
       if (typeof selected === "string") {
+        shouldAutoScrollRef.current = true;
         setProjectRoot(selected);
         setActiveSessionId(null);
         setTimelineItems([]);
@@ -323,6 +353,7 @@ export function AgentMode() {
         model: model || DEFAULT_MODEL,
         mode: DEFAULT_MODE
       });
+      shouldAutoScrollRef.current = true;
       sessionId = detail.session.id;
       setActiveSessionId(sessionId);
       setSessions((current) => [
@@ -347,6 +378,7 @@ export function AgentMode() {
         model: model || DEFAULT_MODEL,
         mode: DEFAULT_MODE
       });
+      shouldAutoScrollRef.current = true;
       setActiveSessionId(detail.session.id);
       setSessions((current) => [
         detail.session,
@@ -362,6 +394,7 @@ export function AgentMode() {
     setError(null);
     try {
       const detail = await agentRuntimeService.loadSession(sessionId);
+      shouldAutoScrollRef.current = true;
       setActiveSessionId(detail.session.id);
       setProjectRoot(detail.session.projectRoot);
       setTimelineItems(detail.timeline);
@@ -377,6 +410,8 @@ export function AgentMode() {
     setError(null);
     setInput("");
     setIsSending(true);
+    shouldAutoScrollRef.current = true;
+    requestAnimationFrame(() => scrollTimelineToBottom("smooth"));
     try {
       const sessionId = await ensureRuntimeAndSession();
       const response = await agentRuntimeService.sendMessage({
@@ -404,7 +439,7 @@ export function AgentMode() {
       ]);
       setIsSending(false);
     }
-  }, [ensureRuntimeAndSession, input, isSending, model]);
+  }, [ensureRuntimeAndSession, input, isSending, model, scrollTimelineToBottom]);
 
   const cancelPrompt = useCallback(async () => {
     if (!activeRunId) return;
@@ -570,7 +605,11 @@ export function AgentMode() {
           />
 
           <section className="flex min-w-0 flex-1 flex-col overflow-hidden">
-            <div className="min-h-0 flex-1 overflow-y-auto px-4 py-5">
+            <div
+              ref={chatContainerRef}
+              className="min-h-0 flex-1 overflow-y-auto px-4 py-5"
+              onScroll={updateAutoScrollFromPosition}
+            >
               <div className="mx-auto flex w-full max-w-4xl flex-col gap-4">
                 {timelineItems.length === 0 ? (
                   <EmptyAgentState
@@ -599,7 +638,6 @@ export function AgentMode() {
                     />
                   </>
                 )}
-                <div ref={messagesEndRef} />
               </div>
             </div>
 
