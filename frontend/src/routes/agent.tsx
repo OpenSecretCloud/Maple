@@ -1,14 +1,10 @@
-import { lazy, Suspense } from "react";
 import { Navigate, createFileRoute } from "@tanstack/react-router";
 import { useOpenSecret } from "@opensecret/react";
 import { AppEntryPage } from "@/components/AppEntryPage";
 import { useRouteMeta } from "@/utils/routeMeta";
 import { appUrl } from "@/config/domains";
 import { isTauriDesktop } from "@/utils/platform";
-
-const AgentMode = lazy(() =>
-  import("@/components/AgentMode").then((module) => ({ default: module.AgentMode }))
-);
+import { AgentMode } from "@/components/AgentMode";
 
 export const Route = createFileRoute("/agent")({
   component: AgentRoute
@@ -32,9 +28,5 @@ function AgentRoute() {
     return <AppEntryPage />;
   }
 
-  return (
-    <Suspense fallback={null}>
-      <AgentMode />
-    </Suspense>
-  );
+  return <AgentMode />;
 }
