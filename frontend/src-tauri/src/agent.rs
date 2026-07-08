@@ -683,11 +683,13 @@ pub async fn agent_send_message(
     let session_id = request.session_id.clone();
     let task_run_id = run_id.clone();
     let task_agent_manager = Arc::clone(&agent_manager);
+    let task_session_manager = Arc::clone(&session_manager);
 
     tauri::async_runtime::spawn(async move {
         let result = run_agent_prompt(
             app_handle_for_task.clone(),
             agent,
+            task_session_manager,
             session_id.clone(),
             task_run_id.clone(),
             text,
@@ -822,6 +824,7 @@ pub async fn agent_append_runtime_log(
 async fn run_agent_prompt(
     app_handle: AppHandle,
     agent: Arc<Agent>,
+    session_manager: Arc<SessionManager>,
     session_id: String,
     run_id: String,
     text: String,
@@ -845,6 +848,23 @@ async fn run_agent_prompt(
         .reply(user_message, session_config, Some(cancel_token.clone()))
         .await
         .map_err(|e| format!("Goose reply failed: {e}"))?;
+    let updated_session = session_manager
+        .get_session(&session_id, false)
+        .await
+        .map_err(|e| format!("Failed to load updated Goose session: {e}"))?;
+    emit_agent_event(
+        &app_handle,
+        AgentEventEnvelope {
+            event_type: "sessionUpdated".to_string(),
+            session_id: Some(session_id.clone()),
+            run_id: Some(run_id.clone()),
+            item: None,
+            status: None,
+            session: Some(session_summary(&updated_session)),
+            message: None,
+            details: None,
+        },
+    );
 
     while let Some(event) = stream.next().await {
         if cancel_token.is_cancelled() {

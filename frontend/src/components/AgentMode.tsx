@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useOpenSecret } from "@opensecret/react";
 import {
   AlertCircle,
@@ -70,6 +70,7 @@ import type {
 const DEFAULT_MODEL = POWERFUL_MODEL_ALIAS;
 const DEFAULT_MODE = "smart_approve";
 const AUTO_SCROLL_BOTTOM_THRESHOLD_PX = 100;
+const SIDEBAR_REORDER_ANIMATION_MS = 150;
 
 const PRIMARY_AGENT_MODELS = [
   {
@@ -492,6 +493,17 @@ export function AgentMode() {
   );
 
   const sidebarLayoutStyle = getSidebarLayoutStyle({ offsetContent: isSidebarOpen });
+  const upsertSessionSummary = useCallback((summary: AgentSessionSummary) => {
+    setSessions((current) => {
+      let replaced = false;
+      const next = current.map((session) => {
+        if (session.id !== summary.id) return session;
+        replaced = true;
+        return summary;
+      });
+      return replaced ? next : [summary, ...current];
+    });
+  }, []);
 
   const handleAgentEvent = useCallback(
     (event: AgentEventEnvelope) => {
@@ -501,10 +513,12 @@ export function AgentMode() {
           break;
         case "sessionCreated":
           if (event.session) {
-            setSessions((current) => [
-              event.session!,
-              ...current.filter((session) => session.id !== event.session!.id)
-            ]);
+            upsertSessionSummary(event.session);
+          }
+          break;
+        case "sessionUpdated":
+          if (event.session) {
+            upsertSessionSummary(event.session);
           }
           break;
         case "runStarted":
@@ -557,7 +571,7 @@ export function AgentMode() {
           break;
       }
     },
-    [refreshSessions]
+    [refreshSessions, upsertSessionSummary]
   );
 
   useEffect(() => {
@@ -738,6 +752,8 @@ function AgentSidebarContent({
   onProjectRootChange,
   onSessionSelect
 }: AgentSidebarContentProps) {
+  const rowElementsRef = useRef(new Map<string, HTMLElement>());
+  const previousRowTopsRef = useRef(new Map<string, number>());
   const { projectRows, sessionsByRoot } = useMemo(() => {
     const rootsByPath = new Map<string, RecentProjectRoot>();
     const sessionsByProjectRoot = new Map<string, AgentSessionSummary[]>();
@@ -776,6 +792,39 @@ function AgentSidebarContent({
 
     return { projectRows: rows, sessionsByRoot: sessionsByProjectRoot };
   }, [projectRoot, recentRoots, sessions]);
+  const setAnimatedRowRef = useCallback((key: string, node: HTMLElement | null) => {
+    if (node) {
+      rowElementsRef.current.set(key, node);
+    } else {
+      rowElementsRef.current.delete(key);
+    }
+  }, []);
+
+  useLayoutEffect(() => {
+    const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const previousTops = previousRowTopsRef.current;
+    const nextTops = new Map<string, number>();
+
+    rowElementsRef.current.forEach((node, key) => {
+      const nextTop = node.getBoundingClientRect().top;
+      nextTops.set(key, nextTop);
+
+      if (prefersReducedMotion) return;
+
+      const previousTop = previousTops.get(key);
+      if (previousTop === undefined) return;
+
+      const delta = previousTop - nextTop;
+      if (Math.abs(delta) < 1) return;
+
+      node.animate([{ transform: `translateY(${delta}px)` }, { transform: "translateY(0)" }], {
+        duration: SIDEBAR_REORDER_ANIMATION_MS,
+        easing: "cubic-bezier(0.2, 0, 0, 1)"
+      });
+    });
+
+    previousRowTopsRef.current = nextTops;
+  }, [projectRows, sessions]);
 
   return (
     <>
@@ -804,97 +853,100 @@ function AgentSidebarContent({
         </button>
       ) : (
         <div className="space-y-1">
-            {projectRows.map((root) => {
-              const isActive = root.path === projectRoot;
-              const projectSessions = sessionsByRoot.get(root.path) || [];
-              const hasRunningSession = projectSessions.some((session) =>
-                runningSessionIds.has(session.id)
-              );
+          {projectRows.map((root) => {
+            const isActive = root.path === projectRoot;
+            const projectSessions = sessionsByRoot.get(root.path) || [];
+            const hasRunningSession = projectSessions.some((session) =>
+              runningSessionIds.has(session.id)
+            );
 
-              return (
-                <div key={root.path} className="space-y-1.5">
-                  <div
+            return (
+              <div
+                key={root.path}
+                ref={(node) => setAnimatedRowRef(`project:${root.path}`, node)}
+                className="space-y-1.5 will-change-transform"
+              >
+                <div
+                  className={cn(
+                    "flex items-center gap-1 rounded-md transition-colors",
+                    isActive ? "bg-background/70 text-foreground" : "text-muted-foreground"
+                  )}
+                >
+                  <button
+                    type="button"
                     className={cn(
-                      "flex items-center gap-1 rounded-md transition-colors",
-                      isActive ? "bg-background/70 text-foreground" : "text-muted-foreground"
+                      "flex min-w-0 flex-1 items-center gap-3 rounded-md px-2 py-2 text-left text-sm transition-colors",
+                      !isActive && "hover:bg-background/60 hover:text-foreground"
                     )}
+                    onClick={() => onProjectRootChange(root.path)}
+                    title={root.path}
                   >
-                    <button
+                    <FolderOpen className="h-4 w-4 shrink-0" />
+                    <span className="min-w-0 flex-1 truncate">{root.name}</span>
+                    {hasRunningSession ? (
+                      <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-[hsl(var(--maple-primary))]" />
+                    ) : isActive && runtimeRunning ? (
+                      <span className="h-2 w-2 shrink-0 rounded-full bg-maple-success" />
+                    ) : null}
+                    {isActive ? <ChevronDown className="h-4 w-4 shrink-0" /> : null}
+                  </button>
+                  {isActive ? (
+                    <Button
                       type="button"
-                      className={cn(
-                        "flex min-w-0 flex-1 items-center gap-3 rounded-md px-2 py-2 text-left text-sm transition-colors",
-                        !isActive && "hover:bg-background/60 hover:text-foreground"
-                      )}
-                      onClick={() => onProjectRootChange(root.path)}
-                      title={root.path}
+                      variant="ghost"
+                      size="icon"
+                      className="mr-1 h-7 w-7 shrink-0 text-muted-foreground hover:bg-background/70 hover:text-foreground"
+                      onClick={onCreateSession}
+                      disabled={!projectRoot}
+                      aria-label="New agent session"
                     >
-                      <FolderOpen className="h-4 w-4 shrink-0" />
-                      <span className="min-w-0 flex-1 truncate">{root.name}</span>
-                      {hasRunningSession ? (
-                        <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-[hsl(var(--maple-primary))]" />
-                      ) : isActive && runtimeRunning ? (
-                        <span className="h-2 w-2 shrink-0 rounded-full bg-maple-success" />
-                      ) : null}
-                      {isActive ? <ChevronDown className="h-4 w-4 shrink-0" /> : null}
-                    </button>
-                    {isActive ? (
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon"
-                        className="mr-1 h-7 w-7 shrink-0 text-muted-foreground hover:bg-background/70 hover:text-foreground"
-                        onClick={onCreateSession}
-                        disabled={!projectRoot}
-                        aria-label="New agent session"
-                      >
-                        <MessageSquarePlus className="h-4 w-4" />
-                      </Button>
-                    ) : null}
-                  </div>
-
-                  <div className="space-y-0.5 pl-9">
-                    {projectSessions.length === 0 ? (
-                      isActive ? (
-                        <p className="px-2 py-1 text-xs text-muted-foreground/75">
-                          No sessions yet
-                        </p>
-                      ) : null
-                    ) : (
-                      projectSessions.slice(0, 6).map((session) => {
-                        const isRunning = runningSessionIds.has(session.id);
-
-                        return (
-                          <button
-                            key={session.id}
-                            type="button"
-                            className={cn(
-                              "grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-md px-2 py-1.5 text-left transition-colors",
-                              session.id === activeSessionId
-                                ? "bg-background/80 text-foreground"
-                                : "text-muted-foreground hover:bg-background/60 hover:text-foreground"
-                            )}
-                            onClick={() => onSessionSelect(session.id)}
-                          >
-                            <span className="truncate text-sm">{sessionTitle(session)}</span>
-                            <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                              {isRunning ? (
-                                <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[hsl(var(--maple-primary))]" />
-                              ) : null}
-                              {formatDate(session.updatedMs)}
-                            </span>
-                          </button>
-                        );
-                      })
-                    )}
-                    {projectSessions.length > 6 ? (
-                      <p className="px-2 py-1 text-xs text-muted-foreground/75">
-                        {projectSessions.length - 6} more
-                      </p>
-                    ) : null}
-                  </div>
+                      <MessageSquarePlus className="h-4 w-4" />
+                    </Button>
+                  ) : null}
                 </div>
-              );
-            })}
+
+                <div className="space-y-0.5 pl-9">
+                  {projectSessions.length === 0 ? (
+                    isActive ? (
+                      <p className="px-2 py-1 text-xs text-muted-foreground/75">No sessions yet</p>
+                    ) : null
+                  ) : (
+                    projectSessions.slice(0, 6).map((session) => {
+                      const isRunning = runningSessionIds.has(session.id);
+
+                      return (
+                        <button
+                          key={session.id}
+                          ref={(node) => setAnimatedRowRef(`session:${session.id}`, node)}
+                          type="button"
+                          className={cn(
+                            "grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-md px-2 py-1.5 text-left transition-colors will-change-transform",
+                            session.id === activeSessionId
+                              ? "bg-background/80 text-foreground"
+                              : "text-muted-foreground hover:bg-background/60 hover:text-foreground"
+                          )}
+                          onClick={() => onSessionSelect(session.id)}
+                        >
+                          <span className="truncate text-sm">{sessionTitle(session)}</span>
+                          <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                            {isRunning ? (
+                              <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[hsl(var(--maple-primary))]" />
+                            ) : null}
+                            {formatDate(session.updatedMs)}
+                          </span>
+                        </button>
+                      );
+                    })
+                  )}
+                  {projectSessions.length > 6 ? (
+                    <p className="px-2 py-1 text-xs text-muted-foreground/75">
+                      {projectSessions.length - 6} more
+                    </p>
+                  ) : null}
+                </div>
+              </div>
+            );
+          })}
         </div>
       )}
 
