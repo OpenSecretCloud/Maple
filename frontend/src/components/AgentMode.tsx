@@ -2,17 +2,22 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useOpenSecret } from "@opensecret/react";
 import {
   AlertCircle,
+  ArrowUp,
+  Brain,
+  Camera,
   Check,
+  ChevronDown,
+  ChevronLeft,
   ChevronRight,
   Circle,
   FolderOpen,
   Loader2,
+  Lock,
   MessageSquarePlus,
   RotateCcw,
-  Send,
-  Square,
   Terminal,
-  X
+  X,
+  Zap
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -25,9 +30,16 @@ import {
   SelectTrigger,
   SelectValue
 } from "@/components/ui/select";
-import { Input } from "@/components/ui/input";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger
+} from "@/components/ui/dropdown-menu";
 import { Sidebar, SidebarToggle } from "@/components/Sidebar";
 import { MapleWordmark } from "@/components/MapleWordmark";
+import { UpgradePromptDialog } from "@/components/UpgradePromptDialog";
 import {
   agentRuntimeService,
   type AgentEventEnvelope,
@@ -39,11 +51,79 @@ import {
 } from "@/services/agentRuntimeService";
 import { proxyService } from "@/services/proxyService";
 import { SIDEBAR_GRID_COLUMNS_CLASS, getSidebarLayoutStyle } from "@/constants/layout";
-import { cn, useIsLandscapeMobile, useIsMobile } from "@/utils/utils";
+import {
+  cn,
+  POWERFUL_MODEL_ALIAS,
+  QUICK_MODEL_ALIAS,
+  useIsLandscapeMobile,
+  useIsMobile
+} from "@/utils/utils";
 import { isTauriDesktop } from "@/utils/platform";
+import { useLocalState } from "@/state/useLocalState";
+import type {
+  ModelAccessTier,
+  OpenSecretModel,
+  OpenSecretModelAlias,
+  OpenSecretModelCatalog
+} from "@/state/LocalStateContextDef";
 
-const DEFAULT_MODEL = "auto:powerful";
+const DEFAULT_MODEL = POWERFUL_MODEL_ALIAS;
 const DEFAULT_MODE = "smart_approve";
+
+const PRIMARY_AGENT_MODELS = [
+  {
+    id: QUICK_MODEL_ALIAS,
+    label: "Quick",
+    icon: Zap,
+    description: "Fast, everyday responses",
+    access: "free" as ModelAccessTier,
+    capabilities: { vision: false, reasoning: true }
+  },
+  {
+    id: POWERFUL_MODEL_ALIAS,
+    label: "Powerful",
+    icon: Brain,
+    description: "Deeper thinking & analysis",
+    access: "pro" as ModelAccessTier,
+    capabilities: { vision: true, reasoning: true }
+  }
+] as const;
+
+const FALLBACK_ALIAS_TARGETS = {
+  [QUICK_MODEL_ALIAS]: "gpt-oss-120b",
+  [POWERFUL_MODEL_ALIAS]: "kimi-k2-6"
+} as const;
+
+type ModelCatalogClient = {
+  fetchModelCatalog?: () => Promise<OpenSecretModelCatalog>;
+  fetchModels?: () => Promise<OpenSecretModel[]>;
+};
+
+function isAutoModelAlias(modelId: string): boolean {
+  return modelId === QUICK_MODEL_ALIAS || modelId === POWERFUL_MODEL_ALIAS;
+}
+
+function isSelectableChatModel(model: OpenSecretModel): boolean {
+  return model.enabled !== false && model.deprecated !== true && model.capabilities?.chat !== false;
+}
+
+function buildFallbackModelAliases(models: OpenSecretModel[]): OpenSecretModelAlias[] {
+  const modelById = new Map(models.map((availableModel) => [availableModel.id, availableModel]));
+
+  return PRIMARY_AGENT_MODELS.map((primaryModel) => {
+    const targetModel = modelById.get(FALLBACK_ALIAS_TARGETS[primaryModel.id]);
+
+    return {
+      id: primaryModel.id,
+      label: primaryModel.label,
+      short_name: primaryModel.label,
+      description: primaryModel.description,
+      target_model: targetModel?.id || "",
+      access: targetModel?.access || primaryModel.access,
+      capabilities: targetModel?.capabilities || primaryModel.capabilities
+    };
+  });
+}
 
 export function AgentMode() {
   const { createApiKey } = useOpenSecret();
@@ -724,92 +804,524 @@ function AgentComposer({
   onRestartRuntime,
   onSendMessage
 }: AgentComposerProps) {
+  const rootOptions = recentRoots.some((root) => root.path === projectRoot)
+    ? recentRoots
+    : projectRoot
+      ? [{ path: projectRoot, name: activeRootLabel, lastUsedMs: Date.now() }, ...recentRoots]
+      : recentRoots;
+
   return (
-    <div className="w-full rounded-lg border border-border/45 bg-background shadow-sm">
-      <div className="flex flex-wrap items-center gap-2 border-b border-border/35 px-2 py-2">
-        <Select value={projectRoot || undefined} onValueChange={onProjectRootChange}>
-          <SelectTrigger className="h-8 min-w-[12rem] flex-1 rounded-md border-0 bg-muted/60 px-2">
-            <FolderOpen className="mr-2 h-4 w-4 shrink-0" />
-            <SelectValue placeholder={activeRootLabel} />
-          </SelectTrigger>
-          <SelectContent>
-            {recentRoots.map((root) => (
-              <SelectItem key={root.path} value={root.path}>
-                {root.name}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        <Button
-          type="button"
-          variant="outline"
-          size="icon"
-          className="h-8 w-8 shrink-0"
-          onClick={onChooseProjectRoot}
-          aria-label="Choose project folder"
-        >
-          <FolderOpen className="h-4 w-4" />
-        </Button>
-        <Input
-          value={model}
-          onChange={(event) => onModelChange(event.target.value)}
-          className="h-8 w-[11rem] rounded-md border-0 bg-muted/60 text-xs"
-          aria-label="Agent model"
-        />
-        <Button
-          type="button"
-          variant="outline"
-          size="icon"
-          className="h-8 w-8 shrink-0"
-          onClick={onRestartRuntime}
-          disabled={isStarting || !projectRoot}
-          aria-label="Restart agent runtime"
-        >
-          {isStarting ? (
-            <Loader2 className="h-4 w-4 animate-spin" />
-          ) : (
-            <RotateCcw className="h-4 w-4" />
-          )}
-        </Button>
-      </div>
-      <div className="flex items-end gap-2 p-2">
-        <Textarea
-          id="agent-message"
-          value={input}
-          onChange={(event) => onInputChange(event.target.value)}
-          onKeyDown={onKeyDown}
-          placeholder="Ask Goose to work in this folder..."
-          className="max-h-44 min-h-[4.5rem] resize-none rounded-md border-0 bg-transparent px-2 py-2 focus-visible:ring-0 focus-visible:ring-offset-0"
-        />
-        {isSending ? (
+    <div className="relative overflow-hidden rounded-3xl border border-[hsl(var(--maple-secondary-container))] bg-background transition-colors focus-within:border-[hsl(var(--maple-primary))]">
+      <Textarea
+        id="agent-message"
+        value={input}
+        onChange={(event) => onInputChange(event.target.value)}
+        onKeyDown={onKeyDown}
+        placeholder="Ask Goose to work in this folder..."
+        className="w-full max-h-[200px] min-h-[52px] resize-none border-0 bg-transparent py-3.5 pl-4 pr-2 leading-6 focus-visible:ring-0 focus-visible:ring-offset-0 placeholder:text-muted-foreground/60"
+        rows={1}
+      />
+
+      <div className="grid grid-cols-[minmax(0,1fr)_auto] items-end gap-x-2 gap-y-2 px-2 pb-2 pt-1">
+        <div className="flex min-w-0 flex-wrap items-center gap-1.5 sm:gap-2">
+          <AgentModelSelector model={model} onModelChange={onModelChange} />
+
+          <Select value={projectRoot || undefined} onValueChange={onProjectRootChange}>
+            <SelectTrigger className="h-8 w-auto max-w-[12rem] gap-1 border-0 bg-transparent px-2 text-[hsl(var(--maple-secondary-700))] hover:bg-[hsl(var(--maple-primary-container))] hover:text-[hsl(var(--maple-secondary-700))] focus:ring-0 focus:ring-offset-0">
+              <FolderOpen className="h-4 w-4 shrink-0" />
+              <SelectValue placeholder={activeRootLabel} />
+            </SelectTrigger>
+            <SelectContent>
+              {rootOptions.map((root) => (
+                <SelectItem key={root.path} value={root.path}>
+                  {root.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+
           <Button
             type="button"
-            size="icon"
-            variant="outline"
-            className="h-9 w-9 shrink-0"
-            onClick={onCancelPrompt}
-            aria-label="Cancel prompt"
+            variant="ghost"
+            size="sm"
+            className="h-8 w-8 p-0 text-[hsl(var(--maple-secondary-700))] hover:bg-[hsl(var(--maple-primary-container))] hover:text-[hsl(var(--maple-secondary-700))]"
+            onClick={onChooseProjectRoot}
+            aria-label="Choose project folder"
           >
-            <Square className="h-3.5 w-3.5" />
+            <FolderOpen className="h-4 w-4" />
           </Button>
-        ) : (
+
           <Button
             type="button"
-            size="icon"
-            className="h-9 w-9 shrink-0"
-            onClick={onSendMessage}
-            disabled={!input.trim() || isStarting || !projectRoot}
-            aria-label="Send agent message"
+            variant="ghost"
+            size="sm"
+            className="h-8 w-8 p-0 text-[hsl(var(--maple-secondary-700))] hover:bg-[hsl(var(--maple-primary-container))] hover:text-[hsl(var(--maple-secondary-700))]"
+            onClick={onRestartRuntime}
+            disabled={isStarting || !projectRoot}
+            aria-label="Restart agent runtime"
           >
             {isStarting ? (
               <Loader2 className="h-4 w-4 animate-spin" />
             ) : (
-              <Send className="h-4 w-4" />
+              <RotateCcw className="h-4 w-4" />
             )}
           </Button>
-        )}
+        </div>
+
+        <div className="flex shrink-0 items-center self-end gap-1.5 sm:gap-2">
+          {isSending ? (
+            <Button
+              type="button"
+              size="icon"
+              variant="destructive"
+              className="h-8 w-8 rounded-xl"
+              onClick={onCancelPrompt}
+              aria-label="Cancel prompt"
+            >
+              <div className="h-3 w-3 rounded-md bg-current" />
+            </Button>
+          ) : (
+            <button
+              type="button"
+              className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-b from-[hsl(var(--maple-primary))] to-[hsl(var(--maple-primary-strong))] text-[hsl(var(--maple-on-primary))]/90 transition-all duration-200 ease-out active:scale-[0.95] disabled:pointer-events-none disabled:opacity-40"
+              onClick={onSendMessage}
+              disabled={!input.trim() || isStarting || !projectRoot}
+              aria-label="Send agent message"
+            >
+              {isStarting ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <ArrowUp className="h-4 w-4" />
+              )}
+            </button>
+          )}
+        </div>
       </div>
     </div>
+  );
+}
+
+function AgentModelSelector({
+  model,
+  onModelChange
+}: {
+  model: string;
+  onModelChange: (value: string) => void;
+}) {
+  const {
+    availableModels,
+    setAvailableModels,
+    modelAliases,
+    setModelAliases,
+    billingStatus,
+    setHasWhisperModel
+  } = useLocalState();
+  const os = useOpenSecret();
+  const isFetching = useRef(false);
+  const hasFetched = useRef(false);
+  const currentModelRef = useRef(model);
+  const [upgradeDialogOpen, setUpgradeDialogOpen] = useState(false);
+  const [selectedModelName, setSelectedModelName] = useState("");
+  const [showAdvanced, setShowAdvanced] = useState(false);
+
+  useEffect(() => {
+    currentModelRef.current = model;
+  }, [model]);
+
+  const modelById = useMemo(() => {
+    return new Map(availableModels.map((availableModel) => [availableModel.id, availableModel]));
+  }, [availableModels]);
+
+  const aliasById = useMemo(() => {
+    return new Map(modelAliases.map((alias) => [alias.id, alias]));
+  }, [modelAliases]);
+
+  const reconcileSelectedConcreteModel = useCallback(
+    (models: OpenSecretModel[]) => {
+      const currentModel = currentModelRef.current;
+      if (!currentModel || isAutoModelAlias(currentModel)) return;
+
+      const selectedModel = models.find((availableModel) => availableModel.id === currentModel);
+      if (!selectedModel) {
+        onModelChange(DEFAULT_MODEL);
+      }
+    },
+    [onModelChange]
+  );
+
+  const fetchCatalog = useCallback(async () => {
+    if (hasFetched.current || isFetching.current) return;
+
+    if (availableModels.length > 0 && modelAliases.length > 0) {
+      hasFetched.current = true;
+      return;
+    }
+
+    isFetching.current = true;
+
+    try {
+      const modelClient = os as unknown as ModelCatalogClient;
+
+      if (modelClient.fetchModelCatalog) {
+        try {
+          const catalog = await modelClient.fetchModelCatalog();
+          const selectableModels = catalog.data.filter(isSelectableChatModel);
+          const hasCatalogWhisperModel = catalog.data.some(
+            (catalogModel) => catalogModel.id === "whisper-large-v3"
+          );
+          hasFetched.current = true;
+          setAvailableModels(selectableModels);
+          setModelAliases(catalog.aliases);
+          setHasWhisperModel(catalog.audio?.transcription?.available ?? hasCatalogWhisperModel);
+          reconcileSelectedConcreteModel(selectableModels);
+
+          return;
+        } catch (fetchCatalogError) {
+          if (import.meta.env.DEV) {
+            console.warn(
+              "Failed to fetch model catalog, falling back to fetchModels:",
+              fetchCatalogError
+            );
+          }
+        }
+      }
+
+      if (modelClient.fetchModels) {
+        const models = await modelClient.fetchModels();
+        const availableGenerateModels = models.filter((availableModel) => {
+          const tasks = availableModel.tasks || [];
+          if (tasks.length > 0) return tasks.includes("generate");
+          const id = availableModel.id.toLowerCase();
+          return !id.includes("whisper") && !id.includes("embed");
+        });
+        hasFetched.current = true;
+        setHasWhisperModel(
+          models.some((availableModel) => availableModel.id === "whisper-large-v3")
+        );
+        setAvailableModels(availableGenerateModels);
+        setModelAliases(buildFallbackModelAliases(availableGenerateModels));
+        reconcileSelectedConcreteModel(availableGenerateModels);
+      }
+    } catch (fetchError) {
+      if (import.meta.env.DEV) {
+        console.warn("Failed to fetch model metadata:", fetchError);
+      }
+    } finally {
+      isFetching.current = false;
+    }
+  }, [
+    availableModels.length,
+    modelAliases.length,
+    os,
+    reconcileSelectedConcreteModel,
+    setAvailableModels,
+    setHasWhisperModel,
+    setModelAliases
+  ]);
+
+  useEffect(() => {
+    void fetchCatalog();
+  }, [fetchCatalog]);
+
+  const getAlias = useCallback(
+    (modelId: string): OpenSecretModelAlias | undefined => {
+      const alias = aliasById.get(modelId as OpenSecretModelAlias["id"]);
+      if (alias) return alias;
+
+      const fallback = PRIMARY_AGENT_MODELS.find((primaryModel) => primaryModel.id === modelId);
+      if (!fallback) return undefined;
+
+      return {
+        id: fallback.id,
+        label: fallback.label,
+        short_name: fallback.label,
+        description: fallback.description,
+        target_model: "",
+        access: fallback.access,
+        capabilities: fallback.capabilities
+      };
+    },
+    [aliasById]
+  );
+
+  const getTargetModel = useCallback(
+    (alias: OpenSecretModelAlias | undefined) => {
+      if (!alias?.target_model) return undefined;
+      return modelById.get(alias.target_model);
+    },
+    [modelById]
+  );
+
+  const getAccess = useCallback(
+    (modelId: string): ModelAccessTier => {
+      const alias = getAlias(modelId);
+      if (alias) {
+        return getTargetModel(alias)?.access || alias.access || "free";
+      }
+      return modelById.get(modelId)?.access || "free";
+    },
+    [getAlias, getTargetModel, modelById]
+  );
+
+  const hasAccessToModel = useCallback(
+    (modelId: string) => {
+      const access = getAccess(modelId);
+      if (access === "free") return true;
+
+      const planName = billingStatus?.product_name?.toLowerCase() || "";
+
+      if (access === "pro") {
+        return planName.includes("pro") || planName.includes("max") || planName.includes("team");
+      }
+
+      if (access === "starter") {
+        return (
+          planName.includes("starter") ||
+          planName.includes("pro") ||
+          planName.includes("max") ||
+          planName.includes("team")
+        );
+      }
+
+      return true;
+    },
+    [billingStatus?.product_name, getAccess]
+  );
+
+  const getDisplayLabel = (modelId: string): string => {
+    const alias = getAlias(modelId);
+    if (alias) return alias.short_name || alias.label;
+
+    const selectedModel = modelById.get(modelId);
+    return selectedModel?.short_name || selectedModel?.display_name || modelId;
+  };
+
+  const getDisplayNameText = (modelId: string): string => {
+    const alias = getAlias(modelId);
+    if (alias) return alias.label;
+
+    const selectedModel = modelById.get(modelId);
+    return selectedModel?.display_name || selectedModel?.short_name || modelId;
+  };
+
+  const handlePrimarySelect = (targetModel: string) => {
+    if (!hasAccessToModel(targetModel)) {
+      setSelectedModelName(getDisplayNameText(targetModel));
+      setUpgradeDialogOpen(true);
+      return;
+    }
+
+    onModelChange(targetModel);
+  };
+
+  const getModelBadges = (modelId: string): string[] => {
+    const badges = modelById.get(modelId)?.badges || [];
+    return badges.filter((badge) => badge !== "Pro" && badge !== "Starter");
+  };
+
+  const getDisplayName = (modelId: string, showLock = false) => {
+    const selectedModel = modelById.get(modelId);
+    const elements: React.ReactNode[] = [];
+
+    if (selectedModel) {
+      elements.push(selectedModel.display_name || selectedModel.short_name || modelId);
+
+      const badges = getModelBadges(modelId);
+      badges.forEach((badge, index) => {
+        let badgeClass = "rounded-md px-1.5 py-0.5 text-[10px] font-medium";
+
+        if (badge === "Coming Soon") {
+          badgeClass += " bg-muted text-muted-foreground";
+        } else if (badge === "New") {
+          badgeClass += " bg-maple-info/10 text-maple-info";
+        } else if (badge === "Reasoning") {
+          badgeClass += " bg-maple-error/10 text-maple-error";
+        } else if (badge === "Beta") {
+          badgeClass += " bg-maple-warning/10 text-maple-warning";
+        } else {
+          badgeClass += " bg-[hsl(var(--maple-primary))]/10 text-[hsl(var(--maple-primary))]";
+        }
+
+        elements.push(
+          <span key={`badge-${index}`} className={badgeClass}>
+            {badge}
+          </span>
+        );
+      });
+
+      if (showLock && !hasAccessToModel(modelId)) {
+        elements.push(<Lock key="lock" className="h-3 w-3 opacity-50" />);
+      }
+
+      if (selectedModel.capabilities?.vision) {
+        elements.push(<Camera key="cam" className="h-3 w-3 opacity-50" />);
+      }
+    } else {
+      elements.push(getDisplayNameText(modelId));
+    }
+
+    return <span className="flex items-center gap-1">{elements}</span>;
+  };
+
+  return (
+    <>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-8 gap-1 px-2 text-[hsl(var(--maple-secondary-700))] hover:bg-[hsl(var(--maple-primary-container))] hover:text-[hsl(var(--maple-secondary-700))]"
+            aria-label={`Current agent model: ${getDisplayNameText(model)}. Click to change model.`}
+          >
+            <span className="text-xs font-medium">{getDisplayLabel(model)}</span>
+            <ChevronDown className="h-3 w-3" />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start" className="w-64 p-0">
+          {!showAdvanced ? (
+            <div className="flex flex-col p-1">
+              {PRIMARY_AGENT_MODELS.map((primaryModel) => {
+                const alias = getAlias(primaryModel.id);
+                const Icon = primaryModel.icon;
+                const targetModel = primaryModel.id;
+                const isActive = model === targetModel;
+                const requiresUpgrade = !hasAccessToModel(targetModel);
+
+                return (
+                  <DropdownMenuItem
+                    key={targetModel}
+                    onClick={() => handlePrimarySelect(targetModel)}
+                    className={cn(
+                      "flex cursor-pointer items-center gap-2 px-3 py-1.5",
+                      requiresUpgrade &&
+                        "hover:bg-[hsl(var(--maple-primary-container))] dark:hover:bg-[hsl(var(--maple-primary))]/10"
+                    )}
+                  >
+                    <Icon className="h-4 w-4 opacity-70" />
+                    <div className="flex-1">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-sm font-medium">
+                          {alias?.label || primaryModel.label}
+                        </span>
+                        {requiresUpgrade && <Lock className="h-3 w-3 opacity-50" />}
+                      </div>
+                      <div className="text-xs text-muted-foreground">
+                        {alias?.description || primaryModel.description}
+                      </div>
+                    </div>
+                    {isActive && <Check className="h-4 w-4" />}
+                  </DropdownMenuItem>
+                );
+              })}
+
+              <DropdownMenuSeparator />
+
+              <DropdownMenuItem
+                onSelect={(event) => {
+                  event.preventDefault();
+                  void fetchCatalog();
+                  setShowAdvanced(true);
+                }}
+                className="flex cursor-pointer items-center gap-2 px-3 py-1.5"
+              >
+                <ChevronLeft className="h-4 w-4 rotate-180 opacity-70" />
+                <div className="flex-1">
+                  <span className="text-sm font-medium">More models</span>
+                  <div className="text-xs text-muted-foreground">All models</div>
+                </div>
+              </DropdownMenuItem>
+            </div>
+          ) : (
+            <div className="flex flex-col p-1">
+              <DropdownMenuItem
+                onSelect={(event) => {
+                  event.preventDefault();
+                  setShowAdvanced(false);
+                }}
+                className="mb-1 flex cursor-pointer items-center gap-2 px-3 py-1.5"
+              >
+                <ChevronLeft className="h-4 w-4" />
+                <span className="text-sm font-medium">Back</span>
+              </DropdownMenuItem>
+
+              <DropdownMenuSeparator />
+
+              <div className="max-h-80 overflow-y-auto">
+                {availableModels.length === 0 ? (
+                  <DropdownMenuItem disabled className="px-3 py-2 text-sm text-muted-foreground">
+                    Loading models...
+                  </DropdownMenuItem>
+                ) : (
+                  [...availableModels]
+                    .filter(isSelectableChatModel)
+                    .filter(
+                      (availableModel, index, self) =>
+                        self.findIndex((candidate) => candidate.id === availableModel.id) === index
+                    )
+                    .sort((a, b) => {
+                      const aDisabled = a.enabled === false;
+                      const bDisabled = b.enabled === false;
+                      const aRestricted = !hasAccessToModel(a.id);
+                      const bRestricted = !hasAccessToModel(b.id);
+
+                      if (aDisabled && !bDisabled) return 1;
+                      if (!aDisabled && bDisabled) return -1;
+                      if (aRestricted && !bRestricted) return 1;
+                      if (!aRestricted && bRestricted) return -1;
+
+                      return (a.sort_order ?? 999) - (b.sort_order ?? 999);
+                    })
+                    .map((availableModel) => {
+                      const isDisabled = availableModel.enabled === false;
+                      const isRestricted = !hasAccessToModel(availableModel.id);
+                      const selectedAliasTarget = getAlias(model)?.target_model;
+                      const isActive =
+                        model === availableModel.id || selectedAliasTarget === availableModel.id;
+
+                      return (
+                        <DropdownMenuItem
+                          key={`agent-model-${availableModel.id}`}
+                          onClick={() => {
+                            if (isDisabled) return;
+                            if (isRestricted) {
+                              setSelectedModelName(
+                                availableModel.display_name || availableModel.id
+                              );
+                              setUpgradeDialogOpen(true);
+                            } else {
+                              onModelChange(availableModel.id);
+                              setShowAdvanced(false);
+                            }
+                          }}
+                          className={cn(
+                            "group flex items-center justify-between",
+                            isDisabled && "cursor-not-allowed opacity-50",
+                            isRestricted &&
+                              "hover:bg-[hsl(var(--maple-primary-container))] dark:hover:bg-[hsl(var(--maple-primary))]/10"
+                          )}
+                          disabled={isDisabled}
+                        >
+                          <div className="flex flex-1 items-center gap-2">
+                            <div className="text-sm">{getDisplayName(availableModel.id, true)}</div>
+                          </div>
+                          {isActive && <Check className="h-4 w-4" />}
+                        </DropdownMenuItem>
+                      );
+                    })
+                )}
+              </div>
+            </div>
+          )}
+        </DropdownMenuContent>
+      </DropdownMenu>
+
+      <UpgradePromptDialog
+        open={upgradeDialogOpen}
+        onOpenChange={setUpgradeDialogOpen}
+        feature="model"
+        modelName={selectedModelName}
+      />
+    </>
   );
 }
 
