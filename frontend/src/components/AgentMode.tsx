@@ -142,10 +142,9 @@ export function AgentMode() {
   const [input, setInput] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [isStarting, setIsStarting] = useState(false);
-  const [isSending, setIsSending] = useState(false);
-  const [activeRunId, setActiveRunId] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [activeRunsBySession, setActiveRunsBySession] = useState<Record<string, string>>({});
   const chatContainerRef = useRef<HTMLDivElement>(null);
-  const projectRootRef = useRef(projectRoot);
   const activeSessionIdRef = useRef(activeSessionId);
   const shouldAutoScrollRef = useRef(true);
 
@@ -154,10 +153,6 @@ export function AgentMode() {
       setIsSidebarOpen(false);
     }
   }, [isCompactLayout]);
-
-  useEffect(() => {
-    projectRootRef.current = projectRoot;
-  }, [projectRoot]);
 
   useEffect(() => {
     activeSessionIdRef.current = activeSessionId;
@@ -198,6 +193,12 @@ export function AgentMode() {
     if (!projectRoot) return "Select folder";
     return recentRoots.find((root) => root.path === projectRoot)?.name || basename(projectRoot);
   }, [projectRoot, recentRoots]);
+  const activeRunId = activeSessionId ? (activeRunsBySession[activeSessionId] ?? null) : null;
+  const isSending = Boolean(activeRunId) || isSubmitting;
+  const runningSessionIds = useMemo(
+    () => new Set(Object.keys(activeRunsBySession)),
+    [activeRunsBySession]
+  );
 
   const toggleSidebar = useCallback(() => setIsSidebarOpen((prev) => !prev), []);
 
@@ -217,7 +218,7 @@ export function AgentMode() {
     });
   }, [appendRuntimeLog, createApiKey]);
 
-  const refreshSessions = useCallback(async (root = projectRootRef.current) => {
+  const refreshSessions = useCallback(async () => {
     if (!isTauriDesktop()) return;
     const status = await agentRuntimeService.getRuntimeStatus();
     setRuntimeStatus(status);
@@ -225,7 +226,7 @@ export function AgentMode() {
       setSessions([]);
       return;
     }
-    const nextSessions = await agentRuntimeService.listSessions(root || status.projectRoot || null);
+    const nextSessions = await agentRuntimeService.listSessions(null);
     setSessions(nextSessions);
   }, []);
 
@@ -250,7 +251,7 @@ export function AgentMode() {
 
         await ensureMapleProxyReady();
         if (status.running) {
-          await refreshSessions(root);
+          await refreshSessions();
         } else if (root) {
           const startedStatus = await agentRuntimeService.startRuntime({
             projectRoot: root,
@@ -259,7 +260,7 @@ export function AgentMode() {
           });
           if (cancelled) return;
           setRuntimeStatus(startedStatus);
-          await refreshSessions(startedStatus.projectRoot || root);
+          await refreshSessions();
         }
       } catch (loadError) {
         if (!cancelled) setError(errorMessage(loadError));
@@ -293,6 +294,18 @@ export function AgentMode() {
     }
   }, []);
 
+  const selectProjectRoot = useCallback(
+    (value: string) => {
+      setProjectRoot(value);
+      setActiveSessionId(null);
+      activeSessionIdRef.current = null;
+      setTimelineItems([]);
+      shouldAutoScrollRef.current = true;
+      void refreshSessions().catch((selectError) => setError(errorMessage(selectError)));
+    },
+    [refreshSessions]
+  );
+
   const startRuntime = useCallback(
     async (restart = false) => {
       setError(null);
@@ -310,7 +323,7 @@ export function AgentMode() {
         setProjectRoot(status.projectRoot || projectRoot);
         setModel(status.model || model || DEFAULT_MODEL);
         setRecentRoots(await agentRuntimeService.listRecentProjectRoots());
-        await refreshSessions(status.projectRoot || projectRoot);
+        await refreshSessions();
         return status;
       } catch (startError) {
         setError(errorMessage(startError));
@@ -327,11 +340,9 @@ export function AgentMode() {
       throw new Error("Select a project folder first");
     }
 
-    let status = await agentRuntimeService.getRuntimeStatus();
+    const status = await agentRuntimeService.getRuntimeStatus();
     if (!status.running) {
-      status = await startRuntime(false);
-    } else if (status.projectRoot && status.projectRoot !== projectRoot) {
-      status = await startRuntime(true);
+      await startRuntime(false);
     }
 
     let sessionId = activeSessionIdRef.current;
@@ -344,6 +355,7 @@ export function AgentMode() {
       });
       shouldAutoScrollRef.current = true;
       sessionId = detail.session.id;
+      activeSessionIdRef.current = sessionId;
       setActiveSessionId(sessionId);
       setSessions((current) => [
         detail.session,
@@ -368,6 +380,7 @@ export function AgentMode() {
         mode: DEFAULT_MODE
       });
       shouldAutoScrollRef.current = true;
+      activeSessionIdRef.current = detail.session.id;
       setActiveSessionId(detail.session.id);
       setSessions((current) => [
         detail.session,
@@ -384,6 +397,7 @@ export function AgentMode() {
     try {
       const detail = await agentRuntimeService.loadSession(sessionId);
       shouldAutoScrollRef.current = true;
+      activeSessionIdRef.current = detail.session.id;
       setActiveSessionId(detail.session.id);
       setProjectRoot(detail.session.projectRoot);
       setTimelineItems(detail.timeline);
@@ -398,7 +412,7 @@ export function AgentMode() {
 
     setError(null);
     setInput("");
-    setIsSending(true);
+    setIsSubmitting(true);
     shouldAutoScrollRef.current = true;
     requestAnimationFrame(() => scrollTimelineToBottom("smooth"));
     try {
@@ -409,7 +423,11 @@ export function AgentMode() {
         model: model || DEFAULT_MODEL,
         mode: DEFAULT_MODE
       });
-      setActiveRunId(response.runId);
+      setActiveRunsBySession((current) => ({
+        ...current,
+        [sessionId]: response.runId
+      }));
+      setIsSubmitting(false);
     } catch (sendError) {
       const message = errorMessage(sendError);
       setError(message);
@@ -426,7 +444,7 @@ export function AgentMode() {
           merge: "replace"
         }
       ]);
-      setIsSending(false);
+      setIsSubmitting(false);
     }
   }, [ensureRuntimeAndSession, input, isSending, model, scrollTimelineToBottom]);
 
@@ -434,8 +452,14 @@ export function AgentMode() {
     if (!activeRunId) return;
     try {
       await agentRuntimeService.cancelRun(activeRunId);
-      setActiveRunId(null);
-      setIsSending(false);
+      if (activeSessionIdRef.current) {
+        setActiveRunsBySession((current) => {
+          const next = { ...current };
+          delete next[activeSessionIdRef.current!];
+          return next;
+        });
+      }
+      setIsSubmitting(false);
     } catch (cancelError) {
       setError(errorMessage(cancelError));
     }
@@ -481,35 +505,51 @@ export function AgentMode() {
               event.session!,
               ...current.filter((session) => session.id !== event.session!.id)
             ]);
-            setActiveSessionId(event.session.id);
           }
           break;
         case "runStarted":
-          setIsSending(true);
-          setActiveRunId(event.runId ?? null);
+          if (event.sessionId && event.runId) {
+            setActiveRunsBySession((current) => ({
+              ...current,
+              [event.sessionId!]: event.runId!
+            }));
+          }
+          setIsSubmitting(false);
           break;
         case "timelineItem":
-          if (event.sessionId && event.sessionId !== activeSessionIdRef.current) {
-            setActiveSessionId(event.sessionId);
-          }
-          if (event.item) {
+          if (event.item && event.sessionId === activeSessionIdRef.current) {
             setTimelineItems((current) => mergeTimelineItem(current, event.item!));
           }
           break;
         case "runFinished":
-          setIsSending(false);
-          setActiveRunId(null);
-          void refreshSessions(projectRootRef.current).catch(() => {});
+          if (event.sessionId) {
+            setActiveRunsBySession((current) => {
+              const next = { ...current };
+              delete next[event.sessionId!];
+              return next;
+            });
+          }
+          setIsSubmitting(false);
+          void refreshSessions().catch(() => {});
           break;
         case "error":
-          setIsSending(false);
-          setActiveRunId(null);
+          if (event.sessionId) {
+            setActiveRunsBySession((current) => {
+              const next = { ...current };
+              delete next[event.sessionId!];
+              return next;
+            });
+          }
+          setIsSubmitting(false);
           if (event.message) setError(event.message);
-          if (event.item) setTimelineItems((current) => mergeTimelineItem(current, event.item!));
+          if (event.item && event.sessionId === activeSessionIdRef.current) {
+            setTimelineItems((current) => mergeTimelineItem(current, event.item!));
+          }
           break;
         case "historyReplaced":
           void (async () => {
-            const id = activeSessionIdRef.current;
+            const id = event.sessionId || activeSessionIdRef.current;
+            if (event.sessionId && event.sessionId !== activeSessionIdRef.current) return;
             if (!id) return;
             const detail = await agentRuntimeService.loadSession(id);
             setTimelineItems(detail.timeline);
@@ -586,10 +626,11 @@ export function AgentMode() {
             projectRoot={projectRoot}
             recentRoots={recentRoots}
             runtimeRunning={runtimeStatus?.running ?? false}
+            runningSessionIds={runningSessionIds}
             sessions={sessions}
             onChooseProjectRoot={chooseProjectRoot}
             onCreateSession={() => void createSession()}
-            onProjectRootChange={setProjectRoot}
+            onProjectRootChange={selectProjectRoot}
             onSessionSelect={(sessionId) => void loadSession(sessionId)}
           />
 
@@ -614,7 +655,7 @@ export function AgentMode() {
                     onInputChange={setInput}
                     onKeyDown={handleKeyDown}
                     onModelChange={setModel}
-                    onProjectRootChange={setProjectRoot}
+                    onProjectRootChange={selectProjectRoot}
                     onRestartRuntime={() => void startRuntime(true)}
                     onSendMessage={() => void sendMessage()}
                   />
@@ -645,7 +686,7 @@ export function AgentMode() {
                     onInputChange={setInput}
                     onKeyDown={handleKeyDown}
                     onModelChange={setModel}
-                    onProjectRootChange={setProjectRoot}
+                    onProjectRootChange={selectProjectRoot}
                     onRestartRuntime={() => void startRuntime(true)}
                     onSendMessage={() => void sendMessage()}
                   />
@@ -677,6 +718,7 @@ interface AgentProjectPanelProps {
   projectRoot: string;
   recentRoots: RecentProjectRoot[];
   runtimeRunning: boolean;
+  runningSessionIds: Set<string>;
   sessions: AgentSessionSummary[];
   onChooseProjectRoot: () => void;
   onCreateSession: () => void;
@@ -689,90 +731,182 @@ function AgentProjectPanel({
   projectRoot,
   recentRoots,
   runtimeRunning,
+  runningSessionIds,
   sessions,
   onChooseProjectRoot,
   onCreateSession,
   onProjectRootChange,
   onSessionSelect
 }: AgentProjectPanelProps) {
+  const { projectRows, sessionsByRoot } = useMemo(() => {
+    const rootsByPath = new Map<string, RecentProjectRoot>();
+    const sessionsByProjectRoot = new Map<string, AgentSessionSummary[]>();
+
+    recentRoots.forEach((root) => rootsByPath.set(root.path, root));
+    if (projectRoot && !rootsByPath.has(projectRoot)) {
+      rootsByPath.set(projectRoot, {
+        path: projectRoot,
+        name: basename(projectRoot),
+        lastUsedMs: Date.now()
+      });
+    }
+
+    sessions.forEach((session) => {
+      const rootSessions = sessionsByProjectRoot.get(session.projectRoot) || [];
+      rootSessions.push(session);
+      sessionsByProjectRoot.set(session.projectRoot, rootSessions);
+
+      const existingRoot = rootsByPath.get(session.projectRoot);
+      if (!existingRoot || existingRoot.lastUsedMs < session.updatedMs) {
+        rootsByPath.set(session.projectRoot, {
+          path: session.projectRoot,
+          name: basename(session.projectRoot),
+          lastUsedMs: session.updatedMs
+        });
+      }
+    });
+
+    sessionsByProjectRoot.forEach((rootSessions) => {
+      rootSessions.sort((a, b) => b.updatedMs - a.updatedMs);
+    });
+
+    const rows = [...rootsByPath.values()].sort((a, b) => {
+      if (a.path === projectRoot) return -1;
+      if (b.path === projectRoot) return 1;
+      return b.lastUsedMs - a.lastUsedMs;
+    });
+
+    return { projectRows: rows, sessionsByRoot: sessionsByProjectRoot };
+  }, [projectRoot, recentRoots, sessions]);
+
   return (
-    <aside className="hidden w-72 shrink-0 flex-col overflow-hidden border-r border-border/35 bg-muted/20 lg:flex">
-      <div className="border-b border-border/35 p-3">
-        <div className="mb-2 flex items-center justify-between gap-2">
-          <p className="truncate text-xs font-medium uppercase text-muted-foreground">Project</p>
-          <Badge variant="outline" className="h-5 rounded-md px-1.5 text-[11px]">
-            {runtimeRunning ? "running" : "stopped"}
-          </Badge>
-        </div>
-        <div className="flex items-center gap-2">
-          <Select value={projectRoot || undefined} onValueChange={onProjectRootChange}>
-            <SelectTrigger className="h-8 min-w-0 flex-1 rounded-md border-border/45 bg-background px-2 text-xs">
-              <SelectValue placeholder={projectRoot ? basename(projectRoot) : "Select folder"} />
-            </SelectTrigger>
-            <SelectContent>
-              {recentRoots.map((root) => (
-                <SelectItem key={root.path} value={root.path}>
-                  {root.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+    <aside className="hidden w-80 shrink-0 flex-col overflow-hidden border-r border-border/25 bg-muted dark:bg-[hsl(var(--sidebar))] lg:flex">
+      <div className="sidebar-scrollbar min-h-0 flex-1 overflow-y-auto px-4 py-5">
+        <div className="mb-4 flex items-center justify-between gap-3">
+          <p className="text-sm font-medium text-muted-foreground">Projects</p>
           <Button
             type="button"
-            variant="outline"
+            variant="ghost"
             size="icon"
-            className="h-8 w-8 shrink-0"
+            className="h-8 w-8 text-muted-foreground hover:bg-background/60 hover:text-foreground"
             onClick={onChooseProjectRoot}
             aria-label="Choose project folder"
           >
             <FolderOpen className="h-4 w-4" />
           </Button>
         </div>
-        {projectRoot ? (
-          <p className="mt-2 truncate text-[11px] text-muted-foreground">{projectRoot}</p>
-        ) : null}
-      </div>
-      <div className="flex items-center justify-between gap-2 px-3 py-2">
-        <p className="text-xs font-medium uppercase text-muted-foreground">Sessions</p>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          className="h-7 w-7"
-          onClick={onCreateSession}
-          disabled={!projectRoot}
-          aria-label="New agent session"
-        >
-          <MessageSquarePlus className="h-4 w-4" />
-        </Button>
-      </div>
-      <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-3">
-        {sessions.length === 0 ? (
-          <div className="rounded-md border border-border/35 bg-background/60 px-3 py-2 text-xs text-muted-foreground">
-            No agent sessions yet.
-          </div>
+
+        {projectRows.length === 0 ? (
+          <button
+            type="button"
+            className="flex w-full items-center gap-3 rounded-md px-2 py-2 text-left text-sm text-muted-foreground transition-colors hover:bg-background/60 hover:text-foreground"
+            onClick={onChooseProjectRoot}
+          >
+            <FolderOpen className="h-4 w-4 shrink-0" />
+            Select a folder
+          </button>
         ) : (
           <div className="space-y-1">
-            {sessions.map((session) => (
-              <button
-                key={session.id}
-                type="button"
-                className={cn(
-                  "w-full rounded-md px-2 py-2 text-left transition-colors",
-                  session.id === activeSessionId
-                    ? "bg-background text-foreground"
-                    : "text-muted-foreground hover:bg-background/60 hover:text-foreground"
-                )}
-                onClick={() => onSessionSelect(session.id)}
-              >
-                <span className="block truncate text-sm">{sessionTitle(session)}</span>
-                <span className="mt-0.5 block truncate text-[11px]">
-                  {formatDate(session.updatedMs)}
-                </span>
-              </button>
-            ))}
+            {projectRows.map((root) => {
+              const isActive = root.path === projectRoot;
+              const projectSessions = sessionsByRoot.get(root.path) || [];
+              const hasRunningSession = projectSessions.some((session) =>
+                runningSessionIds.has(session.id)
+              );
+
+              return (
+                <div key={root.path} className="space-y-1.5">
+                  <div
+                    className={cn(
+                      "flex items-center gap-1 rounded-md transition-colors",
+                      isActive ? "bg-background/70 text-foreground" : "text-muted-foreground"
+                    )}
+                  >
+                    <button
+                      type="button"
+                      className={cn(
+                        "flex min-w-0 flex-1 items-center gap-3 rounded-md px-2 py-2 text-left text-sm transition-colors",
+                        !isActive && "hover:bg-background/60 hover:text-foreground"
+                      )}
+                      onClick={() => onProjectRootChange(root.path)}
+                      title={root.path}
+                    >
+                      <FolderOpen className="h-4 w-4 shrink-0" />
+                      <span className="min-w-0 flex-1 truncate">{root.name}</span>
+                      {hasRunningSession ? (
+                        <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-[hsl(var(--maple-primary))]" />
+                      ) : isActive && runtimeRunning ? (
+                        <span className="h-2 w-2 shrink-0 rounded-full bg-maple-success" />
+                      ) : null}
+                      {isActive ? <ChevronDown className="h-4 w-4 shrink-0" /> : null}
+                    </button>
+                    {isActive ? (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="mr-1 h-7 w-7 shrink-0 text-muted-foreground hover:bg-background/70 hover:text-foreground"
+                        onClick={onCreateSession}
+                        disabled={!projectRoot}
+                        aria-label="New agent session"
+                      >
+                        <MessageSquarePlus className="h-4 w-4" />
+                      </Button>
+                    ) : null}
+                  </div>
+
+                  <div className="space-y-0.5 pl-9">
+                    {projectSessions.length === 0 ? (
+                      isActive ? (
+                        <p className="px-2 py-1 text-xs text-muted-foreground/75">
+                          No sessions yet
+                        </p>
+                      ) : null
+                    ) : (
+                      projectSessions.slice(0, 6).map((session) => {
+                        const isRunning = runningSessionIds.has(session.id);
+
+                        return (
+                          <button
+                            key={session.id}
+                            type="button"
+                            className={cn(
+                              "grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-md px-2 py-1.5 text-left transition-colors",
+                              session.id === activeSessionId
+                                ? "bg-background/80 text-foreground"
+                                : "text-muted-foreground hover:bg-background/60 hover:text-foreground"
+                            )}
+                            onClick={() => onSessionSelect(session.id)}
+                          >
+                            <span className="truncate text-sm">{sessionTitle(session)}</span>
+                            <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                              {isRunning ? (
+                                <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[hsl(var(--maple-primary))]" />
+                              ) : null}
+                              {formatDate(session.updatedMs)}
+                            </span>
+                          </button>
+                        );
+                      })
+                    )}
+                    {projectSessions.length > 6 ? (
+                      <p className="px-2 py-1 text-xs text-muted-foreground/75">
+                        {projectSessions.length - 6} more
+                      </p>
+                    ) : null}
+                  </div>
+                </div>
+              );
+            })}
           </div>
         )}
+
+        <div className="mt-7">
+          <p className="mb-3 text-sm font-medium text-muted-foreground">Chats</p>
+          <p className="px-2 text-xs text-muted-foreground/75">
+            Folderless agent chats are not available yet.
+          </p>
+        </div>
       </div>
     </aside>
   );
@@ -820,7 +954,7 @@ function AgentComposer({
       : recentRoots;
 
   return (
-    <div className="relative overflow-hidden rounded-3xl border border-[hsl(var(--maple-secondary-container))] bg-background transition-colors focus-within:border-[hsl(var(--maple-primary))]">
+    <div className="relative w-full overflow-hidden rounded-3xl border border-[hsl(var(--maple-secondary-container))] bg-background transition-colors focus-within:border-[hsl(var(--maple-primary))]">
       <Textarea
         id="agent-message"
         value={input}

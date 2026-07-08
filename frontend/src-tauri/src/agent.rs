@@ -9,6 +9,7 @@ use goose::config::{
     DEFAULT_EXTENSION_TIMEOUT,
 };
 use goose::conversation::message::{ActionRequiredData, Message, MessageContent};
+use goose::execution::manager::AgentManager;
 use goose::permission::permission_confirmation::PrincipalType;
 use goose::permission::{Permission, PermissionConfirmation};
 use goose::session::session_manager::{Session, SessionType};
@@ -181,10 +182,14 @@ pub struct AgentEventEnvelope {
     pub details: Option<Value>,
 }
 
+struct ActiveAgentRun {
+    token: CancellationToken,
+}
+
 struct AgentRuntime {
-    agent: Arc<Agent>,
+    agent_manager: Arc<AgentManager>,
     session_manager: Arc<SessionManager>,
-    active_runs: HashMap<String, CancellationToken>,
+    active_runs: HashMap<String, ActiveAgentRun>,
     project_root: PathBuf,
     model: String,
     mode: String,
@@ -219,6 +224,7 @@ impl AgentRuntime {
 pub struct AgentRuntimeState {
     inner: Arc<Mutex<Option<AgentRuntime>>>,
     session_log: Arc<Mutex<()>>,
+    pending_permissions: Arc<Mutex<HashMap<String, String>>>,
 }
 
 impl AgentRuntimeState {
@@ -226,6 +232,7 @@ impl AgentRuntimeState {
         Self {
             inner: Arc::new(Mutex::new(None)),
             session_log: Arc::new(Mutex::new(())),
+            pending_permissions: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }
@@ -310,7 +317,11 @@ pub async fn agent_start_runtime(
         GoosePlatform::GooseDesktop,
     )
     .with_use_login_shell_path(true);
-    let agent = Arc::new(Agent::with_config(goose_config));
+    let agent_manager = Arc::new(
+        AgentManager::new(goose_config, None)
+            .await
+            .map_err(|e| format!("Failed to create Goose agent manager: {e}"))?,
+    );
 
     append_runtime_log(
         &log_path,
@@ -324,7 +335,7 @@ pub async fn agent_start_runtime(
     );
 
     let runtime = AgentRuntime {
-        agent,
+        agent_manager,
         session_manager,
         active_runs: HashMap::new(),
         project_root: project_root.clone(),
@@ -374,12 +385,13 @@ pub async fn agent_stop_runtime(
     let config_dir = agent_config_dir(&app_handle).map_err(|e| e.to_string())?;
     let mut runtime = state.inner.lock().await;
     if let Some(current) = runtime.as_mut() {
-        for token in current.active_runs.values() {
-            token.cancel();
+        for active_run in current.active_runs.values() {
+            active_run.token.cancel();
         }
         append_runtime_log(&current.log_path, "stopped direct Goose runtime");
     }
     *runtime = None;
+    state.pending_permissions.lock().await.clear();
     Ok(stopped_status(config_dir, None))
 }
 
@@ -393,12 +405,13 @@ pub async fn agent_restart_runtime(
     {
         let mut runtime = state.inner.lock().await;
         if let Some(current) = runtime.as_mut() {
-            for token in current.active_runs.values() {
-                token.cancel();
+            for active_run in current.active_runs.values() {
+                active_run.token.cancel();
             }
         }
         *runtime = None;
     }
+    state.pending_permissions.lock().await.clear();
     agent_start_runtime(app_handle, state, proxy_state, request).await
 }
 
@@ -440,13 +453,13 @@ pub async fn agent_create_session(
         model: None,
         mode: None,
     });
-    let (agent, session_manager, runtime_project_root, runtime_model, runtime_mode) = {
+    let (agent_manager, session_manager, runtime_project_root, runtime_model, runtime_mode) = {
         let runtime = state.inner.lock().await;
         let current = runtime
             .as_ref()
             .ok_or_else(|| "Agent runtime is not running".to_string())?;
         (
-            Arc::clone(&current.agent),
+            Arc::clone(&current.agent_manager),
             Arc::clone(&current.session_manager),
             current.project_root.clone(),
             current.model.clone(),
@@ -474,7 +487,7 @@ pub async fn agent_create_session(
         .await
         .map_err(|e| format!("Failed to create Goose session: {e}"))?;
 
-    configure_session_agent(&agent, &session, &model, &mode).await?;
+    configure_session_agent(&agent_manager, &session, &model, &mode).await?;
     let summary = session_summary(&session);
     let _ = save_recent_project_root_inner(&app_handle, &root);
     let detail = AgentSessionDetail {
@@ -581,16 +594,13 @@ pub async fn agent_send_message(
 
     let run_id = format!("run_{}", unix_ms());
     let cancel_token = CancellationToken::new();
-    let (agent, session_manager, log_path, model, mode) = {
-        let mut runtime = state.inner.lock().await;
+    let (agent_manager, session_manager, log_path, model, mode) = {
+        let runtime = state.inner.lock().await;
         let current = runtime
-            .as_mut()
+            .as_ref()
             .ok_or_else(|| "Agent runtime is not running".to_string())?;
-        current
-            .active_runs
-            .insert(run_id.clone(), cancel_token.clone());
         (
-            Arc::clone(&current.agent),
+            Arc::clone(&current.agent_manager),
             Arc::clone(&current.session_manager),
             current.log_path.clone(),
             request
@@ -605,7 +615,26 @@ pub async fn agent_send_message(
         .get_session(&request.session_id, false)
         .await
         .map_err(|e| format!("Failed to load Goose session: {e}"))?;
-    configure_session_agent(&agent, &session, &model, &mode).await?;
+    let agent = configure_session_agent(&agent_manager, &session, &model, &mode).await?;
+
+    agent_manager
+        .try_register_cancel_token(&request.session_id, cancel_token.clone())
+        .await
+        .map_err(|e| format!("Agent session is already running: {e}"))?;
+
+    {
+        let mut runtime = state.inner.lock().await;
+        let Some(current) = runtime.as_mut() else {
+            agent_manager.unregister_cancel_token(&request.session_id).await;
+            return Err("Agent runtime is not running".to_string());
+        };
+        current.active_runs.insert(
+            run_id.clone(),
+            ActiveAgentRun {
+                token: cancel_token.clone(),
+            },
+        );
+    }
 
     emit_agent_event(
         &app_handle,
@@ -650,8 +679,10 @@ pub async fn agent_send_message(
     let app_handle_for_task = app_handle.clone();
     let state_inner = Arc::clone(&state.inner);
     let session_log = Arc::clone(&state.session_log);
+    let pending_permissions = Arc::clone(&state.pending_permissions);
     let session_id = request.session_id.clone();
     let task_run_id = run_id.clone();
+    let task_agent_manager = Arc::clone(&agent_manager);
 
     tauri::async_runtime::spawn(async move {
         let result = run_agent_prompt(
@@ -663,6 +694,7 @@ pub async fn agent_send_message(
             cancel_token.clone(),
             log_path.clone(),
             session_log,
+            pending_permissions,
         )
         .await;
 
@@ -672,6 +704,7 @@ pub async fn agent_send_message(
                 current.active_runs.remove(&task_run_id);
             }
         }
+        task_agent_manager.unregister_cancel_token(&session_id).await;
 
         let (status, message) = match result {
             Ok(()) if cancel_token.is_cancelled() => ("cancelled", None),
@@ -721,8 +754,8 @@ pub async fn agent_cancel_run(
     let Some(current) = runtime.as_ref() else {
         return Ok(());
     };
-    if let Some(token) = current.active_runs.get(&run_id) {
-        token.cancel();
+    if let Some(active_run) = current.active_runs.get(&run_id) {
+        active_run.token.cancel();
     }
     Ok(())
 }
@@ -732,22 +765,43 @@ pub async fn agent_permission_respond(
     state: State<'_, AgentRuntimeState>,
     response: AgentPermissionResponse,
 ) -> Result<(), String> {
-    let agent = {
+    let (agent_manager, session_id) = {
         let runtime = state.inner.lock().await;
         let current = runtime
             .as_ref()
             .ok_or_else(|| "Agent runtime is not running".to_string())?;
-        Arc::clone(&current.agent)
+        let session_id = state
+            .pending_permissions
+            .lock()
+            .await
+            .get(&response.request_id)
+            .cloned()
+            .ok_or_else(|| {
+                format!(
+                    "No pending Agent Mode permission request found for {}",
+                    response.request_id
+                )
+            })?;
+        (Arc::clone(&current.agent_manager), session_id)
     };
+    let agent = agent_manager
+        .get_or_create_agent(session_id)
+        .await
+        .map_err(|e| format!("Failed to resolve Goose agent for permission response: {e}"))?;
     agent
         .handle_confirmation(
-            response.request_id,
+            response.request_id.clone(),
             PermissionConfirmation {
                 principal_type: PrincipalType::Tool,
                 permission: permission_from_decision(&response.decision)?,
             },
         )
         .await;
+    state
+        .pending_permissions
+        .lock()
+        .await
+        .remove(&response.request_id);
     Ok(())
 }
 
@@ -774,6 +828,7 @@ async fn run_agent_prompt(
     cancel_token: CancellationToken,
     log_path: PathBuf,
     session_log: Arc<Mutex<()>>,
+    pending_permissions: Arc<Mutex<HashMap<String, String>>>,
 ) -> Result<(), String> {
     append_runtime_log(
         &log_path,
@@ -798,6 +853,12 @@ async fn run_agent_prompt(
         match event {
             Ok(AgentEvent::Message(message)) => {
                 for item in message_to_timeline_items(&message, true) {
+                    if let Some(request_id) = pending_permission_request_id(&item) {
+                        pending_permissions
+                            .lock()
+                            .await
+                            .insert(request_id, session_id.clone());
+                    }
                     emit_timeline_item(&app_handle, &session_id, &run_id, item.clone());
                     append_session_event_with_lock(
                         &app_handle,
@@ -883,12 +944,27 @@ async fn run_agent_prompt(
     Ok(())
 }
 
+fn pending_permission_request_id(item: &AgentTimelineItem) -> Option<String> {
+    if item.item_type == "permission" {
+        return item
+            .id
+            .strip_prefix("permission-")
+            .filter(|request_id| !request_id.is_empty())
+            .map(ToString::to_string);
+    }
+    None
+}
+
 async fn configure_session_agent(
-    agent: &Arc<Agent>,
+    agent_manager: &Arc<AgentManager>,
     session: &Session,
     model: &str,
     mode: &str,
-) -> Result<(), String> {
+) -> Result<Arc<Agent>, String> {
+    let agent = agent_manager
+        .get_or_create_agent(session.id.clone())
+        .await
+        .map_err(|e| format!("Failed to get Goose agent for session {}: {e}", session.id))?;
     let provider = goose::providers::create_with_working_dir(
         "openai",
         Vec::new(),
@@ -918,7 +994,7 @@ async fn configure_session_agent(
         .add_extension(developer, &session.id)
         .await
         .map_err(|e| format!("Failed to enable Goose developer tools: {e}"))?;
-    Ok(())
+    Ok(agent)
 }
 
 fn message_to_timeline_items(message: &Message, live: bool) -> Vec<AgentTimelineItem> {
