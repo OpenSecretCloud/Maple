@@ -13,7 +13,15 @@ import { Button } from "./ui/button";
 import { useLocation, useRouter } from "@tanstack/react-router";
 import { ChatHistoryList } from "./ChatHistoryList";
 import { AccountMenu } from "./AccountMenu";
-import { useRef, useEffect, KeyboardEvent, useCallback, useLayoutEffect, useState } from "react";
+import {
+  useRef,
+  useEffect,
+  KeyboardEvent,
+  useCallback,
+  useLayoutEffect,
+  useState,
+  type ReactNode
+} from "react";
 import { flushSync } from "react-dom";
 import { cn, useClickOutside, useIsMobile, useIsLandscapeMobile } from "@/utils/utils";
 import { MapleWordmark } from "@/components/MapleWordmark";
@@ -29,10 +37,14 @@ import { isTauriDesktop } from "@/utils/platform";
 export function Sidebar({
   chatId,
   isOpen,
+  mode = "chat",
+  navigationContent,
   onToggle
 }: {
   chatId?: string;
   isOpen: boolean;
+  mode?: "chat" | "agent";
+  navigationContent?: ReactNode;
   onToggle: () => void;
 }) {
   const router = useRouter();
@@ -113,13 +125,13 @@ export function Sidebar({
     }
   }
 
-  async function openAgentMode() {
+  async function toggleAgentMode() {
     if (isOpen) {
       onToggle();
     }
 
     try {
-      await router.navigate({ to: "/agent" });
+      await router.navigate({ to: location.pathname === "/agent" ? "/" : "/agent" });
     } catch (error) {
       console.error("Navigation failed:", error);
     }
@@ -155,6 +167,7 @@ export function Sidebar({
   const isLandscapeMobile = useIsLandscapeMobile();
   const isCompactLayout = isMobile || isLandscapeMobile;
   const showAgentMode = isTauriDesktop();
+  const isAgentMode = mode === "agent";
 
   // Modified click outside handler to ignore clicks in dropdowns and dialogs
   // Only applies on mobile - desktop users use the toggle button
@@ -250,14 +263,16 @@ export function Sidebar({
               <SquarePenIcon className="h-4 w-4 shrink-0" />
               New Chat
             </button>
-            <button
-              className="flex w-full items-center justify-start gap-2 py-1.5 pr-1 pl-0 text-sm text-foreground hover:text-foreground/70 transition-colors"
-              onClick={toggleSearch}
-              aria-label={isSearchVisible ? "Hide search" : "Search chat history"}
-            >
-              <Search className="h-4 w-4" />
-              Search
-            </button>
+            {!isAgentMode && (
+              <button
+                className="flex w-full items-center justify-start gap-2 py-1.5 pr-1 pl-0 text-sm text-foreground hover:text-foreground/70 transition-colors"
+                onClick={toggleSearch}
+                aria-label={isSearchVisible ? "Hide search" : "Search chat history"}
+              >
+                <Search className="h-4 w-4" />
+                Search
+              </button>
+            )}
             {showAgentMode && (
               <button
                 type="button"
@@ -267,7 +282,7 @@ export function Sidebar({
                     ? "text-[hsl(var(--maple-primary-strong))] dark:text-[hsl(var(--maple-primary))]"
                     : "text-foreground hover:text-foreground/70"
                 )}
-                onClick={openAgentMode}
+                onClick={toggleAgentMode}
               >
                 <Bot className="h-4 w-4" />
                 Agent Mode
@@ -275,7 +290,7 @@ export function Sidebar({
             )}
           </div>
         </div>
-        {isSelectionMode && (
+        {!isAgentMode && isSelectionMode && (
           <div className="mb-2 space-y-2 px-4">
             <div className="flex items-center gap-2">
               <Button
@@ -315,7 +330,7 @@ export function Sidebar({
             </div>
           </div>
         )}
-        {isSearchVisible && (
+        {!isAgentMode && isSearchVisible && (
           <div className="relative transition-all duration-200 ease-in-out px-4">
             <Input
               ref={searchInputRef}
@@ -343,16 +358,18 @@ export function Sidebar({
             ref={historyContainerRef}
             className="sidebar-scrollbar relative flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto overflow-x-clip pl-4 pr-2 pt-5 md:px-4"
           >
-            <ChatHistoryList
-              currentChatId={chatId}
-              searchQuery={searchQuery}
-              isMobile={isCompactLayout}
-              isSelectionMode={isSelectionMode}
-              onExitSelectionMode={exitSelectionMode}
-              selectedIds={selectedIds}
-              onSelectionChange={setSelectedIds}
-              containerRef={historyContainerRef}
-            />
+            {navigationContent || (
+              <ChatHistoryList
+                currentChatId={chatId}
+                searchQuery={searchQuery}
+                isMobile={isCompactLayout}
+                isSelectionMode={isSelectionMode}
+                onExitSelectionMode={exitSelectionMode}
+                selectedIds={selectedIds}
+                onSelectionChange={setSelectedIds}
+                containerRef={historyContainerRef}
+              />
+            )}
             {/* Real empty tail so the last row sits in clear space — no overlay on hit targets */}
             <div aria-hidden className="min-h-[7.5rem] shrink-0 bg-transparent" />
           </nav>
@@ -361,7 +378,7 @@ export function Sidebar({
             aria-hidden
             className={cn(
               "pointer-events-none absolute left-0 top-0 z-[8] h-8 w-[calc(100%-10px)] max-w-full bg-gradient-to-b to-transparent",
-              isSearchVisible
+              !isAgentMode && isSearchVisible
                 ? "from-background/75 dark:from-background/75"
                 : "from-muted/75 dark:from-[hsl(var(--sidebar)/0.75)]"
             )}

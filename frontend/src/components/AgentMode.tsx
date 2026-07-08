@@ -131,7 +131,7 @@ export function AgentMode() {
   const isMobile = useIsMobile();
   const isLandscapeMobile = useIsLandscapeMobile();
   const isCompactLayout = isMobile || isLandscapeMobile;
-  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(!isCompactLayout);
   const [runtimeStatus, setRuntimeStatus] = useState<AgentRuntimeStatus | null>(null);
   const [recentRoots, setRecentRoots] = useState<RecentProjectRoot[]>([]);
   const [sessions, setSessions] = useState<AgentSessionSummary[]>([]);
@@ -600,28 +600,11 @@ export function AgentMode() {
         isSidebarOpen ? SIDEBAR_GRID_COLUMNS_CLASS : ""
       )}
     >
-      <Sidebar isOpen={isSidebarOpen} onToggle={toggleSidebar} />
-
-      <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-        {!isSidebarOpen && (
-          <div className="fixed left-4 top-[9.5px] z-20">
-            <SidebarToggle onToggle={toggleSidebar} />
-          </div>
-        )}
-
-        <header className="h-14 shrink-0 border-b border-border/35" aria-label="Agent Mode" />
-
-        {error && (
-          <div className="mx-auto mt-3 w-full max-w-6xl px-4">
-            <div className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
-              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
-              <span className="min-w-0 break-words">{error}</span>
-            </div>
-          </div>
-        )}
-
-        <main className="flex min-h-0 flex-1 overflow-hidden">
-          <AgentProjectPanel
+      <Sidebar
+        isOpen={isSidebarOpen}
+        mode="agent"
+        navigationContent={
+          <AgentSidebarContent
             activeSessionId={activeSessionId}
             projectRoot={projectRoot}
             recentRoots={recentRoots}
@@ -633,68 +616,85 @@ export function AgentMode() {
             onProjectRootChange={selectProjectRoot}
             onSessionSelect={(sessionId) => void loadSession(sessionId)}
           />
+        }
+        onToggle={toggleSidebar}
+      />
 
-          <section className="flex min-w-0 flex-1 flex-col overflow-hidden">
-            <div
-              ref={chatContainerRef}
-              className="min-h-0 flex-1 overflow-y-auto px-4 py-5"
-              onScroll={updateAutoScrollFromPosition}
-            >
-              <div className="mx-auto flex w-full max-w-4xl flex-col gap-4">
-                {timelineItems.length === 0 ? (
-                  <EmptyAgentState
-                    activeRootLabel={activeRootLabel}
-                    input={input}
-                    isSending={isSending}
-                    isStarting={isStarting}
-                    model={model}
-                    projectRoot={projectRoot}
-                    recentRoots={recentRoots}
-                    onCancelPrompt={cancelPrompt}
-                    onChooseProjectRoot={chooseProjectRoot}
-                    onInputChange={setInput}
-                    onKeyDown={handleKeyDown}
-                    onModelChange={setModel}
-                    onProjectRootChange={selectProjectRoot}
-                    onRestartRuntime={() => void startRuntime(true)}
-                    onSendMessage={() => void sendMessage()}
-                  />
-                ) : (
-                  <>
-                    <AgentTimeline
-                      items={timelineItems}
-                      onPermissionDecision={respondToPermission}
-                    />
-                  </>
-                )}
+      <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+        {!isSidebarOpen && (
+          <div className="fixed left-4 top-[9.5px] z-20 flex items-center gap-1.5">
+            <SidebarToggle onToggle={toggleSidebar} />
+            <MapleWordmark
+              className="h-4 w-auto animate-in fade-in-0 slide-in-from-left-1 duration-300"
+              aria-hidden
+            />
+          </div>
+        )}
+
+        {error && (
+          <div className="mx-auto mt-3 w-full max-w-6xl px-4">
+            <div className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+              <span className="min-w-0 break-words">{error}</span>
+            </div>
+          </div>
+        )}
+
+        <section className="flex min-h-0 flex-1 flex-col overflow-hidden">
+          <div
+            ref={chatContainerRef}
+            className="min-h-0 flex-1 overflow-y-auto px-4 py-5"
+            onScroll={updateAutoScrollFromPosition}
+          >
+            <div className="mx-auto flex w-full max-w-4xl flex-col gap-4">
+              {timelineItems.length === 0 ? (
+                <EmptyAgentState
+                  activeRootLabel={activeRootLabel}
+                  input={input}
+                  isSending={isSending}
+                  isStarting={isStarting}
+                  model={model}
+                  projectRoot={projectRoot}
+                  recentRoots={recentRoots}
+                  onCancelPrompt={cancelPrompt}
+                  onChooseProjectRoot={chooseProjectRoot}
+                  onInputChange={setInput}
+                  onKeyDown={handleKeyDown}
+                  onModelChange={setModel}
+                  onProjectRootChange={selectProjectRoot}
+                  onRestartRuntime={() => void startRuntime(true)}
+                  onSendMessage={() => void sendMessage()}
+                />
+              ) : (
+                <AgentTimeline items={timelineItems} onPermissionDecision={respondToPermission} />
+              )}
+            </div>
+          </div>
+
+          {timelineItems.length > 0 ? (
+            <div className="shrink-0 border-t border-border/35 bg-background px-4 py-3">
+              <div className="mx-auto max-w-4xl">
+                <AgentComposer
+                  activeRootLabel={activeRootLabel}
+                  input={input}
+                  isSending={isSending}
+                  isStarting={isStarting}
+                  model={model}
+                  projectRoot={projectRoot}
+                  recentRoots={recentRoots}
+                  onCancelPrompt={cancelPrompt}
+                  onChooseProjectRoot={chooseProjectRoot}
+                  onInputChange={setInput}
+                  onKeyDown={handleKeyDown}
+                  onModelChange={setModel}
+                  onProjectRootChange={selectProjectRoot}
+                  onRestartRuntime={() => void startRuntime(true)}
+                  onSendMessage={() => void sendMessage()}
+                />
               </div>
             </div>
-
-            {timelineItems.length > 0 ? (
-              <div className="shrink-0 border-t border-border/35 bg-background px-4 py-3">
-                <div className="mx-auto max-w-4xl">
-                  <AgentComposer
-                    activeRootLabel={activeRootLabel}
-                    input={input}
-                    isSending={isSending}
-                    isStarting={isStarting}
-                    model={model}
-                    projectRoot={projectRoot}
-                    recentRoots={recentRoots}
-                    onCancelPrompt={cancelPrompt}
-                    onChooseProjectRoot={chooseProjectRoot}
-                    onInputChange={setInput}
-                    onKeyDown={handleKeyDown}
-                    onModelChange={setModel}
-                    onProjectRootChange={selectProjectRoot}
-                    onRestartRuntime={() => void startRuntime(true)}
-                    onSendMessage={() => void sendMessage()}
-                  />
-                </div>
-              </div>
-            ) : null}
-          </section>
-        </main>
+          ) : null}
+        </section>
       </div>
     </div>
   );
@@ -713,7 +713,7 @@ function EmptyAgentState(props: AgentComposerProps) {
   );
 }
 
-interface AgentProjectPanelProps {
+interface AgentSidebarContentProps {
   activeSessionId: string | null;
   projectRoot: string;
   recentRoots: RecentProjectRoot[];
@@ -726,7 +726,7 @@ interface AgentProjectPanelProps {
   onSessionSelect: (sessionId: string) => void;
 }
 
-function AgentProjectPanel({
+function AgentSidebarContent({
   activeSessionId,
   projectRoot,
   recentRoots,
@@ -737,7 +737,7 @@ function AgentProjectPanel({
   onCreateSession,
   onProjectRootChange,
   onSessionSelect
-}: AgentProjectPanelProps) {
+}: AgentSidebarContentProps) {
   const { projectRows, sessionsByRoot } = useMemo(() => {
     const rootsByPath = new Map<string, RecentProjectRoot>();
     const sessionsByProjectRoot = new Map<string, AgentSessionSummary[]>();
@@ -780,33 +780,32 @@ function AgentProjectPanel({
   }, [projectRoot, recentRoots, sessions]);
 
   return (
-    <aside className="hidden w-80 shrink-0 flex-col overflow-hidden border-r border-border/25 bg-muted dark:bg-[hsl(var(--sidebar))] lg:flex">
-      <div className="sidebar-scrollbar min-h-0 flex-1 overflow-y-auto px-4 py-5">
-        <div className="mb-4 flex items-center justify-between gap-3">
-          <p className="text-sm font-medium text-muted-foreground">Projects</p>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            className="h-8 w-8 text-muted-foreground hover:bg-background/60 hover:text-foreground"
-            onClick={onChooseProjectRoot}
-            aria-label="Choose project folder"
-          >
-            <FolderOpen className="h-4 w-4" />
-          </Button>
-        </div>
+    <>
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <p className="text-sm font-medium text-muted-foreground">Projects</p>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          className="h-8 w-8 text-muted-foreground hover:bg-background/60 hover:text-foreground"
+          onClick={onChooseProjectRoot}
+          aria-label="Choose project folder"
+        >
+          <FolderOpen className="h-4 w-4" />
+        </Button>
+      </div>
 
-        {projectRows.length === 0 ? (
-          <button
-            type="button"
-            className="flex w-full items-center gap-3 rounded-md px-2 py-2 text-left text-sm text-muted-foreground transition-colors hover:bg-background/60 hover:text-foreground"
-            onClick={onChooseProjectRoot}
-          >
-            <FolderOpen className="h-4 w-4 shrink-0" />
-            Select a folder
-          </button>
-        ) : (
-          <div className="space-y-1">
+      {projectRows.length === 0 ? (
+        <button
+          type="button"
+          className="flex w-full items-center gap-3 rounded-md px-2 py-2 text-left text-sm text-muted-foreground transition-colors hover:bg-background/60 hover:text-foreground"
+          onClick={onChooseProjectRoot}
+        >
+          <FolderOpen className="h-4 w-4 shrink-0" />
+          Select a folder
+        </button>
+      ) : (
+        <div className="space-y-1">
             {projectRows.map((root) => {
               const isActive = root.path === projectRoot;
               const projectSessions = sessionsByRoot.get(root.path) || [];
@@ -898,17 +897,16 @@ function AgentProjectPanel({
                 </div>
               );
             })}
-          </div>
-        )}
-
-        <div className="mt-7">
-          <p className="mb-3 text-sm font-medium text-muted-foreground">Chats</p>
-          <p className="px-2 text-xs text-muted-foreground/75">
-            Folderless agent chats are not available yet.
-          </p>
         </div>
+      )}
+
+      <div className="mt-7">
+        <p className="mb-3 text-sm font-medium text-muted-foreground">Chats</p>
+        <p className="px-2 text-xs text-muted-foreground/75">
+          Folderless agent chats are not available yet.
+        </p>
       </div>
-    </aside>
+    </>
   );
 }
 
