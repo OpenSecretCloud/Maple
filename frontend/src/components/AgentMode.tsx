@@ -668,7 +668,7 @@ export function AgentMode() {
 function EmptyAgentState(props: AgentComposerProps) {
   return (
     <div className="flex min-h-[52vh] items-center justify-center">
-      <div className="flex w-full max-w-2xl flex-col items-center gap-5 text-center">
+      <div className="flex w-full max-w-4xl flex-col items-center gap-5 text-center">
         <h2 className="font-displayWide text-3xl font-normal brand-gradient-text">
           Work in a folder...
         </h2>
