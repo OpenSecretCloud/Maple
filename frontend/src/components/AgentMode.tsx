@@ -227,12 +227,6 @@ export function AgentMode() {
     }
     const nextSessions = await agentRuntimeService.listSessions(root || status.projectRoot || null);
     setSessions(nextSessions);
-    if (!activeSessionIdRef.current && nextSessions.length > 0) {
-      const first = nextSessions[0];
-      setActiveSessionId(first.id);
-      const detail = await agentRuntimeService.loadSession(first.id);
-      setTimelineItems(detail.timeline);
-    }
   }, []);
 
   useEffect(() => {
