@@ -15,6 +15,7 @@ import {
   Lock,
   MessageSquarePlus,
   RotateCcw,
+  ShieldCheck,
   Terminal,
   X,
   Zap
@@ -72,6 +73,25 @@ const DEFAULT_MODE = "smart_approve";
 const AUTO_SCROLL_BOTTOM_THRESHOLD_PX = 100;
 const SIDEBAR_REORDER_ANIMATION_MS = 150;
 
+type AgentPermissionMode = "smart_approve" | "auto";
+
+const AGENT_PERMISSION_MODES: Array<{
+  value: AgentPermissionMode;
+  label: string;
+  description: string;
+}> = [
+  {
+    value: "smart_approve",
+    label: "Read only",
+    description: "Auto-runs read-only tools; asks before writes"
+  },
+  {
+    value: "auto",
+    label: "Allow all",
+    description: "Allows all tool calls without prompting"
+  }
+];
+
 const PRIMARY_AGENT_MODELS = [
   {
     id: QUICK_MODEL_ALIAS,
@@ -103,6 +123,10 @@ type ModelCatalogClient = {
 
 function isAutoModelAlias(modelId: string): boolean {
   return modelId === QUICK_MODEL_ALIAS || modelId === POWERFUL_MODEL_ALIAS;
+}
+
+function normalizeAgentPermissionMode(mode?: string | null): AgentPermissionMode {
+  return mode === "auto" ? "auto" : DEFAULT_MODE;
 }
 
 function isSelectableChatModel(model: OpenSecretModel): boolean {
@@ -139,6 +163,7 @@ export function AgentMode() {
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [projectRoot, setProjectRoot] = useState("");
   const [model, setModel] = useState(DEFAULT_MODEL);
+  const [mode, setMode] = useState<AgentPermissionMode>(DEFAULT_MODE);
   const [timelineItems, setTimelineItems] = useState<AgentTimelineItem[]>([]);
   const [timelineItemsBySession, setTimelineItemsBySession] = useState<
     Record<string, AgentTimelineItem[]>
@@ -296,8 +321,10 @@ export function AgentMode() {
         setRecentRoots(roots);
         const root = status.projectRoot || config.defaultProjectRoot || roots[0]?.path || "";
         const nextModel = status.model || config.defaultModel || DEFAULT_MODEL;
+        const nextMode = normalizeAgentPermissionMode(status.mode);
         setProjectRoot(root);
         setModel(nextModel);
+        setMode(nextMode);
 
         await ensureMapleProxyReady();
         if (status.running) {
@@ -306,7 +333,7 @@ export function AgentMode() {
           const startedStatus = await agentRuntimeService.startRuntime({
             projectRoot: root,
             model: nextModel,
-            mode: DEFAULT_MODE
+            mode: nextMode
           });
           if (cancelled) return;
           applyRuntimeStatus(startedStatus);
@@ -365,13 +392,14 @@ export function AgentMode() {
           throw new Error("Select a project folder first");
         }
         await ensureMapleProxyReady();
-        const request = { projectRoot, model: model || DEFAULT_MODEL, mode: DEFAULT_MODE };
+        const request = { projectRoot, model: model || DEFAULT_MODEL, mode };
         const status = restart
           ? await agentRuntimeService.restartRuntime(request)
           : await agentRuntimeService.startRuntime(request);
         applyRuntimeStatus(status);
         setProjectRoot(status.projectRoot || projectRoot);
         setModel(status.model || model || DEFAULT_MODEL);
+        setMode(normalizeAgentPermissionMode(status.mode || mode));
         setRecentRoots(await agentRuntimeService.listRecentProjectRoots());
         await refreshSessions();
         return status;
@@ -382,7 +410,7 @@ export function AgentMode() {
         setIsStarting(false);
       }
     },
-    [applyRuntimeStatus, ensureMapleProxyReady, model, projectRoot, refreshSessions]
+    [applyRuntimeStatus, ensureMapleProxyReady, mode, model, projectRoot, refreshSessions]
   );
 
   const ensureRuntimeAndSession = useCallback(async () => {
@@ -401,12 +429,13 @@ export function AgentMode() {
         projectRoot,
         title: "New agent session",
         model: model || DEFAULT_MODEL,
-        mode: DEFAULT_MODE
+        mode
       });
       shouldAutoScrollRef.current = true;
       sessionId = detail.session.id;
       activeSessionIdRef.current = sessionId;
       setActiveSessionId(sessionId);
+      setMode(normalizeAgentPermissionMode(detail.session.mode));
       setSessions((current) => [
         detail.session,
         ...current.filter((item) => item.id !== sessionId)
@@ -415,7 +444,7 @@ export function AgentMode() {
     }
 
     return sessionId;
-  }, [model, projectRoot, replaceSessionTimeline, startRuntime]);
+  }, [mode, model, projectRoot, replaceSessionTimeline, startRuntime]);
 
   const createSession = useCallback(async () => {
     setError(null);
@@ -427,11 +456,12 @@ export function AgentMode() {
         projectRoot,
         title: "New agent session",
         model: model || DEFAULT_MODEL,
-        mode: DEFAULT_MODE
+        mode
       });
       shouldAutoScrollRef.current = true;
       activeSessionIdRef.current = detail.session.id;
       setActiveSessionId(detail.session.id);
+      setMode(normalizeAgentPermissionMode(detail.session.mode));
       setSessions((current) => [
         detail.session,
         ...current.filter((session) => session.id !== detail.session.id)
@@ -440,7 +470,7 @@ export function AgentMode() {
     } catch (createError) {
       setError(errorMessage(createError));
     }
-  }, [model, projectRoot, replaceSessionTimeline, runtimeStatus?.running, startRuntime]);
+  }, [mode, model, projectRoot, replaceSessionTimeline, runtimeStatus?.running, startRuntime]);
 
   const loadSession = useCallback(
     async (sessionId: string) => {
@@ -456,6 +486,7 @@ export function AgentMode() {
         activeSessionIdRef.current = detail.session.id;
         setActiveSessionId(detail.session.id);
         setProjectRoot(detail.session.projectRoot);
+        setMode(normalizeAgentPermissionMode(detail.session.mode));
         replaceSessionTimeline(detail.session.id, detail.timeline);
       } catch (loadError) {
         setError(errorMessage(loadError));
@@ -479,7 +510,7 @@ export function AgentMode() {
         sessionId,
         text,
         model: model || DEFAULT_MODEL,
-        mode: DEFAULT_MODE
+        mode
       });
       setActiveRunsBySession((current) => ({
         ...current,
@@ -508,6 +539,7 @@ export function AgentMode() {
     input,
     isSending,
     mergeSessionTimelineItem,
+    mode,
     model,
     scrollTimelineToBottom
   ]);
@@ -751,6 +783,7 @@ export function AgentMode() {
                   input={input}
                   isSending={isSending}
                   isStarting={isStarting}
+                  mode={mode}
                   model={model}
                   projectRoot={projectRoot}
                   recentRoots={recentRoots}
@@ -758,6 +791,7 @@ export function AgentMode() {
                   onChooseProjectRoot={chooseProjectRoot}
                   onInputChange={setInput}
                   onKeyDown={handleKeyDown}
+                  onModeChange={setMode}
                   onModelChange={setModel}
                   onProjectRootChange={selectProjectRoot}
                   onRestartRuntime={() => void startRuntime(true)}
@@ -777,6 +811,7 @@ export function AgentMode() {
                   input={input}
                   isSending={isSending}
                   isStarting={isStarting}
+                  mode={mode}
                   model={model}
                   projectRoot={projectRoot}
                   recentRoots={recentRoots}
@@ -784,6 +819,7 @@ export function AgentMode() {
                   onChooseProjectRoot={chooseProjectRoot}
                   onInputChange={setInput}
                   onKeyDown={handleKeyDown}
+                  onModeChange={setMode}
                   onModelChange={setModel}
                   onProjectRootChange={selectProjectRoot}
                   onRestartRuntime={() => void startRuntime(true)}
@@ -1093,6 +1129,7 @@ interface AgentComposerProps {
   input: string;
   isSending: boolean;
   isStarting: boolean;
+  mode: AgentPermissionMode;
   model: string;
   projectRoot: string;
   recentRoots: RecentProjectRoot[];
@@ -1100,6 +1137,7 @@ interface AgentComposerProps {
   onChooseProjectRoot: () => void;
   onInputChange: (value: string) => void;
   onKeyDown: (event: React.KeyboardEvent<HTMLTextAreaElement>) => void;
+  onModeChange: (value: AgentPermissionMode) => void;
   onModelChange: (value: string) => void;
   onProjectRootChange: (value: string) => void;
   onRestartRuntime: () => void;
@@ -1111,6 +1149,7 @@ function AgentComposer({
   input,
   isSending,
   isStarting,
+  mode,
   model,
   projectRoot,
   recentRoots,
@@ -1118,6 +1157,7 @@ function AgentComposer({
   onChooseProjectRoot,
   onInputChange,
   onKeyDown,
+  onModeChange,
   onModelChange,
   onProjectRootChange,
   onRestartRuntime,
@@ -1144,6 +1184,8 @@ function AgentComposer({
       <div className="grid grid-cols-[minmax(0,1fr)_auto] items-end gap-x-2 gap-y-2 px-2 pb-2 pt-1">
         <div className="flex min-w-0 flex-wrap items-center gap-1.5 sm:gap-2">
           <AgentModelSelector model={model} onModelChange={onModelChange} />
+
+          <AgentModeSelector mode={mode} onModeChange={onModeChange} />
 
           <Select value={projectRoot || undefined} onValueChange={onProjectRootChange}>
             <SelectTrigger className="h-8 w-auto max-w-[12rem] gap-1 border-0 bg-transparent px-2 text-[hsl(var(--maple-secondary-700))] hover:bg-[hsl(var(--maple-primary-container))] hover:text-[hsl(var(--maple-secondary-700))] focus:ring-0 focus:ring-offset-0">
@@ -1217,6 +1259,47 @@ function AgentComposer({
         </div>
       </div>
     </div>
+  );
+}
+
+function AgentModeSelector({
+  mode,
+  onModeChange
+}: {
+  mode: AgentPermissionMode;
+  onModeChange: (value: AgentPermissionMode) => void;
+}) {
+  const activeMode =
+    AGENT_PERMISSION_MODES.find((candidate) => candidate.value === mode) ||
+    AGENT_PERMISSION_MODES[0];
+
+  return (
+    <Select
+      value={activeMode.value}
+      onValueChange={(value) => onModeChange(normalizeAgentPermissionMode(value))}
+    >
+      <SelectTrigger
+        className="h-8 w-auto max-w-[11.5rem] gap-1 border-0 bg-transparent px-2 text-[hsl(var(--maple-secondary-700))] hover:bg-[hsl(var(--maple-primary-container))] hover:text-[hsl(var(--maple-secondary-700))] focus:ring-0 focus:ring-offset-0"
+        aria-label={`Current permission mode: ${activeMode.label}. Click to change mode.`}
+      >
+        <ShieldCheck className="h-4 w-4 shrink-0" />
+        <span className="truncate text-xs font-medium">{activeMode.label}</span>
+      </SelectTrigger>
+      <SelectContent>
+        {AGENT_PERMISSION_MODES.map((permissionMode) => (
+          <SelectItem
+            key={permissionMode.value}
+            value={permissionMode.value}
+            textValue={permissionMode.label}
+          >
+            <div className="flex flex-col">
+              <span>{permissionMode.label}</span>
+              <span className="text-xs text-muted-foreground">{permissionMode.description}</span>
+            </div>
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
   );
 }
 
