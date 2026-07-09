@@ -63,6 +63,10 @@ android-build:
 desktop-build:
     cd frontend && bun tauri build
 
+# Run Tauri desktop development build, using workspace-local config when available
+desktop-dev:
+    cd frontend && if [ -f ../.local/tauri-workspace.json ]; then bun tauri dev --config ../.local/tauri-workspace.json; else bun tauri dev; fi
+
 # Build Tauri desktop debug
 desktop-build-debug:
     cd frontend && bun tauri build --debug
