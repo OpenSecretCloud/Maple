@@ -148,6 +148,9 @@ export function AgentMode() {
   const [isStarting, setIsStarting] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [activeRunsBySession, setActiveRunsBySession] = useState<Record<string, string>>({});
+  const [completedUnreadSessionIds, setCompletedUnreadSessionIds] = useState<Set<string>>(
+    () => new Set()
+  );
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const activeSessionIdRef = useRef(activeSessionId);
   const shouldAutoScrollRef = useRef(true);
@@ -236,6 +239,24 @@ export function AgentMode() {
     if (activeSessionIdRef.current === sessionId) {
       setTimelineItems((current) => mergeTimelineItem(current, item));
     }
+  }, []);
+
+  const clearCompletedUnreadSession = useCallback((sessionId: string) => {
+    setCompletedUnreadSessionIds((current) => {
+      if (!current.has(sessionId)) return current;
+      const next = new Set(current);
+      next.delete(sessionId);
+      return next;
+    });
+  }, []);
+
+  const markCompletedUnreadSession = useCallback((sessionId: string) => {
+    setCompletedUnreadSessionIds((current) => {
+      if (current.has(sessionId)) return current;
+      const next = new Set(current);
+      next.add(sessionId);
+      return next;
+    });
   }, []);
 
   const ensureMapleProxyReady = useCallback(async () => {
@@ -424,6 +445,7 @@ export function AgentMode() {
   const loadSession = useCallback(
     async (sessionId: string) => {
       setError(null);
+      clearCompletedUnreadSession(sessionId);
       activeSessionIdRef.current = sessionId;
       setActiveSessionId(sessionId);
       const cachedTimeline = timelineItemsBySession[sessionId];
@@ -439,7 +461,7 @@ export function AgentMode() {
         setError(errorMessage(loadError));
       }
     },
-    [replaceSessionTimeline, timelineItemsBySession]
+    [clearCompletedUnreadSession, replaceSessionTimeline, timelineItemsBySession]
   );
 
   const sendMessage = useCallback(async () => {
@@ -568,6 +590,7 @@ export function AgentMode() {
           break;
         case "runStarted":
           if (event.sessionId && event.runId) {
+            clearCompletedUnreadSession(event.sessionId);
             setActiveRunsBySession((current) => ({
               ...current,
               [event.sessionId!]: event.runId!
@@ -591,6 +614,9 @@ export function AgentMode() {
           setIsSubmitting(false);
           void refreshSessions().catch(() => {});
           if (event.sessionId && event.message === "completed") {
+            if (event.sessionId !== activeSessionIdRef.current) {
+              markCompletedUnreadSession(event.sessionId);
+            }
             void agentRuntimeService
               .loadSession(event.sessionId)
               .then((detail) => replaceSessionTimeline(event.sessionId!, detail.timeline))
@@ -623,6 +649,8 @@ export function AgentMode() {
     },
     [
       applyRuntimeStatus,
+      clearCompletedUnreadSession,
+      markCompletedUnreadSession,
       mergeSessionTimelineItem,
       refreshSessions,
       replaceSessionTimeline,
@@ -678,7 +706,7 @@ export function AgentMode() {
             activeSessionId={activeSessionId}
             projectRoot={projectRoot}
             recentRoots={recentRoots}
-            runtimeRunning={runtimeStatus?.running ?? false}
+            completedUnreadSessionIds={completedUnreadSessionIds}
             runningSessionIds={runningSessionIds}
             sessions={sessions}
             onChooseProjectRoot={chooseProjectRoot}
@@ -787,7 +815,7 @@ interface AgentSidebarContentProps {
   activeSessionId: string | null;
   projectRoot: string;
   recentRoots: RecentProjectRoot[];
-  runtimeRunning: boolean;
+  completedUnreadSessionIds: Set<string>;
   runningSessionIds: Set<string>;
   sessions: AgentSessionSummary[];
   onChooseProjectRoot: () => void;
@@ -800,7 +828,7 @@ function AgentSidebarContent({
   activeSessionId,
   projectRoot,
   recentRoots,
-  runtimeRunning,
+  completedUnreadSessionIds,
   runningSessionIds,
   sessions,
   onChooseProjectRoot,
@@ -810,6 +838,7 @@ function AgentSidebarContent({
 }: AgentSidebarContentProps) {
   const rowElementsRef = useRef(new Map<string, HTMLElement>());
   const previousRowTopsRef = useRef(new Map<string, number>());
+  const [collapsedProjectRoots, setCollapsedProjectRoots] = useState<Set<string>>(() => new Set());
   const { projectRows, sessionsByRoot } = useMemo(() => {
     const rootsByPath = new Map<string, RecentProjectRoot>();
     const sessionsByProjectRoot = new Map<string, AgentSessionSummary[]>();
@@ -880,7 +909,19 @@ function AgentSidebarContent({
     });
 
     previousRowTopsRef.current = nextTops;
-  }, [projectRows, sessions]);
+  }, [collapsedProjectRoots, projectRows, sessions]);
+
+  const toggleProjectCollapsed = useCallback((path: string) => {
+    setCollapsedProjectRoots((current) => {
+      const next = new Set(current);
+      if (next.has(path)) {
+        next.delete(path);
+      } else {
+        next.add(path);
+      }
+      return next;
+    });
+  }, []);
 
   return (
     <>
@@ -912,9 +953,16 @@ function AgentSidebarContent({
           {projectRows.map((root) => {
             const isActive = root.path === projectRoot;
             const projectSessions = sessionsByRoot.get(root.path) || [];
+            const isCollapsed = collapsedProjectRoots.has(root.path);
             const hasRunningSession = projectSessions.some((session) =>
               runningSessionIds.has(session.id)
             );
+            const hasUnreadCompletedSession = projectSessions.some((session) =>
+              completedUnreadSessionIds.has(session.id)
+            );
+            const showProjectRunningIndicator = isCollapsed && hasRunningSession;
+            const showProjectUnreadIndicator =
+              isCollapsed && !hasRunningSession && hasUnreadCompletedSession;
 
             return (
               <div
@@ -939,13 +987,30 @@ function AgentSidebarContent({
                   >
                     <FolderOpen className="h-4 w-4 shrink-0" />
                     <span className="min-w-0 flex-1 truncate">{root.name}</span>
-                    {hasRunningSession ? (
+                    {showProjectRunningIndicator ? (
                       <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-[hsl(var(--maple-primary))]" />
-                    ) : isActive && runtimeRunning ? (
+                    ) : showProjectUnreadIndicator ? (
                       <span className="h-2 w-2 shrink-0 rounded-full bg-maple-success" />
                     ) : null}
-                    {isActive ? <ChevronDown className="h-4 w-4 shrink-0" /> : null}
                   </button>
+                  {projectSessions.length > 0 ? (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7 shrink-0 text-muted-foreground hover:bg-background/70 hover:text-foreground"
+                      onClick={() => toggleProjectCollapsed(root.path)}
+                      aria-label={
+                        isCollapsed ? "Expand project sessions" : "Collapse project sessions"
+                      }
+                    >
+                      {isCollapsed ? (
+                        <ChevronRight className="h-4 w-4" />
+                      ) : (
+                        <ChevronDown className="h-4 w-4" />
+                      )}
+                    </Button>
+                  ) : null}
                   {isActive ? (
                     <Button
                       type="button"
@@ -961,45 +1026,52 @@ function AgentSidebarContent({
                   ) : null}
                 </div>
 
-                <div className="space-y-0.5 pl-9">
-                  {projectSessions.length === 0 ? (
-                    isActive ? (
-                      <p className="px-2 py-1 text-xs text-muted-foreground/75">No sessions yet</p>
-                    ) : null
-                  ) : (
-                    projectSessions.slice(0, 6).map((session) => {
-                      const isRunning = runningSessionIds.has(session.id);
+                {!isCollapsed ? (
+                  <div className="space-y-0.5 pl-9">
+                    {projectSessions.length === 0 ? (
+                      isActive ? (
+                        <p className="px-2 py-1 text-xs text-muted-foreground/75">
+                          No sessions yet
+                        </p>
+                      ) : null
+                    ) : (
+                      projectSessions.slice(0, 6).map((session) => {
+                        const isRunning = runningSessionIds.has(session.id);
+                        const isUnreadCompleted = completedUnreadSessionIds.has(session.id);
 
-                      return (
-                        <button
-                          key={session.id}
-                          ref={(node) => setAnimatedRowRef(`session:${session.id}`, node)}
-                          type="button"
-                          className={cn(
-                            "grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-md px-2 py-1.5 text-left transition-colors will-change-transform",
-                            session.id === activeSessionId
-                              ? "bg-background/80 text-foreground"
-                              : "text-muted-foreground hover:bg-background/60 hover:text-foreground"
-                          )}
-                          onClick={() => onSessionSelect(session.id)}
-                        >
-                          <span className="truncate text-sm">{sessionTitle(session)}</span>
-                          <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                            {isRunning ? (
-                              <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[hsl(var(--maple-primary))]" />
-                            ) : null}
-                            {formatDate(session.updatedMs)}
-                          </span>
-                        </button>
-                      );
-                    })
-                  )}
-                  {projectSessions.length > 6 ? (
-                    <p className="px-2 py-1 text-xs text-muted-foreground/75">
-                      {projectSessions.length - 6} more
-                    </p>
-                  ) : null}
-                </div>
+                        return (
+                          <button
+                            key={session.id}
+                            ref={(node) => setAnimatedRowRef(`session:${session.id}`, node)}
+                            type="button"
+                            className={cn(
+                              "grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-md px-2 py-1.5 text-left transition-colors will-change-transform",
+                              session.id === activeSessionId
+                                ? "bg-background/80 text-foreground"
+                                : "text-muted-foreground hover:bg-background/60 hover:text-foreground"
+                            )}
+                            onClick={() => onSessionSelect(session.id)}
+                          >
+                            <span className="truncate text-sm">{sessionTitle(session)}</span>
+                            <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                              {isRunning ? (
+                                <Loader2 className="h-3 w-3 shrink-0 animate-spin text-[hsl(var(--maple-primary))]" />
+                              ) : isUnreadCompleted ? (
+                                <span className="h-2 w-2 shrink-0 rounded-full bg-maple-success" />
+                              ) : null}
+                              {formatDate(session.updatedMs)}
+                            </span>
+                          </button>
+                        );
+                      })
+                    )}
+                    {projectSessions.length > 6 ? (
+                      <p className="px-2 py-1 text-xs text-muted-foreground/75">
+                        {projectSessions.length - 6} more
+                      </p>
+                    ) : null}
+                  </div>
+                ) : null}
               </div>
             );
           })}
