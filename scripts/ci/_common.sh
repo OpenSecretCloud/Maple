@@ -141,6 +141,7 @@ use_pr_environment() {
   done < <(env)
 
   export VITE_OPEN_SECRET_API_URL="https://enclave.secretgpt.ai"
+  export VITE_OS_FLAGS_BASE_URL="https://flags-dev.opensecret.cloud"
   export VITE_MAPLE_BILLING_API_URL="https://billing-dev.opensecret.cloud"
   export VITE_CLIENT_ID="ba5a14b5-d915-47b1-b7b1-afda52bc5fc6"
 }
@@ -156,6 +157,7 @@ use_release_environment() {
   done < <(env)
 
   export VITE_OPEN_SECRET_API_URL="https://enclave.trymaple.ai"
+  export VITE_OS_FLAGS_BASE_URL="https://flags.opensecret.cloud"
   export VITE_MAPLE_BILLING_API_URL="https://billing.opensecret.cloud"
   export VITE_CLIENT_ID="ba5a14b5-d915-47b1-b7b1-afda52bc5fc6"
 }
