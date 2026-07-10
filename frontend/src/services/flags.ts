@@ -3,6 +3,10 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 10 * 1000;
 const DEV_FLAGS_BASE_URL = "https://flags-dev.opensecret.cloud";
 const PROD_FLAGS_BASE_URL = "https://flags.opensecret.cloud";
 
+export const FEATURE_FLAGS = {
+  AGENT_MODE: "agent_mode"
+} as const;
+
 export type FlagValues = Readonly<Record<string, boolean>>;
 
 export type FlagsFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;

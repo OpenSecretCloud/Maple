@@ -33,6 +33,8 @@ import {
   SIDEBAR_WIDTH_CLASS
 } from "@/constants/layout";
 import { isTauriDesktop } from "@/utils/platform";
+import { useOpenSecret } from "@opensecret/react";
+import { FEATURE_FLAGS, flagsClient } from "@/services/flags";
 
 export function Sidebar({
   chatId,
@@ -49,6 +51,8 @@ export function Sidebar({
 }) {
   const router = useRouter();
   const location = useLocation();
+  const os = useOpenSecret();
+  const userId = os.auth.user?.user.id;
   const {
     searchQuery,
     setSearchQuery,
@@ -166,8 +170,31 @@ export function Sidebar({
   const isMobile = useIsMobile();
   const isLandscapeMobile = useIsLandscapeMobile();
   const isCompactLayout = isMobile || isLandscapeMobile;
-  const showAgentMode = isTauriDesktop();
+  const agentModeAvailable = isTauriDesktop();
+  const [agentModeFlag, setAgentModeFlag] = useState<{
+    userId: string;
+    enabled: boolean;
+  } | null>(null);
+  const showAgentMode =
+    agentModeAvailable && agentModeFlag?.userId === userId && agentModeFlag?.enabled === true;
   const isAgentMode = mode === "agent";
+
+  useEffect(() => {
+    if (!agentModeAvailable || !userId) return;
+
+    let disposed = false;
+    void flagsClient.isEnabled(userId, FEATURE_FLAGS.AGENT_MODE).then(
+      (enabled) => {
+        if (!disposed) setAgentModeFlag({ userId, enabled });
+      },
+      (error: unknown) => {
+        console.warn("Unable to load optional feature flags; keeping them hidden.", error);
+      }
+    );
+    return () => {
+      disposed = true;
+    };
+  }, [agentModeAvailable, userId]);
 
   // Modified click outside handler to ignore clicks in dropdowns and dialogs
   // Only applies on mobile - desktop users use the toggle button
