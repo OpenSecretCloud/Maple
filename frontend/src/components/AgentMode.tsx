@@ -1176,7 +1176,7 @@ function AgentComposer({
         value={input}
         onChange={(event) => onInputChange(event.target.value)}
         onKeyDown={onKeyDown}
-        placeholder="Ask Goose to work in this folder..."
+        placeholder="Ask Maple to work in this folder..."
         className="w-full max-h-[200px] min-h-[52px] resize-none border-0 bg-transparent py-3.5 pl-4 pr-2 leading-6 focus-visible:ring-0 focus-visible:ring-offset-0 placeholder:text-muted-foreground/60"
         rows={1}
       />
