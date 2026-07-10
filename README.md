@@ -51,7 +51,11 @@ rustup target add aarch64-apple-darwin x86_64-apple-darwin
 ./setup-hooks.sh
 ```
 
-This will configure git to use the project's pre-commit hooks, which run `bun run build` before each commit.
+This configures Git to use the project's pre-commit hook. Managed
+`opensecret-workspaces` checkouts enable the same hook automatically. The hook
+checks formatting, builds the frontend, runs frontend tests, and runs Rust tests
+when Tauri files are staged. If Bun or Cargo is not already available and Nix
+is installed, the hook enters this repository's Nix development shell.
 
 ## Development
 

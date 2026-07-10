@@ -54,31 +54,50 @@ import { ApiKeyManagementDialog } from "@/components/apikeys/ApiKeyManagementDia
 import { getTeamSeatMismatch } from "@/utils/teamSeats";
 import packageJson from "../../package.json";
 import { SIDEBAR_ACCOUNT_MENU_WIDTH_CLASS, SIDEBAR_LAYOUT_STYLE } from "@/constants/layout";
+import { clearAgentHistoryForUser, stopAgentRuntimeForUser } from "@/services/agentRuntimeService";
 
-function ConfirmDeleteDialog() {
+function ConfirmDeleteDialog({ onDeleted }: { onDeleted: () => void }) {
   const os = useOpenSecret();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   async function handleDeleteHistory() {
+    setDeleteError(null);
+    setIsDeleting(true);
+    let operationBlock: Awaited<ReturnType<typeof clearAgentHistoryForUser>> | null = null;
     try {
       const conversations = await os.listConversations({ limit: 1 });
       if (conversations.data && conversations.data.length > 0) {
         await os.deleteConversations();
         console.log("Server conversations deleted");
       }
-    } catch (e) {
-      console.error("Error deleting conversations:", e);
-    }
 
-    // Always refresh UI and navigate home
-    queryClient.invalidateQueries({ queryKey: ["conversations"] });
-    queryClient.invalidateQueries({ queryKey: ["pinnedConversations"] });
-    queryClient.invalidateQueries({ queryKey: ["projectConversations"] });
-    queryClient.invalidateQueries({ queryKey: ["conversationProjects"] });
-    queryClient.invalidateQueries({ queryKey: ["conversationProject"] });
-    navigate({ to: "/" });
-    window.dispatchEvent(new CustomEvent("newchat", { detail: { projectId: null } }));
+      operationBlock = await clearAgentHistoryForUser(os.auth.user?.user.id);
+
+      // Refresh UI only after both hosted and local Agent Mode history are gone.
+      queryClient.invalidateQueries({ queryKey: ["conversations"] });
+      queryClient.invalidateQueries({ queryKey: ["pinnedConversations"] });
+      queryClient.invalidateQueries({ queryKey: ["projectConversations"] });
+      queryClient.invalidateQueries({ queryKey: ["conversationProjects"] });
+      queryClient.invalidateQueries({ queryKey: ["conversationProject"] });
+      onDeleted();
+      try {
+        await navigate({ to: "/" });
+      } catch (navigationError) {
+        console.error("Chat history was deleted, but navigation failed:", navigationError);
+        window.location.href = "/";
+        return;
+      }
+      window.dispatchEvent(new CustomEvent("newchat", { detail: { projectId: null } }));
+    } catch (e) {
+      console.error("Error deleting chat history:", e);
+      setDeleteError("Maple couldn't delete all chat history. Please try again.");
+    } finally {
+      operationBlock?.release();
+      setIsDeleting(false);
+    }
   }
 
   return (
@@ -87,9 +106,23 @@ function ConfirmDeleteDialog() {
         <AlertDialogTitle>Are you sure?</AlertDialogTitle>
         <AlertDialogDescription>This will delete your entire chat history.</AlertDialogDescription>
       </AlertDialogHeader>
+      {deleteError ? (
+        <Alert variant="destructive">
+          <AlertCircle className="h-4 w-4" />
+          <AlertDescription>{deleteError}</AlertDescription>
+        </Alert>
+      ) : null}
       <AlertDialogFooter>
-        <AlertDialogCancel>Cancel</AlertDialogCancel>
-        <AlertDialogAction onClick={handleDeleteHistory}>Delete</AlertDialogAction>
+        <AlertDialogCancel disabled={isDeleting}>Cancel</AlertDialogCancel>
+        <AlertDialogAction
+          disabled={isDeleting}
+          onClick={(event) => {
+            event.preventDefault();
+            void handleDeleteHistory();
+          }}
+        >
+          {isDeleting ? "Deleting..." : "Delete"}
+        </AlertDialogAction>
       </AlertDialogFooter>
     </AlertDialogContent>
   );
@@ -99,10 +132,12 @@ export function AccountMenu() {
   const os = useOpenSecret();
   const queryClient = useQueryClient();
   const router = useRouter();
-  const { billingStatus } = useLocalState();
+  const { billingStatus, setBillingStatus } = useLocalState();
   const [isPortalLoading, setIsPortalLoading] = useState(false);
   const [isTeamDialogOpen, setIsTeamDialogOpen] = useState(false);
   const [isApiKeyDialogOpen, setIsApiKeyDialogOpen] = useState(false);
+  const [isDeleteHistoryOpen, setIsDeleteHistoryOpen] = useState(false);
+  const [isSigningOut, setIsSigningOut] = useState(false);
   const [showAboutMenu, setShowAboutMenu] = useState(false);
   const [portalError, setPortalError] = useState<string | null>(null);
 
@@ -114,6 +149,19 @@ export function AccountMenu() {
   const isTeamPlan = productName.toLowerCase().includes("team");
   const showUpgrade = !isMax && !isTeamPlan;
   const showManage = (isPro || isMax || isStarter || isTeamPlan) && hasStripeAccount;
+
+  // Keep the shared sidebar billing badge current on every authenticated route,
+  // including Agent Mode. Some routes do not own a route-level billing refresh.
+  useQuery({
+    queryKey: ["billingStatus"],
+    queryFn: async () => {
+      const billingService = getBillingService();
+      const status = await billingService.getBillingStatus();
+      setBillingStatus(status);
+      return status;
+    },
+    enabled: !!os.auth.user
+  });
 
   // Fetch team status if user has team plan
   const { data: teamStatus } = useQuery<TeamStatus>({
@@ -249,7 +297,26 @@ export function AccountMenu() {
   };
 
   async function signOut() {
+    setPortalError(null);
+    setIsSigningOut(true);
+    let operationBlock: Awaited<ReturnType<typeof stopAgentRuntimeForUser>> | null = null;
+    let signedOut = false;
+
+    // Never sign out while this account may still have tools executing.
     try {
+      operationBlock = await stopAgentRuntimeForUser(os.auth.user?.user.id);
+    } catch (error) {
+      console.error("Error stopping Agent Mode:", error);
+      setPortalError("Maple couldn't stop Agent Mode. Please try logging out again.");
+      setIsSigningOut(false);
+      return;
+    }
+
+    try {
+      // Credential reset is a required part of logout.
+      const { proxyService } = await import("@/services/proxyService");
+      await proxyService.stopAndResetProxy(os.auth.user?.user.id, os.deleteApiKey);
+
       // Try to clear billing token first
       try {
         getBillingService().clearToken();
@@ -259,16 +326,9 @@ export function AccountMenu() {
         sessionStorage.removeItem("maple_billing_token");
       }
 
-      // Stop proxy and reset config so it doesn't auto-start on next launch
-      try {
-        const { proxyService } = await import("@/services/proxyService");
-        await proxyService.stopAndResetProxy();
-      } catch (error) {
-        console.error("Error clearing proxy config:", error);
-      }
-
       // Sign out from OpenSecret
       await os.signOut();
+      signedOut = true;
       queryClient.clear();
 
       // Navigate after everything is done
@@ -276,14 +336,26 @@ export function AccountMenu() {
       await router.navigate({ to: "/" });
     } catch (error) {
       console.error("Error during sign out:", error);
-      // Force reload as last resort
-      window.location.href = "/";
+      if (signedOut) {
+        window.location.href = "/";
+        return;
+      }
+      setPortalError(
+        "Maple couldn't securely reset Agent Mode or finish logging out. Please try again."
+      );
+    } finally {
+      if (!signedOut) {
+        operationBlock.release();
+        setIsSigningOut(false);
+      } else {
+        operationBlock.retainUntilNextSession();
+      }
     }
   }
 
   return (
     <div className="w-full">
-      <AlertDialog>
+      <AlertDialog open={isDeleteHistoryOpen} onOpenChange={setIsDeleteHistoryOpen}>
         <Dialog>
           <DropdownMenu onOpenChange={(open) => !open && setShowAboutMenu(false)}>
             <div className="flex w-full max-w-full items-end gap-2">
@@ -407,9 +479,9 @@ export function AccountMenu() {
                     </DropdownMenuItem>
                   </DropdownMenuGroup>
                   <DropdownMenuSeparator />
-                  <DropdownMenuItem onClick={signOut}>
+                  <DropdownMenuItem onClick={signOut} disabled={isSigningOut}>
                     <LogOut className="mr-2 h-4 w-4" />
-                    <span>Log out</span>
+                    <span>{isSigningOut ? "Logging out..." : "Log out"}</span>
                   </DropdownMenuItem>
                 </div>
 
@@ -482,7 +554,7 @@ export function AccountMenu() {
               </div>
             </DropdownMenuContent>
             <AccountDialog />
-            <ConfirmDeleteDialog />
+            <ConfirmDeleteDialog onDeleted={() => setIsDeleteHistoryOpen(false)} />
             {portalError && (
               <Alert variant="destructive" className="mt-2">
                 <AlertCircle className="h-4 w-4" />

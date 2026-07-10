@@ -50,10 +50,43 @@ import type {
 
 const TOKEN_STORAGE_KEY = "maple_billing_token";
 
+const KNOWN_MAPLE_PRODUCT_NAMES: Record<string, string> = {
+  prod_RXODZOqZXxz5Ez: "Starter",
+  prod_RXODQdCZX8GtWh: "Pro",
+  prod_SgXHQFS10kc5hL: "Max"
+};
+
+function normalizeBillingStatus(status: BillingStatus): BillingStatus {
+  if (status.product_name?.trim()) {
+    return status;
+  }
+
+  if (!status.is_subscribed) {
+    return {
+      ...status,
+      product_name: "Free"
+    };
+  }
+
+  const fallbackProductName = KNOWN_MAPLE_PRODUCT_NAMES[status.product_id];
+  if (!fallbackProductName) {
+    return status;
+  }
+
+  return {
+    ...status,
+    product_name: fallbackProductName
+  };
+}
+
 class BillingService {
   private os: OpenSecretContextType;
 
   constructor(os: OpenSecretContextType) {
+    this.os = os;
+  }
+
+  updateOpenSecret(os: OpenSecretContextType): void {
     this.os = os;
   }
 
@@ -98,7 +131,9 @@ class BillingService {
   }
 
   async getBillingStatus(): Promise<BillingStatus> {
-    return this.executeWithToken((token) => fetchBillingStatus(token));
+    return this.executeWithToken(async (token) =>
+      normalizeBillingStatus(await fetchBillingStatus(token))
+    );
   }
 
   async getPortalUrl(): Promise<string> {
@@ -218,6 +253,8 @@ let billingServiceInstance: BillingService | null = null;
 export function initBillingService(os: OpenSecretContextType): BillingService {
   if (!billingServiceInstance) {
     billingServiceInstance = new BillingService(os);
+  } else {
+    billingServiceInstance.updateOpenSecret(os);
   }
   return billingServiceInstance;
 }

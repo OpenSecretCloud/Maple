@@ -2,10 +2,38 @@
 
 echo "Running pre-commit hook..."
 
-# Navigate to frontend directory from repo root
 REPO_ROOT=$(git rev-parse --show-toplevel)
-cd "$REPO_ROOT/frontend" || exit 1
+STAGED_FILES=$(git diff --cached --name-only)
+NEEDS_TOOLCHAIN=0
 
+if ! command -v bun >/dev/null 2>&1; then
+    NEEDS_TOOLCHAIN=1
+fi
+
+if echo "$STAGED_FILES" | grep -Eq '^frontend/src-tauri/.*\.(rs|toml|lock)$' \
+    && ! command -v cargo >/dev/null 2>&1; then
+    NEEDS_TOOLCHAIN=1
+fi
+
+if [ "$NEEDS_TOOLCHAIN" -eq 1 ]; then
+    if [ "${MAPLE_HOOK_NIX_BOOTSTRAPPED:-0}" = "1" ]; then
+        echo "Error: Maple's Nix development shell did not provide the required tools."
+        exit 1
+    fi
+
+    if command -v nix >/dev/null 2>&1 && [ -f "$REPO_ROOT/flake.nix" ]; then
+        echo "Required tools are not on PATH; entering the Maple Nix development shell..."
+        exec nix develop "$REPO_ROOT" -c env MAPLE_HOOK_NIX_BOOTSTRAPPED=1 \
+            "$REPO_ROOT/.githooks/pre-commit"
+    fi
+
+    echo "Error: This hook requires bun, plus cargo for staged Rust changes."
+    echo "Install the missing tools or run the commit from 'nix develop'."
+    exit 1
+fi
+
+# Navigate to frontend directory from repo root
+cd "$REPO_ROOT/frontend" || exit 1
 
 # Run prettier check
 echo "Checking code formatting with Prettier..."
@@ -35,7 +63,6 @@ if ! bun run test; then
 fi
 
 # Run Rust unit tests only when relevant Rust/Tauri files are staged
-STAGED_FILES=$(git diff --cached --name-only)
 if echo "$STAGED_FILES" | grep -Eq '^frontend/src-tauri/.*\.(rs|toml|lock)$'; then
     echo "Running Rust unit tests..."
     cd "$REPO_ROOT/frontend/src-tauri" || exit 1

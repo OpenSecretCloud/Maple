@@ -14,6 +14,8 @@ import { Loader2, CheckCircle, LogOut } from "lucide-react";
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
 import { AlertDestructive } from "./AlertDestructive";
+import { stopAgentRuntimeForUser } from "@/services/agentRuntimeService";
+import { getBillingService } from "@/billing/billingService";
 
 export function VerificationModal() {
   const os = useOpenSecret();
@@ -30,6 +32,8 @@ export function VerificationModal() {
   const [verificationCode, setVerificationCode] = useState("");
   const [isVerifying, setIsVerifying] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [isSigningOut, setIsSigningOut] = useState(false);
+  const [signOutError, setSignOutError] = useState<string | null>(null);
 
   // Update open state based on user verification status
   useEffect(() => {
@@ -108,16 +112,49 @@ export function VerificationModal() {
   };
 
   const handleSignOut = async () => {
-    // Stop proxy and reset config so it doesn't auto-start on next launch
+    setSignOutError(null);
+    setIsSigningOut(true);
+    let operationBlock: Awaited<ReturnType<typeof stopAgentRuntimeForUser>> | null = null;
+    let signedOut = false;
+
     try {
-      const { proxyService } = await import("@/services/proxyService");
-      await proxyService.stopAndResetProxy();
+      operationBlock = await stopAgentRuntimeForUser(os.auth.user?.user.id);
     } catch (error) {
-      console.error("Error clearing proxy config:", error);
+      console.error("Error stopping Agent Mode:", error);
+      setSignOutError("Maple couldn't stop Agent Mode. Please try logging out again.");
+      setIsSigningOut(false);
+      return;
     }
 
-    await os.signOut();
-    queryClient.clear();
+    try {
+      // Credential reset is a required part of logout.
+      const { proxyService } = await import("@/services/proxyService");
+      await proxyService.stopAndResetProxy(os.auth.user?.user.id, os.deleteApiKey);
+
+      // Do not carry this account's third-party billing JWT into the next
+      // authenticated session in the same WebView.
+      try {
+        getBillingService().clearToken();
+      } catch {
+        sessionStorage.removeItem("maple_billing_token");
+      }
+
+      await os.signOut();
+      signedOut = true;
+      queryClient.clear();
+    } catch (error) {
+      console.error("Error during sign out:", error);
+      setSignOutError(
+        "Maple couldn't securely reset Agent Mode or finish logging out. Please try again."
+      );
+    } finally {
+      if (!signedOut) {
+        operationBlock.release();
+        setIsSigningOut(false);
+      } else {
+        operationBlock.retainUntilNextSession();
+      }
+    }
   };
 
   return (
@@ -155,6 +192,9 @@ export function VerificationModal() {
             {error && <AlertDestructive title="Verification Failed" description={error} />}
           </div>
           <div className="flex flex-col gap-2">
+            {signOutError ? (
+              <AlertDestructive title="Log Out Failed" description={signOutError} />
+            ) : null}
             {justResent ? (
               <div className="flex items-center gap-2 text-sm text-muted-foreground bg-muted p-3 rounded-md">
                 <CheckCircle className="h-4 w-4 text-maple-success" />
@@ -172,9 +212,14 @@ export function VerificationModal() {
                 )}
               </Button>
             )}
-            <Button variant="outline" onClick={handleSignOut} className="gap-2">
+            <Button
+              variant="outline"
+              onClick={handleSignOut}
+              className="gap-2"
+              disabled={isSigningOut}
+            >
               <LogOut className="w-4 h-4" />
-              Log Out
+              {isSigningOut ? "Logging Out..." : "Log Out"}
             </Button>
           </div>
         </div>

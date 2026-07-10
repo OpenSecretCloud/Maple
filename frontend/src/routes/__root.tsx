@@ -2,6 +2,8 @@ import { useOpenSecret } from "@opensecret/react";
 import { OpenSecretContextType } from "@opensecret/react";
 import { createRootRouteWithContext, Outlet } from "@tanstack/react-router";
 import { ExternalUrlConfirmHandler } from "@/components/ExternalUrlConfirmHandler";
+import { useLayoutEffect } from "react";
+import { transitionAgentAuthUser } from "@/services/agentRuntimeService";
 
 interface RootRouterContext {
   os: OpenSecretContextType;
@@ -30,6 +32,13 @@ export const Route = createRootRouteWithContext<RootRouterContext>()({
 
 function Root() {
   const { auth } = useOpenSecret();
+  const userId = auth.user?.user.id || null;
+
+  useLayoutEffect(() => {
+    // Queue cleanup before route-level passive effects initialize Agent Mode.
+    // A failed transition is surfaced by Agent Mode's matching wait gate.
+    void transitionAgentAuthUser(userId).catch(() => {});
+  }, [userId]);
 
   // TODO... put something here, but showing nothing looks nicer than "Loading..."
   if (auth.loading) {

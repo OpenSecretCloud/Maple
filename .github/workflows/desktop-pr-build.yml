@@ -5,7 +5,7 @@ permissions:
 
 on:
   pull_request:
-    branches: [ master ]
+    branches: [master]
 
 jobs:
   build-macos:
@@ -138,7 +138,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # was stable
         with:
-          toolchain: 1.88.0
+          toolchain: 1.94.1
 
       - name: Install sccache
         shell: bash
