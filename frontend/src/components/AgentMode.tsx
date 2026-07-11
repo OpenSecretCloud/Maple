@@ -16,15 +16,20 @@ import {
   MessageSquarePlus,
   MoreHorizontal,
   ShieldCheck,
-  Terminal,
   Trash,
   X,
   Zap
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { Badge } from "@/components/ui/badge";
-import { Markdown } from "@/components/markdown";
+import { Markdown, ThinkingBlock } from "@/components/markdown";
+import {
+  CHAT_COMPOSER_TEXTAREA_CLASS,
+  ChatAssistantTurn,
+  ChatComposerSurface,
+  ChatDesktopConversationHeader,
+  ChatUserTurn
+} from "@/components/chat/ChatTurn";
 import {
   Select,
   SelectContent,
@@ -60,7 +65,12 @@ import {
   proxyService
 } from "@/services/proxyService";
 import { agentOperationFence } from "@/services/agentOperationFence";
-import { coalesceAdjacentThinkingItems, hasRenderableThinkingText } from "@/services/agentTimeline";
+import {
+  activeAgentThinkingItemId,
+  coalesceAdjacentThinkingItems,
+  groupAgentTimelineItems,
+  hasRenderableThinkingText
+} from "@/services/agentTimeline";
 import {
   DEFAULT_AGENT_MODEL,
   PRIMARY_AGENT_MODEL_IDS,
@@ -288,6 +298,10 @@ export function AgentMode({ userId }: { userId: string }) {
     if (!projectRoot) return "Select folder";
     return recentRoots.find((root) => root.path === projectRoot)?.name || basename(projectRoot);
   }, [projectRoot, recentRoots]);
+  const activeSessionTitle = useMemo(() => {
+    const activeSession = sessions.find((session) => session.id === activeSessionId);
+    return activeSession ? sessionTitle(activeSession) : "Agent session";
+  }, [activeSessionId, sessions]);
   const activeRunId = activeSessionId ? (activeRunsBySession[activeSessionId] ?? null) : null;
   const activePendingSendKey = activeSessionId || NEW_SESSION_PENDING_KEY;
   const isSubmitting = pendingSendSessionIds.has(activePendingSendKey);
@@ -1407,6 +1421,14 @@ export function AgentMode({ userId }: { userId: string }) {
           </div>
         )}
 
+        {timelineItems.length > 0 ? (
+          <ChatDesktopConversationHeader
+            title={activeSessionTitle}
+            isSidebarOpen={isSidebarOpen}
+            onNewChat={() => void createSession()}
+          />
+        ) : null}
+
         {hasManualProxyConflict && (
           <div className="mx-auto mt-3 w-full max-w-6xl px-4">
             <div className="flex flex-col gap-3 rounded-md border border-maple-warning/40 bg-maple-warning/10 px-3 py-3 text-sm sm:flex-row sm:items-center sm:justify-between">
@@ -1449,10 +1471,10 @@ export function AgentMode({ userId }: { userId: string }) {
         <section className="flex min-h-0 flex-1 flex-col overflow-hidden">
           <div
             ref={chatContainerRef}
-            className="min-h-0 flex-1 overflow-y-auto px-4 py-5"
+            className="relative flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-y-contain"
             onScroll={updateAutoScrollFromPosition}
           >
-            <div className="mx-auto flex w-full max-w-4xl flex-col gap-4">
+            <div className="mx-auto w-full max-w-4xl p-4 md:p-6 landscape-short:p-2">
               {timelineItems.length === 0 ? (
                 <EmptyAgentState
                   activeRootLabel={activeRootLabel}
@@ -1475,14 +1497,18 @@ export function AgentMode({ userId }: { userId: string }) {
                   onSendMessage={() => void sendMessage()}
                 />
               ) : (
-                <AgentTimeline items={timelineItems} onPermissionDecision={respondToPermission} />
+                <AgentTimeline
+                  items={timelineItems}
+                  isRunActive={Boolean(activeRunId) && !isSubmitting}
+                  onPermissionDecision={respondToPermission}
+                />
               )}
             </div>
           </div>
 
           {timelineItems.length > 0 ? (
-            <div className="shrink-0 border-t border-border/35 bg-background px-4 py-3">
-              <div className="mx-auto max-w-4xl">
+            <div className="shrink-0 bg-background pb-[env(safe-area-inset-bottom)]">
+              <div className="mx-auto max-w-4xl px-4 landscape-short:px-3">
                 <AgentComposer
                   activeRootLabel={activeRootLabel}
                   areSettingsDisabled={areAgentSettingsLocked}
@@ -1503,6 +1529,9 @@ export function AgentMode({ userId }: { userId: string }) {
                   onProjectRootChange={selectProjectRoot}
                   onSendMessage={() => void sendMessage()}
                 />
+                <p className="mb-2 mt-1 text-center text-[10px] text-muted-foreground/50 landscape-short:mb-1">
+                  AI can make mistakes. Check important info.
+                </p>
               </div>
             </div>
           ) : null}
@@ -1515,11 +1544,15 @@ export function AgentMode({ userId }: { userId: string }) {
 function EmptyAgentState(props: AgentComposerProps) {
   return (
     <div className="flex min-h-[52vh] items-center justify-center">
-      <div className="flex w-full max-w-4xl flex-col items-center gap-5 text-center">
-        <h2 className="font-displayWide text-3xl font-normal brand-gradient-text">
+      <div className="flex w-full max-w-4xl flex-col items-center gap-6 text-center landscape-short:gap-3">
+        <h1 className="mb-6 overflow-visible pb-1 font-displayWide text-4xl font-normal leading-relaxed brand-gradient-text landscape-short:mb-2 landscape-short:text-2xl">
           Work in a folder...
-        </h2>
+        </h1>
         <AgentComposer {...props} />
+        <p className="flex items-center justify-center gap-1 text-center text-xs text-muted-foreground/60">
+          <Lock className="h-3 w-3" />
+          Encrypted and private at every step
+        </p>
       </div>
     </div>
   );
@@ -1914,7 +1947,7 @@ function AgentComposer({
       : recentRoots;
 
   return (
-    <div className="relative w-full overflow-hidden rounded-3xl border border-[hsl(var(--maple-secondary-container))] bg-background transition-colors focus-within:border-[hsl(var(--maple-primary))]">
+    <ChatComposerSurface>
       <Textarea
         id="agent-message"
         value={input}
@@ -1922,7 +1955,7 @@ function AgentComposer({
         onKeyDown={onKeyDown}
         disabled={isSendDisabled}
         placeholder="Ask Maple to work in this folder..."
-        className="w-full max-h-[200px] min-h-[52px] resize-none border-0 bg-transparent py-3.5 pl-4 pr-2 leading-6 focus-visible:ring-0 focus-visible:ring-offset-0 placeholder:text-muted-foreground/60"
+        className={CHAT_COMPOSER_TEXTAREA_CLASS}
         rows={1}
       />
 
@@ -2000,7 +2033,7 @@ function AgentComposer({
           )}
         </div>
       </div>
-    </div>
+    </ChatComposerSurface>
   );
 }
 
@@ -2473,92 +2506,119 @@ function AgentModelSelector({
 
 function AgentTimeline({
   items,
+  isRunActive,
   onPermissionDecision
 }: {
   items: AgentTimelineItem[];
+  isRunActive: boolean;
   onPermissionDecision: (item: AgentTimelineItem, decision: AgentPermissionDecision) => void;
 }) {
   const visibleItems = coalesceAdjacentThinkingItems(items).filter(isRenderableTimelineItem);
+  const turns = groupAgentTimelineItems(visibleItems);
+  const activeThinkingItemId = activeAgentThinkingItemId(visibleItems, isRunActive);
+
   return (
-    <div className="flex flex-col gap-3">
-      {visibleItems.map((item) => {
-        if (item.itemType === "message") return <MessageBubble key={item.id} item={item} />;
-        if (item.itemType === "thinking") return <ThinkingMessage key={item.id} item={item} />;
-        if (item.itemType === "tool") return <ToolCallRow key={item.id} item={item} />;
-        if (item.itemType === "permission") {
+    <div className="space-y-1">
+      {turns.map((turn) => {
+        if (turn.type === "user") {
           return (
-            <PermissionRow key={item.id} item={item} onPermissionDecision={onPermissionDecision} />
+            <ChatUserTurn key={turn.id}>
+              <Markdown content={turn.item.text || ""} />
+            </ChatUserTurn>
           );
         }
-        return <SystemRow key={item.id} item={item} />;
+
+        return (
+          <ChatAssistantTurn key={turn.id}>
+            {turn.items.map((item) => (
+              <AgentAssistantItem
+                key={item.id}
+                item={item}
+                isThinking={item.id === activeThinkingItemId}
+                onPermissionDecision={onPermissionDecision}
+              />
+            ))}
+          </ChatAssistantTurn>
+        );
       })}
     </div>
   );
 }
 
-function MessageBubble({ item }: { item: AgentTimelineItem }) {
-  const role = item.role || "assistant";
-  const text = item.text || "";
-  if (!text.trim()) return null;
-  return (
-    <div className={cn("flex", role === "user" ? "justify-end" : "justify-start")}>
-      <div
-        className={cn(
-          "max-w-[82%] rounded-lg px-3 py-2 text-sm leading-6",
-          role === "user"
-            ? "bg-[hsl(var(--maple-primary))] text-primary-foreground"
-            : "border border-border/45 bg-muted/45 text-foreground"
-        )}
-      >
-        {role === "assistant" ? (
-          <Markdown content={text} />
-        ) : (
-          <div className="whitespace-pre-wrap break-words">{text}</div>
-        )}
+function AgentAssistantItem({
+  item,
+  isThinking,
+  onPermissionDecision
+}: {
+  item: AgentTimelineItem;
+  isThinking: boolean;
+  onPermissionDecision: (item: AgentTimelineItem, decision: AgentPermissionDecision) => void;
+}) {
+  if (item.itemType === "message") {
+    return (
+      <div className="prose prose-sm max-w-none dark:prose-invert">
+        <Markdown content={item.text || ""} />
       </div>
-    </div>
-  );
-}
-
-function ThinkingMessage({ item }: { item: AgentTimelineItem }) {
-  return (
-    <details className="group rounded-lg border border-border/35 bg-muted/25 px-3 py-2 text-sm text-muted-foreground">
-      <summary className="flex cursor-pointer list-none items-center gap-2 font-medium text-foreground/80">
-        <ChevronRight className="h-4 w-4 transition-transform group-open:rotate-90" />
-        Thinking
-      </summary>
-      <div className="mt-2 whitespace-pre-wrap break-words text-xs leading-5">
-        {item.text || ""}
-      </div>
-    </details>
-  );
+    );
+  }
+  if (item.itemType === "thinking") {
+    return <ThinkingBlock content={item.text || ""} isThinking={isThinking} showDuration={false} />;
+  }
+  if (item.itemType === "tool") return <ToolCallRow item={item} />;
+  if (item.itemType === "permission") {
+    return <PermissionRow item={item} onPermissionDecision={onPermissionDecision} />;
+  }
+  return <SystemRow item={item} />;
 }
 
 function ToolCallRow({ item }: { item: AgentTimelineItem }) {
-  const failed = item.status === "failed";
+  const status = item.status || "running";
+  const failed = status === "failed" || status === "error";
+  const active = isActiveAgentStatus(status);
+  const hasDetails =
+    Boolean(item.text?.trim()) || item.input !== undefined || item.output !== undefined;
+  const statusIcon = active ? (
+    <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" />
+  ) : failed ? (
+    <X className="h-4 w-4 shrink-0 text-destructive" />
+  ) : (
+    <Check className="h-4 w-4 shrink-0 text-maple-success" />
+  );
+
+  const summary = (
+    <div className="flex min-w-0 flex-1 items-center gap-2">
+      {statusIcon}
+      <span className="min-w-0 flex-1 truncate text-sm font-medium">{toolTitle(item)}</span>
+      <span className={cn("shrink-0 text-xs text-muted-foreground", failed && "text-destructive")}>
+        {formatStatus(status)}
+      </span>
+    </div>
+  );
+
+  if (!hasDetails) {
+    return (
+      <div
+        className={cn(
+          "flex items-center gap-2 rounded-2xl bg-muted/30 px-3 py-2 text-sm",
+          failed && "bg-destructive/5"
+        )}
+      >
+        {summary}
+      </div>
+    );
+  }
+
   return (
     <details
       open={failed}
       className={cn(
-        "group rounded-lg border bg-muted/30 px-3 py-2",
-        failed ? "border-destructive/35" : "border-border/45"
+        "group rounded-3xl border border-muted/40 bg-muted/20 px-4 py-3 text-sm",
+        failed && "border-destructive/35 bg-destructive/5"
       )}
     >
-      <summary className="flex cursor-pointer list-none items-center justify-between gap-3">
-        <div className="flex min-w-0 items-center gap-2">
-          <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-90" />
-          <Terminal className="h-4 w-4 shrink-0 text-muted-foreground" />
-          <span className="truncate text-sm font-medium">{toolTitle(item)}</span>
-        </div>
-        <Badge
-          variant="secondary"
-          className={cn(
-            "shrink-0 capitalize",
-            failed && "border-destructive/40 bg-destructive/15 text-destructive"
-          )}
-        >
-          {formatStatus(item.status || "running")}
-        </Badge>
+      <summary className="flex cursor-pointer list-none items-center gap-2">
+        <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-90" />
+        {summary}
       </summary>
       <div className="mt-2 space-y-2 pl-6">
         {item.text ? <ToolDetail label="Summary" value={item.text} /> : null}
@@ -2584,24 +2644,27 @@ function PermissionRow({
   return (
     <div
       className={cn(
-        "rounded-lg border px-3 py-3",
+        "rounded-3xl border border-muted/40 bg-muted/20 px-4 py-3 text-sm",
         resolved
-          ? "border-border/45 bg-muted/20"
-          : "border-[hsl(var(--maple-primary)/0.45)] bg-[hsl(var(--maple-primary)/0.08)]"
+          ? "border-muted/40"
+          : "border-[hsl(var(--maple-primary)/0.45)] bg-[hsl(var(--maple-primary)/0.06)]"
       )}
     >
       <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <p className="text-sm font-medium">{item.title || "Permission requested"}</p>
-          {item.text ? (
-            <p className="mt-1 whitespace-pre-wrap break-words text-xs text-muted-foreground">
-              {item.text}
-            </p>
-          ) : null}
+        <div className="flex min-w-0 items-start gap-2">
+          <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-[hsl(var(--maple-primary))]" />
+          <div className="min-w-0">
+            <p className="font-medium">{item.title || "Permission requested"}</p>
+            {item.text ? (
+              <p className="mt-1 whitespace-pre-wrap break-words text-xs text-muted-foreground">
+                {item.text}
+              </p>
+            ) : null}
+          </div>
         </div>
-        <Badge variant={resolved ? "secondary" : "outline"} className="shrink-0 rounded-md">
+        <span className="shrink-0 text-xs text-muted-foreground" role="status" aria-live="polite">
           {formatPermissionStatus(item.status || "pending")}
-        </Badge>
+        </span>
       </div>
       {item.input !== undefined ? (
         <div className="mt-2">
@@ -2646,10 +2709,10 @@ function SystemRow({ item }: { item: AgentTimelineItem }) {
   return (
     <div
       className={cn(
-        "rounded-lg border px-3 py-2 text-sm",
+        "rounded-2xl px-3 py-2 text-sm",
         failed
-          ? "border-destructive/35 bg-destructive/5 text-destructive"
-          : "border-border/35 bg-muted/25 text-muted-foreground"
+          ? "border border-destructive/35 bg-destructive/5 text-destructive"
+          : "bg-muted/30 text-muted-foreground"
       )}
     >
       <div className="flex items-start gap-2">
@@ -2740,6 +2803,10 @@ function formatUnknown(value: unknown): string {
 
 function formatStatus(status: string): string {
   return status.replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function isActiveAgentStatus(status: string | null | undefined): boolean {
+  return ["running", "in_progress", "streaming", "pending", "queued"].includes(status || "");
 }
 
 function formatPermissionStatus(status: string): string {

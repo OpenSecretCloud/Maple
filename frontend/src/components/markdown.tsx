@@ -27,9 +27,15 @@ export interface ThinkingBlockProps {
   content: string;
   isThinking: boolean;
   duration?: number;
+  showDuration?: boolean;
 }
 
-export function ThinkingBlock({ content, isThinking, duration }: ThinkingBlockProps) {
+export function ThinkingBlock({
+  content,
+  isThinking,
+  duration,
+  showDuration = true
+}: ThinkingBlockProps) {
   const [isExpanded, setIsExpanded] = useState(false);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const startTimeRef = useRef<number | null>(null);
@@ -89,7 +95,7 @@ export function ThinkingBlock({ content, isThinking, duration }: ThinkingBlockPr
           <span className="min-w-0 text-sm font-medium text-muted-foreground">
             {isThinking ? (
               <span className="inline-flex items-center gap-2">
-                Thinking for {durationText} seconds
+                {showDuration ? `Thinking for ${durationText} seconds` : "Thinking"}
                 <span className="inline-flex items-baseline gap-1">
                   <span className="inline-block animate-bounce" style={{ animationDelay: "0ms" }}>
                     .
@@ -102,8 +108,10 @@ export function ThinkingBlock({ content, isThinking, duration }: ThinkingBlockPr
                   </span>
                 </span>
               </span>
-            ) : (
+            ) : showDuration ? (
               `Thought for ${durationText} seconds`
+            ) : (
+              "Thought"
             )}
           </span>
           <span className="shrink-0 text-muted-foreground" aria-hidden>

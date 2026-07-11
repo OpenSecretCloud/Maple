@@ -32,6 +32,13 @@ import { truncateMarkdownPreservingLinks } from "@/utils/markdown";
 import { useOpenAI } from "@/ai/useOpenAi";
 import { DEFAULT_MODEL_ID, getInitialWebSearchEnabled } from "@/state/LocalStateContext";
 import { Markdown, ThinkingBlock } from "@/components/markdown";
+import {
+  CHAT_COMPOSER_TEXTAREA_CLASS,
+  ChatAssistantTurn,
+  ChatComposerSurface,
+  ChatDesktopConversationHeader,
+  ChatUserTurn
+} from "@/components/chat/ChatTurn";
 import { ModelSelector } from "@/components/ModelSelector";
 import { useLocalState } from "@/state/useLocalState";
 import { useOpenSecret } from "@opensecret/react";
@@ -145,19 +152,6 @@ function mergeMessagesById(existingMessages: Message[], newMessages: Message[]):
 
   // Return as array, maintaining insertion order (Map preserves insertion order)
   return Array.from(messagesMap.values());
-}
-
-function MapleChatAvatar() {
-  return (
-    <img
-      src="/m-avatar.svg"
-      alt=""
-      width={32}
-      height={32}
-      draggable={false}
-      className="h-8 w-8 shrink-0 select-none"
-    />
-  );
 }
 
 function updateMessageById(
@@ -1309,53 +1303,43 @@ const MessageList = memo(
             const userText = getUserMessageText(message);
 
             return (
-              <div
+              <ChatUserTurn
                 key={group.id}
-                ref={groupIndex === 0 ? firstMessageRef : undefined}
-                className="group/user flex flex-col items-end py-4 landscape-short:py-1.5"
+                containerRef={groupIndex === 0 ? firstMessageRef : undefined}
+                actions={userText ? <CopyButton text={userText} /> : undefined}
+                actionsClassName={
+                  isMobile ? "opacity-100" : "opacity-0 group-hover/user:opacity-100"
+                }
               >
-                <div className="max-w-[min(100%,42rem)] rounded-2xl border border-border bg-muted px-4 py-3 landscape-short:px-3 landscape-short:py-2 backdrop-blur-lg dark:bg-card">
-                  <div className="prose prose-sm max-w-none text-left dark:prose-invert">
-                    <div className="space-y-3">
-                      {message.content.map((part, partIdx) => {
-                        if (
-                          (part.type === "input_text" ||
-                            part.type === "output_text" ||
-                            part.type === "text") &&
-                          "text" in part &&
-                          part.text
-                        ) {
-                          return (
-                            <div key={partIdx}>
-                              <Markdown content={part.text} chatId={chatId || ""} />
-                            </div>
-                          );
-                        }
-                        if (part.type === "input_image" && "image_url" in part && part.image_url) {
-                          return (
-                            <div key={partIdx}>
-                              <img
-                                src={part.image_url}
-                                alt={`Image ${partIdx + 1}`}
-                                className="max-w-full rounded-2xl"
-                                style={{ maxHeight: "400px", objectFit: "contain" }}
-                              />
-                            </div>
-                          );
-                        }
-                        return null;
-                      })}
-                    </div>
-                  </div>
-                </div>
-                {userText && (
-                  <div
-                    className={`flex justify-end pr-1 pt-1 ${isMobile ? "opacity-100" : "opacity-0 group-hover/user:opacity-100"} transition-opacity`}
-                  >
-                    <CopyButton text={userText} />
-                  </div>
-                )}
-              </div>
+                {message.content.map((part, partIdx) => {
+                  if (
+                    (part.type === "input_text" ||
+                      part.type === "output_text" ||
+                      part.type === "text") &&
+                    "text" in part &&
+                    part.text
+                  ) {
+                    return (
+                      <div key={partIdx}>
+                        <Markdown content={part.text} chatId={chatId || ""} />
+                      </div>
+                    );
+                  }
+                  if (part.type === "input_image" && "image_url" in part && part.image_url) {
+                    return (
+                      <div key={partIdx}>
+                        <img
+                          src={part.image_url}
+                          alt={`Image ${partIdx + 1}`}
+                          className="max-w-full rounded-2xl"
+                          style={{ maxHeight: "400px", objectFit: "contain" }}
+                        />
+                      </div>
+                    );
+                  }
+                  return null;
+                })}
+              </ChatUserTurn>
             );
           }
 
@@ -1377,38 +1361,25 @@ const MessageList = memo(
             const textContent = getAssistantGroupText(group.items);
 
             return (
-              <div
+              <ChatAssistantTurn
                 key={group.id}
-                ref={groupIndex === 0 ? firstMessageRef : undefined}
-                className="group py-4 px-0 md:p-4 landscape-short:py-1.5 landscape-short:px-2"
+                containerRef={groupIndex === 0 ? firstMessageRef : undefined}
+                actions={
+                  textContent ? (
+                    <>
+                      <CopyButton text={textContent} />
+                      <TTSButton
+                        text={textContent}
+                        messageId={group.id}
+                        onNeedsSetup={onTTSSetupOpen}
+                        onManage={onTTSManage}
+                      />
+                    </>
+                  ) : undefined
+                }
               >
-                <div className="mx-auto flex w-full max-w-4xl flex-col gap-2 md:flex-row md:items-start md:gap-3">
-                  <div className="flex h-8 shrink-0 items-center gap-2 px-0 md:h-auto md:flex-col md:items-start md:gap-3 landscape-short:h-6">
-                    <MapleChatAvatar />
-                    <div className="text-sm font-semibold leading-none md:hidden">Maple</div>
-                  </div>
-                  <div className="flex min-w-0 w-full flex-1 flex-col overflow-hidden px-2 md:gap-2 md:px-0">
-                    <div className="hidden md:block">
-                      <div className="text-left text-sm font-semibold leading-none">Maple</div>
-                    </div>
-                    <div className="space-y-2">
-                      {renderAssistantItems(group.items)}
-                      {/* Copy and TTS buttons for the assistant's text content */}
-                      {textContent && (
-                        <div className="flex gap-1">
-                          <CopyButton text={textContent} />
-                          <TTSButton
-                            text={textContent}
-                            messageId={group.id}
-                            onNeedsSetup={onTTSSetupOpen}
-                            onManage={onTTSManage}
-                          />
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              </div>
+                {renderAssistantItems(group.items)}
+              </ChatAssistantTurn>
             );
           }
 
@@ -1417,24 +1388,13 @@ const MessageList = memo(
 
         {/* Loading indicator - only show while waiting for the first assistant item (TTFT) */}
         {shouldShowInitialAssistantLoader && (
-          <div className="group py-4 px-0 md:p-4 landscape-short:py-1.5 landscape-short:px-2">
-            <div className="mx-auto flex w-full max-w-4xl flex-col gap-2 md:flex-row md:items-start md:gap-3">
-              <div className="flex h-8 shrink-0 items-center gap-2 px-0 md:h-auto md:flex-col md:items-start md:gap-3 landscape-short:h-6">
-                <MapleChatAvatar />
-                <div className="text-sm font-semibold leading-none md:hidden">Maple</div>
-              </div>
-              <div className="flex min-w-0 w-full flex-1 flex-col px-2 md:gap-2 md:px-0">
-                <div className="hidden md:block">
-                  <div className="text-left text-sm font-semibold leading-none">Maple</div>
-                </div>
-                <div className="flex items-center gap-1">
-                  <div className="h-2 w-2 animate-pulse rounded-full bg-foreground/60" />
-                  <div className="h-2 w-2 animate-pulse rounded-full bg-foreground/60 delay-75" />
-                  <div className="h-2 w-2 animate-pulse rounded-full bg-foreground/60 delay-150" />
-                </div>
-              </div>
+          <ChatAssistantTurn>
+            <div className="flex items-center gap-1">
+              <div className="h-2 w-2 animate-pulse rounded-full bg-foreground/60" />
+              <div className="h-2 w-2 animate-pulse rounded-full bg-foreground/60 delay-75" />
+              <div className="h-2 w-2 animate-pulse rounded-full bg-foreground/60 delay-150" />
             </div>
-          </div>
+          </ChatAssistantTurn>
         )}
       </>
     );
@@ -3392,28 +3352,12 @@ export function UnifiedChat() {
               </h1>
             </div>
           ) : (
-            <div className="h-14 flex items-center px-4">
-              <div className="relative flex flex-1 items-center justify-center">
-                <h1
-                  className={`max-w-[20rem] truncate text-base font-medium text-foreground transition-colors duration-300 ${
-                    titleJustUpdated ? "title-update-animation" : ""
-                  }`}
-                >
-                  {conversation?.metadata?.title || "Chat"}
-                </h1>
-                {!isSidebarOpen && (
-                  <Button
-                    variant="outline"
-                    size="icon"
-                    className="absolute right-0 h-9 w-9 border-0"
-                    onClick={handleNewChatFromHeader}
-                    aria-label="New chat"
-                  >
-                    <SquarePen className="h-4 w-4" />
-                  </Button>
-                )}
-              </div>
-            </div>
+            <ChatDesktopConversationHeader
+              title={conversation?.metadata?.title || "Chat"}
+              titleClassName={titleJustUpdated ? "title-update-animation" : undefined}
+              isSidebarOpen={isSidebarOpen}
+              onNewChat={handleNewChatFromHeader}
+            />
           ))}
 
         {/* Messages Area */}
@@ -3743,7 +3687,7 @@ export function UnifiedChat() {
                     </div>
                   )}
 
-                  <div className="relative overflow-hidden rounded-3xl border border-[hsl(var(--maple-secondary-container))] bg-background transition-colors focus-within:border-[hsl(var(--maple-primary))]">
+                  <ChatComposerSurface>
                     <Textarea
                       ref={textareaRef}
                       value={input}
@@ -3752,7 +3696,7 @@ export function UnifiedChat() {
                       onPaste={handlePaste}
                       placeholder="Message Maple..."
                       disabled={isGenerating || isRecording}
-                      className="w-full min-h-[52px] landscape-short:min-h-[40px] max-h-[200px] landscape-short:max-h-[100px] resize-none border-0 bg-transparent py-3.5 landscape-short:py-2 pl-4 pr-2 leading-6 focus-visible:ring-0 focus-visible:ring-offset-0 placeholder:text-muted-foreground/60"
+                      className={CHAT_COMPOSER_TEXTAREA_CLASS}
                       rows={1}
                       id="message"
                     />
@@ -3883,7 +3827,7 @@ export function UnifiedChat() {
                         className="absolute inset-0 rounded-3xl"
                       />
                     )}
-                  </div>
+                  </ChatComposerSurface>
                 </div>
               </form>
               <p className="mb-2 mt-1 landscape-short:mb-1 text-center text-[10px] text-muted-foreground/50">
