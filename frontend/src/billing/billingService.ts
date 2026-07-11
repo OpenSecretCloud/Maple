@@ -50,35 +50,6 @@ import type {
 
 const TOKEN_STORAGE_KEY = "maple_billing_token";
 
-const KNOWN_MAPLE_PRODUCT_NAMES: Record<string, string> = {
-  prod_RXODZOqZXxz5Ez: "Starter",
-  prod_RXODQdCZX8GtWh: "Pro",
-  prod_SgXHQFS10kc5hL: "Max"
-};
-
-function normalizeBillingStatus(status: BillingStatus): BillingStatus {
-  if (status.product_name?.trim()) {
-    return status;
-  }
-
-  if (!status.is_subscribed) {
-    return {
-      ...status,
-      product_name: "Free"
-    };
-  }
-
-  const fallbackProductName = KNOWN_MAPLE_PRODUCT_NAMES[status.product_id];
-  if (!fallbackProductName) {
-    return status;
-  }
-
-  return {
-    ...status,
-    product_name: fallbackProductName
-  };
-}
-
 class BillingService {
   private os: OpenSecretContextType;
 
@@ -131,9 +102,7 @@ class BillingService {
   }
 
   async getBillingStatus(): Promise<BillingStatus> {
-    return this.executeWithToken(async (token) =>
-      normalizeBillingStatus(await fetchBillingStatus(token))
-    );
+    return this.executeWithToken((token) => fetchBillingStatus(token));
   }
 
   async getPortalUrl(): Promise<string> {
