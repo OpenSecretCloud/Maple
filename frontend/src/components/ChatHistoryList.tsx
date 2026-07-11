@@ -87,6 +87,9 @@ interface ChatHistoryListProps {
   selectedIds: Set<string>;
   onSelectionChange: (ids: Set<string>) => void;
   containerRef?: React.RefObject<HTMLElement>;
+  onOpenConversation?: (conversation: Conversation) => void;
+  onOpenProject?: (projectId: string) => void;
+  onOpenNewChat?: (projectId: string | null) => void;
 }
 
 export function ChatHistoryList({
@@ -97,7 +100,10 @@ export function ChatHistoryList({
   onExitSelectionMode,
   selectedIds,
   onSelectionChange,
-  containerRef
+  containerRef,
+  onOpenConversation,
+  onOpenProject,
+  onOpenNewChat
 }: ChatHistoryListProps) {
   const opensecret = useOpenSecret();
   const router = useRouter();
@@ -929,6 +935,11 @@ export function ChatHistoryList({
       setSelectedProjectId(projectId);
       setExpandedProjectId(projectId);
 
+      if (onOpenProject) {
+        onOpenProject(projectId);
+        return;
+      }
+
       if (window.location.pathname !== "/") {
         await router.navigate({ to: "/" });
       }
@@ -940,13 +951,18 @@ export function ChatHistoryList({
       window.history.replaceState({}, "", params.toString() ? `/?${params.toString()}` : "/");
       window.dispatchEvent(new Event("projectselected"));
     },
-    [router, setSelectedProjectId]
+    [onOpenProject, router, setSelectedProjectId]
   );
 
   const handleNewChatInProject = useCallback(
     async (projectId: string) => {
       preventProjectMenuFocusRestoreRef.current = true;
       setSelectedProjectId(projectId);
+
+      if (onOpenNewChat) {
+        onOpenNewChat(projectId);
+        return;
+      }
 
       if (window.location.pathname !== "/") {
         await router.navigate({ to: "/" });
@@ -961,7 +977,7 @@ export function ChatHistoryList({
       window.dispatchEvent(new CustomEvent<NewChatNavigationDetail>("newchat", { detail }));
       setTimeout(() => document.getElementById("message")?.focus(), 0);
     },
-    [router, runtimeStore, setSelectedProjectId]
+    [onOpenNewChat, router, runtimeStore, setSelectedProjectId]
   );
 
   const handleCreateProject = useCallback(
@@ -1111,6 +1127,11 @@ export function ChatHistoryList({
       runtimeStore.markCompletionRead(createConversationChatKey(conversation.id));
       setSelectedProjectId(conversation.project_id ?? null);
 
+      if (onOpenConversation) {
+        onOpenConversation(conversation);
+        return;
+      }
+
       if (window.location.pathname !== "/") {
         await router.navigate({ to: "/" });
       }
@@ -1126,7 +1147,7 @@ export function ChatHistoryList({
         })
       );
     },
-    [router, runtimeStore, setSelectedProjectId]
+    [onOpenConversation, router, runtimeStore, setSelectedProjectId]
   );
 
   // Listen for conversation created event to refresh the list

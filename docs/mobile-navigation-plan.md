@@ -2,7 +2,11 @@
 
 ## Status
 
-Planning only. This document describes an agreed future implementation; no application code has been changed as part of this planning work.
+Core implementation is complete on the `mobile-navigation` branch. The navigation/history and
+stream-disconnect behavior have focused automated coverage, and the repository's format, lint,
+typecheck, test, and production-build checks pass. The unchecked acceptance items below require
+interactive browser or physical iOS/Android validation and remain the final release-validation
+pass.
 
 ## Objective
 
@@ -268,6 +272,11 @@ An in-memory `draftMessages` mechanism exists in local state, but `UnifiedChat` 
 
 Before implementation is finalized, record the actual resulting behavior and decide whether preserving unsent text should become a separate follow-up. Draft persistence is not currently part of the feature's definition of done.
 
+The implemented core behavior is that unsent composer text and attachments are discarded when a
+chat or transient New Chat page is popped and unmounted. Preserving them should be considered as a
+separate follow-up; this implementation does not connect or change the existing unused
+`draftMessages` state.
+
 ## Stretch Goal: iOS Edge-Swipe Back
 
 After the core feature is complete, add an interactive left-edge swipe-back gesture for the iOS Tauri app.
@@ -314,8 +323,8 @@ The core feature is complete when every agreed non-stretch behavior is implement
 
 - [ ] Desktop app navigation is visually and behaviorally unchanged.
 - [ ] Desktop-width web navigation is visually and behaviorally unchanged.
-- [ ] Desktop and mobile render the same shared menu implementation.
-- [ ] A shared menu change appears on both desktop and mobile.
+- [x] Desktop and mobile render the same shared menu implementation.
+- [x] A shared menu change appears on both desktop and mobile.
 - [ ] Existing menu item behavior remains unchanged.
 - [ ] Existing platform and feature-flag visibility rules remain unchanged.
 - [ ] Projects, pinned chats, recents, search, selection, pull-to-refresh, and account controls still work.
@@ -323,44 +332,44 @@ The core feature is complete when every agreed non-stretch behavior is implement
 
 ### Mobile hierarchy
 
-- [ ] A fresh mobile root load shows the full-screen main menu.
-- [ ] The mobile main menu has no sidebar collapse control.
-- [ ] New Chat opens a transient full-screen new-chat page without changing the URL.
-- [ ] Existing chats open as full-screen detail pages using the existing `conversation_id` URL.
-- [ ] Project detail uses the existing `project_id` URL.
+- [x] A fresh mobile root load shows the full-screen main menu.
+- [x] The mobile main menu has no sidebar collapse control.
+- [x] New Chat opens a transient full-screen new-chat page without changing the URL.
+- [x] Existing chats open as full-screen detail pages using the existing `conversation_id` URL.
+- [x] Project detail uses the existing `project_id` URL.
 - [ ] Project rows still expand and collapse inline in the menu.
-- [ ] Parent-page menu and project state are preserved while a child page is visible.
+- [x] Parent-page menu and project state are preserved while a child page is visible.
 
 ### Back behavior
 
-- [ ] Mobile chat, new-chat, and project-detail pages show the agreed back button.
-- [ ] Back returns to the correct previous in-app page.
-- [ ] Directly loaded chat URLs fall back to the mobile main menu from the in-app back button.
-- [ ] Browser back and forward remain synchronized with the visible mobile page.
-- [ ] Mobile web, iOS, and Android use the same navigation logic.
+- [x] Mobile chat, new-chat, and project-detail pages show the agreed back button.
+- [x] Back returns to the correct previous in-app page.
+- [x] Directly loaded chat URLs fall back to the mobile main menu from the in-app back button.
+- [x] Browser back and forward remain synchronized with the visible mobile page.
+- [x] Mobile web, iOS, and Android use the same navigation logic.
 
 ### URL and lifecycle behavior
 
-- [ ] No new route or query parameter is introduced.
-- [ ] Web refresh reloads the current chat or project URL at every viewport width.
-- [ ] Refreshing mobile `/` shows the main menu rather than reconstructing transient New Chat.
-- [ ] Backgrounding and foregrounding an in-memory native app preserves its current page.
-- [ ] A fresh native app process starts at the main menu.
+- [x] No new route or query parameter is introduced.
+- [x] Web refresh reloads the current chat or project URL at every viewport width.
+- [x] Refreshing mobile `/` shows the main menu rather than reconstructing transient New Chat.
+- [x] Backgrounding and foregrounding an in-memory native app preserves its current page.
+- [x] A fresh native app process starts at the main menu.
 
 ### Chat lifecycle
 
-- [ ] A chat unmounts after it leaves the screen.
-- [ ] Leaving a generating chat does not call the cancel-response operation.
-- [ ] Reopening a generating chat catches up without resubmitting the prompt.
-- [ ] Reopening after generation completes shows the completed result.
-- [ ] Switching between chat, New Chat, project detail, and the menu does not create duplicate conversations or messages.
+- [x] A chat unmounts after it leaves the screen.
+- [x] Leaving a generating chat does not call the cancel-response operation.
+- [x] Reopening a generating chat catches up without resubmitting the prompt.
+- [x] Reopening after generation completes shows the completed result.
+- [x] Switching between chat, New Chat, project detail, and the menu does not create duplicate conversations or messages.
 
 ### Motion and accessibility
 
 - [ ] Forward and back slide transitions work in portrait and short landscape.
-- [ ] Reduced-motion users receive a suitable non-animated or minimized transition.
-- [ ] Covered parent pages are inert and hidden from assistive technology.
-- [ ] Focus moves predictably on push and pop.
+- [x] Reduced-motion users receive a suitable non-animated or minimized transition.
+- [x] Covered parent pages are inert and hidden from assistive technology.
+- [x] Focus moves predictably on push and pop.
 - [ ] Safe areas and the mobile keyboard do not obscure navigation controls.
 
 ### Validation
@@ -371,6 +380,6 @@ The core feature is complete when every agreed non-stretch behavior is implement
 - [ ] Validate iOS suspend/resume and fresh launch.
 - [ ] Validate Android suspend/resume and fresh launch.
 - [ ] Validate navigation away from and back to an actively generating chat.
-- [ ] Run the repository's applicable format, lint, typecheck, test, and build checks.
+- [x] Run the repository's applicable format, lint, typecheck, test, and build checks.
 
 The unresolved composer-draft gap and the iOS edge-swipe stretch goal do not block core completion.

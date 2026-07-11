@@ -26,7 +26,8 @@ import {
   Volume2,
   Square,
   LockKeyhole,
-  ChevronRight
+  ChevronRight,
+  ArrowLeft
 } from "lucide-react";
 import RecordRTC from "recordrtc";
 import { useQueryClient } from "@tanstack/react-query";
@@ -1571,7 +1572,21 @@ const MessageList = memo(
 
 MessageList.displayName = "MessageList";
 
-export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
+type UnifiedChatProps = {
+  isVisible?: boolean;
+  standaloneMobile?: boolean;
+  onMobileBack?: () => void;
+  onMobileOpenNewChat?: (projectId: string | null) => void;
+  onMobileConversationCreated?: (conversationId: string) => void;
+};
+
+export function UnifiedChat({
+  isVisible = true,
+  standaloneMobile = false,
+  onMobileBack,
+  onMobileOpenNewChat,
+  onMobileConversationCreated
+}: UnifiedChatProps = {}) {
   const isMobile = useIsMobile();
   const isLandscapeMobile = useIsLandscapeMobile();
   const isCompactLayout = isMobile || isLandscapeMobile;
@@ -1852,10 +1867,10 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
   useEffect(() => {
     const enteredLandscapeMobile = isLandscapeMobile && !wasLandscapeMobileRef.current;
     wasLandscapeMobileRef.current = isLandscapeMobile;
-    if (enteredLandscapeMobile && isSidebarOpen) {
+    if (!standaloneMobile && enteredLandscapeMobile && isSidebarOpen) {
       setIsSidebarOpen(false);
     }
-  }, [isLandscapeMobile, isSidebarOpen, setIsSidebarOpen]);
+  }, [isLandscapeMobile, isSidebarOpen, setIsSidebarOpen, standaloneMobile]);
 
   // Save fullscreen preference to localStorage when it changes
   useEffect(() => {
@@ -2047,7 +2062,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
     }
   }, [input]);
 
-  // Cleanup billing refresh timeout on unmount
+  // Disconnect component-local work on unmount without canceling server-side processing.
   useEffect(() => {
     const billingRefreshTimeouts = billingRefreshTimeoutsRef.current;
     return () => {
@@ -2530,6 +2545,8 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
   // Unified event handling for conversation changes. Selection never clears or
   // aborts the previous runtime; background streams retain their owning key.
   useEffect(() => {
+    if (standaloneMobile) return;
+
     // Handle new chat event
     const handleNewChat = (event?: Event) => {
       const detail =
@@ -2598,7 +2615,14 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
       );
       window.removeEventListener("popstate", handlePopState);
     };
-  }, [chatId, runtimeStore, selectConversationRuntime, selectFreshDraftRuntime, selectedProjectId]);
+  }, [
+    chatId,
+    runtimeStore,
+    selectConversationRuntime,
+    selectFreshDraftRuntime,
+    selectedProjectId,
+    standaloneMobile
+  ]);
 
   // Cancel the current response
   const handleCancelResponse = useCallback(async () => {
@@ -3505,6 +3529,11 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
       setSelectedProjectId(null);
     });
 
+    if (onMobileOpenNewChat) {
+      onMobileOpenNewChat(null);
+      return;
+    }
+
     const usp = new URLSearchParams(window.location.search);
     usp.delete("conversation_id");
     usp.delete("project_id");
@@ -3522,7 +3551,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
     if (isSidebarOpen) {
       toggleSidebar();
     }
-  }, [isSidebarOpen, runtimeStore, setSelectedProjectId, toggleSidebar]);
+  }, [isSidebarOpen, onMobileOpenNewChat, runtimeStore, setSelectedProjectId, toggleSidebar]);
 
   const handleNewChatFromUpgrade = useCallback(() => {
     const projectId = selectedProjectId ?? null;
@@ -4825,6 +4854,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
             setActiveRuntimeKey(runtimeKey);
             setChatId(conversationId);
             canonicalizeConversationHistoryEntry(conversationId);
+            onMobileConversationCreated?.(conversationId);
           }
           window.dispatchEvent(new Event("conversationcreated"));
         }
@@ -4965,7 +4995,8 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
       processStreamingResponse,
       queryClient,
       runtimeStore,
-      selectedProjectId
+      selectedProjectId,
+      onMobileConversationCreated
     ]
   );
 
@@ -4986,16 +5017,18 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
     continueChatComposerListBeforeInput(event, setInput);
   };
 
+  const effectiveSidebarOpen = !standaloneMobile && isSidebarOpen;
+
   return (
     <ResizableSidebarLayout
       data-runtime-key={runtimeStore.resolveKey(activeRuntimeKey)}
       data-generating={isGenerating ? "true" : "false"}
-      isCompactLayout={isCompactLayout}
-      isOpen={isSidebarOpen}
+      isCompactLayout={standaloneMobile || isCompactLayout}
+      isOpen={effectiveSidebarOpen}
       mode="chat"
       onOpenChange={setIsSidebarOpen}
       onTransitionChange={setIsSidebarTransitioning}
-      sidebar={<Sidebar chatId={chatId} isOpen={isSidebarOpen} onToggle={toggleSidebar} />}
+      sidebar={<Sidebar chatId={chatId} isOpen={effectiveSidebarOpen} onToggle={toggleSidebar} />}
       userId={os.auth.user?.user.id}
     >
       {/* Main Content */}
@@ -5032,21 +5065,45 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
         )}
 
         {/* Sidebar toggle + wordmark — fixed except on compact layouts while chatting (two-row header below) */}
-        {!isSidebarOpen && !isSidebarTransitioning && !(isCompactLayout && messages.length > 0) && (
-          <div className="fixed left-4 top-[9.5px] z-20 flex items-center gap-1.5">
-            <SidebarToggle onToggle={toggleSidebar} />
-            <MapleWordmark
-              className="h-4 w-auto animate-in fade-in-0 slide-in-from-left-1 duration-300"
-              aria-hidden
-            />
-          </div>
-        )}
+        {!effectiveSidebarOpen &&
+          !isSidebarTransitioning &&
+          !(isCompactLayout && messages.length > 0) && (
+            <div className="fixed left-4 top-[9.5px] z-20 flex items-center gap-1.5">
+              {standaloneMobile && onMobileBack ? (
+                <button
+                  type="button"
+                  className="flex h-9 w-9 items-center justify-center text-foreground transition-colors hover:text-foreground/70"
+                  onClick={onMobileBack}
+                  aria-label="Back"
+                >
+                  <ArrowLeft className="h-4 w-4" />
+                </button>
+              ) : (
+                <SidebarToggle onToggle={toggleSidebar} />
+              )}
+              <MapleWordmark
+                className="h-4 w-auto animate-in fade-in-0 slide-in-from-left-1 duration-300"
+                aria-hidden
+              />
+            </div>
+          )}
 
         {/* Only show header when there are messages (conversation exists) */}
         {messages.length > 0 &&
-          (isLandscapeMobile && !isSidebarOpen ? (
+          (isLandscapeMobile && !effectiveSidebarOpen ? (
             <div className="z-10 flex shrink-0 items-center gap-2 bg-background px-1 py-1 pr-4">
-              <SidebarToggle onToggle={toggleSidebar} />
+              {standaloneMobile && onMobileBack ? (
+                <button
+                  type="button"
+                  className="flex h-9 w-9 items-center justify-center text-foreground transition-colors hover:text-foreground/70"
+                  onClick={onMobileBack}
+                  aria-label="Back"
+                >
+                  <ArrowLeft className="h-4 w-4" />
+                </button>
+              ) : (
+                <SidebarToggle onToggle={toggleSidebar} />
+              )}
               <div className="min-w-0 overflow-hidden">
                 <MapleWordmark className="h-4 w-auto max-w-full" aria-hidden />
               </div>
@@ -5067,11 +5124,22 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
                 <SquarePen className="h-4 w-4" />
               </Button>
             </div>
-          ) : isMobile && !isSidebarOpen ? (
+          ) : isMobile && !effectiveSidebarOpen ? (
             <div className="z-10 flex shrink-0 flex-col gap-2 bg-background pb-2 pl-1 pr-4 pt-2">
               <div className="flex items-center justify-between gap-3">
                 <div className="flex min-w-0 flex-1 items-center gap-1.5">
-                  <SidebarToggle onToggle={toggleSidebar} />
+                  {standaloneMobile && onMobileBack ? (
+                    <button
+                      type="button"
+                      className="flex h-9 w-9 items-center justify-center text-foreground transition-colors hover:text-foreground/70"
+                      onClick={onMobileBack}
+                      aria-label="Back"
+                    >
+                      <ArrowLeft className="h-4 w-4" />
+                    </button>
+                  ) : (
+                    <SidebarToggle onToggle={toggleSidebar} />
+                  )}
                   <div className="min-w-0 overflow-hidden">
                     <MapleWordmark className="h-4 w-auto max-w-full" aria-hidden />
                   </div>
@@ -5098,7 +5166,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
             <ChatDesktopConversationHeader
               title={conversation?.metadata?.title || "Chat"}
               titleClassName={titleJustUpdated ? "title-update-animation" : undefined}
-              isSidebarOpen={isSidebarOpen}
+              isSidebarOpen={effectiveSidebarOpen}
               onNewChat={handleNewChatFromHeader}
             />
           ))}

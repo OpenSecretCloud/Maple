@@ -10,7 +10,8 @@ import {
   Pin,
   PinOff,
   SquarePen,
-  Trash2
+  Trash2,
+  ArrowLeft
 } from "lucide-react";
 import { useOpenSecret, type Conversation } from "@opensecret/react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -64,6 +65,11 @@ const MAX_SELECTION = 20;
 
 interface ProjectDetailViewProps {
   projectId: string;
+  standaloneMobile?: boolean;
+  onMobileBack?: () => void;
+  onMobileOpenConversation?: (conversationId: string) => void;
+  onMobileOpenNewChat?: (projectId: string) => void;
+  onMobileProjectDeleted?: () => void;
 }
 
 function getConversationTitle(conversation: Conversation) {
@@ -152,7 +158,14 @@ function ProjectInstructionsDialog({
   );
 }
 
-export function ProjectDetailView({ projectId }: ProjectDetailViewProps) {
+export function ProjectDetailView({
+  projectId,
+  standaloneMobile = false,
+  onMobileBack,
+  onMobileOpenConversation,
+  onMobileOpenNewChat,
+  onMobileProjectDeleted
+}: ProjectDetailViewProps) {
   const os = useOpenSecret();
   const userId = os.auth.user?.user.id;
   const queryClient = useQueryClient();
@@ -170,10 +183,10 @@ export function ProjectDetailView({ projectId }: ProjectDetailViewProps) {
   useEffect(() => {
     const enteredLandscapeMobile = isLandscapeMobile && !wasLandscapeMobileRef.current;
     wasLandscapeMobileRef.current = isLandscapeMobile;
-    if (enteredLandscapeMobile && isSidebarOpen) {
+    if (!standaloneMobile && enteredLandscapeMobile && isSidebarOpen) {
       setIsSidebarOpen(false);
     }
-  }, [isLandscapeMobile, isSidebarOpen, setIsSidebarOpen]);
+  }, [isLandscapeMobile, isSidebarOpen, setIsSidebarOpen, standaloneMobile]);
 
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [hasMoreConversations, setHasMoreConversations] = useState(false);
@@ -334,6 +347,11 @@ export function ProjectDetailView({ projectId }: ProjectDetailViewProps) {
 
   const handleStartNewChat = useCallback(() => {
     setSelectedProjectId(projectId);
+    if (onMobileOpenNewChat) {
+      onMobileOpenNewChat(projectId);
+      return;
+    }
+
     const params = new URLSearchParams(window.location.search);
     params.delete("project_id");
     params.delete("conversation_id");
@@ -350,12 +368,17 @@ export function ProjectDetailView({ projectId }: ProjectDetailViewProps) {
       })
     );
     setTimeout(() => document.getElementById("message")?.focus(), 0);
-  }, [projectId, runtimeStore, setSelectedProjectId]);
+  }, [onMobileOpenNewChat, projectId, runtimeStore, setSelectedProjectId]);
 
   const handleSelectConversation = useCallback(
     (conversation: Conversation) => {
       runtimeStore.markCompletionRead(createConversationChatKey(conversation.id));
       setSelectedProjectId(conversation.project_id ?? null);
+      if (onMobileOpenConversation) {
+        onMobileOpenConversation(conversation.id);
+        return;
+      }
+
       const params = new URLSearchParams(window.location.search);
       params.delete("project_id");
       params.set("conversation_id", conversation.id);
@@ -366,7 +389,7 @@ export function ProjectDetailView({ projectId }: ProjectDetailViewProps) {
         })
       );
     },
-    [runtimeStore, setSelectedProjectId]
+    [onMobileOpenConversation, runtimeStore, setSelectedProjectId]
   );
 
   const handleSaveProjectInstructions = useCallback(
@@ -390,6 +413,12 @@ export function ProjectDetailView({ projectId }: ProjectDetailViewProps) {
     runtimeStore.deleteActivityGroup(projectId);
     await invalidateConversationData();
     setSelectedProjectId(null);
+
+    if (standaloneMobile && onMobileProjectDeleted) {
+      onMobileProjectDeleted();
+      return;
+    }
+
     const draftRuntimeKey = rootChatDraftKeyAfterProjectDeletion(runtimeStore);
     const chatEntry = createChatHistoryEntryForDraft(draftRuntimeKey);
     window.history.replaceState(chatEntry.historyState, "", "/");
@@ -399,7 +428,15 @@ export function ProjectDetailView({ projectId }: ProjectDetailViewProps) {
       })
     );
     window.dispatchEvent(new Event("projectselected"));
-  }, [invalidateConversationData, os, projectId, runtimeStore, setSelectedProjectId]);
+  }, [
+    invalidateConversationData,
+    onMobileProjectDeleted,
+    os,
+    projectId,
+    runtimeStore,
+    setSelectedProjectId,
+    standaloneMobile
+  ]);
 
   const handleRenameConversation = useCallback(
     async (conversationId: string, newTitle: string) => {
@@ -512,7 +549,13 @@ export function ProjectDetailView({ projectId }: ProjectDetailViewProps) {
     return project.instructions;
   }, [project?.instructions]);
 
-  if (isProjectPending && !project) {
+  const renderProjectLayout = (children: React.ReactNode) => {
+    if (standaloneMobile) {
+      return (
+        <div className="grid h-dvh min-h-0 w-full grid-cols-1 overflow-hidden">{children}</div>
+      );
+    }
+
     return (
       <ResizableSidebarLayout
         isCompactLayout={isCompactLayout}
@@ -523,30 +566,52 @@ export function ProjectDetailView({ projectId }: ProjectDetailViewProps) {
         sidebar={<Sidebar isOpen={isSidebarOpen} onToggle={toggleSidebar} />}
         userId={userId}
       >
-        <div className="relative flex min-h-0 min-w-0 flex-1 items-center justify-center bg-background">
-          {!isSidebarOpen && !isSidebarTransitioning ? (
-            <div className="fixed left-4 top-[9.5px] z-20">
-              <SidebarToggle onToggle={toggleSidebar} />
-            </div>
-          ) : null}
-          <p className="text-sm text-muted-foreground">Loading project...</p>
-        </div>
+        {children}
       </ResizableSidebarLayout>
+    );
+  };
+
+  if (isProjectPending && !project) {
+    return renderProjectLayout(
+      <div className="relative flex min-h-0 min-w-0 flex-1 items-center justify-center bg-background">
+        {standaloneMobile ? (
+          onMobileBack ? (
+            <button
+              type="button"
+              className="absolute left-1 top-2 z-20 flex h-9 w-9 items-center justify-center text-foreground transition-colors hover:text-foreground/70"
+              onClick={onMobileBack}
+              aria-label="Back"
+            >
+              <ArrowLeft className="h-4 w-4" />
+            </button>
+          ) : null
+        ) : !isSidebarOpen && !isSidebarTransitioning ? (
+          <div className="fixed left-4 top-[9.5px] z-20">
+            <SidebarToggle onToggle={toggleSidebar} />
+          </div>
+        ) : null}
+        <p className="text-sm text-muted-foreground">Loading project...</p>
+      </div>
     );
   }
 
-  return (
-    <ResizableSidebarLayout
-      isCompactLayout={isCompactLayout}
-      isOpen={isSidebarOpen}
-      mode="chat"
-      onOpenChange={setIsSidebarOpen}
-      onTransitionChange={setIsSidebarTransitioning}
-      sidebar={<Sidebar isOpen={isSidebarOpen} onToggle={toggleSidebar} />}
-      userId={userId}
-    >
+  return renderProjectLayout(
+    <>
       <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background">
-        {!isSidebarOpen && !isSidebarTransitioning ? (
+        {standaloneMobile ? (
+          onMobileBack ? (
+            <div className="absolute left-1 top-[9.5px] z-20">
+              <button
+                type="button"
+                className="flex h-9 w-9 items-center justify-center text-foreground transition-colors hover:text-foreground/70"
+                onClick={onMobileBack}
+                aria-label="Back"
+              >
+                <ArrowLeft className="h-4 w-4" />
+              </button>
+            </div>
+          ) : null
+        ) : !isSidebarOpen && !isSidebarTransitioning ? (
           <div className="fixed left-4 top-[9.5px] z-20">
             <SidebarToggle onToggle={toggleSidebar} />
           </div>
@@ -920,6 +985,6 @@ export function ProjectDetailView({ projectId }: ProjectDetailViewProps) {
         onConfirm={handleMoveSelectedConversations}
         isMoving={isBulkMoving}
       />
-    </ResizableSidebarLayout>
+    </>
   );
 }
