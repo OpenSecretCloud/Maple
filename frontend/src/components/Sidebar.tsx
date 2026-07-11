@@ -418,16 +418,7 @@ export function Sidebar({
             {/* Real empty tail so the last row sits in clear space — no overlay on hit targets */}
             <div aria-hidden className="min-h-[7.5rem] shrink-0 bg-transparent" />
           </nav>
-          {/* Fades sit over the scrollport; spacer above keeps last rows out of the bottom band */}
-          <div
-            aria-hidden
-            className={cn(
-              "pointer-events-none absolute left-0 top-0 z-[8] h-8 w-[calc(100%-10px)] max-w-full bg-gradient-to-b to-transparent",
-              !isAgentMode && isSearchVisible
-                ? "from-background/75 dark:from-background/75"
-                : "from-muted/75 dark:from-[hsl(var(--sidebar)/0.75)]"
-            )}
-          />
+          {/* Bottom scroll fade */}
           <div
             aria-hidden
             className="pointer-events-none absolute bottom-0 left-0 z-[8] h-8 w-[calc(100%-10px)] max-w-full bg-gradient-to-b from-transparent to-muted/75 dark:to-[hsl(var(--sidebar)/0.75)]"
