@@ -15,7 +15,6 @@ import { NotificationProvider } from "./contexts/NotificationContext";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import { ProxyEventListener } from "./components/ProxyEventListener";
 import { UpdateEventListener } from "./components/UpdateEventListener";
-import { TeamSeatMismatchAlert } from "./components/team/TeamSeatMismatchAlert";
 import { TTSProvider } from "./services/tts/TTSContext";
 
 const DEFAULT_OPEN_SECRET_CLIENT_ID = "ba5a14b5-d915-47b1-b7b1-afda52bc5fc6";
@@ -109,7 +108,6 @@ export default function App() {
                       <ProxyEventListener />
                       <UpdateEventListener />
                       <DeepLinkHandler />
-                      <TeamSeatMismatchAlert />
                       <InnerApp />
                     </BillingServiceProvider>
                   </TTSProvider>

@@ -1,9 +1,10 @@
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, useNavigate, useRouter } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { useOpenSecret } from "@opensecret/react";
 import { AlertDestructive } from "@/components/AlertDestructive";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Loader2 } from "lucide-react";
+import { navigateToSafeInternalRedirect } from "@/utils/internalRedirect";
 
 export const Route = createFileRoute("/verify/$code")({
   component: VerifyEmail
@@ -14,6 +15,7 @@ function VerifyEmail() {
   const [isVerifying, setIsVerifying] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const navigate = useNavigate();
+  const router = useRouter();
   const { verifyEmail, refetchUser } = useOpenSecret();
 
   useEffect(() => {
@@ -28,13 +30,7 @@ function VerifyEmail() {
           // Check for a pending redirect (e.g. team invite page)
           const pendingRedirect = sessionStorage.getItem("post_auth_redirect");
           sessionStorage.removeItem("post_auth_redirect");
-          if (
-            pendingRedirect &&
-            pendingRedirect.startsWith("/") &&
-            !pendingRedirect.startsWith("//")
-          ) {
-            navigate({ to: pendingRedirect });
-          } else {
+          if (!navigateToSafeInternalRedirect(router.history, pendingRedirect)) {
             navigate({ to: "/" });
           }
         }, 2000);
@@ -49,7 +45,7 @@ function VerifyEmail() {
       }
     }
     verify();
-  }, [code, navigate, verifyEmail, refetchUser]);
+  }, [code, navigate, verifyEmail, refetchUser, router]);
 
   if (isVerifying) {
     return (

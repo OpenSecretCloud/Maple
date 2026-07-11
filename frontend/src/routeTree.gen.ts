@@ -11,10 +11,12 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as TermsRouteImport } from './routes/terms'
 import { Route as SignupRouteImport } from './routes/signup'
+import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as RedeemRouteImport } from './routes/redeem'
 import { Route as ProofRouteImport } from './routes/proof'
 import { Route as PrivacyRouteImport } from './routes/privacy'
 import { Route as PricingRouteImport } from './routes/pricing'
+import { Route as PaymentSuccessCreditsRouteImport } from './routes/payment-success-credits'
 import { Route as PaymentSuccessRouteImport } from './routes/payment-success'
 import { Route as PaymentCanceledRouteImport } from './routes/payment-canceled'
 import { Route as PasswordResetRouteImport } from './routes/password-reset'
@@ -24,10 +26,27 @@ import { Route as DesktopAuthRouteImport } from './routes/desktop-auth'
 import { Route as AgentRouteImport } from './routes/agent'
 import { Route as AboutRouteImport } from './routes/about'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as SettingsIndexRouteImport } from './routes/settings.index'
 import { Route as VerifyCodeRouteImport } from './routes/verify.$code'
+import { Route as SettingsTeamRouteImport } from './routes/settings.team'
+import { Route as SettingsSecurityRouteImport } from './routes/settings.security'
+import { Route as SettingsPreferencesRouteImport } from './routes/settings.preferences'
+import { Route as SettingsHistoryRouteImport } from './routes/settings.history'
+import { Route as SettingsDeleteAccountRouteImport } from './routes/settings.delete-account'
+import { Route as SettingsBillingRouteImport } from './routes/settings.billing'
+import { Route as SettingsApiRouteImport } from './routes/settings.api'
+import { Route as SettingsAccountRouteImport } from './routes/settings.account'
+import { Route as SettingsAboutRouteImport } from './routes/settings.about'
 import { Route as PasswordResetConfirmRouteImport } from './routes/password-reset.confirm'
+import { Route as SettingsTeamIndexRouteImport } from './routes/settings.team.index'
+import { Route as SettingsApiIndexRouteImport } from './routes/settings.api.index'
 import { Route as TeamInviteInviteIdRouteImport } from './routes/team.invite.$inviteId'
+import { Route as SettingsTeamInviteRouteImport } from './routes/settings.team.invite'
+import { Route as SettingsApiProxyRouteImport } from './routes/settings.api.proxy'
+import { Route as SettingsApiKeysRouteImport } from './routes/settings.api.keys'
 import { Route as AuthProviderCallbackRouteImport } from './routes/auth.$provider.callback'
+import { Route as SettingsApiKeysIndexRouteImport } from './routes/settings.api.keys.index'
+import { Route as SettingsApiKeysNewRouteImport } from './routes/settings.api.keys.new'
 
 const TermsRoute = TermsRouteImport.update({
   id: '/terms',
@@ -37,6 +56,11 @@ const TermsRoute = TermsRouteImport.update({
 const SignupRoute = SignupRouteImport.update({
   id: '/signup',
   path: '/signup',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SettingsRoute = SettingsRouteImport.update({
+  id: '/settings',
+  path: '/settings',
   getParentRoute: () => rootRouteImport,
 } as any)
 const RedeemRoute = RedeemRouteImport.update({
@@ -57,6 +81,11 @@ const PrivacyRoute = PrivacyRouteImport.update({
 const PricingRoute = PricingRouteImport.update({
   id: '/pricing',
   path: '/pricing',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const PaymentSuccessCreditsRoute = PaymentSuccessCreditsRouteImport.update({
+  id: '/payment-success-credits',
+  path: '/payment-success-credits',
   getParentRoute: () => rootRouteImport,
 } as any)
 const PaymentSuccessRoute = PaymentSuccessRouteImport.update({
@@ -104,25 +133,110 @@ const IndexRoute = IndexRouteImport.update({
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const SettingsIndexRoute = SettingsIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => SettingsRoute,
+} as any)
 const VerifyCodeRoute = VerifyCodeRouteImport.update({
   id: '/verify/$code',
   path: '/verify/$code',
   getParentRoute: () => rootRouteImport,
+} as any)
+const SettingsTeamRoute = SettingsTeamRouteImport.update({
+  id: '/team',
+  path: '/team',
+  getParentRoute: () => SettingsRoute,
+} as any)
+const SettingsSecurityRoute = SettingsSecurityRouteImport.update({
+  id: '/security',
+  path: '/security',
+  getParentRoute: () => SettingsRoute,
+} as any)
+const SettingsPreferencesRoute = SettingsPreferencesRouteImport.update({
+  id: '/preferences',
+  path: '/preferences',
+  getParentRoute: () => SettingsRoute,
+} as any)
+const SettingsHistoryRoute = SettingsHistoryRouteImport.update({
+  id: '/history',
+  path: '/history',
+  getParentRoute: () => SettingsRoute,
+} as any)
+const SettingsDeleteAccountRoute = SettingsDeleteAccountRouteImport.update({
+  id: '/delete-account',
+  path: '/delete-account',
+  getParentRoute: () => SettingsRoute,
+} as any)
+const SettingsBillingRoute = SettingsBillingRouteImport.update({
+  id: '/billing',
+  path: '/billing',
+  getParentRoute: () => SettingsRoute,
+} as any)
+const SettingsApiRoute = SettingsApiRouteImport.update({
+  id: '/api',
+  path: '/api',
+  getParentRoute: () => SettingsRoute,
+} as any)
+const SettingsAccountRoute = SettingsAccountRouteImport.update({
+  id: '/account',
+  path: '/account',
+  getParentRoute: () => SettingsRoute,
+} as any)
+const SettingsAboutRoute = SettingsAboutRouteImport.update({
+  id: '/about',
+  path: '/about',
+  getParentRoute: () => SettingsRoute,
 } as any)
 const PasswordResetConfirmRoute = PasswordResetConfirmRouteImport.update({
   id: '/confirm',
   path: '/confirm',
   getParentRoute: () => PasswordResetRoute,
 } as any)
+const SettingsTeamIndexRoute = SettingsTeamIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => SettingsTeamRoute,
+} as any)
+const SettingsApiIndexRoute = SettingsApiIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => SettingsApiRoute,
+} as any)
 const TeamInviteInviteIdRoute = TeamInviteInviteIdRouteImport.update({
   id: '/team/invite/$inviteId',
   path: '/team/invite/$inviteId',
   getParentRoute: () => rootRouteImport,
 } as any)
+const SettingsTeamInviteRoute = SettingsTeamInviteRouteImport.update({
+  id: '/invite',
+  path: '/invite',
+  getParentRoute: () => SettingsTeamRoute,
+} as any)
+const SettingsApiProxyRoute = SettingsApiProxyRouteImport.update({
+  id: '/proxy',
+  path: '/proxy',
+  getParentRoute: () => SettingsApiRoute,
+} as any)
+const SettingsApiKeysRoute = SettingsApiKeysRouteImport.update({
+  id: '/keys',
+  path: '/keys',
+  getParentRoute: () => SettingsApiRoute,
+} as any)
 const AuthProviderCallbackRoute = AuthProviderCallbackRouteImport.update({
   id: '/auth/$provider/callback',
   path: '/auth/$provider/callback',
   getParentRoute: () => rootRouteImport,
+} as any)
+const SettingsApiKeysIndexRoute = SettingsApiKeysIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => SettingsApiKeysRoute,
+} as any)
+const SettingsApiKeysNewRoute = SettingsApiKeysNewRouteImport.update({
+  id: '/new',
+  path: '/new',
+  getParentRoute: () => SettingsApiKeysRoute,
 } as any)
 
 export interface FileRoutesByFullPath {
@@ -135,16 +249,35 @@ export interface FileRoutesByFullPath {
   '/password-reset': typeof PasswordResetRouteWithChildren
   '/payment-canceled': typeof PaymentCanceledRoute
   '/payment-success': typeof PaymentSuccessRoute
+  '/payment-success-credits': typeof PaymentSuccessCreditsRoute
   '/pricing': typeof PricingRoute
   '/privacy': typeof PrivacyRoute
   '/proof': typeof ProofRoute
   '/redeem': typeof RedeemRoute
+  '/settings': typeof SettingsRouteWithChildren
   '/signup': typeof SignupRoute
   '/terms': typeof TermsRoute
   '/password-reset/confirm': typeof PasswordResetConfirmRoute
+  '/settings/about': typeof SettingsAboutRoute
+  '/settings/account': typeof SettingsAccountRoute
+  '/settings/api': typeof SettingsApiRouteWithChildren
+  '/settings/billing': typeof SettingsBillingRoute
+  '/settings/delete-account': typeof SettingsDeleteAccountRoute
+  '/settings/history': typeof SettingsHistoryRoute
+  '/settings/preferences': typeof SettingsPreferencesRoute
+  '/settings/security': typeof SettingsSecurityRoute
+  '/settings/team': typeof SettingsTeamRouteWithChildren
   '/verify/$code': typeof VerifyCodeRoute
+  '/settings/': typeof SettingsIndexRoute
   '/auth/$provider/callback': typeof AuthProviderCallbackRoute
+  '/settings/api/keys': typeof SettingsApiKeysRouteWithChildren
+  '/settings/api/proxy': typeof SettingsApiProxyRoute
+  '/settings/team/invite': typeof SettingsTeamInviteRoute
   '/team/invite/$inviteId': typeof TeamInviteInviteIdRoute
+  '/settings/api/': typeof SettingsApiIndexRoute
+  '/settings/team/': typeof SettingsTeamIndexRoute
+  '/settings/api/keys/new': typeof SettingsApiKeysNewRoute
+  '/settings/api/keys/': typeof SettingsApiKeysIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -156,6 +289,7 @@ export interface FileRoutesByTo {
   '/password-reset': typeof PasswordResetRouteWithChildren
   '/payment-canceled': typeof PaymentCanceledRoute
   '/payment-success': typeof PaymentSuccessRoute
+  '/payment-success-credits': typeof PaymentSuccessCreditsRoute
   '/pricing': typeof PricingRoute
   '/privacy': typeof PrivacyRoute
   '/proof': typeof ProofRoute
@@ -163,9 +297,23 @@ export interface FileRoutesByTo {
   '/signup': typeof SignupRoute
   '/terms': typeof TermsRoute
   '/password-reset/confirm': typeof PasswordResetConfirmRoute
+  '/settings/about': typeof SettingsAboutRoute
+  '/settings/account': typeof SettingsAccountRoute
+  '/settings/billing': typeof SettingsBillingRoute
+  '/settings/delete-account': typeof SettingsDeleteAccountRoute
+  '/settings/history': typeof SettingsHistoryRoute
+  '/settings/preferences': typeof SettingsPreferencesRoute
+  '/settings/security': typeof SettingsSecurityRoute
   '/verify/$code': typeof VerifyCodeRoute
+  '/settings': typeof SettingsIndexRoute
   '/auth/$provider/callback': typeof AuthProviderCallbackRoute
+  '/settings/api/proxy': typeof SettingsApiProxyRoute
+  '/settings/team/invite': typeof SettingsTeamInviteRoute
   '/team/invite/$inviteId': typeof TeamInviteInviteIdRoute
+  '/settings/api': typeof SettingsApiIndexRoute
+  '/settings/team': typeof SettingsTeamIndexRoute
+  '/settings/api/keys/new': typeof SettingsApiKeysNewRoute
+  '/settings/api/keys': typeof SettingsApiKeysIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -178,16 +326,35 @@ export interface FileRoutesById {
   '/password-reset': typeof PasswordResetRouteWithChildren
   '/payment-canceled': typeof PaymentCanceledRoute
   '/payment-success': typeof PaymentSuccessRoute
+  '/payment-success-credits': typeof PaymentSuccessCreditsRoute
   '/pricing': typeof PricingRoute
   '/privacy': typeof PrivacyRoute
   '/proof': typeof ProofRoute
   '/redeem': typeof RedeemRoute
+  '/settings': typeof SettingsRouteWithChildren
   '/signup': typeof SignupRoute
   '/terms': typeof TermsRoute
   '/password-reset/confirm': typeof PasswordResetConfirmRoute
+  '/settings/about': typeof SettingsAboutRoute
+  '/settings/account': typeof SettingsAccountRoute
+  '/settings/api': typeof SettingsApiRouteWithChildren
+  '/settings/billing': typeof SettingsBillingRoute
+  '/settings/delete-account': typeof SettingsDeleteAccountRoute
+  '/settings/history': typeof SettingsHistoryRoute
+  '/settings/preferences': typeof SettingsPreferencesRoute
+  '/settings/security': typeof SettingsSecurityRoute
+  '/settings/team': typeof SettingsTeamRouteWithChildren
   '/verify/$code': typeof VerifyCodeRoute
+  '/settings/': typeof SettingsIndexRoute
   '/auth/$provider/callback': typeof AuthProviderCallbackRoute
+  '/settings/api/keys': typeof SettingsApiKeysRouteWithChildren
+  '/settings/api/proxy': typeof SettingsApiProxyRoute
+  '/settings/team/invite': typeof SettingsTeamInviteRoute
   '/team/invite/$inviteId': typeof TeamInviteInviteIdRoute
+  '/settings/api/': typeof SettingsApiIndexRoute
+  '/settings/team/': typeof SettingsTeamIndexRoute
+  '/settings/api/keys/new': typeof SettingsApiKeysNewRoute
+  '/settings/api/keys/': typeof SettingsApiKeysIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -201,16 +368,35 @@ export interface FileRouteTypes {
     | '/password-reset'
     | '/payment-canceled'
     | '/payment-success'
+    | '/payment-success-credits'
     | '/pricing'
     | '/privacy'
     | '/proof'
     | '/redeem'
+    | '/settings'
     | '/signup'
     | '/terms'
     | '/password-reset/confirm'
+    | '/settings/about'
+    | '/settings/account'
+    | '/settings/api'
+    | '/settings/billing'
+    | '/settings/delete-account'
+    | '/settings/history'
+    | '/settings/preferences'
+    | '/settings/security'
+    | '/settings/team'
     | '/verify/$code'
+    | '/settings/'
     | '/auth/$provider/callback'
+    | '/settings/api/keys'
+    | '/settings/api/proxy'
+    | '/settings/team/invite'
     | '/team/invite/$inviteId'
+    | '/settings/api/'
+    | '/settings/team/'
+    | '/settings/api/keys/new'
+    | '/settings/api/keys/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -222,6 +408,7 @@ export interface FileRouteTypes {
     | '/password-reset'
     | '/payment-canceled'
     | '/payment-success'
+    | '/payment-success-credits'
     | '/pricing'
     | '/privacy'
     | '/proof'
@@ -229,9 +416,23 @@ export interface FileRouteTypes {
     | '/signup'
     | '/terms'
     | '/password-reset/confirm'
+    | '/settings/about'
+    | '/settings/account'
+    | '/settings/billing'
+    | '/settings/delete-account'
+    | '/settings/history'
+    | '/settings/preferences'
+    | '/settings/security'
     | '/verify/$code'
+    | '/settings'
     | '/auth/$provider/callback'
+    | '/settings/api/proxy'
+    | '/settings/team/invite'
     | '/team/invite/$inviteId'
+    | '/settings/api'
+    | '/settings/team'
+    | '/settings/api/keys/new'
+    | '/settings/api/keys'
   id:
     | '__root__'
     | '/'
@@ -243,16 +444,35 @@ export interface FileRouteTypes {
     | '/password-reset'
     | '/payment-canceled'
     | '/payment-success'
+    | '/payment-success-credits'
     | '/pricing'
     | '/privacy'
     | '/proof'
     | '/redeem'
+    | '/settings'
     | '/signup'
     | '/terms'
     | '/password-reset/confirm'
+    | '/settings/about'
+    | '/settings/account'
+    | '/settings/api'
+    | '/settings/billing'
+    | '/settings/delete-account'
+    | '/settings/history'
+    | '/settings/preferences'
+    | '/settings/security'
+    | '/settings/team'
     | '/verify/$code'
+    | '/settings/'
     | '/auth/$provider/callback'
+    | '/settings/api/keys'
+    | '/settings/api/proxy'
+    | '/settings/team/invite'
     | '/team/invite/$inviteId'
+    | '/settings/api/'
+    | '/settings/team/'
+    | '/settings/api/keys/new'
+    | '/settings/api/keys/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -265,10 +485,12 @@ export interface RootRouteChildren {
   PasswordResetRoute: typeof PasswordResetRouteWithChildren
   PaymentCanceledRoute: typeof PaymentCanceledRoute
   PaymentSuccessRoute: typeof PaymentSuccessRoute
+  PaymentSuccessCreditsRoute: typeof PaymentSuccessCreditsRoute
   PricingRoute: typeof PricingRoute
   PrivacyRoute: typeof PrivacyRoute
   ProofRoute: typeof ProofRoute
   RedeemRoute: typeof RedeemRoute
+  SettingsRoute: typeof SettingsRouteWithChildren
   SignupRoute: typeof SignupRoute
   TermsRoute: typeof TermsRoute
   VerifyCodeRoute: typeof VerifyCodeRoute
@@ -290,6 +512,13 @@ declare module '@tanstack/react-router' {
       path: '/signup'
       fullPath: '/signup'
       preLoaderRoute: typeof SignupRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/settings': {
+      id: '/settings'
+      path: '/settings'
+      fullPath: '/settings'
+      preLoaderRoute: typeof SettingsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/redeem': {
@@ -318,6 +547,13 @@ declare module '@tanstack/react-router' {
       path: '/pricing'
       fullPath: '/pricing'
       preLoaderRoute: typeof PricingRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/payment-success-credits': {
+      id: '/payment-success-credits'
+      path: '/payment-success-credits'
+      fullPath: '/payment-success-credits'
+      preLoaderRoute: typeof PaymentSuccessCreditsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/payment-success': {
@@ -383,12 +619,82 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/settings/': {
+      id: '/settings/'
+      path: '/'
+      fullPath: '/settings/'
+      preLoaderRoute: typeof SettingsIndexRouteImport
+      parentRoute: typeof SettingsRoute
+    }
     '/verify/$code': {
       id: '/verify/$code'
       path: '/verify/$code'
       fullPath: '/verify/$code'
       preLoaderRoute: typeof VerifyCodeRouteImport
       parentRoute: typeof rootRouteImport
+    }
+    '/settings/team': {
+      id: '/settings/team'
+      path: '/team'
+      fullPath: '/settings/team'
+      preLoaderRoute: typeof SettingsTeamRouteImport
+      parentRoute: typeof SettingsRoute
+    }
+    '/settings/security': {
+      id: '/settings/security'
+      path: '/security'
+      fullPath: '/settings/security'
+      preLoaderRoute: typeof SettingsSecurityRouteImport
+      parentRoute: typeof SettingsRoute
+    }
+    '/settings/preferences': {
+      id: '/settings/preferences'
+      path: '/preferences'
+      fullPath: '/settings/preferences'
+      preLoaderRoute: typeof SettingsPreferencesRouteImport
+      parentRoute: typeof SettingsRoute
+    }
+    '/settings/history': {
+      id: '/settings/history'
+      path: '/history'
+      fullPath: '/settings/history'
+      preLoaderRoute: typeof SettingsHistoryRouteImport
+      parentRoute: typeof SettingsRoute
+    }
+    '/settings/delete-account': {
+      id: '/settings/delete-account'
+      path: '/delete-account'
+      fullPath: '/settings/delete-account'
+      preLoaderRoute: typeof SettingsDeleteAccountRouteImport
+      parentRoute: typeof SettingsRoute
+    }
+    '/settings/billing': {
+      id: '/settings/billing'
+      path: '/billing'
+      fullPath: '/settings/billing'
+      preLoaderRoute: typeof SettingsBillingRouteImport
+      parentRoute: typeof SettingsRoute
+    }
+    '/settings/api': {
+      id: '/settings/api'
+      path: '/api'
+      fullPath: '/settings/api'
+      preLoaderRoute: typeof SettingsApiRouteImport
+      parentRoute: typeof SettingsRoute
+    }
+    '/settings/account': {
+      id: '/settings/account'
+      path: '/account'
+      fullPath: '/settings/account'
+      preLoaderRoute: typeof SettingsAccountRouteImport
+      parentRoute: typeof SettingsRoute
+    }
+    '/settings/about': {
+      id: '/settings/about'
+      path: '/about'
+      fullPath: '/settings/about'
+      preLoaderRoute: typeof SettingsAboutRouteImport
+      parentRoute: typeof SettingsRoute
     }
     '/password-reset/confirm': {
       id: '/password-reset/confirm'
@@ -397,6 +703,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof PasswordResetConfirmRouteImport
       parentRoute: typeof PasswordResetRoute
     }
+    '/settings/team/': {
+      id: '/settings/team/'
+      path: '/'
+      fullPath: '/settings/team/'
+      preLoaderRoute: typeof SettingsTeamIndexRouteImport
+      parentRoute: typeof SettingsTeamRoute
+    }
+    '/settings/api/': {
+      id: '/settings/api/'
+      path: '/'
+      fullPath: '/settings/api/'
+      preLoaderRoute: typeof SettingsApiIndexRouteImport
+      parentRoute: typeof SettingsApiRoute
+    }
     '/team/invite/$inviteId': {
       id: '/team/invite/$inviteId'
       path: '/team/invite/$inviteId'
@@ -404,12 +724,47 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof TeamInviteInviteIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/settings/team/invite': {
+      id: '/settings/team/invite'
+      path: '/invite'
+      fullPath: '/settings/team/invite'
+      preLoaderRoute: typeof SettingsTeamInviteRouteImport
+      parentRoute: typeof SettingsTeamRoute
+    }
+    '/settings/api/proxy': {
+      id: '/settings/api/proxy'
+      path: '/proxy'
+      fullPath: '/settings/api/proxy'
+      preLoaderRoute: typeof SettingsApiProxyRouteImport
+      parentRoute: typeof SettingsApiRoute
+    }
+    '/settings/api/keys': {
+      id: '/settings/api/keys'
+      path: '/keys'
+      fullPath: '/settings/api/keys'
+      preLoaderRoute: typeof SettingsApiKeysRouteImport
+      parentRoute: typeof SettingsApiRoute
+    }
     '/auth/$provider/callback': {
       id: '/auth/$provider/callback'
       path: '/auth/$provider/callback'
       fullPath: '/auth/$provider/callback'
       preLoaderRoute: typeof AuthProviderCallbackRouteImport
       parentRoute: typeof rootRouteImport
+    }
+    '/settings/api/keys/': {
+      id: '/settings/api/keys/'
+      path: '/'
+      fullPath: '/settings/api/keys/'
+      preLoaderRoute: typeof SettingsApiKeysIndexRouteImport
+      parentRoute: typeof SettingsApiKeysRoute
+    }
+    '/settings/api/keys/new': {
+      id: '/settings/api/keys/new'
+      path: '/new'
+      fullPath: '/settings/api/keys/new'
+      preLoaderRoute: typeof SettingsApiKeysNewRouteImport
+      parentRoute: typeof SettingsApiKeysRoute
     }
   }
 }
@@ -426,6 +781,80 @@ const PasswordResetRouteWithChildren = PasswordResetRoute._addFileChildren(
   PasswordResetRouteChildren,
 )
 
+interface SettingsApiKeysRouteChildren {
+  SettingsApiKeysNewRoute: typeof SettingsApiKeysNewRoute
+  SettingsApiKeysIndexRoute: typeof SettingsApiKeysIndexRoute
+}
+
+const SettingsApiKeysRouteChildren: SettingsApiKeysRouteChildren = {
+  SettingsApiKeysNewRoute: SettingsApiKeysNewRoute,
+  SettingsApiKeysIndexRoute: SettingsApiKeysIndexRoute,
+}
+
+const SettingsApiKeysRouteWithChildren = SettingsApiKeysRoute._addFileChildren(
+  SettingsApiKeysRouteChildren,
+)
+
+interface SettingsApiRouteChildren {
+  SettingsApiKeysRoute: typeof SettingsApiKeysRouteWithChildren
+  SettingsApiProxyRoute: typeof SettingsApiProxyRoute
+  SettingsApiIndexRoute: typeof SettingsApiIndexRoute
+}
+
+const SettingsApiRouteChildren: SettingsApiRouteChildren = {
+  SettingsApiKeysRoute: SettingsApiKeysRouteWithChildren,
+  SettingsApiProxyRoute: SettingsApiProxyRoute,
+  SettingsApiIndexRoute: SettingsApiIndexRoute,
+}
+
+const SettingsApiRouteWithChildren = SettingsApiRoute._addFileChildren(
+  SettingsApiRouteChildren,
+)
+
+interface SettingsTeamRouteChildren {
+  SettingsTeamInviteRoute: typeof SettingsTeamInviteRoute
+  SettingsTeamIndexRoute: typeof SettingsTeamIndexRoute
+}
+
+const SettingsTeamRouteChildren: SettingsTeamRouteChildren = {
+  SettingsTeamInviteRoute: SettingsTeamInviteRoute,
+  SettingsTeamIndexRoute: SettingsTeamIndexRoute,
+}
+
+const SettingsTeamRouteWithChildren = SettingsTeamRoute._addFileChildren(
+  SettingsTeamRouteChildren,
+)
+
+interface SettingsRouteChildren {
+  SettingsAboutRoute: typeof SettingsAboutRoute
+  SettingsAccountRoute: typeof SettingsAccountRoute
+  SettingsApiRoute: typeof SettingsApiRouteWithChildren
+  SettingsBillingRoute: typeof SettingsBillingRoute
+  SettingsDeleteAccountRoute: typeof SettingsDeleteAccountRoute
+  SettingsHistoryRoute: typeof SettingsHistoryRoute
+  SettingsPreferencesRoute: typeof SettingsPreferencesRoute
+  SettingsSecurityRoute: typeof SettingsSecurityRoute
+  SettingsTeamRoute: typeof SettingsTeamRouteWithChildren
+  SettingsIndexRoute: typeof SettingsIndexRoute
+}
+
+const SettingsRouteChildren: SettingsRouteChildren = {
+  SettingsAboutRoute: SettingsAboutRoute,
+  SettingsAccountRoute: SettingsAccountRoute,
+  SettingsApiRoute: SettingsApiRouteWithChildren,
+  SettingsBillingRoute: SettingsBillingRoute,
+  SettingsDeleteAccountRoute: SettingsDeleteAccountRoute,
+  SettingsHistoryRoute: SettingsHistoryRoute,
+  SettingsPreferencesRoute: SettingsPreferencesRoute,
+  SettingsSecurityRoute: SettingsSecurityRoute,
+  SettingsTeamRoute: SettingsTeamRouteWithChildren,
+  SettingsIndexRoute: SettingsIndexRoute,
+}
+
+const SettingsRouteWithChildren = SettingsRoute._addFileChildren(
+  SettingsRouteChildren,
+)
+
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AboutRoute: AboutRoute,
@@ -436,10 +865,12 @@ const rootRouteChildren: RootRouteChildren = {
   PasswordResetRoute: PasswordResetRouteWithChildren,
   PaymentCanceledRoute: PaymentCanceledRoute,
   PaymentSuccessRoute: PaymentSuccessRoute,
+  PaymentSuccessCreditsRoute: PaymentSuccessCreditsRoute,
   PricingRoute: PricingRoute,
   PrivacyRoute: PrivacyRoute,
   ProofRoute: ProofRoute,
   RedeemRoute: RedeemRoute,
+  SettingsRoute: SettingsRouteWithChildren,
   SignupRoute: SignupRoute,
   TermsRoute: TermsRoute,
   VerifyCodeRoute: VerifyCodeRoute,

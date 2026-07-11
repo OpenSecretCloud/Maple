@@ -1,4 +1,4 @@
-import { createFileRoute, useNavigate, Link } from "@tanstack/react-router";
+import { createFileRoute, useNavigate, useRouter, Link } from "@tanstack/react-router";
 import { useEffect, useState, useRef } from "react";
 import { useOpenSecret } from "@opensecret/react";
 import { AlertDestructive } from "@/components/AlertDestructive";
@@ -6,6 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { getBillingService } from "@/billing/billingService";
+import { getSafeInternalRedirect, navigateToSafeInternalRedirect } from "@/utils/internalRedirect";
 
 export const Route = createFileRoute("/auth/$provider/callback")({
   component: OAuthCallback
@@ -30,6 +31,7 @@ function OAuthCallback() {
   const [error, setError] = useState<string | null>(null);
   const [nativeRedirectUrl, setNativeRedirectUrl] = useState<string | null>(null);
   const navigate = useNavigate();
+  const router = useRouter();
   const { handleGitHubCallback, handleGoogleCallback, handleAppleCallback } = useOpenSecret();
   const processedRef = useRef(false);
 
@@ -52,6 +54,16 @@ function OAuthCallback() {
         deepLinkUrl += `&refresh_token=${encodeURIComponent(refreshToken)}`;
       }
 
+      const selectedPlan = sessionStorage.getItem("selected_plan");
+      sessionStorage.removeItem("selected_plan");
+      const postAuthRedirect = sessionStorage.getItem("post_auth_redirect");
+      sessionStorage.removeItem("post_auth_redirect");
+      const safePostAuthRedirect = getSafeInternalRedirect(postAuthRedirect);
+
+      if (!selectedPlan && safePostAuthRedirect) {
+        deepLinkUrl += `&next=${encodeURIComponent(safePostAuthRedirect)}`;
+      }
+
       // Store the URL in state so we can show a manual open button as fallback
       setNativeRedirectUrl(deepLinkUrl);
 
@@ -69,10 +81,7 @@ function OAuthCallback() {
 
     const postAuthRedirect = sessionStorage.getItem("post_auth_redirect");
     sessionStorage.removeItem("post_auth_redirect");
-    const safePostAuthRedirect =
-      postAuthRedirect && postAuthRedirect.startsWith("/") && !postAuthRedirect.startsWith("//")
-        ? postAuthRedirect
-        : null;
+    const safePostAuthRedirect = getSafeInternalRedirect(postAuthRedirect);
 
     setTimeout(() => {
       if (selectedPlan) {
@@ -81,7 +90,7 @@ function OAuthCallback() {
           search: { selected_plan: selectedPlan }
         });
       } else if (safePostAuthRedirect) {
-        navigate({ to: safePostAuthRedirect });
+        navigateToSafeInternalRedirect(router.history, safePostAuthRedirect);
       } else {
         navigate({ to: "/" });
       }
@@ -164,7 +173,7 @@ function OAuthCallback() {
     };
 
     processCallback();
-  }, [handleGitHubCallback, handleGoogleCallback, handleAppleCallback, navigate, provider]);
+  }, [handleGitHubCallback, handleGoogleCallback, handleAppleCallback, navigate, provider, router]);
 
   // After auth completes for a native app flow, show a button to open the app
   if (nativeRedirectUrl) {

@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { isTauri } from "@/utils/platform";
 import { listen } from "@tauri-apps/api/event";
+import { getSafeInternalRedirect } from "@/utils/internalRedirect";
 
 // For direct deep link handling, we'll listen to our custom event
 // If we had the types installed, we would use:
@@ -18,7 +19,7 @@ export function DeepLinkHandler() {
           // Listen for the custom event we emit from Rust
           unlisten = await listen<string>("deep-link-received", (event) => {
             const url = event.payload;
-            console.log("[Deep Link] Received URL:", url);
+            console.log("[Deep Link] Received callback");
 
             try {
               // Parse the URL to extract parameters
@@ -32,6 +33,8 @@ export function DeepLinkHandler() {
                 // Handle auth deep links
                 const accessToken = urlObj.searchParams.get("access_token");
                 const refreshToken = urlObj.searchParams.get("refresh_token");
+                const next = urlObj.searchParams.get("next");
+                const safeNext = getSafeInternalRedirect(next) ?? "/";
 
                 if (accessToken && refreshToken) {
                   console.log("[Deep Link] Auth tokens received");
@@ -41,22 +44,28 @@ export function DeepLinkHandler() {
                   localStorage.setItem("refresh_token", refreshToken);
 
                   // Refresh the app state to reflect the logged-in status
-                  window.location.href = "/"; // Reload the app
+                  window.location.href = safeNext; // Reload the app at the requested internal route
                 } else {
                   console.error("[Deep Link] Missing tokens in auth deep link");
                 }
               } else if (
                 firstPathPart === "payment" ||
                 firstPathPart === "payment-success" ||
+                firstPathPart === "payment-success-credits" ||
                 firstPathPart === "payment-canceled" ||
                 urlObj.searchParams.has("payment_success") ||
-                urlObj.searchParams.has("success")
+                urlObj.searchParams.has("success") ||
+                urlObj.searchParams.has("canceled") ||
+                urlObj.searchParams.has("payment_canceled")
               ) {
                 // Handle payment deep links from various sources
                 const isSuccess =
                   firstPathPart === "payment-success" ||
+                  firstPathPart === "payment-success-credits" ||
                   urlObj.searchParams.get("success") === "true" ||
                   urlObj.searchParams.get("payment_success") === "true";
+
+                const isCreditSuccess = firstPathPart === "payment-success-credits";
 
                 const isCanceled =
                   firstPathPart === "payment-canceled" ||
@@ -71,7 +80,11 @@ export function DeepLinkHandler() {
                 });
 
                 // Use window.location instead of navigate
-                if (isSuccess) {
+                if (isCreditSuccess) {
+                  // Keep the established root callback contract; the home route bridges it into
+                  // the dedicated API credits settings page.
+                  window.location.href = "/?credits_success=true";
+                } else if (isSuccess) {
                   // Navigate to the success page or show a success message
                   window.location.href = "/pricing?success=true";
                 } else if (isCanceled) {

@@ -8,7 +8,7 @@ import {
 } from "@/components/ui/dialog";
 import { useQueryClient } from "@tanstack/react-query";
 import { useOpenSecret } from "@opensecret/react";
-import { useNavigate } from "@tanstack/react-router";
+import { useRouter } from "@tanstack/react-router";
 import { useState, useEffect } from "react";
 import { Loader2, CheckCircle, LogOut } from "lucide-react";
 import { Input } from "./ui/input";
@@ -16,11 +16,12 @@ import { Label } from "./ui/label";
 import { AlertDestructive } from "./AlertDestructive";
 import { stopAgentRuntimeForUser } from "@/services/agentRuntimeService";
 import { getBillingService } from "@/billing/billingService";
+import { navigateToSafeInternalRedirect } from "@/utils/internalRedirect";
 
 export function VerificationModal() {
   const os = useOpenSecret();
   const queryClient = useQueryClient();
-  const navigate = useNavigate();
+  const router = useRouter();
   const [isOpen, setIsOpen] = useState(() => {
     if (!os.auth.user) return false;
     // Skip email verification for guest users and in local development
@@ -90,9 +91,7 @@ export function VerificationModal() {
       // Check for a pending redirect (e.g. team invite page) after email verification
       const pendingRedirect = sessionStorage.getItem("post_auth_redirect");
       sessionStorage.removeItem("post_auth_redirect");
-      if (pendingRedirect && pendingRedirect.startsWith("/") && !pendingRedirect.startsWith("//")) {
-        navigate({ to: pendingRedirect });
-      }
+      navigateToSafeInternalRedirect(router.history, pendingRedirect);
     } catch (err) {
       if (err instanceof Error) {
         setError(err.message);

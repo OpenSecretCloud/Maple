@@ -47,7 +47,8 @@ fn handle_desktop_run_event(app_handle: &tauri::AppHandle, event: tauri::RunEven
 
 // This handles incoming deep links
 fn handle_deep_link_event(url: &str, app: &tauri::AppHandle) {
-    log::info!("[Deep Link] Received: {url}");
+    // OAuth callbacks carry bearer tokens in the query string, so never log the raw URL.
+    log::info!("[Deep Link] Received callback");
     // Forward the URL to the frontend
     match app.emit_to("main", "deep-link-received", url.to_string()) {
         Ok(_) => log::info!("[Deep Link] Event emitted successfully"),
@@ -59,8 +60,9 @@ fn handle_deep_link_event(url: &str, app: &tauri::AppHandle) {
 pub fn run() {
     #[cfg(desktop)]
     let app = tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
-            log::info!("Single instance detected: {}, {argv:?}, {cwd}", app.package_info().name);
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            // argv can contain a custom-scheme callback URL with OAuth bearer tokens.
+            log::info!("Single instance detected for {}", app.package_info().name);
         }))
         .plugin(tauri_plugin_log::Builder::default().level(log::LevelFilter::Info).build())
         .plugin(tauri_plugin_deep_link::init())

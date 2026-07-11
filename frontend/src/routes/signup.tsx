@@ -1,4 +1,4 @@
-import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate, useRouter } from "@tanstack/react-router";
 import { useOpenSecret, type LoginResponse } from "@opensecret/react";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -22,6 +22,7 @@ import { GuestCredentialsDialog } from "@/components/GuestCredentialsDialog";
 import { UserCircle } from "lucide-react";
 import { appUrl } from "@/config/domains";
 import { useRouteMeta } from "@/utils/routeMeta";
+import { getSafeInternalRedirect, navigateToSafeInternalRedirect } from "@/utils/internalRedirect";
 
 type SignupSearchParams = {
   next?: string;
@@ -32,7 +33,7 @@ type SignupSearchParams = {
 export const Route = createFileRoute("/signup")({
   component: SignupPage,
   validateSearch: (search: Record<string, unknown>): SignupSearchParams => ({
-    next: typeof search.next === "string" ? search.next : undefined,
+    next: getSafeInternalRedirect(search.next),
     selected_plan: typeof search.selected_plan === "string" ? search.selected_plan : undefined,
     code: typeof search.code === "string" ? search.code : undefined
   })
@@ -49,6 +50,7 @@ function SignupPage() {
   });
 
   const navigate = useNavigate();
+  const router = useRouter();
   const os = useOpenSecret();
   const { next, selected_plan, code } = Route.useSearch();
   const [signUpMethod, setSignUpMethod] = useState<SignUpMethod>(null);
@@ -76,10 +78,12 @@ function SignupPage() {
           search: { code }
         });
       } else {
-        navigate({ to: next || "/" });
+        if (!navigateToSafeInternalRedirect(router.history, next)) {
+          navigate({ to: "/" });
+        }
       }
     }
-  }, [os.auth.user, navigate, next, selected_plan, code, showGuestCredentials]);
+  }, [os.auth.user, navigate, next, selected_plan, code, showGuestCredentials, router]);
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -109,7 +113,9 @@ function SignupPage() {
             search: { code }
           });
         } else {
-          navigate({ to: next || "/" });
+          if (!navigateToSafeInternalRedirect(router.history, next)) {
+            navigate({ to: "/" });
+          }
         }
         window.scrollTo(0, 0);
       }, 100);
@@ -143,6 +149,10 @@ function SignupPage() {
           desktopAuthUrl += `&code=${encodeURIComponent(code)}`;
         }
 
+        if (next) {
+          desktopAuthUrl += `&next=${encodeURIComponent(next)}`;
+        }
+
         // Use the opener plugin by directly invoking the command
         // This works for both desktop and mobile (iOS/Android)
         console.log("[OAuth] Opening URL in external browser:", desktopAuthUrl);
@@ -153,13 +163,15 @@ function SignupPage() {
       } else {
         // Web flow remains unchanged
         const { auth_url } = await os.initiateGitHubAuth("");
+        sessionStorage.removeItem("selected_plan");
         if (selected_plan) {
           sessionStorage.setItem("selected_plan", selected_plan);
         }
         if (code) {
           sessionStorage.setItem("redeem_code", code);
         }
-        if (next && next.startsWith("/") && !next.startsWith("//")) {
+        sessionStorage.removeItem("post_auth_redirect");
+        if (next) {
           sessionStorage.setItem("post_auth_redirect", next);
         }
         window.location.href = auth_url;
@@ -188,6 +200,10 @@ function SignupPage() {
           desktopAuthUrl += `&code=${encodeURIComponent(code)}`;
         }
 
+        if (next) {
+          desktopAuthUrl += `&next=${encodeURIComponent(next)}`;
+        }
+
         // Use the opener plugin by directly invoking the command
         // This works for both desktop and mobile (iOS/Android)
         console.log("[OAuth] Opening URL in external browser:", desktopAuthUrl);
@@ -198,13 +214,15 @@ function SignupPage() {
       } else {
         // Web flow remains unchanged
         const { auth_url } = await os.initiateGoogleAuth("");
+        sessionStorage.removeItem("selected_plan");
         if (selected_plan) {
           sessionStorage.setItem("selected_plan", selected_plan);
         }
         if (code) {
           sessionStorage.setItem("redeem_code", code);
         }
-        if (next && next.startsWith("/") && !next.startsWith("//")) {
+        sessionStorage.removeItem("post_auth_redirect");
+        if (next) {
           sessionStorage.setItem("post_auth_redirect", next);
         }
         window.location.href = auth_url;
@@ -329,7 +347,9 @@ function SignupPage() {
                 search: { code }
               });
             } else {
-              navigate({ to: next || "/" });
+              if (!navigateToSafeInternalRedirect(router.history, next)) {
+                navigate({ to: "/" });
+              }
             }
           } catch (backendError) {
             console.error("[OAuth] Backend processing failed:", backendError);
@@ -359,6 +379,10 @@ function SignupPage() {
         // If there's a redemption code, add it to the URL
         if (code) {
           desktopAuthUrl += `&code=${encodeURIComponent(code)}`;
+        }
+
+        if (next) {
+          desktopAuthUrl += `&next=${encodeURIComponent(next)}`;
         }
 
         // Use the opener plugin by directly invoking the command
@@ -423,7 +447,9 @@ function SignupPage() {
               if (plan) {
                 navigate({ to: "/pricing", search: { selected_plan: plan } });
               } else {
-                navigate({ to: next || "/" });
+                if (!navigateToSafeInternalRedirect(router.history, next)) {
+                  navigate({ to: "/" });
+                }
               }
             }}
             selectedPlan={selected_plan}

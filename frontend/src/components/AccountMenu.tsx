@@ -1,578 +1,70 @@
-import {
-  LogOut,
-  Trash,
-  User,
-  CreditCard,
-  ArrowUpCircle,
-  Mail,
-  Users,
-  AlertCircle,
-  Key,
-  Info,
-  Shield,
-  FileText,
-  ChevronLeft
-} from "lucide-react";
-import { isMobile, isTauri, isIOS } from "@/utils/platform";
-
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuGroup,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger
-} from "@/components/ui/dropdown-menu";
-import { useOpenSecret } from "@opensecret/react";
-import { useNavigate, useRouter } from "@tanstack/react-router";
-import { Dialog, DialogTrigger } from "./ui/dialog";
-import { AccountDialog } from "./AccountDialog";
-import { CreditUsage } from "./CreditUsage";
-import { Badge } from "@/components/ui/badge";
-
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger
-} from "@/components/ui/alert-dialog";
-import { useLocalState } from "@/state/useLocalState";
-import { useQueryClient, useQuery } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
+import { useOpenSecret } from "@opensecret/react";
+import { AlertCircle, Settings } from "lucide-react";
 import { getBillingService } from "@/billing/billingService";
-import { useState } from "react";
+import { CreditUsage } from "@/components/CreditUsage";
+import { useCompactSettingsLayout } from "@/components/settings/useCompactSettingsLayout";
+import { useLocalState } from "@/state/useLocalState";
 import type { TeamStatus } from "@/types/team";
-import { Alert, AlertDescription } from "@/components/ui/alert";
-import { TeamManagementDialog } from "@/components/team/TeamManagementDialog";
-import { ApiKeyManagementDialog } from "@/components/apikeys/ApiKeyManagementDialog";
 import { getTeamSeatMismatch } from "@/utils/teamSeats";
-import packageJson from "../../package.json";
-import { SIDEBAR_ACCOUNT_MENU_WIDTH_CLASS, SIDEBAR_LAYOUT_STYLE } from "@/constants/layout";
-import { clearAgentHistoryForUser, stopAgentRuntimeForUser } from "@/services/agentRuntimeService";
-
-function ConfirmDeleteDialog({ onDeleted }: { onDeleted: () => void }) {
-  const os = useOpenSecret();
-  const queryClient = useQueryClient();
-  const navigate = useNavigate();
-  const [deleteError, setDeleteError] = useState<string | null>(null);
-  const [isDeleting, setIsDeleting] = useState(false);
-
-  async function handleDeleteHistory() {
-    setDeleteError(null);
-    setIsDeleting(true);
-    let operationBlock: Awaited<ReturnType<typeof clearAgentHistoryForUser>> | null = null;
-    try {
-      const conversations = await os.listConversations({ limit: 1 });
-      if (conversations.data && conversations.data.length > 0) {
-        await os.deleteConversations();
-        console.log("Server conversations deleted");
-      }
-
-      operationBlock = await clearAgentHistoryForUser(os.auth.user?.user.id);
-
-      // Refresh UI only after both hosted and local Agent Mode history are gone.
-      queryClient.invalidateQueries({ queryKey: ["conversations"] });
-      queryClient.invalidateQueries({ queryKey: ["pinnedConversations"] });
-      queryClient.invalidateQueries({ queryKey: ["projectConversations"] });
-      queryClient.invalidateQueries({ queryKey: ["conversationProjects"] });
-      queryClient.invalidateQueries({ queryKey: ["conversationProject"] });
-      onDeleted();
-      try {
-        await navigate({ to: "/" });
-      } catch (navigationError) {
-        console.error("Chat history was deleted, but navigation failed:", navigationError);
-        window.location.href = "/";
-        return;
-      }
-      window.dispatchEvent(new CustomEvent("newchat", { detail: { projectId: null } }));
-    } catch (e) {
-      console.error("Error deleting chat history:", e);
-      setDeleteError("Maple couldn't delete all chat history. Please try again.");
-    } finally {
-      operationBlock?.release();
-      setIsDeleting(false);
-    }
-  }
-
-  return (
-    <AlertDialogContent>
-      <AlertDialogHeader>
-        <AlertDialogTitle>Are you sure?</AlertDialogTitle>
-        <AlertDialogDescription>This will delete your entire chat history.</AlertDialogDescription>
-      </AlertDialogHeader>
-      {deleteError ? (
-        <Alert variant="destructive">
-          <AlertCircle className="h-4 w-4" />
-          <AlertDescription>{deleteError}</AlertDescription>
-        </Alert>
-      ) : null}
-      <AlertDialogFooter>
-        <AlertDialogCancel disabled={isDeleting}>Cancel</AlertDialogCancel>
-        <AlertDialogAction
-          disabled={isDeleting}
-          onClick={(event) => {
-            event.preventDefault();
-            void handleDeleteHistory();
-          }}
-        >
-          {isDeleting ? "Deleting..." : "Delete"}
-        </AlertDialogAction>
-      </AlertDialogFooter>
-    </AlertDialogContent>
-  );
-}
 
 export function AccountMenu() {
   const os = useOpenSecret();
-  const queryClient = useQueryClient();
-  const router = useRouter();
   const { billingStatus, setBillingStatus } = useLocalState();
-  const [isPortalLoading, setIsPortalLoading] = useState(false);
-  const [isTeamDialogOpen, setIsTeamDialogOpen] = useState(false);
-  const [isApiKeyDialogOpen, setIsApiKeyDialogOpen] = useState(false);
-  const [isDeleteHistoryOpen, setIsDeleteHistoryOpen] = useState(false);
-  const [isSigningOut, setIsSigningOut] = useState(false);
-  const [showAboutMenu, setShowAboutMenu] = useState(false);
-  const [portalError, setPortalError] = useState<string | null>(null);
-
-  const hasStripeAccount = !!billingStatus?.stripe_customer_id;
-  const productName = billingStatus?.product_name || "";
-  const isPro = productName.toLowerCase().includes("pro");
-  const isMax = productName.toLowerCase().includes("max");
-  const isStarter = productName.toLowerCase().includes("starter");
-  const isTeamPlan = productName.toLowerCase().includes("team");
-  const showUpgrade = !isMax && !isTeamPlan;
-  const showManage = (isPro || isMax || isStarter || isTeamPlan) && hasStripeAccount;
+  const isCompactSettingsLayout = useCompactSettingsLayout();
+  const isTeamPlan = billingStatus?.product_name?.toLowerCase().includes("team") ?? false;
 
   // Keep the shared sidebar billing badge current on every authenticated route,
   // including Agent Mode. Some routes do not own a route-level billing refresh.
   useQuery({
     queryKey: ["billingStatus"],
     queryFn: async () => {
-      const billingService = getBillingService();
-      const status = await billingService.getBillingStatus();
+      const status = await getBillingService().getBillingStatus();
       setBillingStatus(status);
       return status;
     },
     enabled: !!os.auth.user
   });
 
-  // Fetch team status if user has team plan
   const { data: teamStatus } = useQuery<TeamStatus>({
     queryKey: ["teamStatus"],
-    queryFn: async () => {
-      const billingService = getBillingService();
-      return await billingService.getTeamStatus();
-    },
+    queryFn: () => getBillingService().getTeamStatus(),
     enabled: isTeamPlan && !!os.auth.user && !!billingStatus
   });
 
-  // Fetch products with version check for iOS to determine API Management availability
-  const isIOSPlatform = isIOS();
-  const { data: products } = useQuery({
-    queryKey: ["products-version-check", isIOSPlatform],
-    queryFn: async () => {
-      try {
-        const billingService = getBillingService();
-        // Send version for iOS builds (App Store restrictions)
-        if (isIOSPlatform) {
-          const version = `v${packageJson.version}`;
-          return await billingService.getProducts(version);
-        }
-        return await billingService.getProducts();
-      } catch (error) {
-        console.error("Error fetching products for version check:", error);
-        return null;
-      }
-    },
-    enabled: isIOSPlatform
-  });
-
-  // Show alert badge if user has team plan but hasn't created team yet
-  const showTeamSetupAlert =
-    isTeamPlan && teamStatus?.has_team_subscription && !teamStatus?.team_created;
+  const needsTeamSetup = !!teamStatus?.has_team_subscription && teamStatus.team_created === false;
   const teamSeatMismatch = getTeamSeatMismatch(teamStatus);
-  const showTeamAttentionAlert = showTeamSetupAlert || !!teamSeatMismatch;
-
-  // Determine if API Management should be shown
-  // On desktop/web/Android: always show
-  // On iOS only: only show if version is approved (at least one product is available)
-  const showApiManagement = (() => {
-    if (!isIOSPlatform) {
-      return true; // Always show on desktop/web/Android
-    }
-    // On iOS, check if version is approved
-    // If products is null/undefined, default to false (hide until we know)
-    if (!products) {
-      return false;
-    }
-    // Show if at least one product is available (meaning version is approved)
-    return products.some((product) => product.is_available !== false);
-  })();
-
-  const handleManageSubscription = async () => {
-    if (!hasStripeAccount) return;
-
-    try {
-      setIsPortalLoading(true);
-      setPortalError(null);
-      const billingService = getBillingService();
-      const url = await billingService.getPortalUrl();
-
-      // Check if we're on any Tauri platform (mobile or desktop)
-      if (isTauri()) {
-        console.log(
-          "[Billing] Tauri platform detected, using opener plugin to launch external browser for portal"
-        );
-
-        const { invoke } = await import("@tauri-apps/api/core");
-
-        // Use the opener plugin directly for all Tauri platforms
-        await invoke("plugin:opener|open_url", { url })
-          .then(() => {
-            console.log("[Billing] Successfully opened portal URL in external browser");
-          })
-          .catch((err: Error) => {
-            console.error("[Billing] Failed to open external browser:", err);
-            if (isMobile()) {
-              alert("Failed to open browser. Please try again.");
-            } else {
-              // Fallback to window.open on desktop
-              window.open(url, "_blank");
-            }
-          });
-
-        // Add a small delay to ensure the browser has time to open
-        await new Promise((resolve) => setTimeout(resolve, 300));
-        return;
-      }
-
-      // Default browser opening for web platforms
-      window.open(url, "_blank");
-    } catch (error) {
-      console.error("Error fetching portal URL:", error);
-      setPortalError(
-        "Unable to open subscription management. Please try again or contact support@trymaple.ai."
-      );
-    } finally {
-      setIsPortalLoading(false);
-    }
-  };
-
-  const handleOpenExternalUrl = async (url: string) => {
-    try {
-      // Check if we're on any Tauri platform (mobile or desktop)
-      const isInTauri = isTauri();
-
-      if (isInTauri) {
-        const { invoke } = await import("@tauri-apps/api/core");
-        await invoke("plugin:opener|open_url", { url })
-          .then(() => {
-            console.log("[External Link] Successfully opened URL with Tauri opener");
-          })
-          .catch((err: Error) => {
-            console.error("[External Link] Failed to open with Tauri opener:", err);
-            // Fallback to window.open on desktop (may work), alert on mobile
-            if (isMobile()) {
-              alert("Failed to open link. Please try again.");
-            } else {
-              window.open(url, "_blank", "noopener,noreferrer");
-            }
-          });
-      } else {
-        // Default browser opening for web platform
-        window.open(url, "_blank", "noopener,noreferrer");
-      }
-    } catch (error) {
-      console.error("Error opening external URL:", error);
-      // Fallback to window.open
-      window.open(url, "_blank", "noopener,noreferrer");
-    }
-  };
-
-  async function signOut() {
-    setPortalError(null);
-    setIsSigningOut(true);
-    let operationBlock: Awaited<ReturnType<typeof stopAgentRuntimeForUser>> | null = null;
-    let signedOut = false;
-
-    // Never sign out while this account may still have tools executing.
-    try {
-      operationBlock = await stopAgentRuntimeForUser(os.auth.user?.user.id);
-    } catch (error) {
-      console.error("Error stopping Agent Mode:", error);
-      setPortalError("Maple couldn't stop Agent Mode. Please try logging out again.");
-      setIsSigningOut(false);
-      return;
-    }
-
-    try {
-      // Credential reset is a required part of logout.
-      const { proxyService } = await import("@/services/proxyService");
-      await proxyService.stopAndResetProxy(os.auth.user?.user.id, os.deleteApiKey);
-
-      // Try to clear billing token first
-      try {
-        getBillingService().clearToken();
-      } catch (error) {
-        console.error("Error clearing billing token:", error);
-        // Fallback to direct session storage removal if billing service fails
-        sessionStorage.removeItem("maple_billing_token");
-      }
-
-      // Sign out from OpenSecret
-      await os.signOut();
-      signedOut = true;
-      queryClient.clear();
-
-      // Navigate after everything is done
-      await router.invalidate();
-      await router.navigate({ to: "/" });
-    } catch (error) {
-      console.error("Error during sign out:", error);
-      if (signedOut) {
-        window.location.href = "/";
-        return;
-      }
-      setPortalError(
-        "Maple couldn't securely reset Agent Mode or finish logging out. Please try again."
-      );
-    } finally {
-      if (!signedOut) {
-        operationBlock.release();
-        setIsSigningOut(false);
-      } else {
-        operationBlock.retainUntilNextSession();
-      }
-    }
-  }
+  const attentionLabel = teamSeatMismatch
+    ? "Team usage paused"
+    : needsTeamSetup
+      ? "Team setup required"
+      : undefined;
 
   return (
-    <div className="w-full">
-      <AlertDialog open={isDeleteHistoryOpen} onOpenChange={setIsDeleteHistoryOpen}>
-        <Dialog>
-          <DropdownMenu onOpenChange={(open) => !open && setShowAboutMenu(false)}>
-            <div className="flex w-full max-w-full items-end gap-2">
-              <div className="flex shrink-0 justify-start">
-                <DropdownMenuTrigger asChild>
-                  <button
-                    type="button"
-                    aria-label="Open account menu"
-                    className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[hsl(var(--sidebar-chrome))] text-[hsl(var(--on-sidebar-chrome))] shadow-none ring-0 transition-colors hover:bg-[hsl(var(--sidebar-chrome-hover))]"
-                  >
-                    <User className="h-4 w-4" />
-                    {showTeamAttentionAlert && (
-                      <AlertCircle
-                        className={`absolute -right-1 -top-1 h-4 w-4 rounded-full bg-background ${
-                          teamSeatMismatch ? "text-destructive" : "text-maple-warning"
-                        }`}
-                      />
-                    )}
-                  </button>
-                </DropdownMenuTrigger>
-              </div>
-              <Link
-                to="/pricing"
-                className="group/credit-link min-w-0 flex-1 rounded-xl outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
-                aria-label={billingStatus ? `${billingStatus.product_name} plan` : "Billing status"}
-              >
-                <CreditUsage />
-              </Link>
-            </div>
-            {/* align=start: panel aligns to sidebar content edge; center was relative to the small icon */}
-            <DropdownMenuContent
-              style={SIDEBAR_LAYOUT_STYLE}
-              className={`${SIDEBAR_ACCOUNT_MENU_WIDTH_CLASS} max-w-[calc(100vw_-_2rem)] overflow-hidden dark:bg-[hsl(var(--sidebar-chrome))]`}
-              align="start"
-              side="top"
-              sideOffset={8}
-            >
-              <div className="relative">
-                <div
-                  className={`transition-transform duration-300 ease-in-out ${
-                    showAboutMenu ? "-translate-x-full" : "translate-x-0"
-                  }`}
-                >
-                  <DropdownMenuLabel>{teamStatus?.team_name || "Maple Research"}</DropdownMenuLabel>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuGroup>
-                    <DialogTrigger asChild>
-                      <DropdownMenuItem>
-                        <User className="mr-2 h-4 w-4" />
-                        <span>Profile</span>
-                      </DropdownMenuItem>
-                    </DialogTrigger>
-                    {showUpgrade && (
-                      <DropdownMenuItem asChild>
-                        <Link to="/pricing">
-                          <ArrowUpCircle className="mr-2 h-4 w-4" />
-                          <span>Upgrade your plan</span>
-                        </Link>
-                      </DropdownMenuItem>
-                    )}
-                    {showManage && (
-                      <DropdownMenuItem
-                        onClick={handleManageSubscription}
-                        disabled={isPortalLoading}
-                      >
-                        <CreditCard className="mr-2 h-4 w-4" />
-                        <span>{isPortalLoading ? "Loading..." : "Manage Subscription"}</span>
-                      </DropdownMenuItem>
-                    )}
-                    {isTeamPlan && (
-                      <DropdownMenuItem onClick={() => setIsTeamDialogOpen(true)}>
-                        <div className="flex items-center justify-between w-full">
-                          <div className="flex items-center">
-                            <Users className="mr-2 h-4 w-4" />
-                            <span>Manage Team</span>
-                          </div>
-                          {teamSeatMismatch ? (
-                            <Badge
-                              variant="secondary"
-                              className="bg-destructive py-0 px-1.5 text-xs font-medium text-destructive-onFilled"
-                            >
-                              Paused
-                            </Badge>
-                          ) : showTeamSetupAlert ? (
-                            <Badge
-                              variant="secondary"
-                              className="bg-maple-warning py-0 px-1.5 text-xs font-medium text-maple-onWarning"
-                            >
-                              Setup Required
-                            </Badge>
-                          ) : null}
-                        </div>
-                      </DropdownMenuItem>
-                    )}
-                    {showApiManagement && (
-                      <DropdownMenuItem onClick={() => setIsApiKeyDialogOpen(true)}>
-                        <Key className="mr-2 h-4 w-4" />
-                        <span>API Management</span>
-                      </DropdownMenuItem>
-                    )}
-                    <AlertDialogTrigger asChild>
-                      <DropdownMenuItem>
-                        <Trash className="mr-2 h-4 w-4" />
-                        <span>Delete History</span>
-                      </DropdownMenuItem>
-                    </AlertDialogTrigger>
-                  </DropdownMenuGroup>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuGroup>
-                    <DropdownMenuItem
-                      onClick={(e) => {
-                        e.preventDefault();
-                        setShowAboutMenu(true);
-                      }}
-                      onSelect={(e) => {
-                        e.preventDefault();
-                      }}
-                    >
-                      <Info className="mr-2 h-4 w-4" />
-                      <span>About Us</span>
-                    </DropdownMenuItem>
-                  </DropdownMenuGroup>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem onClick={signOut} disabled={isSigningOut}>
-                    <LogOut className="mr-2 h-4 w-4" />
-                    <span>{isSigningOut ? "Logging out..." : "Log out"}</span>
-                  </DropdownMenuItem>
-                </div>
-
-                {/* About Us Submenu */}
-                <div
-                  className={`absolute top-0 left-0 w-full transition-transform duration-300 ease-in-out ${
-                    showAboutMenu ? "translate-x-0" : "translate-x-full"
-                  }`}
-                >
-                  <DropdownMenuGroup>
-                    <DropdownMenuItem
-                      onClick={(e) => {
-                        e.preventDefault();
-                        setShowAboutMenu(false);
-                      }}
-                      onSelect={(e) => {
-                        e.preventDefault();
-                      }}
-                    >
-                      <ChevronLeft className="mr-2 h-4 w-4" />
-                      <span>Back</span>
-                    </DropdownMenuItem>
-                  </DropdownMenuGroup>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuGroup>
-                    <DropdownMenuItem asChild>
-                      <Link to="/about">
-                        <Info className="mr-2 h-4 w-4" />
-                        <span>About Maple</span>
-                      </Link>
-                    </DropdownMenuItem>
-                    <DropdownMenuItem
-                      onClick={(e) => {
-                        e.preventDefault();
-                        handleOpenExternalUrl("https://trymaple.ai/privacy");
-                      }}
-                      onSelect={(e) => {
-                        e.preventDefault();
-                      }}
-                    >
-                      <Shield className="mr-2 h-4 w-4" />
-                      <span>Privacy Policy</span>
-                    </DropdownMenuItem>
-                    <DropdownMenuItem
-                      onClick={(e) => {
-                        e.preventDefault();
-                        handleOpenExternalUrl("https://trymaple.ai/terms");
-                      }}
-                      onSelect={(e) => {
-                        e.preventDefault();
-                      }}
-                    >
-                      <FileText className="mr-2 h-4 w-4" />
-                      <span>Terms of Service</span>
-                    </DropdownMenuItem>
-                    <DropdownMenuItem
-                      onClick={(e) => {
-                        e.preventDefault();
-                        handleOpenExternalUrl("mailto:support@trymaple.ai");
-                      }}
-                      onSelect={(e) => {
-                        e.preventDefault();
-                      }}
-                    >
-                      <Mail className="mr-2 h-4 w-4" />
-                      <span>Contact Us</span>
-                    </DropdownMenuItem>
-                  </DropdownMenuGroup>
-                </div>
-              </div>
-            </DropdownMenuContent>
-            <AccountDialog />
-            <ConfirmDeleteDialog onDeleted={() => setIsDeleteHistoryOpen(false)} />
-            {portalError && (
-              <Alert variant="destructive" className="mt-2">
-                <AlertCircle className="h-4 w-4" />
-                <AlertDescription>{portalError}</AlertDescription>
-              </Alert>
-            )}
-            <TeamManagementDialog
-              open={isTeamDialogOpen}
-              onOpenChange={setIsTeamDialogOpen}
-              teamStatus={teamStatus}
-            />
-            <ApiKeyManagementDialog
-              open={isApiKeyDialogOpen}
-              onOpenChange={setIsApiKeyDialogOpen}
-            />
-          </DropdownMenu>
-        </Dialog>
-      </AlertDialog>
+    <div className="flex w-full max-w-full items-end gap-2">
+      <Link
+        to={isCompactSettingsLayout ? "/settings" : "/settings/account"}
+        aria-label={attentionLabel ? `Open settings, ${attentionLabel}` : "Open settings"}
+        title="Settings"
+        className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[hsl(var(--sidebar-chrome))] text-[hsl(var(--on-sidebar-chrome))] shadow-none ring-0 transition-colors hover:bg-[hsl(var(--sidebar-chrome-hover))] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        <Settings className="h-4 w-4" />
+        {(teamSeatMismatch || needsTeamSetup) && (
+          <AlertCircle
+            className={`absolute -right-1 -top-1 h-4 w-4 rounded-full bg-background ${
+              teamSeatMismatch ? "text-destructive" : "text-maple-warning"
+            }`}
+          />
+        )}
+      </Link>
+      <Link
+        to="/pricing"
+        className="group/credit-link min-w-0 flex-1 rounded-xl outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+        aria-label={billingStatus ? `${billingStatus.product_name} plan` : "Billing status"}
+      >
+        <CreditUsage />
+      </Link>
     </div>
   );
 }

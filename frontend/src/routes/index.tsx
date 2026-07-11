@@ -1,21 +1,16 @@
 import { useEffect, useState } from "react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { UnifiedChat } from "@/components/UnifiedChat";
-import { ProjectDetailView } from "@/components/ProjectDetailView";
 import { AppEntryPage } from "@/components/AppEntryPage";
-import { VerificationModal } from "@/components/VerificationModal";
 import { GuestPaymentWarningDialog } from "@/components/GuestPaymentWarningDialog";
-import { TeamManagementDialog } from "@/components/team/TeamManagementDialog";
-import { ApiKeyManagementDialog } from "@/components/apikeys/ApiKeyManagementDialog";
 import { PromoDialog, hasSeenPromo, markPromoAsSeen } from "@/components/PromoDialog";
 import { useOpenSecret } from "@opensecret/react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { getBillingService } from "@/billing/billingService";
 import { useLocalState } from "@/state/useLocalState";
-import type { TeamStatus } from "@/types/team";
 import type { DiscountResponse } from "@/billing/billingApi";
 import { appUrl } from "@/config/domains";
 import { useRouteMeta } from "@/utils/routeMeta";
+import { getSafeInternalRedirect } from "@/utils/internalRedirect";
 
 const appHomeUrl = appUrl("/");
 
@@ -30,7 +25,7 @@ type IndexSearchOptions = {
 function validateSearch(search: Record<string, unknown>): IndexSearchOptions {
   return {
     login: search?.login === "true" ? "true" : undefined,
-    next: search.next ? (search.next as string) : undefined,
+    next: getSafeInternalRedirect(search.next),
     team_setup: search?.team_setup === true || search?.team_setup === "true" ? true : undefined,
     credits_success:
       search?.credits_success === true || search?.credits_success === "true" ? true : undefined,
@@ -43,48 +38,6 @@ export const Route = createFileRoute("/")({
   component: Index,
   validateSearch
 });
-
-function getActiveProjectIdFromSearch() {
-  if (typeof window === "undefined") {
-    return null;
-  }
-
-  return new URLSearchParams(window.location.search).get("project_id");
-}
-
-function AuthenticatedHomeContent() {
-  const [activeProjectId, setActiveProjectId] = useState<string | null>(() =>
-    getActiveProjectIdFromSearch()
-  );
-
-  useEffect(() => {
-    const syncFromLocation = () => {
-      setActiveProjectId(getActiveProjectIdFromSearch());
-    };
-
-    window.addEventListener("projectselected", syncFromLocation);
-    window.addEventListener("conversationselected", syncFromLocation as EventListener);
-    window.addEventListener("newchat", syncFromLocation);
-    window.addEventListener("popstate", syncFromLocation);
-
-    return () => {
-      window.removeEventListener("projectselected", syncFromLocation);
-      window.removeEventListener("conversationselected", syncFromLocation as EventListener);
-      window.removeEventListener("newchat", syncFromLocation);
-      window.removeEventListener("popstate", syncFromLocation);
-    };
-  }, []);
-
-  const hasConversationId =
-    typeof window !== "undefined" &&
-    new URLSearchParams(window.location.search).has("conversation_id");
-
-  if (activeProjectId && !hasConversationId) {
-    return <ProjectDetailView projectId={activeProjectId} />;
-  }
-
-  return <UnifiedChat />;
-}
 
 function Index() {
   const navigate = useNavigate();
@@ -102,10 +55,6 @@ function Index() {
 
   const { login, next, team_setup, credits_success, api_settings } = Route.useSearch();
 
-  // Modal states
-  const [teamDialogOpen, setTeamDialogOpen] = useState(false);
-  const [apiKeyDialogOpen, setApiKeyDialogOpen] = useState(false);
-  const [showCreditSuccess, setShowCreditSuccess] = useState(false);
   const [showGuestPaymentWarning, setShowGuestPaymentWarning] = useState(false);
   const [promoDialogOpen, setPromoDialogOpen] = useState(false);
 
@@ -131,16 +80,6 @@ function Index() {
     }
   }, [login, next, navigate]);
 
-  // Fetch team status for the dialog
-  const { data: teamStatus } = useQuery<TeamStatus>({
-    queryKey: ["teamStatus"],
-    queryFn: async () => {
-      const billingService = getBillingService();
-      return await billingService.getTeamStatus();
-    },
-    enabled: !!os.auth.user
-  });
-
   // Fetch active discount/promotion for promo dialog
   const { data: discount } = useQuery<DiscountResponse>({
     queryKey: ["discount"],
@@ -152,36 +91,29 @@ function Index() {
     enabled: !!os.auth.user
   });
 
-  // Auto-open team dialog if team_setup is true
+  // Preserve legacy Team setup URLs by routing them into the dedicated Team settings page.
   useEffect(() => {
-    if (team_setup && os.auth.user && teamStatus) {
-      setTeamDialogOpen(true);
-      // Clear the query param to prevent re-opening on refresh
-      navigate({ to: "/", replace: true });
+    if (team_setup && os.auth.user) {
+      navigate({ to: "/settings/team", replace: true });
     }
-  }, [team_setup, os.auth.user, teamStatus, navigate]);
+  }, [team_setup, os.auth.user, navigate]);
 
-  // Handle credits_success - open API key dialog and refresh balance
+  // Preserve the existing credit callback while moving its success state into API settings.
   useEffect(() => {
     if (credits_success && os.auth.user) {
-      setApiKeyDialogOpen(true);
-      setShowCreditSuccess(true);
-      // Refresh the credit balance
       queryClient.invalidateQueries({ queryKey: ["apiCreditBalance"] });
-      // Clear the query param to prevent re-opening on refresh
-      navigate({ to: "/", replace: true });
-      // Clear success message after 5 seconds
-      const timer = setTimeout(() => setShowCreditSuccess(false), 5000);
-      return () => clearTimeout(timer);
+      navigate({
+        to: "/settings/api",
+        search: { credits_success: true },
+        replace: true
+      });
     }
   }, [credits_success, os.auth.user, navigate, queryClient]);
 
-  // Handle api_settings - open API key dialog directly
+  // Preserve legacy links that opened API Management directly.
   useEffect(() => {
     if (api_settings && os.auth.user) {
-      setApiKeyDialogOpen(true);
-      // Clear the query param to prevent re-opening on refresh
-      navigate({ to: "/", replace: true });
+      navigate({ to: "/settings/api", replace: true });
     }
   }, [api_settings, os.auth.user, navigate]);
 
@@ -231,30 +163,14 @@ function Index() {
     return <AppEntryPage />;
   }
 
-  // Show unified chat for authenticated users
+  // The authenticated home surface is mounted by the root route so it can remain alive while
+  // the dedicated settings routes visually replace it.
   return (
     <>
-      <AuthenticatedHomeContent />
-
       {/* Modals */}
-      <VerificationModal />
       <GuestPaymentWarningDialog
         open={showGuestPaymentWarning}
         onOpenChange={setShowGuestPaymentWarning}
-      />
-
-      {/* Team Management Dialog */}
-      <TeamManagementDialog
-        open={teamDialogOpen}
-        onOpenChange={setTeamDialogOpen}
-        teamStatus={teamStatus}
-      />
-
-      {/* API Key Management Dialog */}
-      <ApiKeyManagementDialog
-        open={apiKeyDialogOpen}
-        onOpenChange={setApiKeyDialogOpen}
-        showCreditSuccessMessage={showCreditSuccess}
       />
 
       {/* Promo Dialog - shows once per promo for free users */}

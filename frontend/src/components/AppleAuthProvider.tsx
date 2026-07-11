@@ -6,6 +6,7 @@ import { bytesToHex } from "@noble/hashes/utils";
 import { Button, type ButtonProps } from "./ui/button";
 import { Apple } from "./icons/Apple";
 import { getBillingService } from "@/billing/billingService";
+import { getSafeInternalRedirect } from "@/utils/internalRedirect";
 
 // Define the props interface
 interface AppleAuthProviderProps {
@@ -249,6 +250,14 @@ export function AppleAuthProvider({
                 deepLinkUrl += `&refresh_token=${encodeURIComponent(refreshToken)}`;
               }
 
+              const postAuthRedirect = sessionStorage.getItem("post_auth_redirect");
+              sessionStorage.removeItem("post_auth_redirect");
+              const safePostAuthRedirect = getSafeInternalRedirect(postAuthRedirect);
+
+              if (!selectedPlan && safePostAuthRedirect) {
+                deepLinkUrl += `&next=${encodeURIComponent(safePostAuthRedirect)}`;
+              }
+
               setTimeout(() => {
                 window.location.href = deepLinkUrl;
               }, 1000);
@@ -359,6 +368,14 @@ export function AppleAuthProvider({
 
             if (refreshToken) {
               deepLinkUrl += `&refresh_token=${encodeURIComponent(refreshToken)}`;
+            }
+
+            const postAuthRedirect = sessionStorage.getItem("post_auth_redirect");
+            sessionStorage.removeItem("post_auth_redirect");
+            const safePostAuthRedirect = getSafeInternalRedirect(postAuthRedirect);
+
+            if (!selectedPlan && safePostAuthRedirect) {
+              deepLinkUrl += `&next=${encodeURIComponent(safePostAuthRedirect)}`;
             }
 
             setTimeout(() => {
