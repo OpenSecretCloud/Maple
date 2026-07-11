@@ -853,11 +853,35 @@ pub struct EmbeddingResponse {
     pub usage: EmbeddingUsage,
 }
 
+/// An embedding vector in the representation requested by `encoding_format`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum EmbeddingVector {
+    Float(Vec<f64>),
+    Base64(String),
+}
+
+impl EmbeddingVector {
+    pub fn as_floats(&self) -> Option<&[f64]> {
+        match self {
+            Self::Float(values) => Some(values),
+            Self::Base64(_) => None,
+        }
+    }
+
+    pub fn as_base64(&self) -> Option<&str> {
+        match self {
+            Self::Float(_) => None,
+            Self::Base64(value) => Some(value),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmbeddingData {
     pub object: String,
     pub index: i32,
-    pub embedding: Vec<f64>,
+    pub embedding: EmbeddingVector,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1142,5 +1166,76 @@ mod tests {
         assert_eq!(response.message, "");
         assert_eq!(response.access_token.as_deref(), Some("new-access"));
         assert_eq!(response.refresh_token, None);
+    }
+
+    #[test]
+    fn embedding_response_deserializes_float_vectors() {
+        let response: EmbeddingResponse = serde_json::from_value(json!({
+            "object": "list",
+            "data": [{
+                "object": "embedding",
+                "index": 0,
+                "embedding": [0.1, 0.2, 0.3]
+            }],
+            "model": "nomic-embed-text",
+            "usage": { "prompt_tokens": 4, "total_tokens": 4 }
+        }))
+        .unwrap();
+
+        assert_eq!(
+            response.data[0].embedding,
+            EmbeddingVector::Float(vec![0.1, 0.2, 0.3])
+        );
+        assert_eq!(
+            response.data[0].embedding.as_floats(),
+            Some([0.1, 0.2, 0.3].as_slice())
+        );
+        assert_eq!(response.data[0].embedding.as_base64(), None);
+        assert_eq!(
+            serde_json::to_value(&response).unwrap()["data"][0]["embedding"],
+            json!([0.1, 0.2, 0.3])
+        );
+    }
+
+    #[test]
+    fn embedding_response_deserializes_base64_vectors() {
+        let response: EmbeddingResponse = serde_json::from_value(json!({
+            "object": "list",
+            "data": [{
+                "object": "embedding",
+                "index": 0,
+                "embedding": "AQIDBA=="
+            }],
+            "model": "nomic-embed-text",
+            "usage": { "prompt_tokens": 4, "total_tokens": 4 }
+        }))
+        .unwrap();
+
+        assert_eq!(
+            response.data[0].embedding,
+            EmbeddingVector::Base64("AQIDBA==".to_string())
+        );
+        assert_eq!(response.data[0].embedding.as_floats(), None);
+        assert_eq!(response.data[0].embedding.as_base64(), Some("AQIDBA=="));
+        assert_eq!(
+            serde_json::to_value(&response).unwrap()["data"][0]["embedding"],
+            json!("AQIDBA==")
+        );
+    }
+
+    #[test]
+    fn embedding_response_rejects_unknown_vector_representations() {
+        let response = serde_json::from_value::<EmbeddingResponse>(json!({
+            "object": "list",
+            "data": [{
+                "object": "embedding",
+                "index": 0,
+                "embedding": { "values": [0.1, 0.2, 0.3] }
+            }],
+            "model": "nomic-embed-text",
+            "usage": { "prompt_tokens": 4, "total_tokens": 4 }
+        }));
+
+        assert!(response.is_err());
     }
 }

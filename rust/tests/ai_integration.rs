@@ -1,3 +1,4 @@
+use base64::{engine::general_purpose, Engine as _};
 use futures::StreamExt;
 use opensecret::{
     ChatCompletionRequest, ChatMessage, EmbeddingInput, EmbeddingRequest, Error, Function,
@@ -401,7 +402,7 @@ async fn test_guest_user_cannot_use_ai() {
 }
 
 #[tokio::test]
-async fn test_create_embeddings_single_input() {
+async fn test_create_embeddings_float_encoding() {
     let client = setup_authenticated_client()
         .await
         .expect("Failed to setup client");
@@ -409,7 +410,7 @@ async fn test_create_embeddings_single_input() {
     let request = EmbeddingRequest {
         input: EmbeddingInput::Single("Hello, world!".to_string()),
         model: embedding_model(),
-        encoding_format: None,
+        encoding_format: Some("float".to_string()),
         dimensions: None,
         user: None,
     };
@@ -425,12 +426,12 @@ async fn test_create_embeddings_single_input() {
     assert_eq!(response.data[0].object, "embedding");
     assert_eq!(response.data[0].index, 0);
 
-    let expected_dimensions = embedding_dimensions();
-    assert_eq!(
-        response.data[0].embedding.len(),
-        expected_dimensions,
-        "Unexpected embedding dimensions"
-    );
+    let embedding = response.data[0]
+        .embedding
+        .as_floats()
+        .expect("Expected float embedding response");
+    assert_eq!(embedding.len(), embedding_dimensions());
+    assert!(embedding.iter().all(|value| value.is_finite()));
 
     // Verify usage
     assert!(response.usage.prompt_tokens > 0);
@@ -438,9 +439,49 @@ async fn test_create_embeddings_single_input() {
 
     println!(
         "Embedding created with {} dimensions, {} tokens used",
-        response.data[0].embedding.len(),
+        embedding.len(),
         response.usage.total_tokens
     );
+}
+
+#[tokio::test]
+async fn test_create_embeddings_base64_encoding() {
+    let client = setup_authenticated_client()
+        .await
+        .expect("Failed to setup client");
+
+    let request = EmbeddingRequest {
+        input: EmbeddingInput::Single("Hello, world!".to_string()),
+        model: embedding_model(),
+        encoding_format: Some("base64".to_string()),
+        dimensions: None,
+        user: None,
+    };
+
+    let response = client
+        .create_embeddings(request)
+        .await
+        .expect("Failed to create base64 embeddings");
+
+    assert_eq!(response.object, "list");
+    assert_eq!(response.data.len(), 1);
+    assert_eq!(response.data[0].object, "embedding");
+    assert_eq!(response.data[0].index, 0);
+
+    let embedding = response.data[0]
+        .embedding
+        .as_base64()
+        .expect("Expected base64 embedding response");
+    let decoded = general_purpose::STANDARD
+        .decode(embedding)
+        .expect("Embedding should contain valid base64");
+    assert_eq!(
+        decoded.len(),
+        embedding_dimensions() * std::mem::size_of::<f32>()
+    );
+
+    assert!(response.usage.prompt_tokens > 0);
+    assert!(response.usage.total_tokens > 0);
 }
 
 #[tokio::test]
@@ -474,11 +515,11 @@ async fn test_create_embeddings_multiple_inputs() {
     for (i, embedding_data) in response.data.iter().enumerate() {
         assert_eq!(embedding_data.object, "embedding");
         assert_eq!(embedding_data.index as usize, i);
-        assert_eq!(
-            embedding_data.embedding.len(),
-            embedding_dimensions(),
-            "Unexpected embedding dimensions"
-        );
+        let embedding = embedding_data
+            .embedding
+            .as_floats()
+            .expect("Expected default float embedding response");
+        assert_eq!(embedding.len(), embedding_dimensions());
     }
 
     // Verify usage accounts for all inputs
@@ -512,7 +553,14 @@ async fn test_embeddings_from_string_conversion() {
         .expect("Failed to create embeddings");
 
     assert_eq!(response.data.len(), 1);
-    assert_eq!(response.data[0].embedding.len(), embedding_dimensions());
+    assert_eq!(
+        response.data[0]
+            .embedding
+            .as_floats()
+            .expect("Expected default float embedding response")
+            .len(),
+        embedding_dimensions()
+    );
 }
 
 #[tokio::test]
