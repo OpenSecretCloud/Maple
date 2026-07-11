@@ -4071,9 +4071,9 @@ dependencies = [
 
 [[package]]
 name = "maple-proxy"
-version = "0.1.10"
+version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "29ac117843d081e34ed1bbaf386e4975c2c93af4649668fe86282737007ae922"
+checksum = "88573e251e75ff45858962256de59394793e33df1d06b19e2f1ce44dad5ae430"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -4833,9 +4833,9 @@ dependencies = [
 
 [[package]]
 name = "opensecret"
-version = "3.1.1"
+version = "3.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2782b2ff33589206bb6418bd7adbc1f064d3aef9e4a92aef93c41174ac5f686b"
+checksum = "92ce94955ead29ea33002f32d19b94420582e15e0b2c8b7c8e66e64dae6ff48a"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -5566,9 +5566,9 @@ dependencies = [
 
 [[package]]
 name = "quinn-proto"
-version = "0.11.14"
+version = "0.11.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "434b42fec591c96ef50e21e886936e66d3cc3f737104fdb9b737c40ffb94c098"
+checksum = "4fcb935c5bec503c2f0e306bdd3e58bb9029dcb14fa8d9ac76e3a5256ac0763e"
 dependencies = [
  "aws-lc-rs",
  "bytes",
