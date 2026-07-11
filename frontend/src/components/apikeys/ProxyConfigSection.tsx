@@ -107,7 +107,10 @@ export function ProxyConfigSection({ apiKeys, onRequestNewApiKey }: ProxyConfigS
         backend_url: backendUrl,
         auto_start: config.auto_start // Preserve auto_start setting
       };
-      const status = await proxyService.startProxy(updatedConfig);
+      // The user is explicitly taking control of the shared proxy. The service
+      // detaches the active Agent association only after the native start
+      // succeeds, while retaining its exact key name for later revocation.
+      const status = await proxyService.startManualProxy(updatedConfig);
       setProxyStatus(status);
       setConfig(updatedConfig);
 
@@ -126,7 +129,7 @@ export function ProxyConfigSection({ apiKeys, onRequestNewApiKey }: ProxyConfigS
     setIsLoading(true);
 
     try {
-      const status = await proxyService.stopProxy();
+      const status = await proxyService.stopManualProxy();
       setProxyStatus(status);
       setConfig((prev) => ({ ...prev, enabled: false }));
 
@@ -313,7 +316,7 @@ export function ProxyConfigSection({ apiKeys, onRequestNewApiKey }: ProxyConfigS
               setConfig(newConfig);
               // Save immediately when toggling auto-start
               try {
-                await proxyService.saveProxySettings(newConfig);
+                await proxyService.saveManualProxySettings(newConfig);
                 setMessage({
                   type: "success",
                   text: e.target.checked ? "Auto-start enabled" : "Auto-start disabled"

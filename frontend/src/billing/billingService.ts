@@ -57,6 +57,10 @@ class BillingService {
     this.os = os;
   }
 
+  updateOpenSecret(os: OpenSecretContextType): void {
+    this.os = os;
+  }
+
   private async getStoredToken(): Promise<string | null> {
     return sessionStorage.getItem(TOKEN_STORAGE_KEY);
   }
@@ -218,6 +222,8 @@ let billingServiceInstance: BillingService | null = null;
 export function initBillingService(os: OpenSecretContextType): BillingService {
   if (!billingServiceInstance) {
     billingServiceInstance = new BillingService(os);
+  } else {
+    billingServiceInstance.updateOpenSecret(os);
   }
   return billingServiceInstance;
 }

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { AlertDestructive } from "@/components/AlertDestructive";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -16,6 +16,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { generateSecureSecret, hashSecret, useOpenSecret } from "@opensecret/react";
 import { getBillingService } from "@/billing/billingService";
 import { Loader2 } from "lucide-react";
+import { clearAgentDataForUser } from "@/services/agentRuntimeService";
 
 interface DeleteAccountDialogProps {
   open: boolean;
@@ -29,8 +30,10 @@ export function DeleteAccountDialog({ open, onOpenChange }: DeleteAccountDialogP
   const [uuid, setUuid] = useState("");
   const [secret, setSecret] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [isAccountDeleted, setIsAccountDeleted] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirmText, setConfirmText] = useState("");
+  const cleanupBlockRef = useRef<Awaited<ReturnType<typeof clearAgentDataForUser>> | null>(null);
 
   // Initial request for account deletion
   const handleRequestDeletion = async () => {
@@ -65,10 +68,33 @@ export function DeleteAccountDialog({ open, onOpenChange }: DeleteAccountDialogP
   const handleConfirmDeletion = async () => {
     setIsLoading(true);
     setError(null);
+    let deletionConfirmed = isAccountDeleted;
+    let agentDataCleared = cleanupBlockRef.current !== null;
+    let proxyReset = false;
 
     try {
-      // Confirm account deletion with UUID and secret
-      await os.confirmAccountDeletion(uuid, secret);
+      const userId = os.auth.user?.user.id;
+
+      if (!cleanupBlockRef.current) {
+        // Local Agent data is cleared before the irreversible remote action.
+        // The returned block stays held until the account flow either succeeds
+        // or fails while the user still owns the account.
+        cleanupBlockRef.current = await clearAgentDataForUser(userId);
+        agentDataCleared = true;
+      }
+
+      // Credential reset is also required before remote deletion so a crash
+      // cannot leave a deleted account's proxy key on disk.
+      const { proxyService } = await import("@/services/proxyService");
+      await proxyService.stopAndResetProxy(userId, os.deleteApiKey);
+      proxyReset = true;
+
+      if (!deletionConfirmed) {
+        await os.confirmAccountDeletion(uuid, secret);
+        deletionConfirmed = true;
+        setIsAccountDeleted(true);
+        cleanupBlockRef.current.retainUntilNextSession();
+      }
 
       // Clear all tokens and storage
       try {
@@ -80,14 +106,6 @@ export function DeleteAccountDialog({ open, onOpenChange }: DeleteAccountDialogP
         sessionStorage.removeItem("maple_billing_token");
       }
 
-      // Stop proxy and reset config so it doesn't auto-start on next launch
-      try {
-        const { proxyService } = await import("@/services/proxyService");
-        await proxyService.stopAndResetProxy();
-      } catch (error) {
-        console.error("Error clearing proxy config:", error);
-      }
-
       // Sign out
       await os.signOut();
       queryClient.clear();
@@ -95,13 +113,28 @@ export function DeleteAccountDialog({ open, onOpenChange }: DeleteAccountDialogP
       // Force page refresh to go to logged out state
       window.location.href = "/";
     } catch (err) {
-      setError("Failed to confirm account deletion. Please verify your code and try again.");
+      // If remote deletion did not happen, the authenticated user remains and
+      // must be able to start a fresh Agent runtime after this attempt.
+      if (!deletionConfirmed) {
+        cleanupBlockRef.current?.release();
+        cleanupBlockRef.current = null;
+      }
+      setError(
+        !agentDataCleared
+          ? "Maple couldn't safely stop and clear local Agent Mode data. Your account was not deleted; please retry."
+          : !proxyReset
+            ? "Local Agent Mode history was cleared, but Maple couldn't reset its proxy credentials. Your account was not deleted; please retry."
+            : !deletionConfirmed
+              ? "Local Agent Mode history was cleared, but account deletion was not confirmed. Verify the code and retry if you still want to delete your account."
+              : "Your account data was deleted, but Maple couldn't finish signing out. Please retry."
+      );
       console.error(err);
       setIsLoading(false);
     }
   };
 
   const handleCancel = () => {
+    if (isAccountDeleted) return;
     setStep("request");
     setError(null);
     setConfirmText("");
@@ -110,7 +143,13 @@ export function DeleteAccountDialog({ open, onOpenChange }: DeleteAccountDialogP
   };
 
   return (
-    <AlertDialog open={open} onOpenChange={onOpenChange}>
+    <AlertDialog
+      open={open}
+      onOpenChange={(nextOpen) => {
+        if (!nextOpen && isAccountDeleted) return;
+        onOpenChange(nextOpen);
+      }}
+    >
       <AlertDialogContent className="max-w-md">
         <AlertDialogHeader>
           <AlertDialogTitle>
@@ -119,7 +158,7 @@ export function DeleteAccountDialog({ open, onOpenChange }: DeleteAccountDialogP
           <AlertDialogDescription>
             {step === "request"
               ? "This action cannot be undone. This will permanently delete your account and all your data."
-              : "Please check your email for a confirmation code and enter it below."}
+              : "Please check your email for a confirmation code. Submitting it clears local Agent Mode history and proxy credentials before the final account deletion request, even if the code is rejected."}
           </AlertDialogDescription>
         </AlertDialogHeader>
 
@@ -161,7 +200,9 @@ export function DeleteAccountDialog({ open, onOpenChange }: DeleteAccountDialogP
         </div>
 
         <AlertDialogFooter className="mt-4">
-          <AlertDialogCancel onClick={handleCancel}>Cancel</AlertDialogCancel>
+          <AlertDialogCancel onClick={handleCancel} disabled={isLoading || isAccountDeleted}>
+            Cancel
+          </AlertDialogCancel>
           {step === "request" ? (
             <Button
               variant="destructive"
@@ -188,6 +229,8 @@ export function DeleteAccountDialog({ open, onOpenChange }: DeleteAccountDialogP
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                   Processing...
                 </>
+              ) : isAccountDeleted ? (
+                "Finish Cleanup"
               ) : (
                 "Confirm Deletion"
               )}

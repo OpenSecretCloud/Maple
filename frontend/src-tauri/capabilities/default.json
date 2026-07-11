@@ -5,9 +5,11 @@
   "windows": [
     "main"
   ],
+  "platforms": ["macOS", "windows", "linux"],
   "permissions": [
     "core:default",
     "updater:default",
+    "dialog:default",
     "fs:default",
     {
       "identifier": "fs:allow-read-file",

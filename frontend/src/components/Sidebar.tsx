@@ -6,13 +6,22 @@ import {
   XCircle,
   Trash2,
   X,
-  FolderInput
+  FolderInput,
+  Bot
 } from "lucide-react";
 import { Button } from "./ui/button";
 import { useLocation, useRouter } from "@tanstack/react-router";
 import { ChatHistoryList } from "./ChatHistoryList";
 import { AccountMenu } from "./AccountMenu";
-import { useRef, useEffect, KeyboardEvent, useCallback, useLayoutEffect, useState } from "react";
+import {
+  useRef,
+  useEffect,
+  KeyboardEvent,
+  useCallback,
+  useLayoutEffect,
+  useState,
+  type ReactNode
+} from "react";
 import { flushSync } from "react-dom";
 import { cn, useClickOutside, useIsMobile, useIsLandscapeMobile } from "@/utils/utils";
 import { MapleWordmark } from "@/components/MapleWordmark";
@@ -23,31 +32,44 @@ import {
   SIDEBAR_MAX_WIDTH_CLASS,
   SIDEBAR_WIDTH_CLASS
 } from "@/constants/layout";
+import { isTauriDesktop } from "@/utils/platform";
+import { useOpenSecret } from "@opensecret/react";
+import { FEATURE_FLAGS, flagsClient } from "@/services/flags";
+import { UpgradePromptDialog } from "@/components/UpgradePromptDialog";
+import { hasApiAccess } from "@/billing/billingAccess";
 
 export function Sidebar({
   chatId,
   isOpen,
+  mode = "chat",
+  navigationContent,
   onToggle
 }: {
   chatId?: string;
   isOpen: boolean;
+  mode?: "chat" | "agent";
+  navigationContent?: ReactNode;
   onToggle: () => void;
 }) {
   const router = useRouter();
   const location = useLocation();
+  const os = useOpenSecret();
+  const userId = os.auth.user?.user.id;
   const {
     searchQuery,
     setSearchQuery,
     isSearchVisible,
     setIsSearchVisible,
     selectedProjectId,
-    setSelectedProjectId
+    setSelectedProjectId,
+    billingStatus
   } = useLocalState();
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   // Multi-select state
   const [isSelectionMode, setIsSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [agentModeUpgradeOpen, setAgentModeUpgradeOpen] = useState(false);
 
   // Enter selection mode when items are selected (e.g., via long press)
   useEffect(() => {
@@ -111,6 +133,29 @@ export function Sidebar({
     }
   }
 
+  async function toggleAgentMode() {
+    const isLeavingAgentMode = location.pathname === "/agent";
+
+    if (!isLeavingAgentMode) {
+      if (billingStatus === null) return;
+
+      if (!hasApiAccess(billingStatus)) {
+        setAgentModeUpgradeOpen(true);
+        return;
+      }
+    }
+
+    if (isOpen) {
+      onToggle();
+    }
+
+    try {
+      await router.navigate({ to: isLeavingAgentMode ? "/" : "/agent" });
+    } catch (error) {
+      console.error("Navigation failed:", error);
+    }
+  }
+
   const toggleSearch = () => {
     setIsSearchVisible(!isSearchVisible);
     if (!isSearchVisible) {
@@ -140,6 +185,34 @@ export function Sidebar({
   const isMobile = useIsMobile();
   const isLandscapeMobile = useIsLandscapeMobile();
   const isCompactLayout = isMobile || isLandscapeMobile;
+  const agentModeAvailable = isTauriDesktop();
+  const [agentModeFlag, setAgentModeFlag] = useState<{
+    userId: string;
+    enabled: boolean;
+  } | null>(null);
+  const showAgentMode =
+    agentModeAvailable &&
+    billingStatus !== null &&
+    agentModeFlag?.userId === userId &&
+    agentModeFlag?.enabled === true;
+  const isAgentMode = mode === "agent";
+
+  useEffect(() => {
+    if (!agentModeAvailable || !userId) return;
+
+    let disposed = false;
+    void flagsClient.isEnabled(userId, FEATURE_FLAGS.AGENT_MODE).then(
+      (enabled) => {
+        if (!disposed) setAgentModeFlag({ userId, enabled });
+      },
+      (error: unknown) => {
+        console.warn("Unable to load optional feature flags; keeping them hidden.", error);
+      }
+    );
+    return () => {
+      disposed = true;
+    };
+  }, [agentModeAvailable, userId]);
 
   // Modified click outside handler to ignore clicks in dropdowns and dialogs
   // Only applies on mobile - desktop users use the toggle button
@@ -235,17 +308,34 @@ export function Sidebar({
               <SquarePenIcon className="h-4 w-4 shrink-0" />
               New Chat
             </button>
-            <button
-              className="flex w-full items-center justify-start gap-2 py-1.5 pr-1 pl-0 text-sm text-foreground hover:text-foreground/70 transition-colors"
-              onClick={toggleSearch}
-              aria-label={isSearchVisible ? "Hide search" : "Search chat history"}
-            >
-              <Search className="h-4 w-4" />
-              Search
-            </button>
+            {showAgentMode && (
+              <button
+                type="button"
+                className={cn(
+                  "flex w-full items-center justify-start gap-2 py-1.5 pr-1 pl-0 text-sm transition-colors",
+                  location.pathname === "/agent"
+                    ? "text-[hsl(var(--maple-primary-strong))] dark:text-[hsl(var(--maple-primary))]"
+                    : "text-foreground hover:text-foreground/70"
+                )}
+                onClick={toggleAgentMode}
+              >
+                <Bot className="h-4 w-4" />
+                Agent Mode
+              </button>
+            )}
+            {!isAgentMode && (
+              <button
+                className="flex w-full items-center justify-start gap-2 py-1.5 pr-1 pl-0 text-sm text-foreground hover:text-foreground/70 transition-colors"
+                onClick={toggleSearch}
+                aria-label={isSearchVisible ? "Hide search" : "Search chat history"}
+              >
+                <Search className="h-4 w-4" />
+                Search
+              </button>
+            )}
           </div>
         </div>
-        {isSelectionMode && (
+        {!isAgentMode && isSelectionMode && (
           <div className="mb-2 space-y-2 px-4">
             <div className="flex items-center gap-2">
               <Button
@@ -285,7 +375,7 @@ export function Sidebar({
             </div>
           </div>
         )}
-        {isSearchVisible && (
+        {!isAgentMode && isSearchVisible && (
           <div className="relative transition-all duration-200 ease-in-out px-4">
             <Input
               ref={searchInputRef}
@@ -313,16 +403,18 @@ export function Sidebar({
             ref={historyContainerRef}
             className="sidebar-scrollbar relative flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto overflow-x-clip pl-4 pr-2 pt-5 md:px-4"
           >
-            <ChatHistoryList
-              currentChatId={chatId}
-              searchQuery={searchQuery}
-              isMobile={isCompactLayout}
-              isSelectionMode={isSelectionMode}
-              onExitSelectionMode={exitSelectionMode}
-              selectedIds={selectedIds}
-              onSelectionChange={setSelectedIds}
-              containerRef={historyContainerRef}
-            />
+            {navigationContent || (
+              <ChatHistoryList
+                currentChatId={chatId}
+                searchQuery={searchQuery}
+                isMobile={isCompactLayout}
+                isSelectionMode={isSelectionMode}
+                onExitSelectionMode={exitSelectionMode}
+                selectedIds={selectedIds}
+                onSelectionChange={setSelectedIds}
+                containerRef={historyContainerRef}
+              />
+            )}
             {/* Real empty tail so the last row sits in clear space — no overlay on hit targets */}
             <div aria-hidden className="min-h-[7.5rem] shrink-0 bg-transparent" />
           </nav>
@@ -331,7 +423,7 @@ export function Sidebar({
             aria-hidden
             className={cn(
               "pointer-events-none absolute left-0 top-0 z-[8] h-8 w-[calc(100%-10px)] max-w-full bg-gradient-to-b to-transparent",
-              isSearchVisible
+              !isAgentMode && isSearchVisible
                 ? "from-background/75 dark:from-background/75"
                 : "from-muted/75 dark:from-[hsl(var(--sidebar)/0.75)]"
             )}
@@ -345,6 +437,11 @@ export function Sidebar({
           <AccountMenu />
         </div>
       </div>
+      <UpgradePromptDialog
+        open={agentModeUpgradeOpen}
+        onOpenChange={setAgentModeUpgradeOpen}
+        feature="agent"
+      />
     </div>
   );
 }

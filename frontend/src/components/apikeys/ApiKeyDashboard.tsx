@@ -23,6 +23,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useLocalState } from "@/state/useLocalState";
 import { useNavigate } from "@tanstack/react-router";
 import { isTauriDesktop } from "@/utils/platform";
+import { hasApiAccess } from "@/billing/billingAccess";
 
 interface ApiKey {
   name: string;
@@ -42,11 +43,7 @@ export function ApiKeyDashboard({ showCreditSuccessMessage = false }: ApiKeyDash
 
   // Check if user has API access (Pro, Team, or Max plans only - not Starter)
   const isBillingLoading = billingStatus === null;
-  const productName = billingStatus?.product_name || "";
-  const isPro = productName.toLowerCase().includes("pro");
-  const isMax = productName.toLowerCase().includes("max");
-  const isTeamPlan = productName.toLowerCase().includes("team");
-  const hasApiAccess = isPro || isMax || isTeamPlan;
+  const userHasApiAccess = hasApiAccess(billingStatus);
 
   // Fetch API keys
   const {
@@ -117,7 +114,7 @@ export function ApiKeyDashboard({ showCreditSuccessMessage = false }: ApiKeyDash
   }
 
   // Show upgrade prompt for users without API access (Free and Starter plans)
-  if (!hasApiAccess) {
+  if (!userHasApiAccess) {
     return (
       <>
         <DialogHeader>

@@ -1,6 +1,8 @@
 use tauri::Emitter;
 use tauri_plugin_deep_link::DeepLinkExt;
 
+#[cfg(desktop)]
+mod agent;
 mod pdf_extractor;
 mod proxy;
 // TTS is available on desktop and iOS (not Android)
@@ -9,9 +11,38 @@ mod tts;
 
 #[cfg(desktop)]
 #[tauri::command]
-fn restart_for_update(app_handle: tauri::AppHandle) {
+async fn restart_for_update(app_handle: tauri::AppHandle) -> Result<(), String> {
     log::info!("User requested restart for update");
+    agent::shutdown_agent_runtime(&app_handle).await?;
     app_handle.restart();
+}
+
+#[cfg(desktop)]
+fn handle_desktop_run_event(app_handle: &tauri::AppHandle, event: tauri::RunEvent) {
+    let tauri::RunEvent::ExitRequested { code, api, .. } = event else {
+        return;
+    };
+
+    // Update restart is explicitly drained by restart_for_update. Tauri does
+    // not allow restart ExitRequested events to be prevented.
+    if code == Some(tauri::RESTART_EXIT_CODE) || AGENT_EXIT_CLEANUP_COMPLETE.load(Ordering::SeqCst)
+    {
+        return;
+    }
+
+    api.prevent_exit();
+    if AGENT_EXIT_CLEANUP_STARTED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+
+    let app_handle = app_handle.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) = agent::shutdown_agent_runtime(&app_handle).await {
+            log::error!("Failed to stop Agent Mode during app exit: {error}");
+        }
+        AGENT_EXIT_CLEANUP_COMPLETE.store(true, Ordering::SeqCst);
+        app_handle.exit(code.unwrap_or_default());
+    });
 }
 
 // This handles incoming deep links
@@ -36,11 +67,31 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_dialog::init())
+        .manage(agent::AgentRuntimeState::new())
         .manage(proxy::ProxyState::new())
         .manage(tts::TTSState::new())
         .invoke_handler(tauri::generate_handler![
+            agent::agent_get_runtime_status,
+            agent::agent_start_runtime,
+            agent::agent_stop_runtime,
+            agent::agent_restart_runtime,
+            agent::agent_load_config,
+            agent::agent_save_config,
+            agent::agent_list_recent_project_roots,
+            agent::agent_save_recent_project_root,
+            agent::agent_create_session,
+            agent::agent_list_sessions,
+            agent::agent_load_session,
+            agent::agent_delete_session,
+            agent::agent_send_message,
+            agent::agent_cancel_run,
+            agent::agent_permission_respond,
+            agent::agent_clear_user_history,
+            agent::agent_clear_user_data,
             proxy::start_proxy,
             proxy::stop_proxy,
+            proxy::stop_and_reset_proxy,
             proxy::get_proxy_status,
             proxy::load_proxy_config,
             proxy::save_proxy_settings,
@@ -304,6 +355,12 @@ pub fn run() {
         })
         .plugin(tauri_plugin_updater::Builder::new().build());
 
+    #[cfg(desktop)]
+    app.build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(handle_desktop_run_event);
+
+    #[cfg(not(desktop))]
     app.run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
@@ -318,6 +375,10 @@ use std::sync::Mutex;
 
 #[cfg(desktop)]
 static UPDATE_DOWNLOADED: AtomicBool = AtomicBool::new(false);
+#[cfg(desktop)]
+static AGENT_EXIT_CLEANUP_STARTED: AtomicBool = AtomicBool::new(false);
+#[cfg(desktop)]
+static AGENT_EXIT_CLEANUP_COMPLETE: AtomicBool = AtomicBool::new(false);
 #[cfg(desktop)]
 static CURRENT_VERSION: Lazy<Mutex<String>> = Lazy::new(|| Mutex::new(String::new()));
 

@@ -10,6 +10,9 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useOpenSecret } from "@opensecret/react";
 import { AlertTriangle, LogOut, CreditCard } from "lucide-react";
+import { stopAgentRuntimeForUser } from "@/services/agentRuntimeService";
+import { useState } from "react";
+import { getBillingService } from "@/billing/billingService";
 
 interface GuestPaymentWarningDialogProps {
   open: boolean;
@@ -20,22 +23,58 @@ export function GuestPaymentWarningDialog({ open, onOpenChange }: GuestPaymentWa
   const navigate = useNavigate();
   const os = useOpenSecret();
   const queryClient = useQueryClient();
+  const [isLoggingOut, setIsLoggingOut] = useState(false);
+  const [logoutError, setLogoutError] = useState<string | null>(null);
 
   const handleGoToPricing = () => {
     navigate({ to: "/pricing" });
   };
 
   const handleLogout = async () => {
-    // Stop proxy and reset config so it doesn't auto-start on next launch
+    setLogoutError(null);
+    setIsLoggingOut(true);
+    let operationBlock: Awaited<ReturnType<typeof stopAgentRuntimeForUser>> | null = null;
+    let signedOut = false;
+
     try {
-      const { proxyService } = await import("@/services/proxyService");
-      await proxyService.stopAndResetProxy();
+      operationBlock = await stopAgentRuntimeForUser(os.auth.user?.user.id);
     } catch (error) {
-      console.error("Error clearing proxy config:", error);
+      console.error("Error stopping Agent Mode:", error);
+      setLogoutError("Maple couldn't stop Agent Mode. Please try logging out again.");
+      setIsLoggingOut(false);
+      return;
     }
 
-    await os.signOut();
-    queryClient.clear();
+    try {
+      // Credential reset is a required part of logout.
+      const { proxyService } = await import("@/services/proxyService");
+      await proxyService.stopAndResetProxy(os.auth.user?.user.id, os.deleteApiKey);
+
+      // Third-party billing tokens outlive the OpenSecret browser session. If
+      // one survives logout, the next account can briefly query billing as the
+      // previous user until that token expires.
+      try {
+        getBillingService().clearToken();
+      } catch {
+        sessionStorage.removeItem("maple_billing_token");
+      }
+
+      await os.signOut();
+      signedOut = true;
+      queryClient.clear();
+    } catch (error) {
+      console.error("Error during sign out:", error);
+      setLogoutError(
+        "Maple couldn't securely reset Agent Mode or finish logging out. Please try again."
+      );
+    } finally {
+      if (!signedOut) {
+        operationBlock.release();
+        setIsLoggingOut(false);
+      } else {
+        operationBlock.retainUntilNextSession();
+      }
+    }
   };
 
   return (
@@ -66,14 +105,25 @@ export function GuestPaymentWarningDialog({ open, onOpenChange }: GuestPaymentWa
             </p>
           </div>
 
+          {logoutError ? (
+            <p className="text-sm text-destructive" role="alert">
+              {logoutError}
+            </p>
+          ) : null}
+
           <div className="space-y-2">
             <Button onClick={handleGoToPricing} className="w-full gap-2">
               <CreditCard className="w-4 h-4" />
               View Pricing & Subscribe
             </Button>
-            <Button variant="outline" onClick={handleLogout} className="w-full gap-2">
+            <Button
+              variant="outline"
+              onClick={handleLogout}
+              className="w-full gap-2"
+              disabled={isLoggingOut}
+            >
               <LogOut className="w-4 h-4" />
-              Log Out
+              {isLoggingOut ? "Logging Out..." : "Log Out"}
             </Button>
           </div>
         </div>

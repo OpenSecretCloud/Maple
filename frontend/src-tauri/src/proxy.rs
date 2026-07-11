@@ -1,11 +1,22 @@
 use anyhow::{anyhow, Result};
 use maple_proxy::{create_app, Config};
 use serde::{Deserialize, Serialize};
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+use std::path::Path;
 use std::path::PathBuf;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State};
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+const MAPLE_APP_IDENTIFIER: &str = "cloud.opensecret.maple";
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+static LEGACY_CONFIG_MIGRATION_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProxyConfig {
@@ -50,6 +61,7 @@ pub struct ProxyState {
     handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     config: Arc<Mutex<ProxyConfig>>,
     running: Arc<Mutex<bool>>,
+    lifecycle: Arc<Mutex<()>>,
 }
 
 impl ProxyState {
@@ -58,6 +70,15 @@ impl ProxyState {
             handle: Arc::new(Mutex::new(None)),
             config: Arc::new(Mutex::new(ProxyConfig::default())),
             running: Arc::new(Mutex::new(false)),
+            lifecycle: Arc::new(Mutex::new(())),
+        }
+    }
+
+    pub async fn status(&self) -> ProxyStatus {
+        ProxyStatus {
+            running: *self.running.lock().await,
+            config: self.config.lock().await.clone(),
+            error: None,
         }
     }
 }
@@ -65,9 +86,10 @@ impl ProxyState {
 // On Windows the proxy config lives in the roaming %APPDATA% profile, so a
 // plaintext api_key could sync across machines in a domain/AAD environment.
 // Store it in Windows Credential Manager instead and keep it out of the JSON.
+// The Tauri identifier scopes both the config directory and credential entry,
+// so managed workspace builds cannot read or overwrite production's key. The
+// production identifier remains the legacy service name, requiring no migration.
 // macOS/Linux keep their local plaintext-with-0o600 behavior unchanged.
-#[cfg(target_os = "windows")]
-const KEYRING_SERVICE: &str = "cloud.opensecret.maple";
 #[cfg(target_os = "windows")]
 const KEYRING_USER: &str = "proxy_api_key";
 
@@ -77,10 +99,16 @@ const KEYRING_USER: &str = "proxy_api_key";
 /// and `Err` when a clear was requested but the stale credential could not be
 /// removed (caller must not scrub the JSON, or the old key would be resurrected).
 #[cfg(target_os = "windows")]
-fn store_api_key(key: &str) -> Result<bool> {
-    let entry = match keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER) {
+fn store_api_key(app_handle: &AppHandle, key: &str) -> Result<bool> {
+    let service = app_handle.config().identifier.clone();
+    let entry = match keyring::Entry::new(&service, KEYRING_USER) {
         Ok(entry) => entry,
         Err(e) => {
+            if key.is_empty() {
+                return Err(anyhow!(
+                    "Failed to access Credential Manager while clearing the API key: {e}"
+                ));
+            }
             log::warn!("Credential Manager unavailable, keeping plaintext config: {e}");
             return Ok(false);
         }
@@ -114,8 +142,9 @@ fn store_api_key(key: &str) -> Result<bool> {
 /// - `Ok(Some(key))` — Credential Manager is available (`key` may be empty).
 /// - `Ok(None)` — unavailable; caller should fall back to the JSON value.
 #[cfg(target_os = "windows")]
-fn load_api_key() -> Result<Option<String>> {
-    let entry = match keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER) {
+fn load_api_key(app_handle: &AppHandle) -> Result<Option<String>> {
+    let service = app_handle.config().identifier.clone();
+    let entry = match keyring::Entry::new(&service, KEYRING_USER) {
         Ok(entry) => entry,
         Err(_) => return Ok(None),
     };
@@ -138,6 +167,15 @@ pub async fn start_proxy(
     state: State<'_, ProxyState>,
     config: ProxyConfig,
 ) -> Result<ProxyStatus, String> {
+    let _lifecycle_guard = state.lifecycle.lock().await;
+    start_proxy_inner(app_handle, &state, config).await
+}
+
+async fn start_proxy_inner(
+    app_handle: AppHandle,
+    state: &ProxyState,
+    config: ProxyConfig,
+) -> Result<ProxyStatus, String> {
     log::info!(
         "Starting proxy on {}:{} (cors={}, auto_start={})",
         config.host,
@@ -149,13 +187,9 @@ pub async fn start_proxy(
     // Check if proxy is already running
     let mut running = state.running.lock().await;
     if *running {
-        return Err("Proxy is already running".to_string());
+        drop(running);
+        return Ok(state.status().await);
     }
-
-    // Update config
-    let mut stored_config = state.config.lock().await;
-    *stored_config = config.clone();
-    drop(stored_config); // Release config lock early
 
     // Use backend URL from config or fall back to production
     let backend_url = config
@@ -184,7 +218,17 @@ pub async fn start_proxy(
         }
     };
 
-    // Create the app
+    // Starting successfully means the exact credential/configuration is also
+    // durable. In particular, do not hide Credential Manager or disk failures
+    // behind a running in-memory proxy that will change after restart.
+    save_proxy_config(&app_handle, &config)
+        .await
+        .map_err(|error| format!("Failed to save proxy config: {error}"))?;
+    *state.config.lock().await = config.clone();
+
+    // maple-proxy owns the OpenAI-compatible transport, including the shared
+    // 50 MiB request limit needed by Goose's image tool. Provider responses are
+    // passed through unchanged.
     let app = create_app(proxy_config);
 
     // Spawn the proxy server
@@ -202,11 +246,6 @@ pub async fn start_proxy(
 
     *running = true;
 
-    // Save config to disk
-    if let Err(e) = save_proxy_config(&app_handle, &config).await {
-        log::error!("Failed to save proxy config: {e}");
-    }
-
     Ok(ProxyStatus {
         running: true,
         config,
@@ -216,19 +255,27 @@ pub async fn start_proxy(
 
 #[tauri::command]
 pub async fn stop_proxy(state: State<'_, ProxyState>) -> Result<ProxyStatus, String> {
+    let _lifecycle_guard = state.lifecycle.lock().await;
+    stop_proxy_inner(&state).await
+}
+
+async fn stop_proxy_inner(state: &ProxyState) -> Result<ProxyStatus, String> {
     log::info!("Stopping proxy");
 
     let mut running = state.running.lock().await;
     if !*running {
-        return Err("Proxy is not running".to_string());
+        drop(running);
+        return Ok(state.status().await);
     }
 
     // Abort the proxy task
-    let mut handle_guard = state.handle.lock().await;
-    if let Some(handle) = handle_guard.take() {
+    let handle = state.handle.lock().await.take();
+    if let Some(handle) = handle {
         handle.abort();
+        // Await cancellation while lifecycle serialization is still held so a
+        // subsequent start cannot race the old listener's teardown.
+        let _ = handle.await;
     }
-    drop(handle_guard); // Release handle lock before taking config lock to avoid deadlock
 
     *running = false;
 
@@ -245,28 +292,72 @@ pub async fn stop_proxy(state: State<'_, ProxyState>) -> Result<ProxyStatus, Str
 
 #[tauri::command]
 pub async fn get_proxy_status(state: State<'_, ProxyState>) -> Result<ProxyStatus, String> {
-    let running = *state.running.lock().await;
-    let config = state.config.lock().await.clone();
-
-    Ok(ProxyStatus {
-        running,
-        config,
-        error: None,
-    })
+    let _lifecycle_guard = state.lifecycle.lock().await;
+    Ok(state.status().await)
 }
 
 #[tauri::command]
-pub async fn load_proxy_config(app_handle: AppHandle) -> Result<ProxyConfig, String> {
+pub async fn load_proxy_config(
+    app_handle: AppHandle,
+    state: State<'_, ProxyState>,
+) -> Result<ProxyConfig, String> {
+    let _lifecycle_guard = state.lifecycle.lock().await;
     load_saved_proxy_config(&app_handle)
         .await
         .map_err(|e| format!("Failed to load proxy config: {e}"))
 }
 
 #[tauri::command]
-pub async fn save_proxy_settings(app_handle: AppHandle, config: ProxyConfig) -> Result<(), String> {
+pub async fn save_proxy_settings(
+    app_handle: AppHandle,
+    state: State<'_, ProxyState>,
+    config: ProxyConfig,
+) -> Result<(), String> {
+    let _lifecycle_guard = state.lifecycle.lock().await;
     save_proxy_config(&app_handle, &config)
         .await
         .map_err(|e| format!("Failed to save proxy config: {e}"))
+}
+
+#[tauri::command]
+pub async fn stop_and_reset_proxy(
+    app_handle: AppHandle,
+    state: State<'_, ProxyState>,
+) -> Result<ProxyStatus, String> {
+    let _lifecycle_guard = state.lifecycle.lock().await;
+    stop_proxy_inner(&state).await?;
+
+    // Clear account-bound state without discarding app/workspace routing such
+    // as the managed proxy port or backend URL.
+    let mut config = match load_saved_proxy_config(&app_handle).await {
+        Ok(config) => config,
+        Err(_) => state.config.lock().await.clone(),
+    };
+    config.api_key.clear();
+    config.enabled = false;
+    config.auto_start = false;
+    save_proxy_config(&app_handle, &config)
+        .await
+        .map_err(|error| format!("Failed to reset proxy config: {error}"))?;
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    if app_handle.config().identifier == MAPLE_APP_IDENTIFIER {
+        scrub_legacy_proxy_config(
+            &legacy_proxy_config_path()
+                .map_err(|error| format!("Failed to locate legacy proxy config: {error}"))?,
+            InvalidLegacyConfigPolicy::Remove,
+        )
+        .await
+        .map_err(|error| format!("Failed to reset legacy proxy config: {error}"))?;
+    }
+
+    *state.config.lock().await = config.clone();
+
+    Ok(ProxyStatus {
+        running: false,
+        config,
+        error: None,
+    })
 }
 
 #[tauri::command]
@@ -285,40 +376,470 @@ pub async fn test_proxy_port(host: String, port: u16) -> Result<bool, String> {
     }
 }
 
-// Helper functions for config persistence.
-// Windows uses the Tauri-managed app_config_dir() (%APPDATA%); macOS/Linux keep
-// the historical ~/.config/maple/ location. The Windows API key is additionally
-// stored in Credential Manager rather than plaintext (see store/load_api_key).
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn proxy_request_body_limit_remains_50_mib() {
+        assert_eq!(maple_proxy::MAX_PROXY_REQUEST_BODY_BYTES, 50 * 1024 * 1024);
+    }
+
+    #[tokio::test]
+    async fn stop_waits_for_aborted_server_task() {
+        struct DropFlag(Arc<std::sync::atomic::AtomicBool>);
+        impl Drop for DropFlag {
+            fn drop(&mut self) {
+                self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+
+        let state = ProxyState::new();
+        let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let task_dropped = Arc::clone(&dropped);
+        let task = tokio::spawn(async move {
+            let _drop_flag = DropFlag(task_dropped);
+            let _ = started_tx.send(());
+            std::future::pending::<()>().await;
+        });
+        started_rx.await.unwrap();
+        *state.handle.lock().await = Some(task);
+        *state.running.lock().await = true;
+
+        let status = stop_proxy_inner(&state).await.unwrap();
+
+        assert!(!status.running);
+        assert!(dropped.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(state.handle.lock().await.is_none());
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    fn config_migration_test_dir() -> PathBuf {
+        let counter = LEGACY_CONFIG_MIGRATION_COUNTER.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!(
+            "maple-proxy-config-migration-{}-{counter}",
+            std::process::id()
+        ))
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[tokio::test]
+    async fn migrates_legacy_config_once_and_scrubs_source() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = config_migration_test_dir();
+        let legacy_path = root.join("legacy/proxy_config.json");
+        let target_path = root.join("app/proxy_config.json");
+        tokio::fs::create_dir_all(legacy_path.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::create_dir_all(target_path.parent().unwrap())
+            .await
+            .unwrap();
+
+        let original = ProxyConfig {
+            host: "127.0.0.2".to_string(),
+            port: 8765,
+            api_key: "legacy-key".to_string(),
+            enabled: true,
+            enable_cors: false,
+            backend_url: Some("https://example.invalid".to_string()),
+            auto_start: true,
+        };
+        tokio::fs::write(&legacy_path, serde_json::to_vec(&original).unwrap())
+            .await
+            .unwrap();
+
+        migrate_legacy_proxy_config(&legacy_path, &target_path)
+            .await
+            .unwrap();
+        assert!(legacy_path.exists());
+        let migrated: ProxyConfig =
+            serde_json::from_slice(&tokio::fs::read(&target_path).await.unwrap()).unwrap();
+        assert_eq!(migrated.port, 8765);
+        assert_eq!(migrated.api_key, "legacy-key");
+        assert!(migrated.enabled);
+        assert!(migrated.auto_start);
+        assert_eq!(
+            tokio::fs::metadata(&target_path)
+                .await
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+
+        let scrubbed: ProxyConfig =
+            serde_json::from_slice(&tokio::fs::read(&legacy_path).await.unwrap()).unwrap();
+        assert_eq!(scrubbed.host, original.host);
+        assert_eq!(scrubbed.port, original.port);
+        assert_eq!(scrubbed.enable_cors, original.enable_cors);
+        assert_eq!(scrubbed.backend_url, original.backend_url);
+        assert!(scrubbed.api_key.is_empty());
+        assert!(!scrubbed.enabled);
+        assert!(!scrubbed.auto_start);
+        assert_eq!(
+            tokio::fs::metadata(&legacy_path)
+                .await
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+
+        let changed = ProxyConfig {
+            port: 9999,
+            api_key: "reintroduced-key".to_string(),
+            enabled: true,
+            auto_start: true,
+            ..original
+        };
+        tokio::fs::write(&legacy_path, serde_json::to_vec(&changed).unwrap())
+            .await
+            .unwrap();
+        migrate_legacy_proxy_config(&legacy_path, &target_path)
+            .await
+            .unwrap();
+        let still_migrated: ProxyConfig =
+            serde_json::from_slice(&tokio::fs::read(&target_path).await.unwrap()).unwrap();
+        assert_eq!(still_migrated.port, 8765);
+        let rescrubbed: ProxyConfig =
+            serde_json::from_slice(&tokio::fs::read(&legacy_path).await.unwrap()).unwrap();
+        assert_eq!(rescrubbed.port, 9999);
+        assert!(rescrubbed.api_key.is_empty());
+        assert!(!rescrubbed.enabled);
+        assert!(!rescrubbed.auto_start);
+
+        tokio::fs::remove_dir_all(root).await.unwrap();
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[tokio::test]
+    async fn skips_invalid_legacy_config_without_blocking_fresh_state() {
+        let root = config_migration_test_dir();
+        let legacy_path = root.join("legacy/proxy_config.json");
+        let target_path = root.join("app/proxy_config.json");
+        tokio::fs::create_dir_all(legacy_path.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::create_dir_all(target_path.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&legacy_path, b"not valid JSON")
+            .await
+            .unwrap();
+
+        migrate_legacy_proxy_config(&legacy_path, &target_path)
+            .await
+            .unwrap();
+        assert!(!target_path.exists());
+        assert!(legacy_path.exists());
+
+        tokio::fs::remove_dir_all(root).await.unwrap();
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[tokio::test]
+    async fn explicit_legacy_reset_removes_invalid_config() {
+        let root = config_migration_test_dir();
+        let legacy_path = root.join("legacy/proxy_config.json");
+        tokio::fs::create_dir_all(legacy_path.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&legacy_path, b"not valid JSON")
+            .await
+            .unwrap();
+
+        scrub_legacy_proxy_config(&legacy_path, InvalidLegacyConfigPolicy::Remove)
+            .await
+            .unwrap();
+
+        assert!(!legacy_path.exists());
+        tokio::fs::remove_dir_all(root).await.unwrap();
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[tokio::test]
+    async fn explicit_legacy_reset_surfaces_valid_scrub_failure() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = config_migration_test_dir();
+        let legacy_dir = root.join("legacy");
+        let legacy_path = legacy_dir.join("proxy_config.json");
+        let target_path = root.join("app/proxy_config.json");
+        tokio::fs::create_dir_all(&legacy_dir).await.unwrap();
+        tokio::fs::create_dir_all(target_path.parent().unwrap())
+            .await
+            .unwrap();
+        let config = ProxyConfig {
+            api_key: "credential-that-must-not-survive".to_string(),
+            enabled: true,
+            auto_start: true,
+            ..ProxyConfig::default()
+        };
+        tokio::fs::write(&legacy_path, serde_json::to_vec(&config).unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(
+            &target_path,
+            serde_json::to_vec(&ProxyConfig::default()).unwrap(),
+        )
+        .await
+        .unwrap();
+        tokio::fs::set_permissions(&legacy_dir, std::fs::Permissions::from_mode(0o500))
+            .await
+            .unwrap();
+
+        // An authoritative app-specific config keeps ordinary loads working.
+        migrate_legacy_proxy_config(&legacy_path, &target_path)
+            .await
+            .unwrap();
+        let result =
+            scrub_legacy_proxy_config(&legacy_path, InvalidLegacyConfigPolicy::Remove).await;
+
+        tokio::fs::set_permissions(&legacy_dir, std::fs::Permissions::from_mode(0o700))
+            .await
+            .unwrap();
+        assert!(result.is_err());
+        let unchanged: ProxyConfig =
+            serde_json::from_slice(&tokio::fs::read(&legacy_path).await.unwrap()).unwrap();
+        assert_eq!(unchanged.api_key, config.api_key);
+        tokio::fs::remove_dir_all(root).await.unwrap();
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[tokio::test]
+    async fn completed_migration_is_not_blocked_by_legacy_scrub_failure() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = config_migration_test_dir();
+        let legacy_dir = root.join("legacy");
+        let legacy_path = legacy_dir.join("proxy_config.json");
+        let target_path = root.join("app/proxy_config.json");
+        tokio::fs::create_dir_all(&legacy_dir).await.unwrap();
+        tokio::fs::create_dir_all(target_path.parent().unwrap())
+            .await
+            .unwrap();
+        let config = ProxyConfig {
+            api_key: "legacy-key".to_string(),
+            enabled: true,
+            auto_start: true,
+            ..ProxyConfig::default()
+        };
+        tokio::fs::write(&legacy_path, serde_json::to_vec(&config).unwrap())
+            .await
+            .unwrap();
+        tokio::fs::set_permissions(&legacy_dir, std::fs::Permissions::from_mode(0o500))
+            .await
+            .unwrap();
+
+        let result = migrate_legacy_proxy_config(&legacy_path, &target_path).await;
+
+        tokio::fs::set_permissions(&legacy_dir, std::fs::Permissions::from_mode(0o700))
+            .await
+            .unwrap();
+        result.unwrap();
+        let migrated: ProxyConfig =
+            serde_json::from_slice(&tokio::fs::read(&target_path).await.unwrap()).unwrap();
+        assert_eq!(migrated.api_key, config.api_key);
+        let unchanged: ProxyConfig =
+            serde_json::from_slice(&tokio::fs::read(&legacy_path).await.unwrap()).unwrap();
+        assert_eq!(unchanged.api_key, config.api_key);
+        tokio::fs::remove_dir_all(root).await.unwrap();
+    }
+}
+
+// Keep proxy state scoped to the Tauri application identifier on every platform.
+// Production macOS/Linux installs copy the historical ~/.config/maple config on
+// first use; workspace builds have unique identifiers and remain isolated.
 async fn get_config_path(app_handle: &AppHandle) -> Result<PathBuf> {
-    let app_dir = if cfg!(target_os = "windows") {
-        // Resolves to %APPDATA%\cloud.opensecret.maple\ (Roaming).
-        app_handle
-            .path()
-            .app_config_dir()
-            .map_err(|e| anyhow!("Failed to resolve app config dir: {e}"))?
-    } else {
-        // macOS/Linux: ~/.config/maple/ — unchanged for byte-identical behavior.
-        let app_name = "maple";
-        let home_dir =
-            std::env::var("HOME").map_err(|_| anyhow!("Failed to get home directory"))?;
-        PathBuf::from(home_dir).join(".config").join(app_name)
+    let app_dir = app_handle
+        .path()
+        .app_config_dir()
+        .map_err(|e| anyhow!("Failed to resolve app config dir: {e}"))?;
+    tokio::fs::create_dir_all(&app_dir).await?;
+    let path = app_dir.join("proxy_config.json");
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    if app_handle.config().identifier == MAPLE_APP_IDENTIFIER {
+        migrate_legacy_proxy_config(&legacy_proxy_config_path()?, &path).await?;
+    }
+
+    Ok(path)
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn legacy_proxy_config_path() -> Result<PathBuf> {
+    let home = std::env::var("HOME").map_err(|_| anyhow!("Failed to get home directory"))?;
+    Ok(PathBuf::from(home)
+        .join(".config")
+        .join("maple")
+        .join("proxy_config.json"))
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+async fn migrate_legacy_proxy_config(legacy_path: &Path, target_path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    if !tokio::fs::try_exists(legacy_path).await? {
+        return Ok(());
+    }
+
+    if tokio::fs::try_exists(target_path).await? {
+        if let Err(error) =
+            scrub_legacy_proxy_config(legacy_path, InvalidLegacyConfigPolicy::Preserve).await
+        {
+            // The app-specific config is already authoritative. Legacy cleanup
+            // is retried on later loads and is mandatory during explicit reset.
+            log::warn!(
+                "Unable to scrub legacy proxy credentials from {}: {error}",
+                legacy_path.display()
+            );
+        }
+        return Ok(());
+    }
+
+    let contents = match tokio::fs::read(legacy_path).await {
+        Ok(contents) => contents,
+        Err(error) => {
+            log::warn!(
+                "Skipping unreadable legacy proxy config {}: {error}",
+                legacy_path.display()
+            );
+            return Ok(());
+        }
+    };
+    if let Err(error) = serde_json::from_slice::<ProxyConfig>(&contents) {
+        log::warn!(
+            "Skipping invalid legacy proxy config {}: {error}",
+            legacy_path.display()
+        );
+        return Ok(());
+    }
+
+    let counter = LEGACY_CONFIG_MIGRATION_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let temp_name = format!(".proxy_config.migrate-{}-{counter}.tmp", std::process::id());
+    let temp_path = target_path.with_file_name(temp_name);
+
+    let migration = async {
+        let mut temp = tokio::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(0o600)
+            .open(&temp_path)
+            .await?;
+        temp.write_all(&contents).await?;
+        temp.sync_all().await?;
+        tokio::fs::set_permissions(&temp_path, std::fs::Permissions::from_mode(0o600)).await?;
+
+        match tokio::fs::hard_link(&temp_path, target_path).await {
+            Ok(()) => log::info!(
+                "Migrated proxy configuration into {}",
+                target_path.display()
+            ),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error),
+        }
+        Ok::<(), std::io::Error>(())
+    }
+    .await;
+
+    let _ = tokio::fs::remove_file(&temp_path).await;
+    migration?;
+
+    // Keep a credential-free rollback fallback at the legacy path. The
+    // app-specific copy is already authoritative, so cleanup failure is
+    // best-effort here and remains a hard error during explicit reset.
+    if let Err(error) =
+        scrub_legacy_proxy_config(legacy_path, InvalidLegacyConfigPolicy::Preserve).await
+    {
+        log::warn!(
+            "Unable to scrub legacy proxy credentials from {}: {error}",
+            legacy_path.display()
+        );
+    }
+    Ok(())
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[derive(Clone, Copy)]
+enum InvalidLegacyConfigPolicy {
+    Preserve,
+    Remove,
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+async fn scrub_legacy_proxy_config(
+    path: &Path,
+    invalid_policy: InvalidLegacyConfigPolicy,
+) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let contents = match tokio::fs::read(path).await {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    let mut config: ProxyConfig = match serde_json::from_slice(&contents) {
+        Ok(config) => config,
+        Err(error) => {
+            log::warn!(
+                "Unable to parse legacy proxy config {} while removing credentials: {error}",
+                path.display()
+            );
+            if matches!(invalid_policy, InvalidLegacyConfigPolicy::Remove) {
+                tokio::fs::remove_file(path).await?;
+            }
+            return Ok(());
+        }
     };
 
-    // Ensure directory exists
-    tokio::fs::create_dir_all(&app_dir).await?;
+    let already_scrubbed = config.api_key.is_empty() && !config.enabled && !config.auto_start;
+    let owner_only = tokio::fs::metadata(path).await?.permissions().mode() & 0o777 == 0o600;
+    if already_scrubbed && owner_only {
+        return Ok(());
+    }
 
-    Ok(app_dir.join("proxy_config.json"))
+    config.api_key.clear();
+    config.enabled = false;
+    config.auto_start = false;
+
+    let counter = LEGACY_CONFIG_MIGRATION_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let temp_name = format!(".proxy_config.scrub-{}-{counter}.tmp", std::process::id());
+    let temp_path = path.with_file_name(temp_name);
+    let rewrite = async {
+        let mut temp = tokio::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(0o600)
+            .open(&temp_path)
+            .await?;
+        temp.write_all(&serde_json::to_vec_pretty(&config)?).await?;
+        temp.sync_all().await?;
+        tokio::fs::set_permissions(&temp_path, std::fs::Permissions::from_mode(0o600)).await?;
+        tokio::fs::rename(&temp_path, path).await?;
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+
+    if rewrite.is_err() {
+        let _ = tokio::fs::remove_file(&temp_path).await;
+    }
+    rewrite
 }
 
 async fn save_proxy_config(app_handle: &AppHandle, config: &ProxyConfig) -> Result<()> {
     let path = get_config_path(app_handle).await?;
 
     // On Windows, move the API key into Credential Manager and scrub it from
-    // the JSON (the config dir is the roaming profile). Other platforms keep
-    // the existing plaintext-in-JSON behavior unchanged.
+    // the JSON (the config dir is the roaming profile). Other platforms retain
+    // the existing owner-only JSON behavior.
     #[cfg(target_os = "windows")]
     let json = {
-        let scrubbed = match store_api_key(&config.api_key) {
+        let scrubbed = match store_api_key(app_handle, &config.api_key) {
             Ok(true) => ProxyConfig {
                 api_key: String::new(),
                 ..config.clone()
@@ -354,7 +875,7 @@ async fn save_proxy_config(app_handle: &AppHandle, config: &ProxyConfig) -> Resu
     Ok(())
 }
 
-async fn load_saved_proxy_config(app_handle: &AppHandle) -> Result<ProxyConfig> {
+pub async fn load_saved_proxy_config(app_handle: &AppHandle) -> Result<ProxyConfig> {
     let path = get_config_path(app_handle).await?;
 
     if !path.exists() {
@@ -368,7 +889,7 @@ async fn load_saved_proxy_config(app_handle: &AppHandle) -> Result<ProxyConfig> 
     // On Windows, prefer the API key from Credential Manager; fall back to any
     // plaintext value still in the JSON if it's unavailable.
     #[cfg(target_os = "windows")]
-    if let Some(key) = load_api_key()? {
+    if let Some(key) = load_api_key(app_handle)? {
         if !key.is_empty() {
             config.api_key = key;
         }
@@ -377,8 +898,43 @@ async fn load_saved_proxy_config(app_handle: &AppHandle) -> Result<ProxyConfig> 
     Ok(config)
 }
 
+pub async fn ensure_proxy_running(
+    app_handle: AppHandle,
+    state: State<'_, ProxyState>,
+) -> Result<ProxyStatus, String> {
+    let _lifecycle_guard = state.lifecycle.lock().await;
+    let current = state.status().await;
+    if current.running {
+        log::info!(
+            "Maple proxy already running on {}:{}",
+            current.config.host,
+            current.config.port
+        );
+        return Ok(current);
+    }
+
+    let config = load_saved_proxy_config(&app_handle)
+        .await
+        .map_err(|e| format!("Failed to load proxy config: {e}"))?;
+
+    if config.api_key.trim().is_empty() {
+        log::warn!("Maple proxy cannot auto-start because saved config has no API key");
+        return Err("Maple proxy is not configured with an API key yet".to_string());
+    }
+
+    log::info!(
+        "Starting Maple proxy from saved config on {}:{}",
+        config.host,
+        config.port
+    );
+    start_proxy_inner(app_handle, &state, config).await
+}
+
 // Initialize proxy on app startup if auto_start is enabled
 pub async fn init_proxy_on_startup_simple(app_handle: AppHandle) -> Result<()> {
+    let proxy_state: tauri::State<ProxyState> = app_handle.state();
+    let _lifecycle_guard = proxy_state.lifecycle.lock().await;
+
     // Load saved config
     let config = load_saved_proxy_config(&app_handle).await?;
 
@@ -386,11 +942,8 @@ pub async fn init_proxy_on_startup_simple(app_handle: AppHandle) -> Result<()> {
     if config.auto_start && !config.api_key.is_empty() {
         log::info!("Auto-starting proxy from saved config");
 
-        // Get the proxy state from the app handle
-        let proxy_state: tauri::State<ProxyState> = app_handle.state();
-
         // Try to start the proxy
-        match start_proxy(app_handle.clone(), proxy_state, config.clone()).await {
+        match start_proxy_inner(app_handle.clone(), &proxy_state, config.clone()).await {
             Ok(_) => {
                 log::info!(
                     "Proxy auto-started successfully on {}:{}",
