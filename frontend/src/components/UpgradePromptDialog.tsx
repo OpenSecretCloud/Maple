@@ -46,7 +46,7 @@ export function UpgradePromptDialog({
 
   const handleBuyCredits = () => {
     onOpenChange(false);
-    navigate({ to: "/", search: { api_settings: true } });
+    navigate({ to: "/settings/api" });
   };
 
   const handleNewChat = () => {

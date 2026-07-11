@@ -4,11 +4,13 @@ import { useOpenSecret } from "@opensecret/react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Loader2 } from "lucide-react";
 import { AppleAuthProvider } from "@/components/AppleAuthProvider";
+import { getSafeInternalRedirect } from "@/utils/internalRedirect";
 
 // Define the search parameters interface
 interface DesktopAuthSearchParams {
   provider: string;
   selected_plan?: string;
+  next?: string;
 }
 
 // This route handles OAuth flow for both desktop and mobile Tauri apps
@@ -22,7 +24,8 @@ export const Route = createFileRoute("/desktop-auth")({
     }
     return {
       provider,
-      selected_plan: typeof search.selected_plan === "string" ? search.selected_plan : undefined
+      selected_plan: typeof search.selected_plan === "string" ? search.selected_plan : undefined,
+      next: getSafeInternalRedirect(search.next)
     };
   }
 });
@@ -30,7 +33,7 @@ export const Route = createFileRoute("/desktop-auth")({
 function DesktopAuth() {
   // Use the typed search params
   const search = Route.useSearch();
-  const { provider, selected_plan } = search;
+  const { provider, selected_plan, next } = search;
   const navigate = useNavigate();
   const os = useOpenSecret();
 
@@ -41,8 +44,14 @@ function DesktopAuth() {
         localStorage.setItem("redirect-to-native", "true");
 
         // Store selected plan if present
+        sessionStorage.removeItem("selected_plan");
         if (selected_plan) {
           sessionStorage.setItem("selected_plan", selected_plan);
+        }
+
+        sessionStorage.removeItem("post_auth_redirect");
+        if (next) {
+          sessionStorage.setItem("post_auth_redirect", next);
         }
 
         // For Apple, we don't need to do anything here - the AppleAuthProvider
@@ -73,7 +82,7 @@ function DesktopAuth() {
     };
 
     initiateAuth();
-  }, [os, provider, selected_plan, navigate]);
+  }, [os, provider, selected_plan, next, navigate]);
 
   // Special handling for Apple OAuth - use popup instead of redirect
   if (provider === "apple") {
