@@ -16,7 +16,8 @@ import {
   Shrink,
   Volume2,
   Square,
-  LockKeyhole
+  LockKeyhole,
+  ArrowLeft
 } from "lucide-react";
 import RecordRTC from "recordrtc";
 import { useQueryClient } from "@tanstack/react-query";
@@ -62,6 +63,7 @@ import {
   DropdownMenuTrigger
 } from "@/components/ui/dropdown-menu";
 import { isLinux, isTauri } from "@/utils/platform";
+import { ResponseLifecycleFence } from "@/utils/responseLifecycle";
 import { ConversationProjectPicker } from "@/components/ConversationProjectPicker";
 import {
   getSidebarLayoutStyle,
@@ -1362,7 +1364,19 @@ const MessageList = memo(
 
 MessageList.displayName = "MessageList";
 
-export function UnifiedChat() {
+type UnifiedChatProps = {
+  standaloneMobile?: boolean;
+  onMobileBack?: () => void;
+  onMobileOpenNewChat?: (projectId: string | null) => void;
+  onMobileConversationCreated?: (conversationId: string) => void;
+};
+
+export function UnifiedChat({
+  standaloneMobile = false,
+  onMobileBack,
+  onMobileOpenNewChat,
+  onMobileConversationCreated
+}: UnifiedChatProps = {}) {
   const isMobile = useIsMobile();
   const isLandscapeMobile = useIsLandscapeMobile();
   const isCompactLayout = isMobile || isLandscapeMobile;
@@ -1466,6 +1480,7 @@ export function UnifiedChat() {
   const assistantStreamingRef = useRef(false);
 
   const abortControllerRef = useRef<AbortController | null>(null);
+  const responseLifecycleRef = useRef(new ResponseLifecycleFence());
   const billingRefreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const documentInputRef = useRef<HTMLInputElement>(null);
@@ -1507,11 +1522,24 @@ export function UnifiedChat() {
     }
   }, [input]);
 
-  // Cleanup billing refresh timeout on unmount
+  // Disconnect component-local work on unmount without canceling server-side processing.
   useEffect(() => {
+    const responseLifecycle = responseLifecycleRef.current;
+
     return () => {
+      responseLifecycle.unmount();
+      activeConversationLoadRef.current += 1;
+      abortControllerRef.current?.abort();
+      abortControllerRef.current = null;
+      assistantStreamingRef.current = false;
+
       if (billingRefreshTimeoutRef.current) {
         clearTimeout(billingRefreshTimeoutRef.current);
+      }
+
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((track) => track.stop());
+        streamRef.current = null;
       }
     };
   }, []);
@@ -1692,6 +1720,8 @@ export function UnifiedChat() {
 
   // Unified event handling for conversation changes
   useEffect(() => {
+    if (standaloneMobile) return;
+
     // Handle new chat event
     const handleNewChat = (event?: Event) => {
       const nextProjectId =
@@ -1754,7 +1784,7 @@ export function UnifiedChat() {
       );
       window.removeEventListener("popstate", handlePopState);
     };
-  }, [chatId, clearAllAttachments, selectedProjectId]);
+  }, [chatId, clearAllAttachments, selectedProjectId, standaloneMobile]);
 
   // Cancel the current response
   const handleCancelResponse = useCallback(async () => {
@@ -1766,6 +1796,7 @@ export function UnifiedChat() {
       );
       setIsGenerating(false);
       setCurrentResponseId(undefined);
+      responseLifecycleRef.current.abortResponse();
       abortControllerRef.current?.abort();
       abortControllerRef.current = null;
       assistantStreamingRef.current = false;
@@ -2171,6 +2202,11 @@ export function UnifiedChat() {
       setSelectedProjectId(null);
     });
 
+    if (onMobileOpenNewChat) {
+      onMobileOpenNewChat(null);
+      return;
+    }
+
     const usp = new URLSearchParams(window.location.search);
     usp.delete("conversation_id");
     usp.delete("project_id");
@@ -2182,7 +2218,7 @@ export function UnifiedChat() {
     if (isSidebarOpen) {
       toggleSidebar();
     }
-  }, [isSidebarOpen, setSelectedProjectId, toggleSidebar]);
+  }, [isSidebarOpen, onMobileOpenNewChat, setSelectedProjectId, toggleSidebar]);
 
   // Check user's billing access
   const billingStatus = localState.billingStatus;
@@ -2847,6 +2883,8 @@ export function UnifiedChat() {
       const hasContent = trimmedInput || draftImages.length > 0 || documentText;
       if (!hasContent || isGenerating || !openai) return;
 
+      responseLifecycleRef.current.beginResponse();
+
       // Clear any previous error
       setError(null);
 
@@ -2884,6 +2922,8 @@ export function UnifiedChat() {
           console.error("Failed to convert image:", error);
         }
       }
+
+      if (responseLifecycleRef.current.shouldIgnoreErrors()) return;
 
       // Add user message immediately with a local UUID
       const localMessageId = uuidv4();
@@ -2928,6 +2968,11 @@ export function UnifiedChat() {
             : await openai.conversations.create({
                 metadata: {}
               });
+
+          // The user may have left while the conversation was being created. In that case the
+          // prompt has not been submitted yet, so do not start new component-local work.
+          if (responseLifecycleRef.current.shouldIgnoreErrors()) return;
+
           conversationId = newConv.id;
           setConversation(newConv as Conversation);
 
@@ -2939,6 +2984,7 @@ export function UnifiedChat() {
           // Update local state but flag that we just created it
           setIsNewConversationJustCreated(true);
           setChatId(conversationId);
+          onMobileConversationCreated?.(conversationId);
 
           // Trigger sidebar refresh to show the new conversation
           window.dispatchEvent(new Event("conversationcreated"));
@@ -2971,15 +3017,19 @@ export function UnifiedChat() {
         } finally {
           // Re-enable polling after streaming completes
           assistantStreamingRef.current = false;
-          setCurrentResponseId(undefined);
+          if (responseLifecycleRef.current.canUpdateState()) {
+            setCurrentResponseId(undefined);
 
-          // Invalidate billing status after a delay to allow backend processing
-          billingRefreshTimeoutRef.current = setTimeout(() => {
-            queryClient.invalidateQueries({ queryKey: ["billingStatus"] });
-            billingRefreshTimeoutRef.current = null;
-          }, 3000);
+            // Invalidate billing status after a delay to allow backend processing
+            billingRefreshTimeoutRef.current = setTimeout(() => {
+              queryClient.invalidateQueries({ queryKey: ["billingStatus"] });
+              billingRefreshTimeoutRef.current = null;
+            }, 3000);
+          }
         }
       } catch (error) {
+        if (responseLifecycleRef.current.shouldIgnoreErrors()) return;
+
         console.error("Failed to send message:", error);
 
         // Handle usage limit errors with upsell dialogs
@@ -3108,6 +3158,8 @@ export function UnifiedChat() {
               console.log("Waiting 1s before retry...");
               await new Promise((resolve) => setTimeout(resolve, 1000));
 
+              if (responseLifecycleRef.current.shouldIgnoreErrors()) return;
+
               console.log("Retrying request once...");
               // TODO: Consider calling os.getAttestation() here if needed for attestation refresh
 
@@ -3141,6 +3193,8 @@ export function UnifiedChat() {
               }
               return;
             } catch (retryError) {
+              if (responseLifecycleRef.current.shouldIgnoreErrors()) return;
+
               // Retry failed - check one last time if message actually went through
               console.error("Retry failed:", retryError);
 
@@ -3212,8 +3266,10 @@ export function UnifiedChat() {
           }
         }
       } finally {
-        setIsGenerating(false);
-        setCurrentResponseId(undefined);
+        if (responseLifecycleRef.current.canUpdateState()) {
+          setIsGenerating(false);
+          setCurrentResponseId(undefined);
+        }
         abortControllerRef.current = null;
         assistantStreamingRef.current = false;
       }
@@ -3230,7 +3286,8 @@ export function UnifiedChat() {
       documentText,
       clearAllAttachments,
       processStreamingResponse,
-      isWebSearchEnabled
+      isWebSearchEnabled,
+      onMobileConversationCreated
     ]
   );
 
@@ -3243,15 +3300,21 @@ export function UnifiedChat() {
     }
   };
 
-  const sidebarLayoutStyle = getSidebarLayoutStyle({ offsetContent: isSidebarOpen });
+  const sidebarLayoutStyle = getSidebarLayoutStyle({
+    offsetContent: !standaloneMobile && isSidebarOpen
+  });
 
   return (
     <div
       style={sidebarLayoutStyle}
-      className={`grid h-dvh min-h-0 w-full grid-cols-1 overflow-hidden ${isSidebarOpen ? SIDEBAR_GRID_COLUMNS_CLASS : ""}`}
+      className={`grid h-dvh min-h-0 w-full grid-cols-1 overflow-hidden ${
+        !standaloneMobile && isSidebarOpen ? SIDEBAR_GRID_COLUMNS_CLASS : ""
+      }`}
     >
       {/* Use the existing Sidebar component */}
-      <Sidebar chatId={chatId} isOpen={isSidebarOpen} onToggle={toggleSidebar} />
+      {!standaloneMobile ? (
+        <Sidebar chatId={chatId} isOpen={isSidebarOpen} onToggle={toggleSidebar} />
+      ) : null}
 
       {/* Main Content */}
       <div className="flex flex-col flex-1 min-w-0 min-h-0 bg-background overflow-hidden relative">
@@ -3289,7 +3352,18 @@ export function UnifiedChat() {
         {/* Sidebar toggle + wordmark — fixed except on compact layouts while chatting (two-row header below) */}
         {!isSidebarOpen && !(isCompactLayout && messages.length > 0) && (
           <div className="fixed left-4 top-[9.5px] z-20 flex items-center gap-1.5">
-            <SidebarToggle onToggle={toggleSidebar} />
+            {standaloneMobile && onMobileBack ? (
+              <button
+                type="button"
+                className="flex h-9 w-9 items-center justify-center text-foreground transition-colors hover:text-foreground/70"
+                onClick={onMobileBack}
+                aria-label="Back"
+              >
+                <ArrowLeft className="h-4 w-4" />
+              </button>
+            ) : (
+              <SidebarToggle onToggle={toggleSidebar} />
+            )}
             <MapleWordmark
               className="h-4 w-auto animate-in fade-in-0 slide-in-from-left-1 duration-300"
               aria-hidden
@@ -3301,7 +3375,18 @@ export function UnifiedChat() {
         {messages.length > 0 &&
           (isLandscapeMobile && !isSidebarOpen ? (
             <div className="z-10 flex shrink-0 items-center gap-2 bg-background px-1 py-1 pr-4">
-              <SidebarToggle onToggle={toggleSidebar} />
+              {standaloneMobile && onMobileBack ? (
+                <button
+                  type="button"
+                  className="flex h-9 w-9 items-center justify-center text-foreground transition-colors hover:text-foreground/70"
+                  onClick={onMobileBack}
+                  aria-label="Back"
+                >
+                  <ArrowLeft className="h-4 w-4" />
+                </button>
+              ) : (
+                <SidebarToggle onToggle={toggleSidebar} />
+              )}
               <div className="min-w-0 overflow-hidden">
                 <MapleWordmark className="h-4 w-auto max-w-full" aria-hidden />
               </div>
@@ -3326,7 +3411,18 @@ export function UnifiedChat() {
             <div className="z-10 flex shrink-0 flex-col gap-2 bg-background pb-2 pl-1 pr-4 pt-2">
               <div className="flex items-center justify-between gap-3">
                 <div className="flex min-w-0 flex-1 items-center gap-1.5">
-                  <SidebarToggle onToggle={toggleSidebar} />
+                  {standaloneMobile && onMobileBack ? (
+                    <button
+                      type="button"
+                      className="flex h-9 w-9 items-center justify-center text-foreground transition-colors hover:text-foreground/70"
+                      onClick={onMobileBack}
+                      aria-label="Back"
+                    >
+                      <ArrowLeft className="h-4 w-4" />
+                    </button>
+                  ) : (
+                    <SidebarToggle onToggle={toggleSidebar} />
+                  )}
                   <div className="min-w-0 overflow-hidden">
                     <MapleWordmark className="h-4 w-auto max-w-full" aria-hidden />
                   </div>

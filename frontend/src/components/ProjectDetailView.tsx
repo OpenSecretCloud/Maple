@@ -10,7 +10,8 @@ import {
   Pin,
   PinOff,
   SquarePen,
-  Trash2
+  Trash2,
+  ArrowLeft
 } from "lucide-react";
 import { useOpenSecret, type Conversation } from "@opensecret/react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -54,6 +55,11 @@ const MAX_SELECTION = 20;
 
 interface ProjectDetailViewProps {
   projectId: string;
+  standaloneMobile?: boolean;
+  onMobileBack?: () => void;
+  onMobileOpenConversation?: (conversationId: string) => void;
+  onMobileOpenNewChat?: (projectId: string) => void;
+  onMobileProjectDeleted?: () => void;
 }
 
 function getConversationTitle(conversation: Conversation) {
@@ -142,7 +148,14 @@ function ProjectInstructionsDialog({
   );
 }
 
-export function ProjectDetailView({ projectId }: ProjectDetailViewProps) {
+export function ProjectDetailView({
+  projectId,
+  standaloneMobile = false,
+  onMobileBack,
+  onMobileOpenConversation,
+  onMobileOpenNewChat,
+  onMobileProjectDeleted
+}: ProjectDetailViewProps) {
   const os = useOpenSecret();
   const userId = os.auth.user?.user.id;
   const queryClient = useQueryClient();
@@ -306,17 +319,27 @@ export function ProjectDetailView({ projectId }: ProjectDetailViewProps) {
 
   const handleStartNewChat = useCallback(() => {
     setSelectedProjectId(projectId);
+    if (onMobileOpenNewChat) {
+      onMobileOpenNewChat(projectId);
+      return;
+    }
+
     const params = new URLSearchParams(window.location.search);
     params.delete("project_id");
     params.delete("conversation_id");
     window.history.replaceState(null, "", params.toString() ? `/?${params.toString()}` : "/");
     window.dispatchEvent(new CustomEvent("newchat", { detail: { projectId } }));
     setTimeout(() => document.getElementById("message")?.focus(), 0);
-  }, [projectId, setSelectedProjectId]);
+  }, [onMobileOpenNewChat, projectId, setSelectedProjectId]);
 
   const handleSelectConversation = useCallback(
     (conversation: Conversation) => {
       setSelectedProjectId(conversation.project_id ?? null);
+      if (onMobileOpenConversation) {
+        onMobileOpenConversation(conversation.id);
+        return;
+      }
+
       const params = new URLSearchParams(window.location.search);
       params.delete("project_id");
       params.set("conversation_id", conversation.id);
@@ -327,7 +350,7 @@ export function ProjectDetailView({ projectId }: ProjectDetailViewProps) {
         })
       );
     },
-    [setSelectedProjectId]
+    [onMobileOpenConversation, setSelectedProjectId]
   );
 
   const handleSaveProjectInstructions = useCallback(
@@ -353,7 +376,8 @@ export function ProjectDetailView({ projectId }: ProjectDetailViewProps) {
     window.history.replaceState({}, "", "/");
     window.dispatchEvent(new CustomEvent("newchat", { detail: { projectId: null } }));
     window.dispatchEvent(new Event("projectselected"));
-  }, [invalidateConversationData, os, projectId, setSelectedProjectId]);
+    onMobileProjectDeleted?.();
+  }, [invalidateConversationData, onMobileProjectDeleted, os, projectId, setSelectedProjectId]);
 
   const handleRenameConversation = useCallback(
     async (conversationId: string, newTitle: string) => {
@@ -462,13 +486,23 @@ export function ProjectDetailView({ projectId }: ProjectDetailViewProps) {
   if (isProjectPending && !project) {
     return (
       <div
-        style={SIDEBAR_LAYOUT_STYLE}
+        style={standaloneMobile ? undefined : SIDEBAR_LAYOUT_STYLE}
         className={`grid h-dvh min-h-0 w-full grid-cols-1 overflow-hidden ${
-          isSidebarOpen ? SIDEBAR_GRID_COLUMNS_CLASS : ""
+          !standaloneMobile && isSidebarOpen ? SIDEBAR_GRID_COLUMNS_CLASS : ""
         }`}
       >
-        <Sidebar isOpen={isSidebarOpen} onToggle={toggleSidebar} />
-        <div className="flex min-h-0 min-w-0 flex-1 items-center justify-center bg-background">
+        {!standaloneMobile ? <Sidebar isOpen={isSidebarOpen} onToggle={toggleSidebar} /> : null}
+        <div className="relative flex min-h-0 min-w-0 flex-1 items-center justify-center bg-background">
+          {standaloneMobile && onMobileBack ? (
+            <button
+              type="button"
+              className="absolute left-1 top-2 z-20 flex h-9 w-9 items-center justify-center text-foreground transition-colors hover:text-foreground/70"
+              onClick={onMobileBack}
+              aria-label="Back"
+            >
+              <ArrowLeft className="h-4 w-4" />
+            </button>
+          ) : null}
           <p className="text-sm text-muted-foreground">Loading project...</p>
         </div>
       </div>
@@ -477,15 +511,26 @@ export function ProjectDetailView({ projectId }: ProjectDetailViewProps) {
 
   return (
     <div
-      style={SIDEBAR_LAYOUT_STYLE}
+      style={standaloneMobile ? undefined : SIDEBAR_LAYOUT_STYLE}
       className={`grid h-dvh min-h-0 w-full grid-cols-1 overflow-hidden ${
-        isSidebarOpen ? SIDEBAR_GRID_COLUMNS_CLASS : ""
+        !standaloneMobile && isSidebarOpen ? SIDEBAR_GRID_COLUMNS_CLASS : ""
       }`}
     >
-      <Sidebar isOpen={isSidebarOpen} onToggle={toggleSidebar} />
+      {!standaloneMobile ? <Sidebar isOpen={isSidebarOpen} onToggle={toggleSidebar} /> : null}
 
       <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background">
-        {!isSidebarOpen ? (
+        {standaloneMobile && onMobileBack ? (
+          <div className="absolute left-1 top-[9.5px] z-20">
+            <button
+              type="button"
+              className="flex h-9 w-9 items-center justify-center text-foreground transition-colors hover:text-foreground/70"
+              onClick={onMobileBack}
+              aria-label="Back"
+            >
+              <ArrowLeft className="h-4 w-4" />
+            </button>
+          </div>
+        ) : !isSidebarOpen ? (
           <div className="fixed left-4 top-[9.5px] z-20">
             <SidebarToggle onToggle={toggleSidebar} />
           </div>
