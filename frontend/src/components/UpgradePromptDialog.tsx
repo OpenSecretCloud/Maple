@@ -16,15 +16,17 @@ import {
   FileText,
   Gauge,
   MessageCircle,
-  Coins
+  Coins,
+  Bot
 } from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
 import { useLocalState } from "@/state/useLocalState";
+import { hasApiAccess } from "@/billing/billingAccess";
 
 interface UpgradePromptDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  feature: "image" | "voice" | "model" | "document" | "usage" | "tokens";
+  feature: "image" | "voice" | "model" | "document" | "usage" | "tokens" | "agent";
   modelName?: string;
 }
 
@@ -62,7 +64,7 @@ export function UpgradePromptDialog({
   const isFreeTier = !localState.billingStatus?.product_name || currentPlan === "free";
   const isPro = currentPlan.includes("pro") && !currentPlan.includes("max");
   const isMax = currentPlan.includes("max");
-  const hasApiAccess = isPro || isMax || currentPlan.includes("team");
+  const userHasApiAccess = hasApiAccess(localState.billingStatus);
 
   const getNextPlan = () => {
     if (isFreeTier) return "Pro";
@@ -162,6 +164,20 @@ export function UpgradePromptDialog({
           "Auto-compaction keeps conversations flowing"
         ]
       };
+    } else if (feature === "agent") {
+      return {
+        icon: <Bot className="h-8 w-8" />,
+        title: "Agent Mode",
+        description: "Use Maple as a coding agent for multi-step work across local projects",
+        requiredPlan: "Pro",
+        benefits: [
+          "Work through multi-step coding tasks",
+          "Read and edit files in projects you choose",
+          "Run commands and development tools",
+          "Keep separate agent sessions for each project",
+          "Use supported private AI models with API access"
+        ]
+      };
     } else {
       return {
         icon: <Cpu className="h-8 w-8" />,
@@ -230,7 +246,7 @@ export function UpgradePromptDialog({
             </Button>
           )}
           {/* Show Buy Credits button for paid users hitting usage limits */}
-          {feature === "usage" && hasApiAccess && (
+          {feature === "usage" && userHasApiAccess && (
             <Button variant="outline" onClick={handleBuyCredits} className="w-full gap-2">
               <Coins className="h-4 w-4" />
               Buy Extra Credits

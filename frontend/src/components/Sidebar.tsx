@@ -35,6 +35,8 @@ import {
 import { isTauriDesktop } from "@/utils/platform";
 import { useOpenSecret } from "@opensecret/react";
 import { FEATURE_FLAGS, flagsClient } from "@/services/flags";
+import { UpgradePromptDialog } from "@/components/UpgradePromptDialog";
+import { hasApiAccess } from "@/billing/billingAccess";
 
 export function Sidebar({
   chatId,
@@ -59,13 +61,15 @@ export function Sidebar({
     isSearchVisible,
     setIsSearchVisible,
     selectedProjectId,
-    setSelectedProjectId
+    setSelectedProjectId,
+    billingStatus
   } = useLocalState();
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   // Multi-select state
   const [isSelectionMode, setIsSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [agentModeUpgradeOpen, setAgentModeUpgradeOpen] = useState(false);
 
   // Enter selection mode when items are selected (e.g., via long press)
   useEffect(() => {
@@ -130,12 +134,23 @@ export function Sidebar({
   }
 
   async function toggleAgentMode() {
+    const isLeavingAgentMode = location.pathname === "/agent";
+
+    if (!isLeavingAgentMode) {
+      if (billingStatus === null) return;
+
+      if (!hasApiAccess(billingStatus)) {
+        setAgentModeUpgradeOpen(true);
+        return;
+      }
+    }
+
     if (isOpen) {
       onToggle();
     }
 
     try {
-      await router.navigate({ to: location.pathname === "/agent" ? "/" : "/agent" });
+      await router.navigate({ to: isLeavingAgentMode ? "/" : "/agent" });
     } catch (error) {
       console.error("Navigation failed:", error);
     }
@@ -176,7 +191,10 @@ export function Sidebar({
     enabled: boolean;
   } | null>(null);
   const showAgentMode =
-    agentModeAvailable && agentModeFlag?.userId === userId && agentModeFlag?.enabled === true;
+    agentModeAvailable &&
+    billingStatus !== null &&
+    agentModeFlag?.userId === userId &&
+    agentModeFlag?.enabled === true;
   const isAgentMode = mode === "agent";
 
   useEffect(() => {
@@ -419,6 +437,11 @@ export function Sidebar({
           <AccountMenu />
         </div>
       </div>
+      <UpgradePromptDialog
+        open={agentModeUpgradeOpen}
+        onOpenChange={setAgentModeUpgradeOpen}
+        feature="agent"
+      />
     </div>
   );
 }
