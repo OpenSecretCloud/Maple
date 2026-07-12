@@ -14,6 +14,7 @@ categories = ["cryptography", "api-bindings", "web-programming"]
 [dependencies]
 # HTTP and async runtime
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls", "http2", "charset", "system-proxy"] }
+http = "1.1"
 tokio = { version = "1.41", features = ["full"] }
 async-trait = "0.1"
 
@@ -47,6 +48,7 @@ chrono = { version = "0.4", features = ["serde"] }
 
 # SSE support for streaming
 eventsource-stream = "0.2"
+async-stream = "0.3"
 futures = "0.3"
 pin-project = "1.1"
 bytes = "1.8"

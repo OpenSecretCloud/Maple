@@ -7,7 +7,7 @@ pub mod push;
 pub mod session;
 pub mod types;
 
-pub use client::OpenSecretClient;
+pub use client::{InferenceRequest, InferenceResponse, OpenSecretClient, OpenSecretResponseBody};
 pub use error::{Error, Result};
 pub use push::*;
 pub use types::*;

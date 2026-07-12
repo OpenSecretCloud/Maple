@@ -7,14 +7,38 @@ use crate::{
     types::*,
 };
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+use bytes::{Bytes, BytesMut};
+use futures::{Stream, StreamExt};
+use http::{header, HeaderMap as HttpHeaderMap, Request as HttpRequest, Response as HttpResponse};
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use reqwest::{
     header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE},
     Client,
 };
-use serde::{de::DeserializeOwned, Serialize};
-use std::sync::{Arc, RwLock};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use std::{
+    pin::Pin,
+    sync::{Arc, RwLock},
+};
 use uuid::Uuid;
+
+/// A decrypted response body returned by [`OpenSecretClient::send_inference_request`].
+///
+/// Ordinary responses contain one chunk. Server-sent event responses remain a
+/// stream, with each encrypted `data:` field decrypted without interpreting its
+/// payload as JSON.
+pub type OpenSecretResponseBody = Pin<Box<dyn Stream<Item = Result<Bytes>> + Send + 'static>>;
+
+/// A caller-owned request to an allowed OpenSecret inference endpoint.
+pub type InferenceRequest = HttpRequest<Bytes>;
+
+/// A decrypted HTTP response from an OpenSecret inference endpoint.
+pub type InferenceResponse = HttpResponse<OpenSecretResponseBody>;
+
+#[derive(Deserialize)]
+struct EncryptedBody {
+    encrypted: String,
+}
 
 pub struct OpenSecretClient {
     client: Client,
@@ -142,24 +166,183 @@ fn build_conversation_projects_endpoint(params: Option<&ConversationProjectListP
     endpoint
 }
 
-fn normalize_chat_completion_request(
-    mut request: serde_json::Value,
-    stream: bool,
-) -> Result<serde_json::Value> {
-    let request_object = request.as_object_mut().ok_or_else(|| {
-        Error::Configuration("Chat completion request must be a JSON object".to_string())
-    })?;
-
-    request_object.insert("stream".to_string(), serde_json::Value::Bool(stream));
-
-    Ok(request)
-}
-
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum AuthHeaderMode {
     None,
     Jwt,
     ApiKeyOrJwt,
+}
+
+fn is_allowed_inference_endpoint(method: &http::Method, path: &str) -> bool {
+    matches!(
+        (method.as_str(), path),
+        ("GET", "/v1/models")
+            | ("GET", "/v1/models/catalog")
+            | ("POST", "/v1/chat/completions")
+            | ("POST", "/v1/embeddings")
+            | ("POST", "/v1/audio/speech")
+            | ("POST", "/v1/audio/transcriptions")
+    )
+}
+
+fn is_hop_by_hop_header(name: &http::HeaderName) -> bool {
+    matches!(
+        name.as_str(),
+        "connection"
+            | "keep-alive"
+            | "proxy-authenticate"
+            | "proxy-authorization"
+            | "te"
+            | "trailer"
+            | "transfer-encoding"
+            | "upgrade"
+    )
+}
+
+fn sanitize_inference_request_headers(headers: &HttpHeaderMap) -> HttpHeaderMap {
+    let connection_headers = headers
+        .get_all(header::CONNECTION)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .filter_map(|value| http::HeaderName::from_bytes(value.as_bytes()).ok())
+        .collect::<Vec<_>>();
+
+    headers
+        .iter()
+        .filter(|(name, _)| {
+            !is_hop_by_hop_header(name)
+                && !connection_headers.contains(name)
+                && *name != header::HOST
+                && *name != header::AUTHORIZATION
+                && name.as_str() != "x-session-id"
+                && *name != header::CONTENT_LENGTH
+                && *name != header::CONTENT_TYPE
+                && *name != header::CONTENT_ENCODING
+                && *name != header::ACCEPT_ENCODING
+                && name.as_str() != "content-md5"
+                && name.as_str() != "digest"
+        })
+        .map(|(name, value)| (name.clone(), value.clone()))
+        .collect()
+}
+
+fn sanitize_inference_response_headers(headers: &HttpHeaderMap) -> HttpHeaderMap {
+    let connection_headers = headers
+        .get_all(header::CONNECTION)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .filter_map(|value| http::HeaderName::from_bytes(value.as_bytes()).ok())
+        .collect::<Vec<_>>();
+
+    headers
+        .iter()
+        .filter(|(name, _)| {
+            !is_hop_by_hop_header(name)
+                && !connection_headers.contains(name)
+                && *name != header::CONTENT_LENGTH
+                && *name != header::CONTENT_ENCODING
+                && name.as_str() != "content-md5"
+                && name.as_str() != "digest"
+                && *name != header::ETAG
+        })
+        .map(|(name, value)| (name.clone(), value.clone()))
+        .collect()
+}
+
+fn is_event_stream(headers: &HttpHeaderMap) -> bool {
+    headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .is_some_and(|media_type| media_type.trim().eq_ignore_ascii_case("text/event-stream"))
+}
+
+fn transform_sse_line(line: Bytes, session_key: &[u8; 32]) -> Result<Bytes> {
+    let (content, line_ending) = if line.ends_with(b"\r\n") {
+        (&line[..line.len() - 2], &b"\r\n"[..])
+    } else if line.ends_with(b"\n") {
+        (&line[..line.len() - 1], &b"\n"[..])
+    } else {
+        (&line[..], &b""[..])
+    };
+
+    let Some(mut payload) = content.strip_prefix(b"data:") else {
+        return Ok(line);
+    };
+    let prefix_len = if payload.starts_with(b" ") {
+        payload = &payload[1..];
+        6
+    } else {
+        5
+    };
+
+    if payload == b"[DONE]" {
+        return Ok(line);
+    }
+
+    if payload.is_empty() {
+        return Ok(line);
+    }
+
+    let encrypted = match BASE64.decode(payload) {
+        Ok(encrypted) => encrypted,
+        Err(_) => return Ok(line),
+    };
+    if encrypted.len() < 28 {
+        return Ok(line);
+    }
+    let decrypted = crypto::decrypt_data(session_key, &encrypted)
+        .map_err(|error| Error::Decryption(format!("Failed to decrypt SSE data: {error}")))?;
+
+    let mut transformed = BytesMut::with_capacity(prefix_len + decrypted.len() + line_ending.len());
+    transformed.extend_from_slice(&content[..prefix_len]);
+    transformed.extend_from_slice(&decrypted);
+    transformed.extend_from_slice(line_ending);
+    Ok(transformed.freeze())
+}
+
+fn decrypt_sse_stream(
+    mut source: OpenSecretResponseBody,
+    session_key: [u8; 32],
+) -> OpenSecretResponseBody {
+    let stream = async_stream::try_stream! {
+        let mut buffered = BytesMut::new();
+
+        while let Some(chunk) = source.next().await {
+            buffered.extend_from_slice(&chunk?);
+            while let Some(line_end) = buffered.iter().position(|byte| *byte == b'\n') {
+                let line = buffered.split_to(line_end + 1).freeze();
+                yield transform_sse_line(line, &session_key)?;
+            }
+        }
+
+        if !buffered.is_empty() {
+            yield transform_sse_line(buffered.freeze(), &session_key)?;
+        }
+    };
+
+    Box::pin(stream)
+}
+
+fn decrypt_sse_body(response: reqwest::Response, session_key: [u8; 32]) -> OpenSecretResponseBody {
+    let source = response
+        .bytes_stream()
+        .map(|chunk| chunk.map_err(Error::Http));
+    decrypt_sse_stream(Box::pin(source), session_key)
+}
+
+async fn collect_response_body(mut body: OpenSecretResponseBody) -> Result<Bytes> {
+    let mut collected = BytesMut::new();
+    while let Some(chunk) = body.next().await {
+        collected.extend_from_slice(&chunk?);
+    }
+    Ok(collected.freeze())
 }
 
 impl OpenSecretClient {
@@ -521,16 +704,205 @@ impl OpenSecretClient {
         Ok(result)
     }
 
-    /// Encrypted API call specifically for OpenAI endpoints (/v1/*)
-    /// This supports both API key and JWT authentication, with API key taking priority
-    async fn encrypted_openai_call<T: Serialize + Clone, U: DeserializeOwned>(
+    /// Sends a lossless encrypted request to an OpenSecret inference endpoint.
+    ///
+    /// The request URI must be relative and target one of the SDK's explicitly
+    /// allowed inference routes. Its method, query string, headers, and body
+    /// bytes are otherwise caller-owned. The SDK does not parse the request as
+    /// JSON and never adds or changes inference parameters such as `stream`.
+    ///
+    /// OpenSecret authentication, attestation sessions, and the encrypted
+    /// envelope remain SDK-owned. Caller-provided authorization, session,
+    /// content-length, content-type, content-encoding, accept-encoding,
+    /// integrity, and hop-by-hop headers are therefore not forwarded. Other
+    /// headers are preserved.
+    ///
+    /// The returned HTTP response preserves the final OpenSecret status and
+    /// safe response headers. Its body is decrypted raw bytes. SSE framing is
+    /// preserved while encrypted `data:` fields are decrypted without parsing
+    /// their contents as completion JSON.
+    pub async fn send_inference_request(
+        &self,
+        request: InferenceRequest,
+    ) -> Result<InferenceResponse> {
+        let (parts, body) = request.into_parts();
+        if parts.uri.scheme().is_some() || parts.uri.authority().is_some() {
+            return Err(Error::Configuration(
+                "Inference request URI must be relative".to_string(),
+            ));
+        }
+        if !is_allowed_inference_endpoint(&parts.method, parts.uri.path()) {
+            return Err(Error::Configuration(format!(
+                "Inference endpoint is not allowed: {} {}",
+                parts.method,
+                parts.uri.path()
+            )));
+        }
+
+        let path_and_query = parts
+            .uri
+            .path_and_query()
+            .ok_or_else(|| Error::Configuration("Inference request URI has no path".to_string()))?
+            .as_str()
+            .to_string();
+        let headers = sanitize_inference_request_headers(&parts.headers);
+        let mut retried_attestation = false;
+        let mut retried_refresh = false;
+
+        loop {
+            let result = self
+                .send_inference_request_once(&parts.method, &path_and_query, &headers, body.clone())
+                .await;
+
+            match result {
+                Ok((response, _session_key))
+                    if response.status() == reqwest::StatusCode::BAD_REQUEST
+                        && !retried_attestation =>
+                {
+                    self.perform_attestation_handshake().await?;
+                    retried_attestation = true;
+                }
+                Ok((response, session_key))
+                    if response.status() == reqwest::StatusCode::UNAUTHORIZED
+                        && !retried_refresh
+                        && !self.using_api_key(AuthHeaderMode::ApiKeyOrJwt)? =>
+                {
+                    if self.refresh_token().await.is_ok() {
+                        retried_refresh = true;
+                    } else {
+                        return self.finish_inference_response(response, session_key).await;
+                    }
+                }
+                Ok((response, session_key)) => {
+                    return self.finish_inference_response(response, session_key).await
+                }
+                Err(error) if !retried_attestation && Self::is_attestation_retryable(&error) => {
+                    self.perform_attestation_handshake().await?;
+                    retried_attestation = true;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
+    async fn send_inference_request_once(
+        &self,
+        method: &http::Method,
+        path_and_query: &str,
+        caller_headers: &HttpHeaderMap,
+        body: Bytes,
+    ) -> Result<(reqwest::Response, [u8; 32])> {
+        let session = self.session_manager.get_session()?.ok_or_else(|| {
+            Error::Session(
+                "No active session. Call perform_attestation_handshake first".to_string(),
+            )
+        })?;
+        let url = format!("{}{}", self.base_url, path_and_query);
+        let mut headers = caller_headers.clone();
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        headers.insert(
+            "x-session-id",
+            HeaderValue::from_str(&session.session_id.to_string())
+                .map_err(|error| Error::Session(format!("Invalid session ID: {error}")))?,
+        );
+        if let Some(token) = self.resolve_auth_token(AuthHeaderMode::ApiKeyOrJwt)? {
+            headers.insert(
+                AUTHORIZATION,
+                HeaderValue::from_str(&format!("Bearer {token}")).map_err(|error| {
+                    Error::Authentication(format!(
+                        "Invalid authorization credential format: {error}"
+                    ))
+                })?,
+            );
+        }
+
+        let encrypted_body = if body.is_empty() {
+            None
+        } else {
+            let encrypted = crypto::encrypt_data(&session.session_key, &body)?;
+            Some(EncryptedRequest {
+                encrypted: BASE64.encode(encrypted),
+            })
+        };
+        let request = self.client.request(method.clone(), url).headers(headers);
+        let response = match encrypted_body {
+            Some(encrypted_body) => request.json(&encrypted_body).send().await?,
+            None => request.send().await?,
+        };
+
+        Ok((response, session.session_key))
+    }
+
+    async fn finish_inference_response(
+        &self,
+        response: reqwest::Response,
+        session_key: [u8; 32],
+    ) -> Result<HttpResponse<OpenSecretResponseBody>> {
+        let status = response.status();
+        let headers = sanitize_inference_response_headers(response.headers());
+        let body: OpenSecretResponseBody = if is_event_stream(&headers) {
+            decrypt_sse_body(response, session_key)
+        } else {
+            let raw_body = response.bytes().await?;
+            let decrypted_body = match serde_json::from_slice::<EncryptedBody>(&raw_body) {
+                Ok(encrypted_body) => {
+                    let encrypted = BASE64.decode(encrypted_body.encrypted)?;
+                    Bytes::from(crypto::decrypt_data(&session_key, &encrypted)?)
+                }
+                Err(_) if status.is_success() && !raw_body.is_empty() => {
+                    return Err(Error::InvalidResponse(
+                        "Successful inference response did not contain an encrypted body"
+                            .to_string(),
+                    ));
+                }
+                Err(_) => raw_body,
+            };
+            Box::pin(futures::stream::once(async move { Ok(decrypted_body) }))
+        };
+
+        let mut result = HttpResponse::builder()
+            .status(status)
+            .body(body)
+            .map_err(|error| {
+                Error::InvalidResponse(format!("Failed to construct inference response: {error}"))
+            })?;
+        *result.headers_mut() = headers;
+        Ok(result)
+    }
+
+    /// Typed compatibility wrapper over the lossless inference transport.
+    async fn encrypted_openai_call<T: Serialize, U: DeserializeOwned>(
         &self,
         endpoint: &str,
         method: &str,
         data: Option<T>,
     ) -> Result<U> {
-        self.retry_encrypted_json_call(endpoint, method, data, AuthHeaderMode::ApiKeyOrJwt, true)
-            .await
+        let method = http::Method::from_bytes(method.as_bytes()).map_err(|error| {
+            Error::Configuration(format!("Invalid inference HTTP method: {error}"))
+        })?;
+        let body = match data {
+            Some(data) => Bytes::from(serde_json::to_vec(&data)?),
+            None => Bytes::new(),
+        };
+        let request = HttpRequest::builder()
+            .method(method)
+            .uri(endpoint)
+            .body(body)
+            .map_err(|error| {
+                Error::Configuration(format!("Failed to build inference request: {error}"))
+            })?;
+        let response = self.send_inference_request(request).await?;
+        let status = response.status();
+        let body = collect_response_body(response.into_body()).await?;
+
+        if !status.is_success() {
+            return Err(Error::Api {
+                status: status.as_u16(),
+                message: String::from_utf8_lossy(&body).into_owned(),
+            });
+        }
+
+        Ok(serde_json::from_slice(&body)?)
     }
 
     async fn retry_encrypted_stream_call<T: Serialize + Clone>(
@@ -1541,24 +1913,9 @@ impl OpenSecretClient {
     /// Creates a chat completion (non-streaming)
     pub async fn create_chat_completion(
         &self,
-        request: ChatCompletionRequest,
+        mut request: ChatCompletionRequest,
     ) -> Result<ChatCompletionResponse> {
-        let response = self
-            .create_chat_completion_raw(serde_json::to_value(request)?)
-            .await?;
-        Ok(serde_json::from_value(response)?)
-    }
-
-    /// Creates a non-streaming chat completion while preserving provider-specific
-    /// request and response fields.
-    ///
-    /// The request must be a JSON object. Its `stream` field is always set to
-    /// `false`; every other field is forwarded unchanged.
-    pub async fn create_chat_completion_raw(
-        &self,
-        request: serde_json::Value,
-    ) -> Result<serde_json::Value> {
-        let request = normalize_chat_completion_request(request, false)?;
+        request.stream = Some(false);
         self.encrypted_openai_call("/v1/chat/completions", "POST", Some(request))
             .await
     }
@@ -1573,41 +1930,32 @@ impl OpenSecretClient {
         request.stream_options = Some(StreamOptions {
             include_usage: true,
         });
-        self.create_chat_completion_stream_raw(serde_json::to_value(request)?)
-            .await
-    }
-
-    /// Creates a streaming chat completion while preserving provider-specific
-    /// request fields and raw response chunk fields.
-    ///
-    /// The request must be a JSON object. Its `stream` field is always set to
-    /// `true`; every other field is forwarded unchanged.
-    pub async fn create_chat_completion_stream_raw(
-        &self,
-        request: serde_json::Value,
-    ) -> Result<std::pin::Pin<Box<dyn futures::Stream<Item = Result<ChatCompletionChunk>> + Send>>>
-    {
         use eventsource_stream::Eventsource;
         use futures::StreamExt;
 
-        let request = normalize_chat_completion_request(request, true)?;
-
-        let (response, session_key) = self
-            .retry_encrypted_stream_call(
-                "/v1/chat/completions",
-                "POST",
-                Some(request),
-                AuthHeaderMode::ApiKeyOrJwt,
-                true,
-            )
-            .await?;
+        let request = HttpRequest::builder()
+            .method(http::Method::POST)
+            .uri("/v1/chat/completions")
+            .header(header::ACCEPT, "text/event-stream")
+            .body(Bytes::from(serde_json::to_vec(&request)?))
+            .map_err(|error| {
+                Error::Configuration(format!("Failed to build inference request: {error}"))
+            })?;
+        let response = self.send_inference_request(request).await?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = collect_response_body(response.into_body()).await?;
+            return Err(Error::Api {
+                status: status.as_u16(),
+                message: String::from_utf8_lossy(&body).into_owned(),
+            });
+        }
 
         let stream = response
-            .bytes_stream()
+            .into_body()
             .map(|result| result.map_err(std::io::Error::other));
 
         let event_stream = stream.eventsource().filter_map(move |event| {
-            let session_key = session_key;
             async move {
                 match event {
                     Ok(event) => {
@@ -1616,37 +1964,17 @@ impl OpenSecretClient {
                             return None;
                         }
 
-                        // Decrypt the event data - server sends base64 encrypted chunks.
-                        // Skip non-base64 events (heartbeats, retries, etc.) to match TS SDK.
-                        let encrypted_bytes = match BASE64.decode(&event.data) {
-                            Ok(bytes) => bytes,
-                            Err(_) => return None,
-                        };
-                        match crypto::decrypt_data(&session_key, &encrypted_bytes) {
-                            Ok(decrypted) => match String::from_utf8(decrypted) {
-                                Ok(json_str) => {
-                                    match serde_json::from_str::<ChatCompletionChunk>(&json_str) {
-                                        Ok(chunk) => Some(Ok(chunk)),
-                                        Err(e) => Some(Err(Error::Api {
-                                            status: 0,
-                                            message: format!("Failed to parse chunk: {}", e),
-                                        })),
-                                    }
-                                }
-                                Err(e) => Some(Err(Error::Api {
-                                    status: 0,
-                                    message: format!("Invalid UTF-8 in decrypted data: {}", e),
-                                })),
-                            },
-                            Err(e) => Some(Err(Error::Decryption(format!(
-                                "Failed to decrypt chunk: {}",
-                                e
-                            )))),
+                        match serde_json::from_str::<ChatCompletionChunk>(&event.data) {
+                            Ok(chunk) => Some(Ok(chunk)),
+                            Err(error) => Some(Err(Error::Api {
+                                status: 0,
+                                message: format!("Failed to parse chunk: {error}"),
+                            })),
                         }
                     }
-                    Err(e) => Some(Err(Error::Api {
+                    Err(error) => Some(Err(Error::Api {
                         status: 0,
-                        message: format!("SSE error: {}", e),
+                        message: format!("SSE error: {error}"),
                     })),
                 }
             }
@@ -1975,7 +2303,7 @@ mod tests {
     use futures::StreamExt;
     use serde_json::json;
     use wiremock::{
-        matchers::{header, method, path},
+        matchers::{header, method, path, query_param},
         Match, Mock, MockServer, Request, Respond, ResponseTemplate,
     };
 
@@ -2013,6 +2341,28 @@ mod tests {
                 return false;
             };
             let Ok(actual) = serde_json::from_slice::<serde_json::Value>(&plaintext) else {
+                return false;
+            };
+
+            actual == self.expected
+        }
+    }
+
+    #[derive(Debug)]
+    struct EncryptedBytesBodyMatcher {
+        session_key: [u8; 32],
+        expected: Bytes,
+    }
+
+    impl Match for EncryptedBytesBodyMatcher {
+        fn matches(&self, request: &Request) -> bool {
+            let Ok(body) = serde_json::from_slice::<EncryptedRequest>(request.body.as_ref()) else {
+                return false;
+            };
+            let Ok(encrypted) = BASE64.decode(body.encrypted.as_bytes()) else {
+                return false;
+            };
+            let Ok(actual) = crypto::decrypt_data(&self.session_key, &encrypted) else {
                 return false;
             };
 
@@ -2090,10 +2440,20 @@ mod tests {
         json!({ "encrypted": BASE64.encode(encrypted) })
     }
 
+    fn encrypted_response_bytes(session_key: &[u8; 32], payload: &[u8]) -> serde_json::Value {
+        let encrypted = crypto::encrypt_data(session_key, payload).unwrap();
+        json!({ "encrypted": BASE64.encode(encrypted) })
+    }
+
     fn encrypted_sse_data<T: Serialize>(session_key: &[u8; 32], payload: &T) -> String {
         let plaintext = serde_json::to_vec(payload).unwrap();
         let encrypted = crypto::encrypt_data(session_key, &plaintext).unwrap();
         format!("data: {}\n\n", BASE64.encode(encrypted))
+    }
+
+    fn encrypted_sse_bytes(session_key: &[u8; 32], payload: &[u8]) -> String {
+        let encrypted = crypto::encrypt_data(session_key, payload).unwrap();
+        BASE64.encode(encrypted)
     }
 
     fn decrypt_request_body<T: serde::de::DeserializeOwned>(
@@ -2744,11 +3104,7 @@ mod tests {
                     "stream_options": {"include_usage": true}
                 }),
             })
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .insert_header("content-type", "text/event-stream")
-                    .set_body_string(sse_body),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_raw(sse_body, "text/event-stream"))
             .expect(1)
             .mount(&mock_server)
             .await;
@@ -2780,196 +3136,449 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_raw_chat_completion_preserves_request_extensions_and_response() {
+    async fn inference_transport_preserves_raw_request_and_response_bytes() {
         let mock_server = MockServer::start().await;
-        let client = OpenSecretClient::new(mock_server.uri()).unwrap();
+        let client =
+            OpenSecretClient::new_with_api_key(mock_server.uri(), "real_api_key".to_string())
+                .unwrap();
         let session_id = Uuid::new_v4();
         let session_key = [27u8; 32];
-
         client
             .session_manager
             .set_session(session_id, session_key)
             .unwrap();
-        client
-            .session_manager
-            .set_tokens(
-                "access_token".to_string(),
-                Some("refresh_token".to_string()),
-            )
-            .unwrap();
 
-        let request = json!({
-            "model": "gemma4-31b",
-            "messages": [{"role": "user", "content": "Classify this command"}],
-            "stream": true,
-            "include_reasoning": false,
-            "chat_template_kwargs": {"enable_thinking": false},
-            "provider_extensions": {
-                "nested": {"flag": true, "values": [1, "two", null]}
-            }
-        });
-        let expected_request = json!({
-            "model": "gemma4-31b",
-            "messages": [{"role": "user", "content": "Classify this command"}],
-            "stream": false,
-            "include_reasoning": false,
-            "chat_template_kwargs": {"enable_thinking": false},
-            "provider_extensions": {
-                "nested": {"flag": true, "values": [1, "two", null]}
-            }
-        });
-        let raw_response = json!({
-            "id": "chatcmpl-raw",
-            "object": "chat.completion",
-            "created": 1,
-            "model": "gemma4-31b",
-            "choices": [{
-                "index": 0,
-                "message": {
-                    "role": "assistant",
-                    "content": "READ",
-                    "provider_metadata": {"decision_id": "abc"}
-                },
-                "finish_reason": "stop"
-            }],
-            "usage": {"prompt_tokens": 10, "completion_tokens": 1, "total_tokens": 11},
-            "provider_response": {"arbitrary": [true, {"nested": "value"}]}
-        });
-
-        Mock::given(method("POST"))
-            .and(path("/v1/chat/completions"))
-            .and(header("authorization", "Bearer access_token"))
-            .and(header("x-session-id", session_id.to_string()))
-            .and(EncryptedJsonBodyMatcher {
-                session_key,
-                expected: expected_request,
-            })
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(encrypted_response(&session_key, &raw_response)),
-            )
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-
-        let response = client.create_chat_completion_raw(request).await.unwrap();
-
-        assert_eq!(response, raw_response);
-    }
-
-    #[tokio::test]
-    async fn test_raw_streaming_completion_normalizes_and_preserves_extensions() {
-        let mock_server = MockServer::start().await;
-        let client = OpenSecretClient::new(mock_server.uri()).unwrap();
-        let session_id = Uuid::new_v4();
-        let session_key = [28u8; 32];
-
-        client
-            .session_manager
-            .set_session(session_id, session_key)
-            .unwrap();
-        client
-            .session_manager
-            .set_tokens(
-                "access_token".to_string(),
-                Some("refresh_token".to_string()),
-            )
-            .unwrap();
-
-        let request = json!({
-            "model": "gemma4-31b",
-            "messages": [{"role": "user", "content": "Classify this command"}],
-            "stream": false,
-            "stream_options": {
-                "include_usage": false,
-                "provider_stream_option": {"keep": "me"}
-            },
-            "include_reasoning": false,
-            "chat_template_kwargs": {"enable_thinking": false},
-            "provider_extensions": {"nested": {"keep": true}}
-        });
-        let expected_request = json!({
-            "model": "gemma4-31b",
-            "messages": [{"role": "user", "content": "Classify this command"}],
-            "stream": true,
-            "stream_options": {
-                "include_usage": false,
-                "provider_stream_option": {"keep": "me"}
-            },
-            "include_reasoning": false,
-            "chat_template_kwargs": {"enable_thinking": false},
-            "provider_extensions": {"nested": {"keep": true}}
-        });
-        let first_chunk = json!({
-            "id": "chatcmpl-raw-stream",
-            "object": "chat.completion.chunk",
-            "choices": [{
-                "index": 0,
-                "delta": {
-                    "content": "READ",
-                    "provider_delta": {"nested": [1, 2, 3]}
-                },
-                "finish_reason": null
-            }],
-            "provider_chunk": {"arbitrary": true}
-        });
-        let usage_chunk = json!({
-            "id": "chatcmpl-raw-stream",
-            "object": "chat.completion.chunk",
-            "choices": [],
-            "usage": {
-                "prompt_tokens": 10,
-                "completion_tokens": 1,
-                "total_tokens": 11,
-                "provider_usage": {"cached": 4}
-            }
-        });
-        let sse_body = format!(
-            "{}{}data: [DONE]\n\n",
-            encrypted_sse_data(&session_key, &first_chunk),
-            encrypted_sse_data(&session_key, &usage_chunk),
+        let request_body = Bytes::from_static(
+            br#"{ "z": 184467440737095516160000000000000, "stream":false, "a":[1, 2] }
+"#,
+        );
+        let response_body = Bytes::from_static(
+            br#"{ "provider": {"huge":184467440737095516160000000000001}, "a": 1 }
+"#,
         );
 
         Mock::given(method("POST"))
             .and(path("/v1/chat/completions"))
-            .and(header("authorization", "Bearer access_token"))
+            .and(query_param("trace", "one two"))
+            .and(header("authorization", "Bearer real_api_key"))
             .and(header("x-session-id", session_id.to_string()))
-            .and(header("accept", "text/event-stream"))
-            .and(EncryptedJsonBodyMatcher {
+            .and(header("content-type", "application/json"))
+            .and(header("x-provider-beta", "raw-v2"))
+            .and(MissingHeaderMatcher("x-remove"))
+            .and(MissingHeaderMatcher("content-encoding"))
+            .and(MissingHeaderMatcher("accept-encoding"))
+            .and(MissingHeaderMatcher("content-md5"))
+            .and(EncryptedBytesBodyMatcher {
                 session_key,
-                expected: expected_request,
+                expected: request_body.clone(),
             })
             .respond_with(
-                ResponseTemplate::new(200)
-                    .insert_header("content-type", "text/event-stream")
-                    .set_body_string(sse_body),
+                ResponseTemplate::new(201)
+                    .insert_header("content-type", "application/json")
+                    .insert_header("x-provider-result", "kept")
+                    .insert_header("connection", "x-remove-response")
+                    .insert_header("x-remove-response", "gone")
+                    .insert_header("content-encoding", "identity")
+                    .set_body_json(encrypted_response_bytes(&session_key, &response_body)),
             )
             .expect(1)
             .mount(&mock_server)
             .await;
 
-        let mut stream = client
-            .create_chat_completion_stream_raw(request)
-            .await
+        let request = HttpRequest::builder()
+            .method(http::Method::POST)
+            .uri("/v1/chat/completions?trace=one%20two")
+            .header(header::AUTHORIZATION, "Bearer caller_must_not_control_this")
+            .header("x-session-id", "caller_must_not_control_this")
+            .header(header::CONTENT_TYPE, "application/custom")
+            .header(header::CONTENT_ENCODING, "gzip")
+            .header(header::ACCEPT_ENCODING, "gzip, br")
+            .header("content-md5", "caller-body-digest")
+            .header(header::CONNECTION, "x-remove")
+            .header("x-remove", "gone")
+            .header("x-provider-beta", "raw-v2")
+            .body(request_body)
             .unwrap();
-        let actual_first = stream.next().await.unwrap().unwrap();
-        let actual_usage = stream.next().await.unwrap().unwrap();
+        let response = client.send_inference_request(request).await.unwrap();
 
-        assert_eq!(actual_first.0, first_chunk);
-        assert_eq!(actual_usage.0, usage_chunk);
-        assert!(stream.next().await.is_none());
+        assert_eq!(response.status(), http::StatusCode::CREATED);
+        assert_eq!(response.headers().get("x-provider-result").unwrap(), "kept");
+        assert!(!response.headers().contains_key(header::CONTENT_LENGTH));
+        assert!(!response.headers().contains_key(header::CONTENT_ENCODING));
+        assert!(!response.headers().contains_key(header::CONNECTION));
+        assert!(!response.headers().contains_key("x-remove-response"));
+        assert_eq!(
+            collect_response_body(response.into_body()).await.unwrap(),
+            response_body
+        );
     }
 
-    #[test]
-    fn raw_chat_completion_requires_a_json_object() {
-        let error =
-            normalize_chat_completion_request(json!(["not", "an", "object"]), false).unwrap_err();
+    #[tokio::test]
+    async fn inference_transport_rejects_absolute_and_non_inference_routes() {
+        let client = OpenSecretClient::new("http://localhost:3000").unwrap();
+        for (method, uri) in [
+            (
+                http::Method::POST,
+                "https://example.test/v1/chat/completions",
+            ),
+            (http::Method::POST, "/v1/responses"),
+            (http::Method::GET, "/v1/chat/completions"),
+            (http::Method::POST, "/protected/user"),
+        ] {
+            let request = HttpRequest::builder()
+                .method(method)
+                .uri(uri)
+                .body(Bytes::new())
+                .unwrap();
+            assert!(matches!(
+                client.send_inference_request(request).await,
+                Err(Error::Configuration(_))
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn inference_transport_preserves_final_plaintext_error_after_refresh() {
+        let mock_server = MockServer::start().await;
+        let client = OpenSecretClient::new(mock_server.uri()).unwrap();
+        let session_id = Uuid::new_v4();
+        let session_key = [28u8; 32];
+        let request_body = Bytes::from_static(br#"{"model":"test","messages":[]}"#);
+        let error_body =
+            Bytes::from_static(br#"{"error":{"type":"rate_limit","n":999999999999999999999}}"#);
+        client
+            .session_manager
+            .set_session(session_id, session_key)
+            .unwrap();
+        client
+            .session_manager
+            .set_tokens(
+                "expired_access".to_string(),
+                Some("refresh_token".to_string()),
+            )
+            .unwrap();
+
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .and(header("authorization", "Bearer expired_access"))
+            .and(EncryptedBytesBodyMatcher {
+                session_key,
+                expected: request_body.clone(),
+            })
+            .respond_with(ResponseTemplate::new(401).set_body_string("jwt expired"))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/refresh"))
+            .and(MissingHeaderMatcher("authorization"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(encrypted_response(
+                &session_key,
+                &json!({
+                    "access_token": "fresh_access",
+                    "refresh_token": "fresh_refresh"
+                }),
+            )))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .and(header("authorization", "Bearer fresh_access"))
+            .and(EncryptedBytesBodyMatcher {
+                session_key,
+                expected: request_body.clone(),
+            })
+            .respond_with(
+                ResponseTemplate::new(429)
+                    .insert_header("x-request-id", "provider-429")
+                    .set_body_bytes(error_body.clone()),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let request = HttpRequest::builder()
+            .method(http::Method::POST)
+            .uri("/v1/chat/completions")
+            .body(request_body)
+            .unwrap();
+        let response = client.send_inference_request(request).await.unwrap();
+
+        assert_eq!(response.status(), http::StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            response.headers().get("x-request-id").unwrap(),
+            "provider-429"
+        );
+        assert_eq!(
+            collect_response_body(response.into_body()).await.unwrap(),
+            error_body
+        );
+    }
+
+    #[tokio::test]
+    async fn inference_transport_decrypts_non_success_encrypted_body() {
+        let mock_server = MockServer::start().await;
+        let client =
+            OpenSecretClient::new_with_api_key(mock_server.uri(), "api_key".to_string()).unwrap();
+        let session_id = Uuid::new_v4();
+        let session_key = [29u8; 32];
+        let error_body = Bytes::from_static(br#"{ "error": "provider rejected", "extra": 7 }"#);
+        client
+            .session_manager
+            .set_session(session_id, session_key)
+            .unwrap();
+
+        Mock::given(method("POST"))
+            .and(path("/v1/embeddings"))
+            .respond_with(
+                ResponseTemplate::new(422)
+                    .set_body_json(encrypted_response_bytes(&session_key, &error_body)),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let request = HttpRequest::builder()
+            .method(http::Method::POST)
+            .uri("/v1/embeddings")
+            .body(Bytes::from_static(br#"{"model":"x","input":"y"}"#))
+            .unwrap();
+        let response = client.send_inference_request(request).await.unwrap();
+
+        assert_eq!(response.status(), http::StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(
+            collect_response_body(response.into_body()).await.unwrap(),
+            error_body
+        );
+    }
+
+    #[tokio::test]
+    async fn inference_transport_establishes_attestation_and_replays_exact_bytes() {
+        let mock_server = MockServer::start().await;
+        let client =
+            OpenSecretClient::new_with_api_key(mock_server.uri(), "api_key".to_string()).unwrap();
+        let server_secret_key = [34u8; 32];
+        let server_public_key =
+            x25519_dalek::PublicKey::from(&x25519_dalek::StaticSecret::from(server_secret_key));
+        let session_key = [35u8; 32];
+        let session_id = Uuid::new_v4();
+        let request_body = Bytes::from_static(br#"{ "model":"x", "input":"exact bytes" }"#);
+        let response_body = Bytes::from_static(br#"{ "ok": true }"#);
+
+        Mock::given(method("GET"))
+            .and(PathPrefixMatcher("/attestation/"))
+            .respond_with(AttestationResponder {
+                server_public_key: server_public_key.to_bytes(),
+            })
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/key_exchange"))
+            .and(MissingHeaderMatcher("authorization"))
+            .respond_with(KeyExchangeResponder {
+                server_secret_key,
+                session_key,
+                session_id: session_id.to_string(),
+            })
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/embeddings"))
+            .and(header("authorization", "Bearer api_key"))
+            .and(header("x-session-id", session_id.to_string()))
+            .and(EncryptedBytesBodyMatcher {
+                session_key,
+                expected: request_body.clone(),
+            })
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(encrypted_response_bytes(&session_key, &response_body)),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let request = HttpRequest::builder()
+            .method(http::Method::POST)
+            .uri("/v1/embeddings")
+            .body(request_body)
+            .unwrap();
+        let response = client.send_inference_request(request).await.unwrap();
+
+        assert_eq!(
+            collect_response_body(response.into_body()).await.unwrap(),
+            response_body
+        );
+    }
+
+    #[tokio::test]
+    async fn inference_sse_transport_preserves_framing_across_arbitrary_chunks() {
+        let session_key = [30u8; 32];
+        let decrypted_payload =
+            br#"{ "delta": {"huge":184467440737095516160000000000000}, "text":"hi" }"#;
+        let encrypted_payload = encrypted_sse_bytes(&session_key, decrypted_payload);
+        let encrypted_sse = format!(
+            ": heartbeat\r\nevent: chunk\r\nid: provider-7\r\nretry: 1500\r\ndata: {encrypted_payload}\r\n\r\ndata: provider-heartbeat\n\ndata: [DONE]\n\n"
+        );
+        let expected = format!(
+            ": heartbeat\r\nevent: chunk\r\nid: provider-7\r\nretry: 1500\r\ndata: {}\r\n\r\ndata: provider-heartbeat\n\ndata: [DONE]\n\n",
+            String::from_utf8_lossy(decrypted_payload)
+        );
+        let chunks = encrypted_sse
+            .as_bytes()
+            .chunks(3)
+            .map(|chunk| Ok(Bytes::copy_from_slice(chunk)))
+            .collect::<Vec<Result<Bytes>>>();
+        let source: OpenSecretResponseBody = Box::pin(futures::stream::iter(chunks));
+
+        let actual = collect_response_body(decrypt_sse_stream(source, session_key))
+            .await
+            .unwrap();
+
+        assert_eq!(actual, expected.as_bytes());
+        assert_eq!(
+            actual
+                .windows(6)
+                .filter(|window| *window == b"[DONE]")
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn inference_sse_transport_reports_corrupt_ciphertext() {
+        let session_key = [31u8; 32];
+        let mut encrypted = crypto::encrypt_data(&session_key, br#"{"delta":"x"}"#).unwrap();
+        *encrypted.last_mut().unwrap() ^= 0xff;
+        let source: OpenSecretResponseBody = Box::pin(futures::stream::iter([Ok(Bytes::from(
+            format!("data: {}\n\n", BASE64.encode(encrypted)),
+        ))]));
+
+        let error = collect_response_body(decrypt_sse_stream(source, session_key))
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, Error::Decryption(message) if message.contains("SSE data")));
+    }
+
+    #[tokio::test]
+    async fn typed_chat_completion_keeps_legacy_stream_false_and_error_mapping() {
+        let mock_server = MockServer::start().await;
+        let client =
+            OpenSecretClient::new_with_api_key(mock_server.uri(), "api_key".to_string()).unwrap();
+        let session_id = Uuid::new_v4();
+        let session_key = [32u8; 32];
+        client
+            .session_manager
+            .set_session(session_id, session_key)
+            .unwrap();
+
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .and(EncryptedJsonBodyMatcher {
+                session_key,
+                expected: json!({
+                    "model": "typed-model",
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "stream": false
+                }),
+            })
+            .respond_with(ResponseTemplate::new(409).set_body_string("typed conflict"))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let error = client
+            .create_chat_completion(ChatCompletionRequest {
+                model: "typed-model".to_string(),
+                messages: vec![ChatMessage {
+                    role: "user".to_string(),
+                    content: json!("hi"),
+                    tool_calls: None,
+                    reasoning_content: None,
+                }],
+                temperature: None,
+                max_tokens: None,
+                stream: Some(true),
+                stream_options: None,
+                tools: None,
+                tool_choice: None,
+            })
+            .await
+            .unwrap_err();
 
         assert!(matches!(
             error,
-            Error::Configuration(message)
-                if message == "Chat completion request must be a JSON object"
+            Error::Api { status: 409, message } if message == "typed conflict"
         ));
+    }
+
+    #[tokio::test]
+    async fn typed_models_and_embeddings_remain_compatible() {
+        let mock_server = MockServer::start().await;
+        let client =
+            OpenSecretClient::new_with_api_key(mock_server.uri(), "api_key".to_string()).unwrap();
+        let session_id = Uuid::new_v4();
+        let session_key = [33u8; 32];
+        client
+            .session_manager
+            .set_session(session_id, session_key)
+            .unwrap();
+
+        Mock::given(method("GET"))
+            .and(path("/v1/models"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(encrypted_response(
+                &session_key,
+                &json!({
+                    "object": "list",
+                    "data": [{"id": "model-a", "object": "model"}]
+                }),
+            )))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/embeddings"))
+            .and(EncryptedJsonBodyMatcher {
+                session_key,
+                expected: json!({
+                    "input": "hello",
+                    "model": "embedding-model"
+                }),
+            })
+            .respond_with(ResponseTemplate::new(200).set_body_json(encrypted_response(
+                &session_key,
+                &json!({
+                    "object": "list",
+                    "data": [{"object": "embedding", "index": 0, "embedding": [0.25, 0.5]}],
+                    "model": "embedding-model",
+                    "usage": {"prompt_tokens": 1, "total_tokens": 1}
+                }),
+            )))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let models = client.get_models().await.unwrap();
+        let embeddings = client
+            .create_embeddings(EmbeddingRequest {
+                input: "hello".into(),
+                model: "embedding-model".to_string(),
+                encoding_format: None,
+                dimensions: None,
+                user: None,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(models.data[0].id, "model-a");
+        assert_eq!(
+            embeddings.data[0].embedding.as_floats(),
+            Some(&[0.25, 0.5][..])
+        );
     }
 
     #[tokio::test]
