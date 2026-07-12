@@ -34,7 +34,7 @@ tauri-plugin-single-instance = { version = "=2.4.0", features = ["deep-link"] }
 tauri-plugin-opener = "2.5.4"
 tauri-plugin-os = "2.3.2"
 tauri-plugin-sign-in-with-apple = "1.0.2"
-tokio = { version = "1.0", features = ["net", "sync", "rt-multi-thread", "macros", "time"] }
+tokio = { version = "1.0", features = ["io-util", "net", "process", "sync", "rt-multi-thread", "macros", "time"] }
 once_cell = "1.18.0"
 maple-proxy = "0.1.11"
 tauri-plugin-fs = "2.5.1"
@@ -75,9 +75,14 @@ sha2 = "0.10"
 # instead of a submodule so ordinary Maple checkouts do not need the full Goose
 # history.
 goose = { git = "https://github.com/aaif-goose/goose.git", rev = "b7eb1e9735833a7bf12ab92994a788fbc770f218", package = "goose", default-features = false }
+async-trait = "0.1"
 rmcp = { version = "=1.4.0", default-features = false }
 tauri-plugin-dialog = "2.7.1"
 tokio-util = "0.7"
+process-wrap = { version = "=9.1.0", default-features = false, features = ["tokio1", "creation-flags", "job-object", "process-group"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [target.'cfg(target_os = "ios")'.dependencies]
 # TTS dependencies (Supertonic) - iOS
@@ -103,6 +108,7 @@ openssl = { version = "0.10.80", default-features = false, features = ["vendored
 # Store the proxy API key in Windows Credential Manager rather than as
 # plaintext in the roaming %APPDATA% config (which can sync across machines).
 keyring = { version = "3", features = ["windows-native"] }
+windows = { version = "0.62.2", features = ["Win32_System_Threading"] }
 
 [patch.crates-io]
 # Local patch for tao 0.35.2 Android intent crashes:

@@ -1,4 +1,8 @@
+mod developer_tools;
+mod shell_permission;
+
 use crate::proxy;
+use developer_tools::MapleDeveloperClient;
 use futures_util::StreamExt;
 use goose::agents::{
     Agent, AgentConfig as GooseAgentConfig, AgentEvent, ExtensionConfig, GoosePlatform,
@@ -20,7 +24,11 @@ use goose::session::SessionManager;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use shell_permission::{
+    local_read_image_request_id, local_read_request_id, ShellPermissionClassifier,
+    ShellPermissionOutcome, ShellPermissionRequest,
+};
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -34,8 +42,21 @@ use tokio_util::sync::CancellationToken;
 const DEFAULT_AGENT_MODEL: &str = "glm-5-2";
 const LEGACY_AGENT_DEFAULT_MODEL: &str = "auto:powerful";
 const DEFAULT_GOOSE_MODE: &str = "smart_approve";
+// Keep Goose on its ActionRequired path so Maple can apply the currently selected
+// policy at every tool boundary, including when the user changes it mid-run.
+const GOOSE_PERMISSION_ROUTING_MODE: GooseMode = GooseMode::SmartApprove;
 const AGENT_EVENT_NAME: &str = "agent-event";
-const MAPLE_DEVELOPER_TOOLS: [&str; 5] = ["write", "edit", "shell", "tree", "read_image"];
+const MAPLE_DEVELOPER_TOOLS: [&str; 5] = ["read", "shell", "edit", "write", "read_image"];
+const MAPLE_GOOSE_PERMISSION_CONFIG: &str = r#"user:
+  always_allow: []
+  ask_before:
+  - read
+  - shell
+  - edit
+  - write
+  - read_image
+  never_allow: []
+"#;
 const RUN_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 const DEFAULT_AGENT_SESSION_TITLE: &str = "New agent session";
 const MAX_AGENT_SESSION_TITLE_CHARS: usize = 80;
@@ -115,6 +136,13 @@ pub struct AgentPermissionResponse {
     pub decision: String,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentPermissionModeRequest {
+    pub session_id: String,
+    pub mode: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentRunResponse {
@@ -188,11 +216,13 @@ struct ActiveAgentRun {
 
 type PendingPermissionKey = (String, String);
 type PendingPermissions = Arc<Mutex<HashMap<PendingPermissionKey, ()>>>;
+type SessionPermissionModes = Arc<Mutex<HashMap<String, GooseMode>>>;
 
 struct AgentRuntime {
     agent_manager: Arc<AgentManager>,
     session_manager: Arc<SessionManager>,
     active_runs: HashMap<String, ActiveAgentRun>,
+    permission_modes: SessionPermissionModes,
     project_root: PathBuf,
     model: String,
     mode: String,
@@ -560,6 +590,7 @@ async fn start_runtime_for_user(
     let mode = request
         .mode
         .unwrap_or_else(|| DEFAULT_GOOSE_MODE.to_string());
+    parse_user_permission_mode(&mode)?;
 
     let config_dir = agent_config_dir(&app_handle, &user_id).map_err(|e| e.to_string())?;
     let goose_path_root = config_dir.join("goose");
@@ -567,24 +598,27 @@ async fn start_runtime_for_user(
         .map_err(|e| format!("Failed to create Goose data dir: {e}"))?;
     fs::create_dir_all(goose_path_root.join("config"))
         .map_err(|e| format!("Failed to create Goose config dir: {e}"))?;
+    // This account-scoped PermissionManager is the one AgentManager actually
+    // inspects. Force every Maple-routed tool through ActionRequired before it
+    // is constructed so stale Goose AlwaysAllow entries cannot bypass Maple.
+    reset_maple_owned_permission_file(&goose_path_root.join("config").join("permission.yaml"))?;
 
     configure_embedded_goose(
         &agent_root_dir(&app_handle)
             .map_err(|e| e.to_string())?
             .join("goose-runtime"),
         &model,
-        &mode,
+        DEFAULT_GOOSE_MODE,
         &maple_proxy_base_url,
     )?;
 
     let session_manager = Arc::new(SessionManager::new(goose_path_root.join("data")));
     let permission_manager = Arc::new(PermissionManager::new(goose_path_root.join("config")));
-    let goose_mode = parse_goose_mode(&mode);
     let goose_config = GooseAgentConfig::new(
         Arc::clone(&session_manager),
         permission_manager,
         None,
-        goose_mode,
+        GOOSE_PERMISSION_ROUTING_MODE,
         true,
         GoosePlatform::GooseDesktop,
     )
@@ -599,6 +633,7 @@ async fn start_runtime_for_user(
         agent_manager,
         session_manager,
         active_runs: HashMap::new(),
+        permission_modes: Arc::new(Mutex::new(HashMap::new())),
         project_root: project_root.clone(),
         model: model.clone(),
         mode: mode.clone(),
@@ -788,7 +823,14 @@ pub async fn agent_create_session(
         model: None,
         mode: None,
     });
-    let (agent_manager, session_manager, runtime_project_root, runtime_model, runtime_mode) = {
+    let (
+        agent_manager,
+        session_manager,
+        permission_modes,
+        runtime_project_root,
+        runtime_model,
+        runtime_mode,
+    ) = {
         let runtime = state.inner.lock().await;
         let current = runtime
             .as_ref()
@@ -797,6 +839,7 @@ pub async fn agent_create_session(
         (
             Arc::clone(&current.agent_manager),
             Arc::clone(&current.session_manager),
+            Arc::clone(&current.permission_modes),
             current.project_root.clone(),
             current.model.clone(),
             current.mode.clone(),
@@ -812,18 +855,18 @@ pub async fn agent_create_session(
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| DEFAULT_AGENT_SESSION_TITLE.to_string());
     let mode = request.mode.unwrap_or(runtime_mode);
+    let permission_mode = parse_user_permission_mode(&mode)?;
     let model = request.model.unwrap_or(runtime_model);
     let session = session_manager
-        .create_session(
-            root.clone(),
-            title,
-            SessionType::User,
-            parse_goose_mode(&mode),
-        )
+        .create_session(root.clone(), title, SessionType::User, permission_mode)
         .await
         .map_err(|e| format!("Failed to create Goose session: {e}"))?;
 
-    configure_session_agent(&agent_manager, &session, &model, &mode).await?;
+    permission_modes
+        .lock()
+        .await
+        .insert(session.id.clone(), permission_mode);
+    configure_session_agent(&agent_manager, &session_manager, &session, &model, &mode).await?;
     let summary = session_summary(&session);
     let _ = save_recent_project_root_inner(&app_handle, &user_id, &root);
     let detail = AgentSessionDetail {
@@ -947,7 +990,7 @@ pub async fn agent_delete_session(
     }
 
     let _session_lifecycle_guard = state.session_lifecycle.lock().await;
-    let (agent_manager, session_manager) = {
+    let (agent_manager, session_manager, permission_modes) = {
         let runtime = state.inner.lock().await;
         match runtime.as_ref() {
             Some(current) => {
@@ -958,9 +1001,10 @@ pub async fn agent_delete_session(
                 (
                     Some(Arc::clone(&current.agent_manager)),
                     Arc::clone(&current.session_manager),
+                    Some(Arc::clone(&current.permission_modes)),
                 )
             }
-            None => (None, account_session_manager(&app_handle, &user_id)?),
+            None => (None, account_session_manager(&app_handle, &user_id)?, None),
         }
     };
 
@@ -977,6 +1021,9 @@ pub async fn agent_delete_session(
                 "Deleted Goose session {session_id}, but failed to unload its agent: {error}"
             );
         }
+    }
+    if let Some(permission_modes) = permission_modes {
+        permission_modes.lock().await.remove(&session_id);
     }
 
     Ok(())
@@ -1077,7 +1124,7 @@ pub async fn agent_send_message(
     let cancel_token = CancellationToken::new();
     let prompt_title = session_title_from_prompt(&text);
     let user_message = Message::user().with_text(text).with_generated_id();
-    let (agent_manager, session_manager, model, mode) = {
+    let (agent_manager, session_manager, permission_modes, model, mode) = {
         let runtime = state.inner.lock().await;
         let current = runtime
             .as_ref()
@@ -1086,6 +1133,7 @@ pub async fn agent_send_message(
         (
             Arc::clone(&current.agent_manager),
             Arc::clone(&current.session_manager),
+            Arc::clone(&current.permission_modes),
             request
                 .model
                 .clone()
@@ -1093,6 +1141,7 @@ pub async fn agent_send_message(
             request.mode.clone().unwrap_or_else(|| current.mode.clone()),
         )
     };
+    let requested_permission_mode = parse_user_permission_mode(&mode)?;
 
     let user_item = message_to_timeline_items(&user_message, false)
         .into_iter()
@@ -1107,6 +1156,15 @@ pub async fn agent_send_message(
         .try_register_cancel_token(&request.session_id, cancel_token.clone())
         .await
         .map_err(|e| format!("Agent session is already running: {e}"))?;
+
+    // A rejected or delayed send must not be able to change a live policy that
+    // the mode command already made authoritative. Seed only sessions that do
+    // not yet have runtime policy state, after Goose grants this run its claim.
+    let (permission_mode, seeded_permission_mode) = {
+        let mut modes = permission_modes.lock().await;
+        select_session_permission_mode(&mut modes, &request.session_id, requested_permission_mode)
+    };
+    let effective_mode = permission_mode.to_string();
 
     let setup_result: Result<(Arc<Agent>, AgentTurnSnapshot), String> = async {
         let mut session = session_manager
@@ -1146,13 +1204,23 @@ pub async fn agent_send_message(
                 },
             );
         }
-        let agent = configure_session_agent(&agent_manager, &session, &model, &mode).await?;
+        let agent = configure_session_agent(
+            &agent_manager,
+            &session_manager,
+            &session,
+            &model,
+            &effective_mode,
+        )
+        .await?;
         Ok((agent, turn_snapshot))
     }
     .await;
     let (agent, task_turn_snapshot) = match setup_result {
         Ok(setup) => setup,
         Err(error) => {
+            if seeded_permission_mode {
+                permission_modes.lock().await.remove(&request.session_id);
+            }
             agent_manager
                 .unregister_cancel_token(&request.session_id)
                 .await;
@@ -1168,6 +1236,7 @@ pub async fn agent_send_message(
     let task_run_id = run_id.clone();
     let task_agent_manager = Arc::clone(&agent_manager);
     let task_session_manager = Arc::clone(&session_manager);
+    let task_permission_modes = Arc::clone(&permission_modes);
     let task_user_message = user_message.clone();
     let task_cancel_token = cancel_token.clone();
     let (start_tx, start_rx) = oneshot::channel();
@@ -1186,6 +1255,7 @@ pub async fn agent_send_message(
                 session_id: session_id.clone(),
                 run_id: task_run_id.clone(),
                 user_message: task_user_message,
+                permission_modes: task_permission_modes,
                 cancel_token: task_cancel_token.clone(),
                 pending_permissions,
             })
@@ -1374,6 +1444,167 @@ pub async fn agent_cancel_run(
 }
 
 #[tauri::command]
+pub async fn agent_set_permission_mode(
+    app_handle: AppHandle,
+    state: State<'_, AgentRuntimeState>,
+    user_id: String,
+    request: AgentPermissionModeRequest,
+) -> Result<(), String> {
+    let account_scope = account_scope(&user_id)?;
+    let generation = account_generation(&state, &account_scope).await;
+    let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
+    ensure_account_generation(&state, &account_scope, generation).await?;
+
+    let session_id = request.session_id.trim().to_string();
+    if session_id.is_empty() {
+        return Err("Agent permission mode update requires a session ID".to_string());
+    }
+    let goose_mode = parse_user_permission_mode(&request.mode)?;
+    let (agent_manager, session_manager, permission_modes) = {
+        let runtime = state.inner.lock().await;
+        let current = runtime
+            .as_ref()
+            .ok_or_else(|| "Agent runtime is not running".to_string())?;
+        ensure_runtime_account(current, &account_scope)?;
+        (
+            Arc::clone(&current.agent_manager),
+            Arc::clone(&current.session_manager),
+            Arc::clone(&current.permission_modes),
+        )
+    };
+
+    // Restrictive transitions take effect before any fallible Goose or disk
+    // work. Otherwise the selector could say Read only while a still-live Auto
+    // policy approves the next write. If setup fails, restore the previous
+    // policy so the command and optimistic UI can roll back consistently.
+    let previous_restrictive_mode = if goose_mode == GooseMode::SmartApprove {
+        permission_modes
+            .lock()
+            .await
+            .insert(session_id.clone(), goose_mode)
+    } else {
+        None
+    };
+    let update_result: Result<Arc<Agent>, String> = async {
+        let agent = agent_manager
+            .get_or_create_agent(session_id.clone())
+            .await
+            .map_err(|error| format!("Failed to resolve Goose agent for mode update: {error}"))?;
+        agent
+            .update_goose_mode(GOOSE_PERMISSION_ROUTING_MODE, &session_id)
+            .await
+            .map_err(|error| format!("Failed to update Goose mode: {error}"))?;
+        // update_goose_mode already persists SmartApprove, which is both our
+        // internal Goose routing mode and the user-facing Read-only mode. Auto
+        // is Maple-owned, so only that case needs a second persistence step.
+        // Keeping Read-only to one write avoids a failed duplicate write
+        // leaving the persisted session stricter than the live Maple policy.
+        if goose_mode == GooseMode::Auto {
+            session_manager
+                .update(&session_id)
+                .goose_mode(goose_mode)
+                .apply()
+                .await
+                .map_err(|error| format!("Failed to persist Agent permission mode: {error}"))?;
+        }
+        Ok(agent)
+    }
+    .await;
+    let agent = match update_result {
+        Ok(agent) => agent,
+        Err(error) => {
+            if goose_mode == GooseMode::SmartApprove {
+                let mut modes = permission_modes.lock().await;
+                match previous_restrictive_mode {
+                    Some(previous) => {
+                        modes.insert(session_id.clone(), previous);
+                    }
+                    None => {
+                        modes.remove(&session_id);
+                    }
+                }
+            }
+            return Err(error);
+        }
+    };
+    if goose_mode == GooseMode::Auto {
+        permission_modes
+            .lock()
+            .await
+            .insert(session_id.clone(), goose_mode);
+    }
+    {
+        let mut runtime = state.inner.lock().await;
+        let current = runtime
+            .as_mut()
+            .ok_or_else(|| "Agent runtime is not running".to_string())?;
+        ensure_runtime_account(current, &account_scope)?;
+        current.mode = request.mode.clone();
+    }
+
+    if goose_mode == GooseMode::Auto {
+        let request_ids = {
+            let mut pending = state.pending_permissions.lock().await;
+            let request_ids = pending
+                .keys()
+                .filter(|(pending_session_id, _)| pending_session_id == &session_id)
+                .map(|(_, request_id)| request_id.clone())
+                .collect::<Vec<_>>();
+            for request_id in &request_ids {
+                pending.remove(&(session_id.clone(), request_id.clone()));
+            }
+            request_ids
+        };
+        for request_id in request_ids {
+            deliver_tool_permission(&agent, request_id.clone(), Permission::AllowOnce).await;
+            if let Some(item) = update_live_permission_status(
+                &state.live_timelines,
+                &session_id,
+                &request_id,
+                "allow_once",
+            )
+            .await
+            {
+                emit_agent_event(
+                    &app_handle,
+                    AgentEventEnvelope {
+                        event_type: "timelineItem".to_string(),
+                        session_id: Some(session_id.clone()),
+                        run_id: None,
+                        item: Some(item),
+                        status: None,
+                        session: None,
+                        message: None,
+                    },
+                );
+            }
+        }
+    }
+
+    // The policy is already committed at this point. A best-effort refresh
+    // must not report failure to the selector and make it roll back to a mode
+    // that is no longer authoritative.
+    match session_manager.get_session(&session_id, false).await {
+        Ok(session) => emit_agent_event(
+            &app_handle,
+            AgentEventEnvelope {
+                event_type: "sessionUpdated".to_string(),
+                session_id: Some(session_id),
+                run_id: None,
+                item: None,
+                status: None,
+                session: Some(session_summary(&session)),
+                message: None,
+            },
+        ),
+        Err(error) => log::warn!(
+            "Agent permission mode was updated, but the refreshed session could not be loaded: {error}"
+        ),
+    }
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn agent_permission_respond(
     app_handle: AppHandle,
     state: State<'_, AgentRuntimeState>,
@@ -1453,6 +1684,7 @@ struct AgentPromptRun {
     session_id: String,
     run_id: String,
     user_message: Message,
+    permission_modes: SessionPermissionModes,
     cancel_token: CancellationToken,
     pending_permissions: PendingPermissions,
 }
@@ -1496,6 +1728,213 @@ fn apply_failed_prompt_outcome(
     timelines.insert(session_id.to_string(), LiveTimeline::Failed(vec![item]));
 }
 
+async fn selected_permission_mode(
+    permission_modes: &SessionPermissionModes,
+    session_id: &str,
+) -> GooseMode {
+    permission_modes
+        .lock()
+        .await
+        .get(session_id)
+        .copied()
+        .unwrap_or(GOOSE_PERMISSION_ROUTING_MODE)
+}
+
+fn select_session_permission_mode(
+    permission_modes: &mut HashMap<String, GooseMode>,
+    session_id: &str,
+    requested_mode: GooseMode,
+) -> (GooseMode, bool) {
+    if let Some(mode) = permission_modes.get(session_id).copied() {
+        (mode, false)
+    } else {
+        permission_modes.insert(session_id.to_string(), requested_mode);
+        (requested_mode, true)
+    }
+}
+
+async fn deliver_tool_permission(agent: &Agent, request_id: String, permission: Permission) {
+    agent
+        .handle_confirmation(
+            request_id,
+            PermissionConfirmation {
+                principal_type: PrincipalType::Tool,
+                permission,
+            },
+        )
+        .await;
+}
+
+async fn deliver_tool_permission_if_auto(
+    agent: &Agent,
+    session_id: &str,
+    permission_modes: &SessionPermissionModes,
+    request_id: &str,
+    cancel_token: &CancellationToken,
+) -> bool {
+    // Keep the policy lock through confirmation delivery. This is the
+    // linearization point for Auto -> Read only: once the restrictive mode
+    // command returns, no permission decision based on an older Auto snapshot
+    // can still be delivered.
+    let modes = permission_modes.lock().await;
+    if modes
+        .get(session_id)
+        .copied()
+        .unwrap_or(GOOSE_PERMISSION_ROUTING_MODE)
+        != GooseMode::Auto
+    {
+        return false;
+    }
+    let permission = if cancel_token.is_cancelled() {
+        Permission::Cancel
+    } else {
+        Permission::AllowOnce
+    };
+    deliver_tool_permission(agent, request_id.to_string(), permission).await;
+    drop(modes);
+    true
+}
+
+async fn claim_pending_permission_if_auto(
+    agent: &Agent,
+    session_id: &str,
+    permission_modes: &SessionPermissionModes,
+    pending_permissions: &PendingPermissions,
+    request_id: &str,
+    cancel_token: &CancellationToken,
+) -> bool {
+    // This is the same Auto -> Read only linearization boundary as the direct
+    // path above, with the pending request claimed while the policy is locked.
+    let modes = permission_modes.lock().await;
+    if modes
+        .get(session_id)
+        .copied()
+        .unwrap_or(GOOSE_PERMISSION_ROUTING_MODE)
+        != GooseMode::Auto
+    {
+        return false;
+    }
+    let claimed = pending_permissions
+        .lock()
+        .await
+        .remove(&(session_id.to_string(), request_id.to_string()))
+        .is_some();
+    if claimed {
+        let permission = if cancel_token.is_cancelled() {
+            Permission::Cancel
+        } else {
+            Permission::AllowOnce
+        };
+        deliver_tool_permission(agent, request_id.to_string(), permission).await;
+    }
+    drop(modes);
+    true
+}
+
+async fn automatically_handle_permissions(
+    agent: &Agent,
+    session_id: &str,
+    permission_modes: &SessionPermissionModes,
+    working_dir: &Path,
+    message: &Message,
+    cancel_token: &CancellationToken,
+) -> HashSet<String> {
+    let classifier = ShellPermissionClassifier;
+    let mut handled = HashSet::new();
+
+    for content in &message.content {
+        let MessageContent::ActionRequired(action) = content else {
+            continue;
+        };
+        let tool_request_id = match &action.data {
+            ActionRequiredData::ToolConfirmation { id, .. } => Some(id.clone()),
+            _ => None,
+        };
+        if let Some(request_id) = tool_request_id.as_ref() {
+            if deliver_tool_permission_if_auto(
+                agent,
+                session_id,
+                permission_modes,
+                request_id,
+                cancel_token,
+            )
+            .await
+            {
+                let request_id = request_id.clone();
+                handled.insert(request_id);
+                continue;
+            }
+        }
+        let current_mode = selected_permission_mode(permission_modes, session_id)
+            .await
+            .to_string();
+        if let Some(request_id) = local_read_request_id(&current_mode, action)
+            .or_else(|| local_read_image_request_id(&current_mode, action))
+            .map(str::to_string)
+        {
+            let permission = if cancel_token.is_cancelled() {
+                Permission::Cancel
+            } else {
+                log::info!("Auto-approved local Agent Mode file read request {request_id}");
+                Permission::AllowOnce
+            };
+            deliver_tool_permission(agent, request_id.clone(), permission).await;
+            handled.insert(request_id);
+            continue;
+        }
+        let Some(request) = ShellPermissionRequest::from_action(&current_mode, working_dir, action)
+        else {
+            if let Some(request_id) = tool_request_id {
+                if deliver_tool_permission_if_auto(
+                    agent,
+                    session_id,
+                    permission_modes,
+                    &request_id,
+                    cancel_token,
+                )
+                .await
+                {
+                    handled.insert(request_id);
+                }
+            }
+            continue;
+        };
+        let request_id = request.request_id().to_string();
+        let outcome = classifier
+            .classify(agent, session_id, &request, cancel_token)
+            .await;
+        if deliver_tool_permission_if_auto(
+            agent,
+            session_id,
+            permission_modes,
+            &request_id,
+            cancel_token,
+        )
+        .await
+        {
+            handled.insert(request_id);
+            continue;
+        }
+        let permission = if cancel_token.is_cancelled() {
+            Permission::Cancel
+        } else {
+            match outcome {
+                ShellPermissionOutcome::ReadOnly => {
+                    log::info!("Auto-approved read-only Agent Mode shell request {request_id}");
+                    Permission::AllowOnce
+                }
+                ShellPermissionOutcome::Cancelled => Permission::Cancel,
+                ShellPermissionOutcome::RequiresApproval => continue,
+            }
+        };
+
+        deliver_tool_permission(agent, request_id.clone(), permission).await;
+        handled.insert(request_id);
+    }
+
+    handled
+}
+
 async fn run_agent_prompt(run: AgentPromptRun) -> Result<AgentPromptOutcome, String> {
     let AgentPromptRun {
         app_handle,
@@ -1505,6 +1944,7 @@ async fn run_agent_prompt(run: AgentPromptRun) -> Result<AgentPromptOutcome, Str
         session_id,
         run_id,
         user_message,
+        permission_modes,
         cancel_token,
         pending_permissions,
     } = run;
@@ -1523,6 +1963,7 @@ async fn run_agent_prompt(run: AgentPromptRun) -> Result<AgentPromptOutcome, Str
         .get_session(&session_id, false)
         .await
         .map_err(|e| format!("Failed to load updated Goose session: {e}"))?;
+    let working_dir = updated_session.working_dir.clone();
     emit_agent_event(
         &app_handle,
         AgentEventEnvelope {
@@ -1539,7 +1980,21 @@ async fn run_agent_prompt(run: AgentPromptRun) -> Result<AgentPromptOutcome, Str
     while let Some(event) = stream.next().await {
         match event {
             Ok(AgentEvent::Message(message)) => {
+                let automatically_handled = automatically_handle_permissions(
+                    &agent,
+                    &session_id,
+                    &permission_modes,
+                    &working_dir,
+                    &message,
+                    &cancel_token,
+                )
+                .await;
                 let mut items = message_to_timeline_items(&message, true);
+                items.retain(|item| {
+                    pending_permission_request_id(item)
+                        .is_none_or(|request_id| !automatically_handled.contains(&request_id))
+                });
+                let mut newly_auto_handled = HashSet::new();
                 for item in &mut items {
                     if let Some(request_id) = pending_permission_request_id(item) {
                         if !register_pending_permission(
@@ -1560,8 +2015,43 @@ async fn run_agent_prompt(run: AgentPromptRun) -> Result<AgentPromptOutcome, Str
                                 )
                                 .await;
                             item.status = Some("cancelled".to_string());
+                        } else if claim_pending_permission_if_auto(
+                            &agent,
+                            &session_id,
+                            &permission_modes,
+                            &pending_permissions,
+                            &request_id,
+                            &cancel_token,
+                        )
+                        .await
+                        {
+                            newly_auto_handled.insert(request_id);
                         }
                     }
+                }
+                items.retain(|item| {
+                    pending_permission_request_id(item)
+                        .is_none_or(|request_id| !newly_auto_handled.contains(&request_id))
+                });
+                // Publish a permission card while holding the same claim lock
+                // used by an Allow-all transition. If that transition already
+                // drained the request, suppress the now-non-actionable card; if
+                // this path wins, the transition will immediately replace the
+                // published card with its allowed status.
+                let pending_publication_guard = if items
+                    .iter()
+                    .any(|item| pending_permission_request_id(item).is_some())
+                {
+                    Some(pending_permissions.lock().await)
+                } else {
+                    None
+                };
+                if let Some(pending) = pending_publication_guard.as_ref() {
+                    items.retain(|item| {
+                        pending_permission_request_id(item).is_none_or(|request_id| {
+                            pending.contains_key(&(session_id.clone(), request_id))
+                        })
+                    });
                 }
                 if !items.is_empty() {
                     terminal_message = Some(update_live_message_candidate(
@@ -1580,6 +2070,7 @@ async fn run_agent_prompt(run: AgentPromptRun) -> Result<AgentPromptOutcome, Str
                     )
                     .await;
                 }
+                drop(pending_publication_guard);
             }
             // Usage ledgers remain in Goose's persisted messages for context
             // accounting, but Agent Mode does not render ephemeral token rows.
@@ -1741,6 +2232,7 @@ fn pending_permission_request_id(item: &AgentTimelineItem) -> Option<String> {
 
 async fn configure_session_agent(
     agent_manager: &Arc<AgentManager>,
+    session_manager: &Arc<SessionManager>,
     session: &Session,
     model: &str,
     mode: &str,
@@ -1763,9 +2255,9 @@ async fn configure_session_agent(
         .await
         .map_err(|e| format!("Failed to update Goose provider: {e}"))?;
     agent
-        .update_goose_mode(parse_goose_mode(mode), &session.id)
+        .update_goose_mode(GOOSE_PERMISSION_ROUTING_MODE, &session.id)
         .await
-        .map_err(|e| format!("Failed to update Goose mode: {e}"))?;
+        .map_err(|e| format!("Failed to configure Goose permission routing: {e}"))?;
     let developer = ExtensionConfig::Builtin {
         name: "developer".to_string(),
         description: DEFAULT_EXTENSION_DESCRIPTION.to_string(),
@@ -1777,10 +2269,30 @@ async fn configure_session_agent(
             .map(|tool| tool.to_string())
             .collect(),
     };
+    let developer_client = MapleDeveloperClient::new(agent.extension_manager.get_context().clone())
+        .map_err(|e| format!("Failed to create Maple developer tools: {e}"))?;
     agent
-        .add_extension(developer, &session.id)
+        .extension_manager
+        .add_client(
+            "developer".to_string(),
+            developer,
+            Arc::new(developer_client),
+            None,
+            None,
+        )
+        .await;
+    agent
+        .persist_extension_state(&session.id)
         .await
-        .map_err(|e| format!("Failed to enable Goose developer tools: {e}"))?;
+        .map_err(|e| format!("Failed to persist Maple developer tools: {e}"))?;
+    // Goose's live mode remains SmartApprove so every sensitive call reaches Maple.
+    // Persist the user-facing policy separately for session restoration and display.
+    session_manager
+        .update(&session.id)
+        .goose_mode(parse_goose_mode(mode))
+        .apply()
+        .await
+        .map_err(|e| format!("Failed to persist Agent permission mode: {e}"))?;
     Ok(agent)
 }
 
@@ -2325,10 +2837,11 @@ fn tool_name_from_id(id: &str) -> Option<String> {
 fn permission_from_decision(decision: &str) -> Result<Permission, String> {
     match decision {
         "allow_once" | "allow" => Ok(Permission::AllowOnce),
-        "always_allow" => Ok(Permission::AlwaysAllow),
         "deny_once" | "deny" => Ok(Permission::DenyOnce),
-        "always_deny" => Ok(Permission::AlwaysDeny),
         "cancel" => Ok(Permission::Cancel),
+        "always_allow" | "always_deny" => {
+            Err("Persistent tool permissions are not supported by Maple Agent Mode".to_string())
+        }
         other => Err(format!("Unknown permission decision: {other}")),
     }
 }
@@ -2561,7 +3074,10 @@ fn configure_embedded_goose(
     std::env::remove_var("GOOSE_DISABLE_KEYRING");
     std::env::remove_var("GOOSE_MAX_TOKENS");
 
-    remove_maple_owned_secret_file(&goose_path_root.join("config").join("secrets.yaml"))?;
+    remove_maple_owned_goose_file(
+        &goose_path_root.join("config").join("secrets.yaml"),
+        "secrets",
+    )?;
     let config = goose::config::Config::global();
     config.invalidate_secrets_cache();
     delete_goose_config_key(config, "GOOSE_DISABLE_KEYRING")?;
@@ -2589,19 +3105,38 @@ fn delete_goose_config_key(config: &goose::config::Config, key: &str) -> Result<
     }
 }
 
-fn remove_maple_owned_secret_file(path: &Path) -> Result<(), String> {
+fn remove_maple_owned_goose_file(path: &Path, description: &str) -> Result<(), String> {
     match fs::remove_file(path) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(format!(
-            "Failed to remove Maple-owned Goose secrets file {}: {error}",
+            "Failed to remove Maple-owned Goose {description} file {}: {error}",
             path.display()
         )),
     }
 }
 
+fn reset_maple_owned_permission_file(path: &Path) -> Result<(), String> {
+    fs::write(path, MAPLE_GOOSE_PERMISSION_CONFIG).map_err(|error| {
+        format!(
+            "Failed to reset Maple-owned Goose permission file {}: {error}",
+            path.display()
+        )
+    })?;
+    set_owner_only_permissions(path);
+    Ok(())
+}
+
 fn parse_goose_mode(mode: &str) -> GooseMode {
     GooseMode::from_str(mode).unwrap_or(GooseMode::SmartApprove)
+}
+
+fn parse_user_permission_mode(mode: &str) -> Result<GooseMode, String> {
+    match mode {
+        "auto" => Ok(GooseMode::Auto),
+        "smart_approve" => Ok(GooseMode::SmartApprove),
+        _ => Err(format!("Unsupported Agent permission mode: {mode}")),
+    }
 }
 
 fn stopped_status() -> AgentRuntimeStatus {
@@ -2830,6 +3365,85 @@ mod tests {
         }))
         .expect("legacy config without a model should deserialize");
         assert_eq!(config.default_model, DEFAULT_AGENT_MODEL);
+    }
+
+    #[tokio::test]
+    async fn permission_policy_is_session_scoped_and_mutable_mid_run() {
+        assert_eq!(
+            parse_user_permission_mode("smart_approve"),
+            Ok(GooseMode::SmartApprove)
+        );
+        assert_eq!(parse_user_permission_mode("auto"), Ok(GooseMode::Auto));
+        assert!(parse_user_permission_mode("approve").is_err());
+
+        let modes = SessionPermissionModes::default();
+        assert_eq!(
+            selected_permission_mode(&modes, "session-1").await,
+            GooseMode::SmartApprove
+        );
+        modes
+            .lock()
+            .await
+            .insert("session-1".to_string(), GooseMode::Auto);
+        assert_eq!(
+            selected_permission_mode(&modes, "session-1").await,
+            GooseMode::Auto
+        );
+        assert_eq!(
+            selected_permission_mode(&modes, "session-2").await,
+            GooseMode::SmartApprove
+        );
+
+        let mut claimed = HashMap::from([("session-1".to_string(), GooseMode::SmartApprove)]);
+        assert_eq!(
+            select_session_permission_mode(&mut claimed, "session-1", GooseMode::Auto),
+            (GooseMode::SmartApprove, false),
+            "a delayed send must not overwrite a newer authoritative policy"
+        );
+        assert_eq!(
+            select_session_permission_mode(&mut claimed, "session-2", GooseMode::Auto),
+            (GooseMode::Auto, true)
+        );
+    }
+
+    #[test]
+    fn agent_mode_accepts_only_one_shot_permission_decisions() {
+        assert_eq!(
+            permission_from_decision("allow_once").unwrap(),
+            Permission::AllowOnce
+        );
+        assert_eq!(
+            permission_from_decision("deny_once").unwrap(),
+            Permission::DenyOnce
+        );
+        assert!(permission_from_decision("always_allow").is_err());
+        assert!(permission_from_decision("always_deny").is_err());
+    }
+
+    #[test]
+    fn maple_permission_file_forces_every_routed_tool_through_ask_before() {
+        let root = std::env::temp_dir().join(format!(
+            "maple-permissions-{}-{}",
+            std::process::id(),
+            NEXT_RUN_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("permission.yaml");
+        fs::write(
+            &path,
+            "user:\n  always_allow:\n  - shell\n  ask_before: []\n  never_allow: []\n",
+        )
+        .unwrap();
+
+        reset_maple_owned_permission_file(&path).unwrap();
+        let manager = PermissionManager::new(root.clone());
+        for tool in MAPLE_DEVELOPER_TOOLS {
+            assert_eq!(
+                manager.get_user_permission(tool),
+                Some(goose::config::permission::PermissionLevel::AskBefore)
+            );
+        }
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

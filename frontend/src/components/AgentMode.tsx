@@ -129,7 +129,7 @@ const AGENT_PERMISSION_MODES: Array<{
   {
     value: "smart_approve",
     label: "Read only",
-    description: "Auto-runs read-only tools; asks before writes"
+    description: "Auto-runs local reads; asks before writes and remote access"
   },
   {
     value: "auto",
@@ -230,6 +230,7 @@ export function AgentMode({ userId }: { userId: string }) {
   const [isInitializing, setIsInitializing] = useState(true);
   const [isReplacingManualProxy, setIsReplacingManualProxy] = useState(false);
   const [isStarting, setIsStarting] = useState(false);
+  const [isPermissionModeUpdating, setIsPermissionModeUpdating] = useState(false);
   const [pendingSendSessionIds, setPendingSendSessionIds] = useState<Set<string>>(() => new Set());
   const [pendingSessionSelectionId, setPendingSessionSelectionId] = useState<string | null>(null);
   const [activeRunsBySession, setActiveRunsBySession] = useState<Record<string, string>>({});
@@ -241,6 +242,10 @@ export function AgentMode({ userId }: { userId: string }) {
   const deletedSessionIdsRef = useRef(new Set<string>());
   const shouldAutoScrollRef = useRef(true);
   const projectRootPersistenceRef = useRef<Promise<void>>(Promise.resolve());
+  const permissionModeUpdateRef = useRef<Promise<void>>(Promise.resolve());
+  const permissionModeUpdateGenerationRef = useRef(0);
+  const selectedModeRef = useRef<AgentPermissionMode>(mode);
+  const committedModeRef = useRef<AgentPermissionMode>(mode);
   const terminalRunIdsRef = useRef(new Set<string>());
   const pendingSendTokensRef = useRef(new Map<string, number>());
   const cancelledPendingSendTokensRef = useRef(new Set<number>());
@@ -252,6 +257,12 @@ export function AgentMode({ userId }: { userId: string }) {
   const interactionGenerationRef = useRef(0);
   const startRequestGenerationRef = useRef(0);
   const runStateGenerationRef = useRef(0);
+
+  const applyAuthoritativeMode = useCallback((value: AgentPermissionMode) => {
+    selectedModeRef.current = value;
+    committedModeRef.current = value;
+    setMode(value);
+  }, []);
 
   useEffect(() => {
     if (isCompactLayout) {
@@ -306,13 +317,13 @@ export function AgentMode({ userId }: { userId: string }) {
   const activePendingSendKey = activeSessionId || NEW_SESSION_PENDING_KEY;
   const isSubmitting = pendingSendSessionIds.has(activePendingSendKey);
   const isSessionSelectionPending = pendingSessionSelectionId !== null;
-  const isCreatingSessionForSend = pendingSendSessionIds.has(NEW_SESSION_PENDING_KEY);
   const areAgentSettingsLocked =
     !isAuthTransitionReady ||
     isInitializing ||
     isStarting ||
+    isPermissionModeUpdating ||
     isSessionSelectionPending ||
-    isCreatingSessionForSend ||
+    isSubmitting ||
     isReplacingManualProxy ||
     hasManualProxyConflict;
   const isAgentSendLocked = areAgentSettingsLocked;
@@ -573,7 +584,7 @@ export function AgentMode({ userId }: { userId: string }) {
         const nextMode = normalizeAgentPermissionMode(status.mode);
         setProjectRoot(root);
         setModel(nextModel);
-        setMode(nextMode);
+        applyAuthoritativeMode(nextMode);
 
         // Session history is local account data and remains browseable even
         // when an existing proxy credential requires explicit replacement.
@@ -633,6 +644,7 @@ export function AgentMode({ userId }: { userId: string }) {
       cancelled = true;
     };
   }, [
+    applyAuthoritativeMode,
     applyRuntimeStatus,
     ensureMapleProxyReady,
     refreshSessionList,
@@ -701,10 +713,62 @@ export function AgentMode({ userId }: { userId: string }) {
     setModel(value);
   }, []);
 
-  const selectMode = useCallback((value: AgentPermissionMode) => {
-    interactionGenerationRef.current += 1;
-    setMode(value);
-  }, []);
+  const selectMode = useCallback(
+    (value: AgentPermissionMode) => {
+      if (value === selectedModeRef.current) return;
+      const interactionGeneration = interactionGenerationRef.current + 1;
+      interactionGenerationRef.current = interactionGeneration;
+      setError(null);
+
+      const sessionId = activeSessionIdRef.current;
+      if (!sessionId) {
+        applyAuthoritativeMode(value);
+        return;
+      }
+      const updateGeneration = permissionModeUpdateGenerationRef.current + 1;
+      permissionModeUpdateGenerationRef.current = updateGeneration;
+      setIsPermissionModeUpdating(true);
+      // A relaxation may be shown before the backend catches up because that
+      // only understates current restrictions. Keep showing Auto during a
+      // restrictive transition until the backend has made Read only live, so
+      // the selector never promises protection that is not authoritative yet.
+      if (value === "auto") {
+        selectedModeRef.current = value;
+        setMode(value);
+      }
+      const update = permissionModeUpdateRef.current.then(() =>
+        agentRuntimeService.setPermissionMode(userId, sessionId, value)
+      );
+      permissionModeUpdateRef.current = update
+        .then(
+          () => {
+            if (activeSessionIdRef.current === sessionId) {
+              committedModeRef.current = value;
+              if (interactionGenerationRef.current === interactionGeneration) {
+                selectedModeRef.current = value;
+                setMode(value);
+              }
+            }
+          },
+          (modeError) => {
+            if (
+              activeSessionIdRef.current === sessionId &&
+              interactionGenerationRef.current === interactionGeneration
+            ) {
+              selectedModeRef.current = committedModeRef.current;
+              setMode(committedModeRef.current);
+              setError(errorMessage(modeError));
+            }
+          }
+        )
+        .finally(() => {
+          if (permissionModeUpdateGenerationRef.current === updateGeneration) {
+            setIsPermissionModeUpdating(false);
+          }
+        });
+    },
+    [applyAuthoritativeMode, userId]
+  );
 
   const startRuntime = useCallback(
     async (restart = false) => {
@@ -719,7 +783,8 @@ export function AgentMode({ userId }: { userId: string }) {
             throw new Error("Select a project folder first");
           }
           await ensureMapleProxyReady();
-          const request = { projectRoot, model: model || DEFAULT_MODEL, mode };
+          const requestedMode = selectedModeRef.current;
+          const request = { projectRoot, model: model || DEFAULT_MODEL, mode: requestedMode };
           const runStateGeneration = runStateGenerationRef.current;
           const status = restart
             ? await agentRuntimeService.restartRuntime(userId, request)
@@ -734,7 +799,7 @@ export function AgentMode({ userId }: { userId: string }) {
           applyRuntimeStatus(status, runStateGeneration);
           setProjectRoot(status.projectRoot || projectRoot);
           setModel(status.model || model || DEFAULT_MODEL);
-          setMode(normalizeAgentPermissionMode(status.mode || mode));
+          applyAuthoritativeMode(normalizeAgentPermissionMode(status.mode || requestedMode));
           setRecentRoots(roots);
           await refreshSessions();
           return status;
@@ -755,9 +820,9 @@ export function AgentMode({ userId }: { userId: string }) {
       }
     },
     [
+      applyAuthoritativeMode,
       applyRuntimeStatus,
       ensureMapleProxyReady,
-      mode,
       model,
       projectRoot,
       refreshSessions,
@@ -830,7 +895,7 @@ export function AgentMode({ userId }: { userId: string }) {
           projectRoot,
           title: "New agent session",
           model: model || DEFAULT_MODEL,
-          mode
+          mode: selectedModeRef.current
         });
         // Goose may reuse the newest deleted session ID. This detail represents
         // a new persisted session, so it supersedes any local deletion tombstone.
@@ -852,14 +917,14 @@ export function AgentMode({ userId }: { userId: string }) {
           shouldAutoScrollRef.current = true;
           activeSessionIdRef.current = sessionId;
           setActiveSessionId(sessionId);
-          setMode(normalizeAgentPermissionMode(detail.session.mode));
+          applyAuthoritativeMode(normalizeAgentPermissionMode(detail.session.mode));
           replaceSessionTimeline(sessionId, detail.timeline);
         }
       }
 
       return sessionId;
     },
-    [mode, model, projectRoot, replaceSessionTimeline, startRuntime, userId]
+    [applyAuthoritativeMode, model, projectRoot, replaceSessionTimeline, startRuntime, userId]
   );
 
   const createSession = useCallback(async () => {
@@ -876,7 +941,7 @@ export function AgentMode({ userId }: { userId: string }) {
           projectRoot,
           title: "New agent session",
           model: model || DEFAULT_MODEL,
-          mode
+          mode: selectedModeRef.current
         });
       });
       deletedSessionIdsRef.current.delete(detail.session.id);
@@ -893,7 +958,7 @@ export function AgentMode({ userId }: { userId: string }) {
         shouldAutoScrollRef.current = true;
         activeSessionIdRef.current = detail.session.id;
         setActiveSessionId(detail.session.id);
-        setMode(normalizeAgentPermissionMode(detail.session.mode));
+        applyAuthoritativeMode(normalizeAgentPermissionMode(detail.session.mode));
         replaceSessionTimeline(detail.session.id, detail.timeline);
       }
     } catch (createError) {
@@ -907,9 +972,9 @@ export function AgentMode({ userId }: { userId: string }) {
       finishSessionSelection(selectionGeneration);
     }
   }, [
+    applyAuthoritativeMode,
     beginSessionSelection,
     finishSessionSelection,
-    mode,
     model,
     projectRoot,
     replaceSessionTimeline,
@@ -962,7 +1027,7 @@ export function AgentMode({ userId }: { userId: string }) {
         if (detail.session.model) {
           setModel(detail.session.model);
         }
-        setMode(normalizeAgentPermissionMode(detail.session.mode));
+        applyAuthoritativeMode(normalizeAgentPermissionMode(detail.session.mode));
         setTimelineItems(detail.timeline);
         finishSessionSelection(selectionGeneration);
 
@@ -996,6 +1061,7 @@ export function AgentMode({ userId }: { userId: string }) {
       }
     },
     [
+      applyAuthoritativeMode,
       beginSessionSelection,
       clearCompletedUnreadSession,
       finishSessionSelection,
@@ -1046,11 +1112,17 @@ export function AgentMode({ userId }: { userId: string }) {
         if (cancelledPendingSendTokensRef.current.has(sendToken)) {
           throw new PendingAgentSendCancelledError();
         }
+        // The selector reflects only committed policy. Wait for any in-flight
+        // update so this send cannot replay a stale mode snapshot afterward.
+        await permissionModeUpdateRef.current;
+        if (cancelledPendingSendTokensRef.current.has(sendToken)) {
+          throw new PendingAgentSendCancelledError();
+        }
         const response = await agentRuntimeService.sendMessage(userId, {
           sessionId,
           text,
           model: model || DEFAULT_MODEL,
-          mode
+          mode: selectedModeRef.current
         });
         if (cancelledPendingSendTokensRef.current.has(sendToken)) {
           // The native command may have crossed the start boundary while the
@@ -1101,7 +1173,6 @@ export function AgentMode({ userId }: { userId: string }) {
     isAgentSendLocked,
     markPendingSend,
     mergeSessionTimelineItem,
-    mode,
     model,
     movePendingSend,
     recordActiveRun,

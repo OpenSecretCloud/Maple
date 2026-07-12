@@ -4029,6 +4029,7 @@ name = "maple"
 version = "3.1.4"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum",
  "base64 0.22.1",
  "dirs",
@@ -4036,6 +4037,7 @@ dependencies = [
  "goose",
  "hound",
  "keyring",
+ "libc",
  "log",
  "maple-proxy",
  "ndarray",
@@ -4044,6 +4046,7 @@ dependencies = [
  "ort",
  "pdf-extract",
  "plist",
+ "process-wrap",
  "rand 0.8.6",
  "rand_distr",
  "regex",
@@ -4067,6 +4070,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "unicode-normalization",
+ "windows 0.62.2",
 ]
 
 [[package]]
