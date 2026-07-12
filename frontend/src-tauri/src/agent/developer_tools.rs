@@ -1,7 +1,11 @@
 use goose::agents::mcp_client::{Error, McpClientTrait};
+#[cfg(not(windows))]
+use goose::agents::platform_extensions::developer::shell::{shell_display_name, ShellTool};
+use goose::agents::platform_extensions::developer::shell::{ShellOutput, ShellParams};
 use goose::agents::platform_extensions::developer::DeveloperClient;
 use goose::agents::platform_extensions::PlatformExtensionContext;
 use goose::agents::ToolCallContext;
+use goose::subprocess::configure_subprocess;
 use once_cell::sync::Lazy;
 use rmcp::model::{
     CallToolResult, Content, Implementation, InitializeResult, JsonObject, ListToolsResult,
@@ -13,17 +17,24 @@ use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, Weak};
 use std::time::Duration;
-use tokio::sync::Mutex;
+use tokio::io::{AsyncRead, AsyncReadExt};
+#[cfg(not(windows))]
+use tokio::sync::OnceCell;
+use tokio::sync::{mpsc, Mutex};
 use tokio_util::sync::CancellationToken;
 
 use super::shell_permission::is_remote_file_source;
 
 const MAX_READ_LINES: usize = 2_000;
 const MAX_READ_BYTES: usize = 50 * 1024;
+const MAX_EDIT_BYTES: usize = 20 * 1024 * 1024;
 const MAX_IMAGE_BYTES: usize = 20 * 1024 * 1024;
+const MAX_SHELL_OUTPUT_BYTES: usize = 50_000;
+const SHELL_OUTPUT_DRAIN_TIMEOUT: Duration = Duration::from_millis(500);
 const IMAGE_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30);
 const MAPLE_DEVELOPER_INSTRUCTIONS: &str = r#"Use the developer tools to inspect and modify the project.
 
@@ -83,6 +94,10 @@ where
 pub(crate) struct MapleDeveloperClient {
     info: InitializeResult,
     goose: DeveloperClient,
+    #[cfg(not(windows))]
+    login_path_probe: ShellTool,
+    #[cfg(not(windows))]
+    login_path: OnceCell<Option<String>>,
 }
 
 impl MapleDeveloperClient {
@@ -94,7 +109,41 @@ impl MapleDeveloperClient {
         Ok(Self {
             info,
             goose: DeveloperClient::new(context)?,
+            #[cfg(not(windows))]
+            login_path_probe: ShellTool::new(true)?,
+            #[cfg(not(windows))]
+            login_path: OnceCell::new(),
         })
+    }
+
+    #[cfg(not(windows))]
+    async fn login_path(&self) -> Option<String> {
+        self.login_path
+            .get_or_init(|| async {
+                let probe = match shell_display_name().to_ascii_lowercase().as_str() {
+                    "nu" | "nushell" => "print ($env.PATH | str join (char esep))",
+                    _ => "printf '%s' \"$PATH\"",
+                };
+                let result = self
+                    .login_path_probe
+                    .shell_with_cwd(
+                        ShellParams {
+                            command: probe.to_string(),
+                            timeout_secs: Some(5),
+                        },
+                        None,
+                        CancellationToken::new(),
+                    )
+                    .await;
+                result
+                    .structured_content
+                    .and_then(|value| serde_json::from_value::<ShellOutput>(value).ok())
+                    .map(|output| output.stdout.trim().to_string())
+                    .filter(|path| !path.is_empty())
+                    .or_else(|| std::env::var("PATH").ok())
+            })
+            .await
+            .clone()
     }
 
     fn read_tool() -> Tool {
@@ -138,8 +187,8 @@ impl MapleDeveloperClient {
     fn edit_tool() -> Tool {
         Tool::new(
             "edit".to_string(),
-            "Apply one or more exact, unique text replacements to a file. Every oldText is matched against the original file, all replacements are validated before writing, and overlapping edits are rejected."
-                .to_string(),
+            format!("Apply one or more exact, unique text replacements to a file up to {}MB. Every oldText is matched against the original file, all replacements are validated before writing, and overlapping edits are rejected.", MAX_EDIT_BYTES / (1024 * 1024))
+                ,
             object!({
                 "type": "object",
                 "additionalProperties": false,
@@ -310,10 +359,21 @@ impl McpClientTrait for MapleDeveloperClient {
                 Err(error) => error_result(error),
             },
             "shell" => {
-                return self
-                    .goose
-                    .call_tool(ctx, name, arguments, cancel_token)
-                    .await;
+                let params = match Self::parse_args::<ShellParams>(arguments) {
+                    Ok(params) => params,
+                    Err(error) => return Ok(shell_error_result(error, None)),
+                };
+                #[cfg(not(windows))]
+                let login_path = self.login_path().await;
+                #[cfg(windows)]
+                let login_path: Option<String> = None;
+                return Ok(run_bounded_shell(
+                    params,
+                    working_dir,
+                    login_path.as_deref(),
+                    cancel_token,
+                )
+                .await);
             }
             "read_image" => {
                 let arguments = normalize_read_image_arguments(arguments, working_dir);
@@ -338,6 +398,381 @@ fn error_result(text: impl Into<String>) -> CallToolResult {
     CallToolResult::error(vec![
         Content::text(format!("Error: {}", text.into())).with_priority(0.0)
     ])
+}
+
+fn shell_error_result(message: impl Into<String>, exit_code: Option<i32>) -> CallToolResult {
+    let message = message.into();
+    let shell_output = ShellOutput {
+        stdout: String::new(),
+        stderr: message.clone(),
+        exit_code,
+        timed_out: false,
+        output_truncated: false,
+        output_collection_error: None,
+    };
+    let mut result = CallToolResult::error(vec![Content::text(message).with_priority(0.0)]);
+    result.structured_content = serde_json::to_value(shell_output).ok();
+    result
+}
+
+enum ShellStreamChunk {
+    Data { stderr: bool, bytes: Vec<u8> },
+    Error(String),
+}
+
+#[derive(Default)]
+struct BoundedShellCapture {
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+    interleaved: Vec<u8>,
+    exceeded_limit: bool,
+    collection_error: Option<String>,
+}
+
+struct BoundedShellExecution {
+    capture: BoundedShellCapture,
+    exit_code: Option<i32>,
+    timed_out: bool,
+    cancelled: bool,
+}
+
+async fn run_bounded_shell(
+    params: ShellParams,
+    working_dir: Option<&Path>,
+    login_path: Option<&str>,
+    cancel_token: CancellationToken,
+) -> CallToolResult {
+    if params.command.trim().is_empty() {
+        return shell_error_result("Command cannot be empty.", None);
+    }
+
+    let execution = match execute_bounded_shell(
+        &params.command,
+        params.timeout_secs,
+        working_dir,
+        login_path,
+        cancel_token,
+    )
+    .await
+    {
+        Ok(execution) => execution,
+        Err(error) => return shell_error_result(error, None),
+    };
+    render_bounded_shell_result(execution, params.timeout_secs)
+}
+
+async fn execute_bounded_shell(
+    command_line: &str,
+    timeout_secs: Option<u64>,
+    working_dir: Option<&Path>,
+    login_path: Option<&str>,
+    cancel_token: CancellationToken,
+) -> Result<BoundedShellExecution, String> {
+    let mut command = build_bounded_shell_command(command_line, working_dir, login_path);
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("Failed to spawn shell command: {error}"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "Failed to capture shell stdout".to_string())?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "Failed to capture shell stderr".to_string())?;
+
+    let (sender, receiver) = mpsc::channel(8);
+    let stdout_task = tokio::spawn(pump_shell_stream(stdout, false, sender.clone()));
+    let stderr_task = tokio::spawn(pump_shell_stream(stderr, true, sender.clone()));
+    drop(sender);
+
+    let output_limit_reached = CancellationToken::new();
+    let mut capture_task = tokio::spawn(collect_bounded_shell_output(
+        receiver,
+        output_limit_reached.clone(),
+    ));
+    let timeout = async move {
+        match timeout_secs.filter(|seconds| *seconds > 0) {
+            Some(seconds) => tokio::time::sleep(Duration::from_secs(seconds)).await,
+            None => std::future::pending::<()>().await,
+        }
+    };
+    tokio::pin!(timeout);
+
+    let mut timed_out = false;
+    let mut cancelled = false;
+    let exit_code = tokio::select! {
+        biased;
+        _ = cancel_token.cancelled() => {
+            cancelled = true;
+            terminate_shell_process(&mut child).await
+        }
+        _ = output_limit_reached.cancelled() => {
+            terminate_shell_process(&mut child).await
+        }
+        _ = &mut timeout => {
+            timed_out = true;
+            terminate_shell_process(&mut child).await
+        }
+        result = child.wait() => result
+            .map_err(|error| format!("Failed waiting on shell command: {error}"))?
+            .code(),
+    };
+
+    let mut capture =
+        match tokio::time::timeout(SHELL_OUTPUT_DRAIN_TIMEOUT, &mut capture_task).await {
+            Ok(Ok(capture)) => capture,
+            Ok(Err(error)) => BoundedShellCapture {
+                collection_error: Some(format!("Shell output task failed: {error}")),
+                ..BoundedShellCapture::default()
+            },
+            Err(_) => {
+                stdout_task.abort();
+                stderr_task.abort();
+                match capture_task.await {
+                    Ok(mut capture) => {
+                        capture.collection_error = Some(
+                            "Shell output draining timed out; output may be incomplete".to_string(),
+                        );
+                        capture
+                    }
+                    Err(error) => BoundedShellCapture {
+                        collection_error: Some(format!(
+                            "Shell output draining timed out and the collector failed: {error}"
+                        )),
+                        ..BoundedShellCapture::default()
+                    },
+                }
+            }
+        };
+    stdout_task.abort();
+    stderr_task.abort();
+    let _ = stdout_task.await;
+    let _ = stderr_task.await;
+    if output_limit_reached.is_cancelled() {
+        capture.exceeded_limit = true;
+    }
+
+    Ok(BoundedShellExecution {
+        capture,
+        exit_code,
+        timed_out,
+        cancelled,
+    })
+}
+
+async fn pump_shell_stream<R>(mut reader: R, stderr: bool, sender: mpsc::Sender<ShellStreamChunk>)
+where
+    R: AsyncRead + Unpin,
+{
+    let mut chunk = vec![0u8; 8 * 1024];
+    loop {
+        match reader.read(&mut chunk).await {
+            Ok(0) => break,
+            Ok(read) => {
+                if sender
+                    .send(ShellStreamChunk::Data {
+                        stderr,
+                        bytes: chunk[..read].to_vec(),
+                    })
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+            Err(error) => {
+                let _ = sender
+                    .send(ShellStreamChunk::Error(format!(
+                        "Failed to read shell {}: {error}",
+                        if stderr { "stderr" } else { "stdout" }
+                    )))
+                    .await;
+                break;
+            }
+        }
+    }
+}
+
+async fn collect_bounded_shell_output(
+    mut receiver: mpsc::Receiver<ShellStreamChunk>,
+    output_limit_reached: CancellationToken,
+) -> BoundedShellCapture {
+    let mut capture = BoundedShellCapture::default();
+    while let Some(chunk) = receiver.recv().await {
+        match chunk {
+            ShellStreamChunk::Data { stderr, bytes } => {
+                let remaining = MAX_SHELL_OUTPUT_BYTES.saturating_sub(capture.interleaved.len());
+                let retained = remaining.min(bytes.len());
+                let retained_bytes = &bytes[..retained];
+                capture.interleaved.extend_from_slice(retained_bytes);
+                if stderr {
+                    capture.stderr.extend_from_slice(retained_bytes);
+                } else {
+                    capture.stdout.extend_from_slice(retained_bytes);
+                }
+                if retained < bytes.len() {
+                    capture.exceeded_limit = true;
+                    output_limit_reached.cancel();
+                    break;
+                }
+            }
+            ShellStreamChunk::Error(error) => {
+                capture.collection_error = Some(error);
+            }
+        }
+    }
+    capture
+}
+
+async fn terminate_shell_process(child: &mut tokio::process::Child) -> Option<i32> {
+    #[cfg(unix)]
+    if let Some(pid) = child.id() {
+        // configure_subprocess gives the command its own process group.
+        let _ = unsafe { libc::kill(-(pid as i32), libc::SIGKILL) };
+    }
+    let _ = child.start_kill();
+    child.wait().await.ok().and_then(|status| status.code())
+}
+
+fn build_bounded_shell_command(
+    command_line: &str,
+    working_dir: Option<&Path>,
+    login_path: Option<&str>,
+) -> tokio::process::Command {
+    #[cfg(windows)]
+    let mut command = {
+        let shell = std::env::var("GOOSE_SHELL").unwrap_or_else(|_| "cmd".to_string());
+        let shell_name = Path::new(&shell)
+            .file_stem()
+            .and_then(|name| name.to_str())
+            .unwrap_or("cmd")
+            .to_ascii_lowercase();
+        let mut command = tokio::process::Command::new(&shell);
+        match shell_name.as_str() {
+            "pwsh" | "powershell" => {
+                command.args(["-NoProfile", "-NonInteractive", "-Command", command_line]);
+            }
+            "cmd" => {
+                command.arg("/C").raw_arg(command_line);
+            }
+            _ => {
+                command.args(["-c", command_line]);
+            }
+        }
+        if let Some(dir) = working_dir {
+            command.current_dir(dir);
+        }
+        if let Some(path) = login_path {
+            command.env("PATH", path);
+        }
+        command
+    };
+
+    #[cfg(not(windows))]
+    let mut command = {
+        let shell = std::env::var("GOOSE_SHELL").unwrap_or_else(|_| {
+            executable_on_path("bash")
+                .unwrap_or_else(|| PathBuf::from("sh"))
+                .to_string_lossy()
+                .into_owned()
+        });
+        if Path::new("/.flatpak-info").exists() {
+            let mut command = tokio::process::Command::new("flatpak-spawn");
+            command.args(["--host", "--watch-bus"]);
+            if let Some(dir) = working_dir {
+                command.arg(format!("--directory={}", dir.display()));
+            }
+            if let Some(path) = login_path {
+                command.arg(format!("--env=PATH={path}"));
+            }
+            command.arg(shell).args(["-c", command_line]);
+            command
+        } else {
+            let mut command = tokio::process::Command::new(shell);
+            command.args(["-c", command_line]);
+            if let Some(dir) = working_dir {
+                command.current_dir(dir);
+            }
+            if let Some(path) = login_path {
+                command.env("PATH", path);
+            }
+            command
+        }
+    };
+
+    configure_subprocess(&mut command);
+    command
+}
+
+#[cfg(not(windows))]
+fn executable_on_path(name: &str) -> Option<PathBuf> {
+    std::env::var_os("PATH")
+        .into_iter()
+        .flat_map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
+        .map(|dir| dir.join(name))
+        .find(|candidate| candidate.is_file())
+}
+
+fn render_bounded_shell_result(
+    execution: BoundedShellExecution,
+    timeout_secs: Option<u64>,
+) -> CallToolResult {
+    let stdout = String::from_utf8_lossy(&execution.capture.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&execution.capture.stderr).into_owned();
+    let mut rendered = String::from_utf8_lossy(&execution.capture.interleaved).into_owned();
+    if rendered.is_empty() {
+        rendered.push_str("(no output)");
+    }
+    if execution.capture.exceeded_limit {
+        rendered.push_str(&format!(
+            "\n\nCommand stopped after output exceeded the {MAX_SHELL_OUTPUT_BYTES} byte safety limit. Use a more targeted command or the read tool."
+        ));
+    }
+    if execution.timed_out {
+        match timeout_secs {
+            Some(seconds) => {
+                rendered.push_str(&format!("\n\nCommand timed out after {seconds} seconds"));
+            }
+            None => rendered.push_str("\n\nCommand timed out"),
+        }
+    }
+    if execution.cancelled {
+        rendered.push_str("\n\nCommand cancelled");
+    }
+    if let Some(error) = &execution.capture.collection_error {
+        rendered.push_str(&format!("\n\nOutput collection error: {error}"));
+    }
+    if let Some(code) = execution.exit_code.filter(|code| *code != 0) {
+        rendered.push_str(&format!("\n\nCommand exited with code {code}"));
+    }
+
+    let shell_output = ShellOutput {
+        stdout,
+        stderr,
+        exit_code: execution.exit_code,
+        timed_out: execution.timed_out,
+        output_truncated: execution.capture.exceeded_limit,
+        output_collection_error: execution.capture.collection_error.clone(),
+    };
+    let structured_content = serde_json::to_value(shell_output).ok();
+    let is_error = execution.cancelled
+        || execution.timed_out
+        || execution.capture.exceeded_limit
+        || execution.capture.collection_error.is_some()
+        || execution.exit_code.unwrap_or(1) != 0;
+    let mut result = if is_error {
+        CallToolResult::error(vec![Content::text(rendered).with_priority(0.0)])
+    } else {
+        CallToolResult::success(vec![Content::text(rendered).with_priority(0.0)])
+    };
+    result.structured_content = structured_content;
+    result
 }
 
 fn resolve_path(path: &str, working_dir: Option<&Path>) -> PathBuf {
@@ -1023,11 +1458,15 @@ async fn edit_file(
         guard = lock.lock() => guard,
     };
     let worker_cancel_token = cancel_token.clone();
-    match tokio::task::spawn_blocking(move || edit_file_blocking(params, path, worker_cancel_token))
-        .await
-    {
-        Ok(result) => result,
-        Err(error) => error_result(format!("Edit task failed: {error}")),
+    let task =
+        tokio::task::spawn_blocking(move || edit_file_blocking(params, path, worker_cancel_token));
+    tokio::select! {
+        biased;
+        _ = cancel_token.cancelled() => error_result("Edit cancelled"),
+        result = task => match result {
+            Ok(result) => result,
+            Err(error) => error_result(format!("Edit task failed: {error}")),
+        },
     }
 }
 
@@ -1043,9 +1482,38 @@ fn edit_file_blocking(
         Ok(file) => file,
         Err(error) => return error_result(format!("Failed to read {}: {error}", params.path)),
     };
-    let mut bytes = Vec::new();
-    if let Err(error) = file.read_to_end(&mut bytes) {
-        return error_result(format!("Failed to read {}: {error}", params.path));
+    let len = match file.metadata() {
+        Ok(metadata) => metadata.len(),
+        Err(error) => return error_result(format!("Failed to inspect {}: {error}", params.path)),
+    };
+    if len > MAX_EDIT_BYTES as u64 {
+        return error_result(format!(
+            "{} is too large to edit safely: {len} bytes exceeds the {MAX_EDIT_BYTES} byte limit",
+            params.path
+        ));
+    }
+    let mut bytes = Vec::with_capacity(len as usize);
+    let mut chunk = [0u8; 64 * 1024];
+    loop {
+        if cancel_token.is_cancelled() {
+            return error_result("Edit cancelled");
+        }
+        let read = match file.read(&mut chunk) {
+            Ok(read) => read,
+            Err(error) => {
+                return error_result(format!("Failed to read {}: {error}", params.path));
+            }
+        };
+        if read == 0 {
+            break;
+        }
+        if bytes.len().saturating_add(read) > MAX_EDIT_BYTES {
+            return error_result(format!(
+                "{} grew beyond the {MAX_EDIT_BYTES} byte edit limit while being read",
+                params.path
+            ));
+        }
+        bytes.extend_from_slice(&chunk[..read]);
     }
     let original = match String::from_utf8(bytes) {
         Ok(content) => content,
@@ -1059,6 +1527,9 @@ fn edit_file_blocking(
     let mut resolved_edits = Vec::with_capacity(params.edits.len());
     let mut has_change = false;
     for (index, replacement) in params.edits.iter().enumerate() {
+        if cancel_token.is_cancelled() {
+            return error_result("Edit cancelled");
+        }
         let old_text = normalize_newlines(&replacement.old_text);
         let new_text = normalize_newlines(&replacement.new_text);
         if old_text.is_empty() {
@@ -1079,8 +1550,7 @@ fn edit_file_blocking(
             }
             _ => {
                 return error_result(format!(
-                    "edits[{index}].oldText matched {} times; include more context so it is unique",
-                    matches.len()
+                    "edits[{index}].oldText matched more than once; include more context so it is unique"
                 ));
             }
         }
@@ -1096,6 +1566,18 @@ fn edit_file_blocking(
         }
     }
 
+    let updated_len =
+        resolved_edits
+            .iter()
+            .try_fold(normalized.len(), |len, (start, end, replacement)| {
+                len.checked_sub(end - start)?.checked_add(replacement.len())
+            });
+    if updated_len.is_none_or(|len| len > MAX_EDIT_BYTES) {
+        return error_result(format!(
+            "Edited content would exceed the {MAX_EDIT_BYTES} byte edit limit"
+        ));
+    }
+
     for (start, end, replacement) in resolved_edits.iter().rev() {
         normalized.replace_range(*start..*end, replacement);
     }
@@ -1104,6 +1586,14 @@ fn edit_file_blocking(
         return error_result("Edit cancelled");
     }
     let updated = restore_text_file(&normalized, bom, line_ending);
+    if updated.len() > MAX_EDIT_BYTES {
+        return error_result(format!(
+            "Edited content would exceed the {MAX_EDIT_BYTES} byte edit limit"
+        ));
+    }
+    if cancel_token.is_cancelled() {
+        return error_result("Edit cancelled");
+    }
     if let Err(error) = file
         .set_len(0)
         .and_then(|_| file.seek(SeekFrom::Start(0)).map(|_| ()))
@@ -1185,7 +1675,7 @@ fn restore_text_file(content: &str, bom: bool, line_ending: LineEnding) -> Strin
 }
 
 fn overlapping_match_positions(haystack: &str, needle: &str) -> Vec<usize> {
-    let mut positions = Vec::new();
+    let mut positions = Vec::with_capacity(2);
     let mut search_start = 0usize;
     while search_start <= haystack.len() {
         let Some(relative) = haystack[search_start..].find(needle) else {
@@ -1193,6 +1683,9 @@ fn overlapping_match_positions(haystack: &str, needle: &str) -> Vec<usize> {
         };
         let position = search_start + relative;
         positions.push(position);
+        if positions.len() == 2 {
+            break;
+        }
         let advance = haystack[position..]
             .chars()
             .next()
@@ -1502,6 +1995,74 @@ mod tests {
         .await
         .unwrap_err();
         assert!(error.contains("image is too large"));
+    }
+
+    #[tokio::test]
+    async fn edit_rejects_oversized_files_before_buffering() {
+        let temp = TestDir::new();
+        let path = temp.path().join("oversized.txt");
+        let file = fs::File::create(&path).unwrap();
+        file.set_len(MAX_EDIT_BYTES as u64 + 1).unwrap();
+
+        let result = edit_file(
+            EditParams {
+                path: "oversized.txt".to_string(),
+                edits: vec![Replacement {
+                    old_text: "before".to_string(),
+                    new_text: "after".to_string(),
+                }],
+            },
+            Some(temp.path()),
+            CancellationToken::new(),
+        )
+        .await;
+        assert_eq!(result.is_error, Some(true));
+        assert!(text(&result).contains("too large to edit safely"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn shell_stops_processes_at_the_combined_output_limit() {
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            run_bounded_shell(
+                ShellParams {
+                    command: "while :; do printf 1234567890; done".to_string(),
+                    timeout_secs: Some(4),
+                },
+                None,
+                std::env::var("PATH").ok().as_deref(),
+                CancellationToken::new(),
+            ),
+        )
+        .await
+        .expect("output limiting must stop an unbounded command");
+        let output: ShellOutput =
+            serde_json::from_value(result.structured_content.clone().unwrap()).unwrap();
+        assert_eq!(result.is_error, Some(true));
+        assert!(output.output_truncated);
+        assert!(output.stdout.len() + output.stderr.len() <= MAX_SHELL_OUTPUT_BYTES);
+        assert!(text(&result).contains("output exceeded"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn shell_preserves_small_successful_output() {
+        let result = run_bounded_shell(
+            ShellParams {
+                command: "printf hello".to_string(),
+                timeout_secs: Some(2),
+            },
+            None,
+            std::env::var("PATH").ok().as_deref(),
+            CancellationToken::new(),
+        )
+        .await;
+        let output: ShellOutput =
+            serde_json::from_value(result.structured_content.clone().unwrap()).unwrap();
+        assert_eq!(result.is_error, Some(false));
+        assert_eq!(output.stdout, "hello");
+        assert_eq!(text(&result), "hello");
     }
 
     #[cfg(unix)]

@@ -1141,7 +1141,7 @@ pub async fn agent_send_message(
             request.mode.clone().unwrap_or_else(|| current.mode.clone()),
         )
     };
-    let permission_mode = parse_user_permission_mode(&mode)?;
+    let requested_permission_mode = parse_user_permission_mode(&mode)?;
 
     let user_item = message_to_timeline_items(&user_message, false)
         .into_iter()
@@ -1157,14 +1157,14 @@ pub async fn agent_send_message(
         .await
         .map_err(|e| format!("Agent session is already running: {e}"))?;
 
-    // A rejected duplicate send must not be able to change the live policy of
-    // the turn that already owns this session. Commit the requested mode only
-    // after Goose has granted this run the session claim, and restore it if
-    // setup fails before the run starts.
-    let previous_permission_mode = permission_modes
-        .lock()
-        .await
-        .insert(request.session_id.clone(), permission_mode);
+    // A rejected or delayed send must not be able to change a live policy that
+    // the mode command already made authoritative. Seed only sessions that do
+    // not yet have runtime policy state, after Goose grants this run its claim.
+    let (permission_mode, seeded_permission_mode) = {
+        let mut modes = permission_modes.lock().await;
+        select_session_permission_mode(&mut modes, &request.session_id, requested_permission_mode)
+    };
+    let effective_mode = permission_mode.to_string();
 
     let setup_result: Result<(Arc<Agent>, AgentTurnSnapshot), String> = async {
         let mut session = session_manager
@@ -1204,25 +1204,23 @@ pub async fn agent_send_message(
                 },
             );
         }
-        let agent =
-            configure_session_agent(&agent_manager, &session_manager, &session, &model, &mode)
-                .await?;
+        let agent = configure_session_agent(
+            &agent_manager,
+            &session_manager,
+            &session,
+            &model,
+            &effective_mode,
+        )
+        .await?;
         Ok((agent, turn_snapshot))
     }
     .await;
     let (agent, task_turn_snapshot) = match setup_result {
         Ok(setup) => setup,
         Err(error) => {
-            let mut modes = permission_modes.lock().await;
-            match previous_permission_mode {
-                Some(previous) => {
-                    modes.insert(request.session_id.clone(), previous);
-                }
-                None => {
-                    modes.remove(&request.session_id);
-                }
+            if seeded_permission_mode {
+                permission_modes.lock().await.remove(&request.session_id);
             }
-            drop(modes);
             agent_manager
                 .unregister_cancel_token(&request.session_id)
                 .await;
@@ -1576,22 +1574,26 @@ pub async fn agent_set_permission_mode(
         }
     }
 
-    let session = session_manager
-        .get_session(&session_id, false)
-        .await
-        .map_err(|error| format!("Failed to load updated Goose session: {error}"))?;
-    emit_agent_event(
-        &app_handle,
-        AgentEventEnvelope {
-            event_type: "sessionUpdated".to_string(),
-            session_id: Some(session_id),
-            run_id: None,
-            item: None,
-            status: None,
-            session: Some(session_summary(&session)),
-            message: None,
-        },
-    );
+    // The policy is already committed at this point. A best-effort refresh
+    // must not report failure to the selector and make it roll back to a mode
+    // that is no longer authoritative.
+    match session_manager.get_session(&session_id, false).await {
+        Ok(session) => emit_agent_event(
+            &app_handle,
+            AgentEventEnvelope {
+                event_type: "sessionUpdated".to_string(),
+                session_id: Some(session_id),
+                run_id: None,
+                item: None,
+                status: None,
+                session: Some(session_summary(&session)),
+                message: None,
+            },
+        ),
+        Err(error) => log::warn!(
+            "Agent permission mode was updated, but the refreshed session could not be loaded: {error}"
+        ),
+    }
     Ok(())
 }
 
@@ -1731,6 +1733,19 @@ async fn selected_permission_mode(
         .unwrap_or(GOOSE_PERMISSION_ROUTING_MODE)
 }
 
+fn select_session_permission_mode(
+    permission_modes: &mut HashMap<String, GooseMode>,
+    session_id: &str,
+    requested_mode: GooseMode,
+) -> (GooseMode, bool) {
+    if let Some(mode) = permission_modes.get(session_id).copied() {
+        (mode, false)
+    } else {
+        permission_modes.insert(session_id.to_string(), requested_mode);
+        (requested_mode, true)
+    }
+}
+
 async fn deliver_tool_permission(agent: &Agent, request_id: String, permission: Permission) {
     agent
         .handle_confirmation(
@@ -1741,6 +1756,36 @@ async fn deliver_tool_permission(agent: &Agent, request_id: String, permission: 
             },
         )
         .await;
+}
+
+async fn deliver_tool_permission_if_auto(
+    agent: &Agent,
+    session_id: &str,
+    permission_modes: &SessionPermissionModes,
+    request_id: &str,
+    cancel_token: &CancellationToken,
+) -> bool {
+    // Keep the policy lock through confirmation delivery. This is the
+    // linearization point for Auto -> Read only: once the restrictive mode
+    // command returns, no permission decision based on an older Auto snapshot
+    // can still be delivered.
+    let modes = permission_modes.lock().await;
+    if modes
+        .get(session_id)
+        .copied()
+        .unwrap_or(GOOSE_PERMISSION_ROUTING_MODE)
+        != GooseMode::Auto
+    {
+        return false;
+    }
+    let permission = if cancel_token.is_cancelled() {
+        Permission::Cancel
+    } else {
+        Permission::AllowOnce
+    };
+    deliver_tool_permission(agent, request_id.to_string(), permission).await;
+    drop(modes);
+    true
 }
 
 async fn automatically_handle_permissions(
@@ -1758,25 +1803,28 @@ async fn automatically_handle_permissions(
         let MessageContent::ActionRequired(action) = content else {
             continue;
         };
-        let current_mode = selected_permission_mode(permission_modes, session_id).await;
         let tool_request_id = match &action.data {
             ActionRequiredData::ToolConfirmation { id, .. } => Some(id.clone()),
             _ => None,
         };
-        if current_mode == GooseMode::Auto {
-            let Some(request_id) = tool_request_id.clone() else {
+        if let Some(request_id) = tool_request_id.as_ref() {
+            if deliver_tool_permission_if_auto(
+                agent,
+                session_id,
+                permission_modes,
+                request_id,
+                cancel_token,
+            )
+            .await
+            {
+                let request_id = request_id.clone();
+                handled.insert(request_id);
                 continue;
-            };
-            let permission = if cancel_token.is_cancelled() {
-                Permission::Cancel
-            } else {
-                Permission::AllowOnce
-            };
-            deliver_tool_permission(agent, request_id.clone(), permission).await;
-            handled.insert(request_id);
-            continue;
+            }
         }
-        let current_mode = current_mode.to_string();
+        let current_mode = selected_permission_mode(permission_modes, session_id)
+            .await
+            .to_string();
         if let Some(request_id) = local_read_request_id(&current_mode, action)
             .or_else(|| local_read_image_request_id(&current_mode, action))
             .map(str::to_string)
@@ -1793,14 +1841,16 @@ async fn automatically_handle_permissions(
         }
         let Some(request) = ShellPermissionRequest::from_action(&current_mode, working_dir, action)
         else {
-            if selected_permission_mode(permission_modes, session_id).await == GooseMode::Auto {
-                if let Some(request_id) = tool_request_id {
-                    let permission = if cancel_token.is_cancelled() {
-                        Permission::Cancel
-                    } else {
-                        Permission::AllowOnce
-                    };
-                    deliver_tool_permission(agent, request_id.clone(), permission).await;
+            if let Some(request_id) = tool_request_id {
+                if deliver_tool_permission_if_auto(
+                    agent,
+                    session_id,
+                    permission_modes,
+                    &request_id,
+                    cancel_token,
+                )
+                .await
+                {
                     handled.insert(request_id);
                 }
             }
@@ -1810,12 +1860,20 @@ async fn automatically_handle_permissions(
         let outcome = classifier
             .classify(agent, session_id, &request, cancel_token)
             .await;
-        let mode_after_classification =
-            selected_permission_mode(permission_modes, session_id).await;
+        if deliver_tool_permission_if_auto(
+            agent,
+            session_id,
+            permission_modes,
+            &request_id,
+            cancel_token,
+        )
+        .await
+        {
+            handled.insert(request_id);
+            continue;
+        }
         let permission = if cancel_token.is_cancelled() {
             Permission::Cancel
-        } else if mode_after_classification == GooseMode::Auto {
-            Permission::AllowOnce
         } else {
             match outcome {
                 ShellPermissionOutcome::ReadOnly => {
@@ -3297,6 +3355,17 @@ mod tests {
         assert_eq!(
             selected_permission_mode(&modes, "session-2").await,
             GooseMode::SmartApprove
+        );
+
+        let mut claimed = HashMap::from([("session-1".to_string(), GooseMode::SmartApprove)]);
+        assert_eq!(
+            select_session_permission_mode(&mut claimed, "session-1", GooseMode::Auto),
+            (GooseMode::SmartApprove, false),
+            "a delayed send must not overwrite a newer authoritative policy"
+        );
+        assert_eq!(
+            select_session_permission_mode(&mut claimed, "session-2", GooseMode::Auto),
+            (GooseMode::Auto, true)
         );
     }
 
