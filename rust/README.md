@@ -87,6 +87,11 @@ it cannot be used to bypass JWT-only account or conversation APIs. The existing
 typed model, embedding, and chat-completion helpers remain available as
 compatibility wrappers over the same transport.
 
+The SDK manages transport credentials and framing. Caller-provided `Host`,
+`Authorization`, `x-session-id`, `Content-Length`, `Content-Type`,
+`Content-Encoding`, `Accept-Encoding`, `Content-MD5`, `Digest`, hop-by-hop, and
+`Connection`-listed headers are not forwarded; other headers are preserved.
+
 ## Authentication
 
 ### User Registration

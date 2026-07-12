@@ -36,9 +36,12 @@ pub type InferenceRequest = HttpRequest<Bytes>;
 pub type InferenceResponse = HttpResponse<OpenSecretResponseBody>;
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct EncryptedBody {
     encrypted: String,
 }
+
+const MAX_INFERENCE_SSE_LINE_BYTES: usize = 16 * 1024 * 1024;
 
 pub struct OpenSecretClient {
     client: Client,
@@ -290,6 +293,8 @@ fn transform_sse_line(line: Bytes, session_key: &[u8; 32]) -> Result<Bytes> {
         return Ok(line);
     }
 
+    // OpenSecret encrypts every normal data event. A base64-shaped payload
+    // that fails authentication is corrupt transport data, not plaintext.
     let encrypted = match BASE64.decode(payload) {
         Ok(encrypted) => encrypted,
         Err(_) => return Ok(line),
@@ -308,8 +313,16 @@ fn transform_sse_line(line: Bytes, session_key: &[u8; 32]) -> Result<Bytes> {
 }
 
 fn decrypt_sse_stream(
+    source: OpenSecretResponseBody,
+    session_key: [u8; 32],
+) -> OpenSecretResponseBody {
+    decrypt_sse_stream_with_line_limit(source, session_key, MAX_INFERENCE_SSE_LINE_BYTES)
+}
+
+fn decrypt_sse_stream_with_line_limit(
     mut source: OpenSecretResponseBody,
     session_key: [u8; 32],
+    max_line_bytes: usize,
 ) -> OpenSecretResponseBody {
     let stream = async_stream::try_stream! {
         let mut buffered = BytesMut::new();
@@ -317,8 +330,19 @@ fn decrypt_sse_stream(
         while let Some(chunk) = source.next().await {
             buffered.extend_from_slice(&chunk?);
             while let Some(line_end) = buffered.iter().position(|byte| *byte == b'\n') {
-                let line = buffered.split_to(line_end + 1).freeze();
+                let line_len = line_end + 1;
+                if line_len > max_line_bytes {
+                    Err(Error::InvalidResponse(format!(
+                        "Inference SSE line exceeds {max_line_bytes}-byte limit"
+                    )))?;
+                }
+                let line = buffered.split_to(line_len).freeze();
                 yield transform_sse_line(line, &session_key)?;
+            }
+            if buffered.len() > max_line_bytes {
+                Err(Error::InvalidResponse(format!(
+                    "Inference SSE line exceeds {max_line_bytes}-byte limit"
+                )))?;
             }
         }
 
@@ -712,15 +736,17 @@ impl OpenSecretClient {
     /// JSON and never adds or changes inference parameters such as `stream`.
     ///
     /// OpenSecret authentication, attestation sessions, and the encrypted
-    /// envelope remain SDK-owned. Caller-provided authorization, session,
-    /// content-length, content-type, content-encoding, accept-encoding,
-    /// integrity, and hop-by-hop headers are therefore not forwarded. Other
-    /// headers are preserved.
+    /// envelope remain SDK-owned. Caller-provided `Host`, `Authorization`,
+    /// `x-session-id`, `Content-Length`, `Content-Type`, `Content-Encoding`,
+    /// `Accept-Encoding`, `Content-MD5`, `Digest`, and hop-by-hop headers
+    /// (including fields named by `Connection`) are therefore not forwarded.
+    /// Other headers are preserved.
     ///
     /// The returned HTTP response preserves the final OpenSecret status and
     /// safe response headers. Its body is decrypted raw bytes. SSE framing is
     /// preserved while encrypted `data:` fields are decrypted without parsing
-    /// their contents as completion JSON.
+    /// their contents as completion JSON. Individual SSE lines are limited to
+    /// 16 MiB.
     pub async fn send_inference_request(
         &self,
         request: InferenceRequest,
@@ -755,6 +781,9 @@ impl OpenSecretClient {
                 .await;
 
             match result {
+                // OpenSecret currently uses the same 400 for stale sessions and
+                // pre-provider validation. Preserve the legacy one-retry behavior
+                // until the backend exposes an explicit re-attestation signal.
                 Ok((response, _session_key))
                     if response.status() == reqwest::StatusCode::BAD_REQUEST
                         && !retried_attestation =>
@@ -3354,6 +3383,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn inference_transport_preserves_non_envelope_error_with_encrypted_field() {
+        let mock_server = MockServer::start().await;
+        let client =
+            OpenSecretClient::new_with_api_key(mock_server.uri(), "api_key".to_string()).unwrap();
+        let session_key = [36u8; 32];
+        let error_body = Bytes::from(
+            serde_json::to_vec(&json!({
+                "encrypted": BASE64.encode([0u8; 28]),
+                "message": "plain backend error"
+            }))
+            .unwrap(),
+        );
+        client
+            .session_manager
+            .set_session(Uuid::new_v4(), session_key)
+            .unwrap();
+
+        Mock::given(method("POST"))
+            .and(path("/v1/embeddings"))
+            .respond_with(ResponseTemplate::new(422).set_body_bytes(error_body.clone()))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let request = HttpRequest::builder()
+            .method(http::Method::POST)
+            .uri("/v1/embeddings")
+            .body(Bytes::from_static(br#"{"model":"x","input":"y"}"#))
+            .unwrap();
+        let response = client.send_inference_request(request).await.unwrap();
+
+        assert_eq!(response.status(), http::StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(
+            collect_response_body(response.into_body()).await.unwrap(),
+            error_body
+        );
+    }
+
+    #[tokio::test]
     async fn inference_transport_establishes_attestation_and_replays_exact_bytes() {
         let mock_server = MockServer::start().await;
         let client =
@@ -3462,6 +3530,46 @@ mod tests {
             .unwrap_err();
 
         assert!(matches!(error, Error::Decryption(message) if message.contains("SSE data")));
+    }
+
+    #[tokio::test]
+    async fn inference_sse_transport_bounds_each_line_not_each_network_chunk() {
+        let session_key = [37u8; 32];
+        let within_limit = Bytes::from_static(b":1\n:2\n:3\n");
+        let source: OpenSecretResponseBody =
+            Box::pin(futures::stream::iter([Ok(within_limit.clone())]));
+        let actual =
+            collect_response_body(decrypt_sse_stream_with_line_limit(source, session_key, 8))
+                .await
+                .unwrap();
+        assert_eq!(actual, within_limit);
+
+        let exact_limit = Bytes::from_static(b":1234567");
+        let source: OpenSecretResponseBody =
+            Box::pin(futures::stream::iter([Ok(exact_limit.clone())]));
+        let actual =
+            collect_response_body(decrypt_sse_stream_with_line_limit(source, session_key, 8))
+                .await
+                .unwrap();
+        assert_eq!(actual, exact_limit);
+
+        for chunks in [
+            vec![
+                Ok(Bytes::from_static(b":1234")),
+                Ok(Bytes::from_static(b"5678")),
+            ],
+            vec![Ok(Bytes::from_static(b":12345678\n"))],
+        ] {
+            let source: OpenSecretResponseBody = Box::pin(futures::stream::iter(chunks));
+            let error =
+                collect_response_body(decrypt_sse_stream_with_line_limit(source, session_key, 8))
+                    .await
+                    .unwrap_err();
+            assert!(matches!(
+                error,
+                Error::InvalidResponse(message) if message.contains("8-byte limit")
+            ));
+        }
     }
 
     #[tokio::test]
