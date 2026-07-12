@@ -181,13 +181,28 @@ This behavior must be covered by regression testing, including leaving during an
 
 ## Transitions
 
-The core implementation includes a simple page transition:
+The core implementation uses a paired page transition modeled on the standard iOS navigation
+controller push/pop motion:
 
-- Forward navigation slides the child page in from the right.
-- Back navigation slides the child page out to the right and reveals its parent.
+- Forward navigation slides the child page in from the right while shifting its parent partially
+  off the left edge.
+- Back navigation slides the child page out to the right while returning its parent from the left.
 - The popped page unmounts after its exit transition completes.
 - Respect `prefers-reduced-motion` by removing or minimizing nonessential animation.
 - Keep transition state centralized in the mobile navigation shell.
+
+## Compact Settings Navigation
+
+Compact Settings follows the same root/detail hierarchy and paired motion:
+
+- `/settings` is the full-screen Settings menu rather than a drawer over Account settings.
+- Selecting a category pushes its existing detail route over the mounted Settings menu.
+- The detail header uses a top-left back arrow that returns to the Settings menu.
+- Browser history back to the Settings menu uses the same paired pop animation.
+- A directly loaded Settings detail URL falls back to `/settings` from the in-app back button.
+- Existing nested category routes, navigation locks, sign-out behavior, and persistent return to the
+  prior home surface remain unchanged.
+- Desktop-width Settings keeps its existing two-column navigation and detail layout.
 
 ## Implementation Sequence
 
@@ -310,7 +325,7 @@ This stretch goal does not block completion of the core feature.
 - Changing the existing responsive breakpoint logic
 - Adding Android-specific navigation behavior without a demonstrated platform bug
 - Changing Maple/OpenSecret background-processing behavior
-- Changing settings navigation or persistent return-to-home behavior
+- Changing persistent return-to-home behavior
 - Changing Agent Mode availability or navigation
 - Adding draft persistence
 - Adding the iOS edge-swipe gesture before the core feature is complete
@@ -367,10 +382,20 @@ The core feature is complete when every agreed non-stretch behavior is implement
 ### Motion and accessibility
 
 - [ ] Forward and back slide transitions work in portrait and short landscape.
+- [x] Parent menu/project surfaces shift left on push and return on pop.
 - [x] Reduced-motion users receive a suitable non-animated or minimized transition.
 - [x] Covered parent pages are inert and hidden from assistive technology.
 - [x] Focus moves predictably on push and pop.
 - [ ] Safe areas and the mobile keyboard do not obscure navigation controls.
+
+### Compact Settings
+
+- [x] `/settings` renders the full-screen Settings menu on compact layouts.
+- [x] Settings categories push existing detail routes over the mounted menu.
+- [x] Settings detail back returns to the menu through shared browser history when available.
+- [x] Directly loaded Settings detail routes fall back to the Settings menu.
+- [x] Settings navigation locks continue to block unsafe navigation.
+- [x] Desktop-width Settings retains its existing two-column layout.
 
 ### Validation
 

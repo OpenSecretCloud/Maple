@@ -8,15 +8,20 @@ import {
   Database,
   KeyRound,
   LogOut,
-  Menu,
   MessageSquareText,
   Settings,
   ShieldCheck,
   UserRound,
-  UsersRound,
-  X
+  UsersRound
 } from "lucide-react";
-import { useEffect, useRef, useState, type ComponentType } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ComponentType
+} from "react";
 import { getBillingService } from "@/billing/billingService";
 import { MapleWordmark } from "@/components/MapleWordmark";
 import { SettingsNavigationLockProvider } from "@/components/settings/SettingsNavigationLockProvider";
@@ -32,6 +37,11 @@ import { stopAgentRuntimeForUser } from "@/services/agentRuntimeService";
 import { useLocalState } from "@/state/useLocalState";
 import type { TeamStatus } from "@/types/team";
 import { isIOS } from "@/utils/platform";
+import {
+  getSettingsBackTarget,
+  isSettingsRootPath,
+  shouldAnimateSettingsPop
+} from "@/utils/settingsNavigation";
 import { getTeamSeatMismatch } from "@/utils/teamSeats";
 import { cn } from "@/utils/utils";
 import packageJson from "../../../package.json";
@@ -52,15 +62,7 @@ type SettingsNavItem = {
   badgeTone?: "warning" | "danger";
 };
 
-function SettingsNavLink({
-  item,
-  onSelect,
-  replace
-}: {
-  item: SettingsNavItem;
-  onSelect?: () => void;
-  replace?: boolean;
-}) {
+function SettingsNavLink({ item }: { item: SettingsNavItem }) {
   const Icon = item.icon;
   const isNavigationLocked = useSettingsNavigationLockState();
   const attentionLabel =
@@ -73,7 +75,6 @@ function SettingsNavLink({
   return (
     <Link
       to={item.to}
-      replace={replace}
       title={item.label}
       aria-label={attentionLabel ? `${item.label}, ${attentionLabel}` : item.label}
       aria-disabled={isNavigationLocked || undefined}
@@ -82,8 +83,6 @@ function SettingsNavLink({
           event.preventDefault();
           return;
         }
-
-        onSelect?.();
       }}
       activeProps={{
         className:
@@ -128,14 +127,17 @@ function SettingsLayoutContent() {
   const { billingStatus, setBillingStatus } = useLocalState();
   const isNavigationLocked = useSettingsNavigationLockState();
   const isCompactViewport = useCompactSettingsLayout();
-  const isSettingsRoot = location.pathname === "/settings" || location.pathname === "/settings/";
+  const isSettingsRoot = isSettingsRootPath(location.pathname);
   const isAuthReady = !os.auth.loading && !!os.auth.user;
-  const [isDrawerOpen, setIsDrawerOpen] = useState(() => isCompactViewport && isSettingsRoot);
-  const previousPathnameRef = useRef(location.pathname);
-  const drawerRef = useRef<HTMLElement>(null);
-  const drawerCloseButtonRef = useRef<HTMLButtonElement>(null);
-  const menuButtonRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLElement>(null);
+  const menuBackButtonRef = useRef<HTMLButtonElement>(null);
+  const detailBackButtonRef = useRef<HTMLButtonElement>(null);
   const mainRef = useRef<HTMLElement>(null);
+  const rootHistoryIndexRef = useRef<number | null>(null);
+  const popAnimationRef = useRef<Promise<void> | null>(null);
+  const popTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const popResolveRef = useRef<(() => void) | null>(null);
+  const [isPopping, setIsPopping] = useState(false);
   const [isSigningOut, setIsSigningOut] = useState(false);
   const [signOutError, setSignOutError] = useState<string | null>(null);
 
@@ -151,61 +153,129 @@ function SettingsLayoutContent() {
     }
   }, [location.href, os.auth.loading, os.auth.user, router]);
 
-  useEffect(() => {
-    const pathChanged = previousPathnameRef.current !== location.pathname;
-    previousPathnameRef.current = location.pathname;
-
+  useLayoutEffect(() => {
     if (!isCompactViewport) {
-      setIsDrawerOpen(false);
+      rootHistoryIndexRef.current = null;
+      setIsPopping(false);
       return;
     }
 
     if (isSettingsRoot) {
-      setIsDrawerOpen(true);
-    } else if (pathChanged) {
-      setIsDrawerOpen(false);
+      const historyIndex = window.history.state?.__TSR_index;
+      rootHistoryIndexRef.current =
+        typeof historyIndex === "number" && Number.isFinite(historyIndex) ? historyIndex : null;
+      setIsPopping(false);
     }
-  }, [isCompactViewport, isSettingsRoot, location.pathname]);
+  }, [isCompactViewport, isSettingsRoot]);
 
   useEffect(() => {
     if (!isAuthReady) return;
 
-    const drawer = drawerRef.current;
+    const menu = menuRef.current;
     const main = mainRef.current;
 
-    if (drawer) {
-      drawer.inert = isCompactViewport && !isDrawerOpen;
+    if (menu) {
+      menu.inert = isCompactViewport && !isSettingsRoot;
     }
     if (main) {
-      main.inert = isCompactViewport && isDrawerOpen;
+      main.inert = isCompactViewport && (isSettingsRoot || isPopping);
     }
 
     return () => {
-      if (drawer) drawer.inert = false;
+      if (menu) menu.inert = false;
       if (main) main.inert = false;
     };
-  }, [isAuthReady, isCompactViewport, isDrawerOpen]);
+  }, [isAuthReady, isCompactViewport, isPopping, isSettingsRoot]);
 
   useEffect(() => {
-    if (!isAuthReady || !isCompactViewport || !isDrawerOpen) return;
+    if (!isAuthReady || !isCompactViewport) return;
 
-    const frame = window.requestAnimationFrame(() => drawerCloseButtonRef.current?.focus());
+    const frame = window.requestAnimationFrame(() => {
+      if (isSettingsRoot) {
+        menuBackButtonRef.current?.focus({ preventScroll: true });
+      } else if (!isPopping) {
+        detailBackButtonRef.current?.focus({ preventScroll: true });
+      }
+    });
     return () => window.cancelAnimationFrame(frame);
-  }, [isAuthReady, isCompactViewport, isDrawerOpen]);
+  }, [isAuthReady, isCompactViewport, isPopping, isSettingsRoot]);
+
+  const runPopAnimation = useCallback(() => {
+    if (popAnimationRef.current) return popAnimationRef.current;
+
+    setIsPopping(true);
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const animation = new Promise<void>((resolve) => {
+      popResolveRef.current = resolve;
+      popTimerRef.current = setTimeout(resolve, reducedMotion ? 0 : 320);
+    }).finally(() => {
+      popAnimationRef.current = null;
+      popTimerRef.current = null;
+      popResolveRef.current = null;
+    });
+    popAnimationRef.current = animation;
+    return animation;
+  }, []);
 
   useEffect(() => {
-    if (!isCompactViewport || !isDrawerOpen) return;
+    return () => {
+      if (popTimerRef.current) clearTimeout(popTimerRef.current);
+      popResolveRef.current?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isCompactViewport || isSettingsRoot) return;
+
+    return router.history.block({
+      enableBeforeUnload: false,
+      blockerFn: async ({ currentLocation, nextLocation, action }) => {
+        if (isNavigationLocked) return true;
+        if (
+          !shouldAnimateSettingsPop({
+            compact: true,
+            currentPathname: currentLocation.pathname,
+            nextPathname: nextLocation.pathname,
+            action
+          })
+        ) {
+          return false;
+        }
+
+        await runPopAnimation();
+        return false;
+      }
+    });
+  }, [isCompactViewport, isNavigationLocked, isSettingsRoot, router.history, runPopAnimation]);
+
+  const showSettingsMenu = useCallback(async () => {
+    if (isNavigationLocked || isPopping) return;
+
+    const target = getSettingsBackTarget(
+      window.history.state?.__TSR_index,
+      rootHistoryIndexRef.current
+    );
+    if (target.type === "history") {
+      router.history.go(target.delta);
+      return;
+    }
+
+    await runPopAnimation();
+    await router.navigate({ to: "/settings", replace: true, ignoreBlocker: true });
+  }, [isNavigationLocked, isPopping, router, runPopAnimation]);
+
+  useEffect(() => {
+    if (!isCompactViewport || isSettingsRoot) return;
 
     const dismissOnEscape = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       event.preventDefault();
-      setIsDrawerOpen(false);
-      window.requestAnimationFrame(() => menuButtonRef.current?.focus());
+      void showSettingsMenu();
     };
 
     window.addEventListener("keydown", dismissOnEscape);
     return () => window.removeEventListener("keydown", dismissOnEscape);
-  }, [isCompactViewport, isDrawerOpen]);
+  }, [isCompactViewport, isSettingsRoot, showSettingsMenu]);
 
   const { data: currentBillingStatus } = useQuery({
     queryKey: ["billingStatus"],
@@ -347,44 +417,28 @@ function SettingsLayoutContent() {
     returnToHome();
   };
 
-  const openDrawer = () => {
-    if (isNavigationLocked || isSigningOut) return;
-    setIsDrawerOpen(true);
-  };
-
-  const closeDrawer = () => {
-    setIsDrawerOpen(false);
-    window.requestAnimationFrame(() => menuButtonRef.current?.focus());
-  };
-
   return (
     <div
       className="relative grid h-dvh min-h-0 w-full grid-cols-1 overflow-hidden bg-background sm:grid-cols-[16rem_minmax(0,1fr)]"
       style={isCompactViewport ? { gridTemplateColumns: "minmax(0, 1fr)" } : undefined}
     >
       <aside
-        ref={drawerRef}
+        ref={menuRef}
         aria-label="Settings navigation"
-        aria-hidden={isCompactViewport && !isDrawerOpen}
+        aria-hidden={isCompactViewport && !isSettingsRoot}
         className={cn(
           "flex min-h-0 flex-col overflow-hidden border-r border-border/40 bg-muted dark:bg-[hsl(var(--sidebar))]",
           isCompactViewport
-            ? "z-40 transition-transform duration-300 ease-out motion-reduce:transition-none"
+            ? [
+                "maple-navigation-page fixed inset-0 z-10 w-full border-r-0",
+                !isSettingsRoot && !isPopping && "maple-navigation-page-covered"
+              ]
             : "z-auto transition-none"
         )}
-        style={
-          isCompactViewport
-            ? {
-                position: "fixed",
-                inset: 0,
-                width: "100%",
-                transform: isDrawerOpen ? "translateX(0)" : "translateX(-100%)"
-              }
-            : undefined
-        }
       >
         <div className="flex h-16 shrink-0 items-center border-b border-border/30 px-3 sm:px-4">
           <button
+            ref={menuBackButtonRef}
             type="button"
             onClick={closeSettings}
             disabled={isNavigationLocked}
@@ -394,17 +448,6 @@ function SettingsLayoutContent() {
             <ArrowLeft className="h-4 w-4 shrink-0" />
             <MapleWordmark className="h-4 min-w-0 w-auto" aria-hidden />
           </button>
-          {isCompactViewport && (
-            <button
-              ref={drawerCloseButtonRef}
-              type="button"
-              onClick={closeDrawer}
-              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-background/70 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              aria-label="Close settings navigation"
-            >
-              <X className="h-4 w-4" />
-            </button>
-          )}
         </div>
 
         <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-3 py-3">
@@ -423,12 +466,7 @@ function SettingsLayoutContent() {
                   </p>
                   <div className="space-y-0.5">
                     {section.items.map((item) => (
-                      <SettingsNavLink
-                        key={item.to}
-                        item={item}
-                        onSelect={isCompactViewport ? closeDrawer : undefined}
-                        replace={isCompactViewport && isSettingsRoot}
-                      />
+                      <SettingsNavLink key={item.to} item={item} />
                     ))}
                   </div>
                 </div>
@@ -468,21 +506,30 @@ function SettingsLayoutContent() {
 
       <main
         ref={mainRef}
-        aria-hidden={isCompactViewport && isDrawerOpen}
-        className="min-h-0 min-w-0 overflow-y-auto overscroll-y-contain bg-background"
+        aria-hidden={isCompactViewport && (isSettingsRoot || isPopping)}
+        className={cn(
+          "min-h-0 min-w-0 overflow-y-auto overscroll-y-contain bg-background",
+          isCompactViewport && [
+            "maple-navigation-page fixed inset-0 z-20 shadow-[-12px_0_28px_rgba(0,0,0,0.12)]",
+            isSettingsRoot
+              ? "maple-navigation-page-pop"
+              : isPopping
+                ? "maple-navigation-page-pop"
+                : "maple-navigation-page-enter"
+          ]
+        )}
       >
         {isCompactViewport && (
           <div className="sticky top-0 z-30 flex h-14 items-center gap-3 border-b border-border/50 bg-background/95 px-3 backdrop-blur supports-[backdrop-filter]:bg-background/80">
             <button
-              ref={menuButtonRef}
+              ref={detailBackButtonRef}
               type="button"
-              onClick={openDrawer}
-              disabled={isNavigationLocked}
+              onClick={() => void showSettingsMenu()}
+              disabled={isNavigationLocked || isPopping}
               className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              aria-label="Open settings navigation"
-              aria-expanded={isDrawerOpen}
+              aria-label="Back to settings"
             >
-              <Menu className="h-5 w-5" />
+              <ArrowLeft className="h-5 w-5" />
             </button>
             <p className="text-sm font-semibold">Settings</p>
           </div>
