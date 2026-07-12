@@ -1,5 +1,4 @@
 import { createFileRoute, Navigate } from "@tanstack/react-router";
-import { AccountSettings } from "@/components/settings/AccountSettings";
 import { useCompactSettingsLayout } from "@/components/settings/useCompactSettingsLayout";
 
 export const Route = createFileRoute("/settings/")({
@@ -13,5 +12,5 @@ function SettingsIndex() {
     return <Navigate to="/settings/account" replace />;
   }
 
-  return <AccountSettings />;
+  return null;
 }
