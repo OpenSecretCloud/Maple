@@ -241,6 +241,7 @@ export function AgentMode({ userId }: { userId: string }) {
   const deletedSessionIdsRef = useRef(new Set<string>());
   const shouldAutoScrollRef = useRef(true);
   const projectRootPersistenceRef = useRef<Promise<void>>(Promise.resolve());
+  const permissionModeUpdateRef = useRef<Promise<void>>(Promise.resolve());
   const terminalRunIdsRef = useRef(new Set<string>());
   const pendingSendTokensRef = useRef(new Map<string, number>());
   const cancelledPendingSendTokensRef = useRef(new Set<number>());
@@ -701,10 +702,25 @@ export function AgentMode({ userId }: { userId: string }) {
     setModel(value);
   }, []);
 
-  const selectMode = useCallback((value: AgentPermissionMode) => {
-    interactionGenerationRef.current += 1;
-    setMode(value);
-  }, []);
+  const selectMode = useCallback(
+    (value: AgentPermissionMode) => {
+      const interactionGeneration = interactionGenerationRef.current + 1;
+      interactionGenerationRef.current = interactionGeneration;
+      setMode(value);
+
+      const sessionId = activeSessionIdRef.current;
+      if (!sessionId) return;
+      const update = permissionModeUpdateRef.current.then(() =>
+        agentRuntimeService.setPermissionMode(userId, sessionId, value)
+      );
+      permissionModeUpdateRef.current = update.catch((modeError) => {
+        if (interactionGenerationRef.current === interactionGeneration) {
+          setError(errorMessage(modeError));
+        }
+      });
+    },
+    [userId]
+  );
 
   const startRuntime = useCallback(
     async (restart = false) => {

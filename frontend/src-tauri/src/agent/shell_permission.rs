@@ -88,6 +88,36 @@ impl ShellPermissionRequest {
     }
 }
 
+pub(crate) fn is_remote_image_source(source: &str) -> bool {
+    reqwest::Url::parse(source).is_ok_and(|url| matches!(url.scheme(), "http" | "https"))
+}
+
+pub(crate) fn local_read_image_request_id<'a>(
+    mode: &str,
+    action: &'a ActionRequired,
+) -> Option<&'a str> {
+    if mode != READ_ONLY_MODE {
+        return None;
+    }
+    let ActionRequiredData::ToolConfirmation {
+        id,
+        tool_name,
+        arguments,
+        prompt,
+    } = &action.data
+    else {
+        return None;
+    };
+    if tool_name != "read_image" || prompt.is_some() {
+        return None;
+    }
+    let source = arguments.get("source")?.as_str()?;
+    if source.trim().is_empty() || is_remote_image_source(source) {
+        return None;
+    }
+    Some(id)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ShellPermissionOutcome {
     ReadOnly,
@@ -295,6 +325,36 @@ mod tests {
 
         let malformed = action("shell", object!({ "command": 42 }), None);
         assert!(ShellPermissionRequest::from_action(READ_ONLY_MODE, cwd, &malformed).is_none());
+    }
+
+    #[test]
+    fn only_local_images_are_automatically_eligible_in_read_only_mode() {
+        let local = action(
+            "read_image",
+            object!({ "source": "~/Desktop/pixel.png" }),
+            None,
+        );
+        assert_eq!(
+            local_read_image_request_id(READ_ONLY_MODE, &local),
+            Some("request-1")
+        );
+        assert!(local_read_image_request_id("auto", &local).is_none());
+
+        for source in [
+            "https://example.com/pixel.png",
+            "HTTP://127.0.0.1/pixel.png",
+        ] {
+            let remote = action("read_image", object!({ "source": source }), None);
+            assert!(local_read_image_request_id(READ_ONLY_MODE, &remote).is_none());
+            assert!(is_remote_image_source(source));
+        }
+
+        let warned = action(
+            "read_image",
+            object!({ "source": "pixel.png" }),
+            Some("Security warning".to_string()),
+        );
+        assert!(local_read_image_request_id(READ_ONLY_MODE, &warned).is_none());
     }
 
     #[test]

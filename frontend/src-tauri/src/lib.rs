@@ -88,6 +88,7 @@ pub fn run() {
             agent::agent_delete_session,
             agent::agent_send_message,
             agent::agent_cancel_run,
+            agent::agent_set_permission_mode,
             agent::agent_permission_respond,
             agent::agent_clear_user_history,
             agent::agent_clear_user_data,

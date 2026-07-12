@@ -8,13 +8,16 @@ use rmcp::model::{
     ServerCapabilities, Tool, ToolAnnotations,
 };
 use rmcp::object;
-use serde::Deserialize;
+use serde::{de::Error as SerdeDeError, Deserialize, Deserializer};
 use std::collections::HashMap;
 use std::fs;
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex as StdMutex, Weak};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
+
+use super::shell_permission::is_remote_image_source;
 
 const MAX_READ_LINES: usize = 2_000;
 const MAX_READ_BYTES: usize = 50 * 1024;
@@ -49,6 +52,7 @@ struct Replacement {
 #[serde(deny_unknown_fields)]
 struct EditParams {
     path: String,
+    #[serde(deserialize_with = "deserialize_edits")]
     edits: Vec<Replacement>,
 }
 
@@ -57,6 +61,18 @@ struct EditParams {
 struct WriteParams {
     path: String,
     content: String,
+}
+
+fn deserialize_edits<'de, D>(deserializer: D) -> Result<Vec<Replacement>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    match value {
+        serde_json::Value::Array(_) => serde_json::from_value(value).map_err(D::Error::custom),
+        serde_json::Value::String(json) => serde_json::from_str(&json).map_err(D::Error::custom),
+        _ => Err(D::Error::custom("edits must be an array")),
+    }
 }
 
 pub(crate) struct MapleDeveloperClient {
@@ -117,7 +133,7 @@ impl MapleDeveloperClient {
     fn edit_tool() -> Tool {
         Tool::new(
             "edit".to_string(),
-            "Apply one or more exact, unique text replacements to a file atomically. Every oldText is matched against the original file; overlapping edits are rejected."
+            "Apply one or more exact, unique text replacements to a file. Every oldText is matched against the original file, all replacements are validated before writing, and overlapping edits are rejected."
                 .to_string(),
             object!({
                 "type": "object",
@@ -159,6 +175,37 @@ impl MapleDeveloperClient {
             Some(false),
             Some(false),
         ))
+    }
+
+    fn read_image_tool(mut tool: Tool) -> Tool {
+        tool.description = Some(
+            "Read an image from a local file path or http(s) URL and return it as image content for the model to inspect. Remote URLs require approval in Read only mode. Supports png, jpeg, gif, and webp."
+                .into(),
+        );
+        let mut schema = tool.input_schema.as_ref().clone();
+        if let Some(source) = schema
+            .get_mut("properties")
+            .and_then(serde_json::Value::as_object_mut)
+            .and_then(|properties| properties.get_mut("source"))
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            source.insert(
+                "description".to_string(),
+                serde_json::Value::String(
+                    "Local file path or http(s) URL. Remote URLs require approval in Read only mode."
+                        .to_string(),
+                ),
+            );
+        }
+        tool.input_schema = Arc::new(schema);
+        tool.annotations = Some(ToolAnnotations::from_raw(
+            Some("Read Image".to_string()),
+            Some(false),
+            Some(false),
+            Some(true),
+            Some(true),
+        ));
+        tool
     }
 
     fn write_tool() -> Tool {
@@ -226,7 +273,7 @@ impl McpClientTrait for MapleDeveloperClient {
         tools.push(Self::edit_tool());
         tools.push(Self::write_tool());
         if let Some(read_image) = delegated_by_name.remove("read_image") {
-            tools.push(read_image);
+            tools.push(Self::read_image_tool(read_image));
         }
 
         Ok(ListToolsResult {
@@ -246,18 +293,25 @@ impl McpClientTrait for MapleDeveloperClient {
         let working_dir = ctx.working_dir.as_deref();
         let result = match name {
             "read" => match Self::parse_args::<ReadParams>(arguments) {
-                Ok(params) => read_file(params, working_dir),
+                Ok(params) => read_file(params, working_dir, cancel_token).await,
                 Err(error) => error_result(error),
             },
             "edit" => match Self::parse_args::<EditParams>(arguments) {
-                Ok(params) => edit_file(params, working_dir).await,
+                Ok(params) => edit_file(params, working_dir, cancel_token).await,
                 Err(error) => error_result(error),
             },
             "write" => match Self::parse_args::<WriteParams>(arguments) {
-                Ok(params) => write_file(params, working_dir).await,
+                Ok(params) => write_file(params, working_dir, cancel_token).await,
                 Err(error) => error_result(error),
             },
-            "shell" | "read_image" => {
+            "shell" => {
+                return self
+                    .goose
+                    .call_tool(ctx, name, arguments, cancel_token)
+                    .await;
+            }
+            "read_image" => {
+                let arguments = normalize_read_image_arguments(arguments, working_dir);
                 return self
                     .goose
                     .call_tool(ctx, name, arguments, cancel_token)
@@ -286,7 +340,7 @@ fn error_result(text: impl Into<String>) -> CallToolResult {
 fn resolve_path(path: &str, working_dir: Option<&Path>) -> PathBuf {
     let expanded = if path == "~" {
         home_dir().unwrap_or_else(|| PathBuf::from(path))
-    } else if let Some(relative) = path.strip_prefix("~/") {
+    } else if let Some(relative) = path.strip_prefix("~/").or_else(|| path.strip_prefix("~\\")) {
         home_dir()
             .map(|home| home.join(relative))
             .unwrap_or_else(|| PathBuf::from(path))
@@ -311,7 +365,42 @@ fn home_dir() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-fn read_file(params: ReadParams, working_dir: Option<&Path>) -> CallToolResult {
+fn normalize_read_image_arguments(
+    mut arguments: Option<JsonObject>,
+    working_dir: Option<&Path>,
+) -> Option<JsonObject> {
+    let source = arguments
+        .as_ref()
+        .and_then(|arguments| arguments.get("source"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+    let Some(source) = source else {
+        return arguments;
+    };
+    if is_remote_image_source(&source)
+        || reqwest::Url::parse(&source).is_ok_and(|url| url.scheme() == "file")
+    {
+        return arguments;
+    }
+
+    if let Some(arguments) = arguments.as_mut() {
+        arguments.insert(
+            "source".to_string(),
+            serde_json::Value::String(
+                resolve_path(&source, working_dir)
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
+        );
+    }
+    arguments
+}
+
+async fn read_file(
+    params: ReadParams,
+    working_dir: Option<&Path>,
+    cancel_token: CancellationToken,
+) -> CallToolResult {
     if params.offset == Some(0) {
         return error_result("offset must be at least 1");
     }
@@ -320,47 +409,105 @@ fn read_file(params: ReadParams, working_dir: Option<&Path>) -> CallToolResult {
     }
 
     let path = resolve_path(&params.path, working_dir);
-    let bytes = match fs::read(&path) {
-        Ok(bytes) => bytes,
+    let worker_cancel_token = cancel_token.clone();
+    let task =
+        tokio::task::spawn_blocking(move || read_file_blocking(params, path, worker_cancel_token));
+    tokio::select! {
+        biased;
+        _ = cancel_token.cancelled() => error_result("Read cancelled"),
+        result = task => match result {
+            Ok(result) => result,
+            Err(error) => error_result(format!("Read task failed: {error}")),
+        },
+    }
+}
+
+fn read_file_blocking(
+    params: ReadParams,
+    path: PathBuf,
+    cancel_token: CancellationToken,
+) -> CallToolResult {
+    if cancel_token.is_cancelled() {
+        return error_result("Read cancelled");
+    }
+
+    let metadata = match fs::metadata(&path) {
+        Ok(metadata) => metadata,
         Err(error) => return error_result(format!("Failed to read {}: {error}", params.path)),
     };
+    if !metadata.is_file() {
+        return error_result(format!("{} is not a regular file", params.path));
+    }
 
-    if is_supported_image(&bytes) {
+    let mut file = match fs::File::open(&path) {
+        Ok(file) => file,
+        Err(error) => return error_result(format!("Failed to read {}: {error}", params.path)),
+    };
+    if !file.metadata().is_ok_and(|metadata| metadata.is_file()) {
+        return error_result(format!("{} is not a regular file", params.path));
+    }
+
+    let mut magic = [0u8; 12];
+    let magic_len = match file.read(&mut magic) {
+        Ok(length) => length,
+        Err(error) => return error_result(format!("Failed to read {}: {error}", params.path)),
+    };
+    if is_supported_image(&magic[..magic_len]) {
         return success_result(format!(
             "{} is an image. Use read_image to inspect it.",
             params.path
         ));
     }
-
-    let content = String::from_utf8_lossy(&bytes);
-    let all_lines = content.split('\n').collect::<Vec<_>>();
-    let start = params.offset.unwrap_or(1) - 1;
-    if start >= all_lines.len() {
-        return error_result(format!(
-            "Offset {} is beyond end of file ({} lines total)",
-            params.offset.unwrap_or(1),
-            all_lines.len()
-        ));
+    if let Err(error) = file.seek(SeekFrom::Start(0)) {
+        return error_result(format!("Failed to read {}: {error}", params.path));
     }
 
-    let requested_end = params
-        .limit
-        .map(|limit| start.saturating_add(limit))
-        .unwrap_or(all_lines.len())
-        .min(all_lines.len());
-    let selected = &all_lines[start..requested_end];
+    let mut reader = BufReader::new(file);
+    let start = params.offset.unwrap_or(1) - 1;
+    for lines_seen in 0..start {
+        match read_stream_line(&mut reader, None, &cancel_token) {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                return error_result(format!(
+                    "Offset {} is beyond end of file ({lines_seen} lines total)",
+                    params.offset.unwrap_or(1)
+                ));
+            }
+            Err(error) => return stream_read_error(&params.path, error),
+        }
+    }
 
+    let line_limit = params.limit.unwrap_or(usize::MAX).min(MAX_READ_LINES);
     let mut output_lines = Vec::new();
     let mut output_bytes = 0usize;
-    let mut truncated = false;
-    for line in selected {
-        if output_lines.len() == MAX_READ_LINES {
-            truncated = true;
-            break;
-        }
+    let mut has_more = false;
+    let mut first_selected_line = true;
+
+    while output_lines.len() < line_limit {
         let separator_bytes = usize::from(!output_lines.is_empty());
-        let line_bytes = line.len();
-        if output_bytes + separator_bytes + line_bytes > MAX_READ_BYTES {
+        let Some(remaining_bytes) = MAX_READ_BYTES.checked_sub(output_bytes + separator_bytes)
+        else {
+            has_more = match read_stream_line(&mut reader, Some(0), &cancel_token) {
+                Ok(line) => line.is_some(),
+                Err(error) => return stream_read_error(&params.path, error),
+            };
+            break;
+        };
+        let line = match read_stream_line(&mut reader, Some(remaining_bytes), &cancel_token) {
+            Ok(Some(line)) => line,
+            Ok(None) if first_selected_line && start > 0 => {
+                return error_result(format!(
+                    "Offset {} is beyond end of file ({start} lines total)",
+                    params.offset.unwrap_or(1)
+                ));
+            }
+            Ok(None) => break,
+            Err(error) => return stream_read_error(&params.path, error),
+        };
+        first_selected_line = false;
+
+        let text = String::from_utf8_lossy(&line.bytes).into_owned();
+        if line.exceeded_limit || text.len() > remaining_bytes {
             if output_lines.is_empty() {
                 return success_result(format!(
                     "[Line {} exceeds the {}KB read limit. Use shell with a byte-limiting command to inspect it.]",
@@ -368,32 +515,119 @@ fn read_file(params: ReadParams, working_dir: Option<&Path>) -> CallToolResult {
                     MAX_READ_BYTES / 1024
                 ));
             }
-            truncated = true;
+            has_more = true;
             break;
         }
-        output_lines.push(*line);
-        output_bytes += separator_bytes + line_bytes;
+
+        output_bytes += separator_bytes + text.len();
+        output_lines.push(text);
+    }
+
+    if !has_more && output_lines.len() == line_limit {
+        has_more = match read_stream_line(&mut reader, Some(0), &cancel_token) {
+            Ok(line) => line.is_some(),
+            Err(error) => return stream_read_error(&params.path, error),
+        };
     }
 
     let mut output = output_lines.join("\n");
-    let consumed_end = start + output_lines.len();
-    if truncated {
+    if has_more {
         let first_line = start + 1;
-        let last_line = consumed_end;
-        let next_offset = consumed_end + 1;
+        let last_line = start + output_lines.len();
+        let next_offset = last_line + 1;
         output.push_str(&format!(
-            "\n\n[Showing lines {first_line}-{last_line} of {}. Use offset={next_offset} to continue.]",
-            all_lines.len()
-        ));
-    } else if requested_end < all_lines.len() {
-        let remaining = all_lines.len() - requested_end;
-        output.push_str(&format!(
-            "\n\n[{remaining} more lines in file. Use offset={} to continue.]",
-            requested_end + 1
+            "\n\n[Showing lines {first_line}-{last_line}. Use offset={next_offset} to continue.]"
         ));
     }
 
     success_result(output)
+}
+
+struct StreamedLine {
+    bytes: Vec<u8>,
+    exceeded_limit: bool,
+}
+
+enum StreamReadError {
+    Cancelled,
+    Io(std::io::Error),
+}
+
+fn read_stream_line<R: BufRead>(
+    reader: &mut R,
+    capture_limit: Option<usize>,
+    cancel_token: &CancellationToken,
+) -> Result<Option<StreamedLine>, StreamReadError> {
+    let mut bytes = Vec::new();
+    let mut saw_any = false;
+
+    loop {
+        if cancel_token.is_cancelled() {
+            return Err(StreamReadError::Cancelled);
+        }
+
+        let (consumed, ended, exceeded_limit) = {
+            let available = reader.fill_buf().map_err(StreamReadError::Io)?;
+            if available.is_empty() {
+                if !saw_any {
+                    return Ok(None);
+                }
+                if bytes.last() == Some(&b'\r') {
+                    bytes.pop();
+                }
+                return Ok(Some(StreamedLine {
+                    bytes,
+                    exceeded_limit: false,
+                }));
+            }
+            saw_any = true;
+
+            let newline = available.iter().position(|byte| *byte == b'\n');
+            let segment_len = newline.unwrap_or(available.len());
+            let mut exceeded_limit = false;
+            let mut captured = 0usize;
+            if let Some(limit) = capture_limit {
+                let remaining = limit.saturating_sub(bytes.len());
+                captured = remaining.min(segment_len);
+                bytes.extend_from_slice(&available[..captured]);
+                exceeded_limit = segment_len > remaining;
+            }
+
+            if exceeded_limit {
+                ((captured + 1).min(segment_len), false, true)
+            } else {
+                (
+                    segment_len + usize::from(newline.is_some()),
+                    newline.is_some(),
+                    false,
+                )
+            }
+        };
+        reader.consume(consumed);
+
+        if exceeded_limit {
+            return Ok(Some(StreamedLine {
+                bytes,
+                exceeded_limit: true,
+            }));
+        }
+        if ended {
+            if bytes.last() == Some(&b'\r') {
+                bytes.pop();
+            }
+            return Ok(Some(StreamedLine {
+                bytes,
+                exceeded_limit: false,
+            }));
+        }
+    }
+}
+
+fn stream_read_error(path: &str, error: StreamReadError) -> CallToolResult {
+    match error {
+        StreamReadError::Cancelled => error_result("Read cancelled"),
+        StreamReadError::Io(error) => error_result(format!("Failed to read {path}: {error}")),
+    }
 }
 
 fn is_supported_image(bytes: &[u8]) -> bool {
@@ -404,10 +638,37 @@ fn is_supported_image(bytes: &[u8]) -> bool {
         || (bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP")
 }
 
-async fn write_file(params: WriteParams, working_dir: Option<&Path>) -> CallToolResult {
+async fn write_file(
+    params: WriteParams,
+    working_dir: Option<&Path>,
+    cancel_token: CancellationToken,
+) -> CallToolResult {
     let path = resolve_path(&params.path, working_dir);
     let lock = mutation_lock(&path);
-    let _guard = lock.lock().await;
+    let _guard = tokio::select! {
+        biased;
+        _ = cancel_token.cancelled() => return error_result("Write cancelled"),
+        guard = lock.lock() => guard,
+    };
+    let worker_cancel_token = cancel_token.clone();
+    match tokio::task::spawn_blocking(move || {
+        write_file_blocking(params, path, worker_cancel_token)
+    })
+    .await
+    {
+        Ok(result) => result,
+        Err(error) => error_result(format!("Write task failed: {error}")),
+    }
+}
+
+fn write_file_blocking(
+    params: WriteParams,
+    path: PathBuf,
+    cancel_token: CancellationToken,
+) -> CallToolResult {
+    if cancel_token.is_cancelled() {
+        return error_result("Write cancelled");
+    }
 
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
@@ -418,6 +679,9 @@ async fn write_file(params: WriteParams, working_dir: Option<&Path>) -> CallTool
                 ));
             }
         }
+    }
+    if cancel_token.is_cancelled() {
+        return error_result("Write cancelled");
     }
 
     let existed = path.exists();
@@ -434,14 +698,39 @@ async fn write_file(params: WriteParams, working_dir: Option<&Path>) -> CallTool
     }
 }
 
-async fn edit_file(params: EditParams, working_dir: Option<&Path>) -> CallToolResult {
+async fn edit_file(
+    params: EditParams,
+    working_dir: Option<&Path>,
+    cancel_token: CancellationToken,
+) -> CallToolResult {
     if params.edits.is_empty() {
         return error_result("edits must contain at least one replacement");
     }
 
     let path = resolve_path(&params.path, working_dir);
     let lock = mutation_lock(&path);
-    let _guard = lock.lock().await;
+    let _guard = tokio::select! {
+        biased;
+        _ = cancel_token.cancelled() => return error_result("Edit cancelled"),
+        guard = lock.lock() => guard,
+    };
+    let worker_cancel_token = cancel_token.clone();
+    match tokio::task::spawn_blocking(move || edit_file_blocking(params, path, worker_cancel_token))
+        .await
+    {
+        Ok(result) => result,
+        Err(error) => error_result(format!("Edit task failed: {error}")),
+    }
+}
+
+fn edit_file_blocking(
+    params: EditParams,
+    path: PathBuf,
+    cancel_token: CancellationToken,
+) -> CallToolResult {
+    if cancel_token.is_cancelled() {
+        return error_result("Edit cancelled");
+    }
     let bytes = match fs::read(&path) {
         Ok(bytes) => bytes,
         Err(error) => return error_result(format!("Failed to read {}: {error}", params.path)),
@@ -453,6 +742,7 @@ async fn edit_file(params: EditParams, working_dir: Option<&Path>) -> CallToolRe
 
     let (bom, line_ending, mut normalized) = normalize_text_file(&original);
     let mut resolved_edits = Vec::with_capacity(params.edits.len());
+    let mut has_change = false;
     for (index, replacement) in params.edits.iter().enumerate() {
         let old_text = normalize_newlines(&replacement.old_text);
         let new_text = normalize_newlines(&replacement.new_text);
@@ -468,7 +758,10 @@ async fn edit_file(params: EditParams, working_dir: Option<&Path>) -> CallToolRe
                     params.path
                 ));
             }
-            [start] => resolved_edits.push((*start, *start + old_text.len(), new_text)),
+            [start] => {
+                has_change |= old_text != new_text;
+                resolved_edits.push((*start, *start + old_text.len(), new_text));
+            }
             _ => {
                 return error_result(format!(
                     "edits[{index}].oldText matched {} times; include more context so it is unique",
@@ -476,6 +769,9 @@ async fn edit_file(params: EditParams, working_dir: Option<&Path>) -> CallToolRe
                 ));
             }
         }
+    }
+    if !has_change {
+        return error_result("edits would not change the file");
     }
 
     resolved_edits.sort_by_key(|(start, _, _)| *start);
@@ -489,6 +785,9 @@ async fn edit_file(params: EditParams, working_dir: Option<&Path>) -> CallToolRe
         normalized.replace_range(*start..*end, replacement);
     }
 
+    if cancel_token.is_cancelled() {
+        return error_result("Edit cancelled");
+    }
     let updated = restore_text_file(&normalized, bom, line_ending);
     match fs::write(&path, updated.as_bytes()) {
         Ok(()) => success_result(format!(
@@ -504,6 +803,7 @@ async fn edit_file(params: EditParams, working_dir: Option<&Path>) -> CallToolRe
 enum LineEnding {
     Lf,
     CrLf,
+    Cr,
 }
 
 fn normalize_text_file(content: &str) -> (bool, LineEnding, String) {
@@ -513,6 +813,8 @@ fn normalize_text_file(content: &str) -> (bool, LineEnding, String) {
     };
     let line_ending = if content.contains("\r\n") {
         LineEnding::CrLf
+    } else if content.contains('\r') {
+        LineEnding::Cr
     } else {
         LineEnding::Lf
     };
@@ -520,13 +822,14 @@ fn normalize_text_file(content: &str) -> (bool, LineEnding, String) {
 }
 
 fn normalize_newlines(content: &str) -> String {
-    content.replace("\r\n", "\n")
+    content.replace("\r\n", "\n").replace('\r', "\n")
 }
 
 fn restore_text_file(content: &str, bom: bool, line_ending: LineEnding) -> String {
     let content = match line_ending {
         LineEnding::Lf => content.to_string(),
         LineEnding::CrLf => content.replace('\n', "\r\n"),
+        LineEnding::Cr => content.replace('\n', "\r"),
     };
     if bom {
         format!("\u{feff}{content}")
@@ -656,15 +959,20 @@ mod tests {
         let write = serde_json::to_value(&result.tools[3]).unwrap();
         assert_eq!(write["annotations"]["readOnlyHint"], false);
         let read_image = serde_json::to_value(&result.tools[4]).unwrap();
-        assert_eq!(read_image["annotations"]["readOnlyHint"], true);
+        assert_eq!(read_image["annotations"]["readOnlyHint"], false);
+        assert_eq!(read_image["annotations"]["openWorldHint"], true);
+        assert!(read_image["description"]
+            .as_str()
+            .unwrap()
+            .contains("Remote URLs require approval"));
         assert_eq!(
             result.tools[2].input_schema["properties"]["edits"]["minItems"],
             1
         );
     }
 
-    #[test]
-    fn read_supports_offsets_limits_and_continuation() {
+    #[tokio::test]
+    async fn read_supports_offsets_limits_and_continuation() {
         let temp = TestDir::new();
         fs::write(temp.path().join("notes.txt"), "one\ntwo\nthree\nfour").unwrap();
         let result = read_file(
@@ -674,16 +982,18 @@ mod tests {
                 limit: Some(2),
             },
             Some(temp.path()),
-        );
+            CancellationToken::new(),
+        )
+        .await;
         assert_eq!(result.is_error, Some(false));
         assert_eq!(
             text(&result),
-            "two\nthree\n\n[1 more lines in file. Use offset=4 to continue.]"
+            "two\nthree\n\n[Showing lines 2-3. Use offset=4 to continue.]"
         );
     }
 
-    #[test]
-    fn read_rejects_offsets_past_eof() {
+    #[tokio::test]
+    async fn read_rejects_offsets_past_eof() {
         let temp = TestDir::new();
         fs::write(temp.path().join("notes.txt"), "one\ntwo").unwrap();
         let result = read_file(
@@ -693,13 +1003,15 @@ mod tests {
                 limit: None,
             },
             Some(temp.path()),
-        );
+            CancellationToken::new(),
+        )
+        .await;
         assert_eq!(result.is_error, Some(true));
         assert!(text(&result).contains("beyond end of file"));
     }
 
-    #[test]
-    fn read_truncates_on_complete_lines_with_next_offset() {
+    #[tokio::test]
+    async fn read_truncates_on_complete_lines_with_next_offset() {
         let temp = TestDir::new();
         let content = (1..=MAX_READ_LINES + 1)
             .map(|line| format!("line-{line}"))
@@ -713,14 +1025,16 @@ mod tests {
                 limit: None,
             },
             Some(temp.path()),
-        );
+            CancellationToken::new(),
+        )
+        .await;
         assert_eq!(result.is_error, Some(false));
-        assert!(text(&result).contains("Showing lines 1-2000 of 2001"));
+        assert!(text(&result).contains("Showing lines 1-2000"));
         assert!(text(&result).contains("Use offset=2001 to continue"));
     }
 
-    #[test]
-    fn read_directs_images_to_read_image() {
+    #[tokio::test]
+    async fn read_directs_images_to_read_image() {
         let temp = TestDir::new();
         fs::write(temp.path().join("pixel.png"), b"\x89PNG\r\n\x1a\nrest").unwrap();
         let result = read_file(
@@ -730,13 +1044,104 @@ mod tests {
                 limit: None,
             },
             Some(temp.path()),
-        );
+            CancellationToken::new(),
+        )
+        .await;
         assert_eq!(result.is_error, Some(false));
         assert!(text(&result).contains("Use read_image"));
     }
 
     #[tokio::test]
-    async fn edit_applies_multiple_replacements_atomically() {
+    async fn read_is_bounded_rejects_non_files_and_observes_cancellation() {
+        let temp = TestDir::new();
+        fs::write(
+            temp.path().join("one-line.txt"),
+            vec![b'a'; MAX_READ_BYTES + 1],
+        )
+        .unwrap();
+        let bounded = read_file(
+            ReadParams {
+                path: "one-line.txt".to_string(),
+                offset: None,
+                limit: None,
+            },
+            Some(temp.path()),
+            CancellationToken::new(),
+        )
+        .await;
+        assert_eq!(bounded.is_error, Some(false));
+        assert!(text(&bounded).contains("exceeds the 50KB read limit"));
+
+        let directory = read_file(
+            ReadParams {
+                path: ".".to_string(),
+                offset: None,
+                limit: None,
+            },
+            Some(temp.path()),
+            CancellationToken::new(),
+        )
+        .await;
+        assert_eq!(directory.is_error, Some(true));
+        assert!(text(&directory).contains("not a regular file"));
+
+        let cancelled_token = CancellationToken::new();
+        cancelled_token.cancel();
+        let cancelled = read_file(
+            ReadParams {
+                path: "one-line.txt".to_string(),
+                offset: None,
+                limit: None,
+            },
+            Some(temp.path()),
+            cancelled_token,
+        )
+        .await;
+        assert_eq!(cancelled.is_error, Some(true));
+        assert!(text(&cancelled).contains("cancelled"));
+    }
+
+    #[tokio::test]
+    async fn read_has_no_phantom_line_after_a_trailing_newline() {
+        let temp = TestDir::new();
+        fs::write(
+            temp.path().join("exact.txt"),
+            "line\n".repeat(MAX_READ_LINES),
+        )
+        .unwrap();
+        let result = read_file(
+            ReadParams {
+                path: "exact.txt".to_string(),
+                offset: None,
+                limit: None,
+            },
+            Some(temp.path()),
+            CancellationToken::new(),
+        )
+        .await;
+        assert_eq!(result.is_error, Some(false));
+        assert!(!text(&result).contains("Use offset="));
+        assert_eq!(text(&result).lines().count(), MAX_READ_LINES);
+    }
+
+    #[test]
+    fn read_image_keeps_remote_urls_and_normalizes_local_paths() {
+        let remote = object!({ "source": "https://example.com/pixel.png" });
+        assert_eq!(
+            normalize_read_image_arguments(Some(remote.clone()), Some(Path::new("/tmp"))),
+            Some(remote)
+        );
+
+        let local = normalize_read_image_arguments(
+            Some(object!({ "source": "images/pixel.png" })),
+            Some(Path::new("/tmp/project")),
+        )
+        .unwrap();
+        assert_eq!(local["source"], "/tmp/project/images/pixel.png");
+    }
+
+    #[tokio::test]
+    async fn edit_validates_then_applies_multiple_replacements() {
         let temp = TestDir::new();
         let path = temp.path().join("notes.txt");
         fs::write(&path, "alpha\nbeta\ngamma\n").unwrap();
@@ -755,6 +1160,7 @@ mod tests {
                 ],
             },
             Some(temp.path()),
+            CancellationToken::new(),
         )
         .await;
         assert_eq!(result.is_error, Some(false));
@@ -777,6 +1183,7 @@ mod tests {
                 }],
             },
             Some(temp.path()),
+            CancellationToken::new(),
         )
         .await;
         assert_eq!(duplicate.is_error, Some(true));
@@ -797,6 +1204,7 @@ mod tests {
                 ],
             },
             Some(temp.path()),
+            CancellationToken::new(),
         )
         .await;
         assert_eq!(overlap.is_error, Some(true));
@@ -817,12 +1225,64 @@ mod tests {
                 }],
             },
             Some(temp.path()),
+            CancellationToken::new(),
         )
         .await;
         assert_eq!(result.is_error, Some(false));
         assert_eq!(
             fs::read_to_string(path).unwrap(),
             "\u{feff}first\r\nsecond\r\n"
+        );
+
+        let classic_mac_path = temp.path().join("classic-mac.txt");
+        fs::write(&classic_mac_path, "alpha\rbeta\r").unwrap();
+        let classic_mac = edit_file(
+            EditParams {
+                path: "classic-mac.txt".to_string(),
+                edits: vec![Replacement {
+                    old_text: "alpha\nbeta".to_string(),
+                    new_text: "first\nsecond".to_string(),
+                }],
+            },
+            Some(temp.path()),
+            CancellationToken::new(),
+        )
+        .await;
+        assert_eq!(classic_mac.is_error, Some(false));
+        assert_eq!(
+            fs::read_to_string(classic_mac_path).unwrap(),
+            "first\rsecond\r"
+        );
+    }
+
+    #[tokio::test]
+    async fn edit_accepts_stringified_edits_and_rejects_no_ops() {
+        let parsed = MapleDeveloperClient::parse_args::<EditParams>(Some(object!({
+            "path": "notes.txt",
+            "edits": "[{\"oldText\":\"alpha\",\"newText\":\"beta\"}]"
+        })))
+        .unwrap();
+        assert_eq!(parsed.edits.len(), 1);
+
+        let temp = TestDir::new();
+        fs::write(temp.path().join("notes.txt"), "alpha").unwrap();
+        let no_op = edit_file(
+            EditParams {
+                path: "notes.txt".to_string(),
+                edits: vec![Replacement {
+                    old_text: "alpha".to_string(),
+                    new_text: "alpha".to_string(),
+                }],
+            },
+            Some(temp.path()),
+            CancellationToken::new(),
+        )
+        .await;
+        assert_eq!(no_op.is_error, Some(true));
+        assert!(text(&no_op).contains("would not change"));
+        assert_eq!(
+            fs::read_to_string(temp.path().join("notes.txt")).unwrap(),
+            "alpha"
         );
     }
 
@@ -836,6 +1296,7 @@ mod tests {
                 content: "hé".to_string(),
             },
             Some(temp.path()),
+            CancellationToken::new(),
         )
         .await;
         assert_eq!(created.is_error, Some(false));
@@ -848,6 +1309,7 @@ mod tests {
                 content: "replacement".to_string(),
             },
             Some(temp.path()),
+            CancellationToken::new(),
         )
         .await;
         assert_eq!(overwritten.is_error, Some(false));

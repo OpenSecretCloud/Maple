@@ -171,6 +171,13 @@ class AgentRuntimeService {
     await this.invokeForUser(userId, "agent_cancel_run", { userId, runId });
   }
 
+  async setPermissionMode(userId: string, sessionId: string, mode: string): Promise<void> {
+    await this.invokeForUser(userId, "agent_set_permission_mode", {
+      userId,
+      request: { sessionId, mode }
+    });
+  }
+
   async respondToPermission(
     userId: string,
     sessionId: string,
