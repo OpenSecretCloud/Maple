@@ -1,7 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import {
   getSettingsBackTarget,
+  hasSettingsHomeParent,
+  isSettingsPath,
   isSettingsRootPath,
+  SETTINGS_HOME_PARENT_STATE_KEY,
   shouldAnimateSettingsPop
 } from "./settingsNavigation";
 
@@ -10,6 +13,18 @@ describe("compact settings navigation", () => {
     expect(isSettingsRootPath("/settings")).toBe(true);
     expect(isSettingsRootPath("/settings/")).toBe(true);
     expect(isSettingsRootPath("/settings/account")).toBe(false);
+  });
+
+  test("recognizes the complete settings route family", () => {
+    expect(isSettingsPath("/settings")).toBe(true);
+    expect(isSettingsPath("/settings/api/keys")).toBe(true);
+    expect(isSettingsPath("/settings-and-more")).toBe(false);
+  });
+
+  test("recognizes settings entries pushed from the mounted home surface", () => {
+    expect(hasSettingsHomeParent({ [SETTINGS_HOME_PARENT_STATE_KEY]: true })).toBe(true);
+    expect(hasSettingsHomeParent({ [SETTINGS_HOME_PARENT_STATE_KEY]: false })).toBe(false);
+    expect(hasSettingsHomeParent(null)).toBe(false);
   });
 
   test("returns to the recorded menu entry across nested detail history", () => {

@@ -39,7 +39,10 @@ import type { TeamStatus } from "@/types/team";
 import { isIOS } from "@/utils/platform";
 import {
   getSettingsBackTarget,
+  hasSettingsHomeParent,
+  isSettingsPath,
   isSettingsRootPath,
+  SETTINGS_SHELL_POP_EVENT,
   shouldAnimateSettingsPop
 } from "@/utils/settingsNavigation";
 import { getTeamSeatMismatch } from "@/utils/teamSeats";
@@ -137,7 +140,11 @@ function SettingsLayoutContent() {
   const popAnimationRef = useRef<Promise<void> | null>(null);
   const popTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const popResolveRef = useRef<(() => void) | null>(null);
+  const settingsShellPopRef = useRef<Promise<void> | null>(null);
+  const settingsShellPopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const settingsShellPopResolveRef = useRef<(() => void) | null>(null);
   const [isPopping, setIsPopping] = useState(false);
+  const [isClosingSettings, setIsClosingSettings] = useState(false);
   const [isSigningOut, setIsSigningOut] = useState(false);
   const [signOutError, setSignOutError] = useState<string | null>(null);
 
@@ -217,20 +224,51 @@ function SettingsLayoutContent() {
     return animation;
   }, []);
 
+  const runSettingsShellPop = useCallback(() => {
+    if (settingsShellPopRef.current) return settingsShellPopRef.current;
+
+    setIsClosingSettings(true);
+    window.dispatchEvent(new Event(SETTINGS_SHELL_POP_EVENT));
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const animation = new Promise<void>((resolve) => {
+      settingsShellPopResolveRef.current = resolve;
+      settingsShellPopTimerRef.current = setTimeout(resolve, reducedMotion ? 0 : 320);
+    }).finally(() => {
+      settingsShellPopRef.current = null;
+      settingsShellPopTimerRef.current = null;
+      settingsShellPopResolveRef.current = null;
+    });
+    settingsShellPopRef.current = animation;
+    return animation;
+  }, []);
+
   useEffect(() => {
     return () => {
       if (popTimerRef.current) clearTimeout(popTimerRef.current);
       popResolveRef.current?.();
+      if (settingsShellPopTimerRef.current) clearTimeout(settingsShellPopTimerRef.current);
+      settingsShellPopResolveRef.current?.();
     };
   }, []);
 
   useEffect(() => {
-    if (!isCompactViewport || isSettingsRoot) return;
+    if (!isCompactViewport) return;
 
     return router.history.block({
       enableBeforeUnload: false,
       blockerFn: async ({ currentLocation, nextLocation, action }) => {
         if (isNavigationLocked) return true;
+
+        const isBackwardAction = action === "BACK" || action === "GO";
+        if (
+          isSettingsRootPath(currentLocation.pathname) &&
+          !isSettingsPath(nextLocation.pathname) &&
+          isBackwardAction
+        ) {
+          await runSettingsShellPop();
+          return false;
+        }
+
         if (
           !shouldAnimateSettingsPop({
             compact: true,
@@ -246,7 +284,7 @@ function SettingsLayoutContent() {
         return false;
       }
     });
-  }, [isCompactViewport, isNavigationLocked, isSettingsRoot, router.history, runPopAnimation]);
+  }, [isCompactViewport, isNavigationLocked, router.history, runPopAnimation, runSettingsShellPop]);
 
   const showSettingsMenu = useCallback(async () => {
     if (isNavigationLocked || isPopping) return;
@@ -412,8 +450,18 @@ function SettingsLayoutContent() {
     }
   };
 
-  const closeSettings = () => {
-    if (isNavigationLocked || isSigningOut) return;
+  const closeSettings = async () => {
+    if (isNavigationLocked || isSigningOut || isClosingSettings) return;
+
+    if (isCompactViewport) {
+      if (hasSettingsHomeParent(window.history.state)) {
+        router.history.back();
+        return;
+      }
+
+      await runSettingsShellPop();
+    }
+
     returnToHome();
   };
 
@@ -440,8 +488,8 @@ function SettingsLayoutContent() {
           <button
             ref={menuBackButtonRef}
             type="button"
-            onClick={closeSettings}
-            disabled={isNavigationLocked}
+            onClick={() => void closeSettings()}
+            disabled={isNavigationLocked || isClosingSettings}
             className="flex h-10 min-w-0 flex-1 items-center justify-start gap-2 rounded-lg px-2 text-foreground transition-colors hover:bg-background/70 disabled:cursor-not-allowed disabled:opacity-50"
             aria-label="Back to chats"
           >

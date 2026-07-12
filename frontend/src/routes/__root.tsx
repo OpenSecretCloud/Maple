@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useOpenSecret } from "@opensecret/react";
 import { OpenSecretContextType } from "@opensecret/react";
 import { createRootRouteWithContext, Outlet, useLocation } from "@tanstack/react-router";
@@ -11,6 +11,8 @@ import { TeamSeatMismatchAlert } from "@/components/team/TeamSeatMismatchAlert";
 import { VerificationModal } from "@/components/VerificationModal";
 import { transitionAgentAuthUser } from "@/services/agentRuntimeService";
 import { getSafeInternalRedirect } from "@/utils/internalRedirect";
+import { SETTINGS_SHELL_POP_EVENT } from "@/utils/settingsNavigation";
+import { cn, useIsLandscapeMobile, useIsMobile } from "@/utils/utils";
 
 interface RootRouterContext {
   os: OpenSecretContextType;
@@ -42,6 +44,11 @@ function Root() {
   const userId = auth.user?.user.id || null;
   const location = useLocation();
   const persistentHomeRef = useRef<HTMLDivElement>(null);
+  const routedSurfaceRef = useRef<HTMLDivElement>(null);
+  const isMobile = useIsMobile();
+  const isLandscapeMobile = useIsLandscapeMobile();
+  const isCompactLayout = isMobile || isLandscapeMobile;
+  const [isSettingsPopping, setIsSettingsPopping] = useState(false);
 
   const isHomeRoute = location.pathname === "/";
   const isSettingsRoute =
@@ -65,6 +72,26 @@ function Root() {
     }
   }, [isSettingsRoute, keepAuthenticatedHomeMounted]);
 
+  useEffect(() => {
+    const handleSettingsPop = () => setIsSettingsPopping(true);
+    window.addEventListener(SETTINGS_SHELL_POP_EVENT, handleSettingsPop);
+    return () => window.removeEventListener(SETTINGS_SHELL_POP_EVENT, handleSettingsPop);
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!isSettingsRoute) setIsSettingsPopping(false);
+  }, [isSettingsRoute]);
+
+  useEffect(() => {
+    const routedSurface = routedSurfaceRef.current;
+    if (!routedSurface) return;
+
+    routedSurface.inert = isSettingsRoute && isSettingsPopping;
+    return () => {
+      routedSurface.inert = false;
+    };
+  }, [isSettingsPopping, isSettingsRoute]);
+
   // TODO... put something here, but showing nothing looks nicer than "Loading..."
   if (auth.loading) {
     return <></>;
@@ -76,16 +103,39 @@ function Root() {
         <div
           ref={persistentHomeRef}
           aria-hidden={isSettingsRoute || undefined}
-          className={isSettingsRoute ? "pointer-events-none fixed inset-0 invisible" : "contents"}
+          className={cn(
+            isCompactLayout
+              ? [
+                  "maple-navigation-page fixed inset-0",
+                  isSettingsRoute && [
+                    "pointer-events-none",
+                    !isSettingsPopping && "maple-navigation-page-covered"
+                  ]
+                ]
+              : isSettingsRoute
+                ? "pointer-events-none fixed inset-0 invisible"
+                : "contents"
+          )}
         >
           <AuthenticatedHomeContent homeLocationHref={isHomeRoute ? location.href : null} />
         </div>
       )}
 
       <div
-        className={
-          isSettingsRoute ? "fixed inset-0 z-50 overflow-hidden bg-background" : "contents"
-        }
+        ref={routedSurfaceRef}
+        aria-hidden={isSettingsRoute && isSettingsPopping ? true : undefined}
+        className={cn(
+          isSettingsRoute
+            ? isCompactLayout
+              ? [
+                  "maple-navigation-page fixed inset-0 z-50 overflow-hidden bg-background shadow-[-12px_0_28px_rgba(0,0,0,0.12)]",
+                  isSettingsPopping
+                    ? "maple-navigation-page-pop pointer-events-none"
+                    : "maple-navigation-page-enter"
+                ]
+              : "fixed inset-0 z-50 overflow-hidden bg-background"
+            : "contents"
+        )}
       >
         <Outlet />
       </div>

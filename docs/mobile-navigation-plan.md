@@ -195,6 +195,9 @@ controller push/pop motion:
 
 Compact Settings follows the same root/detail hierarchy and paired motion:
 
+- Opening Settings from the compact main menu pushes the entire Settings surface over the mounted
+  main menu using the same paired parent/child motion.
+- Back from the Settings menu pops the entire Settings surface and reveals the preserved main menu.
 - `/settings` is the full-screen Settings menu rather than a drawer over Account settings.
 - Selecting a category pushes its existing detail route over the mounted Settings menu.
 - The detail header uses a top-left back arrow that returns to the Settings menu.
@@ -390,6 +393,7 @@ The core feature is complete when every agreed non-stretch behavior is implement
 
 ### Compact Settings
 
+- [x] Opening and closing Settings uses the same paired push/pop treatment as chat navigation.
 - [x] `/settings` renders the full-screen Settings menu on compact layouts.
 - [x] Settings categories push existing detail routes over the mounted menu.
 - [x] Settings detail back returns to the menu through shared browser history when available.
