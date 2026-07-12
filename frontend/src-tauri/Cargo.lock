@@ -4029,6 +4029,7 @@ name = "maple"
 version = "3.1.4"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum",
  "base64 0.22.1",
  "dirs",

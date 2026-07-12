@@ -1,4 +1,8 @@
+mod developer_tools;
+mod shell_permission;
+
 use crate::proxy;
+use developer_tools::MapleDeveloperClient;
 use futures_util::StreamExt;
 use goose::agents::{
     Agent, AgentConfig as GooseAgentConfig, AgentEvent, ExtensionConfig, GoosePlatform,
@@ -20,7 +24,8 @@ use goose::session::SessionManager;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use shell_permission::{ShellPermissionClassifier, ShellPermissionOutcome, ShellPermissionRequest};
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -35,7 +40,7 @@ const DEFAULT_AGENT_MODEL: &str = "glm-5-2";
 const LEGACY_AGENT_DEFAULT_MODEL: &str = "auto:powerful";
 const DEFAULT_GOOSE_MODE: &str = "smart_approve";
 const AGENT_EVENT_NAME: &str = "agent-event";
-const MAPLE_DEVELOPER_TOOLS: [&str; 5] = ["write", "edit", "shell", "tree", "read_image"];
+const MAPLE_DEVELOPER_TOOLS: [&str; 5] = ["read", "shell", "edit", "write", "read_image"];
 const RUN_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 const DEFAULT_AGENT_SESSION_TITLE: &str = "New agent session";
 const MAX_AGENT_SESSION_TITLE_CHARS: usize = 80;
@@ -1186,6 +1191,7 @@ pub async fn agent_send_message(
                 session_id: session_id.clone(),
                 run_id: task_run_id.clone(),
                 user_message: task_user_message,
+                mode,
                 cancel_token: task_cancel_token.clone(),
                 pending_permissions,
             })
@@ -1453,6 +1459,7 @@ struct AgentPromptRun {
     session_id: String,
     run_id: String,
     user_message: Message,
+    mode: String,
     cancel_token: CancellationToken,
     pending_permissions: PendingPermissions,
 }
@@ -1496,6 +1503,54 @@ fn apply_failed_prompt_outcome(
     timelines.insert(session_id.to_string(), LiveTimeline::Failed(vec![item]));
 }
 
+async fn automatically_handle_shell_permissions(
+    agent: &Agent,
+    session_id: &str,
+    mode: &str,
+    working_dir: &Path,
+    message: &Message,
+    cancel_token: &CancellationToken,
+) -> HashSet<String> {
+    let classifier = ShellPermissionClassifier;
+    let mut handled = HashSet::new();
+
+    for content in &message.content {
+        let MessageContent::ActionRequired(action) = content else {
+            continue;
+        };
+        let Some(request) = ShellPermissionRequest::from_action(mode, working_dir, action) else {
+            continue;
+        };
+        let request_id = request.request_id().to_string();
+        let outcome = classifier
+            .classify(agent, session_id, &request, cancel_token)
+            .await;
+        let permission = match outcome {
+            ShellPermissionOutcome::ReadOnly if !cancel_token.is_cancelled() => {
+                log::info!("Auto-approved read-only Agent Mode shell request {request_id}");
+                Permission::AllowOnce
+            }
+            ShellPermissionOutcome::Cancelled | ShellPermissionOutcome::ReadOnly => {
+                Permission::Cancel
+            }
+            ShellPermissionOutcome::RequiresApproval => continue,
+        };
+
+        agent
+            .handle_confirmation(
+                request_id.clone(),
+                PermissionConfirmation {
+                    principal_type: PrincipalType::Tool,
+                    permission,
+                },
+            )
+            .await;
+        handled.insert(request_id);
+    }
+
+    handled
+}
+
 async fn run_agent_prompt(run: AgentPromptRun) -> Result<AgentPromptOutcome, String> {
     let AgentPromptRun {
         app_handle,
@@ -1505,6 +1560,7 @@ async fn run_agent_prompt(run: AgentPromptRun) -> Result<AgentPromptOutcome, Str
         session_id,
         run_id,
         user_message,
+        mode,
         cancel_token,
         pending_permissions,
     } = run;
@@ -1523,6 +1579,7 @@ async fn run_agent_prompt(run: AgentPromptRun) -> Result<AgentPromptOutcome, Str
         .get_session(&session_id, false)
         .await
         .map_err(|e| format!("Failed to load updated Goose session: {e}"))?;
+    let working_dir = updated_session.working_dir.clone();
     emit_agent_event(
         &app_handle,
         AgentEventEnvelope {
@@ -1539,7 +1596,20 @@ async fn run_agent_prompt(run: AgentPromptRun) -> Result<AgentPromptOutcome, Str
     while let Some(event) = stream.next().await {
         match event {
             Ok(AgentEvent::Message(message)) => {
+                let automatically_handled = automatically_handle_shell_permissions(
+                    &agent,
+                    &session_id,
+                    &mode,
+                    &working_dir,
+                    &message,
+                    &cancel_token,
+                )
+                .await;
                 let mut items = message_to_timeline_items(&message, true);
+                items.retain(|item| {
+                    pending_permission_request_id(item)
+                        .is_none_or(|request_id| !automatically_handled.contains(&request_id))
+                });
                 for item in &mut items {
                     if let Some(request_id) = pending_permission_request_id(item) {
                         if !register_pending_permission(
@@ -1777,10 +1847,22 @@ async fn configure_session_agent(
             .map(|tool| tool.to_string())
             .collect(),
     };
+    let developer_client = MapleDeveloperClient::new(agent.extension_manager.get_context().clone())
+        .map_err(|e| format!("Failed to create Maple developer tools: {e}"))?;
     agent
-        .add_extension(developer, &session.id)
+        .extension_manager
+        .add_client(
+            "developer".to_string(),
+            developer,
+            Arc::new(developer_client),
+            None,
+            None,
+        )
+        .await;
+    agent
+        .persist_extension_state(&session.id)
         .await
-        .map_err(|e| format!("Failed to enable Goose developer tools: {e}"))?;
+        .map_err(|e| format!("Failed to persist Maple developer tools: {e}"))?;
     Ok(agent)
 }
 

@@ -75,6 +75,7 @@ sha2 = "0.10"
 # instead of a submodule so ordinary Maple checkouts do not need the full Goose
 # history.
 goose = { git = "https://github.com/aaif-goose/goose.git", rev = "b7eb1e9735833a7bf12ab92994a788fbc770f218", package = "goose", default-features = false }
+async-trait = "0.1"
 rmcp = { version = "=1.4.0", default-features = false }
 tauri-plugin-dialog = "2.7.1"
 tokio-util = "0.7"
