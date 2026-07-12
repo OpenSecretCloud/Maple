@@ -4046,6 +4046,7 @@ dependencies = [
  "ort",
  "pdf-extract",
  "plist",
+ "process-wrap",
  "rand 0.8.6",
  "rand_distr",
  "regex",
@@ -4069,6 +4070,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "unicode-normalization",
+ "windows 0.62.2",
 ]
 
 [[package]]

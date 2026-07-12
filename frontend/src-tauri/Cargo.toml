@@ -79,6 +79,7 @@ async-trait = "0.1"
 rmcp = { version = "=1.4.0", default-features = false }
 tauri-plugin-dialog = "2.7.1"
 tokio-util = "0.7"
+process-wrap = { version = "=9.1.0", default-features = false, features = ["tokio1", "creation-flags", "job-object", "process-group"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
@@ -107,6 +108,7 @@ openssl = { version = "0.10.80", default-features = false, features = ["vendored
 # Store the proxy API key in Windows Credential Manager rather than as
 # plaintext in the roaming %APPDATA% config (which can sync across machines).
 keyring = { version = "3", features = ["windows-native"] }
+windows = { version = "0.62.2", features = ["Win32_System_Threading"] }
 
 [patch.crates-io]
 # Local patch for tao 0.35.2 Android intent crashes:

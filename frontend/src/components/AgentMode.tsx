@@ -728,6 +728,14 @@ export function AgentMode({ userId }: { userId: string }) {
       const updateGeneration = permissionModeUpdateGenerationRef.current + 1;
       permissionModeUpdateGenerationRef.current = updateGeneration;
       setIsPermissionModeUpdating(true);
+      // A relaxation may be shown before the backend catches up because that
+      // only understates current restrictions. Keep showing Auto during a
+      // restrictive transition until the backend has made Read only live, so
+      // the selector never promises protection that is not authoritative yet.
+      if (value === "auto") {
+        selectedModeRef.current = value;
+        setMode(value);
+      }
       const update = permissionModeUpdateRef.current.then(() =>
         agentRuntimeService.setPermissionMode(userId, sessionId, value)
       );

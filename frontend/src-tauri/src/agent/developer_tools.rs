@@ -5,8 +5,14 @@ use goose::agents::platform_extensions::developer::shell::{ShellOutput, ShellPar
 use goose::agents::platform_extensions::developer::DeveloperClient;
 use goose::agents::platform_extensions::PlatformExtensionContext;
 use goose::agents::ToolCallContext;
+#[cfg(unix)]
 use goose::subprocess::configure_subprocess;
 use once_cell::sync::Lazy;
+#[cfg(unix)]
+use process_wrap::tokio::ProcessGroup;
+use process_wrap::tokio::{ChildWrapper, CommandWrap};
+#[cfg(windows)]
+use process_wrap::tokio::{CreationFlags, JobObject};
 use rmcp::model::{
     CallToolResult, Content, Implementation, InitializeResult, JsonObject, ListToolsResult,
     RawContent, ServerCapabilities, Tool, ToolAnnotations,
@@ -17,7 +23,7 @@ use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::process::{ExitStatus, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, Weak};
 use std::time::Duration;
@@ -26,6 +32,8 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::sync::OnceCell;
 use tokio::sync::{mpsc, Mutex};
 use tokio_util::sync::CancellationToken;
+#[cfg(windows)]
+use windows::Win32::System::Threading::CREATE_NO_WINDOW;
 
 use super::shell_permission::is_remote_file_source;
 
@@ -35,6 +43,7 @@ const MAX_EDIT_BYTES: usize = 20 * 1024 * 1024;
 const MAX_IMAGE_BYTES: usize = 20 * 1024 * 1024;
 const MAX_SHELL_OUTPUT_BYTES: usize = 50_000;
 const SHELL_OUTPUT_DRAIN_TIMEOUT: Duration = Duration::from_millis(500);
+const SHELL_PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const IMAGE_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30);
 const MAPLE_DEVELOPER_INSTRUCTIONS: &str = r#"Use the developer tools to inspect and modify the project.
 
@@ -426,6 +435,7 @@ struct BoundedShellCapture {
     stderr: Vec<u8>,
     interleaved: Vec<u8>,
     exceeded_limit: bool,
+    drain_truncated: bool,
     collection_error: Option<String>,
 }
 
@@ -473,16 +483,30 @@ async fn execute_bounded_shell(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        // Keep this on the raw Tokio child instead of process-wrap's
+        // KillOnDrop. The latter enables Windows JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        // which would kill deliberately backgrounded jobs after a successful
+        // shell return. Explicit abnormal paths below still kill the full tree.
         .kill_on_drop(true);
+    let mut command = CommandWrap::from(command);
+    #[cfg(unix)]
+    command.wrap(ProcessGroup::leader());
+    #[cfg(windows)]
+    {
+        // CreationFlags must precede JobObject so CREATE_NO_WINDOW is
+        // preserved when JobObject temporarily adds CREATE_SUSPENDED.
+        command.wrap(CreationFlags(CREATE_NO_WINDOW));
+        command.wrap(JobObject);
+    }
     let mut child = command
         .spawn()
         .map_err(|error| format!("Failed to spawn shell command: {error}"))?;
     let stdout = child
-        .stdout
+        .stdout()
         .take()
         .ok_or_else(|| "Failed to capture shell stdout".to_string())?;
     let stderr = child
-        .stderr
+        .stderr()
         .take()
         .ok_or_else(|| "Failed to capture shell stderr".to_string())?;
 
@@ -506,22 +530,27 @@ async fn execute_bounded_shell(
 
     let mut timed_out = false;
     let mut cancelled = false;
+    let mut wait_error = None;
     let exit_code = tokio::select! {
         biased;
         _ = cancel_token.cancelled() => {
             cancelled = true;
-            terminate_shell_process(&mut child).await
+            terminate_shell_process(child.as_mut()).await
         }
         _ = output_limit_reached.cancelled() => {
-            terminate_shell_process(&mut child).await
+            terminate_shell_process(child.as_mut()).await
         }
         _ = &mut timeout => {
             timed_out = true;
-            terminate_shell_process(&mut child).await
+            terminate_shell_process(child.as_mut()).await
         }
-        result = child.wait() => result
-            .map_err(|error| format!("Failed waiting on shell command: {error}"))?
-            .code(),
+        result = wait_for_shell_parent(child.as_mut()) => match result {
+            Ok(status) => status.code(),
+            Err(error) => {
+                wait_error = Some(format!("Failed waiting on shell command: {error}"));
+                terminate_shell_process(child.as_mut()).await
+            }
+        },
     };
 
     let mut capture =
@@ -536,15 +565,11 @@ async fn execute_bounded_shell(
                 stderr_task.abort();
                 match capture_task.await {
                     Ok(mut capture) => {
-                        capture.collection_error = Some(
-                            "Shell output draining timed out; output may be incomplete".to_string(),
-                        );
+                        capture.drain_truncated = true;
                         capture
                     }
-                    Err(error) => BoundedShellCapture {
-                        collection_error: Some(format!(
-                            "Shell output draining timed out and the collector failed: {error}"
-                        )),
+                    Err(_) => BoundedShellCapture {
+                        drain_truncated: true,
                         ..BoundedShellCapture::default()
                     },
                 }
@@ -557,6 +582,16 @@ async fn execute_bounded_shell(
     if output_limit_reached.is_cancelled() {
         capture.exceeded_limit = true;
     }
+    // The top-level shell can exit before a noisy background descendant reaches
+    // the cap. Keep the wrapped process-tree handle alive and kill it even if
+    // the parent wait already completed. A quiet background job that merely
+    // holds the pipes open follows Pi/Goose semantics and is left running.
+    if capture.exceeded_limit {
+        let _ = terminate_shell_process(child.as_mut()).await;
+    }
+    if let Some(error) = wait_error {
+        return Err(error);
+    }
 
     Ok(BoundedShellExecution {
         capture,
@@ -564,6 +599,19 @@ async fn execute_bounded_shell(
         timed_out,
         cancelled,
     })
+}
+
+async fn wait_for_shell_parent(child: &mut dyn ChildWrapper) -> std::io::Result<ExitStatus> {
+    // JobObject::wait waits for every Windows descendant, but Pi and Goose let
+    // a successfully backgrounded process outlive the shell tool. try_wait
+    // reports the top-level shell while retaining the wrapper for tree-wide
+    // termination on cancellation, timeout, or output overflow.
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(status);
+        }
+        tokio::time::sleep(SHELL_PROCESS_POLL_INTERVAL).await;
+    }
 }
 
 async fn pump_shell_stream<R>(mut reader: R, stderr: bool, sender: mpsc::Sender<ShellStreamChunk>)
@@ -630,12 +678,10 @@ async fn collect_bounded_shell_output(
     capture
 }
 
-async fn terminate_shell_process(child: &mut tokio::process::Child) -> Option<i32> {
-    #[cfg(unix)]
-    if let Some(pid) = child.id() {
-        // configure_subprocess gives the command its own process group.
-        let _ = unsafe { libc::kill(-(pid as i32), libc::SIGKILL) };
-    }
+async fn terminate_shell_process(child: &mut dyn ChildWrapper) -> Option<i32> {
+    // ProcessGroup and JobObject both override start_kill to terminate the
+    // complete descendant tree. Their wait implementations retain the
+    // top-level exit status and finish reaping the wrapped process container.
     let _ = child.start_kill();
     child.wait().await.ok().and_then(|status| status.code())
 }
@@ -706,6 +752,7 @@ fn build_bounded_shell_command(
         }
     };
 
+    #[cfg(unix)]
     configure_subprocess(&mut command);
     command
 }
@@ -734,6 +781,11 @@ fn render_bounded_shell_result(
             "\n\nCommand stopped after output exceeded the {MAX_SHELL_OUTPUT_BYTES} byte safety limit. Use a more targeted command or the read tool."
         ));
     }
+    if execution.capture.drain_truncated {
+        rendered.push_str(
+            "\n\nOutput collection stopped after the shell exited while a background process kept its output streams open.",
+        );
+    }
     if execution.timed_out {
         match timeout_secs {
             Some(seconds) => {
@@ -757,7 +809,7 @@ fn render_bounded_shell_result(
         stderr,
         exit_code: execution.exit_code,
         timed_out: execution.timed_out,
-        output_truncated: execution.capture.exceeded_limit,
+        output_truncated: execution.capture.exceeded_limit || execution.capture.drain_truncated,
         output_collection_error: execution.capture.collection_error.clone(),
     };
     let structured_content = serde_json::to_value(shell_output).ok();
@@ -2043,6 +2095,141 @@ mod tests {
         assert!(output.output_truncated);
         assert!(output.stdout.len() + output.stderr.len() <= MAX_SHELL_OUTPUT_BYTES);
         assert!(text(&result).contains("output exceeded"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn shell_returns_without_killing_a_successful_background_job() {
+        let temp = TestDir::new();
+        let sentinel = temp.path().join("background-completed");
+        let command = format!("(sleep 1; printf survived > '{}') &", sentinel.display());
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(3),
+            run_bounded_shell(
+                ShellParams {
+                    command,
+                    timeout_secs: Some(2),
+                },
+                None,
+                std::env::var("PATH").ok().as_deref(),
+                CancellationToken::new(),
+            ),
+        )
+        .await
+        .expect("an inherited output pipe must not keep shell collection alive");
+        let output: ShellOutput =
+            serde_json::from_value(result.structured_content.clone().unwrap()).unwrap();
+        assert_eq!(result.is_error, Some(false));
+        assert!(output.output_truncated);
+        assert!(output.output_collection_error.is_none());
+
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        assert_eq!(fs::read_to_string(&sentinel).unwrap(), "survived");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn shell_kills_a_noisy_background_tree_after_the_parent_exits() {
+        let temp = TestDir::new();
+        let sentinel = temp.path().join("noisy-background-survived");
+        let command = format!(
+            "((while :; do printf 1234567890; done) & sleep 1; printf survived > '{}') &",
+            sentinel.display()
+        );
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(3),
+            run_bounded_shell(
+                ShellParams {
+                    command,
+                    timeout_secs: Some(2),
+                },
+                None,
+                std::env::var("PATH").ok().as_deref(),
+                CancellationToken::new(),
+            ),
+        )
+        .await
+        .expect("a noisy background tree must stop at the output limit");
+        let output: ShellOutput =
+            serde_json::from_value(result.structured_content.clone().unwrap()).unwrap();
+        assert_eq!(result.is_error, Some(true));
+        assert!(output.output_truncated);
+        assert!(text(&result).contains("output exceeded"));
+
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        assert!(
+            !sentinel.exists(),
+            "noisy background tree survived the output limit"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn shell_timeout_kills_the_complete_process_tree() {
+        let temp = TestDir::new();
+        let sentinel = temp.path().join("timed-out-descendant-survived");
+        let command = format!(
+            "(sleep 2; printf survived > '{}') & sleep 5",
+            sentinel.display()
+        );
+        let result = run_bounded_shell(
+            ShellParams {
+                command,
+                timeout_secs: Some(1),
+            },
+            None,
+            std::env::var("PATH").ok().as_deref(),
+            CancellationToken::new(),
+        )
+        .await;
+        let output: ShellOutput =
+            serde_json::from_value(result.structured_content.clone().unwrap()).unwrap();
+        assert_eq!(result.is_error, Some(true));
+        assert!(output.timed_out);
+
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        assert!(
+            !sentinel.exists(),
+            "timed-out descendant survived process-tree termination"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn shell_cancellation_kills_the_complete_process_tree() {
+        let temp = TestDir::new();
+        let sentinel = temp.path().join("cancelled-descendant-survived");
+        let command = format!(
+            "(sleep 1; printf survived > '{}') & sleep 5",
+            sentinel.display()
+        );
+        let cancel_token = CancellationToken::new();
+        let cancellation = cancel_token.clone();
+        let cancel_task = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            cancellation.cancel();
+        });
+        let result = run_bounded_shell(
+            ShellParams {
+                command,
+                timeout_secs: Some(4),
+            },
+            None,
+            std::env::var("PATH").ok().as_deref(),
+            cancel_token,
+        )
+        .await;
+        cancel_task.await.unwrap();
+        assert_eq!(result.is_error, Some(true));
+        assert!(text(&result).contains("Command cancelled"));
+
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        assert!(
+            !sentinel.exists(),
+            "cancelled descendant survived process-tree termination"
+        );
     }
 
     #[cfg(unix)]

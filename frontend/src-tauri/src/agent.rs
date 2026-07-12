@@ -1494,12 +1494,19 @@ pub async fn agent_set_permission_mode(
             .update_goose_mode(GOOSE_PERMISSION_ROUTING_MODE, &session_id)
             .await
             .map_err(|error| format!("Failed to update Goose mode: {error}"))?;
-        session_manager
-            .update(&session_id)
-            .goose_mode(goose_mode)
-            .apply()
-            .await
-            .map_err(|error| format!("Failed to persist Agent permission mode: {error}"))?;
+        // update_goose_mode already persists SmartApprove, which is both our
+        // internal Goose routing mode and the user-facing Read-only mode. Auto
+        // is Maple-owned, so only that case needs a second persistence step.
+        // Keeping Read-only to one write avoids a failed duplicate write
+        // leaving the persisted session stricter than the live Maple policy.
+        if goose_mode == GooseMode::Auto {
+            session_manager
+                .update(&session_id)
+                .goose_mode(goose_mode)
+                .apply()
+                .await
+                .map_err(|error| format!("Failed to persist Agent permission mode: {error}"))?;
+        }
         Ok(agent)
     }
     .await;
@@ -1788,6 +1795,42 @@ async fn deliver_tool_permission_if_auto(
     true
 }
 
+async fn claim_pending_permission_if_auto(
+    agent: &Agent,
+    session_id: &str,
+    permission_modes: &SessionPermissionModes,
+    pending_permissions: &PendingPermissions,
+    request_id: &str,
+    cancel_token: &CancellationToken,
+) -> bool {
+    // This is the same Auto -> Read only linearization boundary as the direct
+    // path above, with the pending request claimed while the policy is locked.
+    let modes = permission_modes.lock().await;
+    if modes
+        .get(session_id)
+        .copied()
+        .unwrap_or(GOOSE_PERMISSION_ROUTING_MODE)
+        != GooseMode::Auto
+    {
+        return false;
+    }
+    let claimed = pending_permissions
+        .lock()
+        .await
+        .remove(&(session_id.to_string(), request_id.to_string()))
+        .is_some();
+    if claimed {
+        let permission = if cancel_token.is_cancelled() {
+            Permission::Cancel
+        } else {
+            Permission::AllowOnce
+        };
+        deliver_tool_permission(agent, request_id.to_string(), permission).await;
+    }
+    drop(modes);
+    true
+}
+
 async fn automatically_handle_permissions(
     agent: &Agent,
     session_id: &str,
@@ -1972,22 +2015,16 @@ async fn run_agent_prompt(run: AgentPromptRun) -> Result<AgentPromptOutcome, Str
                                 )
                                 .await;
                             item.status = Some("cancelled".to_string());
-                        } else if selected_permission_mode(&permission_modes, &session_id).await
-                            == GooseMode::Auto
+                        } else if claim_pending_permission_if_auto(
+                            &agent,
+                            &session_id,
+                            &permission_modes,
+                            &pending_permissions,
+                            &request_id,
+                            &cancel_token,
+                        )
+                        .await
                         {
-                            let claimed = pending_permissions
-                                .lock()
-                                .await
-                                .remove(&(session_id.clone(), request_id.clone()))
-                                .is_some();
-                            if claimed {
-                                deliver_tool_permission(
-                                    &agent,
-                                    request_id.clone(),
-                                    Permission::AllowOnce,
-                                )
-                                .await;
-                            }
                             newly_auto_handled.insert(request_id);
                         }
                     }
