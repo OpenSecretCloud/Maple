@@ -74,12 +74,7 @@ export interface AgentRunResponse {
   runId: string;
 }
 
-export type AgentPermissionDecision =
-  | "allow_once"
-  | "always_allow"
-  | "deny_once"
-  | "always_deny"
-  | "cancel";
+export type AgentPermissionDecision = "allow_once" | "deny_once" | "cancel";
 
 export interface AgentEventEnvelope {
   eventType: string;

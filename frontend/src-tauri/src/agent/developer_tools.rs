@@ -5,22 +5,26 @@ use goose::agents::ToolCallContext;
 use once_cell::sync::Lazy;
 use rmcp::model::{
     CallToolResult, Content, Implementation, InitializeResult, JsonObject, ListToolsResult,
-    ServerCapabilities, Tool, ToolAnnotations,
+    RawContent, ServerCapabilities, Tool, ToolAnnotations,
 };
 use rmcp::object;
 use serde::{de::Error as SerdeDeError, Deserialize, Deserializer};
 use std::collections::HashMap;
-use std::fs;
-use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
+use std::fs::{self, OpenOptions};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, Weak};
+use std::time::Duration;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
-use super::shell_permission::is_remote_image_source;
+use super::shell_permission::is_remote_file_source;
 
 const MAX_READ_LINES: usize = 2_000;
 const MAX_READ_BYTES: usize = 50 * 1024;
+const MAX_IMAGE_BYTES: usize = 20 * 1024 * 1024;
+const IMAGE_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30);
 const MAPLE_DEVELOPER_INSTRUCTIONS: &str = r#"Use the developer tools to inspect and modify the project.
 
 Use read to examine text files instead of cat or sed. Use shell for searches, directory listings,
@@ -32,6 +36,7 @@ type MutationLockMap = HashMap<PathBuf, Weak<MutationLock>>;
 
 static MUTATION_LOCKS: Lazy<StdMutex<MutationLockMap>> =
     Lazy::new(|| StdMutex::new(HashMap::new()));
+static NEXT_TEMP_IMAGE: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -96,7 +101,7 @@ impl MapleDeveloperClient {
         Tool::new(
             "read".to_string(),
             format!(
-                "Read a text file. Output is limited to {MAX_READ_LINES} lines or {}KB, whichever is reached first. Use offset and limit to continue through large files. Use read_image for images.",
+                "Read a local text file. Output is limited to {MAX_READ_LINES} lines or {}KB, whichever is reached first. Use offset and limit to continue through large files. Remote filesystem paths require approval in Read only mode. Use read_image for images.",
                 MAX_READ_BYTES / 1024
             ),
             object!({
@@ -123,10 +128,10 @@ impl MapleDeveloperClient {
         )
         .annotate(ToolAnnotations::from_raw(
             Some("Read".to_string()),
-            Some(true),
+            Some(false),
             Some(false),
             Some(true),
-            Some(false),
+            Some(true),
         ))
     }
 
@@ -312,9 +317,7 @@ impl McpClientTrait for MapleDeveloperClient {
             }
             "read_image" => {
                 let arguments = normalize_read_image_arguments(arguments, working_dir);
-                return self
-                    .goose
-                    .call_tool(ctx, name, arguments, cancel_token)
+                return call_bounded_read_image(&self.goose, ctx, name, arguments, cancel_token)
                     .await;
             }
             _ => error_result(format!("Unknown tool: {name}")),
@@ -365,6 +368,88 @@ fn home_dir() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
+fn regular_file_error(path: &Path) -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::InvalidInput,
+        format!("{} is not a regular file", path.display()),
+    )
+}
+
+fn open_regular_file_for_read(path: &Path) -> std::io::Result<fs::File> {
+    #[cfg(unix)]
+    let file = {
+        use std::os::unix::fs::OpenOptionsExt;
+        OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(path)?
+    };
+    #[cfg(not(unix))]
+    let file = {
+        let metadata = fs::metadata(path)?;
+        if !metadata.is_file() {
+            return Err(regular_file_error(path));
+        }
+        OpenOptions::new().read(true).open(path)?
+    };
+
+    if !file.metadata()?.is_file() {
+        return Err(regular_file_error(path));
+    }
+    Ok(file)
+}
+
+fn open_regular_file_for_write(path: &Path) -> std::io::Result<fs::File> {
+    #[cfg(unix)]
+    let file = {
+        use std::os::unix::fs::OpenOptionsExt;
+        OpenOptions::new()
+            .write(true)
+            .create(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(path)?
+    };
+    #[cfg(not(unix))]
+    let file = {
+        if let Ok(metadata) = fs::metadata(path) {
+            if !metadata.is_file() {
+                return Err(regular_file_error(path));
+            }
+        }
+        OpenOptions::new().write(true).create(true).open(path)?
+    };
+
+    if !file.metadata()?.is_file() {
+        return Err(regular_file_error(path));
+    }
+    Ok(file)
+}
+
+fn open_regular_file_for_edit(path: &Path) -> std::io::Result<fs::File> {
+    #[cfg(unix)]
+    let file = {
+        use std::os::unix::fs::OpenOptionsExt;
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(path)?
+    };
+    #[cfg(not(unix))]
+    let file = {
+        let metadata = fs::metadata(path)?;
+        if !metadata.is_file() {
+            return Err(regular_file_error(path));
+        }
+        OpenOptions::new().read(true).write(true).open(path)?
+    };
+
+    if !file.metadata()?.is_file() {
+        return Err(regular_file_error(path));
+    }
+    Ok(file)
+}
+
 fn normalize_read_image_arguments(
     mut arguments: Option<JsonObject>,
     working_dir: Option<&Path>,
@@ -377,7 +462,7 @@ fn normalize_read_image_arguments(
     let Some(source) = source else {
         return arguments;
     };
-    if is_remote_image_source(&source)
+    if is_remote_file_source(&source)
         || reqwest::Url::parse(&source).is_ok_and(|url| url.scheme() == "file")
     {
         return arguments;
@@ -394,6 +479,230 @@ fn normalize_read_image_arguments(
         );
     }
     arguments
+}
+
+struct StagedImage {
+    path: PathBuf,
+}
+
+impl Drop for StagedImage {
+    fn drop(&mut self) {
+        if let Err(error) = fs::remove_file(&self.path) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                log::warn!(
+                    "Failed to remove staged Agent Mode image {}: {error}",
+                    self.path.display()
+                );
+            }
+        }
+    }
+}
+
+async fn call_bounded_read_image(
+    goose: &DeveloperClient,
+    ctx: &ToolCallContext,
+    name: &str,
+    arguments: Option<JsonObject>,
+    cancel_token: CancellationToken,
+) -> Result<CallToolResult, Error> {
+    let Some(source) = arguments
+        .as_ref()
+        .and_then(|arguments| arguments.get("source"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+    else {
+        return goose.call_tool(ctx, name, arguments, cancel_token).await;
+    };
+
+    let bytes =
+        match load_bounded_image_bytes(&source, ctx.working_dir.as_deref(), cancel_token.clone())
+            .await
+        {
+            Ok(bytes) => bytes,
+            Err(error) => return Ok(error_result(error)),
+        };
+    if cancel_token.is_cancelled() {
+        return Ok(error_result("Image read cancelled"));
+    }
+    let staged = match tokio::task::spawn_blocking(move || stage_image_bytes(&bytes)).await {
+        Ok(Ok(staged)) => staged,
+        Ok(Err(error)) => return Ok(error_result(error)),
+        Err(error) => return Ok(error_result(format!("Image staging task failed: {error}"))),
+    };
+    if cancel_token.is_cancelled() {
+        return Ok(error_result("Image read cancelled"));
+    }
+
+    let staged_source = staged.path.to_string_lossy().into_owned();
+    let mut delegated_arguments = arguments.unwrap_or_default();
+    delegated_arguments.insert(
+        "source".to_string(),
+        serde_json::Value::String(staged_source.clone()),
+    );
+    let mut result = goose
+        .call_tool(ctx, name, Some(delegated_arguments), cancel_token)
+        .await?;
+    rewrite_staged_image_source(&mut result, &staged_source, &source);
+    Ok(result)
+}
+
+async fn load_bounded_image_bytes(
+    source: &str,
+    working_dir: Option<&Path>,
+    cancel_token: CancellationToken,
+) -> Result<Vec<u8>, String> {
+    if source.trim().is_empty() {
+        return Err("source cannot be empty".to_string());
+    }
+    if let Ok(url) = reqwest::Url::parse(source) {
+        match url.scheme() {
+            "http" | "https" => return download_bounded_image(url, cancel_token).await,
+            "file" => {
+                let path = url
+                    .to_file_path()
+                    .map_err(|_| "invalid file URL".to_string())?;
+                return read_bounded_local_image(path, cancel_token).await;
+            }
+            _ => {}
+        }
+    }
+    read_bounded_local_image(resolve_path(source, working_dir), cancel_token).await
+}
+
+async fn read_bounded_local_image(
+    path: PathBuf,
+    cancel_token: CancellationToken,
+) -> Result<Vec<u8>, String> {
+    tokio::task::spawn_blocking(move || {
+        if cancel_token.is_cancelled() {
+            return Err("Image read cancelled".to_string());
+        }
+        let file = open_regular_file_for_read(&path)
+            .map_err(|error| format!("failed to read image file: {error}"))?;
+        let len = file
+            .metadata()
+            .map_err(|error| format!("failed to inspect image file: {error}"))?
+            .len();
+        if len > MAX_IMAGE_BYTES as u64 {
+            return Err(image_size_error(len));
+        }
+
+        let mut bytes = Vec::with_capacity(len as usize);
+        let mut reader = BufReader::new(file).take(MAX_IMAGE_BYTES as u64 + 1);
+        let mut chunk = [0u8; 64 * 1024];
+        loop {
+            if cancel_token.is_cancelled() {
+                return Err("Image read cancelled".to_string());
+            }
+            let read = reader
+                .read(&mut chunk)
+                .map_err(|error| format!("failed to read image file: {error}"))?;
+            if read == 0 {
+                break;
+            }
+            bytes.extend_from_slice(&chunk[..read]);
+            if bytes.len() > MAX_IMAGE_BYTES {
+                return Err(image_size_error(bytes.len() as u64));
+            }
+        }
+        Ok(bytes)
+    })
+    .await
+    .map_err(|error| format!("Image read task failed: {error}"))?
+}
+
+async fn download_bounded_image(
+    url: reqwest::Url,
+    cancel_token: CancellationToken,
+) -> Result<Vec<u8>, String> {
+    let client = reqwest::Client::builder()
+        .user_agent(concat!("maple/", env!("CARGO_PKG_VERSION")))
+        .timeout(IMAGE_DOWNLOAD_TIMEOUT)
+        .build()
+        .map_err(|error| format!("failed to create image client: {error}"))?;
+    let response = tokio::select! {
+        biased;
+        _ = cancel_token.cancelled() => return Err("Image read cancelled".to_string()),
+        response = client.get(url).send() => response,
+    }
+    .map_err(|error| format!("failed to download image: {error}"))?
+    .error_for_status()
+    .map_err(|error| format!("failed to download image: {error}"))?;
+    if let Some(len) = response.content_length() {
+        if len > MAX_IMAGE_BYTES as u64 {
+            return Err(image_size_error(len));
+        }
+    }
+
+    let mut response = response;
+    let mut bytes = Vec::new();
+    loop {
+        let chunk = tokio::select! {
+            biased;
+            _ = cancel_token.cancelled() => return Err("Image read cancelled".to_string()),
+            chunk = response.chunk() => chunk,
+        }
+        .map_err(|error| format!("failed to read image response: {error}"))?;
+        let Some(chunk) = chunk else {
+            break;
+        };
+        let next_len = bytes
+            .len()
+            .checked_add(chunk.len())
+            .ok_or_else(|| image_size_error(u64::MAX))?;
+        if next_len > MAX_IMAGE_BYTES {
+            return Err(image_size_error(next_len as u64));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
+}
+
+fn image_size_error(len: u64) -> String {
+    format!("image is too large: {len} bytes exceeds {MAX_IMAGE_BYTES} byte limit")
+}
+
+fn stage_image_bytes(bytes: &[u8]) -> Result<StagedImage, String> {
+    for _ in 0..32 {
+        let sequence = NEXT_TEMP_IMAGE.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "maple-agent-image-{}-{sequence}.img",
+            std::process::id()
+        ));
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        match options.open(&path) {
+            Ok(mut file) => {
+                if let Err(error) = file.write_all(bytes) {
+                    let _ = fs::remove_file(&path);
+                    return Err(format!("failed to stage image: {error}"));
+                }
+                return Ok(StagedImage { path });
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(format!("failed to create staged image: {error}")),
+        }
+    }
+    Err("failed to allocate a unique staged image path".to_string())
+}
+
+fn rewrite_staged_image_source(result: &mut CallToolResult, staged: &str, original: &str) {
+    for content in &mut result.content {
+        if let RawContent::Text(text) = &mut content.raw {
+            text.text = text.text.replace(staged, original);
+        }
+    }
+    if let Some(serde_json::Value::Object(structured)) = result.structured_content.as_mut() {
+        structured.insert(
+            "source".to_string(),
+            serde_json::Value::String(original.to_string()),
+        );
+    }
 }
 
 async fn read_file(
@@ -431,21 +740,10 @@ fn read_file_blocking(
         return error_result("Read cancelled");
     }
 
-    let metadata = match fs::metadata(&path) {
-        Ok(metadata) => metadata,
-        Err(error) => return error_result(format!("Failed to read {}: {error}", params.path)),
-    };
-    if !metadata.is_file() {
-        return error_result(format!("{} is not a regular file", params.path));
-    }
-
-    let mut file = match fs::File::open(&path) {
+    let mut file = match open_regular_file_for_read(&path) {
         Ok(file) => file,
         Err(error) => return error_result(format!("Failed to read {}: {error}", params.path)),
     };
-    if !file.metadata().is_ok_and(|metadata| metadata.is_file()) {
-        return error_result(format!("{} is not a regular file", params.path));
-    }
 
     let mut magic = [0u8; 12];
     let magic_len = match file.read(&mut magic) {
@@ -685,17 +983,27 @@ fn write_file_blocking(
     }
 
     let existed = path.exists();
-    match fs::write(&path, params.content.as_bytes()) {
-        Ok(()) => {
-            let action = if existed { "Wrote" } else { "Created" };
-            success_result(format!(
-                "{action} {} ({} bytes)",
-                params.path,
-                params.content.len()
-            ))
-        }
-        Err(error) => error_result(format!("Failed to write {}: {error}", params.path)),
+    let mut file = match open_regular_file_for_write(&path) {
+        Ok(file) => file,
+        Err(error) => return error_result(format!("Failed to write {}: {error}", params.path)),
+    };
+    if cancel_token.is_cancelled() {
+        return error_result("Write cancelled");
     }
+    if let Err(error) = file
+        .set_len(0)
+        .and_then(|_| file.seek(SeekFrom::Start(0)).map(|_| ()))
+        .and_then(|_| file.write_all(params.content.as_bytes()))
+    {
+        return error_result(format!("Failed to write {}: {error}", params.path));
+    }
+
+    let action = if existed { "Wrote" } else { "Created" };
+    success_result(format!(
+        "{action} {} ({} bytes)",
+        params.path,
+        params.content.len()
+    ))
 }
 
 async fn edit_file(
@@ -731,16 +1039,23 @@ fn edit_file_blocking(
     if cancel_token.is_cancelled() {
         return error_result("Edit cancelled");
     }
-    let bytes = match fs::read(&path) {
-        Ok(bytes) => bytes,
+    let mut file = match open_regular_file_for_edit(&path) {
+        Ok(file) => file,
         Err(error) => return error_result(format!("Failed to read {}: {error}", params.path)),
     };
+    let mut bytes = Vec::new();
+    if let Err(error) = file.read_to_end(&mut bytes) {
+        return error_result(format!("Failed to read {}: {error}", params.path));
+    }
     let original = match String::from_utf8(bytes) {
         Ok(content) => content,
         Err(_) => return error_result(format!("{} is not a UTF-8 text file", params.path)),
     };
 
-    let (bom, line_ending, mut normalized) = normalize_text_file(&original);
+    let (bom, line_ending, mut normalized) = match normalize_text_file(&original) {
+        Ok(file) => file,
+        Err(error) => return error_result(format!("Cannot edit {}: {error}", params.path)),
+    };
     let mut resolved_edits = Vec::with_capacity(params.edits.len());
     let mut has_change = false;
     for (index, replacement) in params.edits.iter().enumerate() {
@@ -789,14 +1104,18 @@ fn edit_file_blocking(
         return error_result("Edit cancelled");
     }
     let updated = restore_text_file(&normalized, bom, line_ending);
-    match fs::write(&path, updated.as_bytes()) {
-        Ok(()) => success_result(format!(
-            "Edited {} ({} replacements)",
-            params.path,
-            resolved_edits.len()
-        )),
-        Err(error) => error_result(format!("Failed to write {}: {error}", params.path)),
+    if let Err(error) = file
+        .set_len(0)
+        .and_then(|_| file.seek(SeekFrom::Start(0)).map(|_| ()))
+        .and_then(|_| file.write_all(updated.as_bytes()))
+    {
+        return error_result(format!("Failed to write {}: {error}", params.path));
     }
+    success_result(format!(
+        "Edited {} ({} replacements)",
+        params.path,
+        resolved_edits.len()
+    ))
 }
 
 #[derive(Clone, Copy)]
@@ -806,19 +1125,46 @@ enum LineEnding {
     Cr,
 }
 
-fn normalize_text_file(content: &str) -> (bool, LineEnding, String) {
+fn normalize_text_file(content: &str) -> Result<(bool, LineEnding, String), &'static str> {
     let (bom, content) = match content.strip_prefix('\u{feff}') {
         Some(content) => (true, content),
         None => (false, content),
     };
-    let line_ending = if content.contains("\r\n") {
+    let mut saw_lf = false;
+    let mut saw_crlf = false;
+    let mut saw_cr = false;
+    let bytes = content.as_bytes();
+    let mut index = 0usize;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'\r' if bytes.get(index + 1) == Some(&b'\n') => {
+                saw_crlf = true;
+                index += 2;
+            }
+            b'\r' => {
+                saw_cr = true;
+                index += 1;
+            }
+            b'\n' => {
+                saw_lf = true;
+                index += 1;
+            }
+            _ => index += 1,
+        }
+    }
+    if usize::from(saw_lf) + usize::from(saw_crlf) + usize::from(saw_cr) > 1 {
+        return Err(
+            "mixed line endings are not supported because editing could rewrite untouched lines",
+        );
+    }
+    let line_ending = if saw_crlf {
         LineEnding::CrLf
-    } else if content.contains('\r') {
+    } else if saw_cr {
         LineEnding::Cr
     } else {
         LineEnding::Lf
     };
-    (bom, line_ending, normalize_newlines(content))
+    Ok((bom, line_ending, normalize_newlines(content)))
 }
 
 fn normalize_newlines(content: &str) -> String {
@@ -950,8 +1296,9 @@ mod tests {
         assert!(!names.contains(&"tree"));
 
         let read = serde_json::to_value(&result.tools[0]).unwrap();
-        assert_eq!(read["annotations"]["readOnlyHint"], true);
+        assert_eq!(read["annotations"]["readOnlyHint"], false);
         assert_eq!(read["annotations"]["destructiveHint"], false);
+        assert_eq!(read["annotations"]["openWorldHint"], true);
         let shell = serde_json::to_value(&result.tools[1]).unwrap();
         assert_eq!(shell["annotations"]["readOnlyHint"], false);
         let edit = serde_json::to_value(&result.tools[2]).unwrap();
@@ -1141,6 +1488,96 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn read_image_rejects_oversized_local_files_before_buffering() {
+        let temp = TestDir::new();
+        let path = temp.path().join("oversized.png");
+        let file = fs::File::create(&path).unwrap();
+        file.set_len(MAX_IMAGE_BYTES as u64 + 1).unwrap();
+
+        let error = load_bounded_image_bytes(
+            path.to_str().unwrap(),
+            Some(temp.path()),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("image is too large"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn special_files_are_rejected_without_blocking_workers() {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+
+        let temp = TestDir::new();
+        let fifo = temp.path().join("agent.fifo");
+        let fifo_path = CString::new(fifo.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(fifo_path.as_ptr(), 0o600) }, 0);
+
+        let read = tokio::time::timeout(
+            Duration::from_secs(1),
+            read_file(
+                ReadParams {
+                    path: "agent.fifo".to_string(),
+                    offset: None,
+                    limit: None,
+                },
+                Some(temp.path()),
+                CancellationToken::new(),
+            ),
+        )
+        .await
+        .expect("read must not block on a FIFO");
+        assert_eq!(read.is_error, Some(true));
+
+        let edit = tokio::time::timeout(
+            Duration::from_secs(1),
+            edit_file(
+                EditParams {
+                    path: "agent.fifo".to_string(),
+                    edits: vec![Replacement {
+                        old_text: "before".to_string(),
+                        new_text: "after".to_string(),
+                    }],
+                },
+                Some(temp.path()),
+                CancellationToken::new(),
+            ),
+        )
+        .await
+        .expect("edit must not block on a FIFO");
+        assert_eq!(edit.is_error, Some(true));
+
+        let write = tokio::time::timeout(
+            Duration::from_secs(1),
+            write_file(
+                WriteParams {
+                    path: "agent.fifo".to_string(),
+                    content: "content".to_string(),
+                },
+                Some(temp.path()),
+                CancellationToken::new(),
+            ),
+        )
+        .await
+        .expect("write must not block on a FIFO");
+        assert_eq!(write.is_error, Some(true));
+
+        let image = tokio::time::timeout(
+            Duration::from_secs(1),
+            load_bounded_image_bytes(
+                fifo.to_str().unwrap(),
+                Some(temp.path()),
+                CancellationToken::new(),
+            ),
+        )
+        .await
+        .expect("read_image must not block on a FIFO");
+        assert!(image.unwrap_err().contains("not a regular file"));
+    }
+
+    #[tokio::test]
     async fn edit_validates_then_applies_multiple_replacements() {
         let temp = TestDir::new();
         let path = temp.path().join("notes.txt");
@@ -1253,6 +1690,29 @@ mod tests {
             fs::read_to_string(classic_mac_path).unwrap(),
             "first\rsecond\r"
         );
+    }
+
+    #[tokio::test]
+    async fn edit_rejects_mixed_line_endings_without_rewriting_untouched_lines() {
+        let temp = TestDir::new();
+        let path = temp.path().join("mixed.txt");
+        let original = "a\nb\r\nc\n";
+        fs::write(&path, original).unwrap();
+        let result = edit_file(
+            EditParams {
+                path: "mixed.txt".to_string(),
+                edits: vec![Replacement {
+                    old_text: "c".to_string(),
+                    new_text: "C".to_string(),
+                }],
+            },
+            Some(temp.path()),
+            CancellationToken::new(),
+        )
+        .await;
+        assert_eq!(result.is_error, Some(true));
+        assert!(text(&result).contains("mixed line endings"));
+        assert_eq!(fs::read_to_string(path).unwrap(), original);
     }
 
     #[tokio::test]

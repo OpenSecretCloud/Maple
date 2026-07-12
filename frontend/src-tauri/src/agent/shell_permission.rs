@@ -88,8 +88,52 @@ impl ShellPermissionRequest {
     }
 }
 
-pub(crate) fn is_remote_image_source(source: &str) -> bool {
-    reqwest::Url::parse(source).is_ok_and(|url| matches!(url.scheme(), "http" | "https"))
+pub(crate) fn is_remote_file_source(source: &str) -> bool {
+    let source = source.trim();
+    if source.starts_with(r"\\") || source.starts_with("//") {
+        return true;
+    }
+
+    // URL parsers treat a Windows drive letter as a scheme. Keep drive paths
+    // local while routing actual URLs through the open-world approval path.
+    let bytes = source.as_bytes();
+    if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+        return false;
+    }
+
+    let Ok(url) = reqwest::Url::parse(source) else {
+        return false;
+    };
+    match url.scheme() {
+        "http" | "https" => true,
+        "file" => url
+            .host_str()
+            .is_some_and(|host| !host.is_empty() && !host.eq_ignore_ascii_case("localhost")),
+        _ => true,
+    }
+}
+
+pub(crate) fn local_read_request_id<'a>(mode: &str, action: &'a ActionRequired) -> Option<&'a str> {
+    if mode != READ_ONLY_MODE {
+        return None;
+    }
+    let ActionRequiredData::ToolConfirmation {
+        id,
+        tool_name,
+        arguments,
+        prompt,
+    } = &action.data
+    else {
+        return None;
+    };
+    if tool_name != "read" || prompt.is_some() {
+        return None;
+    }
+    let path = arguments.get("path")?.as_str()?;
+    if path.trim().is_empty() || is_remote_file_source(path) {
+        return None;
+    }
+    Some(id)
 }
 
 pub(crate) fn local_read_image_request_id<'a>(
@@ -112,7 +156,7 @@ pub(crate) fn local_read_image_request_id<'a>(
         return None;
     }
     let source = arguments.get("source")?.as_str()?;
-    if source.trim().is_empty() || is_remote_image_source(source) {
+    if source.trim().is_empty() || is_remote_file_source(source) {
         return None;
     }
     Some(id)
@@ -328,7 +372,13 @@ mod tests {
     }
 
     #[test]
-    fn only_local_images_are_automatically_eligible_in_read_only_mode() {
+    fn only_local_file_reads_are_automatically_eligible_in_read_only_mode() {
+        let local_text = action("read", object!({ "path": "README.md" }), None);
+        assert_eq!(
+            local_read_request_id(READ_ONLY_MODE, &local_text),
+            Some("request-1")
+        );
+
         let local = action(
             "read_image",
             object!({ "source": "~/Desktop/pixel.png" }),
@@ -343,11 +393,29 @@ mod tests {
         for source in [
             "https://example.com/pixel.png",
             "HTTP://127.0.0.1/pixel.png",
+            r"\\server\share\pixel.png",
+            r"\\?\UNC\server\share\pixel.png",
+            "file://server/share/pixel.png",
+            "smb://server/share/pixel.png",
         ] {
             let remote = action("read_image", object!({ "source": source }), None);
             assert!(local_read_image_request_id(READ_ONLY_MODE, &remote).is_none());
-            assert!(is_remote_image_source(source));
+            assert!(is_remote_file_source(source));
         }
+        for source in [
+            "file:///tmp/pixel.png",
+            "file://localhost/tmp/pixel.png",
+            r"C:\pixel.png",
+        ] {
+            assert!(!is_remote_file_source(source));
+        }
+
+        let remote_text = action(
+            "read",
+            object!({ "path": r"\\server\share\notes.txt" }),
+            None,
+        );
+        assert!(local_read_request_id(READ_ONLY_MODE, &remote_text).is_none());
 
         let warned = action(
             "read_image",

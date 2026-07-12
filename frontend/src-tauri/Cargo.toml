@@ -80,6 +80,9 @@ rmcp = { version = "=1.4.0", default-features = false }
 tauri-plugin-dialog = "2.7.1"
 tokio-util = "0.7"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [target.'cfg(target_os = "ios")'.dependencies]
 # TTS dependencies (Supertonic) - iOS
 # We build ONNX Runtime 1.22.2 from source for iOS (see scripts/build-ios-onnxruntime.sh)

@@ -129,7 +129,7 @@ const AGENT_PERMISSION_MODES: Array<{
   {
     value: "smart_approve",
     label: "Read only",
-    description: "Auto-runs read-only tools; asks before writes"
+    description: "Auto-runs local reads; asks before writes and remote access"
   },
   {
     value: "auto",
@@ -704,8 +704,11 @@ export function AgentMode({ userId }: { userId: string }) {
 
   const selectMode = useCallback(
     (value: AgentPermissionMode) => {
+      if (value === mode) return;
       const interactionGeneration = interactionGenerationRef.current + 1;
       interactionGenerationRef.current = interactionGeneration;
+      const previousMode = mode;
+      setError(null);
       setMode(value);
 
       const sessionId = activeSessionIdRef.current;
@@ -715,11 +718,12 @@ export function AgentMode({ userId }: { userId: string }) {
       );
       permissionModeUpdateRef.current = update.catch((modeError) => {
         if (interactionGenerationRef.current === interactionGeneration) {
+          setMode(previousMode);
           setError(errorMessage(modeError));
         }
       });
     },
-    [userId]
+    [mode, userId]
   );
 
   const startRuntime = useCallback(
