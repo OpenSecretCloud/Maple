@@ -142,6 +142,19 @@ fn build_conversation_projects_endpoint(params: Option<&ConversationProjectListP
     endpoint
 }
 
+fn normalize_chat_completion_request(
+    mut request: serde_json::Value,
+    stream: bool,
+) -> Result<serde_json::Value> {
+    let request_object = request.as_object_mut().ok_or_else(|| {
+        Error::Configuration("Chat completion request must be a JSON object".to_string())
+    })?;
+
+    request_object.insert("stream".to_string(), serde_json::Value::Bool(stream));
+
+    Ok(request)
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum AuthHeaderMode {
     None,
@@ -1530,32 +1543,60 @@ impl OpenSecretClient {
         &self,
         request: ChatCompletionRequest,
     ) -> Result<ChatCompletionResponse> {
-        let mut modified_request = request;
-        modified_request.stream = Some(false);
-        self.encrypted_openai_call("/v1/chat/completions", "POST", Some(modified_request))
+        let response = self
+            .create_chat_completion_raw(serde_json::to_value(request)?)
+            .await?;
+        Ok(serde_json::from_value(response)?)
+    }
+
+    /// Creates a non-streaming chat completion while preserving provider-specific
+    /// request and response fields.
+    ///
+    /// The request must be a JSON object. Its `stream` field is always set to
+    /// `false`; every other field is forwarded unchanged.
+    pub async fn create_chat_completion_raw(
+        &self,
+        request: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let request = normalize_chat_completion_request(request, false)?;
+        self.encrypted_openai_call("/v1/chat/completions", "POST", Some(request))
             .await
     }
 
     /// Creates a streaming chat completion
     pub async fn create_chat_completion_stream(
         &self,
-        request: ChatCompletionRequest,
+        mut request: ChatCompletionRequest,
+    ) -> Result<std::pin::Pin<Box<dyn futures::Stream<Item = Result<ChatCompletionChunk>> + Send>>>
+    {
+        request.stream = Some(true);
+        request.stream_options = Some(StreamOptions {
+            include_usage: true,
+        });
+        self.create_chat_completion_stream_raw(serde_json::to_value(request)?)
+            .await
+    }
+
+    /// Creates a streaming chat completion while preserving provider-specific
+    /// request fields and raw response chunk fields.
+    ///
+    /// The request must be a JSON object. Its `stream` field is always set to
+    /// `true`; every other field is forwarded unchanged.
+    pub async fn create_chat_completion_stream_raw(
+        &self,
+        request: serde_json::Value,
     ) -> Result<std::pin::Pin<Box<dyn futures::Stream<Item = Result<ChatCompletionChunk>> + Send>>>
     {
         use eventsource_stream::Eventsource;
         use futures::StreamExt;
 
-        let mut modified_request = request;
-        modified_request.stream = Some(true);
-        modified_request.stream_options = Some(StreamOptions {
-            include_usage: true,
-        });
+        let request = normalize_chat_completion_request(request, true)?;
 
         let (response, session_key) = self
             .retry_encrypted_stream_call(
                 "/v1/chat/completions",
                 "POST",
-                Some(modified_request),
+                Some(request),
                 AuthHeaderMode::ApiKeyOrJwt,
                 true,
             )
@@ -1951,6 +1992,31 @@ mod tests {
     impl Match for PathPrefixMatcher {
         fn matches(&self, request: &Request) -> bool {
             request.url.path().starts_with(self.0)
+        }
+    }
+
+    #[derive(Debug)]
+    struct EncryptedJsonBodyMatcher {
+        session_key: [u8; 32],
+        expected: serde_json::Value,
+    }
+
+    impl Match for EncryptedJsonBodyMatcher {
+        fn matches(&self, request: &Request) -> bool {
+            let Ok(body) = serde_json::from_slice::<EncryptedRequest>(request.body.as_ref()) else {
+                return false;
+            };
+            let Ok(encrypted) = BASE64.decode(body.encrypted.as_bytes()) else {
+                return false;
+            };
+            let Ok(plaintext) = crypto::decrypt_data(&self.session_key, &encrypted) else {
+                return false;
+            };
+            let Ok(actual) = serde_json::from_slice::<serde_json::Value>(&plaintext) else {
+                return false;
+            };
+
+            actual == self.expected
         }
     }
 
@@ -2667,6 +2733,17 @@ mod tests {
             .and(path("/v1/chat/completions"))
             .and(header("authorization", "Bearer access_token"))
             .and(header("x-session-id", session_id.to_string()))
+            .and(EncryptedJsonBodyMatcher {
+                session_key,
+                expected: json!({
+                    "model": "kimi-k2-5",
+                    "messages": [{"role": "user", "content": "What is 2+2?"}],
+                    "temperature": 0.0,
+                    "max_tokens": 100,
+                    "stream": true,
+                    "stream_options": {"include_usage": true}
+                }),
+            })
             .respond_with(
                 ResponseTemplate::new(200)
                     .insert_header("content-type", "text/event-stream")
@@ -2700,6 +2777,199 @@ mod tests {
             Some("2 + 2 = 4")
         );
         assert!(stream.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_raw_chat_completion_preserves_request_extensions_and_response() {
+        let mock_server = MockServer::start().await;
+        let client = OpenSecretClient::new(mock_server.uri()).unwrap();
+        let session_id = Uuid::new_v4();
+        let session_key = [27u8; 32];
+
+        client
+            .session_manager
+            .set_session(session_id, session_key)
+            .unwrap();
+        client
+            .session_manager
+            .set_tokens(
+                "access_token".to_string(),
+                Some("refresh_token".to_string()),
+            )
+            .unwrap();
+
+        let request = json!({
+            "model": "gemma4-31b",
+            "messages": [{"role": "user", "content": "Classify this command"}],
+            "stream": true,
+            "include_reasoning": false,
+            "chat_template_kwargs": {"enable_thinking": false},
+            "provider_extensions": {
+                "nested": {"flag": true, "values": [1, "two", null]}
+            }
+        });
+        let expected_request = json!({
+            "model": "gemma4-31b",
+            "messages": [{"role": "user", "content": "Classify this command"}],
+            "stream": false,
+            "include_reasoning": false,
+            "chat_template_kwargs": {"enable_thinking": false},
+            "provider_extensions": {
+                "nested": {"flag": true, "values": [1, "two", null]}
+            }
+        });
+        let raw_response = json!({
+            "id": "chatcmpl-raw",
+            "object": "chat.completion",
+            "created": 1,
+            "model": "gemma4-31b",
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": "READ",
+                    "provider_metadata": {"decision_id": "abc"}
+                },
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 1, "total_tokens": 11},
+            "provider_response": {"arbitrary": [true, {"nested": "value"}]}
+        });
+
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .and(header("authorization", "Bearer access_token"))
+            .and(header("x-session-id", session_id.to_string()))
+            .and(EncryptedJsonBodyMatcher {
+                session_key,
+                expected: expected_request,
+            })
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(encrypted_response(&session_key, &raw_response)),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let response = client.create_chat_completion_raw(request).await.unwrap();
+
+        assert_eq!(response, raw_response);
+    }
+
+    #[tokio::test]
+    async fn test_raw_streaming_completion_normalizes_and_preserves_extensions() {
+        let mock_server = MockServer::start().await;
+        let client = OpenSecretClient::new(mock_server.uri()).unwrap();
+        let session_id = Uuid::new_v4();
+        let session_key = [28u8; 32];
+
+        client
+            .session_manager
+            .set_session(session_id, session_key)
+            .unwrap();
+        client
+            .session_manager
+            .set_tokens(
+                "access_token".to_string(),
+                Some("refresh_token".to_string()),
+            )
+            .unwrap();
+
+        let request = json!({
+            "model": "gemma4-31b",
+            "messages": [{"role": "user", "content": "Classify this command"}],
+            "stream": false,
+            "stream_options": {
+                "include_usage": false,
+                "provider_stream_option": {"keep": "me"}
+            },
+            "include_reasoning": false,
+            "chat_template_kwargs": {"enable_thinking": false},
+            "provider_extensions": {"nested": {"keep": true}}
+        });
+        let expected_request = json!({
+            "model": "gemma4-31b",
+            "messages": [{"role": "user", "content": "Classify this command"}],
+            "stream": true,
+            "stream_options": {
+                "include_usage": false,
+                "provider_stream_option": {"keep": "me"}
+            },
+            "include_reasoning": false,
+            "chat_template_kwargs": {"enable_thinking": false},
+            "provider_extensions": {"nested": {"keep": true}}
+        });
+        let first_chunk = json!({
+            "id": "chatcmpl-raw-stream",
+            "object": "chat.completion.chunk",
+            "choices": [{
+                "index": 0,
+                "delta": {
+                    "content": "READ",
+                    "provider_delta": {"nested": [1, 2, 3]}
+                },
+                "finish_reason": null
+            }],
+            "provider_chunk": {"arbitrary": true}
+        });
+        let usage_chunk = json!({
+            "id": "chatcmpl-raw-stream",
+            "object": "chat.completion.chunk",
+            "choices": [],
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 1,
+                "total_tokens": 11,
+                "provider_usage": {"cached": 4}
+            }
+        });
+        let sse_body = format!(
+            "{}{}data: [DONE]\n\n",
+            encrypted_sse_data(&session_key, &first_chunk),
+            encrypted_sse_data(&session_key, &usage_chunk),
+        );
+
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .and(header("authorization", "Bearer access_token"))
+            .and(header("x-session-id", session_id.to_string()))
+            .and(header("accept", "text/event-stream"))
+            .and(EncryptedJsonBodyMatcher {
+                session_key,
+                expected: expected_request,
+            })
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream")
+                    .set_body_string(sse_body),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let mut stream = client
+            .create_chat_completion_stream_raw(request)
+            .await
+            .unwrap();
+        let actual_first = stream.next().await.unwrap().unwrap();
+        let actual_usage = stream.next().await.unwrap().unwrap();
+
+        assert_eq!(actual_first.0, first_chunk);
+        assert_eq!(actual_usage.0, usage_chunk);
+        assert!(stream.next().await.is_none());
+    }
+
+    #[test]
+    fn raw_chat_completion_requires_a_json_object() {
+        let error =
+            normalize_chat_completion_request(json!(["not", "an", "object"]), false).unwrap_err();
+
+        assert!(matches!(
+            error,
+            Error::Configuration(message)
+                if message == "Chat completion request must be a JSON object"
+        ));
     }
 
     #[tokio::test]
