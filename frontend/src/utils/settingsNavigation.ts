@@ -1,7 +1,22 @@
 export type SettingsBackTarget = { type: "history"; delta: number } | { type: "root" };
 
+export const SETTINGS_HOME_PARENT_STATE_KEY = "__mapleSettingsHomeParent";
+export const SETTINGS_SHELL_POP_EVENT = "maple:settings-shell-pop";
+
 export function isSettingsRootPath(pathname: string) {
   return pathname === "/settings" || pathname === "/settings/";
+}
+
+export function isSettingsPath(pathname: string) {
+  return isSettingsRootPath(pathname) || pathname.startsWith("/settings/");
+}
+
+export function hasSettingsHomeParent(state: unknown) {
+  return (
+    !!state &&
+    typeof state === "object" &&
+    (state as Record<string, unknown>)[SETTINGS_HOME_PARENT_STATE_KEY] === true
+  );
 }
 
 export function getSettingsBackTarget(

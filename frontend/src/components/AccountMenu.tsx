@@ -7,6 +7,7 @@ import { CreditUsage } from "@/components/CreditUsage";
 import { useCompactSettingsLayout } from "@/components/settings/useCompactSettingsLayout";
 import { useLocalState } from "@/state/useLocalState";
 import type { TeamStatus } from "@/types/team";
+import { SETTINGS_HOME_PARENT_STATE_KEY } from "@/utils/settingsNavigation";
 import { getTeamSeatMismatch } from "@/utils/teamSeats";
 
 export function AccountMenu() {
@@ -45,6 +46,11 @@ export function AccountMenu() {
     <div className="flex w-full max-w-full items-end gap-2">
       <Link
         to={isCompactSettingsLayout ? "/settings" : "/settings/account"}
+        state={
+          isCompactSettingsLayout
+            ? (previous) => ({ ...previous, [SETTINGS_HOME_PARENT_STATE_KEY]: true })
+            : undefined
+        }
         aria-label={attentionLabel ? `Open settings, ${attentionLabel}` : "Open settings"}
         title="Settings"
         className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[hsl(var(--sidebar-chrome))] text-[hsl(var(--on-sidebar-chrome))] shadow-none ring-0 transition-colors hover:bg-[hsl(var(--sidebar-chrome-hover))] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
