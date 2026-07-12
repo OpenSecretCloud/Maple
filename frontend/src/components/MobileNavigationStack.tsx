@@ -26,7 +26,7 @@ import {
   type MobileNavigationSnapshot
 } from "@/utils/mobileNavigation";
 
-const PAGE_TRANSITION_MS = 220;
+const PAGE_TRANSITION_MS = 320;
 let nativeMobileNavigationInitialized = false;
 
 function currentHomeHref() {
@@ -269,6 +269,8 @@ export function MobileNavigationStack() {
   const baseProjectPage = lastProjectPage(snapshot);
   const incomingActivePage = incomingSnapshot ? activeMobilePage(incomingSnapshot) : null;
   const isTransitioningBackward = isExiting && incomingSnapshot !== null;
+  const targetActivePage = incomingActivePage ?? baseActivePage;
+  const isMenuCovered = targetActivePage.type !== "menu";
   const visibleChatPages: Array<Extract<MobileNavigationPage, { type: "chat" | "new-chat" }>> = [];
 
   if (
@@ -304,7 +306,13 @@ export function MobileNavigationStack() {
 
   return (
     <div className="relative h-dvh min-h-0 w-full overflow-hidden bg-background">
-      <NavigationLayer active={!isTransitioningBackward && baseActivePage.type === "menu"}>
+      <NavigationLayer
+        active={!isTransitioningBackward && baseActivePage.type === "menu"}
+        className={cn(
+          "maple-navigation-page z-0",
+          isMenuCovered && "maple-navigation-page-covered"
+        )}
+      >
         <MainMenu
           presentation="page"
           chatId={baseActivePage.type === "chat" ? baseActivePage.conversationId : undefined}
@@ -319,10 +327,12 @@ export function MobileNavigationStack() {
           key={`project-${baseProjectPage.instanceId}`}
           active={baseActivePage.type === "project"}
           className={cn(
+            "maple-navigation-page z-10 shadow-[-12px_0_28px_rgba(0,0,0,0.12)]",
             isTransitioningBackward && baseActivePage.type === "project"
-              ? "z-20 motion-safe:animate-out motion-safe:slide-out-to-right-full motion-safe:duration-200"
-              : baseActivePage.instanceId === enteringInstanceId &&
-                  "motion-safe:animate-in motion-safe:slide-in-from-right-full motion-safe:duration-200"
+              ? "maple-navigation-page-pop z-20"
+              : targetActivePage.type === "chat" || targetActivePage.type === "new-chat"
+                ? "maple-navigation-page-covered"
+                : baseActivePage.instanceId === enteringInstanceId && "maple-navigation-page-enter"
           )}
         >
           {renderProjectPage(baseProjectPage)}
@@ -339,12 +349,12 @@ export function MobileNavigationStack() {
             key={`chat-${page.instanceId}`}
             active={!isIncoming}
             className={cn(
-              isLeaving &&
-                "z-20 motion-safe:animate-out motion-safe:slide-out-to-right-full motion-safe:duration-200",
+              "maple-navigation-page shadow-[-12px_0_28px_rgba(0,0,0,0.12)]",
+              isLeaving && "maple-navigation-page-pop z-20",
               isIncoming && "z-10",
               !isTransitioningBackward &&
                 page.instanceId === enteringInstanceId &&
-                "motion-safe:animate-in motion-safe:slide-in-from-right-full motion-safe:duration-200"
+                "maple-navigation-page-enter"
             )}
           >
             {renderChatPage()}
