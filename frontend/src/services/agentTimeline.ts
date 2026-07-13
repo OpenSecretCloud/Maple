@@ -8,6 +8,10 @@ export function hasRenderableThinkingText(text: string | null | undefined): bool
   return Boolean(text?.trim());
 }
 
+export function hasAgentUserMessage(items: AgentTimelineItem[]): boolean {
+  return items.some((item) => item.itemType === "message" && item.role === "user");
+}
+
 export function activeAgentThinkingItemId(
   items: AgentTimelineItem[],
   isRunActive: boolean

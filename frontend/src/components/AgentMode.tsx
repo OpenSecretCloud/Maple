@@ -69,12 +69,14 @@ import {
   activeAgentThinkingItemId,
   coalesceAdjacentThinkingItems,
   groupAgentTimelineItems,
+  hasAgentUserMessage,
   hasRenderableThinkingText
 } from "@/services/agentTimeline";
 import {
   DEFAULT_AGENT_MODEL,
   PRIMARY_AGENT_MODEL_IDS,
-  reconcileAgentModel
+  reconcileAgentModel,
+  resolveAgentModelVisionCapability
 } from "@/services/agentModels";
 import { SIDEBAR_GRID_COLUMNS_CLASS, getSidebarLayoutStyle } from "@/constants/layout";
 import {
@@ -210,6 +212,7 @@ function buildFallbackModelAliases(models: OpenSecretModel[]): OpenSecretModelAl
 export function AgentMode({ userId }: { userId: string }) {
   const os = useOpenSecret();
   const { createApiKey, deleteApiKey } = os;
+  const { availableModels, modelAliases } = useLocalState();
   const isMobile = useIsMobile();
   const isLandscapeMobile = useIsLandscapeMobile();
   const isCompactLayout = isMobile || isLandscapeMobile;
@@ -257,6 +260,7 @@ export function AgentMode({ userId }: { userId: string }) {
   const interactionGenerationRef = useRef(0);
   const startRequestGenerationRef = useRef(0);
   const runStateGenerationRef = useRef(0);
+  const isAgentModelLockedRef = useRef(false);
 
   const applyAuthoritativeMode = useCallback((value: AgentPermissionMode) => {
     selectedModeRef.current = value;
@@ -326,6 +330,12 @@ export function AgentMode({ userId }: { userId: string }) {
     isSubmitting ||
     isReplacingManualProxy ||
     hasManualProxyConflict;
+  const hasStartedAgentSession =
+    hasAgentUserMessage(timelineItems) ||
+    sessions.some((session) => session.id === activeSessionId && session.messageCount > 0);
+  const isAgentModelLocked = hasStartedAgentSession || Boolean(activeRunId) || isSubmitting;
+  isAgentModelLockedRef.current = isAgentModelLocked;
+  const isAgentModelSelectionDisabled = areAgentSettingsLocked || isAgentModelLocked;
   const isAgentSendLocked = areAgentSettingsLocked;
   const isSending = Boolean(activeRunId) || isSubmitting;
   const runningSessionIds = useMemo(() => {
@@ -709,6 +719,7 @@ export function AgentMode({ userId }: { userId: string }) {
   );
 
   const selectModel = useCallback((value: string) => {
+    if (isAgentModelLockedRef.current) return;
     interactionGenerationRef.current += 1;
     setModel(value);
   }, []);
@@ -1122,7 +1133,12 @@ export function AgentMode({ userId }: { userId: string }) {
           sessionId,
           text,
           model: model || DEFAULT_MODEL,
-          mode: selectedModeRef.current
+          mode: selectedModeRef.current,
+          visionCapable: resolveAgentModelVisionCapability(
+            model || DEFAULT_MODEL,
+            availableModels,
+            modelAliases
+          )
         });
         if (cancelledPendingSendTokensRef.current.has(sendToken)) {
           // The native command may have crossed the start boundary while the
@@ -1167,6 +1183,7 @@ export function AgentMode({ userId }: { userId: string }) {
     }
   }, [
     activeRunsBySession,
+    availableModels,
     clearPendingSend,
     ensureRuntimeAndSession,
     input,
@@ -1174,6 +1191,7 @@ export function AgentMode({ userId }: { userId: string }) {
     markPendingSend,
     mergeSessionTimelineItem,
     model,
+    modelAliases,
     movePendingSend,
     recordActiveRun,
     scrollTimelineToBottom,
@@ -1554,6 +1572,7 @@ export function AgentMode({ userId }: { userId: string }) {
                   isSendDisabled={isAgentSendLocked}
                   isSending={isSending}
                   isStarting={isStarting}
+                  isModelSelectionDisabled={isAgentModelSelectionDisabled}
                   mode={mode}
                   model={model}
                   projectRoot={projectRoot}
@@ -1587,6 +1606,7 @@ export function AgentMode({ userId }: { userId: string }) {
                   isSendDisabled={isAgentSendLocked}
                   isSending={isSending}
                   isStarting={isStarting}
+                  isModelSelectionDisabled={isAgentModelSelectionDisabled}
                   mode={mode}
                   model={model}
                   projectRoot={projectRoot}
@@ -1977,6 +1997,7 @@ interface AgentComposerProps {
   isSendDisabled: boolean;
   isSending: boolean;
   isStarting: boolean;
+  isModelSelectionDisabled: boolean;
   mode: AgentPermissionMode;
   model: string;
   projectRoot: string;
@@ -1998,6 +2019,7 @@ function AgentComposer({
   isSendDisabled,
   isSending,
   isStarting,
+  isModelSelectionDisabled,
   mode,
   model,
   projectRoot,
@@ -2033,7 +2055,7 @@ function AgentComposer({
       <div className="grid grid-cols-[minmax(0,1fr)_auto] items-end gap-x-2 gap-y-2 px-2 pb-2 pt-1">
         <div className="flex min-w-0 flex-wrap items-center gap-1.5 sm:gap-2">
           <AgentModelSelector
-            disabled={areSettingsDisabled}
+            disabled={isModelSelectionDisabled}
             model={model}
             onModelChange={onModelChange}
           />

@@ -4,6 +4,7 @@ import {
   activeAgentThinkingItemId,
   coalesceAdjacentThinkingItems,
   groupAgentTimelineItems,
+  hasAgentUserMessage,
   hasRenderableThinkingText
 } from "./agentTimeline";
 
@@ -32,6 +33,27 @@ describe("hasRenderableThinkingText", () => {
     expect(hasRenderableThinkingText(".")).toBe(true);
     expect(hasRenderableThinkingText("…")).toBe(true);
     expect(hasRenderableThinkingText(". Inspecting")).toBe(true);
+  });
+});
+
+describe("hasAgentUserMessage", () => {
+  test("locks only after a real user message appears", () => {
+    const item = (
+      itemType: AgentTimelineItem["itemType"],
+      role: AgentTimelineItem["role"]
+    ): AgentTimelineItem => ({
+      id: `${itemType}-${role}`,
+      itemType,
+      role,
+      createdMs: 0,
+      merge: "replace"
+    });
+
+    expect(hasAgentUserMessage([])).toBe(false);
+    expect(hasAgentUserMessage([item("error", "system"), item("message", "assistant")])).toBe(
+      false
+    );
+    expect(hasAgentUserMessage([item("message", "user")])).toBe(true);
   });
 });
 

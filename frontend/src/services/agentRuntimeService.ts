@@ -68,6 +68,7 @@ export interface AgentSendMessageRequest {
   text: string;
   model?: string | null;
   mode?: string | null;
+  visionCapable: boolean;
 }
 
 export interface AgentRunResponse {
