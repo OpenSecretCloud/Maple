@@ -306,16 +306,20 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-opensecret = "0.2"
-tokio = { version = "1", features = ["full"] }
+opensecret = "3.4.0"
+bytes = "1"
 futures = "0.3"
+http = "1"
+tokio = { version = "1", features = ["full"] }
 ```
 
 ### Quick Start
 
 ```rust
-use opensecret::{OpenSecretClient, ChatCompletionRequest, ChatMessage, Result};
+use bytes::Bytes;
 use futures::StreamExt;
+use http::Request;
+use opensecret::{OpenSecretClient, Result};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -330,37 +334,24 @@ async fn main() -> Result<()> {
     // Perform attestation handshake (required)
     client.perform_attestation_handshake().await?;
     
-    // Create streaming chat completion
-    let request = ChatCompletionRequest {
-        model: "gpt-oss-120b".to_string(),
-        messages: vec![ChatMessage {
-            role: "user".to_string(),
-            content: serde_json::json!("Hello, world!"),
-            tool_calls: None,
-        }],
-        temperature: Some(0.7),
-        max_tokens: Some(1000),
-        stream: Some(true),
-        stream_options: None,
-        tools: None,
-        tool_choice: None,
-    };
+    // The lossless transport preserves provider-specific parameters and
+    // returns decrypted response bytes for the caller to parse or forward.
+    let request = Request::post("/v1/chat/completions")
+        .body(Bytes::from_static(br#"{
+            "model": "gemma4-31b",
+            "messages": [{"role": "user", "content": "Hello, world!"}],
+            "stream": true,
+            "include_reasoning": false,
+            "chat_template_kwargs": {"enable_thinking": false}
+        }"#))
+        .expect("valid request");
 
-    let mut stream = client.create_chat_completion_stream(request).await?;
-    
-    while let Some(chunk_result) = stream.next().await {
-        match chunk_result {
-            Ok(chunk) => {
-                if !chunk.choices.is_empty() {
-                    if let Some(serde_json::Value::String(content)) = 
-                        &chunk.choices[0].delta.content 
-                    {
-                        print!("{}", content);
-                    }
-                }
-            }
-            Err(e) => eprintln!("Error: {}", e),
-        }
+    let response = client.send_inference_request(request).await?;
+    let mut body = response.into_body();
+    while let Some(chunk) = body.next().await {
+        let decrypted_bytes = chunk?;
+        // Parse or forward the SSE bytes in the calling application.
+        print!("{}", String::from_utf8_lossy(&decrypted_bytes));
     }
     
     Ok(())
@@ -417,7 +408,7 @@ match client.get_models().await {
 | Client creation | `createCustomFetch({ apiKey })` | `OpenSecretClient::new_with_api_key(url, key)` |
 | Attestation | Automatic (in fetch) | Manual: `client.perform_attestation_handshake().await?` |
 | Streaming | `for await (const chunk of stream)` | `while let Some(chunk) = stream.next().await` |
-| OpenAI compat | Uses `openai` npm package | Native implementation |
+| Inference request | Uses `openai` npm package | Lossless encrypted HTTP transport; typed compatibility helpers also available |
 
 ---
 

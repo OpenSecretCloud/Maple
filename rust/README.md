@@ -8,6 +8,7 @@ Rust SDK for OpenSecret - secure AI API interactions with nitro attestation.
 - 🔑 **End-to-End Encryption**: All API calls encrypted with session keys
 - 👤 **Authentication**: Support for both email-based and guest users
 - 🔄 **Token Management**: Automatic token refresh and session management
+- ↔️ **Lossless Inference Transport**: Provider-specific request and response fields pass through as raw bytes
 - 🛡️ **Secure by Default**: No plaintext data transmission
 
 ## Installation
@@ -16,7 +17,10 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-opensecret = "0.1.0"
+opensecret = "3.4.0"
+bytes = "1"
+futures = "0.3"
+http = "1"
 ```
 
 ## Quick Start
@@ -46,6 +50,47 @@ async fn main() -> Result<()> {
     Ok(())
 }
 ```
+
+## Inference APIs
+
+`send_inference_request` is the lossless inference API. The caller owns the
+HTTP method, route, query, headers, body bytes, and response parsing; the SDK
+owns attestation, authentication, encryption, retrying an expired session, and
+response decryption. It does not parse or rewrite inference parameters such as
+`stream`:
+
+```rust
+use bytes::Bytes;
+use futures::StreamExt;
+use http::Request;
+
+let request = Request::post("/v1/chat/completions")
+    .header("x-provider-option", "value")
+    .body(Bytes::from_static(br#"{
+        "model": "provider-model",
+        "messages": [{"role": "user", "content": "Hello"}],
+        "provider_option": {"enabled": true}
+    }"#))
+    .expect("valid inference request");
+
+let response = client.send_inference_request(request).await?;
+let status = response.status();
+let mut body = response.into_body();
+while let Some(chunk) = body.next().await {
+    let decrypted_bytes = chunk?;
+    // Parse or forward the bytes in the calling application.
+}
+```
+
+The transport accepts only the SDK's explicitly allowed inference routes;
+it cannot be used to bypass JWT-only account or conversation APIs. The existing
+typed model, embedding, and chat-completion helpers remain available as
+compatibility wrappers over the same transport.
+
+The SDK manages transport credentials and framing. Caller-provided `Host`,
+`Authorization`, `x-session-id`, `Content-Length`, `Content-Type`,
+`Content-Encoding`, `Accept-Encoding`, `Content-MD5`, `Digest`, hop-by-hop, and
+`Connection`-listed headers are not forwarded; other headers are preserved.
 
 ## Authentication
 
