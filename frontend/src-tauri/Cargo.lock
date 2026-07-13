@@ -3134,16 +3134,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "hdrhistogram"
-version = "7.5.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "765c9198f173dd59ce26ff9f95ef0aafd0a0fe01fb9d72841bc5066a4c06511d"
-dependencies = [
- "byteorder",
- "num-traits",
-]
-
-[[package]]
 name = "heck"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4075,9 +4065,9 @@ dependencies = [
 
 [[package]]
 name = "maple-proxy"
-version = "0.1.11"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "88573e251e75ff45858962256de59394793e33df1d06b19e2f1ce44dad5ae430"
+checksum = "4a1167df860d322880d1bacf48f57505244f4d805b3fa492e57e8a4a355d93cf"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -4837,12 +4827,13 @@ dependencies = [
 
 [[package]]
 name = "opensecret"
-version = "3.3.0"
+version = "3.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "92ce94955ead29ea33002f32d19b94420582e15e0b2c8b7c8e66e64dae6ff48a"
+checksum = "a7652ddb1661444ea0cbacacbc62c13f5073f1687a2e765e0195ebf29d3e394d"
 dependencies = [
  "aes-gcm",
  "anyhow",
+ "async-stream",
  "async-trait",
  "base64 0.22.1",
  "bytes",
@@ -4853,6 +4844,7 @@ dependencies = [
  "futures",
  "hex",
  "hkdf",
+ "http",
  "p256",
  "percent-encoding",
  "pin-project",
@@ -8119,13 +8111,9 @@ checksum = "d039ad9159c98b70ecfd540b2573b97f7f52c3e8d9f8ad57a24b916a536975f9"
 dependencies = [
  "futures-core",
  "futures-util",
- "hdrhistogram",
- "indexmap 2.12.0",
  "pin-project-lite",
- "slab",
  "sync_wrapper",
  "tokio",
- "tokio-util",
  "tower-layer",
  "tower-service",
  "tracing",

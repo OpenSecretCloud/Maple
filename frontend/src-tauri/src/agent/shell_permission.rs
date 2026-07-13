@@ -3,11 +3,15 @@ use goose::conversation::message::{ActionRequired, ActionRequiredData, Message, 
 use rmcp::model::Tool;
 use rmcp::object;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::Path;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 const READ_ONLY_MODE: &str = "smart_approve";
+const CLASSIFIER_MODEL: &str = "gemma4-31b";
+const CLASSIFIER_TEMPERATURE: f32 = 0.0;
+const CLASSIFIER_MAX_TOKENS: i32 = 256;
 const CLASSIFIER_TOOL_NAME: &str = "maple__classify_shell_permission";
 const CLASSIFIER_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_COMMAND_CHARS: usize = 32_000;
@@ -32,8 +36,11 @@ output to /dev/null is also observational.
 Return requires_approval for file/output redirection that writes durable state; tee; mutating flags
 such as sed -i or find -delete; git mutations; package managers; builds or tests; interpreters,
 scripts, project executables, or arbitrary code execution; network operations; process management;
-permission or system configuration changes; unknown commands or aliases; obfuscation; or any
-ambiguity. User intent never makes a mutating command read-only.
+permission or system configuration changes; reads likely to expose secrets, credentials, private
+keys, access tokens, or process environments (for example non-template .env files, SSH or cloud
+credential files, keychains, env, or printenv); unknown commands or aliases; obfuscation; or any
+ambiguity. Obvious example, sample, and template environment files are not secret merely because of
+their filename. User intent never makes a mutating command read-only.
 
 Respond only by calling maple__classify_shell_permission exactly once."#;
 
@@ -205,13 +212,28 @@ impl ShellPermissionClassifier {
                 return ShellPermissionOutcome::RequiresApproval;
             }
         };
-        let model_config = match agent.model_config_for_session(session_id).await {
-            Ok(model_config) => model_config,
-            Err(error) => {
-                log::warn!("Read-only shell classifier could not resolve model: {error}");
-                return ShellPermissionOutcome::RequiresApproval;
-            }
-        };
+        let mut model_config =
+            match goose::model_config::model_config_from_user_config_with_session_settings(
+                provider.get_name(),
+                CLASSIFIER_MODEL,
+                None,
+                Some(classifier_request_params()),
+                None,
+            ) {
+                Ok(model_config) => model_config,
+                Err(error) => {
+                    log::warn!("Read-only shell classifier could not configure {CLASSIFIER_MODEL}: {error}");
+                    return ShellPermissionOutcome::RequiresApproval;
+                }
+            };
+        // The classifier is intentionally isolated from session-level reasoning
+        // and request settings. In particular, Goose may otherwise inherit a
+        // global thinking effort after applying the explicit request params.
+        model_config.request_params = Some(classifier_request_params());
+        model_config.reasoning = Some(false);
+        let model_config = model_config
+            .with_temperature(Some(CLASSIFIER_TEMPERATURE))
+            .with_max_tokens(Some(CLASSIFIER_MAX_TOKENS));
         let input = match serde_json::to_string(request) {
             Ok(input) => input,
             Err(error) => {
@@ -221,13 +243,9 @@ impl ShellPermissionClassifier {
         };
         let messages = [Message::user().with_text(input)];
         let tools = [classifier_tool()];
-        let completion = goose::model_config::complete_fast(
-            provider.as_ref(),
-            &model_config,
-            session_id,
-            CLASSIFIER_SYSTEM_PROMPT,
-            &messages,
-            &tools,
+        let completion = goose::session_context::with_session_id(
+            Some(session_id.to_string()),
+            provider.complete(&model_config, CLASSIFIER_SYSTEM_PROMPT, &messages, &tools),
         );
 
         let result = tokio::select! {
@@ -252,6 +270,16 @@ impl ShellPermissionClassifier {
             ShellPermissionOutcome::RequiresApproval
         })
     }
+}
+
+fn classifier_request_params() -> HashMap<String, serde_json::Value> {
+    HashMap::from([
+        ("include_reasoning".to_string(), serde_json::json!(false)),
+        (
+            "chat_template_kwargs".to_string(),
+            serde_json::json!({ "enable_thinking": false }),
+        ),
+    ])
 }
 
 fn classifier_tool() -> Tool {
@@ -312,7 +340,9 @@ fn parse_classifier_response(message: &Message) -> Option<ShellPermissionOutcome
 mod tests {
     use super::*;
     use goose::conversation::message::MessageContent;
+    use goose::providers::base::Provider;
     use rmcp::model::CallToolRequestParams;
+    use std::sync::{Arc, Mutex as StdMutex};
 
     fn action(
         tool_name: &str,
@@ -498,5 +528,125 @@ mod tests {
             tool.input_schema["properties"]["reason"]["maxLength"],
             MAX_REASON_CHARS
         );
+    }
+
+    #[test]
+    fn classifier_uses_gemma_with_thinking_disabled() {
+        assert_eq!(CLASSIFIER_MODEL, "gemma4-31b");
+
+        let params = classifier_request_params();
+        assert_eq!(
+            params.get("include_reasoning"),
+            Some(&serde_json::json!(false))
+        );
+        assert_eq!(
+            params.get("chat_template_kwargs"),
+            Some(&serde_json::json!({ "enable_thinking": false }))
+        );
+
+        let mut model_config =
+            goose::model_config::model_config_from_user_config_with_session_settings(
+                "openai",
+                CLASSIFIER_MODEL,
+                None,
+                Some(params),
+                None,
+            )
+            .unwrap();
+        model_config.request_params = Some(classifier_request_params());
+        model_config.reasoning = Some(false);
+        let model_config = model_config
+            .with_temperature(Some(CLASSIFIER_TEMPERATURE))
+            .with_max_tokens(Some(CLASSIFIER_MAX_TOKENS));
+        assert_eq!(model_config.model_name, CLASSIFIER_MODEL);
+        assert_eq!(model_config.temperature, Some(CLASSIFIER_TEMPERATURE));
+        assert_eq!(model_config.max_tokens, Some(CLASSIFIER_MAX_TOKENS));
+        assert_eq!(model_config.reasoning, Some(false));
+        let request_params = model_config.request_params.unwrap();
+        assert_eq!(
+            request_params.get("include_reasoning"),
+            Some(&serde_json::json!(false))
+        );
+        assert_eq!(
+            request_params.get("chat_template_kwargs"),
+            Some(&serde_json::json!({ "enable_thinking": false }))
+        );
+        assert!(request_params.get("thinking_effort").is_none());
+    }
+
+    #[tokio::test]
+    async fn goose_serializes_classifier_model_and_thinking_controls() {
+        let captured = Arc::new(StdMutex::new(None));
+        let handler_capture = Arc::clone(&captured);
+        let app = axum::Router::new().route(
+            "/v1/chat/completions",
+            axum::routing::post(move |axum::Json(payload): axum::Json<serde_json::Value>| {
+                let handler_capture = Arc::clone(&handler_capture);
+                async move {
+                    *handler_capture.lock().unwrap() = Some(payload);
+                    (
+                        [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+                        concat!(
+                            "data: {\"id\":\"chatcmpl-classifier\",",
+                            "\"object\":\"chat.completion.chunk\",\"created\":1,",
+                            "\"model\":\"test\",\"choices\":[{\"index\":0,",
+                            "\"delta\":{\"role\":\"assistant\",\"content\":\"ok\"},",
+                            "\"finish_reason\":\"stop\"}]}\n\n",
+                            "data: [DONE]\n\n"
+                        ),
+                    )
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let api_client = goose::providers::api_client::ApiClient::new_with_tls(
+            format!("http://{address}"),
+            goose::providers::api_client::AuthMethod::NoAuth,
+            None,
+        )
+        .unwrap();
+        let provider = goose::providers::openai::OpenAiProvider::new(api_client);
+        let mut model_config =
+            goose::model_config::model_config_from_user_config_with_session_settings(
+                provider.get_name(),
+                CLASSIFIER_MODEL,
+                None,
+                Some(classifier_request_params()),
+                None,
+            )
+            .unwrap();
+        model_config.request_params = Some(classifier_request_params());
+        model_config.reasoning = Some(false);
+        let model_config = model_config
+            .with_temperature(Some(CLASSIFIER_TEMPERATURE))
+            .with_max_tokens(Some(CLASSIFIER_MAX_TOKENS));
+
+        provider
+            .complete(
+                &model_config,
+                CLASSIFIER_SYSTEM_PROMPT,
+                &[Message::user().with_text("request")],
+                &[classifier_tool()],
+            )
+            .await
+            .unwrap();
+        server.abort();
+
+        let payload = captured.lock().unwrap().take().unwrap();
+        assert_eq!(payload["model"], CLASSIFIER_MODEL);
+        assert_eq!(payload["temperature"], CLASSIFIER_TEMPERATURE);
+        assert_eq!(payload["max_tokens"], CLASSIFIER_MAX_TOKENS);
+        assert_eq!(payload["stream"], true);
+        assert_eq!(payload["stream_options"]["include_usage"], true);
+        assert_eq!(payload["include_reasoning"], false);
+        assert_eq!(payload["chat_template_kwargs"]["enable_thinking"], false);
+        assert_eq!(
+            payload["tools"][0]["function"]["name"],
+            CLASSIFIER_TOOL_NAME
+        );
+        assert!(payload.get("thinking_effort").is_none());
     }
 }

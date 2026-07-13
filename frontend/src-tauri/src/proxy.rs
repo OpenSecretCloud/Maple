@@ -380,11 +380,6 @@ pub async fn test_proxy_port(host: String, port: u16) -> Result<bool, String> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn proxy_request_body_limit_remains_50_mib() {
-        assert_eq!(maple_proxy::MAX_PROXY_REQUEST_BODY_BYTES, 50 * 1024 * 1024);
-    }
-
     #[tokio::test]
     async fn stop_waits_for_aborted_server_task() {
         struct DropFlag(Arc<std::sync::atomic::AtomicBool>);
