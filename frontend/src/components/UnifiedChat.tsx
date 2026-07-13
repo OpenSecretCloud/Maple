@@ -1575,6 +1575,7 @@ MessageList.displayName = "MessageList";
 type UnifiedChatProps = {
   isVisible?: boolean;
   standaloneMobile?: boolean;
+  standaloneMobileConversationId?: string | null;
   onMobileBack?: () => void;
   onMobileOpenNewChat?: (projectId: string | null) => void;
   onMobileConversationCreated?: (conversationId: string) => void;
@@ -1583,6 +1584,7 @@ type UnifiedChatProps = {
 export function UnifiedChat({
   isVisible = true,
   standaloneMobile = false,
+  standaloneMobileConversationId,
   onMobileBack,
   onMobileOpenNewChat,
   onMobileConversationCreated
@@ -1606,7 +1608,10 @@ export function UnifiedChat({
 
   const [initialRuntimeSelection] = useState(() => {
     const params = new URLSearchParams(window.location.search);
-    const urlConversationId = params.get("conversation_id") || undefined;
+    const urlConversationId =
+      standaloneMobile && standaloneMobileConversationId !== undefined
+        ? (standaloneMobileConversationId ?? undefined)
+        : (params.get("conversation_id") ?? undefined);
     const initialDraftProjectId = selectedProjectId ?? null;
     const runtimeKey = runtimeKeyForChatLocation(urlConversationId, window.history.state, () =>
       resumeOrCreateChatDraftKey(runtimeStore, initialDraftProjectId, () =>
