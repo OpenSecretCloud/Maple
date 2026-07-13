@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useOpenSecret } from "@opensecret/react";
 import { OpenSecretContextType } from "@opensecret/react";
 import { createRootRouteWithContext, Outlet, useLocation } from "@tanstack/react-router";
@@ -8,10 +8,15 @@ import {
 } from "@/components/AuthenticatedHomeContent";
 import { ExternalUrlConfirmHandler } from "@/components/ExternalUrlConfirmHandler";
 import { TeamSeatMismatchAlert } from "@/components/team/TeamSeatMismatchAlert";
+import { useIOSSwipeBack } from "@/components/useIOSSwipeBack";
 import { VerificationModal } from "@/components/VerificationModal";
 import { transitionAgentAuthUser } from "@/services/agentRuntimeService";
 import { getSafeInternalRedirect } from "@/utils/internalRedirect";
-import { SETTINGS_SHELL_POP_EVENT } from "@/utils/settingsNavigation";
+import {
+  isSettingsRootPath,
+  SETTINGS_SHELL_POP_EVENT,
+  SETTINGS_SHELL_SWIPE_BACK_EVENT
+} from "@/utils/settingsNavigation";
 import { cn, useIsLandscapeMobile, useIsMobile } from "@/utils/utils";
 
 interface RootRouterContext {
@@ -53,7 +58,31 @@ function Root() {
   const isHomeRoute = location.pathname === "/";
   const isSettingsRoute =
     location.pathname === "/settings" || location.pathname.startsWith("/settings/");
+  const isSettingsRoot = isSettingsRootPath(location.pathname);
   const keepAuthenticatedHomeMounted = !!auth.user && (isHomeRoute || isSettingsRoute);
+
+  const getSettingsShellSwipeContext = useCallback(
+    () => (isCompactLayout && isSettingsRoot && !isSettingsPopping ? location.pathname : null),
+    [isCompactLayout, isSettingsPopping, isSettingsRoot, location.pathname]
+  );
+  const commitSettingsShellSwipe = useCallback((_pathname: string, resetSwipe: () => void) => {
+    const accepted = window.dispatchEvent(
+      new Event(SETTINGS_SHELL_SWIPE_BACK_EVENT, { cancelable: true })
+    );
+    if (!accepted) resetSwipe();
+  }, []);
+  const {
+    active: isSettingsShellSwipeActive,
+    currentStyle: settingsShellSwipeStyle,
+    parentStyle: homeSwipeStyle,
+    platformEnabled: isIOSSwipeBackEnabled,
+    pointerHandlers: settingsShellSwipePointerHandlers,
+    reset: resetSettingsShellSwipe
+  } = useIOSSwipeBack({
+    enabled: isCompactLayout && isSettingsRoot,
+    getContext: getSettingsShellSwipeContext,
+    onComplete: commitSettingsShellSwipe
+  });
 
   useLayoutEffect(() => {
     // Queue cleanup before route-level passive effects initialize Agent Mode.
@@ -79,8 +108,11 @@ function Root() {
   }, []);
 
   useLayoutEffect(() => {
-    if (!isSettingsRoute) setIsSettingsPopping(false);
-  }, [isSettingsRoute]);
+    if (!isSettingsRoute) {
+      setIsSettingsPopping(false);
+      resetSettingsShellSwipe();
+    }
+  }, [isSettingsRoute, resetSettingsShellSwipe]);
 
   useEffect(() => {
     const routedSurface = routedSurfaceRef.current;
@@ -109,13 +141,15 @@ function Root() {
                   "maple-navigation-page fixed inset-0",
                   isSettingsRoute && [
                     "pointer-events-none",
-                    !isSettingsPopping && "maple-navigation-page-covered"
+                    !isSettingsPopping && "maple-navigation-page-covered",
+                    isSettingsShellSwipeActive && "maple-navigation-page-interactive"
                   ]
                 ]
               : isSettingsRoute
                 ? "pointer-events-none fixed inset-0 invisible"
                 : "contents"
           )}
+          style={isSettingsShellSwipeActive ? homeSwipeStyle : undefined}
         >
           <AuthenticatedHomeContent homeLocationHref={isHomeRoute ? location.href : null} />
         </div>
@@ -129,6 +163,8 @@ function Root() {
             ? isCompactLayout
               ? [
                   "maple-navigation-page fixed inset-0 z-50 overflow-hidden bg-background shadow-[-12px_0_28px_rgba(0,0,0,0.12)]",
+                  isIOSSwipeBackEnabled && isSettingsRoot && "touch-pan-y",
+                  isSettingsShellSwipeActive && "maple-navigation-page-interactive",
                   isSettingsPopping
                     ? "maple-navigation-page-pop pointer-events-none"
                     : "maple-navigation-page-enter"
@@ -136,6 +172,8 @@ function Root() {
               : "fixed inset-0 z-50 overflow-hidden bg-background"
             : "contents"
         )}
+        style={isSettingsShellSwipeActive ? settingsShellSwipeStyle : undefined}
+        {...settingsShellSwipePointerHandlers}
       >
         <Outlet />
       </div>

@@ -1560,6 +1560,7 @@ MessageList.displayName = "MessageList";
 
 type UnifiedChatProps = {
   standaloneMobile?: boolean;
+  standaloneMobileConversationId?: string | null;
   onMobileBack?: () => void;
   onMobileOpenNewChat?: (projectId: string | null) => void;
   onMobileConversationCreated?: (conversationId: string) => void;
@@ -1567,6 +1568,7 @@ type UnifiedChatProps = {
 
 export function UnifiedChat({
   standaloneMobile = false,
+  standaloneMobileConversationId,
   onMobileBack,
   onMobileOpenNewChat,
   onMobileConversationCreated
@@ -1586,6 +1588,10 @@ export function UnifiedChat({
 
   // Track chatId from URL - use state so we can update it
   const [chatId, setChatId] = useState<string | undefined>(() => {
+    if (standaloneMobile && standaloneMobileConversationId !== undefined) {
+      return standaloneMobileConversationId ?? undefined;
+    }
+
     const params = new URLSearchParams(window.location.search);
     return params.get("conversation_id") || undefined;
   });

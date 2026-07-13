@@ -332,6 +332,10 @@
     transform: translate3d(100%, 0, 0);
   }
 
+  .maple-navigation-page-interactive {
+    animation: none !important;
+  }
+
   @media (prefers-reduced-motion: reduce) {
     .maple-navigation-page {
       transition-duration: 0ms;

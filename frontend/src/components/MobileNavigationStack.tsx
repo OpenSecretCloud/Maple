@@ -4,6 +4,7 @@ import {
   useLayoutEffect,
   useRef,
   useState,
+  type CSSProperties,
   type ReactNode,
   type RefObject
 } from "react";
@@ -11,6 +12,7 @@ import { flushSync } from "react-dom";
 import { MainMenu } from "@/components/Sidebar";
 import { ProjectDetailView } from "@/components/ProjectDetailView";
 import { UnifiedChat } from "@/components/UnifiedChat";
+import { useIOSSwipeBack } from "@/components/useIOSSwipeBack";
 import { useLocalState } from "@/state/useLocalState";
 import { cn } from "@/utils/utils";
 import { isTauriMobile } from "@/utils/platform";
@@ -51,16 +53,28 @@ function lastProjectPage(snapshot: MobileNavigationSnapshot) {
   return null;
 }
 
+function parentSnapshotForSwipe(snapshot: MobileNavigationSnapshot) {
+  if (snapshot.stack.length <= 1) return null;
+
+  return {
+    ...snapshot,
+    stack: snapshot.stack.slice(0, -1),
+    historyIndex: Math.max(0, snapshot.historyIndex - 1)
+  };
+}
+
 function NavigationLayer({
   active,
   children,
   className,
-  layerRef
+  layerRef,
+  style
 }: {
   active: boolean;
   children: ReactNode;
   className?: string;
   layerRef?: RefObject<HTMLDivElement>;
+  style?: CSSProperties;
 }) {
   const fallbackRef = useRef<HTMLDivElement>(null);
   const ref = layerRef ?? fallbackRef;
@@ -82,6 +96,7 @@ function NavigationLayer({
       ref={ref}
       tabIndex={-1}
       aria-hidden={active ? undefined : true}
+      style={style}
       className={cn(
         "absolute inset-0 min-h-0 min-w-0 overflow-hidden bg-background outline-none",
         active ? "pointer-events-auto" : "pointer-events-none",
@@ -109,12 +124,56 @@ export function MobileNavigationStack() {
     activeMobilePage(snapshot).type === "menu" ? null : activeMobilePage(snapshot).instanceId
   );
   const transitionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const skipNextBackwardAnimationRef = useRef(false);
 
   const updateSnapshot = useCallback((next: MobileNavigationSnapshot) => {
     snapshotRef.current = next;
     nextInstanceIdRef.current = Math.max(nextInstanceIdRef.current, maxInstanceId(next) + 1);
     setSnapshot(next);
   }, []);
+
+  const getSwipeParentSnapshot = useCallback(() => {
+    if (activeMobilePage(snapshotRef.current).type === "menu") return null;
+    return parentSnapshotForSwipe(snapshotRef.current);
+  }, []);
+
+  const commitSwipeBack = useCallback(
+    (_parentSnapshot: MobileNavigationSnapshot, resetSwipe: () => void) => {
+      const current = snapshotRef.current;
+      if (current.hasInAppParent) {
+        skipNextBackwardAnimationRef.current = true;
+        window.history.back();
+        return;
+      }
+
+      const menu = createInitialMobileNavigation("/");
+      window.history.replaceState(createMobileHistoryState(menu, window.history.state), "", "/");
+      window.dispatchEvent(new CustomEvent("newchat", { detail: { projectId: null } }));
+      flushSync(() => {
+        setSelectedProjectId(null);
+        updateSnapshot(menu);
+        setIncomingSnapshot(null);
+        setIsExiting(false);
+        setEnteringInstanceId(null);
+      });
+      resetSwipe();
+    },
+    [setSelectedProjectId, updateSnapshot]
+  );
+
+  const {
+    active: isSwipeBackActive,
+    currentStyle: swipeCurrentStyle,
+    parentStyle: swipeParentStyle,
+    platformEnabled: isIOSSwipeBackEnabled,
+    pointerHandlers: swipeBackPointerHandlers,
+    reset: resetSwipeBack,
+    visual: swipeVisual
+  } = useIOSSwipeBack({
+    blocked: isExiting,
+    getContext: getSwipeParentSnapshot,
+    onComplete: commitSwipeBack
+  });
 
   useLayoutEffect(() => {
     const href = nativeFreshLaunchRef.current ? "/" : currentHomeHref();
@@ -140,6 +199,7 @@ export function MobileNavigationStack() {
   const completeBackwardNavigation = useCallback(
     (next: MobileNavigationSnapshot) => {
       if (transitionTimerRef.current) clearTimeout(transitionTimerRef.current);
+      resetSwipeBack();
 
       setIncomingSnapshot(next);
       setIsExiting(true);
@@ -156,7 +216,7 @@ export function MobileNavigationStack() {
         reducedMotion ? 0 : PAGE_TRANSITION_MS
       );
     },
-    [updateSnapshot]
+    [resetSwipeBack, updateSnapshot]
   );
 
   useEffect(() => {
@@ -167,6 +227,16 @@ export function MobileNavigationStack() {
         createInitialMobileNavigation(currentHomeHref());
 
       if (restored.historyIndex < current.historyIndex) {
+        if (skipNextBackwardAnimationRef.current) {
+          skipNextBackwardAnimationRef.current = false;
+          updateSnapshot(restored);
+          setIncomingSnapshot(null);
+          setIsExiting(false);
+          setEnteringInstanceId(null);
+          resetSwipeBack();
+          return;
+        }
+
         completeBackwardNavigation(restored);
         return;
       }
@@ -178,7 +248,7 @@ export function MobileNavigationStack() {
 
     window.addEventListener("popstate", handlePopState);
     return () => window.removeEventListener("popstate", handlePopState);
-  }, [completeBackwardNavigation, updateSnapshot]);
+  }, [completeBackwardNavigation, resetSwipeBack, updateSnapshot]);
 
   useEffect(() => {
     return () => {
@@ -250,7 +320,7 @@ export function MobileNavigationStack() {
   }, []);
 
   const goBack = useCallback(() => {
-    if (isExiting) return;
+    if (isExiting || isSwipeBackActive) return;
 
     const current = snapshotRef.current;
     if (current.hasInAppParent) {
@@ -263,7 +333,7 @@ export function MobileNavigationStack() {
     window.history.replaceState(createMobileHistoryState(menu, window.history.state), "", "/");
     window.dispatchEvent(new CustomEvent("newchat", { detail: { projectId: null } }));
     completeBackwardNavigation(menu);
-  }, [completeBackwardNavigation, isExiting, setSelectedProjectId]);
+  }, [completeBackwardNavigation, isExiting, isSwipeBackActive, setSelectedProjectId]);
 
   const baseActivePage = activeMobilePage(snapshot);
   const baseProjectPage = lastProjectPage(snapshot);
@@ -271,8 +341,12 @@ export function MobileNavigationStack() {
   const isTransitioningBackward = isExiting && incomingSnapshot !== null;
   const targetActivePage = incomingActivePage ?? baseActivePage;
   const isMenuCovered = targetActivePage.type !== "menu";
+  const swipeParentPage = swipeVisual ? activeMobilePage(swipeVisual.context) : null;
   const visibleChatPages: Array<Extract<MobileNavigationPage, { type: "chat" | "new-chat" }>> = [];
 
+  if (swipeParentPage?.type === "chat" || swipeParentPage?.type === "new-chat") {
+    visibleChatPages.push(swipeParentPage);
+  }
   if (
     isTransitioningBackward &&
     incomingActivePage &&
@@ -281,12 +355,15 @@ export function MobileNavigationStack() {
     visibleChatPages.push(incomingActivePage);
   }
   if (baseActivePage.type === "chat" || baseActivePage.type === "new-chat") {
-    visibleChatPages.push(baseActivePage);
+    if (!visibleChatPages.some((page) => page.instanceId === baseActivePage.instanceId)) {
+      visibleChatPages.push(baseActivePage);
+    }
   }
 
-  const renderChatPage = () => (
+  const renderChatPage = (page: Extract<MobileNavigationPage, { type: "chat" | "new-chat" }>) => (
     <UnifiedChat
       standaloneMobile
+      standaloneMobileConversationId={page.type === "chat" ? page.conversationId : null}
       onMobileBack={goBack}
       onMobileOpenNewChat={openNewChat}
       onMobileConversationCreated={handleConversationCreated}
@@ -305,13 +382,21 @@ export function MobileNavigationStack() {
   );
 
   return (
-    <div className="relative h-dvh min-h-0 w-full overflow-hidden bg-background">
+    <div
+      className={cn(
+        "relative h-dvh min-h-0 w-full overflow-hidden bg-background",
+        isIOSSwipeBackEnabled && "touch-pan-y"
+      )}
+      {...swipeBackPointerHandlers}
+    >
       <NavigationLayer
         active={!isTransitioningBackward && baseActivePage.type === "menu"}
         className={cn(
           "maple-navigation-page z-0",
-          isMenuCovered && "maple-navigation-page-covered"
+          isMenuCovered && "maple-navigation-page-covered",
+          swipeParentPage?.type === "menu" && "maple-navigation-page-interactive"
         )}
+        style={swipeParentPage?.type === "menu" ? swipeParentStyle : undefined}
       >
         <MainMenu
           presentation="page"
@@ -332,8 +417,20 @@ export function MobileNavigationStack() {
               ? "maple-navigation-page-pop z-20"
               : targetActivePage.type === "chat" || targetActivePage.type === "new-chat"
                 ? "maple-navigation-page-covered"
-                : baseActivePage.instanceId === enteringInstanceId && "maple-navigation-page-enter"
+                : baseActivePage.instanceId === enteringInstanceId && "maple-navigation-page-enter",
+            swipeVisual &&
+              (swipeParentPage?.instanceId === baseProjectPage.instanceId ||
+                baseActivePage.instanceId === baseProjectPage.instanceId) &&
+              "maple-navigation-page-interactive",
+            swipeVisual && baseActivePage.instanceId === baseProjectPage.instanceId && "z-20"
           )}
+          style={
+            swipeParentPage?.instanceId === baseProjectPage.instanceId
+              ? swipeParentStyle
+              : swipeVisual && baseActivePage.instanceId === baseProjectPage.instanceId
+                ? swipeCurrentStyle
+                : undefined
+          }
         >
           {renderProjectPage(baseProjectPage)}
         </NavigationLayer>
@@ -343,21 +440,28 @@ export function MobileNavigationStack() {
         const isLeaving = isTransitioningBackward && page.instanceId === baseActivePage.instanceId;
         const isIncoming =
           isTransitioningBackward && page.instanceId === incomingActivePage?.instanceId;
+        const isSwipeParent = swipeParentPage?.instanceId === page.instanceId;
+        const isSwipeCurrent = !!swipeVisual && baseActivePage.instanceId === page.instanceId;
 
         return (
           <NavigationLayer
             key={`chat-${page.instanceId}`}
-            active={!isIncoming}
+            active={!isIncoming && !isSwipeParent}
             className={cn(
-              "maple-navigation-page shadow-[-12px_0_28px_rgba(0,0,0,0.12)]",
+              "maple-navigation-page z-20 shadow-[-12px_0_28px_rgba(0,0,0,0.12)]",
               isLeaving && "maple-navigation-page-pop z-20",
               isIncoming && "z-10",
               !isTransitioningBackward &&
                 page.instanceId === enteringInstanceId &&
-                "maple-navigation-page-enter"
+                "maple-navigation-page-enter",
+              (isSwipeParent || isSwipeCurrent) && "maple-navigation-page-interactive",
+              isSwipeParent && "z-10"
             )}
+            style={
+              isSwipeParent ? swipeParentStyle : isSwipeCurrent ? swipeCurrentStyle : undefined
+            }
           >
-            {renderChatPage()}
+            {renderChatPage(page)}
           </NavigationLayer>
         );
       })}
