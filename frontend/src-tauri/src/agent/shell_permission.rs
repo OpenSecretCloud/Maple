@@ -217,7 +217,7 @@ impl ShellPermissionClassifier {
                 provider.get_name(),
                 CLASSIFIER_MODEL,
                 None,
-                Some(classifier_request_params()),
+                Some(thinking_disabled_request_params()),
                 None,
             ) {
                 Ok(model_config) => model_config,
@@ -229,7 +229,7 @@ impl ShellPermissionClassifier {
         // The classifier is intentionally isolated from session-level reasoning
         // and request settings. In particular, Goose may otherwise inherit a
         // global thinking effort after applying the explicit request params.
-        model_config.request_params = Some(classifier_request_params());
+        model_config.request_params = Some(thinking_disabled_request_params());
         model_config.reasoning = Some(false);
         let model_config = model_config
             .with_temperature(Some(CLASSIFIER_TEMPERATURE))
@@ -272,7 +272,7 @@ impl ShellPermissionClassifier {
     }
 }
 
-fn classifier_request_params() -> HashMap<String, serde_json::Value> {
+pub(crate) fn thinking_disabled_request_params() -> HashMap<String, serde_json::Value> {
     HashMap::from([
         ("include_reasoning".to_string(), serde_json::json!(false)),
         (
@@ -534,7 +534,7 @@ mod tests {
     fn classifier_uses_gemma_with_thinking_disabled() {
         assert_eq!(CLASSIFIER_MODEL, "gemma4-31b");
 
-        let params = classifier_request_params();
+        let params = thinking_disabled_request_params();
         assert_eq!(
             params.get("include_reasoning"),
             Some(&serde_json::json!(false))
@@ -553,7 +553,7 @@ mod tests {
                 None,
             )
             .unwrap();
-        model_config.request_params = Some(classifier_request_params());
+        model_config.request_params = Some(thinking_disabled_request_params());
         model_config.reasoning = Some(false);
         let model_config = model_config
             .with_temperature(Some(CLASSIFIER_TEMPERATURE))
@@ -614,11 +614,11 @@ mod tests {
                 provider.get_name(),
                 CLASSIFIER_MODEL,
                 None,
-                Some(classifier_request_params()),
+                Some(thinking_disabled_request_params()),
                 None,
             )
             .unwrap();
-        model_config.request_params = Some(classifier_request_params());
+        model_config.request_params = Some(thinking_disabled_request_params());
         model_config.reasoning = Some(false);
         let model_config = model_config
             .with_temperature(Some(CLASSIFIER_TEMPERATURE))
