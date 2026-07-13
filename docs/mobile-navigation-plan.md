@@ -2,11 +2,11 @@
 
 ## Status
 
-Core implementation is complete on the `mobile-navigation` branch. The navigation/history and
-stream-disconnect behavior have focused automated coverage, and the repository's format, lint,
-typecheck, test, and production-build checks pass. The unchecked acceptance items below require
-interactive browser or physical iOS/Android validation and remain the final release-validation
-pass.
+Core implementation and the iOS edge-swipe stretch goal are complete on the `mobile-navigation`
+branch. Navigation/history, stream-disconnect, and gesture decisions have focused automated
+coverage, and the repository's format, lint, typecheck, test, and production-build checks pass. The
+unchecked acceptance items below require interactive browser or physical iOS/Android validation and
+remain the final release-validation pass.
 
 ## Objective
 
@@ -297,7 +297,9 @@ separate follow-up; this implementation does not connect or change the existing 
 
 ## Stretch Goal: iOS Edge-Swipe Back
 
-After the core feature is complete, add an interactive left-edge swipe-back gesture for the iOS Tauri app.
+Implemented as an interactive left-edge swipe-back gesture for the iOS Tauri app. The same shared
+gesture tracker is used for chat/project navigation, Settings detail-to-menu navigation, and
+Settings menu-to-home navigation.
 
 Wry 0.55.1 does not expose built-in back/forward navigation gestures on iOS, so this requires an app-level gesture rather than a configuration switch.
 
@@ -312,9 +314,23 @@ Expected behavior:
 - Unmount the popped chat after the completed gesture.
 - Avoid intercepting controls or horizontally scrollable content away from the left-edge activation area.
 
+Implementation details:
+
+- The gesture activates only within the leftmost 28 pixels.
+- It locks after 8 pixels of primarily rightward movement and yields to primarily vertical movement.
+- It completes at 35% of the screen width or with sufficient rightward release velocity; otherwise,
+  it animates back to the current page.
+- It reuses the existing history/back destinations and skips a second non-interactive pop animation
+  after the finger-driven transition completes.
+- A previous chat is mounted only when needed to reveal it during an interactive gesture. Canceling
+  the gesture unmounts that preview; completing it leaves the popped chat unmounted.
+- Navigation locks can opt a surface out of gesture capture, and other controls can use
+  `data-swipe-back-ignore` if a future left-edge interaction needs priority.
+
 Do not install this custom gesture in mobile Safari; Safari owns its browser navigation gesture. No Android-specific equivalent is planned.
 
-This stretch goal does not block completion of the core feature.
+Physical-device verification remains required because the gesture is intentionally disabled outside
+the iOS Tauri runtime.
 
 ## Non-Goals
 
@@ -331,7 +347,6 @@ This stretch goal does not block completion of the core feature.
 - Changing persistent return-to-home behavior
 - Changing Agent Mode availability or navigation
 - Adding draft persistence
-- Adding the iOS edge-swipe gesture before the core feature is complete
 
 ## Definition of Done
 
@@ -391,6 +406,16 @@ The core feature is complete when every agreed non-stretch behavior is implement
 - [x] Focus moves predictably on push and pop.
 - [ ] Safe areas and the mobile keyboard do not obscure navigation controls.
 
+### iOS edge-swipe back
+
+- [x] The gesture is limited to the iOS Tauri app and begins only at the left edge.
+- [x] Horizontal movement tracks the finger while primarily vertical movement is rejected.
+- [x] Distance and velocity determine completion, and canceled gestures snap back.
+- [x] Chat, project, Settings detail, and Settings-root flows use their existing back destinations.
+- [x] A completed gesture does not replay the non-interactive pop animation.
+- [x] Popped chats unmount after completion, and canceled chat previews unmount after snap-back.
+- [ ] Verify tracking, completion, cancellation, and vertical-scroll rejection on a physical iPhone.
+
 ### Compact Settings
 
 - [x] Opening and closing Settings uses the same paired push/pop treatment as chat navigation.
@@ -411,4 +436,5 @@ The core feature is complete when every agreed non-stretch behavior is implement
 - [ ] Validate navigation away from and back to an actively generating chat.
 - [x] Run the repository's applicable format, lint, typecheck, test, and build checks.
 
-The unresolved composer-draft gap and the iOS edge-swipe stretch goal do not block core completion.
+The unresolved composer-draft gap does not block completion. Physical iOS gesture validation remains
+part of the final release-validation pass.

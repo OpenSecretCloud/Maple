@@ -26,6 +26,7 @@ import { getBillingService } from "@/billing/billingService";
 import { MapleWordmark } from "@/components/MapleWordmark";
 import { SettingsNavigationLockProvider } from "@/components/settings/SettingsNavigationLockProvider";
 import { useCompactSettingsLayout } from "@/components/settings/useCompactSettingsLayout";
+import { useIOSSwipeBack } from "@/components/useIOSSwipeBack";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { usePersistentHomeNavigation } from "@/contexts/PersistentHomeNavigationContext";
@@ -43,6 +44,7 @@ import {
   isSettingsPath,
   isSettingsRootPath,
   SETTINGS_SHELL_POP_EVENT,
+  SETTINGS_SHELL_SWIPE_BACK_EVENT,
   shouldAnimateSettingsPop
 } from "@/utils/settingsNavigation";
 import { getTeamSeatMismatch } from "@/utils/teamSeats";
@@ -143,6 +145,8 @@ function SettingsLayoutContent() {
   const settingsShellPopRef = useRef<Promise<void> | null>(null);
   const settingsShellPopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const settingsShellPopResolveRef = useRef<(() => void) | null>(null);
+  const skipNextDetailPopAnimationRef = useRef(false);
+  const skipNextSettingsShellPopAnimationRef = useRef(false);
   const [isPopping, setIsPopping] = useState(false);
   const [isClosingSettings, setIsClosingSettings] = useState(false);
   const [isSigningOut, setIsSigningOut] = useState(false);
@@ -242,6 +246,105 @@ function SettingsLayoutContent() {
     return animation;
   }, []);
 
+  const getSettingsDetailSwipeContext = useCallback(() => {
+    if (
+      !isCompactViewport ||
+      isSettingsRoot ||
+      isNavigationLocked ||
+      isPopping ||
+      isClosingSettings
+    ) {
+      return null;
+    }
+
+    return location.pathname;
+  }, [
+    isClosingSettings,
+    isCompactViewport,
+    isNavigationLocked,
+    isPopping,
+    isSettingsRoot,
+    location.pathname
+  ]);
+
+  const commitSettingsDetailSwipe = useCallback(
+    (_pathname: string, resetSwipe: () => void) => {
+      const target = getSettingsBackTarget(
+        window.history.state?.__TSR_index,
+        rootHistoryIndexRef.current
+      );
+      if (target.type === "history") {
+        skipNextDetailPopAnimationRef.current = true;
+        router.history.go(target.delta);
+        return;
+      }
+
+      void router
+        .navigate({ to: "/settings", replace: true, ignoreBlocker: true })
+        .finally(resetSwipe);
+    },
+    [router]
+  );
+
+  const {
+    active: isSettingsDetailSwipeActive,
+    currentStyle: settingsDetailSwipeStyle,
+    parentStyle: settingsMenuSwipeStyle,
+    platformEnabled: isIOSSwipeBackEnabled,
+    pointerHandlers: settingsSwipePointerHandlers,
+    reset: resetSettingsDetailSwipe
+  } = useIOSSwipeBack({
+    enabled: isCompactViewport && !isSettingsRoot,
+    getContext: getSettingsDetailSwipeContext,
+    onComplete: commitSettingsDetailSwipe
+  });
+
+  useLayoutEffect(() => {
+    if (isSettingsRoot) resetSettingsDetailSwipe();
+  }, [isSettingsRoot, resetSettingsDetailSwipe]);
+
+  const closeSettings = useCallback(
+    async (interactive = false) => {
+      if (isNavigationLocked || isSigningOut || isClosingSettings) return;
+
+      if (isCompactViewport) {
+        if (hasSettingsHomeParent(window.history.state)) {
+          if (interactive) skipNextSettingsShellPopAnimationRef.current = true;
+          router.history.back();
+          return;
+        }
+
+        if (!interactive) await runSettingsShellPop();
+      }
+
+      returnToHome();
+    },
+    [
+      isClosingSettings,
+      isCompactViewport,
+      isNavigationLocked,
+      isSigningOut,
+      returnToHome,
+      router.history,
+      runSettingsShellPop
+    ]
+  );
+
+  useEffect(() => {
+    const handleInteractiveSettingsClose = (event: Event) => {
+      if (isNavigationLocked || isSigningOut || isClosingSettings) {
+        event.preventDefault();
+        return;
+      }
+
+      void closeSettings(true);
+    };
+
+    window.addEventListener(SETTINGS_SHELL_SWIPE_BACK_EVENT, handleInteractiveSettingsClose);
+    return () =>
+      window.removeEventListener(SETTINGS_SHELL_SWIPE_BACK_EVENT, handleInteractiveSettingsClose);
+  }, [closeSettings, isClosingSettings, isNavigationLocked, isSigningOut]);
+
   useEffect(() => {
     return () => {
       if (popTimerRef.current) clearTimeout(popTimerRef.current);
@@ -257,6 +360,22 @@ function SettingsLayoutContent() {
     return router.history.block({
       enableBeforeUnload: false,
       blockerFn: async ({ currentLocation, nextLocation, action }) => {
+        const shouldPopDetail = shouldAnimateSettingsPop({
+          compact: true,
+          currentPathname: currentLocation.pathname,
+          nextPathname: nextLocation.pathname,
+          action
+        });
+
+        if (skipNextDetailPopAnimationRef.current && shouldPopDetail) {
+          skipNextDetailPopAnimationRef.current = false;
+          if (isNavigationLocked) {
+            resetSettingsDetailSwipe();
+            return true;
+          }
+          return false;
+        }
+
         if (isNavigationLocked) return true;
 
         const isBackwardAction = action === "BACK" || action === "GO";
@@ -265,29 +384,31 @@ function SettingsLayoutContent() {
           !isSettingsPath(nextLocation.pathname) &&
           isBackwardAction
         ) {
+          if (skipNextSettingsShellPopAnimationRef.current) {
+            skipNextSettingsShellPopAnimationRef.current = false;
+            return false;
+          }
           await runSettingsShellPop();
           return false;
         }
 
-        if (
-          !shouldAnimateSettingsPop({
-            compact: true,
-            currentPathname: currentLocation.pathname,
-            nextPathname: nextLocation.pathname,
-            action
-          })
-        ) {
-          return false;
-        }
+        if (!shouldPopDetail) return false;
 
         await runPopAnimation();
         return false;
       }
     });
-  }, [isCompactViewport, isNavigationLocked, router.history, runPopAnimation, runSettingsShellPop]);
+  }, [
+    isCompactViewport,
+    isNavigationLocked,
+    resetSettingsDetailSwipe,
+    router.history,
+    runPopAnimation,
+    runSettingsShellPop
+  ]);
 
   const showSettingsMenu = useCallback(async () => {
-    if (isNavigationLocked || isPopping) return;
+    if (isNavigationLocked || isPopping || isSettingsDetailSwipeActive) return;
 
     const target = getSettingsBackTarget(
       window.history.state?.__TSR_index,
@@ -300,7 +421,7 @@ function SettingsLayoutContent() {
 
     await runPopAnimation();
     await router.navigate({ to: "/settings", replace: true, ignoreBlocker: true });
-  }, [isNavigationLocked, isPopping, router, runPopAnimation]);
+  }, [isNavigationLocked, isPopping, isSettingsDetailSwipeActive, router, runPopAnimation]);
 
   useEffect(() => {
     if (!isCompactViewport || isSettingsRoot) return;
@@ -450,25 +571,17 @@ function SettingsLayoutContent() {
     }
   };
 
-  const closeSettings = async () => {
-    if (isNavigationLocked || isSigningOut || isClosingSettings) return;
-
-    if (isCompactViewport) {
-      if (hasSettingsHomeParent(window.history.state)) {
-        router.history.back();
-        return;
-      }
-
-      await runSettingsShellPop();
-    }
-
-    returnToHome();
-  };
-
   return (
     <div
-      className="relative grid h-dvh min-h-0 w-full grid-cols-1 overflow-hidden bg-background sm:grid-cols-[16rem_minmax(0,1fr)]"
+      className={cn(
+        "relative grid h-dvh min-h-0 w-full grid-cols-1 overflow-hidden bg-background sm:grid-cols-[16rem_minmax(0,1fr)]",
+        isIOSSwipeBackEnabled && isCompactViewport && "touch-pan-y"
+      )}
+      data-swipe-back-ignore={
+        isNavigationLocked || isSigningOut || isClosingSettings ? "" : undefined
+      }
       style={isCompactViewport ? { gridTemplateColumns: "minmax(0, 1fr)" } : undefined}
+      {...settingsSwipePointerHandlers}
     >
       <aside
         ref={menuRef}
@@ -479,10 +592,12 @@ function SettingsLayoutContent() {
           isCompactViewport
             ? [
                 "maple-navigation-page fixed inset-0 z-10 w-full border-r-0",
-                !isSettingsRoot && !isPopping && "maple-navigation-page-covered"
+                !isSettingsRoot && !isPopping && "maple-navigation-page-covered",
+                isSettingsDetailSwipeActive && "maple-navigation-page-interactive"
               ]
             : "z-auto transition-none"
         )}
+        style={isSettingsDetailSwipeActive ? settingsMenuSwipeStyle : undefined}
       >
         <div className="flex h-16 shrink-0 items-center border-b border-border/30 px-3 sm:px-4">
           <button
@@ -559,6 +674,7 @@ function SettingsLayoutContent() {
           "min-h-0 min-w-0 overflow-y-auto overscroll-y-contain bg-background",
           isCompactViewport && [
             "maple-navigation-page fixed inset-0 z-20 shadow-[-12px_0_28px_rgba(0,0,0,0.12)]",
+            isSettingsDetailSwipeActive && "maple-navigation-page-interactive",
             isSettingsRoot
               ? "maple-navigation-page-pop"
               : isPopping
@@ -566,6 +682,7 @@ function SettingsLayoutContent() {
                 : "maple-navigation-page-enter"
           ]
         )}
+        style={isSettingsDetailSwipeActive ? settingsDetailSwipeStyle : undefined}
       >
         {isCompactViewport && (
           <div className="sticky top-0 z-30 flex h-14 items-center gap-3 border-b border-border/50 bg-background/95 px-3 backdrop-blur supports-[backdrop-filter]:bg-background/80">
@@ -573,7 +690,7 @@ function SettingsLayoutContent() {
               ref={detailBackButtonRef}
               type="button"
               onClick={() => void showSettingsMenu()}
-              disabled={isNavigationLocked || isPopping}
+              disabled={isNavigationLocked || isPopping || isSettingsDetailSwipeActive}
               className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               aria-label="Back to settings"
             >

@@ -2,6 +2,7 @@ export type SettingsBackTarget = { type: "history"; delta: number } | { type: "r
 
 export const SETTINGS_HOME_PARENT_STATE_KEY = "__mapleSettingsHomeParent";
 export const SETTINGS_SHELL_POP_EVENT = "maple:settings-shell-pop";
+export const SETTINGS_SHELL_SWIPE_BACK_EVENT = "maple:settings-shell-swipe-back";
 
 export function isSettingsRootPath(pathname: string) {
   return pathname === "/settings" || pathname === "/settings/";
