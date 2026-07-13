@@ -35,6 +35,7 @@ import {
   Select,
   SelectContent,
   SelectItem,
+  SelectSeparator,
   SelectTrigger,
   SelectValue
 } from "@/components/ui/select";
@@ -100,6 +101,7 @@ import type {
 const DEFAULT_MODEL = DEFAULT_AGENT_MODEL;
 const DEFAULT_MODE = "smart_approve";
 const NEW_SESSION_PENDING_KEY = "__maple-agent-new-session__";
+const NEW_PROJECT_OPTION_VALUE = "__maple-agent-new-project__";
 const MAX_STABLE_SESSION_LOAD_ATTEMPTS = 3;
 const AUTO_SCROLL_BOTTOM_THRESHOLD_PX = 100;
 const SIDEBAR_REORDER_ANIMATION_MS = 150;
@@ -2072,13 +2074,21 @@ function AgentComposer({
           <Select
             disabled={areSettingsDisabled}
             value={projectRoot || undefined}
-            onValueChange={onProjectRootChange}
+            onValueChange={(value) => {
+              if (value === NEW_PROJECT_OPTION_VALUE) {
+                onChooseProjectRoot();
+                return;
+              }
+              onProjectRootChange(value);
+            }}
           >
             <SelectTrigger className="h-8 w-auto max-w-[12rem] gap-1 border-0 bg-transparent px-2 text-[hsl(var(--maple-secondary-700))] hover:bg-[hsl(var(--maple-primary-container))] hover:text-[hsl(var(--maple-secondary-700))] focus:ring-0 focus:ring-offset-0">
               <FolderOpen className="h-4 w-4 shrink-0" />
               <SelectValue placeholder={activeRootLabel} />
             </SelectTrigger>
             <SelectContent>
+              <SelectItem value={NEW_PROJECT_OPTION_VALUE}>New project…</SelectItem>
+              {rootOptions.length > 0 ? <SelectSeparator /> : null}
               {rootOptions.map((root) => (
                 <SelectItem key={root.path} value={root.path}>
                   {root.name}
@@ -2086,18 +2096,6 @@ function AgentComposer({
               ))}
             </SelectContent>
           </Select>
-
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className="h-8 w-8 p-0 text-[hsl(var(--maple-secondary-700))] hover:bg-[hsl(var(--maple-primary-container))] hover:text-[hsl(var(--maple-secondary-700))]"
-            onClick={onChooseProjectRoot}
-            disabled={areSettingsDisabled}
-            aria-label="Choose project folder"
-          >
-            <FolderOpen className="h-4 w-4" />
-          </Button>
         </div>
 
         <div className="flex shrink-0 items-center self-end gap-1.5 sm:gap-2">
