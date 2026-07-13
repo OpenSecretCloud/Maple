@@ -28,6 +28,10 @@ import { Sidebar, SidebarToggle } from "@/components/Sidebar";
 import { MapleWordmark } from "@/components/MapleWordmark";
 import { useIsMobile, useIsLandscapeMobile } from "@/utils/utils";
 import { fileToDataURL } from "@/utils/file";
+import {
+  getImageFilesFromClipboardItems,
+  maybeReadLinuxTauriClipboardImages
+} from "@/utils/imagePaste";
 import { truncateMarkdownPreservingLinks } from "@/utils/markdown";
 import { useOpenAI } from "@/ai/useOpenAi";
 import { DEFAULT_MODEL_ID, getInitialWebSearchEnabled } from "@/state/LocalStateContext";
@@ -56,7 +60,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger
 } from "@/components/ui/dropdown-menu";
-import { isTauri } from "@/utils/platform";
+import { isLinux, isTauri } from "@/utils/platform";
 import { ConversationProjectPicker } from "@/components/ConversationProjectPicker";
 import {
   getSidebarLayoutStyle,
@@ -1412,6 +1416,8 @@ export function UnifiedChat() {
   const { selectedProjectId, setSelectedProjectId } = localState;
   const os = useOpenSecret();
   const isTauriEnv = isTauri();
+  const isLinuxEnv = isLinux();
+  const isLinuxTauriEnv = isTauriEnv && isLinuxEnv;
   const queryClient = useQueryClient();
   const { playbackError, clearPlaybackError } = useTTS();
 
@@ -1503,6 +1509,7 @@ export function UnifiedChat() {
   const billingRefreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const documentInputRef = useRef<HTMLInputElement>(null);
+  const imagePasteGenerationRef = useRef(0);
 
   // Refs
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -1513,6 +1520,7 @@ export function UnifiedChat() {
 
   // Attachment cleanup function - defined early to avoid reference errors
   const clearAllAttachments = useCallback(() => {
+    imagePasteGenerationRef.current += 1;
     // Clean up image URLs
     imageUrls.forEach((url) => URL.revokeObjectURL(url));
     setImageUrls(new Map());
@@ -1521,6 +1529,14 @@ export function UnifiedChat() {
     setDocumentName("");
     setAttachmentError(null);
   }, [imageUrls]);
+
+  // Invalidate delayed clipboard reads when switching conversations or unmounting.
+  useEffect(() => {
+    imagePasteGenerationRef.current += 1;
+    return () => {
+      imagePasteGenerationRef.current += 1;
+    };
+  }, [chatId]);
 
   // Auto-resize textarea
   useEffect(() => {
@@ -2261,24 +2277,8 @@ export function UnifiedChat() {
     [imageUrls, localState]
   );
 
-  const handlePaste = useCallback(
-    (e: React.ClipboardEvent) => {
-      const items = e.clipboardData?.items;
-      if (!items) return;
-
-      const imageFiles: File[] = [];
-      for (let i = 0; i < items.length; i++) {
-        if (items[i].type.startsWith("image/")) {
-          const file = items[i].getAsFile();
-          if (file) imageFiles.push(file);
-        }
-      }
-
-      if (imageFiles.length === 0) return;
-
-      // Prevent the default paste behavior for images
-      e.preventDefault();
-
+  const attachPastedImages = useCallback(
+    (imageFiles: File[]) => {
       if (!canUseImages) {
         setUpgradeFeature("image");
         setUpgradeDialogOpen(true);
@@ -2304,16 +2304,54 @@ export function UnifiedChat() {
 
       if (validFiles.length === 0) return;
 
-      const newUrlMap = new Map(imageUrls);
-      validFiles.forEach((file) => {
-        if (!newUrlMap.has(file)) {
-          newUrlMap.set(file, URL.createObjectURL(file));
-        }
-      });
-      setImageUrls(newUrlMap);
+      const newUrls = validFiles.map((file) => [file, URL.createObjectURL(file)] as const);
+      setImageUrls((currentUrls) => new Map([...currentUrls, ...newUrls]));
       setDraftImages((prev) => [...prev, ...validFiles]);
     },
-    [canUseImages, imageUrls]
+    [canUseImages]
+  );
+
+  const handlePaste = useCallback(
+    (e: React.ClipboardEvent) => {
+      const pasteGeneration = ++imagePasteGenerationRef.current;
+      const items = e.clipboardData?.items;
+      if (!items) return;
+
+      const imageFiles = getImageFilesFromClipboardItems(items);
+      if (imageFiles.length > 0) {
+        // Preserve the existing DOM clipboard path whenever WebKit exposes the image.
+        e.preventDefault();
+        attachPastedImages(imageFiles);
+        return;
+      }
+
+      // WebKitGTK 2.50.3+ hides file-backed images from the paste DataTransfer.
+      // Keep the async fallback scoped to the reporter's zero-item symptom.
+      if (!isLinuxTauriEnv || items.length !== 0) return;
+
+      const fallback = maybeReadLinuxTauriClipboardImages({
+        eventItemCount: items.length,
+        isTauri: isTauriEnv,
+        isLinux: isLinuxEnv,
+        readClipboard: () => {
+          if (typeof navigator === "undefined") return undefined;
+
+          const clipboard = navigator.clipboard;
+          if (typeof clipboard?.read !== "function") return undefined;
+          return clipboard.read();
+        }
+      });
+
+      // Do not prevent the native paste while an async read is pending. An
+      // image-only clipboard has no useful textarea default, and this keeps
+      // ordinary text paste intact if clipboard access is unavailable.
+      void fallback?.then((fallbackFiles) => {
+        if (fallbackFiles.length > 0 && pasteGeneration === imagePasteGenerationRef.current) {
+          attachPastedImages(fallbackFiles);
+        }
+      });
+    },
+    [attachPastedImages, isLinuxEnv, isLinuxTauriEnv, isTauriEnv]
   );
 
   const removeImage = useCallback(
