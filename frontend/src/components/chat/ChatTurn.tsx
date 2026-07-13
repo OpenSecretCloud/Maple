@@ -77,6 +77,18 @@ export function ChatAssistantTurn({ children, actions, containerRef, className }
   );
 }
 
+export function ChatAssistantPendingTurn() {
+  return (
+    <ChatAssistantTurn>
+      <div className="flex items-center gap-1" role="status" aria-label="Maple is responding">
+        <div className="h-2 w-2 animate-pulse rounded-full bg-foreground/60" />
+        <div className="h-2 w-2 animate-pulse rounded-full bg-foreground/60 delay-75" />
+        <div className="h-2 w-2 animate-pulse rounded-full bg-foreground/60 delay-150" />
+      </div>
+    </ChatAssistantTurn>
+  );
+}
+
 export function ChatDesktopConversationHeader({
   title,
   isSidebarOpen,

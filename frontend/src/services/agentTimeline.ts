@@ -64,3 +64,10 @@ export function groupAgentTimelineItems(items: AgentTimelineItem[]): AgentTimeli
   flushAssistantItems();
   return turns;
 }
+
+export function shouldShowAgentAssistantLoader(
+  turns: AgentTimelineTurn[],
+  isResponsePending: boolean
+): boolean {
+  return isResponsePending && turns[turns.length - 1]?.type === "user";
+}

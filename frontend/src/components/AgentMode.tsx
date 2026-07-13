@@ -25,6 +25,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Markdown, ThinkingBlock } from "@/components/markdown";
 import {
   CHAT_COMPOSER_TEXTAREA_CLASS,
+  ChatAssistantPendingTurn,
   ChatAssistantTurn,
   ChatComposerSurface,
   ChatDesktopConversationHeader,
@@ -70,7 +71,8 @@ import {
   coalesceAdjacentThinkingItems,
   groupAgentTimelineItems,
   hasAgentUserMessage,
-  hasRenderableThinkingText
+  hasRenderableThinkingText,
+  shouldShowAgentAssistantLoader
 } from "@/services/agentTimeline";
 import {
   DEFAULT_AGENT_MODEL,
@@ -1589,6 +1591,7 @@ export function AgentMode({ userId }: { userId: string }) {
               ) : (
                 <AgentTimeline
                   items={timelineItems}
+                  isResponsePending={isSending}
                   isRunActive={Boolean(activeRunId) && !isSubmitting}
                   onPermissionDecision={respondToPermission}
                 />
@@ -2599,16 +2602,19 @@ function AgentModelSelector({
 
 function AgentTimeline({
   items,
+  isResponsePending,
   isRunActive,
   onPermissionDecision
 }: {
   items: AgentTimelineItem[];
+  isResponsePending: boolean;
   isRunActive: boolean;
   onPermissionDecision: (item: AgentTimelineItem, decision: AgentPermissionDecision) => void;
 }) {
   const visibleItems = coalesceAdjacentThinkingItems(items).filter(isRenderableTimelineItem);
   const turns = groupAgentTimelineItems(visibleItems);
   const activeThinkingItemId = activeAgentThinkingItemId(visibleItems, isRunActive);
+  const showAssistantLoader = shouldShowAgentAssistantLoader(turns, isResponsePending);
 
   return (
     <div className="space-y-1">
@@ -2634,6 +2640,7 @@ function AgentTimeline({
           </ChatAssistantTurn>
         );
       })}
+      {showAssistantLoader ? <ChatAssistantPendingTurn /> : null}
     </div>
   );
 }

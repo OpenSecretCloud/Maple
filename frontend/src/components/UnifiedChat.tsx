@@ -34,6 +34,7 @@ import { DEFAULT_MODEL_ID, getInitialWebSearchEnabled } from "@/state/LocalState
 import { Markdown, ThinkingBlock } from "@/components/markdown";
 import {
   CHAT_COMPOSER_TEXTAREA_CLASS,
+  ChatAssistantPendingTurn,
   ChatAssistantTurn,
   ChatComposerSurface,
   ChatDesktopConversationHeader,
@@ -1387,15 +1388,7 @@ const MessageList = memo(
         })}
 
         {/* Loading indicator - only show while waiting for the first assistant item (TTFT) */}
-        {shouldShowInitialAssistantLoader && (
-          <ChatAssistantTurn>
-            <div className="flex items-center gap-1">
-              <div className="h-2 w-2 animate-pulse rounded-full bg-foreground/60" />
-              <div className="h-2 w-2 animate-pulse rounded-full bg-foreground/60 delay-75" />
-              <div className="h-2 w-2 animate-pulse rounded-full bg-foreground/60 delay-150" />
-            </div>
-          </ChatAssistantTurn>
-        )}
+        {shouldShowInitialAssistantLoader && <ChatAssistantPendingTurn />}
       </>
     );
   }
