@@ -5,7 +5,8 @@ import {
   coalesceAdjacentThinkingItems,
   groupAgentTimelineItems,
   hasAgentUserMessage,
-  hasRenderableThinkingText
+  hasRenderableThinkingText,
+  shouldShowAgentAssistantLoader
 } from "./agentTimeline";
 
 function thinking(id: string, text: string): AgentTimelineItem {
@@ -180,5 +181,38 @@ describe("groupAgentTimelineItems", () => {
 
     expect(before[1].id).toBe("assistant-after-user");
     expect(after[1].id).toBe(before[1].id);
+  });
+});
+
+describe("shouldShowAgentAssistantLoader", () => {
+  const userTurn = {
+    type: "user" as const,
+    id: "user",
+    item: {
+      id: "user",
+      itemType: "message" as const,
+      role: "user" as const,
+      createdMs: 0,
+      merge: "replace" as const
+    }
+  };
+  const assistantTurn = {
+    type: "assistant" as const,
+    id: "assistant-after-user",
+    items: [thinking("thought", "Working")]
+  };
+
+  test("shows while a sent user turn is waiting for its first assistant activity", () => {
+    expect(shouldShowAgentAssistantLoader([userTurn], true)).toBe(true);
+  });
+
+  test("hides when the response is no longer pending or assistant activity has arrived", () => {
+    expect(shouldShowAgentAssistantLoader([userTurn], false)).toBe(false);
+    expect(shouldShowAgentAssistantLoader([userTurn, assistantTurn], true)).toBe(false);
+  });
+
+  test("does not invent an assistant turn without a user message", () => {
+    expect(shouldShowAgentAssistantLoader([], true)).toBe(false);
+    expect(shouldShowAgentAssistantLoader([assistantTurn], true)).toBe(false);
   });
 });
