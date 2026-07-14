@@ -40,13 +40,62 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # was v5
         with:
-          go-version: "1.22.12"
+          go-version: "1.24.11"
 
-      - name: Install zsp
+      - name: Verify and install zsp
         env:
+          ZSP_MODULE: github.com/zapstore/zsp
+          ZSP_VERSION: v0.4.5
+          ZSP_TAG_SHA: a5eae96f0f67e8a2cdfe2217ef63df7443e8549b
+          ZSP_COMMIT_SHA: ef7af27054404545491c10ba94ded866e0cc8f0b
+          ZSP_MODULE_SUM: h1:1Dr81DhbJjE2TbHQ5fSEflz6WIO2bNXVcnPw2sKlmLI=
+          ZSP_GOMOD_SUM: h1:9pGrVJQJg91VAkf7gi5oL9P+goaHd09CPvipZZx5HP4=
           GOTOOLCHAIN: local
+          GOPROXY: https://proxy.golang.org,direct
+          GOSUMDB: sum.golang.org
+          GONOSUMDB: ""
+          GOPRIVATE: ""
         run: |
-          go install "github.com/zapstore/zsp@v0.4.5"
+          set -euo pipefail
+
+          remote="https://${ZSP_MODULE}.git"
+          tag_ref="refs/tags/${ZSP_VERSION}"
+          actual_tag_sha="$(git ls-remote --tags "${remote}" "${tag_ref}" | awk '{ print $1 }')"
+          actual_commit_sha="$(git ls-remote --tags "${remote}" "${tag_ref}^{}" | awk '{ print $1 }')"
+
+          if [ "${actual_tag_sha}" != "${ZSP_TAG_SHA}" ]; then
+            echo "Unexpected ${ZSP_MODULE} ${ZSP_VERSION} tag object." >&2
+            echo "expected=${ZSP_TAG_SHA}" >&2
+            echo "actual=${actual_tag_sha}" >&2
+            exit 1
+          fi
+
+          if [ "${actual_commit_sha}" != "${ZSP_COMMIT_SHA}" ]; then
+            echo "Unexpected ${ZSP_MODULE} ${ZSP_VERSION} commit." >&2
+            echo "expected=${ZSP_COMMIT_SHA}" >&2
+            echo "actual=${actual_commit_sha}" >&2
+            exit 1
+          fi
+
+          download_json="$(go mod download -json "${ZSP_MODULE}@${ZSP_VERSION}")"
+          actual_module_sum="$(python3 -c 'import json, sys; print(json.load(sys.stdin)["Sum"])' <<<"${download_json}")"
+          actual_gomod_sum="$(python3 -c 'import json, sys; print(json.load(sys.stdin)["GoModSum"])' <<<"${download_json}")"
+
+          if [ "${actual_module_sum}" != "${ZSP_MODULE_SUM}" ]; then
+            echo "Unexpected ${ZSP_MODULE} ${ZSP_VERSION} module checksum." >&2
+            echo "expected=${ZSP_MODULE_SUM}" >&2
+            echo "actual=${actual_module_sum}" >&2
+            exit 1
+          fi
+
+          if [ "${actual_gomod_sum}" != "${ZSP_GOMOD_SUM}" ]; then
+            echo "Unexpected ${ZSP_MODULE} ${ZSP_VERSION} go.mod checksum." >&2
+            echo "expected=${ZSP_GOMOD_SUM}" >&2
+            echo "actual=${actual_gomod_sum}" >&2
+            exit 1
+          fi
+
+          go install "${ZSP_MODULE}@${ZSP_VERSION}"
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
       - name: Publish to Zapstore
