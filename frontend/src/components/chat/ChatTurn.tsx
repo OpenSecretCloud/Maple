@@ -23,13 +23,7 @@ export function MapleChatAvatar() {
   );
 }
 
-export function ChatUserTurn({
-  children,
-  actions,
-  containerRef,
-  className,
-  actionsClassName
-}: ChatTurnProps & { actionsClassName?: string }) {
+export function ChatUserTurn({ children, actions, containerRef, className }: ChatTurnProps) {
   return (
     <div
       ref={containerRef}
@@ -41,7 +35,7 @@ export function ChatUserTurn({
         </div>
       </div>
       {actions ? (
-        <div className={cn("flex justify-end pr-1 pt-1 transition-opacity", actionsClassName)}>
+        <div className="flex justify-end pr-1 pt-1 opacity-100 transition-opacity md:opacity-0 md:group-hover/user:opacity-100 md:group-focus-within/user:opacity-100 landscape-short:opacity-100">
           {actions}
         </div>
       ) : null}

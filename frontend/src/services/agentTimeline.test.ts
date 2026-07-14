@@ -3,21 +3,26 @@ import type { AgentTimelineItem } from "./agentRuntimeService";
 import {
   activeAgentThinkingItemId,
   coalesceAdjacentThinkingItems,
+  getAgentTurnCopyText,
   groupAgentTimelineItems,
   hasAgentUserMessage,
   hasRenderableThinkingText,
   shouldShowAgentAssistantLoader
 } from "./agentTimeline";
 
+function item(
+  id: string,
+  itemType: AgentTimelineItem["itemType"],
+  role?: AgentTimelineItem["role"],
+  text?: string
+): AgentTimelineItem {
+  return { id, itemType, role, text, createdMs: 0, merge: "replace" };
+}
+
 function thinking(id: string, text: string): AgentTimelineItem {
   return {
-    id,
-    itemType: "thinking",
-    role: "thought",
-    title: "Thinking",
-    text,
-    createdMs: 0,
-    merge: "replace"
+    ...item(id, "thinking", "thought", text),
+    title: "Thinking"
   };
 }
 
@@ -39,22 +44,31 @@ describe("hasRenderableThinkingText", () => {
 
 describe("hasAgentUserMessage", () => {
   test("locks only after a real user message appears", () => {
-    const item = (
-      itemType: AgentTimelineItem["itemType"],
-      role: AgentTimelineItem["role"]
-    ): AgentTimelineItem => ({
-      id: `${itemType}-${role}`,
-      itemType,
-      role,
-      createdMs: 0,
-      merge: "replace"
-    });
-
     expect(hasAgentUserMessage([])).toBe(false);
-    expect(hasAgentUserMessage([item("error", "system"), item("message", "assistant")])).toBe(
-      false
-    );
-    expect(hasAgentUserMessage([item("message", "user")])).toBe(true);
+    expect(
+      hasAgentUserMessage([
+        item("error", "error", "system"),
+        item("assistant", "message", "assistant")
+      ])
+    ).toBe(false);
+    expect(hasAgentUserMessage([item("user", "message", "user")])).toBe(true);
+  });
+});
+
+describe("getAgentTurnCopyText", () => {
+  test("copies raw user text and only the final assistant message", () => {
+    const userText = "## Plan\n\nPreserve `raw` markdown 🍁";
+    const turns = groupAgentTimelineItems([
+      item("leading-tool", "tool", "assistant", "Ignore tool output"),
+      item("user", "message", "user", userText),
+      thinking("thought", "Ignore private reasoning"),
+      item("preamble", "message", "assistant", "Ignore preamble"),
+      item("tool", "tool", "assistant", "Ignore tool call"),
+      item("tool-result", "tool", "assistant", "Ignore tool result"),
+      item("final", "message", "assistant", "**Final** 🍁")
+    ]);
+
+    expect(turns.map(getAgentTurnCopyText)).toEqual(["", userText, "**Final** 🍁"]);
   });
 });
 
@@ -119,14 +133,6 @@ describe("activeAgentThinkingItemId", () => {
 });
 
 describe("groupAgentTimelineItems", () => {
-  function item(
-    id: string,
-    itemType: AgentTimelineItem["itemType"],
-    role?: AgentTimelineItem["role"]
-  ): AgentTimelineItem {
-    return { id, itemType, role, createdMs: 0, merge: "replace" };
-  }
-
   test("groups a complete agent response under one assistant turn", () => {
     const turns = groupAgentTimelineItems([
       item("user", "message", "user"),
