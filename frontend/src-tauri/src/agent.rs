@@ -4,6 +4,7 @@ mod shell_permission;
 use crate::proxy;
 use developer_tools::MapleDeveloperClient;
 use futures_util::StreamExt;
+use goose::agents::extension::Envs;
 use goose::agents::{
     Agent, AgentConfig as GooseAgentConfig, AgentEvent, ExtensionConfig, GoosePlatform,
     SessionConfig,
@@ -59,6 +60,7 @@ const MAPLE_GOOSE_PERMISSION_CONFIG: &str = r#"user:
 "#;
 const RUN_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 const DEFAULT_AGENT_SESSION_TITLE: &str = "New agent session";
+const DEFAULT_MCP_TIMEOUT_SECONDS: u64 = 300;
 const MAX_AGENT_SESSION_TITLE_CHARS: usize = 80;
 const MAX_AGENT_ERROR_CHARS: usize = 1_200;
 static NEXT_RUN_ID: AtomicU64 = AtomicU64::new(1);
@@ -88,6 +90,8 @@ pub struct AgentConfig {
     pub default_project_root: Option<String>,
     #[serde(default = "default_agent_model")]
     pub default_model: String,
+    #[serde(default)]
+    pub mcp_servers: Vec<AgentMcpServer>,
 }
 
 fn default_agent_model() -> String {
@@ -99,8 +103,75 @@ impl Default for AgentConfig {
         Self {
             default_project_root: None,
             default_model: default_agent_model(),
+            mcp_servers: Vec::new(),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentMcpKeyValue {
+    pub key: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum AgentMcpTransport {
+    Stdio {
+        command: String,
+        #[serde(default)]
+        environment: Vec<AgentMcpKeyValue>,
+    },
+    StreamableHttp {
+        url: String,
+        #[serde(default)]
+        environment: Vec<AgentMcpKeyValue>,
+        #[serde(default)]
+        headers: Vec<AgentMcpKeyValue>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentMcpServer {
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_mcp_timeout_seconds")]
+    pub timeout_seconds: u64,
+    pub transport: AgentMcpTransport,
+}
+
+fn default_mcp_timeout_seconds() -> u64 {
+    DEFAULT_MCP_TIMEOUT_SECONDS
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentMcpConnectionError {
+    pub name: String,
+    pub error: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentSessionMcpServer {
+    pub name: String,
+    pub description: String,
+    pub transport: String,
+    pub enabled: bool,
+    pub available: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentSetSessionMcpServerRequest {
+    pub session_id: String,
+    pub name: String,
+    pub enabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -136,6 +207,7 @@ pub struct AgentCreateSessionRequest {
     pub title: Option<String>,
     pub model: Option<String>,
     pub mode: Option<String>,
+    pub mcp_server_names: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -188,6 +260,7 @@ pub struct AgentSessionSummary {
 pub struct AgentSessionDetail {
     pub session: AgentSessionSummary,
     pub timeline: Vec<AgentTimelineItem>,
+    pub mcp_errors: Vec<AgentMcpConnectionError>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -589,7 +662,8 @@ async fn start_runtime_for_user(
         }
     }
 
-    let agent_config = load_agent_config_inner(&app_handle, &user_id).unwrap_or_default();
+    let mut agent_config = load_agent_config_inner(&app_handle, &user_id)
+        .map_err(|error| format!("Failed to load Agent config: {error}"))?;
     let request = request.unwrap_or(AgentStartRequest {
         project_root: None,
         model: None,
@@ -607,7 +681,9 @@ async fn start_runtime_for_user(
 
     let project_root = resolve_project_root(request.project_root.as_deref(), &agent_config)
         .map_err(|e| format!("Failed to resolve Agent Mode project root: {e}"))?;
-    let model = request.model.unwrap_or(agent_config.default_model);
+    let model = request
+        .model
+        .unwrap_or_else(|| agent_config.default_model.clone());
     let mode = request
         .mode
         .unwrap_or_else(|| DEFAULT_GOOSE_MODE.to_string());
@@ -632,7 +708,6 @@ async fn start_runtime_for_user(
         DEFAULT_GOOSE_MODE,
         &maple_proxy_base_url,
     )?;
-
     let session_manager = Arc::new(SessionManager::new(goose_path_root.join("data")));
     let permission_manager = Arc::new(PermissionManager::new(goose_path_root.join("config")));
     let goose_config = GooseAgentConfig::new(
@@ -668,10 +743,9 @@ async fn start_runtime_for_user(
     }
 
     let _ = save_recent_project_root_inner(&app_handle, &user_id, &project_root);
-    let mut next_config = load_agent_config_inner(&app_handle, &user_id).unwrap_or_default();
-    next_config.default_project_root = Some(path_string(&project_root));
-    next_config.default_model = model;
-    let _ = save_agent_config_inner(&app_handle, &user_id, &next_config);
+    agent_config.default_project_root = Some(path_string(&project_root));
+    agent_config.default_model = model;
+    let _ = save_agent_config_inner(&app_handle, &user_id, &agent_config);
 
     emit_agent_event(
         &app_handle,
@@ -796,7 +870,45 @@ pub async fn agent_save_config(
     let generation = account_generation(&state, &account_scope).await;
     let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
     ensure_account_generation(&state, &account_scope, generation).await?;
-    save_agent_config_inner(&app_handle, &user_id, &config).map_err(|e| e.to_string())
+    // MCP definitions have a dedicated mutation command. Preserve them here so
+    // a delayed project/model preference save cannot overwrite newer servers.
+    let mut next = load_agent_config_inner(&app_handle, &user_id).map_err(|e| e.to_string())?;
+    next.default_project_root = config.default_project_root;
+    next.default_model = config.default_model;
+    save_agent_config_inner(&app_handle, &user_id, &next).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn agent_list_mcp_servers(
+    app_handle: AppHandle,
+    state: State<'_, AgentRuntimeState>,
+    user_id: String,
+) -> Result<Vec<AgentMcpServer>, String> {
+    let account_scope = account_scope(&user_id)?;
+    let generation = account_generation(&state, &account_scope).await;
+    let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
+    ensure_account_generation(&state, &account_scope, generation).await?;
+    let config = load_agent_config_inner(&app_handle, &user_id).map_err(|e| e.to_string())?;
+    normalize_mcp_servers(config.mcp_servers)
+}
+
+#[tauri::command]
+pub async fn agent_save_mcp_servers(
+    app_handle: AppHandle,
+    state: State<'_, AgentRuntimeState>,
+    user_id: String,
+    servers: Vec<AgentMcpServer>,
+) -> Result<Vec<AgentMcpServer>, String> {
+    let account_scope = account_scope(&user_id)?;
+    let generation = account_generation(&state, &account_scope).await;
+    let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
+    ensure_account_generation(&state, &account_scope, generation).await?;
+    let servers = normalize_mcp_servers(servers)?;
+    let mut config = load_agent_config_inner(&app_handle, &user_id).map_err(|e| e.to_string())?;
+    config.mcp_servers = servers.clone();
+    save_agent_config_inner(&app_handle, &user_id, &config).map_err(|e| e.to_string())?;
+
+    Ok(servers)
 }
 
 #[tauri::command]
@@ -843,6 +955,7 @@ pub async fn agent_create_session(
         title: None,
         model: None,
         mode: None,
+        mcp_server_names: None,
     });
     let (
         agent_manager,
@@ -878,6 +991,16 @@ pub async fn agent_create_session(
     let mode = request.mode.unwrap_or(runtime_mode);
     let permission_mode = parse_user_permission_mode(&mode)?;
     let model = request.model.unwrap_or(runtime_model);
+    let configured_mcp = normalize_mcp_servers(
+        load_agent_config_inner(&app_handle, &user_id)
+            .map_err(|error| format!("Failed to load MCP servers: {error}"))?
+            .mcp_servers,
+    )?;
+    let selected_mcp = select_mcp_servers(&configured_mcp, request.mcp_server_names.as_deref())?;
+    let selected_extensions = selected_mcp
+        .iter()
+        .map(mcp_server_to_extension)
+        .collect::<Result<Vec<_>, _>>()?;
     let session = session_manager
         .create_session(root.clone(), title, SessionType::User, permission_mode)
         .await
@@ -887,7 +1010,7 @@ pub async fn agent_create_session(
         .lock()
         .await
         .insert(session.id.clone(), permission_mode);
-    configure_session_agent(
+    let (agent, mut mcp_errors) = configure_session_agent(
         &agent_manager,
         &session_manager,
         &session,
@@ -896,11 +1019,24 @@ pub async fn agent_create_session(
         false,
     )
     .await?;
+    if !selected_extensions.is_empty() {
+        match agent
+            .add_extensions_bulk(selected_extensions, &session.id)
+            .await
+        {
+            Ok(results) => mcp_errors.extend(mcp_connection_errors(results)),
+            Err(error) => mcp_errors.push(AgentMcpConnectionError {
+                name: "MCP servers".to_string(),
+                error: error.to_string(),
+            }),
+        }
+    }
     let summary = session_summary(&session);
     let _ = save_recent_project_root_inner(&app_handle, &user_id, &root);
     let detail = AgentSessionDetail {
         session: summary.clone(),
         timeline: Vec::new(),
+        mcp_errors,
     };
     emit_agent_event(
         &app_handle,
@@ -999,7 +1135,153 @@ pub async fn agent_load_session(
     Ok(AgentSessionDetail {
         session: session_summary(&session),
         timeline,
+        mcp_errors: Vec::new(),
     })
+}
+
+#[tauri::command]
+pub async fn agent_list_session_mcp_servers(
+    app_handle: AppHandle,
+    state: State<'_, AgentRuntimeState>,
+    user_id: String,
+    session_id: String,
+) -> Result<Vec<AgentSessionMcpServer>, String> {
+    let account_scope = account_scope(&user_id)?;
+    let generation = account_generation(&state, &account_scope).await;
+    let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
+    ensure_account_generation(&state, &account_scope, generation).await?;
+    let session_manager = {
+        let runtime = state.inner.lock().await;
+        match runtime.as_ref() {
+            Some(current) => {
+                ensure_runtime_account(current, &account_scope)?;
+                Arc::clone(&current.session_manager)
+            }
+            None => account_session_manager(&app_handle, &user_id)?,
+        }
+    };
+    let session = session_manager
+        .get_session(session_id.trim(), false)
+        .await
+        .map_err(|error| format!("Failed to load Goose session: {error}"))?;
+    let configured = normalize_mcp_servers(
+        load_agent_config_inner(&app_handle, &user_id)
+            .map_err(|error| format!("Failed to load MCP servers: {error}"))?
+            .mcp_servers,
+    )?;
+    Ok(session_mcp_servers(&configured, &session))
+}
+
+#[tauri::command]
+pub async fn agent_set_session_mcp_server_enabled(
+    app_handle: AppHandle,
+    state: State<'_, AgentRuntimeState>,
+    user_id: String,
+    request: AgentSetSessionMcpServerRequest,
+) -> Result<Vec<AgentSessionMcpServer>, String> {
+    let account_scope = account_scope(&user_id)?;
+    let generation = account_generation(&state, &account_scope).await;
+    let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
+    ensure_account_generation(&state, &account_scope, generation).await?;
+    let _session_lifecycle_guard = state.session_lifecycle.lock().await;
+    let session_id = request.session_id.trim().to_string();
+    let requested_key = goose::config::extensions::name_to_key(request.name.trim());
+    if session_id.is_empty() {
+        return Err("Agent session ID cannot be empty".to_string());
+    }
+    if requested_key.is_empty() || requested_key == "developer" {
+        return Err("That MCP server cannot be changed".to_string());
+    }
+
+    let (agent_manager, session_manager) = {
+        let runtime = state.inner.lock().await;
+        let current = runtime
+            .as_ref()
+            .ok_or_else(|| "Agent runtime is not running".to_string())?;
+        ensure_runtime_account(current, &account_scope)?;
+        if has_active_session_run(&current.active_runs, &session_id) {
+            return Err("Stop the running agent before changing MCP servers".to_string());
+        }
+        (
+            Arc::clone(&current.agent_manager),
+            Arc::clone(&current.session_manager),
+        )
+    };
+    let configured = normalize_mcp_servers(
+        load_agent_config_inner(&app_handle, &user_id)
+            .map_err(|error| format!("Failed to load MCP servers: {error}"))?
+            .mcp_servers,
+    )?;
+    let _session = session_manager
+        .get_session(&session_id, false)
+        .await
+        .map_err(|error| format!("Failed to load Goose session: {error}"))?;
+    let manager_result = agent_manager
+        .get_or_create_agent_with_runtime_context(
+            session_id.clone(),
+            goose::execution::manager::RuntimeContext::default(),
+        )
+        .await
+        .map_err(|error| format!("Failed to load Goose agent: {error}"))?;
+    for error in mcp_connection_errors(manager_result.extension_results) {
+        log::warn!(
+            "Failed to restore MCP server {}: {}",
+            error.name,
+            error.error
+        );
+    }
+    let agent = manager_result.agent;
+    let active = agent.get_extension_configs().await;
+    let active_config = active
+        .iter()
+        .find(|config| mcp_transport_label(config).is_some() && config.key() == requested_key);
+
+    if request.enabled {
+        if active_config.is_none() {
+            let server = configured
+                .iter()
+                .find(|server| {
+                    goose::config::extensions::name_to_key(&server.name) == requested_key
+                })
+                .ok_or_else(|| {
+                    format!(
+                        "MCP server '{}' is no longer configured and cannot be enabled",
+                        request.name.trim()
+                    )
+                })?;
+            let extension = mcp_server_to_extension(server)?;
+            agent
+                .add_extension(extension, &session_id)
+                .await
+                .map_err(|error| {
+                    format!("Failed to connect MCP server '{}': {error}", server.name)
+                })?;
+        }
+    } else if let Some(config) = active_config {
+        agent
+            .remove_extension(&config.name(), &session_id)
+            .await
+            .map_err(|error| {
+                format!(
+                    "Failed to disconnect MCP server '{}': {error}",
+                    request.name.trim()
+                )
+            })?;
+    } else {
+        // A failed cold restore may already have removed the server from the
+        // live manager. Persist that authoritative state so the UI still gets
+        // a successful, durable disable operation.
+        agent
+            .persist_extension_state(&session_id)
+            .await
+            .map_err(|error| format!("Failed to save MCP session state: {error}"))?;
+    }
+
+    let refreshed = session_manager
+        .get_session(&session_id, false)
+        .await
+        .map_err(|error| format!("Failed to reload Goose session: {error}"))?;
+    Ok(session_mcp_servers(&configured, &refreshed))
 }
 
 #[tauri::command]
@@ -1195,7 +1477,10 @@ pub async fn agent_send_message(
     };
     let effective_mode = permission_mode.to_string();
 
-    let setup_result: Result<(Arc<Agent>, AgentTurnSnapshot), String> = async {
+    let setup_result: Result<
+        (Arc<Agent>, AgentTurnSnapshot, Vec<AgentMcpConnectionError>),
+        String,
+    > = async {
         let mut session = session_manager
             .get_session(&request.session_id, true)
             .await
@@ -1241,7 +1526,7 @@ pub async fn agent_send_message(
                 },
             );
         }
-        let agent = configure_session_agent(
+        let (agent, mcp_errors) = configure_session_agent(
             &agent_manager,
             &session_manager,
             &session,
@@ -1250,10 +1535,10 @@ pub async fn agent_send_message(
             request.vision_capable,
         )
         .await?;
-        Ok((agent, turn_snapshot))
+        Ok((agent, turn_snapshot, mcp_errors))
     }
     .await;
-    let (agent, task_turn_snapshot) = match setup_result {
+    let (agent, task_turn_snapshot, mcp_errors) = match setup_result {
         Ok(setup) => setup,
         Err(error) => {
             if seeded_permission_mode {
@@ -1265,6 +1550,20 @@ pub async fn agent_send_message(
             return Err(error);
         }
     };
+    if !mcp_errors.is_empty() {
+        emit_agent_event(
+            &app_handle,
+            AgentEventEnvelope {
+                event_type: "error".to_string(),
+                session_id: None,
+                run_id: Some(run_id.clone()),
+                item: None,
+                status: None,
+                session: None,
+                message: Some(format_mcp_connection_errors(&mcp_errors)),
+            },
+        );
+    }
 
     let app_handle_for_task = app_handle.clone();
     let state_inner = Arc::clone(&state.inner);
@@ -2275,11 +2574,16 @@ async fn configure_session_agent(
     model: &str,
     mode: &str,
     primary_model_supports_vision: bool,
-) -> Result<Arc<Agent>, String> {
-    let agent = agent_manager
-        .get_or_create_agent(session.id.clone())
+) -> Result<(Arc<Agent>, Vec<AgentMcpConnectionError>), String> {
+    let manager_result = agent_manager
+        .get_or_create_agent_with_runtime_context(
+            session.id.clone(),
+            goose::execution::manager::RuntimeContext::default(),
+        )
         .await
         .map_err(|e| format!("Failed to get Goose agent for session {}: {e}", session.id))?;
+    let agent = manager_result.agent;
+    let mcp_errors = mcp_connection_errors(manager_result.extension_results);
     let provider = goose::providers::create_with_working_dir(
         "openai",
         Vec::new(),
@@ -2337,7 +2641,7 @@ async fn configure_session_agent(
         .apply()
         .await
         .map_err(|e| format!("Failed to persist Agent permission mode: {e}"))?;
-    Ok(agent)
+    Ok((agent, mcp_errors))
 }
 
 #[derive(Default)]
@@ -3183,6 +3487,308 @@ fn parse_user_permission_mode(mode: &str) -> Result<GooseMode, String> {
     }
 }
 
+fn normalize_mcp_servers(mut servers: Vec<AgentMcpServer>) -> Result<Vec<AgentMcpServer>, String> {
+    let mut names = HashSet::new();
+
+    for server in &mut servers {
+        server.name = server.name.trim().to_string();
+        server.description = server.description.trim().to_string();
+        if server.name.is_empty() {
+            return Err("MCP server name cannot be empty".to_string());
+        }
+        if server.name.chars().count() > 64 {
+            return Err(format!(
+                "MCP server name '{}' must be 64 characters or fewer",
+                server.name
+            ));
+        }
+        let key = goose::config::extensions::name_to_key(&server.name);
+        if key.is_empty() {
+            return Err(format!(
+                "MCP server name '{}' must contain a letter, number, underscore, or hyphen",
+                server.name
+            ));
+        }
+        if key == "developer" {
+            return Err("The MCP server name 'developer' is reserved by Maple".to_string());
+        }
+        if !names.insert(key) {
+            return Err(format!(
+                "MCP server name '{}' conflicts with another configured server",
+                server.name
+            ));
+        }
+        if server.timeout_seconds == 0 {
+            return Err(format!(
+                "MCP server '{}' must have a timeout greater than zero",
+                server.name
+            ));
+        }
+
+        let environment = match &mut server.transport {
+            AgentMcpTransport::Stdio {
+                command,
+                environment,
+            } => {
+                *command = command.trim().to_string();
+                if command.is_empty() {
+                    return Err(format!("MCP server '{}' requires a command", server.name));
+                }
+                let parts = split_mcp_command(command, &server.name)?;
+                if parts.is_empty() || parts[0].is_empty() {
+                    return Err(format!(
+                        "MCP server '{}' requires an executable",
+                        server.name
+                    ));
+                }
+                validate_mcp_key_values(environment, &server.name, "environment variable", false)?;
+                environment
+            }
+            AgentMcpTransport::StreamableHttp {
+                url,
+                environment,
+                headers,
+            } => {
+                *url = url.trim().to_string();
+                if url.is_empty() {
+                    return Err(format!(
+                        "MCP server '{}' requires an endpoint URL",
+                        server.name
+                    ));
+                }
+                validate_mcp_key_values(environment, &server.name, "environment variable", false)?;
+                validate_mcp_key_values(headers, &server.name, "HTTP header", true)?;
+                environment
+            }
+        };
+
+        for entry in environment {
+            let accepted = Envs::new(HashMap::from([(entry.key.clone(), entry.value.clone())]))
+                .get_env()
+                .contains_key(&entry.key);
+            if !accepted {
+                return Err(format!(
+                    "MCP server '{}' cannot override the environment variable {}",
+                    server.name, entry.key
+                ));
+            }
+        }
+    }
+
+    Ok(servers)
+}
+
+fn validate_mcp_key_values(
+    entries: &mut [AgentMcpKeyValue],
+    server_name: &str,
+    label: &str,
+    case_insensitive: bool,
+) -> Result<(), String> {
+    let mut keys = HashSet::new();
+    for entry in entries {
+        entry.key = entry.key.trim().to_string();
+        if entry.key.is_empty() {
+            return Err(format!(
+                "MCP server '{server_name}' has an empty {label} name"
+            ));
+        }
+        if label == "HTTP header" && entry.key.chars().any(char::is_whitespace) {
+            return Err(format!(
+                "MCP server '{server_name}' HTTP header names cannot contain whitespace"
+            ));
+        }
+        let comparison_key = if case_insensitive {
+            entry.key.to_ascii_lowercase()
+        } else {
+            entry.key.clone()
+        };
+        if !keys.insert(comparison_key) {
+            return Err(format!(
+                "MCP server '{server_name}' has a duplicate {label} named {}",
+                entry.key
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn mcp_environment(server: &AgentMcpServer) -> &[AgentMcpKeyValue] {
+    match &server.transport {
+        AgentMcpTransport::Stdio { environment, .. }
+        | AgentMcpTransport::StreamableHttp { environment, .. } => environment,
+    }
+}
+
+fn split_mcp_command(command: &str, server_name: &str) -> Result<Vec<String>, String> {
+    goose::utils::split_command_args(command)
+        .map_err(|error| format!("MCP server '{server_name}' has an invalid command: {error}"))
+}
+
+fn mcp_server_to_extension(server: &AgentMcpServer) -> Result<ExtensionConfig, String> {
+    let envs = Envs::new(
+        mcp_environment(server)
+            .iter()
+            .map(|entry| (entry.key.clone(), entry.value.clone()))
+            .collect(),
+    );
+    match &server.transport {
+        AgentMcpTransport::Stdio { command, .. } => {
+            let mut parts = split_mcp_command(command, &server.name)?;
+            if parts.is_empty() {
+                return Err(format!("MCP server '{}' requires a command", server.name));
+            }
+            let cmd = parts.remove(0);
+            Ok(ExtensionConfig::Stdio {
+                name: server.name.clone(),
+                description: server.description.clone(),
+                cmd,
+                args: parts,
+                envs,
+                env_keys: Vec::new(),
+                timeout: Some(server.timeout_seconds),
+                cwd: None,
+                bundled: Some(false),
+                available_tools: Vec::new(),
+            })
+        }
+        AgentMcpTransport::StreamableHttp { url, headers, .. } => {
+            Ok(ExtensionConfig::StreamableHttp {
+                name: server.name.clone(),
+                description: server.description.clone(),
+                uri: url.clone(),
+                envs,
+                env_keys: Vec::new(),
+                headers: headers
+                    .iter()
+                    .map(|entry| (entry.key.clone(), entry.value.clone()))
+                    .collect(),
+                timeout: Some(server.timeout_seconds),
+                socket: None,
+                bundled: Some(false),
+                available_tools: Vec::new(),
+            })
+        }
+    }
+}
+
+fn select_mcp_servers(
+    configured: &[AgentMcpServer],
+    requested_names: Option<&[String]>,
+) -> Result<Vec<AgentMcpServer>, String> {
+    let Some(requested_names) = requested_names else {
+        return Ok(configured
+            .iter()
+            .filter(|server| server.enabled)
+            .cloned()
+            .collect());
+    };
+    let configured_by_key = configured
+        .iter()
+        .map(|server| (goose::config::extensions::name_to_key(&server.name), server))
+        .collect::<HashMap<_, _>>();
+    let mut selected = Vec::new();
+    let mut seen = HashSet::new();
+    for requested_name in requested_names {
+        let key = goose::config::extensions::name_to_key(requested_name.trim());
+        if !seen.insert(key.clone()) {
+            continue;
+        }
+        let server = configured_by_key.get(&key).ok_or_else(|| {
+            format!(
+                "MCP server '{}' is no longer configured. Reopen the MCP menu and try again.",
+                requested_name.trim()
+            )
+        })?;
+        selected.push((*server).clone());
+    }
+    Ok(selected)
+}
+
+fn mcp_connection_errors(
+    results: Vec<goose::agents::ExtensionLoadResult>,
+) -> Vec<AgentMcpConnectionError> {
+    results
+        .into_iter()
+        .filter_map(|result| {
+            (!result.success).then(|| AgentMcpConnectionError {
+                name: result.name,
+                error: result
+                    .error
+                    .unwrap_or_else(|| "Connection failed".to_string()),
+            })
+        })
+        .collect()
+}
+
+fn format_mcp_connection_errors(errors: &[AgentMcpConnectionError]) -> String {
+    let details = errors
+        .iter()
+        .map(|error| format!("{}: {}", error.name, error.error))
+        .collect::<Vec<_>>()
+        .join("; ");
+    format!("Some MCP servers could not connect: {details}")
+}
+
+fn mcp_transport_label(config: &ExtensionConfig) -> Option<&'static str> {
+    match config {
+        ExtensionConfig::Stdio { .. } => Some("stdio"),
+        ExtensionConfig::StreamableHttp { .. } => Some("streamable_http"),
+        _ => None,
+    }
+}
+
+fn mcp_extension_description(config: &ExtensionConfig) -> String {
+    match config {
+        ExtensionConfig::Stdio { description, .. }
+        | ExtensionConfig::StreamableHttp { description, .. } => description.clone(),
+        _ => String::new(),
+    }
+}
+
+fn session_mcp_servers(
+    configured: &[AgentMcpServer],
+    session: &Session,
+) -> Vec<AgentSessionMcpServer> {
+    let active =
+        goose::session::EnabledExtensionsState::from_extension_data(&session.extension_data)
+            .map(|state| state.extensions)
+            .unwrap_or_default();
+    let active_keys = active
+        .iter()
+        .filter(|config| mcp_transport_label(config).is_some())
+        .map(ExtensionConfig::key)
+        .collect::<HashSet<_>>();
+    let mut entries = configured
+        .iter()
+        .map(|server| AgentSessionMcpServer {
+            name: server.name.clone(),
+            description: server.description.clone(),
+            transport: match server.transport {
+                AgentMcpTransport::Stdio { .. } => "stdio",
+                AgentMcpTransport::StreamableHttp { .. } => "streamable_http",
+            }
+            .to_string(),
+            enabled: active_keys.contains(&goose::config::extensions::name_to_key(&server.name)),
+            available: true,
+        })
+        .collect::<Vec<_>>();
+    let configured_keys = configured
+        .iter()
+        .map(|server| goose::config::extensions::name_to_key(&server.name))
+        .collect::<HashSet<_>>();
+    entries.extend(active.iter().filter_map(|config| {
+        let transport = mcp_transport_label(config)?;
+        (!configured_keys.contains(&config.key())).then(|| AgentSessionMcpServer {
+            name: config.name(),
+            description: mcp_extension_description(config),
+            transport: transport.to_string(),
+            enabled: true,
+            available: false,
+        })
+    }));
+    entries
+}
+
 fn stopped_status() -> AgentRuntimeStatus {
     AgentRuntimeStatus {
         running: false,
@@ -3286,15 +3892,19 @@ fn load_agent_config_inner(
     user_id: &str,
 ) -> Result<AgentConfig, anyhow::Error> {
     let path = agent_config_dir(app_handle, user_id)?.join("config.json");
-    if !path.exists() {
-        return Ok(AgentConfig::default());
-    }
-    let contents = fs::read_to_string(path)?;
-    let mut config: AgentConfig = serde_json::from_str(&contents)?;
+    let mut config = load_agent_config_file(&path)?;
     if migrate_agent_config(&mut config) {
         save_agent_config_inner(app_handle, user_id, &config)?;
     }
     Ok(config)
+}
+
+fn load_agent_config_file(path: &Path) -> Result<AgentConfig, anyhow::Error> {
+    if !path.exists() {
+        return Ok(AgentConfig::default());
+    }
+    let contents = fs::read_to_string(path)?;
+    Ok(serde_json::from_str(&contents)?)
 }
 
 fn migrate_agent_config(config: &mut AgentConfig) -> bool {
@@ -3402,6 +4012,7 @@ mod tests {
     #[test]
     fn fresh_agent_config_defaults_to_glm() {
         assert_eq!(AgentConfig::default().default_model, DEFAULT_AGENT_MODEL);
+        assert!(AgentConfig::default().mcp_servers.is_empty());
 
         let config: AgentConfig = serde_json::from_value(json!({
             "defaultProjectRoot": null,
@@ -3409,6 +4020,186 @@ mod tests {
         }))
         .expect("legacy config without a model should deserialize");
         assert_eq!(config.default_model, DEFAULT_AGENT_MODEL);
+        assert!(config.mcp_servers.is_empty());
+    }
+
+    fn stdio_mcp(name: &str, enabled: bool) -> AgentMcpServer {
+        AgentMcpServer {
+            name: name.to_string(),
+            description: "Test server".to_string(),
+            enabled,
+            timeout_seconds: 30,
+            transport: AgentMcpTransport::Stdio {
+                command: "tool --flag 'two words'".to_string(),
+                environment: vec![AgentMcpKeyValue {
+                    key: "MCP_TOKEN".to_string(),
+                    value: "super-secret-value".to_string(),
+                }],
+            },
+        }
+    }
+
+    #[test]
+    fn mcp_stdio_command_and_environment_are_frozen_in_the_session_snapshot() {
+        let servers = normalize_mcp_servers(vec![stdio_mcp("My Server", true)]).unwrap();
+        let config = mcp_server_to_extension(&servers[0]).unwrap();
+        let ExtensionConfig::Stdio {
+            cmd,
+            args,
+            envs,
+            env_keys,
+            ..
+        } = &config
+        else {
+            panic!("expected stdio extension");
+        };
+        assert_eq!(cmd, "tool");
+        assert_eq!(args, &["--flag", "two words"]);
+        assert_eq!(
+            envs.get_env().get("MCP_TOKEN").map(String::as_str),
+            Some("super-secret-value")
+        );
+        assert!(env_keys.is_empty());
+
+        let persisted = serde_json::to_string(&config).unwrap();
+        assert!(persisted.contains("super-secret-value"));
+    }
+
+    #[test]
+    fn mcp_stdio_command_preserves_windows_paths_and_apostrophes() {
+        let cases = [
+            (
+                r"C:\tools\mcp.exe --arg value",
+                r"C:\tools\mcp.exe",
+                vec!["--arg", "value"],
+            ),
+            (
+                r#""C:\Program Files\server\mcp.exe" --arg"#,
+                r"C:\Program Files\server\mcp.exe",
+                vec!["--arg"],
+            ),
+            (
+                "O'Reilly wrote don't split",
+                "O'Reilly",
+                vec!["wrote", "don't", "split"],
+            ),
+        ];
+
+        for (command, expected_cmd, expected_args) in cases {
+            let mut server = stdio_mcp("portable", true);
+            let AgentMcpTransport::Stdio {
+                command: server_command,
+                ..
+            } = &mut server.transport
+            else {
+                unreachable!();
+            };
+            *server_command = command.to_string();
+            let server = normalize_mcp_servers(vec![server]).unwrap().remove(0);
+            let ExtensionConfig::Stdio { cmd, args, .. } =
+                mcp_server_to_extension(&server).unwrap()
+            else {
+                panic!("expected stdio extension");
+            };
+            assert_eq!(cmd, expected_cmd);
+            assert_eq!(args, expected_args);
+        }
+    }
+
+    #[test]
+    fn mcp_server_names_use_goose_normalization_and_reserve_developer() {
+        let duplicate = normalize_mcp_servers(vec![
+            stdio_mcp("My Server", true),
+            stdio_mcp("myserver", false),
+        ])
+        .unwrap_err();
+        assert!(duplicate.contains("conflicts"));
+
+        let reserved = normalize_mcp_servers(vec![stdio_mcp("Developer", true)]).unwrap_err();
+        assert!(reserved.contains("reserved"));
+    }
+
+    #[test]
+    fn mcp_validation_rejects_unsafe_env_and_duplicate_headers() {
+        let mut unsafe_server = stdio_mcp("unsafe", true);
+        let AgentMcpTransport::Stdio { environment, .. } = &mut unsafe_server.transport else {
+            unreachable!();
+        };
+        environment[0].key = "NODE_OPTIONS".to_string();
+        assert!(normalize_mcp_servers(vec![unsafe_server])
+            .unwrap_err()
+            .contains("cannot override"));
+
+        let duplicate_headers = AgentMcpServer {
+            name: "http".to_string(),
+            description: String::new(),
+            enabled: true,
+            timeout_seconds: 30,
+            transport: AgentMcpTransport::StreamableHttp {
+                url: "http://127.0.0.1:3000/mcp".to_string(),
+                environment: Vec::new(),
+                headers: vec![
+                    AgentMcpKeyValue {
+                        key: "Authorization".to_string(),
+                        value: "first".to_string(),
+                    },
+                    AgentMcpKeyValue {
+                        key: "authorization".to_string(),
+                        value: "second".to_string(),
+                    },
+                ],
+            },
+        };
+        assert!(normalize_mcp_servers(vec![duplicate_headers])
+            .unwrap_err()
+            .contains("duplicate HTTP header"));
+    }
+
+    #[test]
+    fn mcp_environment_values_are_independent_between_servers() {
+        let first = stdio_mcp("first", true);
+        let mut second = stdio_mcp("second", true);
+        let AgentMcpTransport::Stdio { environment, .. } = &mut second.transport else {
+            unreachable!();
+        };
+        environment[0].value = "different-value".to_string();
+
+        assert!(normalize_mcp_servers(vec![first, second]).is_ok());
+    }
+
+    #[test]
+    fn malformed_agent_config_is_rejected_without_being_rewritten() {
+        let test_root = std::env::temp_dir().join(format!(
+            "maple-agent-malformed-config-{}-{}",
+            std::process::id(),
+            unix_ms()
+        ));
+        let path = test_root.join("config.json");
+        let original = br#"{"defaultModel":"glm-5-2","mcpServers":[{"transport":{"type":"future_transport"}}]}"#;
+        fs::create_dir_all(&test_root).unwrap();
+        fs::write(&path, original).unwrap();
+
+        assert!(load_agent_config_file(&path).is_err());
+        assert_eq!(fs::read(&path).unwrap(), original);
+
+        let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[test]
+    fn mcp_selection_distinguishes_defaults_from_explicit_empty() {
+        let configured = normalize_mcp_servers(vec![
+            stdio_mcp("default", true),
+            stdio_mcp("optional", false),
+        ])
+        .unwrap();
+        assert_eq!(select_mcp_servers(&configured, None).unwrap().len(), 1);
+        assert!(select_mcp_servers(&configured, Some(&[]))
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            select_mcp_servers(&configured, Some(&["optional".to_string()])).unwrap()[0].name,
+            "optional"
+        );
     }
 
     #[test]
@@ -3526,6 +4317,7 @@ mod tests {
         let mut config = AgentConfig {
             default_project_root: Some("/tmp/project".to_string()),
             default_model: LEGACY_AGENT_DEFAULT_MODEL.to_string(),
+            mcp_servers: Vec::new(),
         };
 
         assert!(migrate_agent_config(&mut config));
@@ -3539,6 +4331,7 @@ mod tests {
             let mut config = AgentConfig {
                 default_project_root: None,
                 default_model: model.to_string(),
+                mcp_servers: Vec::new(),
             };
 
             assert!(!migrate_agent_config(&mut config));
