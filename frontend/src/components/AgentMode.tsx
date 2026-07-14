@@ -50,17 +50,26 @@ import { Sidebar, SidebarToggle } from "@/components/Sidebar";
 import { MapleWordmark } from "@/components/MapleWordmark";
 import { DeleteChatDialog } from "@/components/DeleteChatDialog";
 import { UpgradePromptDialog } from "@/components/UpgradePromptDialog";
+import { AgentMcpMenu, AgentMcpServersDialog } from "@/components/agent/AgentMcpControls";
 import {
   agentRuntimeService,
   awaitAgentAuthUser,
   type AgentConfig,
   type AgentEventEnvelope,
+  type AgentMcpServer,
   type AgentPermissionDecision,
   type AgentRuntimeStatus,
+  type AgentSessionMcpServer,
   type AgentSessionSummary,
   type AgentTimelineItem,
   type RecentProjectRoot
 } from "@/services/agentRuntimeService";
+import {
+  isMcpConnectionErrorEvent,
+  mcpConnectionErrorMessage,
+  userFacingAgentError
+} from "@/services/agentMcpErrors";
+import { reconcileNewChatMcpServerNames } from "@/services/agentMcpServers";
 import {
   AgentProxyManualConfigConflictError,
   AgentProxyReplacementSetupError,
@@ -230,6 +239,14 @@ export function AgentMode({ userId }: { userId: string }) {
   const [model, setModel] = useState(DEFAULT_MODEL);
   const [mode, setMode] = useState<AgentPermissionMode>(DEFAULT_MODE);
   const [timelineItems, setTimelineItems] = useState<AgentTimelineItem[]>([]);
+  const [mcpServers, setMcpServers] = useState<AgentMcpServer[]>([]);
+  const [newChatMcpServerNames, setNewChatMcpServerNames] = useState<Set<string>>(() => new Set());
+  const [sessionMcpServers, setSessionMcpServers] = useState<AgentSessionMcpServer[]>([]);
+  const [sessionMcpServersSessionId, setSessionMcpServersSessionId] = useState<string | null>(null);
+  const [isMcpServersDialogOpen, setIsMcpServersDialogOpen] = useState(false);
+  const [isMcpServersLoading, setIsMcpServersLoading] = useState(true);
+  const [isSessionMcpServersLoading, setIsSessionMcpServersLoading] = useState(false);
+  const [isMcpServerTogglePending, setIsMcpServerTogglePending] = useState(false);
   const [input, setInput] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [hasManualProxyConflict, setHasManualProxyConflict] = useState(false);
@@ -265,6 +282,8 @@ export function AgentMode({ userId }: { userId: string }) {
   const startRequestGenerationRef = useRef(0);
   const runStateGenerationRef = useRef(0);
   const isAgentModelLockedRef = useRef(false);
+  const mcpSessionLoadGenerationRef = useRef(0);
+  const mcpToggleGenerationRef = useRef(0);
 
   const applyAuthoritativeMode = useCallback((value: AgentPermissionMode) => {
     selectedModeRef.current = value;
@@ -342,6 +361,39 @@ export function AgentMode({ userId }: { userId: string }) {
   const isAgentModelSelectionDisabled = areAgentSettingsLocked || isAgentModelLocked;
   const isAgentSendLocked = areAgentSettingsLocked;
   const isSending = Boolean(activeRunId) || isSubmitting;
+  const selectedNewChatMcpServerNames = useMemo(
+    () =>
+      mcpServers
+        .filter((server) => newChatMcpServerNames.has(server.name))
+        .map((server) => server.name),
+    [mcpServers, newChatMcpServerNames]
+  );
+  const composerMcpServers = useMemo<AgentSessionMcpServer[]>(
+    () =>
+      activeSessionId
+        ? sessionMcpServersSessionId === activeSessionId
+          ? sessionMcpServers
+          : []
+        : mcpServers.map((server) => ({
+            name: server.name,
+            description: server.description,
+            transport: server.transport.type,
+            enabled: newChatMcpServerNames.has(server.name),
+            available: true
+          })),
+    [
+      activeSessionId,
+      mcpServers,
+      newChatMcpServerNames,
+      sessionMcpServers,
+      sessionMcpServersSessionId
+    ]
+  );
+  const isMcpToggleDisabled =
+    areAgentSettingsLocked || Boolean(activeRunId) || isMcpServerTogglePending;
+  const isComposerMcpLoading = activeSessionId
+    ? isSessionMcpServersLoading || sessionMcpServersSessionId !== activeSessionId
+    : isMcpServersLoading;
   const runningSessionIds = useMemo(() => {
     const ids = new Set(Object.keys(activeRunsBySession));
     for (const sessionId of pendingSendSessionIds) {
@@ -574,6 +626,111 @@ export function AgentMode({ userId }: { userId: string }) {
     });
   }, [applyRuntimeStatus, refreshSessionList, trackAgentWorkflow, userId]);
 
+  const refreshSessionMcpServers = useCallback(
+    async (sessionId: string) => {
+      const generation = mcpSessionLoadGenerationRef.current + 1;
+      mcpSessionLoadGenerationRef.current = generation;
+      setIsSessionMcpServersLoading(true);
+      try {
+        const nextServers = await agentRuntimeService.listSessionMcpServers(userId, sessionId);
+        if (
+          mcpSessionLoadGenerationRef.current === generation &&
+          activeSessionIdRef.current === sessionId
+        ) {
+          setSessionMcpServers(nextServers);
+          setSessionMcpServersSessionId(sessionId);
+        }
+        return nextServers;
+      } finally {
+        if (mcpSessionLoadGenerationRef.current === generation) {
+          setIsSessionMcpServersLoading(false);
+        }
+      }
+    },
+    [userId]
+  );
+
+  const saveMcpServers = useCallback(
+    async (nextServers: AgentMcpServer[]) => {
+      const previousServers = mcpServers;
+      const savedServers = await agentRuntimeService.saveMcpServers(userId, nextServers);
+      setMcpServers(savedServers);
+      setNewChatMcpServerNames((current) =>
+        reconcileNewChatMcpServerNames(previousServers, savedServers, current)
+      );
+
+      const sessionId = activeSessionIdRef.current;
+      if (sessionId) {
+        void refreshSessionMcpServers(sessionId).catch((loadError) => {
+          if (activeSessionIdRef.current === sessionId) {
+            setError(errorMessage(loadError));
+          }
+        });
+      }
+    },
+    [mcpServers, refreshSessionMcpServers, userId]
+  );
+
+  const toggleMcpServer = useCallback(
+    (name: string, enabled: boolean) => {
+      const sessionId = activeSessionIdRef.current;
+      if (!sessionId) {
+        setNewChatMcpServerNames((current) => {
+          const next = new Set(current);
+          if (enabled) {
+            next.add(name);
+          } else {
+            next.delete(name);
+          }
+          return next;
+        });
+        return;
+      }
+
+      const toggleGeneration = mcpToggleGenerationRef.current + 1;
+      mcpToggleGenerationRef.current = toggleGeneration;
+      setError(null);
+      setIsMcpServerTogglePending(true);
+      void agentRuntimeService
+        .setSessionMcpServerEnabled(userId, sessionId, name, enabled)
+        .then((nextServers) => {
+          if (activeSessionIdRef.current === sessionId) {
+            setSessionMcpServers(nextServers);
+            setSessionMcpServersSessionId(sessionId);
+          }
+        })
+        .catch((toggleError) => {
+          if (activeSessionIdRef.current === sessionId) {
+            setError(errorMessage(toggleError));
+          }
+        })
+        .finally(() => {
+          if (mcpToggleGenerationRef.current === toggleGeneration) {
+            setIsMcpServerTogglePending(false);
+          }
+        });
+    },
+    [userId]
+  );
+
+  useEffect(() => {
+    mcpToggleGenerationRef.current += 1;
+    setIsMcpServerTogglePending(false);
+    if (!activeSessionId) {
+      mcpSessionLoadGenerationRef.current += 1;
+      setSessionMcpServers([]);
+      setSessionMcpServersSessionId(null);
+      setIsSessionMcpServersLoading(false);
+      return;
+    }
+
+    void refreshSessionMcpServers(activeSessionId).catch((loadError) => {
+      if (activeSessionIdRef.current === activeSessionId) {
+        setError(errorMessage(loadError));
+      }
+    });
+  }, [activeSessionId, refreshSessionMcpServers]);
+
   useEffect(() => {
     let cancelled = false;
     const initializationGeneration = interactionGenerationRef.current;
@@ -582,10 +739,11 @@ export function AgentMode({ userId }: { userId: string }) {
       if (!isTauriDesktop()) return;
       try {
         const runStateGeneration = runStateGenerationRef.current;
-        const [status, config, roots] = await Promise.all([
+        const [status, config, roots, savedMcpServers] = await Promise.all([
           agentRuntimeService.getRuntimeStatus(userId),
           agentRuntimeService.loadConfig(userId),
-          agentRuntimeService.listRecentProjectRoots(userId)
+          agentRuntimeService.listRecentProjectRoots(userId),
+          agentRuntimeService.listMcpServers(userId)
         ]);
         if (cancelled || interactionGenerationRef.current !== initializationGeneration) {
           return;
@@ -593,6 +751,11 @@ export function AgentMode({ userId }: { userId: string }) {
 
         applyRuntimeStatus(status, runStateGeneration);
         setRecentRoots(roots);
+        setMcpServers(savedMcpServers);
+        setNewChatMcpServerNames(
+          new Set(savedMcpServers.filter((server) => server.enabled).map((server) => server.name))
+        );
+        setIsMcpServersLoading(false);
         const root = config.defaultProjectRoot || status.projectRoot || roots[0]?.path || "";
         const nextModel = status.model || config.defaultModel || DEFAULT_MODEL;
         const nextMode = normalizeAgentPermissionMode(status.mode);
@@ -652,7 +815,10 @@ export function AgentMode({ userId }: { userId: string }) {
         }
       })
       .finally(() => {
-        if (!cancelled) setIsInitializing(false);
+        if (!cancelled) {
+          setIsInitializing(false);
+          setIsMcpServersLoading(false);
+        }
       });
     return () => {
       cancelled = true;
@@ -910,7 +1076,8 @@ export function AgentMode({ userId }: { userId: string }) {
           projectRoot,
           title: "New agent session",
           model: model || DEFAULT_MODEL,
-          mode: selectedModeRef.current
+          mode: selectedModeRef.current,
+          mcpServerNames: selectedNewChatMcpServerNames
         });
         // Goose may reuse the newest deleted session ID. This detail represents
         // a new persisted session, so it supersedes any local deletion tombstone.
@@ -934,12 +1101,22 @@ export function AgentMode({ userId }: { userId: string }) {
           setActiveSessionId(sessionId);
           applyAuthoritativeMode(normalizeAgentPermissionMode(detail.session.mode));
           replaceSessionTimeline(sessionId, detail.timeline);
+          const mcpError = mcpConnectionErrorMessage(detail.mcpErrors);
+          if (mcpError) setError(mcpError);
         }
       }
 
       return sessionId;
     },
-    [applyAuthoritativeMode, model, projectRoot, replaceSessionTimeline, startRuntime, userId]
+    [
+      applyAuthoritativeMode,
+      model,
+      projectRoot,
+      replaceSessionTimeline,
+      selectedNewChatMcpServerNames,
+      startRuntime,
+      userId
+    ]
   );
 
   const createSession = useCallback(async () => {
@@ -956,7 +1133,8 @@ export function AgentMode({ userId }: { userId: string }) {
           projectRoot,
           title: "New agent session",
           model: model || DEFAULT_MODEL,
-          mode: selectedModeRef.current
+          mode: selectedModeRef.current,
+          mcpServerNames: selectedNewChatMcpServerNames
         });
       });
       deletedSessionIdsRef.current.delete(detail.session.id);
@@ -975,6 +1153,8 @@ export function AgentMode({ userId }: { userId: string }) {
         setActiveSessionId(detail.session.id);
         applyAuthoritativeMode(normalizeAgentPermissionMode(detail.session.mode));
         replaceSessionTimeline(detail.session.id, detail.timeline);
+        const mcpError = mcpConnectionErrorMessage(detail.mcpErrors);
+        if (mcpError) setError(mcpError);
       }
     } catch (createError) {
       if (
@@ -994,6 +1174,7 @@ export function AgentMode({ userId }: { userId: string }) {
     projectRoot,
     replaceSessionTimeline,
     runtimeStatus?.running,
+    selectedNewChatMcpServerNames,
     startRuntime,
     trackAgentWorkflow,
     userId
@@ -1044,6 +1225,8 @@ export function AgentMode({ userId }: { userId: string }) {
         }
         applyAuthoritativeMode(normalizeAgentPermissionMode(detail.session.mode));
         setTimelineItems(detail.timeline);
+        const mcpError = mcpConnectionErrorMessage(detail.mcpErrors);
+        if (mcpError) setError(mcpError);
         finishSessionSelection(selectionGeneration);
 
         try {
@@ -1379,7 +1562,11 @@ export function AgentMode({ userId }: { userId: string }) {
         }
         case "error":
           if (event.message && !event.sessionId) {
-            setError(event.message);
+            setError(userFacingAgentError(event.message));
+            const sessionId = activeSessionIdRef.current;
+            if (sessionId && isMcpConnectionErrorEvent(event.message)) {
+              void refreshSessionMcpServers(sessionId).catch(() => {});
+            }
           }
           if (event.item && event.sessionId) {
             mergeSessionTimelineItem(event.sessionId, event.item);
@@ -1413,6 +1600,7 @@ export function AgentMode({ userId }: { userId: string }) {
       mergeSessionTimelineItem,
       refreshSessionList,
       recordActiveRun,
+      refreshSessionMcpServers,
       replaceSessionTimeline,
       upsertSessionSummary,
       userId
@@ -1503,6 +1691,14 @@ export function AgentMode({ userId }: { userId: string }) {
         />
       ) : null}
 
+      <AgentMcpServersDialog
+        open={isMcpServersDialogOpen}
+        servers={mcpServers}
+        disabled={!isAuthTransitionReady || isInitializing}
+        onOpenChange={setIsMcpServersDialogOpen}
+        onSave={saveMcpServers}
+      />
+
       <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         {!isSidebarOpen && (
           <div className="fixed left-4 top-[9.5px] z-20 flex items-center gap-1.5">
@@ -1576,7 +1772,10 @@ export function AgentMode({ userId }: { userId: string }) {
                   isSendDisabled={isAgentSendLocked}
                   isSending={isSending}
                   isStarting={isStarting}
+                  isMcpLoading={isComposerMcpLoading}
+                  isMcpToggleDisabled={isMcpToggleDisabled}
                   isModelSelectionDisabled={isAgentModelSelectionDisabled}
+                  mcpServers={composerMcpServers}
                   mode={mode}
                   model={model}
                   projectRoot={projectRoot}
@@ -1585,6 +1784,8 @@ export function AgentMode({ userId }: { userId: string }) {
                   onChooseProjectRoot={chooseProjectRoot}
                   onInputChange={setInput}
                   onKeyDown={handleKeyDown}
+                  onManageMcpServers={() => setIsMcpServersDialogOpen(true)}
+                  onMcpToggle={toggleMcpServer}
                   onModeChange={selectMode}
                   onModelChange={selectModel}
                   onProjectRootChange={selectProjectRoot}
@@ -1611,7 +1812,10 @@ export function AgentMode({ userId }: { userId: string }) {
                   isSendDisabled={isAgentSendLocked}
                   isSending={isSending}
                   isStarting={isStarting}
+                  isMcpLoading={isComposerMcpLoading}
+                  isMcpToggleDisabled={isMcpToggleDisabled}
                   isModelSelectionDisabled={isAgentModelSelectionDisabled}
+                  mcpServers={composerMcpServers}
                   mode={mode}
                   model={model}
                   projectRoot={projectRoot}
@@ -1620,6 +1824,8 @@ export function AgentMode({ userId }: { userId: string }) {
                   onChooseProjectRoot={chooseProjectRoot}
                   onInputChange={setInput}
                   onKeyDown={handleKeyDown}
+                  onManageMcpServers={() => setIsMcpServersDialogOpen(true)}
+                  onMcpToggle={toggleMcpServer}
                   onModeChange={selectMode}
                   onModelChange={selectModel}
                   onProjectRootChange={selectProjectRoot}
@@ -2002,7 +2208,10 @@ interface AgentComposerProps {
   isSendDisabled: boolean;
   isSending: boolean;
   isStarting: boolean;
+  isMcpLoading: boolean;
+  isMcpToggleDisabled: boolean;
   isModelSelectionDisabled: boolean;
+  mcpServers: AgentSessionMcpServer[];
   mode: AgentPermissionMode;
   model: string;
   projectRoot: string;
@@ -2011,6 +2220,8 @@ interface AgentComposerProps {
   onChooseProjectRoot: () => void;
   onInputChange: (value: string) => void;
   onKeyDown: (event: React.KeyboardEvent<HTMLTextAreaElement>) => void;
+  onManageMcpServers: () => void;
+  onMcpToggle: (name: string, enabled: boolean) => void;
   onModeChange: (value: AgentPermissionMode) => void;
   onModelChange: (value: string) => void;
   onProjectRootChange: (value: string) => void;
@@ -2024,7 +2235,10 @@ function AgentComposer({
   isSendDisabled,
   isSending,
   isStarting,
+  isMcpLoading,
+  isMcpToggleDisabled,
   isModelSelectionDisabled,
+  mcpServers,
   mode,
   model,
   projectRoot,
@@ -2033,6 +2247,8 @@ function AgentComposer({
   onChooseProjectRoot,
   onInputChange,
   onKeyDown,
+  onManageMcpServers,
+  onMcpToggle,
   onModeChange,
   onModelChange,
   onProjectRootChange,
@@ -2069,6 +2285,15 @@ function AgentComposer({
             disabled={areSettingsDisabled}
             mode={mode}
             onModeChange={onModeChange}
+          />
+
+          <AgentMcpMenu
+            servers={mcpServers}
+            disabled={areSettingsDisabled}
+            togglesDisabled={isMcpToggleDisabled}
+            loading={isMcpLoading}
+            onToggle={onMcpToggle}
+            onManage={onManageMcpServers}
           />
 
           <Select

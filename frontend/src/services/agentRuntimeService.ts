@@ -7,6 +7,45 @@ export interface AgentConfig {
   defaultModel: string;
 }
 
+export interface AgentMcpKeyValue {
+  key: string;
+  value: string;
+}
+
+export type AgentMcpTransport =
+  | {
+      type: "stdio";
+      command: string;
+      environment: AgentMcpKeyValue[];
+    }
+  | {
+      type: "streamable_http";
+      url: string;
+      environment: AgentMcpKeyValue[];
+      headers: AgentMcpKeyValue[];
+    };
+
+export interface AgentMcpServer {
+  name: string;
+  description: string;
+  enabled: boolean;
+  timeoutSeconds: number;
+  transport: AgentMcpTransport;
+}
+
+export interface AgentMcpConnectionError {
+  name: string;
+  error: string;
+}
+
+export interface AgentSessionMcpServer {
+  name: string;
+  description: string;
+  transport: "stdio" | "streamable_http";
+  enabled: boolean;
+  available: boolean;
+}
+
 export interface AgentStartRequest {
   projectRoot?: string | null;
   model?: string | null;
@@ -32,6 +71,7 @@ export interface AgentCreateSessionRequest {
   title?: string | null;
   model?: string | null;
   mode?: string | null;
+  mcpServerNames?: string[] | null;
 }
 
 export interface AgentSessionSummary {
@@ -61,6 +101,7 @@ export interface AgentTimelineItem {
 export interface AgentSessionDetail {
   session: AgentSessionSummary;
   timeline: AgentTimelineItem[];
+  mcpErrors: AgentMcpConnectionError[];
 }
 
 export interface AgentSendMessageRequest {
@@ -115,6 +156,38 @@ class AgentRuntimeService {
 
   async saveConfig(userId: string, config: AgentConfig): Promise<void> {
     await this.invokeForUser(userId, "agent_save_config", { userId, config });
+  }
+
+  async listMcpServers(userId: string): Promise<AgentMcpServer[]> {
+    return await this.invokeForUser<AgentMcpServer[]>(userId, "agent_list_mcp_servers");
+  }
+
+  async saveMcpServers(userId: string, servers: AgentMcpServer[]): Promise<AgentMcpServer[]> {
+    return await this.invokeForUser<AgentMcpServer[]>(userId, "agent_save_mcp_servers", {
+      userId,
+      servers
+    });
+  }
+
+  async listSessionMcpServers(userId: string, sessionId: string): Promise<AgentSessionMcpServer[]> {
+    return await this.invokeForUser<AgentSessionMcpServer[]>(
+      userId,
+      "agent_list_session_mcp_servers",
+      { userId, sessionId }
+    );
+  }
+
+  async setSessionMcpServerEnabled(
+    userId: string,
+    sessionId: string,
+    name: string,
+    enabled: boolean
+  ): Promise<AgentSessionMcpServer[]> {
+    return await this.invokeForUser<AgentSessionMcpServer[]>(
+      userId,
+      "agent_set_session_mcp_server_enabled",
+      { userId, request: { sessionId, name, enabled } }
+    );
   }
 
   async listRecentProjectRoots(userId: string): Promise<RecentProjectRoot[]> {
