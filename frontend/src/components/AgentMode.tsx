@@ -69,6 +69,7 @@ import {
   mcpConnectionErrorMessage,
   userFacingAgentError
 } from "@/services/agentMcpErrors";
+import { reconcileNewChatMcpServerNames } from "@/services/agentMcpServers";
 import {
   AgentProxyManualConfigConflictError,
   AgentProxyReplacementSetupError,
@@ -651,10 +652,11 @@ export function AgentMode({ userId }: { userId: string }) {
 
   const saveMcpServers = useCallback(
     async (nextServers: AgentMcpServer[]) => {
+      const previousServers = mcpServers;
       const savedServers = await agentRuntimeService.saveMcpServers(userId, nextServers);
       setMcpServers(savedServers);
-      setNewChatMcpServerNames(
-        new Set(savedServers.filter((server) => server.enabled).map((server) => server.name))
+      setNewChatMcpServerNames((current) =>
+        reconcileNewChatMcpServerNames(previousServers, savedServers, current)
       );
 
       const sessionId = activeSessionIdRef.current;
@@ -666,7 +668,7 @@ export function AgentMode({ userId }: { userId: string }) {
         });
       }
     },
-    [refreshSessionMcpServers, userId]
+    [mcpServers, refreshSessionMcpServers, userId]
   );
 
   const toggleMcpServer = useCallback(

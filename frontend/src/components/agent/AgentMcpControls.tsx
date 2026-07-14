@@ -43,6 +43,7 @@ import type {
   AgentMcpServer,
   AgentSessionMcpServer
 } from "@/services/agentRuntimeService";
+import { gooseMcpServerKey, isValidMcpTimeoutSeconds } from "@/services/agentMcpServers";
 
 const DEFAULT_TIMEOUT_SECONDS = 300;
 type PendingDiscardAction = "close_form" | "close_dialog";
@@ -836,7 +837,7 @@ function normalizeServer(server: AgentMcpServer): AgentMcpServer {
     ...server,
     name: server.name.trim(),
     description: server.description.trim(),
-    timeoutSeconds: Math.floor(server.timeoutSeconds),
+    timeoutSeconds: server.timeoutSeconds,
     transport:
       server.transport.type === "stdio"
         ? { ...server.transport, command: server.transport.command.trim(), environment }
@@ -862,16 +863,16 @@ function validateServer(
 ): string | null {
   const name = server.name.trim();
   if (!name) return "Enter a server name.";
+  const nameKey = gooseMcpServerKey(name);
   if (
     servers.some(
-      (candidate, index) =>
-        index !== editingIndex && candidate.name.trim().toLowerCase() === name.toLowerCase()
+      (candidate, index) => index !== editingIndex && gooseMcpServerKey(candidate.name) === nameKey
     )
   ) {
     return "Another MCP server already uses that name.";
   }
-  if (!Number.isFinite(server.timeoutSeconds) || server.timeoutSeconds <= 0) {
-    return "Timeout must be a positive number of seconds.";
+  if (!isValidMcpTimeoutSeconds(server.timeoutSeconds)) {
+    return "Timeout must be a positive whole number of seconds.";
   }
   if (server.transport.type === "stdio" && !server.transport.command.trim()) {
     return "Enter the command used to start this STDIO server.";

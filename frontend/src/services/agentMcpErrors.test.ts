@@ -44,4 +44,36 @@ describe("MCP connection errors", () => {
     );
     expect(isMcpConnectionErrorEvent("The selected model is unavailable")).toBe(false);
   });
+
+  test("classifies authentication, timeout, and STDIO startup failures", () => {
+    expect(conciseMcpError("HTTP 401 Unauthorized")).toBe(
+      "The server rejected the connection. Check its authentication headers."
+    );
+    expect(conciseMcpError("HTTP 403 Forbidden")).toBe(
+      "The server rejected the connection. Check its authentication headers."
+    );
+    expect(conciseMcpError("request timed out during initialize")).toBe(
+      "The connection timed out. Check that the server is running and reachable."
+    );
+    expect(conciseMcpError("failed to spawn process: executable not found")).toBe(
+      "Could not start the STDIO command. Check the executable path and arguments."
+    );
+  });
+
+  test("bounds aggregated errors and handles empty responses", () => {
+    const message = mcpConnectionErrorMessage([
+      { name: "first", error: "first failure" },
+      { name: "second", error: "second failure" },
+      { name: "third", error: "third failure" },
+      { name: "fourth", error: "fourth failure" }
+    ]);
+
+    expect(message).toContain("first: first failure");
+    expect(message).toContain("third: third failure");
+    expect(message).not.toContain("fourth: fourth failure");
+    expect(message).toContain("and 1 more");
+    expect(mcpConnectionErrorMessage([])).toBeNull();
+    expect(mcpConnectionErrorMessage(null)).toBeNull();
+    expect(isMcpConnectionErrorEvent(message!)).toBe(true);
+  });
 });

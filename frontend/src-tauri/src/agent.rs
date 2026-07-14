@@ -63,6 +63,10 @@ const DEFAULT_AGENT_SESSION_TITLE: &str = "New agent session";
 const DEFAULT_MCP_TIMEOUT_SECONDS: u64 = 300;
 const MAX_AGENT_SESSION_TITLE_CHARS: usize = 80;
 const MAX_AGENT_ERROR_CHARS: usize = 1_200;
+const MAX_MCP_CONNECTION_ERRORS: usize = 3;
+const MAX_MCP_SERVER_NAME_CHARS: usize = 64;
+const MAX_MCP_CONNECTION_ERROR_CHARS: usize = 200;
+const MCP_CONNECTION_ERROR_PREFIX: &str = "Some MCP servers could not connect:";
 static NEXT_RUN_ID: AtomicU64 = AtomicU64::new(1);
 
 fn validate_session_model_lock(
@@ -1001,6 +1005,7 @@ pub async fn agent_create_session(
         .iter()
         .map(mcp_server_to_extension)
         .collect::<Result<Vec<_>, _>>()?;
+    let selected_extension_keys = mcp_extension_keys(&selected_extensions);
     let session = session_manager
         .create_session(root.clone(), title, SessionType::User, permission_mode)
         .await
@@ -1024,7 +1029,9 @@ pub async fn agent_create_session(
             .add_extensions_bulk(selected_extensions, &session.id)
             .await
         {
-            Ok(results) => mcp_errors.extend(mcp_connection_errors(results)),
+            Ok(results) => {
+                mcp_errors.extend(mcp_connection_errors(results, &selected_extension_keys))
+            }
             Err(error) => mcp_errors.push(AgentMcpConnectionError {
                 name: "MCP servers".to_string(),
                 error: error.to_string(),
@@ -1212,10 +1219,11 @@ pub async fn agent_set_session_mcp_server_enabled(
             .map_err(|error| format!("Failed to load MCP servers: {error}"))?
             .mcp_servers,
     )?;
-    let _session = session_manager
+    let session = session_manager
         .get_session(&session_id, false)
         .await
         .map_err(|error| format!("Failed to load Goose session: {error}"))?;
+    let session_mcp_keys = session_mcp_extension_keys(&session);
     let manager_result = agent_manager
         .get_or_create_agent_with_runtime_context(
             session_id.clone(),
@@ -1223,7 +1231,7 @@ pub async fn agent_set_session_mcp_server_enabled(
         )
         .await
         .map_err(|error| format!("Failed to load Goose agent: {error}"))?;
-    for error in mcp_connection_errors(manager_result.extension_results) {
+    for error in mcp_connection_errors(manager_result.extension_results, &session_mcp_keys) {
         log::warn!(
             "Failed to restore MCP server {}: {}",
             error.name,
@@ -2575,6 +2583,7 @@ async fn configure_session_agent(
     mode: &str,
     primary_model_supports_vision: bool,
 ) -> Result<(Arc<Agent>, Vec<AgentMcpConnectionError>), String> {
+    let session_mcp_keys = session_mcp_extension_keys(session);
     let manager_result = agent_manager
         .get_or_create_agent_with_runtime_context(
             session.id.clone(),
@@ -2583,7 +2592,7 @@ async fn configure_session_agent(
         .await
         .map_err(|e| format!("Failed to get Goose agent for session {}: {e}", session.id))?;
     let agent = manager_result.agent;
-    let mcp_errors = mcp_connection_errors(manager_result.extension_results);
+    let mcp_errors = mcp_connection_errors(manager_result.extension_results, &session_mcp_keys);
     let provider = goose::providers::create_with_working_dir(
         "openai",
         Vec::new(),
@@ -3496,7 +3505,7 @@ fn normalize_mcp_servers(mut servers: Vec<AgentMcpServer>) -> Result<Vec<AgentMc
         if server.name.is_empty() {
             return Err("MCP server name cannot be empty".to_string());
         }
-        if server.name.chars().count() > 64 {
+        if server.name.chars().count() > MAX_MCP_SERVER_NAME_CHARS {
             return Err(format!(
                 "MCP server name '{}' must be 64 characters or fewer",
                 server.name
@@ -3704,13 +3713,30 @@ fn select_mcp_servers(
     Ok(selected)
 }
 
+fn mcp_extension_keys(configs: &[ExtensionConfig]) -> HashSet<String> {
+    configs
+        .iter()
+        .filter(|config| mcp_transport_label(config).is_some())
+        .map(ExtensionConfig::key)
+        .collect()
+}
+
+fn session_mcp_extension_keys(session: &Session) -> HashSet<String> {
+    goose::session::EnabledExtensionsState::from_extension_data(&session.extension_data)
+        .map(|state| mcp_extension_keys(&state.extensions))
+        .unwrap_or_default()
+}
+
 fn mcp_connection_errors(
     results: Vec<goose::agents::ExtensionLoadResult>,
+    mcp_keys: &HashSet<String>,
 ) -> Vec<AgentMcpConnectionError> {
     results
         .into_iter()
         .filter_map(|result| {
-            (!result.success).then(|| AgentMcpConnectionError {
+            (!result.success
+                && mcp_keys.contains(&goose::config::extensions::name_to_key(&result.name)))
+            .then(|| AgentMcpConnectionError {
                 name: result.name,
                 error: result
                     .error
@@ -3721,12 +3747,25 @@ fn mcp_connection_errors(
 }
 
 fn format_mcp_connection_errors(errors: &[AgentMcpConnectionError]) -> String {
-    let details = errors
+    let mut details = errors
         .iter()
-        .map(|error| format!("{}: {}", error.name, error.error))
-        .collect::<Vec<_>>()
-        .join("; ");
-    format!("Some MCP servers could not connect: {details}")
+        .take(MAX_MCP_CONNECTION_ERRORS)
+        .map(|error| {
+            format!(
+                "{}: {}",
+                bounded_timeline_text(&error.name, MAX_MCP_SERVER_NAME_CHARS),
+                bounded_timeline_text(&error.error, MAX_MCP_CONNECTION_ERROR_CHARS)
+            )
+        })
+        .collect::<Vec<_>>();
+    let remaining = errors.len().saturating_sub(details.len());
+    if remaining > 0 {
+        details.push(format!("and {remaining} more"));
+    }
+    bounded_timeline_text(
+        &format!("{MCP_CONNECTION_ERROR_PREFIX} {}", details.join("; ")),
+        MAX_AGENT_ERROR_CHARS,
+    )
 }
 
 fn mcp_transport_label(config: &ExtensionConfig) -> Option<&'static str> {
@@ -4165,6 +4204,67 @@ mod tests {
         environment[0].value = "different-value".to_string();
 
         assert!(normalize_mcp_servers(vec![first, second]).is_ok());
+    }
+
+    #[test]
+    fn mcp_connection_errors_exclude_non_mcp_extension_failures() {
+        let mcp_keys = HashSet::from(["fixturestdio".to_string()]);
+        let errors = mcp_connection_errors(
+            vec![
+                goose::agents::ExtensionLoadResult {
+                    name: "developer".to_string(),
+                    success: false,
+                    error: Some("built-in failed".to_string()),
+                },
+                goose::agents::ExtensionLoadResult {
+                    name: "Fixture STDIO".to_string(),
+                    success: false,
+                    error: Some("server failed".to_string()),
+                },
+                goose::agents::ExtensionLoadResult {
+                    name: "fixture_stdio".to_string(),
+                    success: true,
+                    error: None,
+                },
+            ],
+            &mcp_keys,
+        );
+
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].name, "Fixture STDIO");
+        assert_eq!(errors[0].error, "server failed");
+    }
+
+    #[test]
+    fn mcp_connection_error_events_are_bounded() {
+        let short = format_mcp_connection_errors(&[
+            AgentMcpConnectionError {
+                name: "first".to_string(),
+                error: "one".to_string(),
+            },
+            AgentMcpConnectionError {
+                name: "second".to_string(),
+                error: "two".to_string(),
+            },
+        ]);
+        assert_eq!(
+            short,
+            "Some MCP servers could not connect: first: one; second: two"
+        );
+
+        let many = (0..5)
+            .map(|index| AgentMcpConnectionError {
+                name: format!("server-{index}"),
+                error: "🪿".repeat(MAX_MCP_CONNECTION_ERROR_CHARS + 50),
+            })
+            .collect::<Vec<_>>();
+        let bounded = format_mcp_connection_errors(&many);
+        assert!(bounded.contains("server-0"));
+        assert!(bounded.contains("server-2"));
+        assert!(!bounded.contains("server-3"));
+        assert!(bounded.contains("and 2 more"));
+        assert!(bounded.contains('…'));
+        assert!(bounded.chars().count() <= MAX_AGENT_ERROR_CHARS);
     }
 
     #[test]
