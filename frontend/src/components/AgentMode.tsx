@@ -31,6 +31,7 @@ import {
   ChatDesktopConversationHeader,
   ChatUserTurn
 } from "@/components/chat/ChatTurn";
+import { ChatCopyButton } from "@/components/chat/ChatCopyButton";
 import {
   Select,
   SelectContent,
@@ -70,6 +71,7 @@ import { agentOperationFence } from "@/services/agentOperationFence";
 import {
   activeAgentThinkingItemId,
   coalesceAdjacentThinkingItems,
+  getAgentTurnCopyText,
   groupAgentTimelineItems,
   hasAgentUserMessage,
   hasRenderableThinkingText,
@@ -2616,17 +2618,29 @@ function AgentTimeline({
 
   return (
     <div className="space-y-1">
-      {turns.map((turn) => {
+      {turns.map((turn, turnIndex) => {
+        const copyText = getAgentTurnCopyText(turn);
+
         if (turn.type === "user") {
           return (
-            <ChatUserTurn key={turn.id}>
+            <ChatUserTurn
+              key={turn.id}
+              actions={copyText ? <ChatCopyButton text={copyText} /> : undefined}
+            >
               <Markdown content={turn.item.text || ""} />
             </ChatUserTurn>
           );
         }
 
         return (
-          <ChatAssistantTurn key={turn.id}>
+          <ChatAssistantTurn
+            key={turn.id}
+            actions={
+              copyText && !(isRunActive && turnIndex === turns.length - 1) ? (
+                <ChatCopyButton text={copyText} />
+              ) : undefined
+            }
+          >
             {turn.items.map((item) => (
               <AgentAssistantItem
                 key={item.id}

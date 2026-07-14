@@ -4,6 +4,17 @@ export type AgentTimelineTurn =
   | { type: "user"; item: AgentTimelineItem; id: string }
   | { type: "assistant"; items: AgentTimelineItem[]; id: string };
 
+export function getAgentTurnCopyText(turn: AgentTimelineTurn): string {
+  if (turn.type === "user") return turn.item.text ?? "";
+
+  for (let index = turn.items.length - 1; index >= 0; index -= 1) {
+    const item = turn.items[index];
+    if (item.itemType === "message" && item.role === "assistant") return item.text ?? "";
+  }
+
+  return "";
+}
+
 export function hasRenderableThinkingText(text: string | null | undefined): boolean {
   return Boolean(text?.trim());
 }

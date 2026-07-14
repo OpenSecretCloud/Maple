@@ -2,7 +2,6 @@ import { useState, useRef, useEffect, useCallback, memo, useMemo } from "react";
 import { flushSync } from "react-dom";
 import {
   ArrowUp,
-  Copy,
   Check,
   Plus,
   Image,
@@ -44,6 +43,7 @@ import {
   ChatDesktopConversationHeader,
   ChatUserTurn
 } from "@/components/chat/ChatTurn";
+import { ChatCopyButton } from "@/components/chat/ChatCopyButton";
 import { ModelSelector } from "@/components/ModelSelector";
 import { useLocalState } from "@/state/useLocalState";
 import { useOpenSecret } from "@opensecret/react";
@@ -684,40 +684,6 @@ function convertItemsToMessages(items: Array<unknown>): Message[] {
   });
 }
 
-// Custom hook for copy to clipboard functionality
-function useCopyToClipboard(text: string) {
-  const [isCopied, setIsCopied] = useState(false);
-
-  const handleCopy = useCallback(async () => {
-    try {
-      await navigator.clipboard.writeText(text);
-      setIsCopied(true);
-      setTimeout(() => setIsCopied(false), 2000);
-    } catch (error) {
-      console.error("Failed to copy text:", error);
-    }
-  }, [text]);
-
-  return { isCopied, handleCopy };
-}
-
-// Copy button component with cleaner design
-function CopyButton({ text }: { text: string }) {
-  const { isCopied, handleCopy } = useCopyToClipboard(text);
-
-  return (
-    <Button
-      variant="ghost"
-      size="sm"
-      className="h-7 w-7 p-0 text-muted-foreground hover:text-foreground"
-      onClick={handleCopy}
-      aria-label={isCopied ? "Copied" : "Copy to clipboard"}
-    >
-      {isCopied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-    </Button>
-  );
-}
-
 // TTS play button component
 function TTSButton({
   text,
@@ -1050,8 +1016,6 @@ const MessageList = memo(
     onTTSSetupOpen: () => void;
     onTTSManage: () => void;
   }) => {
-    const isMobile = useIsMobile();
-
     const toolCallsByCallId = useMemo(() => {
       const toolCalls = new Map<string, ToolCallItem>();
 
@@ -1311,10 +1275,7 @@ const MessageList = memo(
               <ChatUserTurn
                 key={group.id}
                 containerRef={groupIndex === 0 ? firstMessageRef : undefined}
-                actions={userText ? <CopyButton text={userText} /> : undefined}
-                actionsClassName={
-                  isMobile ? "opacity-100" : "opacity-0 group-hover/user:opacity-100"
-                }
+                actions={userText ? <ChatCopyButton text={userText} /> : undefined}
               >
                 {message.content.map((part, partIdx) => {
                   if (
@@ -1372,7 +1333,7 @@ const MessageList = memo(
                 actions={
                   textContent ? (
                     <>
-                      <CopyButton text={textContent} />
+                      <ChatCopyButton text={textContent} />
                       <TTSButton
                         text={textContent}
                         messageId={group.id}
