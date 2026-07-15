@@ -13,7 +13,7 @@ interface AsyncClipboardItemLike {
 type ClipboardReader = () => Promise<readonly AsyncClipboardItemLike[]> | undefined;
 
 interface LinuxTauriClipboardFallbackOptions {
-  eventItemCount: number;
+  eventItemTypes: readonly string[];
   isTauri: boolean;
   isLinux: boolean;
   readClipboard?: ClipboardReader;
@@ -38,12 +38,19 @@ export function getImageFilesFromClipboardItems(items: ArrayLike<ClipboardEventI
  * the paste gesture. Returning undefined means the fallback was not attempted.
  */
 export function maybeReadLinuxTauriClipboardImages({
-  eventItemCount,
+  eventItemTypes,
   isTauri,
   isLinux,
   readClipboard
 }: LinuxTauriClipboardFallbackOptions): Promise<File[]> | undefined {
-  if (eventItemCount !== 0 || !isTauri || !isLinux || !readClipboard) return undefined;
+  const normalizedEventTypes = eventItemTypes.map((type) => type.toLowerCase());
+  const isEmptyImagePaste = normalizedEventTypes.length === 0;
+  const isHtmlOnlyImagePaste =
+    normalizedEventTypes.length === 1 && normalizedEventTypes[0] === "text/html";
+
+  if ((!isEmptyImagePaste && !isHtmlOnlyImagePaste) || !isTauri || !isLinux || !readClipboard) {
+    return undefined;
+  }
 
   let clipboardItemsPromise: ReturnType<ClipboardReader>;
   try {

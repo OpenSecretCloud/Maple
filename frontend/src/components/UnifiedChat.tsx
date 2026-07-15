@@ -2279,12 +2279,12 @@ export function UnifiedChat() {
         return;
       }
 
-      // WebKitGTK 2.50.3+ hides file-backed images from the paste DataTransfer.
-      // Keep the async fallback scoped to the reporter's zero-item symptom.
-      if (!isLinuxTauriEnv || items.length !== 0) return;
+      // WebKitGTK can hide a clipboard image from the paste DataTransfer while
+      // exposing either no items (screenshots) or one HTML item (browser Copy Image).
+      if (!isLinuxTauriEnv) return;
 
       const fallback = maybeReadLinuxTauriClipboardImages({
-        eventItemCount: items.length,
+        eventItemTypes: Array.from(items, (item) => item.type),
         isTauri: isTauriEnv,
         isLinux: isLinuxEnv,
         readClipboard: () => {
