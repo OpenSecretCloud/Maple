@@ -8,7 +8,7 @@ describe("image paste", () => {
     let readCalls = 0;
 
     const fallback = maybeReadLinuxTauriClipboardImages({
-      eventItemCount: 1,
+      eventItemTypes: ["image/png"],
       isTauri: true,
       isLinux: true,
       readClipboard: () => {
@@ -27,7 +27,7 @@ describe("image paste", () => {
     let readCalls = 0;
 
     const fallback = maybeReadLinuxTauriClipboardImages({
-      eventItemCount: 1,
+      eventItemTypes: ["text/plain"],
       isTauri: true,
       isLinux: true,
       readClipboard: () => {
@@ -44,7 +44,7 @@ describe("image paste", () => {
   it("starts an async image read immediately for an empty Linux Tauri paste event", async () => {
     let readCalls = 0;
     const fallback = maybeReadLinuxTauriClipboardImages({
-      eventItemCount: 0,
+      eventItemTypes: [],
       isTauri: true,
       isLinux: true,
       readClipboard: () => {
@@ -68,6 +68,48 @@ describe("image paste", () => {
     expect(await files[0].text()).toBe("png data");
   });
 
+  it("reads an image from an HTML-only browser Copy Image paste", async () => {
+    let readCalls = 0;
+    const fallback = maybeReadLinuxTauriClipboardImages({
+      eventItemTypes: ["text/html"],
+      isTauri: true,
+      isLinux: true,
+      readClipboard: () => {
+        readCalls++;
+        return Promise.resolve([
+          {
+            types: ["text/html", "image/png"],
+            getType: (type) => Promise.resolve(new Blob([type], { type }))
+          }
+        ]);
+      }
+    });
+
+    expect(readCalls).toBe(1);
+    expect(fallback).toBeDefined();
+
+    const files = await fallback!;
+    expect(files).toHaveLength(1);
+    expect(files[0].name).toBe("pasted-image.png");
+    expect(files[0].type).toBe("image/png");
+  });
+
+  it("does not inspect a paste that includes an ordinary text representation", () => {
+    let readCalls = 0;
+    const fallback = maybeReadLinuxTauriClipboardImages({
+      eventItemTypes: ["text/html", "text/plain"],
+      isTauri: true,
+      isLinux: true,
+      readClipboard: () => {
+        readCalls++;
+        return Promise.resolve([]);
+      }
+    });
+
+    expect(fallback).toBeUndefined();
+    expect(readCalls).toBe(0);
+  });
+
   it.each([
     ["web", false, false],
     ["non-Tauri Linux", false, true],
@@ -79,7 +121,7 @@ describe("image paste", () => {
     let readCalls = 0;
 
     const fallback = maybeReadLinuxTauriClipboardImages({
-      eventItemCount: 0,
+      eventItemTypes: [],
       isTauri,
       isLinux,
       readClipboard: () => {
@@ -95,7 +137,7 @@ describe("image paste", () => {
   it("uses one supported representation per clipboard item", async () => {
     const requestedTypes: string[] = [];
     const fallback = maybeReadLinuxTauriClipboardImages({
-      eventItemCount: 0,
+      eventItemTypes: [],
       isTauri: true,
       isLinux: true,
       readClipboard: () =>
@@ -117,7 +159,7 @@ describe("image paste", () => {
 
   it("skips an unreadable item without dropping other clipboard images", async () => {
     const fallback = maybeReadLinuxTauriClipboardImages({
-      eventItemCount: 0,
+      eventItemTypes: [],
       isTauri: true,
       isLinux: true,
       readClipboard: () =>
@@ -141,12 +183,12 @@ describe("image paste", () => {
 
   it("silently skips unavailable or rejected clipboard reads", async () => {
     const unavailable = maybeReadLinuxTauriClipboardImages({
-      eventItemCount: 0,
+      eventItemTypes: [],
       isTauri: true,
       isLinux: true
     });
     const rejected = maybeReadLinuxTauriClipboardImages({
-      eventItemCount: 0,
+      eventItemTypes: [],
       isTauri: true,
       isLinux: true,
       readClipboard: () => Promise.reject(new Error("clipboard access rejected"))
