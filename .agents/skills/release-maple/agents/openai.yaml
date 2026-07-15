@@ -1,0 +1,4 @@
+interface:
+  display_name: "Release Maple"
+  short_description: "Publish and verify a Maple GitHub release"
+  default_prompt: "Use $release-maple to publish and verify the next Maple release."
