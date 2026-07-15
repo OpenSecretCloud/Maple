@@ -25,7 +25,7 @@ Run this workflow from the `OpenSecretCloud/Maple` repository. Treat publishing 
    ```bash
    gh api --method POST repos/OpenSecretCloud/Maple/releases/generate-notes \
      -f tag_name="$tag" \
-     -f target_commitish=master \
+     -f target_commitish="$head_sha" \
      -f previous_tag_name="$previous_tag" | jq -r '.name, .body'
    ```
 
@@ -38,7 +38,7 @@ Create and publish the release exactly once. This creates the tag, matching the 
 ```bash
 gh release create "$tag" \
   --repo OpenSecretCloud/Maple \
-  --target master \
+  --target "$head_sha" \
   --title "$tag" \
   --generate-notes
 ```

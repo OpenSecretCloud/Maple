@@ -59,8 +59,10 @@ previous_tag="$(gh api "repos/${repo}/releases/latest" --jq .tag_name)"
 [[ "${tag}" != "${previous_tag}" ]] || fail "${tag} is already the latest published release"
 
 previous_version="$(gh api \
+  --method GET \
   -H 'Accept: application/vnd.github.raw+json' \
-  "repos/${repo}/contents/frontend/package.json?ref=${previous_tag}" | jq -er .version)"
+  "repos/${repo}/contents/frontend/package.json" \
+  -f ref="${previous_tag}" | jq -er .version)"
 
 python3 - "${previous_version}" "${package_version}" <<'PY'
 import re
