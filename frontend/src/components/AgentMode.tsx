@@ -10,12 +10,14 @@ import {
   ChevronLeft,
   ChevronRight,
   Circle,
+  Expand,
   FolderOpen,
   Loader2,
   Lock,
   MessageSquarePlus,
   MoreHorizontal,
   ShieldCheck,
+  Shrink,
   Trash,
   X,
   Zap
@@ -250,6 +252,9 @@ export function AgentMode({ userId }: { userId: string }) {
   const [isSessionMcpServersLoading, setIsSessionMcpServersLoading] = useState(false);
   const [isMcpServerTogglePending, setIsMcpServerTogglePending] = useState(false);
   const [input, setInput] = useState("");
+  const [isAgentFullscreen, setIsAgentFullscreen] = useState(
+    () => localStorage.getItem("agentFullscreen") === "true"
+  );
   const [error, setError] = useState<string | null>(null);
   const [hasManualProxyConflict, setHasManualProxyConflict] = useState(false);
   const [isAuthTransitionReady, setIsAuthTransitionReady] = useState(false);
@@ -302,6 +307,10 @@ export function AgentMode({ userId }: { userId: string }) {
   useEffect(() => {
     activeSessionIdRef.current = activeSessionId;
   }, [activeSessionId]);
+
+  useEffect(() => {
+    localStorage.setItem("agentFullscreen", isAgentFullscreen.toString());
+  }, [isAgentFullscreen]);
 
   const updateAutoScrollFromPosition = useCallback(() => {
     const container = chatContainerRef.current;
@@ -1765,7 +1774,14 @@ export function AgentMode({ userId }: { userId: string }) {
             className="relative flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-y-contain"
             onScroll={updateAutoScrollFromPosition}
           >
-            <div className="mx-auto w-full max-w-4xl p-4 md:p-6 landscape-short:p-2">
+            <div
+              className={cn(
+                "mx-auto w-full p-4 md:p-6 landscape-short:p-2",
+                timelineItems.length === 0 && isAgentFullscreen
+                  ? "flex min-h-full max-w-6xl flex-col"
+                  : "max-w-4xl"
+              )}
+            >
               {timelineItems.length === 0 ? (
                 <EmptyAgentState
                   activeRootLabel={activeRootLabel}
@@ -1782,6 +1798,7 @@ export function AgentMode({ userId }: { userId: string }) {
                   model={model}
                   projectRoot={projectRoot}
                   recentRoots={recentRoots}
+                  isExpanded={isAgentFullscreen}
                   onCancelPrompt={cancelPrompt}
                   onChooseProjectRoot={chooseProjectRoot}
                   onInputChange={setInput}
@@ -1792,6 +1809,7 @@ export function AgentMode({ userId }: { userId: string }) {
                   onModelChange={selectModel}
                   onProjectRootChange={selectProjectRoot}
                   onSendMessage={() => void sendMessage()}
+                  onToggleExpanded={() => setIsAgentFullscreen((current) => !current)}
                 />
               ) : (
                 <AgentTimeline
@@ -1846,17 +1864,28 @@ export function AgentMode({ userId }: { userId: string }) {
 }
 
 function EmptyAgentState(props: AgentComposerProps) {
+  const isExpanded = props.isExpanded ?? false;
+
   return (
-    <div className="flex min-h-[52vh] items-center justify-center">
-      <div className="flex w-full max-w-4xl flex-col items-center gap-6 text-center landscape-short:gap-3">
-        <h1 className="mb-6 overflow-visible pb-1 font-displayWide text-4xl font-normal leading-relaxed brand-gradient-text landscape-short:mb-2 landscape-short:text-2xl">
-          Work in a folder...
-        </h1>
+    <div
+      className={cn(
+        "flex items-center justify-center",
+        isExpanded ? "min-h-0 flex-1" : "min-h-[52vh]"
+      )}
+    >
+      <div className="flex w-full flex-col items-center gap-6 text-center landscape-short:gap-3">
+        {!isExpanded ? (
+          <h1 className="mb-6 overflow-visible pb-1 font-displayWide text-4xl font-normal leading-relaxed brand-gradient-text landscape-short:mb-2 landscape-short:text-2xl">
+            Work in a folder...
+          </h1>
+        ) : null}
         <AgentComposer {...props} />
-        <p className="flex items-center justify-center gap-1 text-center text-xs text-muted-foreground/60">
-          <Lock className="h-3 w-3" />
-          Encrypted and private at every step
-        </p>
+        {!isExpanded ? (
+          <p className="flex items-center justify-center gap-1 text-center text-xs text-muted-foreground/60">
+            <Lock className="h-3 w-3" />
+            Encrypted and private at every step
+          </p>
+        ) : null}
       </div>
     </div>
   );
@@ -2218,6 +2247,7 @@ interface AgentComposerProps {
   model: string;
   projectRoot: string;
   recentRoots: RecentProjectRoot[];
+  isExpanded?: boolean;
   onCancelPrompt: () => void;
   onChooseProjectRoot: () => void;
   onInputChange: (value: string) => void;
@@ -2228,6 +2258,7 @@ interface AgentComposerProps {
   onModelChange: (value: string) => void;
   onProjectRootChange: (value: string) => void;
   onSendMessage: () => void;
+  onToggleExpanded?: () => void;
 }
 
 function AgentComposer({
@@ -2245,6 +2276,7 @@ function AgentComposer({
   model,
   projectRoot,
   recentRoots,
+  isExpanded = false,
   onCancelPrompt,
   onChooseProjectRoot,
   onInputChange,
@@ -2254,28 +2286,64 @@ function AgentComposer({
   onModeChange,
   onModelChange,
   onProjectRootChange,
-  onSendMessage
+  onSendMessage,
+  onToggleExpanded
 }: AgentComposerProps) {
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const rootOptions = recentRoots.some((root) => root.path === projectRoot)
     ? recentRoots
     : projectRoot
       ? [{ path: projectRoot, name: activeRootLabel, lastUsedMs: Date.now() }, ...recentRoots]
       : recentRoots;
 
+  useLayoutEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+
+    if (isExpanded) {
+      textarea.style.height = "";
+      return;
+    }
+
+    textarea.style.height = "auto";
+    textarea.style.height = `${Math.min(textarea.scrollHeight, 200)}px`;
+  }, [input, isExpanded]);
+
   return (
-    <ChatComposerSurface>
+    <ChatComposerSurface
+      className={cn(
+        "transition-all duration-300",
+        isExpanded && "flex h-[70vh] max-h-[800px] min-h-0 flex-col"
+      )}
+    >
+      {onToggleExpanded ? (
+        <button
+          type="button"
+          onClick={onToggleExpanded}
+          className="absolute right-2 top-2 z-10 rounded-full p-1.5 text-muted-foreground/60 transition-colors hover:bg-muted/50 hover:text-foreground"
+          aria-label={isExpanded ? "Exit fullscreen" : "Enter fullscreen"}
+        >
+          {isExpanded ? <Shrink className="h-4 w-4" /> : <Expand className="h-4 w-4" />}
+        </button>
+      ) : null}
       <Textarea
+        ref={textareaRef}
         id="agent-message"
         value={input}
         onChange={(event) => onInputChange(event.target.value)}
         onKeyDown={onKeyDown}
         disabled={isSendDisabled}
         placeholder="Ask Maple to work in this folder..."
-        className={CHAT_COMPOSER_TEXTAREA_CLASS}
-        rows={1}
+        className={cn(
+          CHAT_COMPOSER_TEXTAREA_CLASS,
+          onToggleExpanded && "pr-8",
+          isExpanded &&
+            "min-h-0 max-h-none flex-1 overflow-y-auto landscape-short:min-h-0 landscape-short:max-h-none"
+        )}
+        rows={isExpanded ? undefined : 1}
       />
 
-      <div className="grid grid-cols-[minmax(0,1fr)_auto] items-end gap-x-2 gap-y-2 px-2 pb-2 pt-1">
+      <div className="grid shrink-0 grid-cols-[minmax(0,1fr)_auto] items-end gap-x-2 gap-y-2 px-2 pb-2 pt-1">
         <div className="flex min-w-0 flex-wrap items-center gap-1.5 sm:gap-2">
           <AgentModelSelector
             disabled={isModelSelectionDisabled}
