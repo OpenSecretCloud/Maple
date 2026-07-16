@@ -91,6 +91,7 @@ import type {
   ResponseTextDoneEvent
 } from "openai/resources/responses/responses.js";
 import type { Message as OpenAIMessage } from "openai/resources/conversations/conversations.js";
+import { usePersistentSidebarState } from "@/contexts/PersistentHomeNavigationContext";
 
 const CHAT_ALERT_CLASS = `fixed top-16 left-1/2 -translate-x-1/2 z-50 w-full max-w-2xl px-4 ${SIDEBAR_AWARE_FIXED_CENTER_CLASS}`;
 
@@ -1387,7 +1388,7 @@ export function UnifiedChat() {
   const [input, setInput] = useState("");
   const [draftProjectId, setDraftProjectId] = useState<string | null>(() => selectedProjectId);
   const [isGenerating, setIsGenerating] = useState(false);
-  const [isSidebarOpen, setIsSidebarOpen] = useState(!isCompactLayout);
+  const [isSidebarOpen, setIsSidebarOpen] = usePersistentSidebarState(isCompactLayout);
   const [error, setError] = useState<string | null>(null);
   const [lastSeenItemId, setLastSeenItemId] = useState<string | undefined>();
   const [isNewConversationJustCreated, setIsNewConversationJustCreated] = useState(false);
@@ -1429,12 +1430,17 @@ export function UnifiedChat() {
   });
   const [isFullscreenAnimating, setIsFullscreenAnimating] = useState(false);
 
-  // Close sidebar when rotating to landscape on a short screen
+  const wasLandscapeMobileRef = useRef(isLandscapeMobile);
+
+  // Close an already-open sidebar when the current view rotates into a short landscape layout.
+  // A route that mounts while already compact keeps the shared sidebar state during a mode switch.
   useEffect(() => {
-    if (isLandscapeMobile && isSidebarOpen) {
+    const enteredLandscapeMobile = isLandscapeMobile && !wasLandscapeMobileRef.current;
+    wasLandscapeMobileRef.current = isLandscapeMobile;
+    if (enteredLandscapeMobile && isSidebarOpen) {
       setIsSidebarOpen(false);
     }
-  }, [isLandscapeMobile]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [isLandscapeMobile, isSidebarOpen, setIsSidebarOpen]);
 
   // Save fullscreen preference to localStorage when it changes
   useEffect(() => {
@@ -2158,7 +2164,7 @@ export function UnifiedChat() {
   }, [error]);
 
   // Toggle sidebar
-  const toggleSidebar = useCallback(() => setIsSidebarOpen((prev) => !prev), []);
+  const toggleSidebar = useCallback(() => setIsSidebarOpen((prev) => !prev), [setIsSidebarOpen]);
 
   const handleNewChatFromHeader = useCallback(() => {
     flushSync(() => {

@@ -6,8 +6,7 @@ import {
   XCircle,
   Trash2,
   X,
-  FolderInput,
-  Bot
+  FolderInput
 } from "lucide-react";
 import { Button } from "./ui/button";
 import { useLocation, useRouter } from "@tanstack/react-router";
@@ -37,6 +36,8 @@ import { useOpenSecret } from "@opensecret/react";
 import { FEATURE_FLAGS, flagsClient } from "@/services/flags";
 import { UpgradePromptDialog } from "@/components/UpgradePromptDialog";
 import { hasApiAccess } from "@/billing/billingAccess";
+import { WorkspaceModeSwitch, type WorkspaceMode } from "@/components/WorkspaceModeSwitch";
+import { usePersistentHomeNavigation } from "@/contexts/PersistentHomeNavigationContext";
 
 export function Sidebar({
   chatId,
@@ -47,12 +48,13 @@ export function Sidebar({
 }: {
   chatId?: string;
   isOpen: boolean;
-  mode?: "chat" | "agent";
+  mode?: WorkspaceMode;
   navigationContent?: ReactNode;
   onToggle: () => void;
 }) {
   const router = useRouter();
   const location = useLocation();
+  const { returnToHome } = usePersistentHomeNavigation();
   const os = useOpenSecret();
   const userId = os.auth.user?.user.id;
   const {
@@ -70,6 +72,8 @@ export function Sidebar({
   const [isSelectionMode, setIsSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [agentModeUpgradeOpen, setAgentModeUpgradeOpen] = useState(false);
+  const [pendingWorkspaceMode, setPendingWorkspaceMode] = useState<WorkspaceMode | null>(null);
+  const workspaceModeNavigationStartedRef = useRef(false);
 
   // Enter selection mode when items are selected (e.g., via long press)
   useEffect(() => {
@@ -133,10 +137,33 @@ export function Sidebar({
     }
   }
 
-  async function toggleAgentMode() {
-    const isLeavingAgentMode = location.pathname === "/agent";
+  async function completeWorkspaceModeChange(nextMode: WorkspaceMode) {
+    if (workspaceModeNavigationStartedRef.current) return;
+    workspaceModeNavigationStartedRef.current = true;
 
-    if (!isLeavingAgentMode) {
+    if (nextMode === "chat") {
+      returnToHome({ replace: false });
+      return;
+    }
+
+    try {
+      await router.navigate({ to: "/agent" });
+    } catch (error) {
+      workspaceModeNavigationStartedRef.current = false;
+      setPendingWorkspaceMode(null);
+      console.error("Navigation failed:", error);
+    }
+  }
+
+  function switchWorkspaceMode(nextMode: WorkspaceMode) {
+    if (pendingWorkspaceMode !== null) {
+      if (nextMode === mode) setPendingWorkspaceMode(null);
+      return;
+    }
+
+    if (nextMode === mode) return;
+
+    if (nextMode === "agent") {
       if (billingStatus === null) return;
 
       if (!hasApiAccess(billingStatus)) {
@@ -145,15 +172,12 @@ export function Sidebar({
       }
     }
 
-    if (isOpen) {
-      onToggle();
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      void completeWorkspaceModeChange(nextMode);
+      return;
     }
 
-    try {
-      await router.navigate({ to: isLeavingAgentMode ? "/" : "/agent" });
-    } catch (error) {
-      console.error("Navigation failed:", error);
-    }
+    setPendingWorkspaceMode(nextMode);
   }
 
   const toggleSearch = () => {
@@ -190,11 +214,16 @@ export function Sidebar({
     userId: string;
     enabled: boolean;
   } | null>(null);
-  const showAgentMode =
-    agentModeAvailable &&
-    billingStatus !== null &&
-    agentModeFlag?.userId === userId &&
-    agentModeFlag?.enabled === true;
+  // Chat and Agent mount separate Sidebar instances. Seed a remount from the existing,
+  // user-scoped flag cache while this instance revalidates in the background.
+  const cachedAgentModeEnabled = userId
+    ? flagsClient.peekIsEnabled(userId, FEATURE_FLAGS.AGENT_MODE)
+    : undefined;
+  const agentModeEnabled =
+    agentModeFlag !== null && agentModeFlag.userId === userId
+      ? agentModeFlag.enabled
+      : cachedAgentModeEnabled;
+  const showAgentMode = agentModeAvailable && billingStatus !== null && agentModeEnabled === true;
   const isAgentMode = mode === "agent";
 
   useEffect(() => {
@@ -256,6 +285,11 @@ export function Sidebar({
         // Prevent updates if component unmounted
         if (!isMountedRef.current) return;
 
+        const resolvedPath = window.location.pathname;
+        const isWorkspaceModeTransition =
+          (isAgentMode && resolvedPath === "/") || (!isAgentMode && resolvedPath === "/agent");
+        if (isWorkspaceModeTransition) return;
+
         // Double-check conditions after async boundary
         if (isOpen && isCompactLayout) {
           onToggle();
@@ -266,7 +300,7 @@ export function Sidebar({
     return () => {
       unsubscribe();
     };
-  }, [router, isOpen, onToggle, isCompactLayout]);
+  }, [router, isOpen, onToggle, isCompactLayout, isAgentMode]);
 
   return (
     <div
@@ -299,6 +333,19 @@ export function Sidebar({
               <ArrowLeftFromLine className="h-4 w-4" />
             </button>
           </div>
+          {(showAgentMode || isAgentMode) && (
+            <div className="mb-2 px-8">
+              <WorkspaceModeSwitch
+                mode={pendingWorkspaceMode ?? mode}
+                onModeChange={switchWorkspaceMode}
+                onModeTransitionEnd={(nextMode) => {
+                  if (nextMode === pendingWorkspaceMode) {
+                    void completeWorkspaceModeChange(nextMode);
+                  }
+                }}
+              />
+            </div>
+          )}
           <div className="flex flex-col gap-2 px-4">
             <button
               type="button"
@@ -308,21 +355,6 @@ export function Sidebar({
               <SquarePenIcon className="h-4 w-4 shrink-0" />
               New Chat
             </button>
-            {showAgentMode && (
-              <button
-                type="button"
-                className={cn(
-                  "flex w-full items-center justify-start gap-2 py-1.5 pr-1 pl-0 text-sm transition-colors",
-                  location.pathname === "/agent"
-                    ? "text-[hsl(var(--maple-primary-strong))] dark:text-[hsl(var(--maple-primary))]"
-                    : "text-foreground hover:text-foreground/70"
-                )}
-                onClick={toggleAgentMode}
-              >
-                <Bot className="h-4 w-4" />
-                Agent Mode
-              </button>
-            )}
             {!isAgentMode && (
               <button
                 className="flex w-full items-center justify-start gap-2 py-1.5 pr-1 pl-0 text-sm text-foreground hover:text-foreground/70 transition-colors"

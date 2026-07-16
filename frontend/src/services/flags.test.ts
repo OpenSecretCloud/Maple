@@ -43,7 +43,26 @@ describe("FlagsClient", () => {
 
   test("treats a missing flag as disabled", async () => {
     const flags = client(async () => jsonResponse(USER_A, {}));
+    expect(flags.peekIsEnabled(USER_A, "missing")).toBeUndefined();
     await expect(flags.isEnabled(USER_A, "missing")).resolves.toBe(false);
+    expect(flags.peekIsEnabled(USER_A, "missing")).toBe(false);
+  });
+
+  test("only exposes settled cached values synchronously", async () => {
+    let resolveRequest: ((response: Response) => void) | undefined;
+    const flags = client(
+      () =>
+        new Promise<Response>((resolve) => {
+          resolveRequest = resolve;
+        })
+    );
+
+    const pending = flags.isEnabled(USER_A, " enabled ");
+    expect(flags.peekIsEnabled(USER_A, "enabled")).toBeUndefined();
+
+    resolveRequest?.(jsonResponse(USER_A, { enabled: true }));
+    await expect(pending).resolves.toBe(true);
+    expect(flags.peekIsEnabled(` ${USER_A} `, " enabled ")).toBe(true);
   });
 
   test("coalesces concurrent and normalized equivalent lookups", async () => {
@@ -80,11 +99,14 @@ describe("FlagsClient", () => {
 
     await expect(flags.isEnabled(USER_A, "enabled")).resolves.toBe(true);
     now = 600_999;
+    expect(flags.peekIsEnabled(USER_A, "enabled")).toBe(true);
     await expect(flags.isEnabled(USER_A, "enabled")).resolves.toBe(true);
     expect(calls).toBe(1);
 
     now = 601_000;
+    expect(flags.peekIsEnabled(USER_A, "enabled")).toBeUndefined();
     await expect(flags.isEnabled(USER_A, "enabled")).resolves.toBe(false);
+    expect(flags.peekIsEnabled(USER_A, "enabled")).toBe(false);
     expect(calls).toBe(2);
   });
 
@@ -97,7 +119,10 @@ describe("FlagsClient", () => {
     });
 
     await expect(flags.isEnabled(USER_A, "enabled")).resolves.toBe(true);
+    expect(flags.peekIsEnabled(USER_A, "enabled")).toBe(true);
+    expect(flags.peekIsEnabled(USER_B, "enabled")).toBeUndefined();
     await expect(flags.isEnabled(USER_B, "enabled")).resolves.toBe(false);
+    expect(flags.peekIsEnabled(USER_B, "enabled")).toBe(false);
     expect(calls).toBe(2);
   });
 
@@ -110,6 +135,7 @@ describe("FlagsClient", () => {
     });
 
     await expect(flags.isEnabled(USER_A, "enabled")).rejects.toThrow("status 503");
+    expect(flags.peekIsEnabled(USER_A, "enabled")).toBeUndefined();
     await expect(flags.isEnabled(USER_A, "enabled")).resolves.toBe(true);
     expect(calls).toBe(2);
   });
