@@ -660,10 +660,14 @@ export function AgentMode({ userId }: { userId: string }) {
     ): Promise<RecentProjectRoot[]> => {
       return await enqueueProjectRootMutation(async () => {
         const config = await agentRuntimeService.loadConfig(userId);
-        const existingOrder = projectOrderForExistingRegistration(orderedVisibleRoots, path);
+        const existingOrder = projectOrderForExistingRegistration(
+          orderedVisibleRoots,
+          projectOrderState.confirmed,
+          path
+        );
         // A legacy-capped project can already be visible through session history without being in
-        // recent_roots.json. Persist the whole visible order in place instead of promoting that
-        // existing project as though it were a genuinely new folder.
+        // recent_roots.json. Add only that project after the confirmed roots instead of promoting
+        // it or materializing unrelated session-derived projects.
         const roots = existingOrder
           ? await agentRuntimeService.saveProjectRootOrder(userId, existingOrder)
           : await agentRuntimeService.saveRecentProjectRoot(userId, path);
@@ -675,7 +679,7 @@ export function AgentMode({ userId }: { userId: string }) {
         return roots;
       });
     },
-    [enqueueProjectRootMutation, userId]
+    [enqueueProjectRootMutation, projectOrderState.confirmed, userId]
   );
 
   const persistProjectRootOrder = useCallback(

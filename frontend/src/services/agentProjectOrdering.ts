@@ -107,15 +107,31 @@ export function groupAgentSessionsByRoot(
 }
 
 export function projectOrderForExistingRegistration<T extends { path: string }>(
-  roots: readonly T[],
+  visibleRoots: readonly T[],
+  confirmedRoots: readonly T[],
   selectedPath: string
 ): string[] | null {
-  if (!validPath(selectedPath) || !roots.some((root) => root.path === selectedPath)) return null;
+  const confirmedPaths = new Set(
+    confirmedRoots.filter((root) => validPath(root.path)).map((root) => root.path)
+  );
+  if (
+    !validPath(selectedPath) ||
+    confirmedPaths.has(selectedPath) ||
+    !visibleRoots.some((root) => root.path === selectedPath)
+  ) {
+    return null;
+  }
 
   const paths: string[] = [];
   const seen = new Set<string>();
-  for (const root of roots) {
-    if (!validPath(root.path) || seen.has(root.path)) continue;
+  for (const root of visibleRoots) {
+    if (
+      !validPath(root.path) ||
+      seen.has(root.path) ||
+      (root.path !== selectedPath && !confirmedPaths.has(root.path))
+    ) {
+      continue;
+    }
     seen.add(root.path);
     paths.push(root.path);
   }

@@ -73,17 +73,23 @@ describe("mergeAgentProjectRoots", () => {
 });
 
 describe("projectOrderForExistingRegistration", () => {
-  test("preserves the visible order when a legacy session-derived project is chosen again", () => {
-    const visible = mergeAgentProjectRoots([root("/saved/a"), root("/saved/b")], "/saved/a", [
-      session("legacy", "/session/legacy", 10)
-    ]);
+  const confirmed = [root("/saved/a"), root("/saved/b")];
+  const visible = mergeAgentProjectRoots(confirmed, "/saved/a", [
+    session("legacy", "/session/legacy", 10),
+    session("unrelated", "/session/unrelated", 20)
+  ]);
 
-    expect(projectOrderForExistingRegistration(visible, "/session/legacy")).toEqual([
+  test("registers only the selected visible session-derived project", () => {
+    expect(projectOrderForExistingRegistration(visible, confirmed, "/session/legacy")).toEqual([
       "/saved/a",
       "/saved/b",
       "/session/legacy"
     ]);
-    expect(projectOrderForExistingRegistration(visible, "/genuinely/new")).toBeNull();
+    expect(projectOrderForExistingRegistration(visible, confirmed, "/genuinely/new")).toBeNull();
+  });
+
+  test("does not materialize session-derived projects when a saved project is selected", () => {
+    expect(projectOrderForExistingRegistration(visible, confirmed, "/saved/a")).toBeNull();
   });
 });
 
