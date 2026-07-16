@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState
+} from "react";
 import { useOpenSecret } from "@opensecret/react";
 import {
   AlertCircle,
@@ -67,6 +75,16 @@ import {
   type AgentTimelineItem,
   type RecentProjectRoot
 } from "@/services/agentRuntimeService";
+import {
+  createProjectOrderState,
+  groupAgentSessionsByRoot,
+  hasExceededProjectDragThreshold,
+  mergeAgentProjectRoots,
+  projectInsertionIndex,
+  projectOrderForExistingRegistration,
+  projectOrderReducer,
+  reorderProjectRoots
+} from "@/services/agentProjectOrdering";
 import {
   isMcpConnectionErrorEvent,
   mcpConnectionErrorMessage,
@@ -235,7 +253,11 @@ export function AgentMode({ userId }: { userId: string }) {
   const isCompactLayout = isMobile || isLandscapeMobile;
   const [isSidebarOpen, setIsSidebarOpen] = useState(!isCompactLayout);
   const [runtimeStatus, setRuntimeStatus] = useState<AgentRuntimeStatus | null>(null);
-  const [recentRoots, setRecentRoots] = useState<RecentProjectRoot[]>([]);
+  const [projectOrderState, dispatchProjectOrder] = useReducer(
+    projectOrderReducer<RecentProjectRoot>,
+    createProjectOrderState<RecentProjectRoot>([])
+  );
+  const recentRoots = projectOrderState.visible;
   const [sessions, setSessions] = useState<AgentSessionSummary[]>([]);
   const [sessionToDelete, setSessionToDelete] = useState<AgentSessionSummary | null>(null);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
@@ -262,6 +284,7 @@ export function AgentMode({ userId }: { userId: string }) {
   const [isReplacingManualProxy, setIsReplacingManualProxy] = useState(false);
   const [isStarting, setIsStarting] = useState(false);
   const [isPermissionModeUpdating, setIsPermissionModeUpdating] = useState(false);
+  const [isProjectRootRegistrationPending, setIsProjectRootRegistrationPending] = useState(false);
   const [pendingSendSessionIds, setPendingSendSessionIds] = useState<Set<string>>(() => new Set());
   const [pendingSessionSelectionId, setPendingSessionSelectionId] = useState<string | null>(null);
   const [activeRunsBySession, setActiveRunsBySession] = useState<Record<string, string>>({});
@@ -291,6 +314,7 @@ export function AgentMode({ userId }: { userId: string }) {
   const isAgentModelLockedRef = useRef(false);
   const mcpSessionLoadGenerationRef = useRef(0);
   const mcpToggleGenerationRef = useRef(0);
+  const projectOrderRequestIdRef = useRef(0);
 
   const applyAuthoritativeMode = useCallback((value: AgentPermissionMode) => {
     selectedModeRef.current = value;
@@ -343,10 +367,18 @@ export function AgentMode({ userId }: { userId: string }) {
     return () => cancelAnimationFrame(frame);
   }, [scrollTimelineToBottom, timelineItems]);
 
+  const visibleProjectRoots = useMemo(
+    () => mergeAgentProjectRoots(recentRoots, projectRoot, sessions),
+    [projectRoot, recentRoots, sessions]
+  );
+  const visibleProjectRootsRef = useRef<RecentProjectRoot[]>([]);
+  visibleProjectRootsRef.current = visibleProjectRoots;
   const activeRootLabel = useMemo(() => {
     if (!projectRoot) return "Select folder";
-    return recentRoots.find((root) => root.path === projectRoot)?.name || basename(projectRoot);
-  }, [projectRoot, recentRoots]);
+    return (
+      visibleProjectRoots.find((root) => root.path === projectRoot)?.name || basename(projectRoot)
+    );
+  }, [projectRoot, visibleProjectRoots]);
   const activeSessionTitle = useMemo(() => {
     const activeSession = sessions.find((session) => session.id === activeSessionId);
     return activeSession ? sessionTitle(activeSession) : "Agent session";
@@ -355,6 +387,7 @@ export function AgentMode({ userId }: { userId: string }) {
   const activePendingSendKey = activeSessionId || NEW_SESSION_PENDING_KEY;
   const isSubmitting = pendingSendSessionIds.has(activePendingSendKey);
   const isSessionSelectionPending = pendingSessionSelectionId !== null;
+  const isProjectOrderSaving = projectOrderState.pendingRequestId !== null;
   const areAgentSettingsLocked =
     !isAuthTransitionReady ||
     isInitializing ||
@@ -362,6 +395,8 @@ export function AgentMode({ userId }: { userId: string }) {
     isPermissionModeUpdating ||
     isSessionSelectionPending ||
     isSubmitting ||
+    isProjectOrderSaving ||
+    isProjectRootRegistrationPending ||
     isReplacingManualProxy ||
     hasManualProxyConflict;
   const hasStartedAgentSession =
@@ -588,15 +623,50 @@ export function AgentMode({ userId }: { userId: string }) {
     }
   }, [createApiKey, deleteApiKey, trackAgentWorkflow, userId]);
 
-  const persistProjectRoot = useCallback(
-    async (path: string): Promise<RecentProjectRoot[]> => {
+  const enqueueProjectRootMutation = useCallback(
+    async <T,>(mutation: () => Promise<T>): Promise<T> => {
       const previousOperation = projectRootPersistenceRef.current;
-      const operation = trackAgentWorkflow(async () => {
+      const operation = (async () => {
         await previousOperation;
-        const [config, roots] = await Promise.all([
-          agentRuntimeService.loadConfig(userId),
-          agentRuntimeService.saveRecentProjectRoot(userId, path)
-        ]);
+        return await trackAgentWorkflow(mutation);
+      })();
+      projectRootPersistenceRef.current = operation.then(
+        () => undefined,
+        () => undefined
+      );
+      return await operation;
+    },
+    [trackAgentWorkflow]
+  );
+
+  const persistSelectedProjectRoot = useCallback(
+    async (path: string): Promise<void> => {
+      await enqueueProjectRootMutation(async () => {
+        const config = await agentRuntimeService.loadConfig(userId);
+        const nextConfig: AgentConfig = {
+          ...config,
+          defaultProjectRoot: path
+        };
+        await agentRuntimeService.saveConfig(userId, nextConfig);
+      });
+    },
+    [enqueueProjectRootMutation, userId]
+  );
+
+  const registerProjectRoot = useCallback(
+    async (
+      path: string,
+      orderedVisibleRoots: RecentProjectRoot[]
+    ): Promise<RecentProjectRoot[]> => {
+      return await enqueueProjectRootMutation(async () => {
+        const config = await agentRuntimeService.loadConfig(userId);
+        const existingOrder = projectOrderForExistingRegistration(orderedVisibleRoots, path);
+        // A legacy-capped project can already be visible through session history without being in
+        // recent_roots.json. Persist the whole visible order in place instead of promoting that
+        // existing project as though it were a genuinely new folder.
+        const roots = existingOrder
+          ? await agentRuntimeService.saveProjectRootOrder(userId, existingOrder)
+          : await agentRuntimeService.saveRecentProjectRoot(userId, path);
         const nextConfig: AgentConfig = {
           ...config,
           defaultProjectRoot: path
@@ -604,13 +674,41 @@ export function AgentMode({ userId }: { userId: string }) {
         await agentRuntimeService.saveConfig(userId, nextConfig);
         return roots;
       });
-      projectRootPersistenceRef.current = operation.then(
-        () => undefined,
-        () => undefined
-      );
-      return await operation;
     },
-    [trackAgentWorkflow, userId]
+    [enqueueProjectRootMutation, userId]
+  );
+
+  const persistProjectRootOrder = useCallback(
+    async (roots: RecentProjectRoot[]): Promise<RecentProjectRoot[]> => {
+      return await enqueueProjectRootMutation(async () => {
+        return await agentRuntimeService.saveProjectRootOrder(
+          userId,
+          roots.map((root) => root.path)
+        );
+      });
+    },
+    [enqueueProjectRootMutation, userId]
+  );
+
+  const saveProjectRootOrder = useCallback(
+    (nextRoots: RecentProjectRoot[]) => {
+      if (projectOrderState.pendingRequestId !== null) return;
+      const requestId = projectOrderRequestIdRef.current + 1;
+      projectOrderRequestIdRef.current = requestId;
+      setError(null);
+      dispatchProjectOrder({ type: "optimistic", requestId, roots: nextRoots });
+
+      void persistProjectRootOrder(nextRoots).then(
+        (roots) => {
+          dispatchProjectOrder({ type: "confirmed", requestId, roots });
+        },
+        (orderError) => {
+          dispatchProjectOrder({ type: "rejected", requestId });
+          setError(errorMessage(orderError));
+        }
+      );
+    },
+    [persistProjectRootOrder, projectOrderState.pendingRequestId]
   );
 
   const refreshSessionList = useCallback(async () => {
@@ -761,7 +859,7 @@ export function AgentMode({ userId }: { userId: string }) {
         }
 
         applyRuntimeStatus(status, runStateGeneration);
-        setRecentRoots(roots);
+        dispatchProjectOrder({ type: "replace", roots });
         setMcpServers(savedMcpServers);
         setNewChatMcpServerNames(
           new Set(savedMcpServers.filter((server) => server.enabled).map((server) => server.name))
@@ -856,22 +954,24 @@ export function AgentMode({ userId }: { userId: string }) {
         });
         if (typeof selected === "string") {
           invalidateSessionSelection();
-          const interactionGeneration = interactionGenerationRef.current;
           shouldAutoScrollRef.current = true;
           setProjectRoot(selected);
           activeSessionIdRef.current = null;
           setActiveSessionId(null);
           setTimelineItems([]);
-          const roots = await persistProjectRoot(selected);
-          if (interactionGenerationRef.current === interactionGeneration) {
-            setRecentRoots(roots);
+          setIsProjectRootRegistrationPending(true);
+          try {
+            const roots = await registerProjectRoot(selected, visibleProjectRootsRef.current);
+            dispatchProjectOrder({ type: "replace", roots });
+          } finally {
+            setIsProjectRootRegistrationPending(false);
           }
         }
       });
     } catch (chooseError) {
       setError(errorMessage(chooseError));
     }
-  }, [invalidateSessionSelection, persistProjectRoot, trackAgentWorkflow]);
+  }, [invalidateSessionSelection, registerProjectRoot, trackAgentWorkflow]);
 
   const selectProjectRoot = useCallback(
     (value: string) => {
@@ -884,9 +984,8 @@ export function AgentMode({ userId }: { userId: string }) {
       shouldAutoScrollRef.current = true;
       void (async () => {
         try {
-          const roots = await persistProjectRoot(value);
+          await persistSelectedProjectRoot(value);
           if (interactionGenerationRef.current === interactionGeneration) {
-            setRecentRoots(roots);
             await refreshSessions();
           }
         } catch (selectError) {
@@ -896,7 +995,7 @@ export function AgentMode({ userId }: { userId: string }) {
         }
       })();
     },
-    [invalidateSessionSelection, persistProjectRoot, refreshSessions]
+    [invalidateSessionSelection, persistSelectedProjectRoot, refreshSessions]
   );
 
   const selectModel = useCallback((value: string) => {
@@ -981,7 +1080,6 @@ export function AgentMode({ userId }: { userId: string }) {
           const status = restart
             ? await agentRuntimeService.restartRuntime(userId, request)
             : await agentRuntimeService.startRuntime(userId, request);
-          const roots = await agentRuntimeService.listRecentProjectRoots(userId);
           if (
             startRequestGenerationRef.current !== requestGeneration ||
             interactionGenerationRef.current !== interactionGeneration
@@ -992,7 +1090,6 @@ export function AgentMode({ userId }: { userId: string }) {
           setProjectRoot(status.projectRoot || projectRoot);
           setModel(status.model || model || DEFAULT_MODEL);
           applyAuthoritativeMode(normalizeAgentPermissionMode(status.mode || requestedMode));
-          setRecentRoots(roots);
           await refreshSessions();
           return status;
         });
@@ -1241,14 +1338,7 @@ export function AgentMode({ userId }: { userId: string }) {
         finishSessionSelection(selectionGeneration);
 
         try {
-          const roots = await persistProjectRoot(detail.session.projectRoot);
-          if (
-            sessionSelectionGenerationRef.current === selectionGeneration &&
-            interactionGenerationRef.current === interactionGeneration &&
-            activeSessionIdRef.current === detail.session.id
-          ) {
-            setRecentRoots(roots);
-          }
+          await persistSelectedProjectRoot(detail.session.projectRoot);
         } catch (persistError) {
           if (
             sessionSelectionGenerationRef.current === selectionGeneration &&
@@ -1274,7 +1364,7 @@ export function AgentMode({ userId }: { userId: string }) {
       beginSessionSelection,
       clearCompletedUnreadSession,
       finishSessionSelection,
-      persistProjectRoot,
+      persistSelectedProjectRoot,
       replaceSessionTimeline,
       trackAgentWorkflow,
       userId
@@ -1675,13 +1765,14 @@ export function AgentMode({ userId }: { userId: string }) {
             }
             isCompactLayout={isCompactLayout}
             projectRoot={projectRoot}
-            recentRoots={recentRoots}
+            recentRoots={visibleProjectRoots}
             completedUnreadSessionIds={completedUnreadSessionIds}
             disabled={areAgentSettingsLocked}
             runningSessionIds={runningSessionIds}
             sessions={sessions}
             onChooseProjectRoot={chooseProjectRoot}
             onCreateSession={() => void createSession()}
+            onProjectOrderChange={saveProjectRootOrder}
             onProjectRootChange={selectProjectRoot}
             onSessionDelete={setSessionToDelete}
             onSessionSelect={(sessionId) => void loadSession(sessionId)}
@@ -1797,7 +1888,7 @@ export function AgentMode({ userId }: { userId: string }) {
                   mode={mode}
                   model={model}
                   projectRoot={projectRoot}
-                  recentRoots={recentRoots}
+                  recentRoots={visibleProjectRoots}
                   isExpanded={isAgentFullscreen}
                   onCancelPrompt={cancelPrompt}
                   onChooseProjectRoot={chooseProjectRoot}
@@ -1839,7 +1930,7 @@ export function AgentMode({ userId }: { userId: string }) {
                   mode={mode}
                   model={model}
                   projectRoot={projectRoot}
-                  recentRoots={recentRoots}
+                  recentRoots={visibleProjectRoots}
                   onCancelPrompt={cancelPrompt}
                   onChooseProjectRoot={chooseProjectRoot}
                   onInputChange={setInput}
@@ -1902,9 +1993,29 @@ interface AgentSidebarContentProps {
   sessions: AgentSessionSummary[];
   onChooseProjectRoot: () => void;
   onCreateSession: () => void;
+  onProjectOrderChange: (roots: RecentProjectRoot[]) => void;
   onProjectRootChange: (value: string) => void;
   onSessionDelete: (session: AgentSessionSummary) => void;
   onSessionSelect: (sessionId: string) => void;
+}
+
+interface PendingProjectPointer {
+  pointerId: number;
+  path: string;
+  name: string;
+  startX: number;
+  startY: number;
+  grabOffsetX: number;
+  grabOffsetY: number;
+  ghostWidth: number;
+  headerElement: HTMLElement;
+}
+
+interface ProjectDragState extends PendingProjectPointer {
+  clientX: number;
+  clientY: number;
+  insertionIndex: number | null;
+  markerTop: number | null;
 }
 
 function AgentSidebarContent({
@@ -1918,51 +2029,26 @@ function AgentSidebarContent({
   sessions,
   onChooseProjectRoot,
   onCreateSession,
+  onProjectOrderChange,
   onProjectRootChange,
   onSessionDelete,
   onSessionSelect
 }: AgentSidebarContentProps) {
   const rowElementsRef = useRef(new Map<string, HTMLElement>());
   const previousRowTopsRef = useRef(new Map<string, number>());
+  const projectListRef = useRef<HTMLDivElement>(null);
+  const projectGroupElementsRef = useRef(new Map<string, HTMLDivElement>());
+  const projectHeaderElementsRef = useRef(new Map<string, HTMLDivElement>());
+  const pendingProjectPointerRef = useRef<PendingProjectPointer | null>(null);
+  const projectDragRef = useRef<ProjectDragState | null>(null);
+  const autoScrollFrameRef = useRef<number | null>(null);
+  const autoScrollDirectionRef = useRef(0);
+  const suppressProjectClickUntilRef = useRef(0);
+  const [projectDrag, setProjectDrag] = useState<ProjectDragState | null>(null);
+  const isProjectDragging = projectDrag !== null;
   const [collapsedProjectRoots, setCollapsedProjectRoots] = useState<Set<string>>(() => new Set());
-  const { projectRows, sessionsByRoot } = useMemo(() => {
-    const rootsByPath = new Map<string, RecentProjectRoot>();
-    const sessionsByProjectRoot = new Map<string, AgentSessionSummary[]>();
-
-    recentRoots.forEach((root) => rootsByPath.set(root.path, root));
-    if (projectRoot && !rootsByPath.has(projectRoot)) {
-      rootsByPath.set(projectRoot, {
-        path: projectRoot,
-        name: basename(projectRoot),
-        lastUsedMs: Date.now()
-      });
-    }
-
-    sessions.forEach((session) => {
-      const rootSessions = sessionsByProjectRoot.get(session.projectRoot) || [];
-      rootSessions.push(session);
-      sessionsByProjectRoot.set(session.projectRoot, rootSessions);
-
-      const existingRoot = rootsByPath.get(session.projectRoot);
-      if (!existingRoot || existingRoot.lastUsedMs < session.updatedMs) {
-        rootsByPath.set(session.projectRoot, {
-          path: session.projectRoot,
-          name: basename(session.projectRoot),
-          lastUsedMs: session.updatedMs
-        });
-      }
-    });
-
-    sessionsByProjectRoot.forEach((rootSessions) => {
-      rootSessions.sort((a, b) => b.updatedMs - a.updatedMs);
-    });
-
-    const rows = [...rootsByPath.values()].sort((a, b) => {
-      return b.lastUsedMs - a.lastUsedMs;
-    });
-
-    return { projectRows: rows, sessionsByRoot: sessionsByProjectRoot };
-  }, [projectRoot, recentRoots, sessions]);
+  const projectRows = recentRoots;
+  const sessionsByRoot = useMemo(() => groupAgentSessionsByRoot(sessions), [sessions]);
   const setAnimatedRowRef = useCallback((key: string, node: HTMLElement | null) => {
     if (node) {
       rowElementsRef.current.set(key, node);
@@ -1975,27 +2061,354 @@ function AgentSidebarContent({
     const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     const previousTops = previousRowTopsRef.current;
     const nextTops = new Map<string, number>();
+    const deltas = new Map<string, number>();
+    const sessionProjectRoots = new Map(
+      sessions.map((session) => [session.id, session.projectRoot] as const)
+    );
 
     rowElementsRef.current.forEach((node, key) => {
       const nextTop = node.getBoundingClientRect().top;
       nextTops.set(key, nextTop);
-
-      if (prefersReducedMotion) return;
-
       const previousTop = previousTops.get(key);
-      if (previousTop === undefined) return;
-
-      const delta = previousTop - nextTop;
-      if (Math.abs(delta) < 1) return;
-
-      node.animate([{ transform: `translateY(${delta}px)` }, { transform: "translateY(0)" }], {
-        duration: SIDEBAR_REORDER_ANIMATION_MS,
-        easing: "cubic-bezier(0.2, 0, 0, 1)"
-      });
+      if (previousTop !== undefined) deltas.set(key, previousTop - nextTop);
     });
+
+    if (!prefersReducedMotion) {
+      rowElementsRef.current.forEach((node, key) => {
+        let delta = deltas.get(key) || 0;
+        if (key.startsWith("session:")) {
+          const sessionId = key.slice("session:".length);
+          const projectPath = sessionProjectRoots.get(sessionId);
+          if (projectPath) delta -= deltas.get(`project:${projectPath}`) || 0;
+        }
+        if (Math.abs(delta) < 1) return;
+
+        node.animate([{ transform: `translateY(${delta}px)` }, { transform: "translateY(0)" }], {
+          duration: SIDEBAR_REORDER_ANIMATION_MS,
+          easing: "cubic-bezier(0.2, 0, 0, 1)"
+        });
+      });
+    }
 
     previousRowTopsRef.current = nextTops;
   }, [collapsedProjectRoots, projectRows, sessions]);
+
+  const setProjectGroupRef = useCallback(
+    (path: string, node: HTMLDivElement | null) => {
+      setAnimatedRowRef(`project:${path}`, node);
+      if (node) {
+        projectGroupElementsRef.current.set(path, node);
+      } else {
+        projectGroupElementsRef.current.delete(path);
+      }
+    },
+    [setAnimatedRowRef]
+  );
+
+  const setProjectHeaderRef = useCallback((path: string, node: HTMLDivElement | null) => {
+    if (node) {
+      projectHeaderElementsRef.current.set(path, node);
+    } else {
+      projectHeaderElementsRef.current.delete(path);
+    }
+  }, []);
+
+  const measureProjectDrop = useCallback(
+    (clientX: number, clientY: number, draggedPath: string) => {
+      const list = projectListRef.current;
+      if (!list) return { insertionIndex: null, markerTop: null };
+      const listRect = list.getBoundingClientRect();
+      if (
+        clientX < listRect.left ||
+        clientX > listRect.right ||
+        clientY < listRect.top ||
+        clientY > listRect.bottom
+      ) {
+        return { insertionIndex: null, markerTop: null };
+      }
+
+      const centers = projectRows.flatMap((root) => {
+        const header = projectHeaderElementsRef.current.get(root.path);
+        if (!header) return [];
+        const rect = header.getBoundingClientRect();
+        return [{ path: root.path, centerY: rect.top + rect.height / 2 }];
+      });
+      const insertionIndex = projectInsertionIndex(clientY, centers, draggedPath);
+      if (insertionIndex === null) return { insertionIndex: null, markerTop: null };
+
+      const remaining = projectRows.filter((root) => root.path !== draggedPath);
+      let markerViewportY: number;
+      if (remaining.length === 0) {
+        markerViewportY = listRect.top + 8;
+      } else if (insertionIndex < remaining.length) {
+        const target = projectGroupElementsRef.current.get(remaining[insertionIndex].path);
+        if (!target) return { insertionIndex: null, markerTop: null };
+        markerViewportY = target.getBoundingClientRect().top - 4;
+      } else {
+        const target = projectGroupElementsRef.current.get(remaining.at(-1)!.path);
+        if (!target) return { insertionIndex: null, markerTop: null };
+        markerViewportY = target.getBoundingClientRect().bottom + 4;
+      }
+
+      return {
+        insertionIndex,
+        markerTop: Math.max(0, Math.min(listRect.height, markerViewportY - listRect.top))
+      };
+    },
+    [projectRows]
+  );
+
+  const stopProjectAutoScroll = useCallback(() => {
+    autoScrollDirectionRef.current = 0;
+    if (autoScrollFrameRef.current !== null) {
+      cancelAnimationFrame(autoScrollFrameRef.current);
+      autoScrollFrameRef.current = null;
+    }
+  }, []);
+
+  const updateProjectDragPosition = useCallback(
+    (active: ProjectDragState, clientX: number, clientY: number): ProjectDragState => {
+      const measurement = measureProjectDrop(clientX, clientY, active.path);
+      const next = {
+        ...active,
+        clientX,
+        clientY,
+        insertionIndex: measurement.insertionIndex,
+        markerTop: measurement.markerTop
+      };
+      projectDragRef.current = next;
+      setProjectDrag(next);
+      return next;
+    },
+    [measureProjectDrop]
+  );
+
+  const updateProjectAutoScroll = useCallback(
+    (clientX: number, clientY: number) => {
+      const scrollContainer = projectListRef.current?.closest("nav");
+      if (!(scrollContainer instanceof HTMLElement)) {
+        stopProjectAutoScroll();
+        return;
+      }
+      const rect = scrollContainer.getBoundingClientRect();
+      const edgeSize = 40;
+      const isInsideHorizontally = clientX >= rect.left && clientX <= rect.right;
+      const direction =
+        !isInsideHorizontally || clientY < rect.top || clientY > rect.bottom
+          ? 0
+          : clientY < rect.top + edgeSize
+            ? -1
+            : clientY > rect.bottom - edgeSize
+              ? 1
+              : 0;
+      autoScrollDirectionRef.current = direction;
+      if (direction === 0) {
+        stopProjectAutoScroll();
+        return;
+      }
+      if (autoScrollFrameRef.current !== null) return;
+
+      const tick = () => {
+        const active = projectDragRef.current;
+        const nextDirection = autoScrollDirectionRef.current;
+        if (!active || nextDirection === 0) {
+          autoScrollFrameRef.current = null;
+          return;
+        }
+        const previousScrollTop = scrollContainer.scrollTop;
+        scrollContainer.scrollTop += nextDirection * 10;
+        if (scrollContainer.scrollTop === previousScrollTop) {
+          stopProjectAutoScroll();
+          return;
+        }
+        updateProjectDragPosition(active, active.clientX, active.clientY);
+        autoScrollFrameRef.current = requestAnimationFrame(tick);
+      };
+      autoScrollFrameRef.current = requestAnimationFrame(tick);
+    },
+    [stopProjectAutoScroll, updateProjectDragPosition]
+  );
+
+  const clearProjectDrag = useCallback(
+    (suppressClick: boolean) => {
+      const active = projectDragRef.current;
+      pendingProjectPointerRef.current = null;
+      projectDragRef.current = null;
+      setProjectDrag(null);
+      stopProjectAutoScroll();
+      if (active && suppressClick) suppressProjectClickUntilRef.current = Date.now() + 250;
+      if (active?.headerElement.hasPointerCapture(active.pointerId)) {
+        active.headerElement.releasePointerCapture(active.pointerId);
+      }
+    },
+    [stopProjectAutoScroll]
+  );
+
+  const beginProjectPointer = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>, root: RecentProjectRoot) => {
+      if (
+        disabled ||
+        !event.isPrimary ||
+        event.button !== 0 ||
+        pendingProjectPointerRef.current ||
+        projectDragRef.current
+      ) {
+        return;
+      }
+      const rect = event.currentTarget.getBoundingClientRect();
+      pendingProjectPointerRef.current = {
+        pointerId: event.pointerId,
+        path: root.path,
+        name: root.name,
+        startX: event.clientX,
+        startY: event.clientY,
+        grabOffsetX: event.clientX - rect.left,
+        grabOffsetY: event.clientY - rect.top,
+        ghostWidth: rect.width,
+        headerElement: event.currentTarget
+      };
+    },
+    [disabled]
+  );
+
+  const suppressActivatedProjectClick = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+    if (Date.now() > suppressProjectClickUntilRef.current) return;
+    suppressProjectClickUntilRef.current = 0;
+    event.preventDefault();
+    event.stopPropagation();
+  }, []);
+
+  const finishProjectDrag = useCallback(
+    (event: PointerEvent) => {
+      const active = projectDragRef.current;
+      if (!active || active.pointerId !== event.pointerId) {
+        if (pendingProjectPointerRef.current?.pointerId === event.pointerId) {
+          pendingProjectPointerRef.current = null;
+        }
+        return;
+      }
+
+      const measurement = measureProjectDrop(event.clientX, event.clientY, active.path);
+      const nextRoots = reorderProjectRoots(projectRows, active.path, measurement.insertionIndex);
+      clearProjectDrag(true);
+      if (nextRoots !== projectRows) onProjectOrderChange([...nextRoots]);
+    },
+    [clearProjectDrag, measureProjectDrop, onProjectOrderChange, projectRows]
+  );
+
+  useEffect(() => {
+    const handlePointerMove = (event: PointerEvent) => {
+      const candidate = pendingProjectPointerRef.current;
+      if (!candidate || candidate.pointerId !== event.pointerId) return;
+      if (disabled) {
+        clearProjectDrag(Boolean(projectDragRef.current));
+        return;
+      }
+
+      let active = projectDragRef.current;
+      if (!active) {
+        if (
+          !hasExceededProjectDragThreshold(
+            candidate.startX,
+            candidate.startY,
+            event.clientX,
+            event.clientY
+          )
+        ) {
+          return;
+        }
+        const measurement = measureProjectDrop(event.clientX, event.clientY, candidate.path);
+        active = {
+          ...candidate,
+          clientX: event.clientX,
+          clientY: event.clientY,
+          insertionIndex: measurement.insertionIndex,
+          markerTop: measurement.markerTop
+        };
+        projectDragRef.current = active;
+        setProjectDrag(active);
+        candidate.headerElement.setPointerCapture(candidate.pointerId);
+      } else {
+        active = updateProjectDragPosition(active, event.clientX, event.clientY);
+      }
+
+      event.preventDefault();
+      updateProjectAutoScroll(active.clientX, active.clientY);
+    };
+    const handlePointerUp = (event: PointerEvent) => finishProjectDrag(event);
+    const handlePointerCancel = (event: PointerEvent) => {
+      if (
+        pendingProjectPointerRef.current?.pointerId === event.pointerId ||
+        projectDragRef.current?.pointerId === event.pointerId
+      ) {
+        clearProjectDrag(Boolean(projectDragRef.current));
+      }
+    };
+    const handleLostPointerCapture = (event: PointerEvent) => {
+      if (projectDragRef.current?.pointerId === event.pointerId) clearProjectDrag(true);
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || !projectDragRef.current) return;
+      event.preventDefault();
+      clearProjectDrag(true);
+    };
+    const handleWindowBlur = () => {
+      if (projectDragRef.current) clearProjectDrag(true);
+      else pendingProjectPointerRef.current = null;
+    };
+
+    window.addEventListener("pointermove", handlePointerMove, { passive: false });
+    window.addEventListener("pointerup", handlePointerUp);
+    window.addEventListener("pointercancel", handlePointerCancel);
+    window.addEventListener("lostpointercapture", handleLostPointerCapture);
+    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("blur", handleWindowBlur);
+    return () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+      window.removeEventListener("pointercancel", handlePointerCancel);
+      window.removeEventListener("lostpointercapture", handleLostPointerCapture);
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("blur", handleWindowBlur);
+    };
+  }, [
+    clearProjectDrag,
+    disabled,
+    finishProjectDrag,
+    measureProjectDrop,
+    updateProjectAutoScroll,
+    updateProjectDragPosition
+  ]);
+
+  useEffect(() => {
+    if (!disabled) return;
+    if (projectDragRef.current) clearProjectDrag(true);
+    else pendingProjectPointerRef.current = null;
+  }, [clearProjectDrag, disabled]);
+
+  useEffect(() => {
+    if (!isProjectDragging) return;
+    const previousUserSelect = document.body.style.userSelect;
+    const previousCursor = document.body.style.cursor;
+    document.body.style.userSelect = "none";
+    document.body.style.cursor = "grabbing";
+    return () => {
+      document.body.style.userSelect = previousUserSelect;
+      document.body.style.cursor = previousCursor;
+    };
+  }, [isProjectDragging]);
+
+  useEffect(() => {
+    return () => {
+      const active = projectDragRef.current;
+      pendingProjectPointerRef.current = null;
+      projectDragRef.current = null;
+      stopProjectAutoScroll();
+      if (active?.headerElement.hasPointerCapture(active.pointerId)) {
+        active.headerElement.releasePointerCapture(active.pointerId);
+      }
+    };
+  }, [stopProjectAutoScroll]);
 
   const toggleProjectCollapsed = useCallback((path: string) => {
     setCollapsedProjectRoots((current) => {
@@ -2039,8 +2452,8 @@ function AgentSidebarContent({
           Select a folder
         </button>
       ) : (
-        <div className="space-y-2">
-          {projectRows.map((root) => {
+        <div ref={projectListRef} className="relative -mt-3 pb-4 pt-3">
+          {projectRows.map((root, rootIndex) => {
             const isActive = root.path === projectRoot;
             const projectSessions = sessionsByRoot.get(root.path) || [];
             const isCollapsed = collapsedProjectRoots.has(root.path);
@@ -2057,10 +2470,24 @@ function AgentSidebarContent({
             return (
               <div
                 key={root.path}
-                ref={(node) => setAnimatedRowRef(`project:${root.path}`, node)}
-                className="space-y-2 will-change-transform"
+                ref={(node) => setProjectGroupRef(root.path, node)}
+                className={cn(
+                  "space-y-2 will-change-transform",
+                  rootIndex < projectRows.length - 1 && "mb-2",
+                  isProjectDragging && "opacity-25"
+                )}
               >
-                <div className="flex items-center gap-1 rounded-2xl text-foreground">
+                <div
+                  ref={(node) => setProjectHeaderRef(root.path, node)}
+                  className={cn(
+                    "flex select-none items-center gap-1 rounded-2xl text-foreground",
+                    !disabled && projectRows.length > 1 && "touch-none",
+                    !disabled &&
+                      (projectDrag?.path === root.path ? "cursor-grabbing" : "cursor-grab")
+                  )}
+                  onPointerDown={(event) => beginProjectPointer(event, root)}
+                  onClickCapture={suppressActivatedProjectClick}
+                >
                   <button
                     type="button"
                     className={cn(
@@ -2217,8 +2644,33 @@ function AgentSidebarContent({
               </div>
             );
           })}
+          {projectDrag && projectDrag.markerTop !== null && projectDrag.insertionIndex !== null ? (
+            <div
+              aria-hidden="true"
+              className="pointer-events-none absolute inset-x-0 z-40 h-0.5 rounded-full bg-[hsl(var(--blue))]"
+              style={{ top: projectDrag.markerTop }}
+            >
+              <span className="absolute -left-0.5 -top-[3px] h-2 w-2 rounded-full border-2 border-[hsl(var(--blue))] bg-muted dark:bg-[hsl(var(--sidebar))]" />
+            </div>
+          ) : null}
         </div>
       )}
+
+      {projectDrag ? (
+        <div
+          aria-hidden="true"
+          className="pointer-events-none fixed z-50 flex min-w-0 items-center gap-2 rounded-2xl border border-border/40 bg-muted/95 px-3 py-2 text-sm font-medium text-foreground shadow-lg backdrop-blur dark:bg-[hsl(var(--sidebar)/0.95)]"
+          style={{
+            left: projectDrag.clientX - projectDrag.grabOffsetX,
+            top: projectDrag.clientY - projectDrag.grabOffsetY,
+            width: Math.min(projectDrag.ghostWidth, 264),
+            maxWidth: "calc(100vw - 24px)"
+          }}
+        >
+          <FolderOpen className="h-4 w-4 shrink-0" />
+          <span className="min-w-0 flex-1 truncate">{projectDrag.name}</span>
+        </div>
+      ) : null}
 
       <div className="mt-7">
         <p className="mb-3 text-xs font-medium uppercase tracking-wider text-muted-foreground">
@@ -2290,11 +2742,7 @@ function AgentComposer({
   onToggleExpanded
 }: AgentComposerProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const rootOptions = recentRoots.some((root) => root.path === projectRoot)
-    ? recentRoots
-    : projectRoot
-      ? [{ path: projectRoot, name: activeRootLabel, lastUsedMs: Date.now() }, ...recentRoots]
-      : recentRoots;
+  const rootOptions = recentRoots;
 
   useLayoutEffect(() => {
     const textarea = textareaRef.current;

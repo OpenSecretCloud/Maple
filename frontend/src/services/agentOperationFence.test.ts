@@ -71,6 +71,29 @@ describe("AgentOperationFence", () => {
     block.release();
   });
 
+  it("rechecks queued work after its serialized predecessor completes", async () => {
+    const fence = new AgentOperationFence();
+    const predecessor = deferred<void>();
+    const firstOperation = fence.run("user-a", async () => await predecessor.promise);
+    await Promise.resolve();
+
+    let queuedOperationRan = false;
+    const queuedOperation = (async () => {
+      await firstOperation;
+      return await fence.run("user-a", async () => {
+        queuedOperationRan = true;
+      });
+    })();
+
+    const blockPromise = fence.blockAndDrain("user-a");
+    predecessor.resolve();
+    const block = await blockPromise;
+
+    await expect(queuedOperation).rejects.toBeInstanceOf(AgentOperationsBlockedError);
+    expect(queuedOperationRan).toBe(false);
+    block.release();
+  });
+
   it("isolates accounts and keeps blocking until every lease releases", async () => {
     const fence = new AgentOperationFence();
     const first = await fence.blockAndDrain("user-a");

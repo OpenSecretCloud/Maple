@@ -196,7 +196,7 @@ pub struct AgentRuntimeStatus {
     pub active_runs: HashMap<String, String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RecentProjectRoot {
     pub path: String,
@@ -746,7 +746,9 @@ async fn start_runtime_for_user(
         *guard = Some(runtime);
     }
 
-    let _ = save_recent_project_root_inner(&app_handle, &user_id, &project_root);
+    // Starting a runtime is project use, not an explicit folder add. In particular, a
+    // session-derived root may be absent from a legacy capped recent-roots file; registering it
+    // here would incorrectly move that visible project to the top of the manual order.
     agent_config.default_project_root = Some(path_string(&project_root));
     agent_config.default_model = model;
     let _ = save_agent_config_inner(&app_handle, &user_id, &agent_config);
@@ -940,7 +942,22 @@ pub async fn agent_save_recent_project_root(
     let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
     ensure_account_generation(&state, &account_scope, generation).await?;
     let project_root = normalize_project_root(Path::new(&path))?;
-    save_recent_project_root_inner(&app_handle, &user_id, &project_root).map_err(|e| e.to_string())
+    register_explicit_project_root_inner(&app_handle, &user_id, &project_root)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn agent_save_project_root_order(
+    app_handle: AppHandle,
+    state: State<'_, AgentRuntimeState>,
+    user_id: String,
+    paths: Vec<String>,
+) -> Result<Vec<RecentProjectRoot>, String> {
+    let account_scope = account_scope(&user_id)?;
+    let generation = account_generation(&state, &account_scope).await;
+    let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
+    ensure_account_generation(&state, &account_scope, generation).await?;
+    save_project_root_order_inner(&app_handle, &user_id, paths).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1039,7 +1056,8 @@ pub async fn agent_create_session(
         }
     }
     let summary = session_summary(&session);
-    let _ = save_recent_project_root_inner(&app_handle, &user_id, &root);
+    // Session creation must not mutate project order. Only explicit folder-add and reorder
+    // commands may change the persisted project list.
     let detail = AgentSessionDetail {
         session: summary.clone(),
         timeline: Vec::new(),
@@ -1102,7 +1120,7 @@ pub async fn agent_list_sessions(
         })
         .map(|session| session_summary(&session))
         .collect::<Vec<_>>();
-    sessions.sort_by(|a, b| b.updated_ms.cmp(&a.updated_ms));
+    sort_sessions_newest_first(&mut sessions);
     Ok(sessions)
 }
 
@@ -3219,6 +3237,10 @@ fn session_summary(session: &Session) -> AgentSessionSummary {
     }
 }
 
+fn sort_sessions_newest_first(sessions: &mut [AgentSessionSummary]) {
+    sessions.sort_by(|a, b| b.updated_ms.cmp(&a.updated_ms));
+}
+
 fn emit_timeline_item(
     app_handle: &AppHandle,
     session_id: &str,
@@ -3968,6 +3990,10 @@ fn load_recent_project_roots_inner(
     user_id: &str,
 ) -> Result<Vec<RecentProjectRoot>, anyhow::Error> {
     let path = agent_config_dir(app_handle, user_id)?.join("recent_roots.json");
+    load_recent_project_roots_file(&path)
+}
+
+fn read_recent_project_roots_file(path: &Path) -> Result<Vec<RecentProjectRoot>, anyhow::Error> {
     if !path.exists() {
         return Ok(Vec::new());
     }
@@ -3975,31 +4001,137 @@ fn load_recent_project_roots_inner(
     Ok(serde_json::from_str(&contents)?)
 }
 
-fn save_recent_project_root_inner(
+fn load_recent_project_roots_file(path: &Path) -> Result<Vec<RecentProjectRoot>, anyhow::Error> {
+    Ok(sanitize_recent_project_roots(
+        read_recent_project_roots_file(path)?,
+    ))
+}
+
+fn structurally_valid_project_root(path: &str) -> bool {
+    !path.is_empty() && !path.contains('\0') && Path::new(path).is_absolute()
+}
+
+fn sanitize_recent_project_roots(roots: Vec<RecentProjectRoot>) -> Vec<RecentProjectRoot> {
+    let mut seen = HashSet::new();
+    roots
+        .into_iter()
+        .filter(|root| {
+            structurally_valid_project_root(&root.path) && seen.insert(root.path.clone())
+        })
+        .collect()
+}
+
+fn project_root_record(path: String, last_used_ms: u128) -> RecentProjectRoot {
+    let name = Path::new(&path)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .unwrap_or(&path)
+        .to_string();
+    RecentProjectRoot {
+        path,
+        name,
+        last_used_ms,
+    }
+}
+
+fn register_explicit_project_root(
+    roots: Vec<RecentProjectRoot>,
+    project_root: &Path,
+    last_used_ms: u128,
+) -> (Vec<RecentProjectRoot>, bool) {
+    let original_len = roots.len();
+    let mut roots = sanitize_recent_project_roots(roots);
+    let sanitized = roots.len() != original_len;
+    let path = path_string(project_root);
+    if roots.iter().any(|root| root.path == path) {
+        return (roots, sanitized);
+    }
+
+    roots.insert(0, project_root_record(path, last_used_ms));
+    (roots, true)
+}
+
+fn register_explicit_project_root_file(
+    file_path: &Path,
+    project_root: &Path,
+    last_used_ms: u128,
+) -> Result<Vec<RecentProjectRoot>, anyhow::Error> {
+    let roots = read_recent_project_roots_file(file_path)?;
+    let (roots, changed) = register_explicit_project_root(roots, project_root, last_used_ms);
+    if changed {
+        write_json_file(file_path, &roots)?;
+    }
+    Ok(roots)
+}
+
+fn register_explicit_project_root_inner(
     app_handle: &AppHandle,
     user_id: &str,
     project_root: &Path,
 ) -> Result<Vec<RecentProjectRoot>, anyhow::Error> {
-    let mut roots = load_recent_project_roots_inner(app_handle, user_id).unwrap_or_default();
-    let path = path_string(project_root);
-    roots.retain(|root| root.path != path);
-    roots.insert(
-        0,
-        RecentProjectRoot {
-            name: project_root
-                .file_name()
-                .and_then(|value| value.to_str())
-                .unwrap_or(&path)
-                .to_string(),
-            path,
-            last_used_ms: unix_ms(),
-        },
-    );
-    roots.truncate(20);
-
     let file_path = agent_config_dir(app_handle, user_id)?.join("recent_roots.json");
-    write_json_file(&file_path, &roots)?;
+    register_explicit_project_root_file(&file_path, project_root, unix_ms())
+}
+
+fn apply_project_root_order(
+    roots: Vec<RecentProjectRoot>,
+    paths: Vec<String>,
+    last_used_ms: u128,
+) -> Result<Vec<RecentProjectRoot>, String> {
+    let roots = sanitize_recent_project_roots(roots);
+    let mut requested_paths = Vec::new();
+    let mut requested_set = HashSet::new();
+    for path in paths {
+        if structurally_valid_project_root(&path) && requested_set.insert(path.clone()) {
+            requested_paths.push(path);
+        }
+    }
+
+    let missing_paths = roots
+        .iter()
+        .filter(|root| !requested_set.contains(&root.path))
+        .map(|root| root.path.clone())
+        .collect::<Vec<_>>();
+    if !missing_paths.is_empty() {
+        return Err(format!(
+            "Project order is stale and omitted known project roots: {}",
+            missing_paths.join(", ")
+        ));
+    }
+
+    let mut roots_by_path = roots
+        .into_iter()
+        .map(|root| (root.path.clone(), root))
+        .collect::<HashMap<_, _>>();
+    Ok(requested_paths
+        .into_iter()
+        .map(|path| {
+            roots_by_path
+                .remove(&path)
+                .unwrap_or_else(|| project_root_record(path, last_used_ms))
+        })
+        .collect())
+}
+
+fn save_project_root_order_file(
+    file_path: &Path,
+    paths: Vec<String>,
+    last_used_ms: u128,
+) -> Result<Vec<RecentProjectRoot>, anyhow::Error> {
+    let roots = read_recent_project_roots_file(file_path)?;
+    let roots = apply_project_root_order(roots, paths, last_used_ms).map_err(anyhow::Error::msg)?;
+    write_json_file(file_path, &roots)?;
     Ok(roots)
+}
+
+fn save_project_root_order_inner(
+    app_handle: &AppHandle,
+    user_id: &str,
+    paths: Vec<String>,
+) -> Result<Vec<RecentProjectRoot>, anyhow::Error> {
+    let file_path = agent_config_dir(app_handle, user_id)?.join("recent_roots.json");
+    save_project_root_order_file(&file_path, paths, unix_ms())
 }
 
 fn has_active_session_run(active_runs: &HashMap<String, ActiveAgentRun>, session_id: &str) -> bool {
@@ -4047,6 +4179,29 @@ fn path_string(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn recent_roots_test_dir(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "maple-agent-recent-roots-{label}-{}-{}",
+            std::process::id(),
+            NEXT_RUN_ID.fetch_add(1, Ordering::Relaxed)
+        ))
+    }
+
+    fn test_project_path(label: &str) -> String {
+        std::env::temp_dir()
+            .join(format!("maple-agent-project-{label}"))
+            .to_string_lossy()
+            .to_string()
+    }
+
+    fn test_recent_root(label: &str, last_used_ms: u128) -> RecentProjectRoot {
+        project_root_record(test_project_path(label), last_used_ms)
+    }
+
+    fn recent_root_paths(roots: &[RecentProjectRoot]) -> Vec<String> {
+        roots.iter().map(|root| root.path.clone()).collect()
+    }
 
     #[test]
     fn fresh_agent_config_defaults_to_glm() {
@@ -4283,6 +4438,367 @@ mod tests {
         assert_eq!(fs::read(&path).unwrap(), original);
 
         let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[test]
+    fn legacy_recent_project_root_order_is_preserved_while_invalid_duplicates_are_sanitized() {
+        let test_root = recent_roots_test_dir("legacy-order");
+        let path = test_root.join("recent_roots.json");
+        let mut first = test_recent_root("legacy-first", 10);
+        first.name = "Preserved first metadata".to_string();
+        let second = test_recent_root("legacy-second", 20);
+        let mut duplicate_first = first.clone();
+        duplicate_first.name = "Discarded duplicate metadata".to_string();
+        duplicate_first.last_used_ms = 999;
+        let invalid = RecentProjectRoot {
+            path: "relative/project".to_string(),
+            name: "invalid".to_string(),
+            last_used_ms: 30,
+        };
+        write_json_file(
+            &path,
+            &vec![first.clone(), invalid, second.clone(), duplicate_first],
+        )
+        .unwrap();
+
+        let loaded = load_recent_project_roots_file(&path).unwrap();
+
+        assert_eq!(loaded, vec![first.clone(), second.clone()]);
+        let registered =
+            register_explicit_project_root_file(&path, Path::new(&second.path), 1_000).unwrap();
+        assert_eq!(registered, vec![first.clone(), second.clone()]);
+        assert_eq!(
+            read_recent_project_roots_file(&path).unwrap(),
+            vec![first, second]
+        );
+        let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[test]
+    fn registering_recent_project_roots_adds_only_genuinely_new_projects_at_the_top() {
+        let test_root = recent_roots_test_dir("registration");
+        let file_path = test_root.join("recent_roots.json");
+        let first = test_recent_root("register-first", 10);
+        let second = test_recent_root("register-second", 20);
+        let third_path = test_project_path("register-third");
+        write_json_file(&file_path, &vec![first.clone(), second.clone()]).unwrap();
+
+        let original_bytes = fs::read(&file_path).unwrap();
+        let existing =
+            register_explicit_project_root_file(&file_path, Path::new(&second.path), 2_000)
+                .unwrap();
+        assert_eq!(existing, vec![first.clone(), second.clone()]);
+        assert_eq!(fs::read(&file_path).unwrap(), original_bytes);
+
+        let added =
+            register_explicit_project_root_file(&file_path, Path::new(&third_path), 3_000).unwrap();
+        assert_eq!(
+            recent_root_paths(&added),
+            vec![third_path.clone(), first.path.clone(), second.path.clone()]
+        );
+        assert_eq!(added[0].last_used_ms, 3_000);
+
+        let after_add_bytes = fs::read(&file_path).unwrap();
+        let touched_again =
+            register_explicit_project_root_file(&file_path, Path::new(&first.path), 4_000).unwrap();
+        assert_eq!(touched_again, added);
+        assert_eq!(fs::read(&file_path).unwrap(), after_add_bytes);
+
+        let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[test]
+    fn only_explicit_folder_add_can_call_recent_project_registration() {
+        // Starting a runtime and creating/loading a session need the full Goose/Tauri stack in
+        // command tests. Guard the stronger architectural invariant instead: the registration
+        // helper has exactly one caller (agent_save_recent_project_root) plus its definition.
+        // Any attempt to touch recent-root membership from a use/session path fails this test.
+        let registration_helper = concat!("register_explicit_project_root", "_inner(");
+        assert_eq!(
+            include_str!("agent.rs")
+                .matches(registration_helper)
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn resolving_legacy_session_derived_root_preserves_position_when_explicitly_saved() {
+        let test_root = recent_roots_test_dir("legacy-capped-session-root");
+        let file_path = test_root.join("recent_roots.json");
+        let saved_roots = (0..20)
+            .map(|index| {
+                let path = test_root.join(format!("saved-{index}"));
+                fs::create_dir_all(&path).unwrap();
+                project_root_record(path.to_string_lossy().to_string(), index)
+            })
+            .collect::<Vec<_>>();
+        let session_derived_root = test_root.join("session-derived");
+        fs::create_dir_all(&session_derived_root).unwrap();
+        write_json_file(&file_path, &saved_roots).unwrap();
+        let original = fs::read(&file_path).unwrap();
+
+        let resolved = resolve_project_root(
+            Some(&session_derived_root.to_string_lossy()),
+            &AgentConfig::default(),
+        )
+        .unwrap();
+
+        assert_eq!(resolved, session_derived_root.canonicalize().unwrap());
+        assert_eq!(fs::read(&file_path).unwrap(), original);
+        assert_eq!(
+            load_recent_project_roots_file(&file_path).unwrap(),
+            saved_roots
+        );
+
+        let mut visible_order = recent_root_paths(&saved_roots);
+        visible_order.push(path_string(&resolved));
+        let explicitly_saved =
+            save_project_root_order_file(&file_path, visible_order.clone(), 2_000).unwrap();
+        assert_eq!(recent_root_paths(&explicitly_saved), visible_order);
+        assert_eq!(
+            explicitly_saved.last().unwrap().path,
+            path_string(&resolved)
+        );
+
+        let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[test]
+    fn explicit_project_root_order_round_trips_first_middle_and_last_positions() {
+        let test_root = recent_roots_test_dir("round-trip");
+        let file_path = test_root.join("recent_roots.json");
+        let first = test_recent_root("round-trip-first", 10);
+        let second = test_recent_root("round-trip-second", 20);
+        let third = test_recent_root("round-trip-third", 30);
+        write_json_file(
+            &file_path,
+            &vec![first.clone(), second.clone(), third.clone()],
+        )
+        .unwrap();
+
+        let first_to_middle = vec![second.path.clone(), first.path.clone(), third.path.clone()];
+        save_project_root_order_file(&file_path, first_to_middle.clone(), 100).unwrap();
+        assert_eq!(
+            recent_root_paths(&load_recent_project_roots_file(&file_path).unwrap()),
+            first_to_middle
+        );
+
+        let middle_to_first = vec![first.path.clone(), second.path.clone(), third.path.clone()];
+        save_project_root_order_file(&file_path, middle_to_first.clone(), 200).unwrap();
+        assert_eq!(
+            recent_root_paths(&load_recent_project_roots_file(&file_path).unwrap()),
+            middle_to_first
+        );
+
+        let first_to_last = vec![second.path.clone(), third.path.clone(), first.path.clone()];
+        save_project_root_order_file(&file_path, first_to_last.clone(), 300).unwrap();
+        assert_eq!(
+            recent_root_paths(&load_recent_project_roots_file(&file_path).unwrap()),
+            first_to_last
+        );
+
+        let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[test]
+    fn explicit_project_root_order_deduplicates_ignores_malformed_and_adds_offline_roots() {
+        let test_root = recent_roots_test_dir("request-sanitizing");
+        let file_path = test_root.join("recent_roots.json");
+        let first = test_recent_root("sanitize-first", 10);
+        let second = test_recent_root("sanitize-second", 20);
+        let third = test_recent_root("sanitize-third", 30);
+        let offline_path = test_root
+            .join("offline-project")
+            .to_string_lossy()
+            .to_string();
+        assert!(!Path::new(&offline_path).exists());
+        write_json_file(
+            &file_path,
+            &vec![first.clone(), second.clone(), third.clone()],
+        )
+        .unwrap();
+
+        let saved = save_project_root_order_file(
+            &file_path,
+            vec![
+                second.path.clone(),
+                second.path.clone(),
+                "relative/project".to_string(),
+                String::new(),
+                third.path.clone(),
+                format!("{}\0invalid", test_project_path("nul")),
+                first.path.clone(),
+                offline_path.clone(),
+            ],
+            400,
+        )
+        .unwrap();
+
+        assert_eq!(
+            recent_root_paths(&saved),
+            vec![second.path, third.path, first.path, offline_path.clone()]
+        );
+        assert_eq!(saved.last().unwrap().last_used_ms, 400);
+        assert_eq!(load_recent_project_roots_file(&file_path).unwrap(), saved);
+
+        let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[test]
+    fn stale_project_root_order_requests_are_rejected_without_modifying_the_file() {
+        let test_root = recent_roots_test_dir("stale-request");
+        let file_path = test_root.join("recent_roots.json");
+        let first = test_recent_root("stale-first", 10);
+        let second = test_recent_root("stale-second", 20);
+        let third = test_recent_root("stale-third", 30);
+        write_json_file(
+            &file_path,
+            &vec![first.clone(), second.clone(), third.clone()],
+        )
+        .unwrap();
+        let original = fs::read(&file_path).unwrap();
+
+        let error = save_project_root_order_file(
+            &file_path,
+            vec![
+                third.path.clone(),
+                "relative/ignored".to_string(),
+                first.path.clone(),
+            ],
+            500,
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("stale"));
+        assert!(error.to_string().contains(&second.path));
+        assert_eq!(fs::read(&file_path).unwrap(), original.to_vec());
+        assert_eq!(
+            load_recent_project_roots_file(&file_path).unwrap(),
+            vec![first, second, third]
+        );
+
+        let malformed_only = save_project_root_order_file(
+            &file_path,
+            vec![String::new(), "still/relative".to_string()],
+            600,
+        );
+        assert!(malformed_only.is_err());
+        assert_eq!(fs::read(&file_path).unwrap(), original.to_vec());
+
+        let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[test]
+    fn corrupt_recent_project_roots_are_never_overwritten_by_registration_or_reorder() {
+        let test_root = recent_roots_test_dir("corrupt-json");
+        let file_path = test_root.join("recent_roots.json");
+        let original = br#"[{"path":"unterminated""#;
+        fs::create_dir_all(&test_root).unwrap();
+        fs::write(&file_path, original).unwrap();
+        let project_path = test_project_path("corrupt-new");
+
+        assert!(
+            register_explicit_project_root_file(&file_path, Path::new(&project_path), 700).is_err()
+        );
+        assert_eq!(fs::read(&file_path).unwrap(), original);
+
+        assert!(save_project_root_order_file(&file_path, vec![project_path], 800).is_err());
+        assert_eq!(fs::read(&file_path).unwrap(), original);
+
+        let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[test]
+    fn recent_project_root_persistence_has_no_twenty_project_cap() {
+        let test_root = recent_roots_test_dir("more-than-twenty");
+        let file_path = test_root.join("recent_roots.json");
+        let paths = (0..25)
+            .map(|index| test_project_path(&format!("uncapped-{index}")))
+            .collect::<Vec<_>>();
+
+        for (index, path) in paths.iter().enumerate() {
+            register_explicit_project_root_file(&file_path, Path::new(path), index as u128)
+                .unwrap();
+        }
+        assert_eq!(
+            load_recent_project_roots_file(&file_path).unwrap().len(),
+            25
+        );
+
+        let saved = save_project_root_order_file(&file_path, paths.clone(), 900).unwrap();
+        assert_eq!(recent_root_paths(&saved), paths);
+        assert_eq!(
+            load_recent_project_roots_file(&file_path).unwrap().len(),
+            25
+        );
+
+        let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[test]
+    fn recent_project_root_files_remain_isolated_by_account_scope() {
+        let test_root = recent_roots_test_dir("account-isolation");
+        let first_scope = account_scope("recent-roots-user-a").unwrap();
+        let second_scope = account_scope("recent-roots-user-b").unwrap();
+        let first_file = test_root
+            .join("accounts")
+            .join(first_scope)
+            .join("recent_roots.json");
+        let second_file = test_root
+            .join("accounts")
+            .join(second_scope)
+            .join("recent_roots.json");
+        let first_project = test_project_path("account-a-project");
+        let second_project = test_project_path("account-b-project");
+
+        register_explicit_project_root_file(&first_file, Path::new(&first_project), 1_000).unwrap();
+        register_explicit_project_root_file(&second_file, Path::new(&second_project), 2_000)
+            .unwrap();
+
+        assert_eq!(
+            recent_root_paths(&load_recent_project_roots_file(&first_file).unwrap()),
+            vec![first_project]
+        );
+        assert_eq!(
+            recent_root_paths(&load_recent_project_roots_file(&second_file).unwrap()),
+            vec![second_project]
+        );
+
+        let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[test]
+    fn agent_sessions_remain_sorted_by_updated_time_newest_first() {
+        let summary = |id: &str, updated_ms: i64| AgentSessionSummary {
+            id: id.to_string(),
+            title: id.to_string(),
+            project_root: test_project_path("session-sort"),
+            created_ms: 0,
+            updated_ms,
+            message_count: 0,
+            model: None,
+            mode: DEFAULT_GOOSE_MODE.to_string(),
+        };
+        let mut sessions = vec![
+            summary("oldest", 10),
+            summary("newest", 30),
+            summary("middle", 20),
+        ];
+
+        sort_sessions_newest_first(&mut sessions);
+
+        assert_eq!(
+            sessions
+                .into_iter()
+                .map(|session| session.id)
+                .collect::<Vec<_>>(),
+            vec![
+                "newest".to_string(),
+                "middle".to_string(),
+                "oldest".to_string()
+            ]
+        );
     }
 
     #[test]

@@ -201,6 +201,13 @@ class AgentRuntimeService {
     });
   }
 
+  async saveProjectRootOrder(userId: string, paths: string[]): Promise<RecentProjectRoot[]> {
+    return await this.invokeForUser<RecentProjectRoot[]>(userId, "agent_save_project_root_order", {
+      userId,
+      paths
+    });
+  }
+
   async createSession(
     userId: string,
     request?: AgentCreateSessionRequest
