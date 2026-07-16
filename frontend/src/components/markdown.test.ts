@@ -36,4 +36,12 @@ describe("MarkdownContent images", () => {
     expect(rendered).toContain('href="https://trymaple.ai"');
     expect(rendered).toContain(">Maple</a>");
   });
+
+  it("omits images without alt text", () => {
+    const rendered = renderMarkdown("![](https://example.com/hidden.png)");
+
+    expect(rendered).not.toContain("<img");
+    expect(rendered).not.toContain("hidden.png");
+    expect(rendered).not.toContain("<span");
+  });
 });
