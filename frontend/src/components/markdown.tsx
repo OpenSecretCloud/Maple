@@ -435,6 +435,9 @@ function MarkDownContentToMemo(props: { content: string }) {
         ]
       ]}
       components={{
+        // Uploaded images use structured input_image parts outside Markdown. Preserve
+        // useful alt text here without creating an image element or loading its URL.
+        img: ({ alt }) => (alt ? <span>{alt}</span> : null),
         pre: (props: JSX.IntrinsicElements["pre"]) => <PreCode {...props} />,
         code: (props: JSX.IntrinsicElements["code"]) => <CustomCode {...props} />,
         table: (props: JSX.IntrinsicElements["table"]) => <ResponsiveTable {...props} />,
