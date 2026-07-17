@@ -20,6 +20,7 @@ use std::{
     pin::Pin,
     sync::{Arc, RwLock},
 };
+use tokio::sync::Mutex;
 use uuid::Uuid;
 
 /// A decrypted response body returned by [`OpenSecretClient::send_inference_request`].
@@ -47,8 +48,14 @@ pub struct OpenSecretClient {
     client: Client,
     base_url: String,
     session_manager: SessionManager,
+    refresh_lock: Mutex<()>,
     use_mock_attestation: bool,
     server_public_key: Arc<RwLock<Option<Vec<u8>>>>, // Store server's public key from attestation
+}
+
+struct ResolvedAuth {
+    token: Option<String>,
+    using_api_key: bool,
 }
 
 fn append_query_param(query: &mut Vec<String>, key: &str, value: impl ToString) {
@@ -381,6 +388,7 @@ impl OpenSecretClient {
             client: Client::new(),
             base_url: base_url.trim_end_matches('/').to_string(),
             session_manager: SessionManager::new(),
+            refresh_lock: Mutex::new(()),
             use_mock_attestation: use_mock,
             server_public_key: Arc::new(RwLock::new(None)),
         })
@@ -397,6 +405,7 @@ impl OpenSecretClient {
             client: Client::new(),
             base_url: base_url.trim_end_matches('/').to_string(),
             session_manager: SessionManager::new_with_api_key(api_key),
+            refresh_lock: Mutex::new(()),
             use_mock_attestation: use_mock,
             server_public_key: Arc::new(RwLock::new(None)),
         })
@@ -664,8 +673,9 @@ impl OpenSecretClient {
         let mut retried_attestation = false;
 
         loop {
+            let auth = self.resolve_auth(auth_mode)?;
             match self
-                .encrypted_json_call_inner(endpoint, method, data.clone(), auth_mode)
+                .encrypted_json_call_inner(endpoint, method, data.clone(), &auth)
                 .await
             {
                 Ok(result) => return Ok(result),
@@ -690,8 +700,9 @@ impl OpenSecretClient {
         let mut retried_refresh = false;
 
         loop {
+            let auth = self.resolve_auth(auth_mode)?;
             match self
-                .encrypted_json_call_inner(endpoint, method, data.clone(), auth_mode)
+                .encrypted_json_call_inner(endpoint, method, data.clone(), &auth)
                 .await
             {
                 Ok(result) => return Ok(result),
@@ -700,9 +711,10 @@ impl OpenSecretClient {
                     retried_attestation = true;
                 }
                 Err(Error::Api { status: 401, .. })
-                    if allow_refresh && !retried_refresh && !self.using_api_key(auth_mode)? =>
+                    if allow_refresh && !retried_refresh && !auth.using_api_key =>
                 {
-                    self.refresh_token().await?;
+                    self.refresh_after_unauthorized(auth.token.as_deref())
+                        .await?;
                     retried_refresh = true;
                 }
                 Err(error) => return Err(error),
@@ -715,10 +727,10 @@ impl OpenSecretClient {
         endpoint: &str,
         method: &str,
         data: Option<T>,
-        auth_mode: AuthHeaderMode,
+        auth: &ResolvedAuth,
     ) -> Result<U> {
         let (response, session_key) = self
-            .send_encrypted_request(endpoint, method, data, auth_mode, false)
+            .send_encrypted_request(endpoint, method, data, auth, false)
             .await?;
         let encrypted_response: EncryptedResponse<U> = response.json().await?;
         let decrypted =
@@ -776,8 +788,15 @@ impl OpenSecretClient {
         let mut retried_refresh = false;
 
         loop {
+            let auth = self.resolve_auth(AuthHeaderMode::ApiKeyOrJwt)?;
             let result = self
-                .send_inference_request_once(&parts.method, &path_and_query, &headers, body.clone())
+                .send_inference_request_once(
+                    &parts.method,
+                    &path_and_query,
+                    &headers,
+                    body.clone(),
+                    &auth,
+                )
                 .await;
 
             match result {
@@ -794,9 +813,13 @@ impl OpenSecretClient {
                 Ok((response, session_key))
                     if response.status() == reqwest::StatusCode::UNAUTHORIZED
                         && !retried_refresh
-                        && !self.using_api_key(AuthHeaderMode::ApiKeyOrJwt)? =>
+                        && !auth.using_api_key =>
                 {
-                    if self.refresh_token().await.is_ok() {
+                    if self
+                        .refresh_after_unauthorized(auth.token.as_deref())
+                        .await
+                        .is_ok()
+                    {
                         retried_refresh = true;
                     } else {
                         return self.finish_inference_response(response, session_key).await;
@@ -820,6 +843,7 @@ impl OpenSecretClient {
         path_and_query: &str,
         caller_headers: &HttpHeaderMap,
         body: Bytes,
+        auth: &ResolvedAuth,
     ) -> Result<(reqwest::Response, [u8; 32])> {
         let session = self.session_manager.get_session()?.ok_or_else(|| {
             Error::Session(
@@ -834,7 +858,7 @@ impl OpenSecretClient {
             HeaderValue::from_str(&session.session_id.to_string())
                 .map_err(|error| Error::Session(format!("Invalid session ID: {error}")))?,
         );
-        if let Some(token) = self.resolve_auth_token(AuthHeaderMode::ApiKeyOrJwt)? {
+        if let Some(token) = &auth.token {
             headers.insert(
                 AUTHORIZATION,
                 HeaderValue::from_str(&format!("Bearer {token}")).map_err(|error| {
@@ -946,8 +970,9 @@ impl OpenSecretClient {
         let mut retried_refresh = false;
 
         loop {
+            let auth = self.resolve_auth(auth_mode)?;
             match self
-                .send_encrypted_request(endpoint, method, data.clone(), auth_mode, true)
+                .send_encrypted_request(endpoint, method, data.clone(), &auth, true)
                 .await
             {
                 Ok(response) => return Ok(response),
@@ -956,9 +981,10 @@ impl OpenSecretClient {
                     retried_attestation = true;
                 }
                 Err(Error::Api { status: 401, .. })
-                    if allow_refresh && !retried_refresh && !self.using_api_key(auth_mode)? =>
+                    if allow_refresh && !retried_refresh && !auth.using_api_key =>
                 {
-                    self.refresh_token().await?;
+                    self.refresh_after_unauthorized(auth.token.as_deref())
+                        .await?;
                     retried_refresh = true;
                 }
                 Err(error) => return Err(error),
@@ -971,7 +997,7 @@ impl OpenSecretClient {
         endpoint: &str,
         method: &str,
         data: Option<T>,
-        auth_mode: AuthHeaderMode,
+        auth: &ResolvedAuth,
         accept_sse: bool,
     ) -> Result<(reqwest::Response, [u8; 32])> {
         let session = self.session_manager.get_session()?.ok_or_else(|| {
@@ -992,7 +1018,7 @@ impl OpenSecretClient {
             None
         };
 
-        let headers = self.build_encrypted_headers(&session, auth_mode, accept_sse)?;
+        let headers = self.build_encrypted_headers(&session, auth, accept_sse)?;
         let request_builder = match method {
             "GET" => self.client.get(&url),
             "POST" => self.client.post(&url),
@@ -1031,7 +1057,7 @@ impl OpenSecretClient {
     fn build_encrypted_headers(
         &self,
         session: &crate::types::SessionState,
-        auth_mode: AuthHeaderMode,
+        auth: &ResolvedAuth,
         accept_sse: bool,
     ) -> Result<HeaderMap> {
         let mut headers = HeaderMap::new();
@@ -1047,7 +1073,7 @@ impl OpenSecretClient {
                 .map_err(|e| Error::Session(format!("Invalid session ID: {}", e)))?,
         );
 
-        if let Some(token) = self.resolve_auth_token(auth_mode)? {
+        if let Some(token) = &auth.token {
             headers.insert(
                 AUTHORIZATION,
                 HeaderValue::from_str(&format!("Bearer {}", token)).map_err(|e| {
@@ -1059,24 +1085,29 @@ impl OpenSecretClient {
         Ok(headers)
     }
 
-    fn resolve_auth_token(&self, auth_mode: AuthHeaderMode) -> Result<Option<String>> {
+    fn resolve_auth(&self, auth_mode: AuthHeaderMode) -> Result<ResolvedAuth> {
         match auth_mode {
-            AuthHeaderMode::None => Ok(None),
-            AuthHeaderMode::Jwt => self.session_manager.get_access_token(),
+            AuthHeaderMode::None => Ok(ResolvedAuth {
+                token: None,
+                using_api_key: false,
+            }),
+            AuthHeaderMode::Jwt => Ok(ResolvedAuth {
+                token: self.session_manager.get_access_token()?,
+                using_api_key: false,
+            }),
             AuthHeaderMode::ApiKeyOrJwt => {
                 if let Some(api_key) = self.session_manager.get_api_key()? {
-                    Ok(Some(api_key))
+                    Ok(ResolvedAuth {
+                        token: Some(api_key),
+                        using_api_key: true,
+                    })
                 } else {
-                    self.session_manager.get_access_token()
+                    Ok(ResolvedAuth {
+                        token: self.session_manager.get_access_token()?,
+                        using_api_key: false,
+                    })
                 }
             }
-        }
-    }
-
-    fn using_api_key(&self, auth_mode: AuthHeaderMode) -> Result<bool> {
-        match auth_mode {
-            AuthHeaderMode::ApiKeyOrJwt => Ok(self.session_manager.get_api_key()?.is_some()),
-            _ => Ok(false),
         }
     }
 
@@ -1339,7 +1370,7 @@ impl OpenSecretClient {
         Ok(response)
     }
 
-    pub async fn refresh_token(&self) -> Result<()> {
+    async fn refresh_token_inner(&self) -> Result<()> {
         let refresh_token = self
             .session_manager
             .get_refresh_token()?
@@ -1355,6 +1386,26 @@ impl OpenSecretClient {
             .set_tokens(response.access_token, Some(response.refresh_token))?;
 
         Ok(())
+    }
+
+    async fn refresh_after_unauthorized(&self, failed_access_token: Option<&str>) -> Result<()> {
+        let _refresh_guard = self.refresh_lock.lock().await;
+
+        // Another request may already have replaced the credential while this
+        // request was in flight or waiting for the refresh lock. In that case,
+        // retry with the replacement instead of rotating the refresh token a
+        // second time.
+        let current_access_token = self.session_manager.get_access_token()?;
+        if current_access_token.as_deref() != failed_access_token {
+            return Ok(());
+        }
+
+        self.refresh_token_inner().await
+    }
+
+    pub async fn refresh_token(&self) -> Result<()> {
+        let _refresh_guard = self.refresh_lock.lock().await;
+        self.refresh_token_inner().await
     }
 
     async fn logout_inner(&self, push_device_id: Option<Uuid>) -> Result<()> {
@@ -2331,6 +2382,7 @@ mod tests {
     use crate::PushNotificationKeyPair;
     use futures::StreamExt;
     use serde_json::json;
+    use std::time::Duration;
     use wiremock::{
         matchers::{header, method, path, query_param},
         Match, Mock, MockServer, Request, Respond, ResponseTemplate,
@@ -2937,6 +2989,90 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn concurrent_authenticated_401s_share_one_refresh() {
+        let mock_server = MockServer::start().await;
+        let client = OpenSecretClient::new(mock_server.uri()).unwrap();
+        let session_id = Uuid::new_v4();
+        let session_key = [39u8; 32];
+
+        client
+            .session_manager
+            .set_session(session_id, session_key)
+            .unwrap();
+        client
+            .session_manager
+            .set_tokens(
+                "expired_access".to_string(),
+                Some("refresh_token".to_string()),
+            )
+            .unwrap();
+
+        Mock::given(method("GET"))
+            .and(path("/protected/user"))
+            .and(header("authorization", "Bearer expired_access"))
+            .respond_with(
+                ResponseTemplate::new(401)
+                    .set_delay(Duration::from_millis(50))
+                    .set_body_json(json!({ "message": "jwt expired" })),
+            )
+            .expect(2)
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/refresh"))
+            .and(MissingHeaderMatcher("authorization"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(Duration::from_millis(100))
+                    .set_body_json(encrypted_response(
+                        &session_key,
+                        &json!({
+                            "access_token": "fresh_access",
+                            "refresh_token": "fresh_refresh",
+                        }),
+                    )),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/protected/user"))
+            .and(header("authorization", "Bearer fresh_access"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(encrypted_response(
+                &session_key,
+                &json!({
+                    "user": {
+                        "id": Uuid::new_v4(),
+                        "name": null,
+                        "email": "sdk@test.dev",
+                        "email_verified": true,
+                        "login_method": "email",
+                        "created_at": "2024-01-01T00:00:00Z",
+                        "updated_at": "2024-01-01T00:00:00Z"
+                    }
+                }),
+            )))
+            .expect(2)
+            .mount(&mock_server)
+            .await;
+
+        let (first, second) = tokio::join!(client.get_user(), client.get_user());
+        assert_eq!(first.unwrap().user.email.as_deref(), Some("sdk@test.dev"));
+        assert_eq!(second.unwrap().user.email.as_deref(), Some("sdk@test.dev"));
+        assert_eq!(
+            client.get_access_token().unwrap().as_deref(),
+            Some("fresh_access")
+        );
+        assert_eq!(
+            client.get_refresh_token().unwrap().as_deref(),
+            Some("fresh_refresh")
+        );
+        mock_server.verify().await;
+    }
+
+    #[tokio::test]
     async fn test_corrupted_access_token_recovers_via_refresh_on_next_call() {
         let mock_server = MockServer::start().await;
         let client = OpenSecretClient::new(mock_server.uri()).unwrap();
@@ -3343,6 +3479,111 @@ mod tests {
             collect_response_body(response.into_body()).await.unwrap(),
             error_body
         );
+    }
+
+    #[tokio::test]
+    async fn concurrent_inference_401s_share_one_refresh() {
+        let mock_server = MockServer::start().await;
+        let client = OpenSecretClient::new(mock_server.uri()).unwrap();
+        let session_id = Uuid::new_v4();
+        let session_key = [40u8; 32];
+        let request_body = Bytes::from_static(br#"{"model":"test","messages":[]}"#);
+        let response_body = Bytes::from_static(br#"{"id":"completion-ok"}"#);
+
+        client
+            .session_manager
+            .set_session(session_id, session_key)
+            .unwrap();
+        client
+            .session_manager
+            .set_tokens(
+                "expired_access".to_string(),
+                Some("refresh_token".to_string()),
+            )
+            .unwrap();
+
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .and(header("authorization", "Bearer expired_access"))
+            .and(EncryptedBytesBodyMatcher {
+                session_key,
+                expected: request_body.clone(),
+            })
+            .respond_with(
+                ResponseTemplate::new(401)
+                    .set_delay(Duration::from_millis(50))
+                    .set_body_string("jwt expired"),
+            )
+            .expect(2)
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/refresh"))
+            .and(MissingHeaderMatcher("authorization"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(Duration::from_millis(100))
+                    .set_body_json(encrypted_response(
+                        &session_key,
+                        &json!({
+                            "access_token": "fresh_access",
+                            "refresh_token": "fresh_refresh",
+                        }),
+                    )),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .and(header("authorization", "Bearer fresh_access"))
+            .and(EncryptedBytesBodyMatcher {
+                session_key,
+                expected: request_body.clone(),
+            })
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(encrypted_response_bytes(&session_key, &response_body)),
+            )
+            .expect(2)
+            .mount(&mock_server)
+            .await;
+
+        let make_request = || {
+            HttpRequest::builder()
+                .method(http::Method::POST)
+                .uri("/v1/chat/completions")
+                .body(request_body.clone())
+                .unwrap()
+        };
+        let (first, second) = tokio::join!(
+            client.send_inference_request(make_request()),
+            client.send_inference_request(make_request())
+        );
+
+        let first = first.unwrap();
+        let second = second.unwrap();
+        assert_eq!(first.status(), http::StatusCode::OK);
+        assert_eq!(second.status(), http::StatusCode::OK);
+        assert_eq!(
+            collect_response_body(first.into_body()).await.unwrap(),
+            response_body
+        );
+        assert_eq!(
+            collect_response_body(second.into_body()).await.unwrap(),
+            response_body
+        );
+        assert_eq!(
+            client.get_access_token().unwrap().as_deref(),
+            Some("fresh_access")
+        );
+        assert_eq!(
+            client.get_refresh_token().unwrap().as_deref(),
+            Some("fresh_refresh")
+        );
+        mock_server.verify().await;
     }
 
     #[tokio::test]
