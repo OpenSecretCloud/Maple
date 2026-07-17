@@ -2167,6 +2167,20 @@ impl OpenSecretClient {
         Ok(Box::pin(event_stream))
     }
 
+    // Web API Methods
+
+    /// Searches the public web through OpenSecret's configured search provider.
+    pub async fn web_search(&self, request: WebSearchRequest) -> Result<WebSearchResponse> {
+        self.authenticated_api_call("/v1/web/search", "POST", Some(request))
+            .await
+    }
+
+    /// Extracts sanitized Markdown from public URLs through OpenSecret's configured provider.
+    pub async fn web_extract(&self, request: WebExtractRequest) -> Result<WebExtractResponse> {
+        self.authenticated_api_call("/v1/web/extract", "POST", Some(request))
+            .await
+    }
+
     async fn agent_chat_stream(
         &self,
         endpoint: String,
@@ -4591,6 +4605,219 @@ mod tests {
             Some("new_refresh")
         );
         assert!(client.get_session_id().unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn web_search_uses_authenticated_encrypted_endpoint() {
+        let mock_server = MockServer::start().await;
+        let client = OpenSecretClient::new(mock_server.uri()).unwrap();
+        let session_id = Uuid::new_v4();
+        let session_key = [51u8; 32];
+
+        client
+            .session_manager
+            .set_session(session_id, session_key)
+            .unwrap();
+        client
+            .session_manager
+            .set_tokens(
+                "web_access_token".to_string(),
+                Some("web_refresh_token".to_string()),
+            )
+            .unwrap();
+
+        let request = WebSearchRequest {
+            query: "rust confidential computing".to_string(),
+            workflow: Some(WebSearchWorkflow::News),
+            page: Some(2),
+            limit: Some(25),
+            safe_search: Some(false),
+            timeout: Some(2.5),
+            lens_id: None,
+            lens: Some(WebSearchLens {
+                sites_included: Some(vec!["example.com".to_string()]),
+                keywords_included: Some(vec!["enclave".to_string()]),
+                time_relative: Some(WebSearchTimeRelative::Week),
+                search_region: Some("US".to_string()),
+                ..Default::default()
+            }),
+            filters: Some(WebSearchFilters {
+                region: Some("US".to_string()),
+                after: None,
+                before: None,
+            }),
+        };
+        let response = WebSearchResponse {
+            trace_id: Some("trace-search-1".to_string()),
+            results: vec![WebSearchResult {
+                category: "news".to_string(),
+                url: "https://example.com/enclave".to_string(),
+                title: "Enclave update".to_string(),
+                snippet: Some("A short description.".to_string()),
+                published_at: Some("2026-07-16T12:00:00Z".to_string()),
+            }],
+        };
+
+        Mock::given(method("POST"))
+            .and(path("/v1/web/search"))
+            .and(header("authorization", "Bearer web_access_token"))
+            .and(header("x-session-id", session_id.to_string()))
+            .and(EncryptedJsonBodyMatcher {
+                session_key,
+                expected: json!({
+                    "query": "rust confidential computing",
+                    "workflow": "news",
+                    "page": 2,
+                    "limit": 25,
+                    "safe_search": false,
+                    "timeout": 2.5,
+                    "lens": {
+                        "sites_included": ["example.com"],
+                        "keywords_included": ["enclave"],
+                        "time_relative": "week",
+                        "search_region": "US"
+                    },
+                    "filters": {
+                        "region": "US"
+                    }
+                }),
+            })
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(encrypted_response(&session_key, &response)),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let actual = client.web_search(request).await.unwrap();
+
+        assert_eq!(actual, response);
+        mock_server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn web_extract_preserves_order_and_partial_page_errors() {
+        let mock_server = MockServer::start().await;
+        let client = OpenSecretClient::new(mock_server.uri()).unwrap();
+        let session_id = Uuid::new_v4();
+        let session_key = [52u8; 32];
+
+        client
+            .session_manager
+            .set_session(session_id, session_key)
+            .unwrap();
+        client
+            .session_manager
+            .set_tokens(
+                "web_access_token".to_string(),
+                Some("web_refresh_token".to_string()),
+            )
+            .unwrap();
+
+        let first_url = "https://example.com/first".to_string();
+        let second_url = "https://example.com/second".to_string();
+        let request = WebExtractRequest {
+            urls: vec![first_url.clone(), second_url.clone()],
+            timeout: Some(4.5),
+        };
+        let response = WebExtractResponse {
+            trace_id: Some("trace-extract-1".to_string()),
+            pages: vec![
+                WebExtractPage {
+                    url: first_url.clone(),
+                    markdown: Some("# First\n\nExtracted text.".to_string()),
+                    error: None,
+                },
+                WebExtractPage {
+                    url: second_url.clone(),
+                    markdown: None,
+                    error: Some(WebExtractPageError {
+                        code: "no_content".to_string(),
+                        message: "No readable content was found.".to_string(),
+                    }),
+                },
+            ],
+        };
+
+        Mock::given(method("POST"))
+            .and(path("/v1/web/extract"))
+            .and(header("authorization", "Bearer web_access_token"))
+            .and(header("x-session-id", session_id.to_string()))
+            .and(EncryptedJsonBodyMatcher {
+                session_key,
+                expected: json!({
+                    "urls": [first_url, second_url],
+                    "timeout": 4.5
+                }),
+            })
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(encrypted_response(&session_key, &response)),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let actual = client.web_extract(request).await.unwrap();
+
+        assert_eq!(actual, response);
+        assert_eq!(actual.pages[0].url, "https://example.com/first");
+        assert_eq!(
+            actual.pages[1]
+                .error
+                .as_ref()
+                .map(|error| error.code.as_str()),
+            Some("no_content")
+        );
+        mock_server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn web_validation_error_does_not_retry_attestation() {
+        let mock_server = MockServer::start().await;
+        let client = OpenSecretClient::new(mock_server.uri()).unwrap();
+        let session_id = Uuid::new_v4();
+        let session_key = [53u8; 32];
+
+        client
+            .session_manager
+            .set_session(session_id, session_key)
+            .unwrap();
+        client
+            .session_manager
+            .set_tokens(
+                "web_access_token".to_string(),
+                Some("web_refresh_token".to_string()),
+            )
+            .unwrap();
+
+        Mock::given(method("POST"))
+            .and(path("/v1/web/search"))
+            .and(header("authorization", "Bearer web_access_token"))
+            .and(header("x-session-id", session_id.to_string()))
+            .respond_with(ResponseTemplate::new(422).set_body_json(json!({
+                "status": 422,
+                "code": "invalid_request",
+                "message": "The web request is invalid."
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let error = client
+            .web_search(WebSearchRequest::new("maple privacy"))
+            .await
+            .unwrap_err();
+
+        match error {
+            Error::Api { status, message } => {
+                assert_eq!(status, 422);
+                assert!(message.contains("invalid_request"));
+            }
+            other => panic!("expected API validation error, got {other:?}"),
+        }
+        mock_server.verify().await;
     }
 
     #[tokio::test]

@@ -660,6 +660,12 @@ export type OpenSecretContextType = {
    */
   transcribeAudio: typeof api.transcribeAudio;
 
+  /** Searches the public web through OpenSecret's configured search provider. */
+  webSearch: typeof api.webSearch;
+
+  /** Extracts sanitized Markdown from public URLs through OpenSecret's configured provider. */
+  webExtract: typeof api.webExtract;
+
   /**
    * Lists user's responses with pagination
    * @param params - Optional parameters for pagination and filtering
@@ -955,6 +961,8 @@ export const OpenSecretContext = createContext<OpenSecretContextType>({
   listApiKeys: api.listApiKeys,
   deleteApiKey: api.deleteApiKey,
   transcribeAudio: api.transcribeAudio,
+  webSearch: api.webSearch,
+  webExtract: api.webExtract,
   fetchResponsesList: api.fetchResponsesList,
   fetchResponse: api.fetchResponse,
   cancelResponse: api.cancelResponse,
@@ -1373,6 +1381,8 @@ export function OpenSecretProvider({
     listApiKeys: api.listApiKeys,
     deleteApiKey: api.deleteApiKey,
     transcribeAudio: api.transcribeAudio,
+    webSearch: api.webSearch,
+    webExtract: api.webExtract,
     fetchResponsesList: api.fetchResponsesList,
     fetchResponse: api.fetchResponse,
     cancelResponse: api.cancelResponse,
