@@ -21,6 +21,12 @@ pub struct AttestationDocument {
     pub nonce: Option<Vec<u8>>,
 }
 
+/// Low-level AWS Nitro document verifier.
+///
+/// This verifies the certificate chain, document signature, and nonce. Nitro
+/// authenticity alone does not identify an OpenSecret deployment. Production
+/// callers should use `OpenSecretClient`, which additionally enforces its
+/// configured `Pcr0TrustPolicy` before key exchange.
 pub struct AttestationVerifier {
     expected_pcrs: Option<std::collections::HashMap<usize, Vec<u8>>>,
     allow_debug: bool,

@@ -3,6 +3,7 @@ use crate::{
     cbor::{self, Value as CborValue},
     crypto::{self},
     error::{Error, Result},
+    pcr::Pcr0TrustPolicy,
     session::SessionManager,
     types::*,
 };
@@ -16,7 +17,7 @@ use reqwest::{
     Client,
 };
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use std::pin::Pin;
+use std::{net::IpAddr, pin::Pin};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
@@ -47,6 +48,7 @@ pub struct OpenSecretClient {
     session_manager: SessionManager,
     refresh_lock: Mutex<()>,
     use_mock_attestation: bool,
+    pcr0_trust_policy: Pcr0TrustPolicy,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -376,13 +378,63 @@ async fn collect_response_body(mut body: OpenSecretResponseBody) -> Result<Bytes
     Ok(collected.freeze())
 }
 
+fn uses_mock_attestation(base_url: &str) -> Result<bool> {
+    let parsed = reqwest::Url::parse(base_url)
+        .map_err(|error| Error::Configuration(format!("Invalid base URL: {error}")))?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err(Error::Configuration(
+            "Base URL must use HTTP or HTTPS".to_string(),
+        ));
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(Error::Configuration(
+            "Base URL must not contain credentials".to_string(),
+        ));
+    }
+    if parsed.query().is_some() || parsed.fragment().is_some() {
+        return Err(Error::Configuration(
+            "Base URL must not contain a query or fragment".to_string(),
+        ));
+    }
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| Error::Configuration("Base URL must include a host".to_string()))?;
+    let host = host.trim_end_matches('.');
+
+    let is_mock_host = if host.eq_ignore_ascii_case("localhost") {
+        true
+    } else {
+        let address_host = host
+            .strip_prefix('[')
+            .and_then(|host| host.strip_suffix(']'))
+            .unwrap_or(host);
+        address_host.parse::<IpAddr>().is_ok_and(|address| {
+            address.is_loopback()
+                || address.is_unspecified()
+                || (cfg!(target_os = "android") && address == IpAddr::from([10, 0, 2, 2]))
+        })
+    };
+
+    if parsed.scheme() != "https" && !is_mock_host {
+        return Err(Error::Configuration(
+            "Non-local base URLs must use HTTPS".to_string(),
+        ));
+    }
+    Ok(is_mock_host)
+}
+
 impl OpenSecretClient {
     pub fn new(base_url: impl Into<String>) -> Result<Self> {
+        Self::new_with_pcr0_trust_policy(base_url, Pcr0TrustPolicy::official())
+    }
+
+    /// Construct a client with an explicit production PCR0 trust policy.
+    pub fn new_with_pcr0_trust_policy(
+        base_url: impl Into<String>,
+        pcr0_trust_policy: Pcr0TrustPolicy,
+    ) -> Result<Self> {
         let base_url = base_url.into();
-        let use_mock = base_url.contains("localhost")
-            || base_url.contains("127.0.0.1")
-            || base_url.contains("0.0.0.0")
-            || base_url.contains("10.0.2.2");
+        let use_mock = uses_mock_attestation(&base_url)?;
 
         Ok(Self {
             client: Client::new(),
@@ -390,15 +442,22 @@ impl OpenSecretClient {
             session_manager: SessionManager::new(),
             refresh_lock: Mutex::new(()),
             use_mock_attestation: use_mock,
+            pcr0_trust_policy,
         })
     }
 
     pub fn new_with_api_key(base_url: impl Into<String>, api_key: String) -> Result<Self> {
+        Self::new_with_api_key_and_pcr0_trust_policy(base_url, api_key, Pcr0TrustPolicy::official())
+    }
+
+    /// Construct an API-key client with an explicit production PCR0 policy.
+    pub fn new_with_api_key_and_pcr0_trust_policy(
+        base_url: impl Into<String>,
+        api_key: String,
+        pcr0_trust_policy: Pcr0TrustPolicy,
+    ) -> Result<Self> {
         let base_url = base_url.into();
-        let use_mock = base_url.contains("localhost")
-            || base_url.contains("127.0.0.1")
-            || base_url.contains("0.0.0.0")
-            || base_url.contains("10.0.2.2");
+        let use_mock = uses_mock_attestation(&base_url)?;
 
         Ok(Self {
             client: Client::new(),
@@ -406,6 +465,7 @@ impl OpenSecretClient {
             session_manager: SessionManager::new_with_api_key(api_key),
             refresh_lock: Mutex::new(()),
             use_mock_attestation: use_mock,
+            pcr0_trust_policy,
         })
     }
 
@@ -427,7 +487,17 @@ impl OpenSecretClient {
         // Step 2: Parse and verify attestation document
         let doc = if !self.use_mock_attestation {
             let verifier = AttestationVerifier::new();
-            verifier.verify_attestation_document(&attestation_doc.attestation_document, &nonce)?
+            let doc = verifier
+                .verify_attestation_document(&attestation_doc.attestation_document, &nonce)?;
+            let pcr0 = doc.pcrs.get(&0).ok_or_else(|| {
+                Error::AttestationVerificationFailed(
+                    "Missing PCR0 in attestation document".to_string(),
+                )
+            })?;
+            self.pcr0_trust_policy
+                .verify_pcr0(&self.client, pcr0)
+                .await?;
+            doc
         } else {
             // For mock mode, extract without full verification
             self.parse_mock_attestation(&attestation_doc.attestation_document)?
@@ -1466,6 +1536,15 @@ impl OpenSecretClient {
 
     pub fn get_access_token(&self) -> Result<Option<String>> {
         self.session_manager.get_access_token()
+    }
+
+    /// Return one coherent snapshot of the current JWT token pair.
+    ///
+    /// Prefer this over separate access- and refresh-token reads when the pair
+    /// will be persisted or copied into another client: an automatic refresh
+    /// can replace both values between two independent lock acquisitions.
+    pub fn get_tokens(&self) -> Result<Option<TokenPair>> {
+        self.session_manager.get_tokens()
     }
 
     pub fn get_refresh_token(&self) -> Result<Option<String>> {
@@ -2761,6 +2840,77 @@ mod tests {
         let client = OpenSecretClient::new("http://localhost:3000").unwrap();
         assert_eq!(client.base_url, "http://localhost:3000");
         assert!(client.use_mock_attestation);
+    }
+
+    #[test]
+    fn mock_attestation_uses_the_parsed_host_not_url_substrings() {
+        for url in [
+            "https://localhost.example.com",
+            "https://example.com/localhost",
+            "https://example.com/127.0.0.1",
+        ] {
+            let client = OpenSecretClient::new(url).unwrap();
+            assert!(!client.use_mock_attestation, "unexpected mock URL: {url}");
+        }
+
+        assert!(
+            OpenSecretClient::new("http://localhost:3000")
+                .unwrap()
+                .use_mock_attestation
+        );
+        assert!(
+            OpenSecretClient::new("http://127.0.0.1:3000")
+                .unwrap()
+                .use_mock_attestation
+        );
+        assert!(
+            OpenSecretClient::new("http://[::1]:3000")
+                .unwrap()
+                .use_mock_attestation
+        );
+    }
+
+    #[test]
+    fn base_url_validation_rejects_malformed_or_ambiguous_urls() {
+        for url in [
+            "not a URL",
+            "file:///tmp/opensecret",
+            "https://localhost@example.com",
+            "https://example.com?redirect=localhost",
+            "https://example.com/#localhost",
+        ] {
+            assert!(
+                OpenSecretClient::new(url).is_err(),
+                "unexpectedly accepted base URL: {url}"
+            );
+        }
+    }
+
+    #[test]
+    fn android_emulator_alias_is_not_a_desktop_mock_bypass() {
+        let client = OpenSecretClient::new("http://10.0.2.2:3000");
+        if cfg!(target_os = "android") {
+            assert!(client.unwrap().use_mock_attestation);
+        } else {
+            assert!(client.is_err());
+            assert!(
+                !OpenSecretClient::new("https://10.0.2.2:3000")
+                    .unwrap()
+                    .use_mock_attestation
+            );
+        }
+    }
+
+    #[test]
+    fn get_tokens_returns_one_coherent_pair_snapshot() {
+        let client = OpenSecretClient::new("http://localhost:3000").unwrap();
+        client
+            .set_tokens("access".to_string(), Some("refresh".to_string()))
+            .unwrap();
+
+        let tokens = client.get_tokens().unwrap().unwrap();
+        assert_eq!(tokens.access_token, "access");
+        assert_eq!(tokens.refresh_token.as_deref(), Some("refresh"));
     }
 
     #[tokio::test]
