@@ -5,6 +5,18 @@ import { AgentAuthLifecycleCoordinator } from "@/services/agentAuthLifecycle";
 export interface AgentConfig {
   defaultProjectRoot?: string | null;
   defaultModel: string;
+  projectSkillsTrust?: AgentProjectSkillsTrust[];
+}
+
+export interface AgentProjectSkillsTrust {
+  path: string;
+  trusted: boolean;
+}
+
+export interface AgentProjectSkillsTrustStatus {
+  path: string;
+  decision?: boolean | null;
+  available: boolean;
 }
 
 export interface AgentMcpKeyValue {
@@ -199,6 +211,29 @@ class AgentRuntimeService {
       userId,
       path
     });
+  }
+
+  async getProjectSkillsTrust(
+    userId: string,
+    path: string
+  ): Promise<AgentProjectSkillsTrustStatus> {
+    return await this.invokeForUser<AgentProjectSkillsTrustStatus>(
+      userId,
+      "agent_get_project_skills_trust",
+      { userId, path }
+    );
+  }
+
+  async setProjectSkillsTrust(
+    userId: string,
+    path: string,
+    trusted: boolean
+  ): Promise<AgentProjectSkillsTrustStatus> {
+    return await this.invokeForUser<AgentProjectSkillsTrustStatus>(
+      userId,
+      "agent_set_project_skills_trust",
+      { userId, path, trusted }
+    );
   }
 
   async saveProjectRootOrder(userId: string, paths: string[]): Promise<RecentProjectRoot[]> {
