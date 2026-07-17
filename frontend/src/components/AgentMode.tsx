@@ -86,7 +86,6 @@ import {
   reorderProjectRoots
 } from "@/services/agentProjectOrdering";
 import {
-  agentTaskErrorMessage,
   isMcpConnectionErrorEvent,
   mcpConnectionErrorMessage,
   userFacingAgentError
@@ -1207,7 +1206,7 @@ export function AgentMode({ userId }: { userId: string }) {
         setHasManualProxyConflict(true);
       } else if (replaceError instanceof AgentProxyReplacementSetupError) {
         setHasManualProxyConflict(false);
-        setError(errorMessage(replaceError));
+        setError(replaceError.message);
       } else {
         setError(errorMessage(replaceError));
       }
@@ -3842,11 +3841,7 @@ function basename(path: string): string {
 }
 
 function errorMessage(error: unknown): string {
-  const message =
-    error instanceof Error
-      ? error.message
-      : typeof error === "string"
-        ? error
-        : "Agent Mode failed";
-  return agentTaskErrorMessage(message);
+  if (error instanceof Error) return error.message;
+  if (typeof error === "string") return error;
+  return "Agent Mode failed";
 }

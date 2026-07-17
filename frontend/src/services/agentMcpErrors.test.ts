@@ -1,6 +1,5 @@
 import { describe, expect, test } from "bun:test";
 import {
-  agentTaskErrorMessage,
   conciseMcpError,
   isMcpConnectionErrorEvent,
   mcpConnectionErrorMessage,
@@ -43,9 +42,6 @@ describe("MCP connection errors", () => {
     expect(
       userFacingAgentError("Some MCP servers could not connect: calendar: Session not found")
     ).toBe("Some MCP servers could not connect. calendar: Session not found");
-    expect(agentTaskErrorMessage("Failed to connect MCP server: Session not found")).toBe(
-      "Failed to connect MCP server: Session not found"
-    );
   });
 
   test("leaves unrelated Agent errors unchanged", () => {
@@ -53,18 +49,6 @@ describe("MCP connection errors", () => {
       "The selected model is unavailable"
     );
     expect(isMcpConnectionErrorEvent("The selected model is unavailable")).toBe(false);
-  });
-
-  test("translates known runtime session errors without rewriting unrelated text", () => {
-    expect(userFacingAgentError("Failed to load Agent task: Session not found")).toBe(
-      "Failed to load Agent task: Task not found"
-    );
-    expect(
-      agentTaskErrorMessage("Goose stream failed: Please try again or create a new session.")
-    ).toBe("Goose stream failed: Please try again or create a new task.");
-    expect(agentTaskErrorMessage("MCP server session-cache failed")).toBe(
-      "MCP server session-cache failed"
-    );
   });
 
   test("classifies authentication, timeout, and STDIO startup failures", () => {

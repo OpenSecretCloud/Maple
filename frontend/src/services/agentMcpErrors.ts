@@ -26,41 +26,10 @@ export function mcpConnectionErrorMessage(
 
 export function userFacingAgentError(message: string): string {
   const singleLine = message.replace(/\s+/g, " ").trim();
-  if (!isMcpConnectionErrorEvent(singleLine)) return agentTaskErrorMessage(message);
+  if (!isMcpConnectionErrorEvent(singleLine)) return message;
 
   const detail = singleLine.slice(MCP_EVENT_PREFIX.length).trim();
   return `Some MCP servers could not connect. ${conciseMcpError(detail)}`;
-}
-
-export function agentTaskErrorMessage(message: string): string {
-  const isMapleTaskError = [
-    "Agent task",
-    "Failed to create Agent task",
-    "Failed to list Agent tasks",
-    "Failed to load Agent task",
-    "Failed to reload Agent task",
-    "Failed to find Agent task",
-    "Failed to delete Agent task",
-    "Failed to inspect cancelled Agent task",
-    "Failed to restore cancelled Agent task",
-    "Failed to name Agent task",
-    "Failed to load named Agent task",
-    "Failed to load updated Agent task",
-    "Failed to load Agent for task",
-    "Failed to save task MCP settings",
-    "Goose reply failed:",
-    "Goose stream failed:"
-  ].some((prefix) => message.startsWith(prefix));
-
-  if (!isMapleTaskError) return message;
-
-  return message
-    .replace(/\bSession not found\b/g, "Task not found")
-    .replace(/\bsession not found\b/g, "task not found")
-    .replace(/\bCreate a new session\b/g, "Create a new task")
-    .replace(/\bcreate a new session\b/g, "create a new task")
-    .replace(/\bStart a new session\b/g, "Start a new task")
-    .replace(/\bstart a new session\b/g, "start a new task");
 }
 
 export function isMcpConnectionErrorEvent(message: string): boolean {

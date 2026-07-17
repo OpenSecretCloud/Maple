@@ -474,26 +474,6 @@ fn session_title_from_prompt(prompt: &str) -> String {
     title
 }
 
-fn agent_task_framework_notice(message: &str) -> String {
-    let is_compaction_failure = message.starts_with("Ran into this error trying to compact:")
-        && message.ends_with("Please try again or create a new session");
-    let is_context_limit = message
-        .starts_with("Unable to continue: Context limit still exceeded after compaction.")
-        && message.ends_with("or start a new session.");
-    let is_provider_refusal = message.starts_with("The provider refused this request.")
-        && message.ends_with(
-            "Please start a new session to continue — resending this conversation is likely to be refused again.",
-        );
-
-    if !is_compaction_failure && !is_context_limit && !is_provider_refusal {
-        return message.to_string();
-    }
-
-    message
-        .replace("create a new session", "create a new task")
-        .replace("start a new session", "start a new task")
-}
-
 fn should_name_session_from_prompt(session: &Session) -> bool {
     session.message_count == 0 && !session.user_set_name && session.name == DEFAULT_AGENT_TASK_TITLE
 }
@@ -2851,11 +2831,7 @@ fn message_to_timeline_items_with_thinking(
                 item_type: "message".to_string(),
                 role: Some(role.clone()),
                 title: None,
-                text: Some(if role == "assistant" {
-                    agent_task_framework_notice(&text.text)
-                } else {
-                    text.text.clone()
-                }),
+                text: Some(text.text.clone()),
                 status: None,
                 input: None,
                 output: None,
@@ -2961,10 +2937,7 @@ fn system_notification_item(
         item_type: "system".to_string(),
         role: Some("system".to_string()),
         title: Some(title.to_string()),
-        text: Some(bounded_timeline_text(
-            &agent_task_framework_notice(&notification.msg),
-            500,
-        )),
+        text: Some(bounded_timeline_text(&notification.msg, 500)),
         status: None,
         input: None,
         // Provider-specific structured data can contain raw request or model
@@ -6286,56 +6259,6 @@ mod tests {
         assert!(title.chars().count() <= MAX_AGENT_SESSION_TITLE_CHARS);
         assert!(title.ends_with('…'));
         assert!(!title.contains("  "));
-    }
-
-    #[test]
-    fn goose_framework_notices_use_task_copy_without_rewriting_assistant_content() {
-        let compaction = "Ran into this error trying to compact: context overflow.\n\nPlease try again or create a new session";
-        assert_eq!(
-            agent_task_framework_notice(compaction),
-            "Ran into this error trying to compact: context overflow.\n\nPlease try again or create a new task"
-        );
-        let compaction_items =
-            message_to_timeline_items(&Message::assistant().with_text(compaction), true);
-        assert_eq!(
-            compaction_items[0].text.as_deref(),
-            Some(
-                "Ran into this error trying to compact: context overflow.\n\nPlease try again or create a new task"
-            )
-        );
-
-        let context_limit = "Unable to continue: Context limit still exceeded after compaction. Try using a shorter message, a model with a larger context window, or start a new session.";
-        assert!(agent_task_framework_notice(context_limit).ends_with("or start a new task."));
-        let context_items = message_to_timeline_items(
-            &Message::assistant()
-                .with_system_notification(SystemNotificationType::InlineMessage, context_limit),
-            true,
-        );
-        assert!(context_items[0]
-            .text
-            .as_deref()
-            .is_some_and(|text| text.ends_with("or start a new task.")));
-
-        let refusal = "The provider refused this request.\n\nPolicy restriction\n\nPlease start a new session to continue — resending this conversation is likely to be refused again.";
-        assert!(
-            agent_task_framework_notice(refusal).contains("Please start a new task to continue")
-        );
-
-        let assistant_content = "You could create a new session in another terminal.";
-        assert_eq!(
-            agent_task_framework_notice(assistant_content),
-            assistant_content
-        );
-    }
-
-    #[test]
-    fn matching_user_text_keeps_framework_session_wording() {
-        let notice = "Ran into this error trying to compact: context overflow.\n\nPlease try again or create a new session";
-        let items = message_to_timeline_items(&Message::user().with_text(notice), false);
-
-        assert_eq!(items.len(), 1);
-        assert_eq!(items[0].role.as_deref(), Some("user"));
-        assert_eq!(items[0].text.as_deref(), Some(notice));
     }
 
     #[tokio::test]
