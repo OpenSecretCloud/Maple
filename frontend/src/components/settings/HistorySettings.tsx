@@ -44,14 +44,14 @@ export function HistorySettings() {
       try {
         await navigate({ to: "/", ignoreBlocker: true });
       } catch (navigationError) {
-        console.error("Chat history was deleted, but navigation failed:", navigationError);
+        console.error("History was deleted, but navigation failed:", navigationError);
         window.location.href = "/";
         return;
       }
       window.dispatchEvent(new CustomEvent("newchat", { detail: { projectId: null } }));
     } catch (deleteError) {
-      console.error("Error deleting chat history:", deleteError);
-      setError("Maple could not delete all chat history. Please try again.");
+      console.error("Error deleting chat and task history:", deleteError);
+      setError("Maple could not delete all chat and task history. Please try again.");
     } finally {
       operationBlock?.release();
       setIsDeleting(false);
@@ -60,19 +60,21 @@ export function HistorySettings() {
 
   return (
     <SettingsPage
-      title="Chat history"
-      description="Manage the conversations stored in your private Maple workspace."
+      title="Chat and task history"
+      description="Manage the chats and tasks stored in your private Maple workspace."
     >
       <SettingsSection
-        title="Delete all chat history"
-        description="This permanently removes every conversation and project conversation from your account."
+        title="Delete all chat and task history"
+        description="This permanently removes every chat and task from your Maple workspace."
         tone="danger"
       >
         <div className="space-y-4">
-          {error && <AlertDestructive title="Chat history was not deleted" description={error} />}
+          {error && (
+            <AlertDestructive title="Chat and task history was not deleted" description={error} />
+          )}
           {isConfirming ? (
             <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-4">
-              <p className="text-sm font-medium">Delete your entire chat history?</p>
+              <p className="text-sm font-medium">Delete your entire chat and task history?</p>
               <p className="mt-1 text-sm text-muted-foreground">This action cannot be undone.</p>
               <div className="mt-4 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
                 <Button

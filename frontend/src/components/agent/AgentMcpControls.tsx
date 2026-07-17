@@ -310,7 +310,7 @@ export function AgentMcpServersDialog({
                 <DialogTitle>MCP servers</DialogTitle>
                 <DialogDescription>
                   Add tools for Agent Mode over Standard IO or Streamable HTTP. Default servers are
-                  used for future chats; existing chats keep their own selection.
+                  used for future tasks; existing tasks keep their own selection.
                 </DialogDescription>
               </DialogHeader>
 
@@ -323,7 +323,7 @@ export function AgentMcpServersDialog({
 
                 <McpServerGroup
                   title="Default MCP servers"
-                  description="Enabled automatically for new Agent chats."
+                  description="Enabled automatically for new Agent tasks."
                   servers={enabledServers}
                   allServers={servers}
                   disabled={disabled || isSaving}
@@ -382,8 +382,8 @@ export function AgentMcpServersDialog({
             <AlertDialogTitle>Delete this MCP server?</AlertDialogTitle>
             <AlertDialogDescription>
               {pendingDeleteIndex === null
-                ? "This server will be removed from future chats."
-                : `“${servers[pendingDeleteIndex]?.name}” will be removed from future chats. Existing chats keep their current selection.`}
+                ? "This server will be removed from future tasks."
+                : `“${servers[pendingDeleteIndex]?.name}” will be removed from future tasks. Existing tasks keep their current selection.`}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -534,7 +534,7 @@ function McpServerForm({
       <DialogHeader className="shrink-0 px-6 pt-6">
         <DialogTitle>{isEditing ? "Edit MCP server" : "Add MCP server"}</DialogTitle>
         <DialogDescription>
-          Maple saves this configuration without testing the connection. It will connect when a chat
+          Maple saves this configuration without testing the connection. It will connect when a task
           enables the server.
         </DialogDescription>
       </DialogHeader>
@@ -668,7 +668,7 @@ function McpServerForm({
         ) : null}
 
         <p className="text-xs text-muted-foreground">
-          Values are masked here and saved in this account’s local Agent data, including each chat’s
+          Values are masked here and saved in this account’s local Agent data, including each task’s
           selected server snapshot. OAuth and legacy SSE transports are not supported in this first
           version.
         </p>

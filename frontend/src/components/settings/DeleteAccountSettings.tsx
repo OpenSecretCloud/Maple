@@ -129,8 +129,8 @@ export function DeleteAccountSettings() {
           <Alert variant="destructive">
             <AlertTriangle className="h-4 w-4" />
             <AlertDescription>
-              This action cannot be undone. You will lose access to paid features, chat history, and
-              settings.
+              This action cannot be undone. You will lose access to paid features, chat and task
+              history, and settings.
             </AlertDescription>
           </Alert>
 
