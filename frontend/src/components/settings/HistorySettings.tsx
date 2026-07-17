@@ -44,13 +44,13 @@ export function HistorySettings() {
       try {
         await navigate({ to: "/", ignoreBlocker: true });
       } catch (navigationError) {
-        console.error("History was deleted, but navigation failed:", navigationError);
+        console.error("Chat history was deleted, but navigation failed:", navigationError);
         window.location.href = "/";
         return;
       }
       window.dispatchEvent(new CustomEvent("newchat", { detail: { projectId: null } }));
     } catch (deleteError) {
-      console.error("Error deleting chat and task history:", deleteError);
+      console.error("Error deleting chat history:", deleteError);
       setError("Maple could not delete all chat and task history. Please try again.");
     } finally {
       operationBlock?.release();

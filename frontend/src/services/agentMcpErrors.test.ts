@@ -20,7 +20,7 @@ describe("MCP connection errors", () => {
     expect(message).not.toContain("WorkerTransport");
   });
 
-  test("keeps the server name in structured task errors", () => {
+  test("keeps the server name in structured session errors", () => {
     const message = mcpConnectionErrorMessage([{ name: "fixture_http", error: RAW_HTTP_ERROR }]);
 
     expect(message).toContain("fixture_http");
@@ -36,12 +36,6 @@ describe("MCP connection errors", () => {
     expect(message).toContain("Could not reach the Streamable HTTP endpoint");
     expect(message).not.toContain("rmcp");
     expect(message).not.toContain("WorkerTransport");
-  });
-
-  test("preserves session terminology returned by an external MCP server", () => {
-    expect(
-      userFacingAgentError("Some MCP servers could not connect: calendar: Session not found")
-    ).toBe("Some MCP servers could not connect. calendar: Session not found");
   });
 
   test("leaves unrelated Agent errors unchanged", () => {

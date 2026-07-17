@@ -296,7 +296,6 @@ export function AgentMode({ userId }: { userId: string }) {
   const [isProjectRootRegistrationPending, setIsProjectRootRegistrationPending] = useState(false);
   const [pendingSendSessionIds, setPendingSendSessionIds] = useState<Set<string>>(() => new Set());
   const [pendingSessionSelectionId, setPendingSessionSelectionId] = useState<string | null>(null);
-  const [isNewTaskRequested, setIsNewTaskRequested] = useState(false);
   const [activeRunsBySession, setActiveRunsBySession] = useState<Record<string, string>>({});
   const [completedUnreadSessionIds, setCompletedUnreadSessionIds] = useState<Set<string>>(
     () => new Set()
@@ -981,10 +980,10 @@ export function AgentMode({ userId }: { userId: string }) {
     userId
   ]);
 
-  const chooseProjectRoot = useCallback(async (): Promise<string | null> => {
-    if (!isTauriDesktop()) return null;
+  const chooseProjectRoot = useCallback(async () => {
+    if (!isTauriDesktop()) return;
     try {
-      return await trackAgentWorkflow(async () => {
+      await trackAgentWorkflow(async () => {
         const { open } = await import("@tauri-apps/plugin-dialog");
         const selected = await open({
           directory: true,
@@ -1006,13 +1005,10 @@ export function AgentMode({ userId }: { userId: string }) {
           } finally {
             setIsProjectRootRegistrationPending(false);
           }
-          return selected;
         }
-        return null;
       });
     } catch (chooseError) {
       setError(errorMessage(chooseError));
-      return null;
     }
   }, [
     agentSessionSelection,
@@ -1118,7 +1114,7 @@ export function AgentMode({ userId }: { userId: string }) {
   );
 
   const startRuntime = useCallback(
-    async (restart = false, requestedProjectRoot = projectRoot) => {
+    async (restart = false) => {
       const requestGeneration = startRequestGenerationRef.current + 1;
       startRequestGenerationRef.current = requestGeneration;
       const interactionGeneration = interactionGenerationRef.current;
@@ -1126,16 +1122,12 @@ export function AgentMode({ userId }: { userId: string }) {
       setIsStarting(true);
       try {
         return await trackAgentWorkflow(async () => {
-          if (!requestedProjectRoot) {
+          if (!projectRoot) {
             throw new Error("Select a project folder first");
           }
           await ensureMapleProxyReady();
           const requestedMode = selectedModeRef.current;
-          const request = {
-            projectRoot: requestedProjectRoot,
-            model: model || DEFAULT_MODEL,
-            mode: requestedMode
-          };
+          const request = { projectRoot, model: model || DEFAULT_MODEL, mode: requestedMode };
           const runStateGeneration = runStateGenerationRef.current;
           const status = restart
             ? await agentRuntimeService.restartRuntime(userId, request)
@@ -1147,7 +1139,7 @@ export function AgentMode({ userId }: { userId: string }) {
             return status;
           }
           applyRuntimeStatus(status, runStateGeneration);
-          setProjectRoot(status.projectRoot || requestedProjectRoot);
+          setProjectRoot(status.projectRoot || projectRoot);
           setModel(status.model || model || DEFAULT_MODEL);
           applyAuthoritativeMode(normalizeAgentPermissionMode(status.mode || requestedMode));
           await refreshSessions();
@@ -1290,102 +1282,71 @@ export function AgentMode({ userId }: { userId: string }) {
     ]
   );
 
-  const createSession = useCallback(
-    async (root = projectRoot) => {
-      if (pendingSessionSelectionIdRef.current === NEW_SESSION_PENDING_KEY) return;
-      const selectionGeneration = beginSessionSelection(NEW_SESSION_PENDING_KEY);
-      const interactionGeneration = interactionGenerationRef.current;
-      setError(null);
-      try {
-        const detail = await trackAgentWorkflow(async () => {
-          if (!runtimeStatus?.running) {
-            await startRuntime(false, root);
-          }
-          return await agentRuntimeService.createSession(userId, {
-            projectRoot: root,
-            title: "New task",
-            model: model || DEFAULT_MODEL,
-            mode: selectedModeRef.current,
-            mcpServerNames: selectedNewChatMcpServerNames
-          });
+  const createSession = useCallback(async () => {
+    if (pendingSessionSelectionIdRef.current === NEW_SESSION_PENDING_KEY) return;
+    const selectionGeneration = beginSessionSelection(NEW_SESSION_PENDING_KEY);
+    const interactionGeneration = interactionGenerationRef.current;
+    setError(null);
+    try {
+      const detail = await trackAgentWorkflow(async () => {
+        if (!runtimeStatus?.running) {
+          await startRuntime(false);
+        }
+        return await agentRuntimeService.createSession(userId, {
+          projectRoot,
+          title: "New task",
+          model: model || DEFAULT_MODEL,
+          mode: selectedModeRef.current,
+          mcpServerNames: selectedNewChatMcpServerNames
         });
-        deletedSessionIdsRef.current.delete(detail.session.id);
-        setSessions((current) => [
-          detail.session,
-          ...current.filter((session) => session.id !== detail.session.id)
-        ]);
+      });
+      deletedSessionIdsRef.current.delete(detail.session.id);
+      setSessions((current) => [
+        detail.session,
+        ...current.filter((session) => session.id !== detail.session.id)
+      ]);
+      replaceSessionTimeline(detail.session.id, detail.timeline);
+
+      if (
+        isAgentModeMountedRef.current &&
+        sessionSelectionGenerationRef.current === selectionGeneration &&
+        interactionGenerationRef.current === interactionGeneration
+      ) {
+        shouldAutoScrollRef.current = true;
+        activeSessionIdRef.current = detail.session.id;
+        setActiveSessionId(detail.session.id);
+        agentSessionSelection.remember(userId, detail.session.id);
+        applyAuthoritativeMode(normalizeAgentPermissionMode(detail.session.mode));
         replaceSessionTimeline(detail.session.id, detail.timeline);
-
-        if (
-          isAgentModeMountedRef.current &&
-          sessionSelectionGenerationRef.current === selectionGeneration &&
-          interactionGenerationRef.current === interactionGeneration
-        ) {
-          shouldAutoScrollRef.current = true;
-          activeSessionIdRef.current = detail.session.id;
-          setActiveSessionId(detail.session.id);
-          agentSessionSelection.remember(userId, detail.session.id);
-          applyAuthoritativeMode(normalizeAgentPermissionMode(detail.session.mode));
-          replaceSessionTimeline(detail.session.id, detail.timeline);
-          const mcpError = mcpConnectionErrorMessage(detail.mcpErrors);
-          if (mcpError) setError(mcpError);
-        }
-      } catch (createError) {
-        if (
-          isAgentModeMountedRef.current &&
-          sessionSelectionGenerationRef.current === selectionGeneration &&
-          interactionGenerationRef.current === interactionGeneration
-        ) {
-          setError(errorMessage(createError));
-        }
-      } finally {
-        if (isAgentModeMountedRef.current) {
-          finishSessionSelection(selectionGeneration);
-        }
+        const mcpError = mcpConnectionErrorMessage(detail.mcpErrors);
+        if (mcpError) setError(mcpError);
       }
-    },
-    [
-      applyAuthoritativeMode,
-      agentSessionSelection,
-      beginSessionSelection,
-      finishSessionSelection,
-      model,
-      projectRoot,
-      replaceSessionTimeline,
-      runtimeStatus?.running,
-      selectedNewChatMcpServerNames,
-      startRuntime,
-      trackAgentWorkflow,
-      userId
-    ]
-  );
-
-  const requestNewTask = useCallback(() => setIsNewTaskRequested(true), []);
-
-  useEffect(() => {
-    if (!isNewTaskRequested || isInitializing) return;
-
-    setIsNewTaskRequested(false);
-    if (areAgentSettingsLocked) return;
-    hasAttemptedSessionRestoreRef.current = true;
-
-    if (projectRoot) {
-      void createSession();
-    } else {
-      void (async () => {
-        const selectedProjectRoot = await chooseProjectRoot();
-        if (selectedProjectRoot) {
-          await createSession(selectedProjectRoot);
-        }
-      })();
+    } catch (createError) {
+      if (
+        isAgentModeMountedRef.current &&
+        sessionSelectionGenerationRef.current === selectionGeneration &&
+        interactionGenerationRef.current === interactionGeneration
+      ) {
+        setError(errorMessage(createError));
+      }
+    } finally {
+      if (isAgentModeMountedRef.current) {
+        finishSessionSelection(selectionGeneration);
+      }
     }
   }, [
-    areAgentSettingsLocked,
-    chooseProjectRoot,
-    createSession,
-    isInitializing,
-    isNewTaskRequested,
-    projectRoot
+    applyAuthoritativeMode,
+    agentSessionSelection,
+    beginSessionSelection,
+    finishSessionSelection,
+    model,
+    projectRoot,
+    replaceSessionTimeline,
+    runtimeStatus?.running,
+    selectedNewChatMcpServerNames,
+    startRuntime,
+    trackAgentWorkflow,
+    userId
   ]);
 
   const loadSession = useCallback(
@@ -1909,7 +1870,6 @@ export function AgentMode({ userId }: { userId: string }) {
       <Sidebar
         isOpen={isSidebarOpen}
         mode="agent"
-        newItemDisabled={!isInitializing && areAgentSettingsLocked}
         navigationContent={
           <AgentSidebarContent
             activeSessionId={
@@ -1932,7 +1892,6 @@ export function AgentMode({ userId }: { userId: string }) {
             onSessionSelect={(sessionId) => void loadSession(sessionId)}
           />
         }
-        onNewItem={requestNewTask}
         onToggle={toggleSidebar}
       />
 

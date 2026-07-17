@@ -59,7 +59,7 @@ const MAPLE_GOOSE_PERMISSION_CONFIG: &str = r#"user:
   never_allow: []
 "#;
 const RUN_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
-const DEFAULT_AGENT_TASK_TITLE: &str = "New task";
+const DEFAULT_AGENT_SESSION_TITLE: &str = "New task";
 const DEFAULT_MCP_TIMEOUT_SECONDS: u64 = 300;
 const MAX_AGENT_SESSION_TITLE_CHARS: usize = 80;
 const MAX_AGENT_ERROR_CHARS: usize = 1_200;
@@ -475,7 +475,9 @@ fn session_title_from_prompt(prompt: &str) -> String {
 }
 
 fn should_name_session_from_prompt(session: &Session) -> bool {
-    session.message_count == 0 && !session.user_set_name && session.name == DEFAULT_AGENT_TASK_TITLE
+    session.message_count == 0
+        && !session.user_set_name
+        && session.name == DEFAULT_AGENT_SESSION_TITLE
 }
 
 async fn pending_permissions_for_sessions(
@@ -1006,7 +1008,7 @@ pub async fn agent_create_session(
     let title = request
         .title
         .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| DEFAULT_AGENT_TASK_TITLE.to_string());
+        .unwrap_or_else(|| DEFAULT_AGENT_SESSION_TITLE.to_string());
     let mode = request.mode.unwrap_or(runtime_mode);
     let permission_mode = parse_user_permission_mode(&mode)?;
     let model = request.model.unwrap_or(runtime_model);
@@ -6099,7 +6101,7 @@ mod tests {
         let first_turn_session = session_manager
             .create_session(
                 project_dir,
-                DEFAULT_AGENT_TASK_TITLE.to_string(),
+                DEFAULT_AGENT_SESSION_TITLE.to_string(),
                 SessionType::User,
                 GooseMode::SmartApprove,
             )
@@ -6151,7 +6153,7 @@ mod tests {
             .await
             .expect("first-turn session should reload");
         assert_eq!(first_turn_reloaded.message_count, 0);
-        assert_eq!(first_turn_reloaded.name, DEFAULT_AGENT_TASK_TITLE);
+        assert_eq!(first_turn_reloaded.name, DEFAULT_AGENT_SESSION_TITLE);
         assert_eq!(
             first_turn_reloaded.conversation.as_ref(),
             Some(&first_turn_snapshot.conversation)
