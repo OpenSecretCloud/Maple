@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, mock, test } from "bun:test";
 import { encode } from "@stablelib/base64";
 import { decryptMessage, encryptMessage } from "../../encryption";
 import {
+  getApiUrl,
   setApiUrl,
   webExtract,
   webSearch,
@@ -16,6 +17,7 @@ const accessToken = "web-access-token";
 const sessionId = "web-session-id";
 const sessionKey = new Uint8Array(32).fill(19);
 const originalFetch = globalThis.fetch;
+const originalApiUrl = getApiUrl();
 
 beforeEach(() => {
   window.localStorage.clear();
@@ -28,6 +30,9 @@ beforeEach(() => {
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
+  setApiUrl(originalApiUrl);
+  window.localStorage.clear();
+  window.sessionStorage.clear();
 });
 
 test("webSearch sends an authenticated encrypted request and decrypts results", async () => {
