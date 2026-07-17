@@ -122,6 +122,10 @@ import {
 } from "@/utils/utils";
 import { isTauriDesktop } from "@/utils/platform";
 import { useLocalState } from "@/state/useLocalState";
+import {
+  usePersistentHomeNavigation,
+  usePersistentSidebarState
+} from "@/contexts/PersistentHomeNavigationContext";
 import type {
   ModelAccessTier,
   OpenSecretModel,
@@ -137,6 +141,9 @@ const MAX_STABLE_SESSION_LOAD_ATTEMPTS = 3;
 const AUTO_SCROLL_BOTTOM_THRESHOLD_PX = 100;
 const SIDEBAR_REORDER_ANIMATION_MS = 150;
 const SIDEBAR_ICON_STROKE = 2;
+const AGENT_SESSION_DELETED_EVENT = "maple:agent-session-deleted";
+// Mode switches remount AgentMode, so project-root mutations must be ordered outside it.
+const projectRootPersistenceQueues = new Map<string, Promise<void>>();
 const AGENT_SIDEBAR_ELLIPSIS_FADE =
   "pointer-events-none w-4 shrink-0 self-stretch bg-gradient-to-r from-transparent to-[hsl(var(--muted))] dark:to-[hsl(var(--sidebar))]";
 const AGENT_SIDEBAR_ELLIPSIS_TRIGGER_ROW_BASE =
@@ -248,10 +255,11 @@ export function AgentMode({ userId }: { userId: string }) {
   const os = useOpenSecret();
   const { createApiKey, deleteApiKey } = os;
   const { availableModels, modelAliases } = useLocalState();
+  const { agentSessionSelection } = usePersistentHomeNavigation();
   const isMobile = useIsMobile();
   const isLandscapeMobile = useIsLandscapeMobile();
   const isCompactLayout = isMobile || isLandscapeMobile;
-  const [isSidebarOpen, setIsSidebarOpen] = useState(!isCompactLayout);
+  const [isSidebarOpen, setIsSidebarOpen] = usePersistentSidebarState(isCompactLayout);
   const [runtimeStatus, setRuntimeStatus] = useState<AgentRuntimeStatus | null>(null);
   const [projectOrderState, dispatchProjectOrder] = useReducer(
     projectOrderReducer<RecentProjectRoot>,
@@ -259,6 +267,7 @@ export function AgentMode({ userId }: { userId: string }) {
   );
   const recentRoots = projectOrderState.visible;
   const [sessions, setSessions] = useState<AgentSessionSummary[]>([]);
+  const [isSessionHistoryReady, setIsSessionHistoryReady] = useState(false);
   const [sessionToDelete, setSessionToDelete] = useState<AgentSessionSummary | null>(null);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [projectRoot, setProjectRoot] = useState("");
@@ -295,7 +304,6 @@ export function AgentMode({ userId }: { userId: string }) {
   const activeSessionIdRef = useRef(activeSessionId);
   const deletedSessionIdsRef = useRef(new Set<string>());
   const shouldAutoScrollRef = useRef(true);
-  const projectRootPersistenceRef = useRef<Promise<void>>(Promise.resolve());
   const permissionModeUpdateRef = useRef<Promise<void>>(Promise.resolve());
   const permissionModeUpdateGenerationRef = useRef(0);
   const selectedModeRef = useRef<AgentPermissionMode>(mode);
@@ -314,6 +322,9 @@ export function AgentMode({ userId }: { userId: string }) {
   const isAgentModelLockedRef = useRef(false);
   const mcpSessionLoadGenerationRef = useRef(0);
   const mcpToggleGenerationRef = useRef(0);
+  const previousIsCompactLayoutRef = useRef(isCompactLayout);
+  const hasAttemptedSessionRestoreRef = useRef(false);
+  const isAgentModeMountedRef = useRef(true);
   const projectOrderRequestIdRef = useRef(0);
 
   const applyAuthoritativeMode = useCallback((value: AgentPermissionMode) => {
@@ -323,10 +334,19 @@ export function AgentMode({ userId }: { userId: string }) {
   }, []);
 
   useEffect(() => {
-    if (isCompactLayout) {
+    isAgentModeMountedRef.current = true;
+    return () => {
+      isAgentModeMountedRef.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    const wasCompactLayout = previousIsCompactLayoutRef.current;
+    previousIsCompactLayoutRef.current = isCompactLayout;
+    if (isCompactLayout && !wasCompactLayout) {
       setIsSidebarOpen(false);
     }
-  }, [isCompactLayout]);
+  }, [isCompactLayout, setIsSidebarOpen]);
 
   useEffect(() => {
     activeSessionIdRef.current = activeSessionId;
@@ -451,7 +471,7 @@ export function AgentMode({ userId }: { userId: string }) {
     return ids;
   }, [activeRunsBySession, pendingSendSessionIds, pendingSessionSelectionId]);
 
-  const toggleSidebar = useCallback(() => setIsSidebarOpen((prev) => !prev), []);
+  const toggleSidebar = useCallback(() => setIsSidebarOpen((prev) => !prev), [setIsSidebarOpen]);
 
   const beginSessionSelection = useCallback((sessionId: string): number => {
     interactionGenerationRef.current += 1;
@@ -625,18 +645,24 @@ export function AgentMode({ userId }: { userId: string }) {
 
   const enqueueProjectRootMutation = useCallback(
     async <T,>(mutation: () => Promise<T>): Promise<T> => {
-      const previousOperation = projectRootPersistenceRef.current;
+      const previousOperation = projectRootPersistenceQueues.get(userId) ?? Promise.resolve();
       const operation = (async () => {
         await previousOperation;
         return await trackAgentWorkflow(mutation);
       })();
-      projectRootPersistenceRef.current = operation.then(
+      const queueTail = operation.then(
         () => undefined,
         () => undefined
       );
+      projectRootPersistenceQueues.set(userId, queueTail);
+      void queueTail.then(() => {
+        if (projectRootPersistenceQueues.get(userId) === queueTail) {
+          projectRootPersistenceQueues.delete(userId);
+        }
+      });
       return await operation;
     },
-    [trackAgentWorkflow]
+    [trackAgentWorkflow, userId]
   );
 
   const persistSelectedProjectRoot = useCallback(
@@ -720,6 +746,7 @@ export function AgentMode({ userId }: { userId: string }) {
       if (!isTauriDesktop()) return;
       const nextSessions = await agentRuntimeService.listSessions(userId, null);
       setSessions(nextSessions.filter((session) => !deletedSessionIdsRef.current.has(session.id)));
+      setIsSessionHistoryReady(true);
     });
   }, [trackAgentWorkflow, userId]);
 
@@ -851,6 +878,13 @@ export function AgentMode({ userId }: { userId: string }) {
     async function loadInitialState() {
       if (!isTauriDesktop()) return;
       try {
+        // A mode switch can remount AgentMode while the previous mount is still saving a selected
+        // root or manual order. Read only after that user-scoped queue reaches its latest tail.
+        await (projectRootPersistenceQueues.get(userId) ?? Promise.resolve());
+        if (cancelled || interactionGenerationRef.current !== initializationGeneration) {
+          return;
+        }
+
         const runStateGeneration = runStateGenerationRef.current;
         const [status, config, roots, savedMcpServers] = await Promise.all([
           agentRuntimeService.getRuntimeStatus(userId),
@@ -958,6 +992,7 @@ export function AgentMode({ userId }: { userId: string }) {
         });
         if (typeof selected === "string") {
           invalidateSessionSelection();
+          agentSessionSelection.forget(userId);
           shouldAutoScrollRef.current = true;
           setProjectRoot(selected);
           activeSessionIdRef.current = null;
@@ -975,11 +1010,18 @@ export function AgentMode({ userId }: { userId: string }) {
     } catch (chooseError) {
       setError(errorMessage(chooseError));
     }
-  }, [invalidateSessionSelection, registerProjectRoot, trackAgentWorkflow]);
+  }, [
+    agentSessionSelection,
+    invalidateSessionSelection,
+    registerProjectRoot,
+    trackAgentWorkflow,
+    userId
+  ]);
 
   const selectProjectRoot = useCallback(
     (value: string) => {
       invalidateSessionSelection();
+      agentSessionSelection.forget(userId);
       const interactionGeneration = interactionGenerationRef.current;
       setProjectRoot(value);
       setActiveSessionId(null);
@@ -999,7 +1041,13 @@ export function AgentMode({ userId }: { userId: string }) {
         }
       })();
     },
-    [invalidateSessionSelection, persistSelectedProjectRoot, refreshSessions]
+    [
+      agentSessionSelection,
+      invalidateSessionSelection,
+      persistSelectedProjectRoot,
+      refreshSessions,
+      userId
+    ]
   );
 
   const selectModel = useCallback((value: string) => {
@@ -1204,6 +1252,7 @@ export function AgentMode({ userId }: { userId: string }) {
         // A send that creates a session may finish after the user selects a
         // different chat. Keep the new chat/run, but never steal focus back.
         if (
+          isAgentModeMountedRef.current &&
           sessionSelectionGenerationRef.current === expectedSelectionGeneration &&
           interactionGenerationRef.current === expectedInteractionGeneration &&
           activeSessionIdRef.current === null
@@ -1211,6 +1260,7 @@ export function AgentMode({ userId }: { userId: string }) {
           shouldAutoScrollRef.current = true;
           activeSessionIdRef.current = sessionId;
           setActiveSessionId(sessionId);
+          agentSessionSelection.remember(userId, sessionId);
           applyAuthoritativeMode(normalizeAgentPermissionMode(detail.session.mode));
           replaceSessionTimeline(sessionId, detail.timeline);
           const mcpError = mcpConnectionErrorMessage(detail.mcpErrors);
@@ -1222,6 +1272,7 @@ export function AgentMode({ userId }: { userId: string }) {
     },
     [
       applyAuthoritativeMode,
+      agentSessionSelection,
       model,
       projectRoot,
       replaceSessionTimeline,
@@ -1257,12 +1308,14 @@ export function AgentMode({ userId }: { userId: string }) {
       replaceSessionTimeline(detail.session.id, detail.timeline);
 
       if (
+        isAgentModeMountedRef.current &&
         sessionSelectionGenerationRef.current === selectionGeneration &&
         interactionGenerationRef.current === interactionGeneration
       ) {
         shouldAutoScrollRef.current = true;
         activeSessionIdRef.current = detail.session.id;
         setActiveSessionId(detail.session.id);
+        agentSessionSelection.remember(userId, detail.session.id);
         applyAuthoritativeMode(normalizeAgentPermissionMode(detail.session.mode));
         replaceSessionTimeline(detail.session.id, detail.timeline);
         const mcpError = mcpConnectionErrorMessage(detail.mcpErrors);
@@ -1270,16 +1323,20 @@ export function AgentMode({ userId }: { userId: string }) {
       }
     } catch (createError) {
       if (
+        isAgentModeMountedRef.current &&
         sessionSelectionGenerationRef.current === selectionGeneration &&
         interactionGenerationRef.current === interactionGeneration
       ) {
         setError(errorMessage(createError));
       }
     } finally {
-      finishSessionSelection(selectionGeneration);
+      if (isAgentModeMountedRef.current) {
+        finishSessionSelection(selectionGeneration);
+      }
     }
   }, [
     applyAuthoritativeMode,
+    agentSessionSelection,
     beginSessionSelection,
     finishSessionSelection,
     model,
@@ -1311,6 +1368,7 @@ export function AgentMode({ userId }: { userId: string }) {
         });
         const { detail, timelineRevision } = loaded;
         if (
+          !isAgentModeMountedRef.current ||
           sessionSelectionGenerationRef.current !== selectionGeneration ||
           interactionGenerationRef.current !== interactionGeneration ||
           deletedSessionIdsRef.current.has(sessionId)
@@ -1331,6 +1389,7 @@ export function AgentMode({ userId }: { userId: string }) {
         shouldAutoScrollRef.current = true;
         activeSessionIdRef.current = detail.session.id;
         setActiveSessionId(detail.session.id);
+        agentSessionSelection.remember(userId, detail.session.id);
         setProjectRoot(detail.session.projectRoot);
         if (detail.session.model) {
           setModel(detail.session.model);
@@ -1345,6 +1404,7 @@ export function AgentMode({ userId }: { userId: string }) {
           await persistSelectedProjectRoot(detail.session.projectRoot);
         } catch (persistError) {
           if (
+            isAgentModeMountedRef.current &&
             sessionSelectionGenerationRef.current === selectionGeneration &&
             interactionGenerationRef.current === interactionGeneration &&
             activeSessionIdRef.current === detail.session.id
@@ -1354,17 +1414,21 @@ export function AgentMode({ userId }: { userId: string }) {
         }
       } catch (loadError) {
         if (
+          isAgentModeMountedRef.current &&
           sessionSelectionGenerationRef.current === selectionGeneration &&
           interactionGenerationRef.current === interactionGeneration
         ) {
           setError(errorMessage(loadError));
         }
       } finally {
-        finishSessionSelection(selectionGeneration);
+        if (isAgentModeMountedRef.current) {
+          finishSessionSelection(selectionGeneration);
+        }
       }
     },
     [
       applyAuthoritativeMode,
+      agentSessionSelection,
       beginSessionSelection,
       clearCompletedUnreadSession,
       finishSessionSelection,
@@ -1374,6 +1438,31 @@ export function AgentMode({ userId }: { userId: string }) {
       userId
     ]
   );
+
+  useEffect(() => {
+    if (
+      hasAttemptedSessionRestoreRef.current ||
+      !isAuthTransitionReady ||
+      isInitializing ||
+      !isSessionHistoryReady
+    ) {
+      return;
+    }
+
+    hasAttemptedSessionRestoreRef.current = true;
+    const rememberedSessionId = agentSessionSelection.resolve(userId, sessions);
+    if (rememberedSessionId) {
+      void loadSession(rememberedSessionId);
+    }
+  }, [
+    agentSessionSelection,
+    isAuthTransitionReady,
+    isInitializing,
+    isSessionHistoryReady,
+    loadSession,
+    sessions,
+    userId
+  ]);
 
   const sendMessage = useCallback(async () => {
     const text = input.trim();
@@ -1548,6 +1637,7 @@ export function AgentMode({ userId }: { userId: string }) {
   const removeSessionFromState = useCallback(
     (sessionId: string) => {
       deletedSessionIdsRef.current.add(sessionId);
+      agentSessionSelection.forget(userId, sessionId);
       timelineRevisionBySessionRef.current.delete(sessionId);
       setSessions((current) => current.filter((session) => session.id !== sessionId));
       setCompletedUnreadSessionIds((current) => {
@@ -1567,7 +1657,7 @@ export function AgentMode({ userId }: { userId: string }) {
         setInput("");
       }
     },
-    [clearActiveRun]
+    [agentSessionSelection, clearActiveRun, userId]
   );
 
   const deleteSession = useCallback(
@@ -1576,12 +1666,32 @@ export function AgentMode({ userId }: { userId: string }) {
       try {
         await agentRuntimeService.deleteSession(userId, sessionId);
         removeSessionFromState(sessionId);
+        // A mode switch can remount AgentMode while native deletion is pending.
+        // Notify the current mount so it cannot keep or restore the deleted session.
+        window.dispatchEvent(
+          new CustomEvent(AGENT_SESSION_DELETED_EVENT, { detail: { userId, sessionId } })
+        );
       } catch (deleteError) {
         setError(errorMessage(deleteError));
       }
     },
     [removeSessionFromState, userId]
   );
+
+  useEffect(() => {
+    const handleSessionDeleted = (event: Event) => {
+      if (!(event instanceof CustomEvent)) return;
+      const detail = event.detail as { userId?: unknown; sessionId?: unknown } | null;
+      if (detail?.userId === userId && typeof detail.sessionId === "string" && detail.sessionId) {
+        removeSessionFromState(detail.sessionId);
+      }
+    };
+
+    window.addEventListener(AGENT_SESSION_DELETED_EVENT, handleSessionDeleted);
+    return () => {
+      window.removeEventListener(AGENT_SESSION_DELETED_EVENT, handleSessionDeleted);
+    };
+  }, [removeSessionFromState, userId]);
 
   const upsertSessionSummary = useCallback((summary: AgentSessionSummary) => {
     if (deletedSessionIdsRef.current.has(summary.id)) return;

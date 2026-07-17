@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   CheckSquare,
   Folder,
@@ -47,6 +47,7 @@ import { BulkDeleteDialog } from "@/components/BulkDeleteDialog";
 import { MoveChatsDialog } from "@/components/MoveChatsDialog";
 import { listAllConversationProjects } from "@/utils/paginatedLists";
 import { SIDEBAR_GRID_COLUMNS_CLASS, SIDEBAR_LAYOUT_STYLE } from "@/constants/layout";
+import { usePersistentSidebarState } from "@/contexts/PersistentHomeNavigationContext";
 
 const PROJECT_PAGE_SIZE = 20;
 const MAX_SELECTION = 20;
@@ -151,13 +152,16 @@ export function ProjectDetailView({ projectId }: ProjectDetailViewProps) {
   const { setSelectedProjectId } = useLocalState();
   const hasAuthUser = !!os.auth.user;
 
-  const [isSidebarOpen, setIsSidebarOpen] = useState(!isCompactLayout);
+  const [isSidebarOpen, setIsSidebarOpen] = usePersistentSidebarState(isCompactLayout);
+  const wasLandscapeMobileRef = useRef(isLandscapeMobile);
 
   useEffect(() => {
-    if (isLandscapeMobile && isSidebarOpen) {
+    const enteredLandscapeMobile = isLandscapeMobile && !wasLandscapeMobileRef.current;
+    wasLandscapeMobileRef.current = isLandscapeMobile;
+    if (enteredLandscapeMobile && isSidebarOpen) {
       setIsSidebarOpen(false);
     }
-  }, [isLandscapeMobile]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [isLandscapeMobile, isSidebarOpen, setIsSidebarOpen]);
 
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [hasMoreConversations, setHasMoreConversations] = useState(false);
@@ -179,7 +183,7 @@ export function ProjectDetailView({ projectId }: ProjectDetailViewProps) {
 
   const toggleSidebar = useCallback(() => {
     setIsSidebarOpen((prev) => !prev);
-  }, []);
+  }, [setIsSidebarOpen]);
 
   useEffect(() => {
     setSelectedProjectId(projectId);

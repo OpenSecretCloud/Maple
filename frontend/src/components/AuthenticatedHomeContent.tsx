@@ -8,9 +8,11 @@ import {
   type ReactNode
 } from "react";
 import { useLocation, useRouter } from "@tanstack/react-router";
+import { useOpenSecret } from "@opensecret/react";
 import { ProjectDetailView } from "@/components/ProjectDetailView";
 import { UnifiedChat } from "@/components/UnifiedChat";
 import { PersistentHomeNavigationContext } from "@/contexts/PersistentHomeNavigationContext";
+import { AgentSessionSelectionMemory } from "@/services/agentSessionSelection";
 
 const TRANSIENT_HOME_SEARCH_PARAMS = ["team_setup", "credits_success", "api_settings"];
 
@@ -48,21 +50,38 @@ function readSafeHomeHref(): string {
 export function PersistentHomeNavigationProvider({ children }: { children: ReactNode }) {
   const location = useLocation();
   const router = useRouter();
+  const os = useOpenSecret();
+  const userId = os.auth.user?.user.id ?? null;
   const initialHomeHref = readSafeHomeHref();
   const homeHrefRef = useRef(initialHomeHref);
-  const [homeHref, setHomeHref] = useState(initialHomeHref);
+  const homeHrefUserIdRef = useRef(userId);
+  const skipNextHomeCaptureRef = useRef(false);
+  const [sidebarOpen, setSidebarOpen] = useState<boolean | null>(null);
+  const [agentSessionSelection] = useState(() => new AgentSessionSelectionMemory());
 
   const captureHomeHref = useCallback(() => {
-    if (window.location.pathname !== "/") return;
+    if (!userId || window.location.pathname !== "/") return;
 
     const nextHomeHref = readSafeHomeHref();
     homeHrefRef.current = nextHomeHref;
-    setHomeHref((current) => (current === nextHomeHref ? current : nextHomeHref));
-  }, []);
+  }, [userId]);
+
+  useLayoutEffect(() => {
+    if (homeHrefUserIdRef.current === userId) return;
+
+    // Conversation and project IDs are account-scoped; never carry a home snapshot across users.
+    homeHrefUserIdRef.current = userId;
+    skipNextHomeCaptureRef.current = true;
+    homeHrefRef.current = "/";
+  }, [userId]);
 
   // TanStack navigations update location.href. Maple also updates the home URL with the native
   // History API, so the app events below keep the snapshot exact for those transitions too.
   useLayoutEffect(() => {
+    if (skipNextHomeCaptureRef.current) {
+      skipNextHomeCaptureRef.current = false;
+      return;
+    }
     captureHomeHref();
   }, [captureHomeHref, location.href]);
 
@@ -100,10 +119,12 @@ export function PersistentHomeNavigationProvider({ children }: { children: React
 
   const value = useMemo(
     () => ({
-      homeHref,
-      returnToHome
+      returnToHome,
+      sidebarOpen,
+      setSidebarOpen,
+      agentSessionSelection
     }),
-    [homeHref, returnToHome]
+    [agentSessionSelection, returnToHome, sidebarOpen]
   );
 
   return (

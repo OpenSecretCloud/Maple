@@ -24,6 +24,7 @@ interface CacheEntry {
   settled: boolean;
   promise: Promise<FlagValues>;
   token: object;
+  values?: FlagValues;
 }
 
 function defaultBaseUrl(): string {
@@ -117,6 +118,7 @@ export class FlagsClient {
         if (current?.token === token) {
           current.settled = true;
           current.expiresAt = this.now() + this.cacheTtlMs;
+          current.values = flags;
         }
         return flags;
       },
@@ -133,6 +135,17 @@ export class FlagsClient {
   async isEnabled(userId: string, key: string): Promise<boolean> {
     const flags = await this.getFlags(userId, [key]);
     return flags[key.trim()] === true;
+  }
+
+  peekIsEnabled(userId: string, key: string): boolean | undefined {
+    const normalizedUserId = userId.trim();
+    const [normalizedKey] = normalizeKeys([key]);
+    if (!normalizedUserId || !normalizedKey) return undefined;
+
+    this.evictExpired(this.now());
+    const entry = this.cache.get(cacheKey(normalizedUserId, [normalizedKey]));
+    if (!entry?.settled || !entry.values) return undefined;
+    return entry.values[normalizedKey] === true;
   }
 
   private evictExpired(now: number): void {
