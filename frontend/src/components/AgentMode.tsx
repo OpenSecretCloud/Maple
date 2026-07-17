@@ -1892,6 +1892,7 @@ export function AgentMode({ userId }: { userId: string }) {
             onSessionSelect={(sessionId) => void loadSession(sessionId)}
           />
         }
+        onNewItem={areAgentSettingsLocked ? undefined : () => void createSession()}
         onToggle={toggleSidebar}
       />
 

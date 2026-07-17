@@ -44,12 +44,14 @@ export function Sidebar({
   isOpen,
   mode = "chat",
   navigationContent,
+  onNewItem,
   onToggle
 }: {
   chatId?: string;
   isOpen: boolean;
   mode?: WorkspaceMode;
   navigationContent?: ReactNode;
+  onNewItem?: () => void;
   onToggle: () => void;
 }) {
   const router = useRouter();
@@ -226,6 +228,18 @@ export function Sidebar({
   const showAgentMode = agentModeAvailable && billingStatus !== null && agentModeEnabled === true;
   const isAgentMode = mode === "agent";
 
+  async function addItem() {
+    if (!isAgentMode) {
+      await addChat();
+      return;
+    }
+
+    if (isOpen && isCompactLayout) {
+      onToggle();
+    }
+    onNewItem?.();
+  }
+
   useEffect(() => {
     if (!agentModeAvailable || !userId) return;
 
@@ -349,8 +363,9 @@ export function Sidebar({
           <div className="flex flex-col gap-2 px-4">
             <button
               type="button"
-              className="flex w-full items-center justify-start gap-2 py-1.5 pr-1 pl-0 text-sm text-[hsl(var(--maple-primary-strong))] transition-colors hover:text-[hsl(var(--maple-primary))] dark:text-[hsl(var(--maple-primary))] dark:hover:text-[hsl(var(--maple-primary-strong))]"
-              onClick={addChat}
+              className="flex w-full items-center justify-start gap-2 py-1.5 pr-1 pl-0 text-sm text-[hsl(var(--maple-primary-strong))] transition-colors hover:text-[hsl(var(--maple-primary))] disabled:cursor-not-allowed disabled:opacity-50 dark:text-[hsl(var(--maple-primary))] dark:hover:text-[hsl(var(--maple-primary-strong))]"
+              disabled={isAgentMode && !onNewItem}
+              onClick={() => void addItem()}
             >
               <SquarePenIcon className="h-4 w-4 shrink-0" />
               {isAgentMode ? "New Task" : "New Chat"}
