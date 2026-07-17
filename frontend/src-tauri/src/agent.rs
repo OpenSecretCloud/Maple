@@ -1100,35 +1100,62 @@ pub async fn agent_create_session(
         .lock()
         .await
         .insert(session.id.clone(), permission_mode);
-    let (agent, mut mcp_errors) = configure_session_agent(
-        AgentSkillsScope {
-            app_handle: &app_handle,
-            user_id: &user_id,
-        },
-        &agent_manager,
-        &session_manager,
-        &session,
-        &model,
-        &mode,
-        false,
-    )
-    .await?;
-    if !selected_extensions.is_empty() {
-        detach_transient_skills_client(&agent).await;
-        let extension_result = agent
-            .add_extensions_bulk(selected_extensions, &session.id)
-            .await;
-        attach_transient_skills_client(&app_handle, &user_id, &agent, &session).await?;
-        match extension_result {
-            Ok(results) => {
-                mcp_errors.extend(mcp_connection_errors(results, &selected_extension_keys))
+    let setup_result: Result<Vec<AgentMcpConnectionError>, String> = async {
+        let (agent, mut mcp_errors) = configure_session_agent(
+            AgentSkillsScope {
+                app_handle: &app_handle,
+                user_id: &user_id,
+            },
+            &agent_manager,
+            &session_manager,
+            &session,
+            &model,
+            &mode,
+            false,
+        )
+        .await?;
+        if !selected_extensions.is_empty() {
+            // Resolve every fallible part of restoring Maple's transient Skills client before
+            // Goose persists the MCP mutation. Reattachment after this point is infallible.
+            let skills_client =
+                prepare_transient_skills_client(&app_handle, &user_id, &agent, &session)?;
+            detach_transient_skills_client(&agent).await;
+            let extension_result = agent
+                .add_extensions_bulk(selected_extensions, &session.id)
+                .await;
+            attach_prepared_skills_client(&agent, skills_client).await;
+            match extension_result {
+                Ok(results) => {
+                    mcp_errors.extend(mcp_connection_errors(results, &selected_extension_keys))
+                }
+                Err(error) => mcp_errors.push(AgentMcpConnectionError {
+                    name: "MCP servers".to_string(),
+                    error: error.to_string(),
+                }),
             }
-            Err(error) => mcp_errors.push(AgentMcpConnectionError {
-                name: "MCP servers".to_string(),
-                error: error.to_string(),
-            }),
         }
+        Ok(mcp_errors)
     }
+    .await;
+    let mcp_errors = match setup_result {
+        Ok(mcp_errors) => mcp_errors,
+        Err(error) => {
+            permission_modes.lock().await.remove(&session.id);
+            if let Err(cleanup_error) = session_manager.delete_session(&session.id).await {
+                log::warn!(
+                    "Failed to remove Agent session {} after setup error: {cleanup_error}",
+                    session.id
+                );
+            }
+            if let Err(cleanup_error) = agent_manager.remove_session_if_loaded(&session.id).await {
+                log::warn!(
+                    "Failed to unload Agent session {} after setup error: {cleanup_error}",
+                    session.id
+                );
+            }
+            return Err(error);
+        }
+    };
     let summary = session_summary(&session);
     // Session creation must not mutate project order. Only explicit folder-add and reorder
     // commands may change the persisted project list.
@@ -1331,6 +1358,9 @@ pub async fn agent_set_session_mcp_server_enabled(
         );
     }
     let agent = manager_result.agent;
+    // Preflight Skills restoration before detaching the working client or changing persisted MCP
+    // state. Reattaching this prepared client after the mutation cannot fail.
+    let skills_client = prepare_transient_skills_client(&app_handle, &user_id, &agent, &session)?;
     detach_transient_skills_client(&agent).await;
     let active = agent.get_extension_configs().await;
     let active_config = active
@@ -1381,15 +1411,8 @@ pub async fn agent_set_session_mcp_server_enabled(
         Ok(())
     }
     .await;
-    let attach_result =
-        attach_transient_skills_client(&app_handle, &user_id, &agent, &session).await;
-    if let Err(error) = mutation_result {
-        if let Err(attach_error) = attach_result {
-            log::warn!("Failed to restore Maple skills after MCP update error: {attach_error}");
-        }
-        return Err(error);
-    }
-    attach_result?;
+    attach_prepared_skills_client(&agent, skills_client).await;
+    mutation_result?;
 
     let refreshed = session_manager
         .get_session(&session_id, false)
@@ -2699,13 +2722,26 @@ fn project_skills_are_trusted(app_handle: &AppHandle, user_id: &str, project_roo
     }
 }
 
+fn project_skills_root_is_available(project_root: &Path) -> bool {
+    let Ok(canonical) = project_root.canonicalize() else {
+        return false;
+    };
+    canonical == project_root && canonical.is_dir() && fs::read_dir(canonical).is_ok()
+}
+
 fn skills_discovery_working_dir(
     app_handle: &AppHandle,
     user_id: &str,
     session: &Session,
 ) -> Result<PathBuf, String> {
     if project_skills_are_trusted(app_handle, user_id, &session.working_dir) {
-        return Ok(session.working_dir.clone());
+        if project_skills_root_is_available(&session.working_dir) {
+            return Ok(session.working_dir.clone());
+        }
+        log::warn!(
+            "Trusted project skills folder is unavailable; keeping project skills disabled: {}",
+            session.working_dir.display()
+        );
     }
 
     let root = agent_config_dir(app_handle, user_id)
@@ -2751,12 +2787,17 @@ fn skills_client_for_working_dir(
         .map_err(|error| format!("Failed to create Maple skills tools: {error}"))
 }
 
-async fn attach_skills_client_for_working_dir(
+fn prepare_transient_skills_client(
+    app_handle: &AppHandle,
+    user_id: &str,
     agent: &Arc<Agent>,
     session: &Session,
-    working_dir: PathBuf,
-) -> Result<(), String> {
-    let skills_client = skills_client_for_working_dir(agent, session, working_dir)?;
+) -> Result<SkillsClient, String> {
+    let working_dir = skills_discovery_working_dir(app_handle, user_id, session)?;
+    skills_client_for_working_dir(agent, session, working_dir)
+}
+
+async fn attach_prepared_skills_client(agent: &Arc<Agent>, skills_client: SkillsClient) {
     agent
         .extension_manager
         .add_client(
@@ -2767,17 +2808,6 @@ async fn attach_skills_client_for_working_dir(
             None,
         )
         .await;
-    Ok(())
-}
-
-async fn attach_transient_skills_client(
-    app_handle: &AppHandle,
-    user_id: &str,
-    agent: &Arc<Agent>,
-    session: &Session,
-) -> Result<(), String> {
-    let working_dir = skills_discovery_working_dir(app_handle, user_id, session)?;
-    attach_skills_client_for_working_dir(agent, session, working_dir).await
 }
 
 struct AgentSkillsScope<'a> {
@@ -2803,11 +2833,12 @@ async fn configure_session_agent(
         .await
         .map_err(|e| format!("Failed to get Goose agent for session {}: {e}", session.id))?;
     let agent = manager_result.agent;
-    // SkillsClient needs a trust-filtered working directory, but Goose would
-    // reconstruct a persisted platform extension with the real session root.
-    // Keep it transient: detach before every extension-state write and attach
-    // the manually constructed client only after persistence is complete.
-    detach_transient_skills_client(&agent).await;
+    let skills_client = prepare_transient_skills_client(
+        skills_scope.app_handle,
+        skills_scope.user_id,
+        &agent,
+        session,
+    )?;
     let mcp_errors = mcp_connection_errors(manager_result.extension_results, &session_mcp_keys);
     let provider = goose::providers::create_with_working_dir(
         "openai",
@@ -2854,17 +2885,13 @@ async fn configure_session_agent(
             None,
         )
         .await;
-    agent
-        .persist_extension_state(&session.id)
-        .await
-        .map_err(|e| format!("Failed to persist Maple built-in tools: {e}"))?;
-    attach_transient_skills_client(
-        skills_scope.app_handle,
-        skills_scope.user_id,
-        &agent,
-        session,
-    )
-    .await?;
+    // SkillsClient needs a trust-filtered working directory, but Goose would reconstruct a
+    // persisted platform extension with the real session root. Detach only for the extension-state
+    // write, then restore unconditionally before propagating any persistence error.
+    detach_transient_skills_client(&agent).await;
+    let persist_result = agent.persist_extension_state(&session.id).await;
+    attach_prepared_skills_client(&agent, skills_client).await;
+    persist_result.map_err(|e| format!("Failed to persist Maple built-in tools: {e}"))?;
     // Goose's live mode remains SmartApprove so every sensitive call reaches Maple.
     // Persist the user-facing policy separately for session restoration and display.
     session_manager
@@ -4546,6 +4573,39 @@ mod tests {
         let _ = fs::remove_dir_all(test_root);
     }
 
+    #[test]
+    fn project_skills_root_must_still_be_available() {
+        let test_root = recent_roots_test_dir("skills-root-available");
+        let project = test_root.join("project");
+        fs::create_dir_all(&project).unwrap();
+        let canonical_project = normalize_project_root(&project).unwrap();
+
+        assert!(project_skills_root_is_available(&canonical_project));
+        fs::remove_dir_all(&project).unwrap();
+        assert!(!project_skills_root_is_available(&canonical_project));
+
+        let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn project_skills_root_rejects_symlink_replacement() {
+        use std::os::unix::fs::symlink;
+
+        let test_root = recent_roots_test_dir("skills-root-replaced");
+        let project = test_root.join("project");
+        let replacement = test_root.join("replacement");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&replacement).unwrap();
+        let canonical_project = normalize_project_root(&project).unwrap();
+
+        fs::remove_dir_all(&project).unwrap();
+        symlink(&replacement, &project).unwrap();
+        assert!(!project_skills_root_is_available(&canonical_project));
+
+        let _ = fs::remove_dir_all(test_root);
+    }
+
     #[cfg(unix)]
     #[test]
     fn project_skills_trust_uses_the_canonical_folder_path() {
@@ -4685,9 +4745,9 @@ mod tests {
                 None,
             )
             .await;
-        attach_skills_client_for_working_dir(&agent, &session, project)
-            .await
-            .unwrap();
+        let initial_skills =
+            skills_client_for_working_dir(&agent, &session, project.clone()).unwrap();
+        attach_prepared_skills_client(&agent, initial_skills).await;
 
         let tools = agent.list_tools(&session.id, None).await;
         let maple_tool = tools
@@ -4714,6 +4774,7 @@ mod tests {
             1
         );
 
+        let prepared_skills = skills_client_for_working_dir(&agent, &session, project).unwrap();
         detach_transient_skills_client(&agent).await;
         agent.persist_extension_state(&session.id).await.unwrap();
         let persisted = session_manager
@@ -4730,6 +4791,15 @@ mod tests {
             .iter()
             .any(|tool| tool.name.as_ref() == "load_skill"));
         assert!(tools_after_detach
+            .iter()
+            .any(|tool| tool.name.as_ref() == "skills__load_skill"));
+
+        attach_prepared_skills_client(&agent, prepared_skills).await;
+        let tools_after_restore = agent.list_tools(&session.id, None).await;
+        assert!(tools_after_restore
+            .iter()
+            .any(|tool| tool.name.as_ref() == "load_skill"));
+        assert!(tools_after_restore
             .iter()
             .any(|tool| tool.name.as_ref() == "skills__load_skill"));
 
