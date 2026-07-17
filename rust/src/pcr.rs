@@ -1,6 +1,6 @@
 use crate::{error::Error, Result};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
-use reqwest::{Client, Url};
+use reqwest::{redirect::Policy, Client, Url};
 use ring::signature;
 use serde::Deserialize;
 use std::collections::HashSet;
@@ -152,7 +152,7 @@ impl Pcr0TrustPolicy {
         Ok(())
     }
 
-    pub(crate) async fn verify_pcr0(&self, client: &Client, pcr0: &[u8]) -> Result<()> {
+    pub(crate) async fn verify_pcr0(&self, pcr0: &[u8]) -> Result<()> {
         if pcr0.len() != PCR0_BYTES_LEN {
             return Err(Error::AttestationVerificationFailed(format!(
                 "PCR0 must be {PCR0_BYTES_LEN} bytes"
@@ -163,8 +163,12 @@ impl Pcr0TrustPolicy {
             return Ok(());
         }
 
+        // URL validation applies to the complete network request. Do not let a
+        // valid HTTPS history location redirect to HTTP, loopback, or another
+        // destination that has not passed `parse_remote_history_url`.
+        let history_client = Client::builder().redirect(Policy::none()).build()?;
         for url in &self.remote_history_urls {
-            let history = match fetch_remote_history(client, url).await {
+            let history = match fetch_remote_history(&history_client, url).await {
                 Ok(history) => history,
                 Err(_) => continue,
             };
@@ -362,13 +366,10 @@ mod tests {
     #[tokio::test]
     async fn static_allowlist_approves_only_exact_pcr0() {
         let policy = Pcr0TrustPolicy::from_static_allowlist([SIGNED_PCR0]).unwrap();
-        policy
-            .verify_pcr0(&Client::new(), &pcr_bytes(SIGNED_PCR0))
-            .await
-            .unwrap();
+        policy.verify_pcr0(&pcr_bytes(SIGNED_PCR0)).await.unwrap();
 
         let error = policy
-            .verify_pcr0(&Client::new(), &[0x42; PCR0_BYTES_LEN])
+            .verify_pcr0(&[0x42; PCR0_BYTES_LEN])
             .await
             .unwrap_err();
         assert!(matches!(error, Error::AttestationVerificationFailed(_)));
@@ -387,10 +388,7 @@ mod tests {
             .with_remote_history_urls([format!("{}/history.json", server.uri())])
             .unwrap();
 
-        policy
-            .verify_pcr0(&Client::new(), &pcr_bytes(SIGNED_PCR0))
-            .await
-            .unwrap();
+        policy.verify_pcr0(&pcr_bytes(SIGNED_PCR0)).await.unwrap();
     }
 
     #[tokio::test]
@@ -408,7 +406,7 @@ mod tests {
             .unwrap();
 
         let error = policy
-            .verify_pcr0(&Client::new(), &pcr_bytes(SIGNED_PCR0))
+            .verify_pcr0(&pcr_bytes(SIGNED_PCR0))
             .await
             .unwrap_err();
         assert!(matches!(error, Error::AttestationVerificationFailed(_)));
@@ -433,10 +431,29 @@ mod tests {
             .with_remote_history_urls([format!("{}/history.json", server.uri())])
             .unwrap();
 
-        assert!(policy
-            .verify_pcr0(&Client::new(), &pcr_bytes(SIGNED_PCR0))
-            .await
-            .is_err());
+        assert!(policy.verify_pcr0(&pcr_bytes(SIGNED_PCR0)).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn remote_history_redirects_are_not_followed() {
+        let server = MockServer::start().await;
+        let redirected_url = format!("{}/redirected.json", server.uri());
+        Mock::given(path("/history.json"))
+            .respond_with(ResponseTemplate::new(302).insert_header("location", redirected_url))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(path("/redirected.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(history(SIGNED_PCR0_SIGNATURE)))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let policy = Pcr0TrustPolicy::from_static_allowlist(["000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"])
+            .unwrap()
+            .with_remote_history_urls([format!("{}/history.json", server.uri())])
+            .unwrap();
+
+        assert!(policy.verify_pcr0(&pcr_bytes(SIGNED_PCR0)).await.is_err());
     }
 
     #[test]

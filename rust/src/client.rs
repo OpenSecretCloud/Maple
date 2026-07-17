@@ -494,9 +494,7 @@ impl OpenSecretClient {
                     "Missing PCR0 in attestation document".to_string(),
                 )
             })?;
-            self.pcr0_trust_policy
-                .verify_pcr0(&self.client, pcr0)
-                .await?;
+            self.pcr0_trust_policy.verify_pcr0(pcr0).await?;
             doc
         } else {
             // For mock mode, extract without full verification
