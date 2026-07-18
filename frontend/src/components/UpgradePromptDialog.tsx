@@ -174,7 +174,7 @@ export function UpgradePromptDialog({
           "Work through multi-step coding tasks",
           "Read and edit files in projects you choose",
           "Run commands and development tools",
-          "Keep separate agent sessions for each project",
+          "Keep separate tasks for each project",
           "Use supported private AI models with API access"
         ]
       };

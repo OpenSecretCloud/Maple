@@ -401,7 +401,7 @@ export function AgentMode({ userId }: { userId: string }) {
   }, [projectRoot, visibleProjectRoots]);
   const activeSessionTitle = useMemo(() => {
     const activeSession = sessions.find((session) => session.id === activeSessionId);
-    return activeSession ? sessionTitle(activeSession) : "Agent session";
+    return activeSession ? sessionTitle(activeSession) : "New task";
   }, [activeSessionId, sessions]);
   const activeRunId = activeSessionId ? (activeRunsBySession[activeSessionId] ?? null) : null;
   const activePendingSendKey = activeSessionId || NEW_SESSION_PENDING_KEY;
@@ -1234,7 +1234,7 @@ export function AgentMode({ userId }: { userId: string }) {
       if (!sessionId) {
         const detail = await agentRuntimeService.createSession(userId, {
           projectRoot,
-          title: "New agent session",
+          title: "New task",
           model: model || DEFAULT_MODEL,
           mode: selectedModeRef.current,
           mcpServerNames: selectedNewChatMcpServerNames
@@ -1294,7 +1294,7 @@ export function AgentMode({ userId }: { userId: string }) {
         }
         return await agentRuntimeService.createSession(userId, {
           projectRoot,
-          title: "New agent session",
+          title: "New task",
           model: model || DEFAULT_MODEL,
           mode: selectedModeRef.current,
           mcpServerNames: selectedNewChatMcpServerNames
@@ -1364,7 +1364,7 @@ export function AgentMode({ userId }: { userId: string }) {
               return { detail, timelineRevision };
             }
           }
-          throw new Error("This Agent session is still updating. Try selecting it again shortly.");
+          throw new Error("This task is still updating. Try selecting it again shortly.");
         });
         const { detail, timelineRevision } = loaded;
         if (
@@ -1381,7 +1381,7 @@ export function AgentMode({ userId }: { userId: string }) {
         // that case leave the previous chat intact instead of overwriting the
         // newer timeline with a stale snapshot.
         if (!replaceSessionTimeline(detail.session.id, detail.timeline, timelineRevision)) {
-          throw new Error("This Agent session changed while loading. Try selecting it again.");
+          throw new Error("This task changed while loading. Try selecting it again.");
         }
 
         // Commit the selected session and all of its settings together. Until
@@ -1604,7 +1604,7 @@ export function AgentMode({ userId }: { userId: string }) {
     async (item: AgentTimelineItem, decision: AgentPermissionDecision) => {
       const sessionId = activeSessionIdRef.current;
       try {
-        if (!sessionId) throw new Error("No active Agent session for this permission request");
+        if (!sessionId) throw new Error("No active task for this permission request");
         await agentRuntimeService.respondToPermission(
           userId,
           sessionId,
@@ -1892,6 +1892,7 @@ export function AgentMode({ userId }: { userId: string }) {
             onSessionSelect={(sessionId) => void loadSession(sessionId)}
           />
         }
+        onNewItem={areAgentSettingsLocked ? undefined : () => void createSession()}
         onToggle={toggleSidebar}
       />
 
@@ -1902,7 +1903,8 @@ export function AgentMode({ userId }: { userId: string }) {
             if (!open) setSessionToDelete(null);
           }}
           chatTitle={sessionTitle(sessionToDelete)}
-          description={`This will delete "${sessionTitle(sessionToDelete)}" from Agent Mode. This action cannot be undone.`}
+          itemLabel="task"
+          description={`This will permanently delete the task "${sessionTitle(sessionToDelete)}". This action cannot be undone.`}
           onConfirm={() => void deleteSession(sessionToDelete.id)}
         />
       ) : null}
@@ -1931,6 +1933,7 @@ export function AgentMode({ userId }: { userId: string }) {
             title={activeSessionTitle}
             isSidebarOpen={isSidebarOpen}
             onNewChat={() => void createSession()}
+            newItemLabel="New Task"
           />
         ) : null}
 
@@ -1944,7 +1947,7 @@ export function AgentMode({ userId }: { userId: string }) {
                   <p className="mt-0.5 text-xs text-muted-foreground">
                     Maple cannot verify that this existing Local OpenAI Proxy key belongs to the
                     signed-in account. This can happen once after upgrading from an older Agent Mode
-                    build. Your chats remain available; replace the saved local setup before sending
+                    build. Your tasks remain available; replace the saved local setup before sending
                     another message. The existing backend key will remain in API Management.
                   </p>
                 </div>
@@ -2629,9 +2632,7 @@ function AgentSidebarContent({
                       size="icon"
                       className="h-7 w-7 shrink-0 text-muted-foreground hover:text-foreground"
                       onClick={() => toggleProjectCollapsed(root.path)}
-                      aria-label={
-                        isCollapsed ? "Expand project sessions" : "Collapse project sessions"
-                      }
+                      aria-label={isCollapsed ? "Expand project tasks" : "Collapse project tasks"}
                     >
                       {isCollapsed ? (
                         <ChevronRight className="h-4 w-4" />
@@ -2648,7 +2649,7 @@ function AgentSidebarContent({
                       className="h-7 w-7 shrink-0 text-muted-foreground hover:text-foreground"
                       onClick={onCreateSession}
                       disabled={disabled || !projectRoot}
-                      aria-label="New agent session"
+                      aria-label="New Task"
                     >
                       <MessageSquarePlus className="h-4 w-4" />
                     </Button>
@@ -2659,7 +2660,7 @@ function AgentSidebarContent({
                   <div className="mt-2 w-full space-y-2 pl-6">
                     {projectSessions.length === 0 ? (
                       isActive ? (
-                        <p className="py-1 text-xs text-muted-foreground/75">No sessions yet</p>
+                        <p className="py-1 text-xs text-muted-foreground/75">No tasks yet</p>
                       ) : null
                     ) : (
                       projectSessions.map((session) => {
@@ -2726,7 +2727,7 @@ function AgentSidebarContent({
                                         event.preventDefault();
                                         event.stopPropagation();
                                       }}
-                                      aria-label={`Open chat menu for ${title}`}
+                                      aria-label={`Open task menu for ${title}`}
                                     >
                                       <MoreHorizontal
                                         className="h-4 w-4"
@@ -2743,7 +2744,9 @@ function AgentSidebarContent({
                                         className="mr-2 h-4 w-4"
                                         strokeWidth={SIDEBAR_ICON_STROKE}
                                       />
-                                      {isRunning ? "Stop Agent Before Deleting" : "Delete Chat"}
+                                      {isRunning
+                                        ? "Stop Agent Before Deleting Task"
+                                        : "Delete Task"}
                                     </DropdownMenuItem>
                                   </DropdownMenuContent>
                                 </DropdownMenu>
@@ -2788,10 +2791,10 @@ function AgentSidebarContent({
 
       <div className="mt-7">
         <p className="mb-3 text-xs font-medium uppercase tracking-wider text-muted-foreground">
-          Chats
+          Tasks
         </p>
         <p className="text-xs text-muted-foreground/75">
-          Folderless agent chats are not available yet.
+          Folderless Agent tasks are not available yet.
         </p>
       </div>
     </>
@@ -3751,7 +3754,7 @@ function permissionRequestId(item: AgentTimelineItem): string {
 }
 
 function sessionTitle(session: AgentSessionSummary): string {
-  return session.title || "Agent session";
+  return session.title || "New task";
 }
 
 function toolTitle(item: AgentTimelineItem): string {

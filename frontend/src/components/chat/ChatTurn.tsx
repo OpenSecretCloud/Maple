@@ -87,11 +87,13 @@ export function ChatDesktopConversationHeader({
   title,
   isSidebarOpen,
   onNewChat,
+  newItemLabel = "New chat",
   titleClassName
 }: {
   title: string;
   isSidebarOpen: boolean;
   onNewChat: () => void;
+  newItemLabel?: string;
   titleClassName?: string;
 }) {
   return (
@@ -111,7 +113,7 @@ export function ChatDesktopConversationHeader({
             size="icon"
             className="absolute right-0 h-9 w-9 border-0"
             onClick={onNewChat}
-            aria-label="New chat"
+            aria-label={newItemLabel}
           >
             <SquarePen className="h-4 w-4" />
           </Button>

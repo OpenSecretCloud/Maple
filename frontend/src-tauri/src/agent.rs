@@ -59,7 +59,7 @@ const MAPLE_GOOSE_PERMISSION_CONFIG: &str = r#"user:
   never_allow: []
 "#;
 const RUN_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
-const DEFAULT_AGENT_SESSION_TITLE: &str = "New agent session";
+const DEFAULT_AGENT_SESSION_TITLE: &str = "New task";
 const DEFAULT_MCP_TIMEOUT_SECONDS: u64 = 300;
 const MAX_AGENT_SESSION_TITLE_CHARS: usize = 80;
 const MAX_AGENT_ERROR_CHARS: usize = 1_200;
@@ -84,7 +84,7 @@ fn validate_session_model_lock(
         return Ok(());
     }
     Err(format!(
-        "This Agent session is locked to model {persisted_model}. Start a new session to use {requested_model}."
+        "This task is locked to model {persisted_model}. Start a new task to use {requested_model}."
     ))
 }
 
@@ -1026,7 +1026,7 @@ pub async fn agent_create_session(
     let session = session_manager
         .create_session(root.clone(), title, SessionType::User, permission_mode)
         .await
-        .map_err(|e| format!("Failed to create Goose session: {e}"))?;
+        .map_err(|e| format!("Failed to create Agent task: {e}"))?;
 
     permission_modes
         .lock()
@@ -1109,7 +1109,7 @@ pub async fn agent_list_sessions(
     let mut sessions = session_manager
         .list_all_sessions()
         .await
-        .map_err(|e| format!("Failed to list Goose sessions: {e}"))?
+        .map_err(|e| format!("Failed to list Agent tasks: {e}"))?
         .into_iter()
         .filter(|session| {
             if let Some(root) = filter_root.as_ref() {
@@ -1148,11 +1148,11 @@ pub async fn agent_load_session(
     let session = session_manager
         .get_session(&session_id, true)
         .await
-        .map_err(|e| format!("Failed to load Goose session: {e}"))?;
+        .map_err(|e| format!("Failed to load Agent task: {e}"))?;
     let conversation = session
         .conversation
         .as_ref()
-        .ok_or_else(|| "Goose session history was not loaded".to_string())?;
+        .ok_or_else(|| "Agent task history was not loaded".to_string())?;
     let timeline = conversation_to_timeline_items(conversation);
     let timeline =
         overlay_live_timeline(&state.live_timelines, &session_id, conversation, timeline).await;
@@ -1188,7 +1188,7 @@ pub async fn agent_list_session_mcp_servers(
     let session = session_manager
         .get_session(session_id.trim(), false)
         .await
-        .map_err(|error| format!("Failed to load Goose session: {error}"))?;
+        .map_err(|error| format!("Failed to load Agent task: {error}"))?;
     let configured = normalize_mcp_servers(
         load_agent_config_inner(&app_handle, &user_id)
             .map_err(|error| format!("Failed to load MCP servers: {error}"))?
@@ -1212,7 +1212,7 @@ pub async fn agent_set_session_mcp_server_enabled(
     let session_id = request.session_id.trim().to_string();
     let requested_key = goose::config::extensions::name_to_key(request.name.trim());
     if session_id.is_empty() {
-        return Err("Agent session ID cannot be empty".to_string());
+        return Err("Agent task ID cannot be empty".to_string());
     }
     if requested_key.is_empty() || requested_key == "developer" {
         return Err("That MCP server cannot be changed".to_string());
@@ -1240,7 +1240,7 @@ pub async fn agent_set_session_mcp_server_enabled(
     let session = session_manager
         .get_session(&session_id, false)
         .await
-        .map_err(|error| format!("Failed to load Goose session: {error}"))?;
+        .map_err(|error| format!("Failed to load Agent task: {error}"))?;
     let session_mcp_keys = session_mcp_extension_keys(&session);
     let manager_result = agent_manager
         .get_or_create_agent_with_runtime_context(
@@ -1300,13 +1300,13 @@ pub async fn agent_set_session_mcp_server_enabled(
         agent
             .persist_extension_state(&session_id)
             .await
-            .map_err(|error| format!("Failed to save MCP session state: {error}"))?;
+            .map_err(|error| format!("Failed to save task MCP settings: {error}"))?;
     }
 
     let refreshed = session_manager
         .get_session(&session_id, false)
         .await
-        .map_err(|error| format!("Failed to reload Goose session: {error}"))?;
+        .map_err(|error| format!("Failed to reload Agent task: {error}"))?;
     Ok(session_mcp_servers(&configured, &refreshed))
 }
 
@@ -1323,7 +1323,7 @@ pub async fn agent_delete_session(
     ensure_account_generation(&state, &account_scope, generation).await?;
     let session_id = session_id.trim().to_string();
     if session_id.is_empty() {
-        return Err("Agent session ID cannot be empty".to_string());
+        return Err("Agent task ID cannot be empty".to_string());
     }
 
     let _session_lifecycle_guard = state.session_lifecycle.lock().await;
@@ -1333,7 +1333,7 @@ pub async fn agent_delete_session(
             Some(current) => {
                 ensure_runtime_account(current, &account_scope)?;
                 if has_active_session_run(&current.active_runs, &session_id) {
-                    return Err("Stop the running agent before deleting this chat".to_string());
+                    return Err("Stop the running agent before deleting this task".to_string());
                 }
                 (
                     Some(Arc::clone(&current.agent_manager)),
@@ -1375,11 +1375,11 @@ async fn delete_persisted_agent_session(
     session_manager
         .get_session(session_id, false)
         .await
-        .map_err(|e| format!("Failed to find Goose session {session_id}: {e}"))?;
+        .map_err(|e| format!("Failed to find Agent task {session_id}: {e}"))?;
     session_manager
         .delete_session(session_id)
         .await
-        .map_err(|e| format!("Failed to delete Goose session {session_id}: {e}"))?;
+        .map_err(|e| format!("Failed to delete Agent task {session_id}: {e}"))?;
 
     live_timelines.lock().await.remove(session_id);
     pending_permissions
@@ -1411,7 +1411,7 @@ async fn rollback_cancelled_agent_turn(
         let session = session_manager
             .get_session(session_id, false)
             .await
-            .map_err(|error| format!("Failed to inspect cancelled Agent session: {error}"))?;
+            .map_err(|error| format!("Failed to inspect cancelled Agent task: {error}"))?;
         if !session.user_set_name {
             session_manager
                 .update(session_id)
@@ -1419,7 +1419,7 @@ async fn rollback_cancelled_agent_turn(
                 .apply()
                 .await
                 .map_err(|error| {
-                    format!("Failed to restore cancelled Agent session title: {error}")
+                    format!("Failed to restore cancelled Agent task title: {error}")
                 })?;
         }
     }
@@ -1492,7 +1492,7 @@ pub async fn agent_send_message(
     agent_manager
         .try_register_cancel_token(&request.session_id, cancel_token.clone())
         .await
-        .map_err(|e| format!("Agent session is already running: {e}"))?;
+        .map_err(|e| format!("Agent task is already running: {e}"))?;
 
     // A rejected or delayed send must not be able to change a live policy that
     // the mode command already made authoritative. Seed only sessions that do
@@ -1510,7 +1510,7 @@ pub async fn agent_send_message(
         let mut session = session_manager
             .get_session(&request.session_id, true)
             .await
-            .map_err(|e| format!("Failed to load Goose session: {e}"))?;
+            .map_err(|e| format!("Failed to load Agent task: {e}"))?;
         validate_session_model_lock(
             session.message_count,
             session
@@ -1534,11 +1534,11 @@ pub async fn agent_send_message(
                 .system_generated_name(prompt_title)
                 .apply()
                 .await
-                .map_err(|e| format!("Failed to name Agent session: {e}"))?;
+                .map_err(|e| format!("Failed to name Agent task: {e}"))?;
             session = session_manager
                 .get_session(&session.id, false)
                 .await
-                .map_err(|e| format!("Failed to load named Goose session: {e}"))?;
+                .map_err(|e| format!("Failed to load named Agent task: {e}"))?;
             emit_agent_event(
                 &app_handle,
                 AgentEventEnvelope {
@@ -1820,7 +1820,7 @@ pub async fn agent_set_permission_mode(
 
     let session_id = request.session_id.trim().to_string();
     if session_id.is_empty() {
-        return Err("Agent permission mode update requires a session ID".to_string());
+        return Err("Agent permission mode update requires a task ID".to_string());
     }
     let goose_mode = parse_user_permission_mode(&request.mode)?;
     let (agent_manager, session_manager, permission_modes) = {
@@ -1986,12 +1986,12 @@ pub async fn agent_permission_respond(
         ensure_runtime_account(current, &account_scope)?;
         let session_id = response.session_id.trim().to_string();
         if session_id.is_empty() {
-            return Err("Agent permission response requires a session ID".to_string());
+            return Err("Agent permission response requires a task ID".to_string());
         }
         let key = (session_id.clone(), response.request_id.clone());
         if !state.pending_permissions.lock().await.contains_key(&key) {
             return Err(format!(
-                "No pending Agent Mode permission request found for {} in session {}",
+                "No pending Agent Mode permission request found for {} in task {}",
                 response.request_id, session_id
             ));
         }
@@ -2325,7 +2325,7 @@ async fn run_agent_prompt(run: AgentPromptRun) -> Result<AgentPromptOutcome, Str
     let updated_session = session_manager
         .get_session(&session_id, false)
         .await
-        .map_err(|e| format!("Failed to load updated Goose session: {e}"))?;
+        .map_err(|e| format!("Failed to load updated Agent task: {e}"))?;
     let working_dir = updated_session.working_dir.clone();
     emit_agent_event(
         &app_handle,
@@ -2608,7 +2608,7 @@ async fn configure_session_agent(
             goose::execution::manager::RuntimeContext::default(),
         )
         .await
-        .map_err(|e| format!("Failed to get Goose agent for session {}: {e}", session.id))?;
+        .map_err(|e| format!("Failed to load Agent for task {}: {e}", session.id))?;
     let agent = manager_result.agent;
     let mcp_errors = mcp_connection_errors(manager_result.extension_results, &session_mcp_keys);
     let provider = goose::providers::create_with_working_dir(
@@ -4846,7 +4846,7 @@ mod tests {
         assert!(validate_session_model_lock(3, Some("glm-5-2"), "glm-5-2").is_ok());
         let error = validate_session_model_lock(3, Some("glm-5-2"), "gemma4-31b").unwrap_err();
         assert!(error.contains("locked to model glm-5-2"));
-        assert!(error.contains("Start a new session"));
+        assert!(error.contains("Start a new task"));
     }
 
     #[tokio::test]
