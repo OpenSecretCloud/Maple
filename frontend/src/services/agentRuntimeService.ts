@@ -1,6 +1,10 @@
 import { isTauriDesktop } from "@/utils/platform";
 import { agentOperationFence, type AgentOperationBlock } from "@/services/agentOperationFence";
 import { AgentAuthLifecycleCoordinator } from "@/services/agentAuthLifecycle";
+import {
+  clearAgentThoughtLabelsForSession,
+  clearAgentThoughtLabelsForUser
+} from "@/services/agentThoughtLabels";
 
 export interface AgentConfig {
   defaultProjectRoot?: string | null;
@@ -269,6 +273,7 @@ class AgentRuntimeService {
 
   async deleteSession(userId: string, sessionId: string): Promise<void> {
     await this.invokeForUser(userId, "agent_delete_session", { userId, sessionId });
+    clearAgentThoughtLabelsForSession(userId, sessionId);
   }
 
   async sendMessage(userId: string, request: AgentSendMessageRequest): Promise<AgentRunResponse> {
@@ -379,6 +384,7 @@ export async function clearAgentDataForUser(userId?: string | null): Promise<Age
   const block = await agentOperationFence.blockAndDrain(userId);
   try {
     await invokeAgent("agent_clear_user_data", { userId });
+    clearAgentThoughtLabelsForUser(userId);
     return block;
   } catch (error) {
     block.release();
@@ -394,6 +400,7 @@ export async function clearAgentHistoryForUser(
   const block = await agentOperationFence.blockAndDrain(userId);
   try {
     await invokeAgent("agent_clear_user_history", { userId });
+    clearAgentThoughtLabelsForUser(userId);
     return block;
   } catch (error) {
     block.release();

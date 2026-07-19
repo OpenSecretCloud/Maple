@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
-import { MarkdownContent } from "./markdown";
+import { MarkdownContent, ThinkingBlock } from "./markdown";
 
 function renderMarkdown(content: string): string {
   return renderToStaticMarkup(React.createElement(MarkdownContent, { content }));
@@ -43,5 +43,47 @@ describe("MarkdownContent images", () => {
     expect(rendered).not.toContain("<img");
     expect(rendered).not.toContain("hidden.png");
     expect(rendered).not.toContain("<span");
+  });
+});
+
+describe("ThinkingBlock labels", () => {
+  function renderThinkingBlock(isThinking: boolean, completedLabel?: string): string {
+    return renderToStaticMarkup(
+      React.createElement(ThinkingBlock, {
+        content: "Inspected the authentication flow.",
+        isThinking,
+        showDuration: false,
+        completedLabel
+      })
+    );
+  }
+
+  it("renders a completed description with fade transition styles", () => {
+    const completed = renderThinkingBlock(false, "Inspecting authentication flow");
+    const streaming = renderThinkingBlock(true, "Inspecting authentication flow");
+
+    expect(completed).toContain("Inspecting authentication flow");
+    expect(completed).not.toContain(">Thought<");
+    expect(completed).toContain("transition-opacity");
+    expect(completed).toContain("duration-150");
+    expect(completed).toContain("opacity-100");
+    expect(completed).toContain("motion-reduce:transition-none");
+    expect(completed).toContain('aria-live="polite"');
+    expect(completed).toContain('aria-atomic="true"');
+    expect(streaming).toContain("Thinking");
+    expect(streaming).not.toContain("Inspecting authentication flow");
+    expect(streaming).not.toContain("transition-opacity");
+  });
+
+  it("keeps Thought as the completed fallback", () => {
+    expect(renderThinkingBlock(false)).toContain("Thought");
+  });
+
+  it("keeps Thinking visible while a completed phase awaits its generated label", () => {
+    const pending = renderThinkingBlock(false, "Thinking");
+
+    expect(pending).toContain(">Thinking<");
+    expect(pending).not.toContain(">Thought<");
+    expect(pending).toContain("transition-opacity");
   });
 });

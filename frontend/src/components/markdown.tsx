@@ -23,18 +23,73 @@ async function copyToClipboard(text: string) {
   }
 }
 
+const THINKING_LABEL_FADE_DURATION_MS = 150;
+
+function prefersReducedMotion(): boolean {
+  return (
+    typeof window !== "undefined" &&
+    typeof window.matchMedia === "function" &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches
+  );
+}
+
+function FadingThinkingLabel({ text }: { text: string }) {
+  const [displayedText, setDisplayedText] = useState(text);
+  const [isVisible, setIsVisible] = useState(true);
+  const displayedTextRef = useRef(text);
+
+  useEffect(() => {
+    if (text === displayedTextRef.current) return;
+
+    if (prefersReducedMotion()) {
+      displayedTextRef.current = text;
+      setDisplayedText(text);
+      setIsVisible(true);
+      return;
+    }
+
+    setIsVisible(false);
+    let fadeInFrame: number | null = null;
+    const swapTimer = window.setTimeout(() => {
+      displayedTextRef.current = text;
+      setDisplayedText(text);
+      fadeInFrame = window.requestAnimationFrame(() => setIsVisible(true));
+    }, THINKING_LABEL_FADE_DURATION_MS);
+
+    return () => {
+      window.clearTimeout(swapTimer);
+      if (fadeInFrame !== null) window.cancelAnimationFrame(fadeInFrame);
+    };
+  }, [text]);
+
+  return (
+    <span
+      className={cn(
+        "inline-block transition-opacity duration-150 ease-in-out motion-reduce:transition-none",
+        isVisible ? "opacity-100" : "opacity-0"
+      )}
+      aria-live="polite"
+      aria-atomic="true"
+    >
+      {displayedText}
+    </span>
+  );
+}
+
 export interface ThinkingBlockProps {
   content: string;
   isThinking: boolean;
   duration?: number;
   showDuration?: boolean;
+  completedLabel?: string;
 }
 
 export function ThinkingBlock({
   content,
   isThinking,
   duration,
-  showDuration = true
+  showDuration = true,
+  completedLabel
 }: ThinkingBlockProps) {
   const [isExpanded, setIsExpanded] = useState(false);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
@@ -111,7 +166,7 @@ export function ThinkingBlock({
             ) : showDuration ? (
               `Thought for ${durationText} seconds`
             ) : (
-              "Thought"
+              <FadingThinkingLabel text={completedLabel || "Thought"} />
             )}
           </span>
           <span className="shrink-0 text-muted-foreground" aria-hidden>
