@@ -31,6 +31,16 @@ import {
   Zap
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle
+} from "@/components/ui/alert-dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { Markdown, ThinkingBlock } from "@/components/markdown";
 import {
@@ -69,6 +79,7 @@ import {
   type AgentEventEnvelope,
   type AgentMcpServer,
   type AgentPermissionDecision,
+  type AgentProjectSkillsTrustStatus,
   type AgentRuntimeStatus,
   type AgentSessionMcpServer,
   type AgentSessionSummary,
@@ -294,6 +305,13 @@ export function AgentMode({ userId }: { userId: string }) {
   const [isStarting, setIsStarting] = useState(false);
   const [isPermissionModeUpdating, setIsPermissionModeUpdating] = useState(false);
   const [isProjectRootRegistrationPending, setIsProjectRootRegistrationPending] = useState(false);
+  const [projectSkillsTrustPrompt, setProjectSkillsTrustPrompt] =
+    useState<AgentProjectSkillsTrustStatus | null>(null);
+  const [isProjectSkillsTrustLoading, setIsProjectSkillsTrustLoading] = useState(false);
+  const [projectSkillsTrustSavingDecision, setProjectSkillsTrustSavingDecision] = useState<
+    boolean | null
+  >(null);
+  const [projectSkillsTrustError, setProjectSkillsTrustError] = useState<string | null>(null);
   const [pendingSendSessionIds, setPendingSendSessionIds] = useState<Set<string>>(() => new Set());
   const [pendingSessionSelectionId, setPendingSessionSelectionId] = useState<string | null>(null);
   const [activeRunsBySession, setActiveRunsBySession] = useState<Record<string, string>>({});
@@ -326,6 +344,7 @@ export function AgentMode({ userId }: { userId: string }) {
   const hasAttemptedSessionRestoreRef = useRef(false);
   const isAgentModeMountedRef = useRef(true);
   const projectOrderRequestIdRef = useRef(0);
+  const projectSkillsTrustGenerationRef = useRef(0);
 
   const applyAuthoritativeMode = useCallback((value: AgentPermissionMode) => {
     selectedModeRef.current = value;
@@ -408,6 +427,7 @@ export function AgentMode({ userId }: { userId: string }) {
   const isSubmitting = pendingSendSessionIds.has(activePendingSendKey);
   const isSessionSelectionPending = pendingSessionSelectionId !== null;
   const isProjectOrderSaving = projectOrderState.pendingRequestId !== null;
+  const isProjectSkillsTrustSaving = projectSkillsTrustSavingDecision !== null;
   const areAgentSettingsLocked =
     !isAuthTransitionReady ||
     isInitializing ||
@@ -417,6 +437,9 @@ export function AgentMode({ userId }: { userId: string }) {
     isSubmitting ||
     isProjectOrderSaving ||
     isProjectRootRegistrationPending ||
+    isProjectSkillsTrustLoading ||
+    isProjectSkillsTrustSaving ||
+    projectSkillsTrustPrompt !== null ||
     isReplacingManualProxy ||
     hasManualProxyConflict;
   const hasStartedAgentSession =
@@ -739,6 +762,57 @@ export function AgentMode({ userId }: { userId: string }) {
       );
     },
     [persistProjectRootOrder, projectOrderState.pendingRequestId]
+  );
+
+  useEffect(() => {
+    const generation = projectSkillsTrustGenerationRef.current + 1;
+    projectSkillsTrustGenerationRef.current = generation;
+    setProjectSkillsTrustPrompt(null);
+    setProjectSkillsTrustError(null);
+    if (!isAuthTransitionReady || isInitializing || !projectRoot) {
+      setIsProjectSkillsTrustLoading(false);
+      return;
+    }
+
+    setIsProjectSkillsTrustLoading(true);
+    void trackAgentWorkflow(() => agentRuntimeService.getProjectSkillsTrust(userId, projectRoot))
+      .then((status) => {
+        if (projectSkillsTrustGenerationRef.current !== generation) return;
+        if (status.available && status.decision == null) {
+          setProjectSkillsTrustPrompt(status);
+        }
+      })
+      .catch((trustError) => {
+        if (projectSkillsTrustGenerationRef.current === generation) {
+          setError(errorMessage(trustError));
+        }
+      })
+      .finally(() => {
+        if (projectSkillsTrustGenerationRef.current === generation) {
+          setIsProjectSkillsTrustLoading(false);
+        }
+      });
+  }, [isAuthTransitionReady, isInitializing, projectRoot, trackAgentWorkflow, userId]);
+
+  const saveProjectSkillsTrust = useCallback(
+    async (trusted: boolean) => {
+      const prompt = projectSkillsTrustPrompt;
+      if (!prompt || projectSkillsTrustSavingDecision !== null) return;
+      setError(null);
+      setProjectSkillsTrustError(null);
+      setProjectSkillsTrustSavingDecision(trusted);
+      try {
+        await trackAgentWorkflow(() =>
+          agentRuntimeService.setProjectSkillsTrust(userId, prompt.path, trusted)
+        );
+        setProjectSkillsTrustPrompt((current) => (current?.path === prompt.path ? null : current));
+      } catch (trustError) {
+        setProjectSkillsTrustError(errorMessage(trustError));
+      } finally {
+        setProjectSkillsTrustSavingDecision(null);
+      }
+    },
+    [projectSkillsTrustPrompt, projectSkillsTrustSavingDecision, trackAgentWorkflow, userId]
   );
 
   const refreshSessionList = useCallback(async () => {
@@ -1916,6 +1990,50 @@ export function AgentMode({ userId }: { userId: string }) {
         onOpenChange={setIsMcpServersDialogOpen}
         onSave={saveMcpServers}
       />
+
+      <AlertDialog open={projectSkillsTrustPrompt !== null}>
+        <AlertDialogContent onEscapeKeyDown={(event) => event.preventDefault()}>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Trust this folder?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Project skills can add local instructions and supporting files that guide the agent.
+              Maple&apos;s existing tool permissions still apply to anything those instructions ask
+              it to do. Personal skills remain available either way, and Maple remembers this choice
+              for this folder.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {projectSkillsTrustPrompt ? (
+            <div className="rounded-md border bg-muted/40 px-3 py-2 font-mono text-xs break-all">
+              {projectSkillsTrustPrompt.path}
+            </div>
+          ) : null}
+          {projectSkillsTrustError ? (
+            <p className="text-sm text-destructive" role="alert" aria-live="assertive">
+              {projectSkillsTrustError}
+            </p>
+          ) : null}
+          <AlertDialogFooter>
+            <AlertDialogCancel
+              disabled={isProjectSkillsTrustSaving}
+              onClick={() => void saveProjectSkillsTrust(false)}
+            >
+              {projectSkillsTrustSavingDecision === false ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : null}
+              Continue without project skills
+            </AlertDialogCancel>
+            <AlertDialogAction
+              disabled={isProjectSkillsTrustSaving}
+              onClick={() => void saveProjectSkillsTrust(true)}
+            >
+              {projectSkillsTrustSavingDecision === true ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : null}
+              Trust folder
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         {!isSidebarOpen && (

@@ -28,7 +28,7 @@ Environment and HTTP header values are stored in the account definition and copi
 
 The account directory is owner-only on Unix systems, but these values are not encrypted at rest. The UI obscures them while editing; obscuring a field is not encryption. Deleting an Agent session removes its snapshot, and clearing the account's local Agent data removes both its definitions and session store.
 
-Maple rejects Goose's disallowed process-overriding variables, empty or duplicate keys, duplicate case-insensitive HTTP header names, names that collide after Goose normalization, and the reserved `developer` extension name.
+Maple rejects Goose's disallowed process-overriding variables, empty or duplicate keys, duplicate case-insensitive HTTP header names, names that collide after Goose normalization, and the reserved `developer` and `maple-skills-extension` extension names.
 
 ## Compatibility boundary
 

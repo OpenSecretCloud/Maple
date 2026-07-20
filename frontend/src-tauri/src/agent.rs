@@ -22,6 +22,7 @@ use goose::permission::permission_confirmation::PrincipalType;
 use goose::permission::{Permission, PermissionConfirmation};
 use goose::session::session_manager::{Session, SessionType};
 use goose::session::SessionManager;
+use goose::skills::{SkillsClient, EXTENSION_NAME as SKILLS_EXTENSION_NAME};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -48,8 +49,13 @@ const DEFAULT_GOOSE_MODE: &str = "smart_approve";
 const GOOSE_PERMISSION_ROUTING_MODE: GooseMode = GooseMode::SmartApprove;
 const AGENT_EVENT_NAME: &str = "agent-event";
 const MAPLE_DEVELOPER_TOOLS: [&str; 5] = ["read", "shell", "edit", "write", "read_image"];
+const MAPLE_SKILLS_TOOLS: [&str; 1] = ["load_skill"];
+// Goose currently renders the runtime registration key as the model-facing
+// extension heading, so keep this concise and reserve it from user MCP names.
+const MAPLE_SKILLS_CLIENT_KEY: &str = "maple-skills-extension";
 const MAPLE_GOOSE_PERMISSION_CONFIG: &str = r#"user:
-  always_allow: []
+  always_allow:
+  - load_skill
   ask_before:
   - read
   - shell
@@ -96,6 +102,8 @@ pub struct AgentConfig {
     pub default_model: String,
     #[serde(default)]
     pub mcp_servers: Vec<AgentMcpServer>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub project_skills_trust: Vec<AgentProjectSkillsTrust>,
 }
 
 fn default_agent_model() -> String {
@@ -108,8 +116,24 @@ impl Default for AgentConfig {
             default_project_root: None,
             default_model: default_agent_model(),
             mcp_servers: Vec::new(),
+            project_skills_trust: Vec::new(),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentProjectSkillsTrust {
+    pub path: String,
+    pub trusted: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentProjectSkillsTrustStatus {
+    pub path: String,
+    pub decision: Option<bool>,
+    pub available: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -947,6 +971,49 @@ pub async fn agent_save_recent_project_root(
 }
 
 #[tauri::command]
+pub async fn agent_get_project_skills_trust(
+    app_handle: AppHandle,
+    state: State<'_, AgentRuntimeState>,
+    user_id: String,
+    path: String,
+) -> Result<AgentProjectSkillsTrustStatus, String> {
+    let account_scope = account_scope(&user_id)?;
+    let generation = account_generation(&state, &account_scope).await;
+    let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
+    ensure_account_generation(&state, &account_scope, generation).await?;
+    let requested = Path::new(path.trim());
+    if !requested.is_dir() {
+        return Ok(AgentProjectSkillsTrustStatus {
+            path: path_string(requested),
+            decision: None,
+            available: false,
+        });
+    }
+    let project_root = normalize_project_root(requested)?;
+    let config = load_agent_config_inner(&app_handle, &user_id).map_err(|e| e.to_string())?;
+    Ok(project_skills_trust_status(&config, &project_root, true))
+}
+
+#[tauri::command]
+pub async fn agent_set_project_skills_trust(
+    app_handle: AppHandle,
+    state: State<'_, AgentRuntimeState>,
+    user_id: String,
+    path: String,
+    trusted: bool,
+) -> Result<AgentProjectSkillsTrustStatus, String> {
+    let account_scope = account_scope(&user_id)?;
+    let generation = account_generation(&state, &account_scope).await;
+    let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
+    ensure_account_generation(&state, &account_scope, generation).await?;
+    let project_root = normalize_project_root(Path::new(&path))?;
+    let mut config = load_agent_config_inner(&app_handle, &user_id).map_err(|e| e.to_string())?;
+    apply_project_skills_trust(&mut config, &project_root, trusted)?;
+    save_agent_config_inner(&app_handle, &user_id, &config).map_err(|e| e.to_string())?;
+    Ok(project_skills_trust_status(&config, &project_root, true))
+}
+
+#[tauri::command]
 pub async fn agent_save_project_root_order(
     app_handle: AppHandle,
     state: State<'_, AgentRuntimeState>,
@@ -1032,29 +1099,62 @@ pub async fn agent_create_session(
         .lock()
         .await
         .insert(session.id.clone(), permission_mode);
-    let (agent, mut mcp_errors) = configure_session_agent(
-        &agent_manager,
-        &session_manager,
-        &session,
-        &model,
-        &mode,
-        false,
-    )
-    .await?;
-    if !selected_extensions.is_empty() {
-        match agent
-            .add_extensions_bulk(selected_extensions, &session.id)
-            .await
-        {
-            Ok(results) => {
-                mcp_errors.extend(mcp_connection_errors(results, &selected_extension_keys))
+    let setup_result: Result<Vec<AgentMcpConnectionError>, String> = async {
+        let (agent, mut mcp_errors) = configure_session_agent(
+            AgentSkillsScope {
+                app_handle: &app_handle,
+                user_id: &user_id,
+            },
+            &agent_manager,
+            &session_manager,
+            &session,
+            &model,
+            &mode,
+            false,
+        )
+        .await?;
+        if !selected_extensions.is_empty() {
+            // Resolve every fallible part of restoring Maple's transient Skills client before
+            // Goose persists the MCP mutation. Reattachment after this point is infallible.
+            let skills_client =
+                prepare_transient_skills_client(&app_handle, &user_id, &agent, &session)?;
+            detach_transient_skills_client(&agent).await;
+            let extension_result = agent
+                .add_extensions_bulk(selected_extensions, &session.id)
+                .await;
+            attach_prepared_skills_client(&agent, skills_client).await;
+            match extension_result {
+                Ok(results) => {
+                    mcp_errors.extend(mcp_connection_errors(results, &selected_extension_keys))
+                }
+                Err(error) => mcp_errors.push(AgentMcpConnectionError {
+                    name: "MCP servers".to_string(),
+                    error: error.to_string(),
+                }),
             }
-            Err(error) => mcp_errors.push(AgentMcpConnectionError {
-                name: "MCP servers".to_string(),
-                error: error.to_string(),
-            }),
         }
+        Ok(mcp_errors)
     }
+    .await;
+    let mcp_errors = match setup_result {
+        Ok(mcp_errors) => mcp_errors,
+        Err(error) => {
+            permission_modes.lock().await.remove(&session.id);
+            if let Err(cleanup_error) = session_manager.delete_session(&session.id).await {
+                log::warn!(
+                    "Failed to remove Agent task {} after setup error: {cleanup_error}",
+                    session.id
+                );
+            }
+            if let Err(cleanup_error) = agent_manager.remove_session_if_loaded(&session.id).await {
+                log::warn!(
+                    "Failed to unload Agent task {} after setup error: {cleanup_error}",
+                    session.id
+                );
+            }
+            return Err(error);
+        }
+    };
     let summary = session_summary(&session);
     // Session creation must not mutate project order. Only explicit folder-add and reorder
     // commands may change the persisted project list.
@@ -1214,7 +1314,7 @@ pub async fn agent_set_session_mcp_server_enabled(
     if session_id.is_empty() {
         return Err("Agent task ID cannot be empty".to_string());
     }
-    if requested_key.is_empty() || requested_key == "developer" {
+    if requested_key.is_empty() || maple_reserved_extension_key(&requested_key) {
         return Err("That MCP server cannot be changed".to_string());
     }
 
@@ -1257,51 +1357,61 @@ pub async fn agent_set_session_mcp_server_enabled(
         );
     }
     let agent = manager_result.agent;
+    // Preflight Skills restoration before detaching the working client or changing persisted MCP
+    // state. Reattaching this prepared client after the mutation cannot fail.
+    let skills_client = prepare_transient_skills_client(&app_handle, &user_id, &agent, &session)?;
+    detach_transient_skills_client(&agent).await;
     let active = agent.get_extension_configs().await;
     let active_config = active
         .iter()
         .find(|config| mcp_transport_label(config).is_some() && config.key() == requested_key);
 
-    if request.enabled {
-        if active_config.is_none() {
-            let server = configured
-                .iter()
-                .find(|server| {
-                    goose::config::extensions::name_to_key(&server.name) == requested_key
-                })
-                .ok_or_else(|| {
+    let mutation_result: Result<(), String> = async {
+        if request.enabled {
+            if active_config.is_none() {
+                let server = configured
+                    .iter()
+                    .find(|server| {
+                        goose::config::extensions::name_to_key(&server.name) == requested_key
+                    })
+                    .ok_or_else(|| {
+                        format!(
+                            "MCP server '{}' is no longer configured and cannot be enabled",
+                            request.name.trim()
+                        )
+                    })?;
+                let extension = mcp_server_to_extension(server)?;
+                agent
+                    .add_extension(extension, &session_id)
+                    .await
+                    .map_err(|error| {
+                        format!("Failed to connect MCP server '{}': {error}", server.name)
+                    })?;
+            }
+        } else if let Some(config) = active_config {
+            agent
+                .remove_extension(&config.name(), &session_id)
+                .await
+                .map_err(|error| {
                     format!(
-                        "MCP server '{}' is no longer configured and cannot be enabled",
+                        "Failed to disconnect MCP server '{}': {error}",
                         request.name.trim()
                     )
                 })?;
-            let extension = mcp_server_to_extension(server)?;
+        } else {
+            // A failed cold restore may already have removed the server from the
+            // live manager. Persist that authoritative state so the UI still gets
+            // a successful, durable disable operation.
             agent
-                .add_extension(extension, &session_id)
+                .persist_extension_state(&session_id)
                 .await
-                .map_err(|error| {
-                    format!("Failed to connect MCP server '{}': {error}", server.name)
-                })?;
+                .map_err(|error| format!("Failed to save task MCP settings: {error}"))?;
         }
-    } else if let Some(config) = active_config {
-        agent
-            .remove_extension(&config.name(), &session_id)
-            .await
-            .map_err(|error| {
-                format!(
-                    "Failed to disconnect MCP server '{}': {error}",
-                    request.name.trim()
-                )
-            })?;
-    } else {
-        // A failed cold restore may already have removed the server from the
-        // live manager. Persist that authoritative state so the UI still gets
-        // a successful, durable disable operation.
-        agent
-            .persist_extension_state(&session_id)
-            .await
-            .map_err(|error| format!("Failed to save task MCP settings: {error}"))?;
+        Ok(())
     }
+    .await;
+    attach_prepared_skills_client(&agent, skills_client).await;
+    mutation_result?;
 
     let refreshed = session_manager
         .get_session(&session_id, false)
@@ -1553,6 +1663,10 @@ pub async fn agent_send_message(
             );
         }
         let (agent, mcp_errors) = configure_session_agent(
+            AgentSkillsScope {
+                app_handle: &app_handle,
+                user_id: &user_id,
+            },
             &agent_manager,
             &session_manager,
             &session,
@@ -2593,7 +2707,115 @@ fn pending_permission_request_id(item: &AgentTimelineItem) -> Option<String> {
     None
 }
 
+fn project_skills_are_trusted(app_handle: &AppHandle, user_id: &str, project_root: &Path) -> bool {
+    match load_agent_config_inner(app_handle, user_id) {
+        Ok(config) => {
+            project_skills_trust_status(&config, project_root, true).decision == Some(true)
+        }
+        Err(error) => {
+            log::warn!(
+                "Failed to load Agent Mode project skills trust; keeping project skills disabled: {error}"
+            );
+            false
+        }
+    }
+}
+
+fn project_skills_root_is_available(project_root: &Path) -> bool {
+    let Ok(canonical) = project_root.canonicalize() else {
+        return false;
+    };
+    canonical == project_root && canonical.is_dir() && fs::read_dir(canonical).is_ok()
+}
+
+fn skills_discovery_working_dir(
+    app_handle: &AppHandle,
+    user_id: &str,
+    session: &Session,
+) -> Result<PathBuf, String> {
+    if project_skills_are_trusted(app_handle, user_id, &session.working_dir) {
+        if project_skills_root_is_available(&session.working_dir) {
+            return Ok(session.working_dir.clone());
+        }
+        log::warn!(
+            "Trusted project skills folder is unavailable; keeping project skills disabled: {}",
+            session.working_dir.display()
+        );
+    }
+
+    let root = agent_config_dir(app_handle, user_id)
+        .map_err(|error| format!("Failed to locate Maple skills data: {error}"))?
+        .join("untrusted-project-skills");
+    fs::create_dir_all(&root)
+        .map_err(|error| format!("Failed to create Maple skills data directory: {error}"))?;
+    set_owner_only_dir_permissions(&root);
+    Ok(root)
+}
+
+async fn detach_transient_skills_client(agent: &Agent) {
+    let _ = agent
+        .extension_manager
+        .remove_extension(MAPLE_SKILLS_CLIENT_KEY)
+        .await;
+}
+
+fn maple_skills_extension_config() -> ExtensionConfig {
+    ExtensionConfig::Platform {
+        name: SKILLS_EXTENSION_NAME.to_string(),
+        description: "Discover and load agent skills from the local filesystem".to_string(),
+        display_name: Some("Maple Skills Extension".to_string()),
+        bundled: Some(true),
+        available_tools: MAPLE_SKILLS_TOOLS
+            .iter()
+            .map(|tool| tool.to_string())
+            .collect(),
+    }
+}
+
+fn skills_client_for_working_dir(
+    agent: &Arc<Agent>,
+    session: &Session,
+    working_dir: PathBuf,
+) -> Result<SkillsClient, String> {
+    let mut skills_session = session.clone();
+    skills_session.working_dir = working_dir;
+    let mut skills_context = agent.extension_manager.get_context().clone();
+    skills_context.extension_manager = Some(Arc::downgrade(&agent.extension_manager));
+    skills_context.session = Some(Arc::new(skills_session));
+    SkillsClient::new(skills_context)
+        .map_err(|error| format!("Failed to create Maple skills tools: {error}"))
+}
+
+fn prepare_transient_skills_client(
+    app_handle: &AppHandle,
+    user_id: &str,
+    agent: &Arc<Agent>,
+    session: &Session,
+) -> Result<SkillsClient, String> {
+    let working_dir = skills_discovery_working_dir(app_handle, user_id, session)?;
+    skills_client_for_working_dir(agent, session, working_dir)
+}
+
+async fn attach_prepared_skills_client(agent: &Arc<Agent>, skills_client: SkillsClient) {
+    agent
+        .extension_manager
+        .add_client(
+            MAPLE_SKILLS_CLIENT_KEY.to_string(),
+            maple_skills_extension_config(),
+            Arc::new(skills_client),
+            None,
+            None,
+        )
+        .await;
+}
+
+struct AgentSkillsScope<'a> {
+    app_handle: &'a AppHandle,
+    user_id: &'a str,
+}
+
 async fn configure_session_agent(
+    skills_scope: AgentSkillsScope<'_>,
     agent_manager: &Arc<AgentManager>,
     session_manager: &Arc<SessionManager>,
     session: &Session,
@@ -2610,6 +2832,12 @@ async fn configure_session_agent(
         .await
         .map_err(|e| format!("Failed to load Agent for task {}: {e}", session.id))?;
     let agent = manager_result.agent;
+    let skills_client = prepare_transient_skills_client(
+        skills_scope.app_handle,
+        skills_scope.user_id,
+        &agent,
+        session,
+    )?;
     let mcp_errors = mcp_connection_errors(manager_result.extension_results, &session_mcp_keys);
     let provider = goose::providers::create_with_working_dir(
         "openai",
@@ -2656,10 +2884,13 @@ async fn configure_session_agent(
             None,
         )
         .await;
-    agent
-        .persist_extension_state(&session.id)
-        .await
-        .map_err(|e| format!("Failed to persist Maple developer tools: {e}"))?;
+    // SkillsClient needs a trust-filtered working directory, but Goose would reconstruct a
+    // persisted platform extension with the real session root. Detach only for the extension-state
+    // write, then restore unconditionally before propagating any persistence error.
+    detach_transient_skills_client(&agent).await;
+    let persist_result = agent.persist_extension_state(&session.id).await;
+    attach_prepared_skills_client(&agent, skills_client).await;
+    persist_result.map_err(|e| format!("Failed to persist Maple built-in tools: {e}"))?;
     // Goose's live mode remains SmartApprove so every sensitive call reaches Maple.
     // Persist the user-facing policy separately for session restoration and display.
     session_manager
@@ -2960,10 +3191,12 @@ fn tool_request_item(
             item_type: "tool".to_string(),
             role: Some("assistant".to_string()),
             title: Some(
-                request
-                    .persisted_title()
-                    .unwrap_or_else(|| call.name.as_ref())
-                    .to_string(),
+                skill_load_title(call.name.as_ref(), &call.arguments).unwrap_or_else(|| {
+                    request
+                        .persisted_title()
+                        .unwrap_or_else(|| call.name.as_ref())
+                        .to_string()
+                }),
             ),
             text: request
                 .persisted_chain_summary()
@@ -2976,6 +3209,44 @@ fn tool_request_item(
         },
         Err(error) => error_item(format!("Tool call parse failed: {error}")),
     }
+}
+
+fn skill_load_title<T: Serialize>(tool_name: &str, arguments: &T) -> Option<String> {
+    if tool_name != "load_skill" {
+        return None;
+    }
+    let arguments = serde_json::to_value(arguments).ok()?;
+    let name = arguments.get("name")?.as_str()?.trim();
+    if name.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "Loading skill: {}",
+        bounded_timeline_text(name, MAX_AGENT_SESSION_TITLE_CHARS)
+    ))
+}
+
+fn merged_tool_title(previous: &AgentTimelineItem, incoming: &AgentTimelineItem) -> Option<String> {
+    const LOADING_SKILL_PREFIX: &str = "Loading skill: ";
+
+    if incoming.item_type == "tool" {
+        if let Some(skill_name) = previous
+            .title
+            .as_deref()
+            .and_then(|title| title.strip_prefix(LOADING_SKILL_PREFIX))
+        {
+            let prefix = match incoming.status.as_deref() {
+                Some("completed") => Some("Loaded skill: "),
+                Some("failed") => Some("Couldn’t load skill: "),
+                _ => None,
+            };
+            if let Some(prefix) = prefix {
+                return Some(format!("{prefix}{skill_name}"));
+            }
+        }
+    }
+
+    incoming.title.clone().or_else(|| previous.title.clone())
 }
 
 fn tool_response_item(
@@ -2999,7 +3270,7 @@ fn tool_response_item(
                 id: response.id.clone(),
                 item_type: "tool".to_string(),
                 role: Some("assistant".to_string()),
-                title: tool_name_from_id(&response.id).map(|name| format_tool_title(&name)),
+                title: tool_response_title(&response.id),
                 text: None,
                 status: Some(
                     if result.is_error.unwrap_or(false) {
@@ -3024,7 +3295,7 @@ fn tool_response_item(
             id: response.id.clone(),
             item_type: "tool".to_string(),
             role: Some("assistant".to_string()),
-            title: tool_name_from_id(&response.id).map(|name| format_tool_title(&name)),
+            title: tool_response_title(&response.id),
             text: Some(bounded_timeline_text(
                 &error.to_string(),
                 MAX_AGENT_ERROR_CHARS,
@@ -3083,11 +3354,12 @@ fn merge_timeline_item(
         && matches!(incoming.item_type.as_str(), "message" | "thinking")
         && incoming.text.is_some();
 
+    let title = merged_tool_title(&previous, &incoming);
     current[index] = AgentTimelineItem {
         id: incoming.id,
         item_type: incoming.item_type,
         role: incoming.role.or(previous.role),
-        title: incoming.title.or(previous.title),
+        title,
         text: if append_text {
             Some(format!(
                 "{}{}",
@@ -3207,6 +3479,14 @@ fn tool_name_from_id(id: &str) -> Option<String> {
     } else {
         Some(name.to_string())
     }
+}
+
+fn tool_response_title(id: &str) -> Option<String> {
+    tool_name_from_id(id).and_then(|name| {
+        // Preserve the request's argument-aware title when the response is
+        // merged into the same timeline row.
+        (name != "load_skill").then(|| format_tool_title(&name))
+    })
 }
 
 fn permission_from_decision(decision: &str) -> Result<Permission, String> {
@@ -3540,8 +3820,11 @@ fn normalize_mcp_servers(mut servers: Vec<AgentMcpServer>) -> Result<Vec<AgentMc
                 server.name
             ));
         }
-        if key == "developer" {
-            return Err("The MCP server name 'developer' is reserved by Maple".to_string());
+        if maple_reserved_extension_key(&key) {
+            return Err(format!(
+                "The MCP server name '{}' is reserved by Maple",
+                server.name
+            ));
         }
         if !names.insert(key) {
             return Err(format!(
@@ -3607,6 +3890,10 @@ fn normalize_mcp_servers(mut servers: Vec<AgentMcpServer>) -> Result<Vec<AgentMc
     }
 
     Ok(servers)
+}
+
+fn maple_reserved_extension_key(key: &str) -> bool {
+    matches!(key, "developer" | MAPLE_SKILLS_CLIENT_KEY)
 }
 
 fn validate_mcp_key_values(
@@ -3985,6 +4272,47 @@ fn save_agent_config_inner(
     write_json_file(&path, config)
 }
 
+fn project_skills_trust_status(
+    config: &AgentConfig,
+    project_root: &Path,
+    available: bool,
+) -> AgentProjectSkillsTrustStatus {
+    let path = path_string(project_root);
+    let decision = config
+        .project_skills_trust
+        .iter()
+        .find(|entry| entry.path == path)
+        .map(|entry| entry.trusted);
+    AgentProjectSkillsTrustStatus {
+        path,
+        decision,
+        available,
+    }
+}
+
+fn apply_project_skills_trust(
+    config: &mut AgentConfig,
+    project_root: &Path,
+    trusted: bool,
+) -> Result<(), String> {
+    let path = path_string(project_root);
+    if let Some(existing) = config
+        .project_skills_trust
+        .iter()
+        .find(|entry| entry.path == path)
+    {
+        return if existing.trusted == trusted {
+            Ok(())
+        } else {
+            Err("This folder's project skills trust decision has already been saved".to_string())
+        };
+    }
+    config
+        .project_skills_trust
+        .push(AgentProjectSkillsTrust { path, trusted });
+    Ok(())
+}
+
 fn load_recent_project_roots_inner(
     app_handle: &AppHandle,
     user_id: &str,
@@ -4215,6 +4543,274 @@ mod tests {
         .expect("legacy config without a model should deserialize");
         assert_eq!(config.default_model, DEFAULT_AGENT_MODEL);
         assert!(config.mcp_servers.is_empty());
+        assert!(config.project_skills_trust.is_empty());
+    }
+
+    #[test]
+    fn project_skills_trust_persists_both_decisions_and_is_one_time() {
+        let test_root = recent_roots_test_dir("skills-trust");
+        let project = test_root.join("project");
+        let config_path = test_root.join("config.json");
+        fs::create_dir_all(&project).unwrap();
+        let project = normalize_project_root(&project).unwrap();
+        let mut config = AgentConfig::default();
+
+        assert_eq!(
+            project_skills_trust_status(&config, &project, true).decision,
+            None
+        );
+        apply_project_skills_trust(&mut config, &project, false).unwrap();
+        apply_project_skills_trust(&mut config, &project, false).unwrap();
+        assert!(apply_project_skills_trust(&mut config, &project, true).is_err());
+        write_json_file(&config_path, &config).unwrap();
+
+        let loaded = load_agent_config_file(&config_path).unwrap();
+        let status = project_skills_trust_status(&loaded, &project, true);
+        assert_eq!(status.path, path_string(&project));
+        assert_eq!(status.decision, Some(false));
+        assert!(status.available);
+        let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[test]
+    fn project_skills_root_must_still_be_available() {
+        let test_root = recent_roots_test_dir("skills-root-available");
+        let project = test_root.join("project");
+        fs::create_dir_all(&project).unwrap();
+        let canonical_project = normalize_project_root(&project).unwrap();
+
+        assert!(project_skills_root_is_available(&canonical_project));
+        fs::remove_dir_all(&project).unwrap();
+        assert!(!project_skills_root_is_available(&canonical_project));
+
+        let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn project_skills_root_rejects_symlink_replacement() {
+        use std::os::unix::fs::symlink;
+
+        let test_root = recent_roots_test_dir("skills-root-replaced");
+        let project = test_root.join("project");
+        let replacement = test_root.join("replacement");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&replacement).unwrap();
+        let canonical_project = normalize_project_root(&project).unwrap();
+
+        fs::remove_dir_all(&project).unwrap();
+        symlink(&replacement, &project).unwrap();
+        assert!(!project_skills_root_is_available(&canonical_project));
+
+        let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn project_skills_trust_uses_the_canonical_folder_path() {
+        use std::os::unix::fs::symlink;
+
+        let test_root = recent_roots_test_dir("skills-trust-symlink");
+        let project = test_root.join("project");
+        let alias = test_root.join("alias");
+        fs::create_dir_all(&project).unwrap();
+        symlink(&project, &alias).unwrap();
+
+        let canonical_project = normalize_project_root(&project).unwrap();
+        let canonical_alias = normalize_project_root(&alias).unwrap();
+        assert_eq!(canonical_project, canonical_alias);
+        let mut config = AgentConfig::default();
+        apply_project_skills_trust(&mut config, &canonical_project, true).unwrap();
+        assert_eq!(
+            project_skills_trust_status(&config, &canonical_alias, true).decision,
+            Some(true)
+        );
+        let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[tokio::test]
+    async fn untrusted_skills_client_keeps_project_instructions_out_of_context() {
+        use goose::agents::extension::PlatformExtensionContext;
+        use goose::agents::mcp_client::McpClientTrait;
+        use goose::agents::ToolCallContext;
+
+        let test_root = recent_roots_test_dir("skills-discovery");
+        let project = test_root.join("project");
+        let inert = test_root.join("inert");
+        let skill_name = format!(
+            "maple-project-skill-{}-{}",
+            std::process::id(),
+            NEXT_RUN_ID.fetch_add(1, Ordering::Relaxed)
+        );
+        let description = format!("unique description for {skill_name}");
+        let body = format!("unique body for {skill_name}");
+        let skill_dir = project.join(".agents/skills").join(&skill_name);
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::create_dir_all(&inert).unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            format!("---\nname: {skill_name}\ndescription: {description}\n---\n{body}"),
+        )
+        .unwrap();
+        let session_manager = Arc::new(SessionManager::new(test_root.join("sessions")));
+        let make_client = |working_dir: PathBuf| {
+            SkillsClient::new(PlatformExtensionContext {
+                extension_manager: None,
+                session_manager: Arc::clone(&session_manager),
+                session: Some(Arc::new(Session {
+                    working_dir,
+                    ..Session::default()
+                })),
+                use_login_shell_path: false,
+            })
+            .unwrap()
+        };
+
+        let trusted = make_client(project);
+        let trusted_instructions = trusted.get_instructions().unwrap();
+        assert!(trusted_instructions.contains(&skill_name));
+        assert!(trusted_instructions.contains(&description));
+        assert!(!trusted_instructions.contains(&body));
+
+        let untrusted = make_client(inert);
+        let untrusted_instructions = untrusted.get_instructions().unwrap_or_default();
+        assert!(!untrusted_instructions.contains(&skill_name));
+        assert!(!untrusted_instructions.contains(&description));
+        let arguments = serde_json::from_value(json!({"name": skill_name})).unwrap();
+        let result = untrusted
+            .call_tool(
+                &ToolCallContext::new("test".to_string(), None, None),
+                "load_skill",
+                Some(arguments),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(true));
+        let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[tokio::test]
+    async fn maple_skills_registration_is_unprefixed_transient_and_coexists_with_skills_mcp() {
+        let test_root = recent_roots_test_dir("skills-registration");
+        let project = test_root.join("project");
+        let external_root = test_root.join("external");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&external_root).unwrap();
+
+        let session_manager = Arc::new(SessionManager::new(test_root.join("sessions")));
+        let permission_manager = Arc::new(PermissionManager::new(test_root.join("permissions")));
+        let session = session_manager
+            .create_session(
+                project.clone(),
+                "Skills registration".to_string(),
+                SessionType::User,
+                GooseMode::SmartApprove,
+            )
+            .await
+            .unwrap();
+        let agent = Arc::new(Agent::with_config(GooseAgentConfig::new(
+            Arc::clone(&session_manager),
+            permission_manager,
+            None,
+            GooseMode::SmartApprove,
+            true,
+            GoosePlatform::GooseDesktop,
+        )));
+
+        // Simulate a user-configured MCP server named `skills` without making
+        // a network connection. Its transport config should still prefix its
+        // tool independently from Maple's first-class platform client.
+        let mcp_config = mcp_server_to_extension(&AgentMcpServer {
+            name: "skills".to_string(),
+            description: "User MCP named skills".to_string(),
+            enabled: true,
+            timeout_seconds: 30,
+            transport: AgentMcpTransport::StreamableHttp {
+                url: "https://example.invalid/mcp".to_string(),
+                environment: Vec::new(),
+                headers: Vec::new(),
+            },
+        })
+        .unwrap();
+        let mcp_client = skills_client_for_working_dir(&agent, &session, external_root).unwrap();
+        agent
+            .extension_manager
+            .add_client(
+                "skills".to_string(),
+                mcp_config.clone(),
+                Arc::new(mcp_client),
+                None,
+                None,
+            )
+            .await;
+        let initial_skills =
+            skills_client_for_working_dir(&agent, &session, project.clone()).unwrap();
+        attach_prepared_skills_client(&agent, initial_skills).await;
+
+        let prompt_extensions = agent.extension_manager.get_extensions_info(&project).await;
+        assert!(prompt_extensions
+            .iter()
+            .any(|extension| extension.name == MAPLE_SKILLS_CLIENT_KEY));
+        assert!(!prompt_extensions
+            .iter()
+            .any(|extension| extension.name.contains("runtime_only")));
+
+        let tools = agent.list_tools(&session.id, None).await;
+        let maple_tool = tools
+            .iter()
+            .find(|tool| tool.name.as_ref() == "load_skill")
+            .expect("Maple skills tool should be unprefixed");
+        assert_eq!(
+            goose::agents::extension_manager::get_tool_owner(maple_tool).as_deref(),
+            Some(MAPLE_SKILLS_CLIENT_KEY)
+        );
+        let mcp_tool = tools
+            .iter()
+            .find(|tool| tool.name.as_ref() == "skills__load_skill")
+            .expect("user MCP tool should remain prefixed");
+        assert_eq!(
+            goose::agents::extension_manager::get_tool_owner(mcp_tool).as_deref(),
+            Some("skills")
+        );
+        assert_eq!(
+            tools
+                .iter()
+                .filter(|tool| tool.name.as_ref() == "load_skill")
+                .count(),
+            1
+        );
+
+        let prepared_skills = skills_client_for_working_dir(&agent, &session, project).unwrap();
+        detach_transient_skills_client(&agent).await;
+        agent.persist_extension_state(&session.id).await.unwrap();
+        let persisted = session_manager
+            .get_session(&session.id, false)
+            .await
+            .unwrap();
+        let persisted_extensions =
+            goose::session::EnabledExtensionsState::from_extension_data(&persisted.extension_data)
+                .expect("extension state should be persisted");
+        assert_eq!(persisted_extensions.extensions, vec![mcp_config]);
+
+        let tools_after_detach = agent.list_tools(&session.id, None).await;
+        assert!(!tools_after_detach
+            .iter()
+            .any(|tool| tool.name.as_ref() == "load_skill"));
+        assert!(tools_after_detach
+            .iter()
+            .any(|tool| tool.name.as_ref() == "skills__load_skill"));
+
+        attach_prepared_skills_client(&agent, prepared_skills).await;
+        let tools_after_restore = agent.list_tools(&session.id, None).await;
+        assert!(tools_after_restore
+            .iter()
+            .any(|tool| tool.name.as_ref() == "load_skill"));
+        assert!(tools_after_restore
+            .iter()
+            .any(|tool| tool.name.as_ref() == "skills__load_skill"));
+
+        let _ = fs::remove_dir_all(test_root);
     }
 
     fn stdio_mcp(name: &str, enabled: bool) -> AgentMcpServer {
@@ -4301,7 +4897,7 @@ mod tests {
     }
 
     #[test]
-    fn mcp_server_names_use_goose_normalization_and_reserve_developer() {
+    fn mcp_server_names_use_goose_normalization_and_reserve_only_public_maple_names() {
         let duplicate = normalize_mcp_servers(vec![
             stdio_mcp("My Server", true),
             stdio_mcp("myserver", false),
@@ -4311,6 +4907,15 @@ mod tests {
 
         let reserved = normalize_mcp_servers(vec![stdio_mcp("Developer", true)]).unwrap_err();
         assert!(reserved.contains("reserved"));
+
+        let reserved_skills =
+            normalize_mcp_servers(vec![stdio_mcp(MAPLE_SKILLS_CLIENT_KEY, true)]).unwrap_err();
+        assert!(reserved_skills.contains("reserved"));
+
+        // This was a valid user-defined MCP name before Skills support and
+        // must remain recoverable after upgrade.
+        assert!(normalize_mcp_servers(vec![stdio_mcp("maple_internal_skills", true)]).is_ok());
+        assert!(MAPLE_SKILLS_CLIENT_KEY.chars().count() <= MAX_MCP_SERVER_NAME_CHARS);
     }
 
     #[test]
@@ -4925,6 +5530,10 @@ mod tests {
                 Some(goose::config::permission::PermissionLevel::AskBefore)
             );
         }
+        assert_eq!(
+            manager.get_user_permission("load_skill"),
+            Some(goose::config::permission::PermissionLevel::AlwaysAllow)
+        );
         let _ = fs::remove_dir_all(root);
     }
 
@@ -4934,6 +5543,7 @@ mod tests {
             default_project_root: Some("/tmp/project".to_string()),
             default_model: LEGACY_AGENT_DEFAULT_MODEL.to_string(),
             mcp_servers: Vec::new(),
+            project_skills_trust: Vec::new(),
         };
 
         assert!(migrate_agent_config(&mut config));
@@ -4948,6 +5558,7 @@ mod tests {
                 default_project_root: None,
                 default_model: model.to_string(),
                 mcp_servers: Vec::new(),
+                project_skills_trust: Vec::new(),
             };
 
             assert!(!migrate_agent_config(&mut config));
@@ -5195,6 +5806,77 @@ mod tests {
                 rmcp::model::Content::text("ok"),
             ])),
         )
+    }
+
+    #[test]
+    fn load_skill_timeline_card_uses_the_selected_skill_name() {
+        let arguments = json!({"name": "release-maple"})
+            .as_object()
+            .unwrap()
+            .clone();
+        let request = Message::assistant()
+            .with_id("skill-request")
+            .with_tool_request(
+                "functions.load_skill:1",
+                Ok(rmcp::model::CallToolRequestParams::new("load_skill")
+                    .with_arguments(arguments.clone())),
+            );
+        let response = Message::user()
+            .with_id("skill-response")
+            .with_tool_response(
+                "functions.load_skill:1",
+                Ok(rmcp::model::CallToolResult::success(vec![
+                    rmcp::model::Content::text("# Loaded Skill: release-maple"),
+                ])),
+            );
+
+        let request_item = message_to_timeline_items(&request, false)
+            .into_iter()
+            .find(|item| item.item_type == "tool")
+            .unwrap();
+        assert_eq!(
+            request_item.title.as_deref(),
+            Some("Loading skill: release-maple")
+        );
+        assert_eq!(request_item.input, Some(Value::Object(arguments)));
+
+        let merged = message_to_timeline_items(&response, false)
+            .into_iter()
+            .fold(vec![request_item], merge_timeline_item);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(
+            merged[0].title.as_deref(),
+            Some("Loaded skill: release-maple")
+        );
+        assert_eq!(merged[0].status.as_deref(), Some("completed"));
+        assert!(merged[0].input.is_some());
+        assert!(merged[0].output.is_some());
+
+        let failed_response = Message::user()
+            .with_id("skill-failed-response")
+            .with_tool_response(
+                "functions.load_skill:1",
+                Ok(rmcp::model::CallToolResult::error(vec![
+                    rmcp::model::Content::text("Skill 'release-maple' not found"),
+                ])),
+            );
+        let failed = message_to_timeline_items(&failed_response, false)
+            .into_iter()
+            .fold(
+                message_to_timeline_items(&request, false),
+                merge_timeline_item,
+            );
+        assert_eq!(failed.len(), 1);
+        assert_eq!(
+            failed[0].title.as_deref(),
+            Some("Couldn’t load skill: release-maple")
+        );
+        assert_eq!(failed[0].status.as_deref(), Some("failed"));
+
+        assert_eq!(
+            skill_load_title("server__load_skill", &json!({"name": "not-a-maple-skill"})),
+            None
+        );
     }
 
     fn timeline_thinking_texts(items: &[AgentTimelineItem]) -> Vec<&str> {

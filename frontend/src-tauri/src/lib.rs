@@ -84,6 +84,8 @@ pub fn run() {
             agent::agent_save_mcp_servers,
             agent::agent_list_recent_project_roots,
             agent::agent_save_recent_project_root,
+            agent::agent_get_project_skills_trust,
+            agent::agent_set_project_skills_trust,
             agent::agent_save_project_root_order,
             agent::agent_create_session,
             agent::agent_list_sessions,
