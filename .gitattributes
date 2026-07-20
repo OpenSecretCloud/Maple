@@ -1,0 +1,5 @@
+# Preserve vendored crate bytes while excluding upstream whitespace from checks.
+frontend/src-tauri/patches/pdf-extract-0.12.0/** -whitespace
+
+# PDF xref tables contain byte-offset-sensitive, fixed-width records.
+frontend/src-tauri/tests/fixtures/*.pdf binary

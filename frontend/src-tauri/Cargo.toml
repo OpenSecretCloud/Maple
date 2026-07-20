@@ -40,7 +40,7 @@ maple-proxy = "0.2.0"
 tauri-plugin-fs = "2.5.1"
 anyhow = "1.0"
 axum = "0.8"
-pdf-extract = "0.7"
+pdf-extract = "=0.12.0"
 base64 = "0.22"
 
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
@@ -111,6 +111,10 @@ keyring = { version = "3", features = ["windows-native"] }
 windows = { version = "0.62.2", features = ["Win32_System_Threading"] }
 
 [patch.crates-io]
+# Carry narrowly scoped fixes for known pdf-extract 0.12 text-decoding
+# regressions and remove user-controlled Type 4 function contents from logs.
+pdf-extract = { path = "patches/pdf-extract-0.12.0" }
+
 # Local patch for tao 0.35.2 Android intent crashes:
 # https://github.com/tauri-apps/tao/issues/1217
 #
