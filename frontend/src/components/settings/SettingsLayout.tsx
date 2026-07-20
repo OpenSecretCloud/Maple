@@ -279,7 +279,7 @@ function SettingsLayoutContent() {
     },
     {
       label: "Data",
-      items: [{ label: "Chat history", to: "/settings/history", icon: Database }]
+      items: [{ label: "Chat and task history", to: "/settings/history", icon: Database }]
     },
     {
       label: "Maple",

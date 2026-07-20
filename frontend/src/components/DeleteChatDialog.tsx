@@ -15,6 +15,7 @@ interface DeleteChatDialogProps {
   onConfirm: () => void;
   chatTitle: string;
   description?: React.ReactNode;
+  itemLabel?: "chat" | "task";
 }
 
 export function DeleteChatDialog({
@@ -22,7 +23,8 @@ export function DeleteChatDialog({
   onOpenChange,
   onConfirm,
   chatTitle,
-  description
+  description,
+  itemLabel = "chat"
 }: DeleteChatDialogProps) {
   const handleConfirm = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -34,7 +36,7 @@ export function DeleteChatDialog({
     <AlertDialog open={open} onOpenChange={onOpenChange}>
       <AlertDialogContent>
         <AlertDialogHeader>
-          <AlertDialogTitle>Are you sure you want to delete this chat?</AlertDialogTitle>
+          <AlertDialogTitle>Are you sure you want to delete this {itemLabel}?</AlertDialogTitle>
           <AlertDialogDescription>
             {description ?? (
               <>This will permanently delete "{chatTitle}". This action cannot be undone.</>
