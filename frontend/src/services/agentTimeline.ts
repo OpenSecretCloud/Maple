@@ -4,7 +4,7 @@ export type AgentTimelineTurn =
   | { type: "user"; item: AgentTimelineItem; id: string }
   | { type: "assistant"; items: AgentTimelineItem[]; id: string };
 
-interface CompletedAgentThoughtPhase {
+export interface AgentThoughtPhase {
   sessionId: string;
   phaseId: string;
   userRequest: string;
@@ -37,6 +37,31 @@ export function agentThinkingPhaseTurnId(phaseId: string): string {
   return phaseId.replace(/:thought-\d+$/u, "");
 }
 
+export function agentThoughtPhasesForLatestTurn(
+  sessionId: string,
+  items: AgentTimelineItem[]
+): AgentThoughtPhase[] {
+  let latestUserIndex = -1;
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index];
+    if (item.itemType === "message" && item.role === "user") {
+      latestUserIndex = index;
+      break;
+    }
+  }
+  if (latestUserIndex < 0) return [];
+
+  const tracker = new AgentLiveThoughtPhaseTracker();
+  const phases: AgentThoughtPhase[] = [];
+  for (const item of items.slice(latestUserIndex)) {
+    const completedPhase = tracker.observeTimelineItem(sessionId, item);
+    if (completedPhase) phases.push(completedPhase);
+  }
+  const trailingPhase = tracker.finishRun(sessionId);
+  if (trailingPhase) phases.push(trailingPhase);
+  return phases;
+}
+
 export class AgentLiveThoughtPhaseTracker {
   private readonly sessions = new Map<string, LiveAgentThoughtSession>();
   private readonly completedPhaseIds = new Map<string, Set<string>>();
@@ -53,10 +78,7 @@ export class AgentLiveThoughtPhaseTracker {
     });
   }
 
-  observeTimelineItem(
-    sessionId: string,
-    item: AgentTimelineItem
-  ): CompletedAgentThoughtPhase | null {
+  observeTimelineItem(sessionId: string, item: AgentTimelineItem): AgentThoughtPhase | null {
     const session = this.session(sessionId);
     if (item.itemType === "message" && item.role === "user") {
       if (session.seenItemIds.has(item.id)) {
@@ -109,8 +131,20 @@ export class AgentLiveThoughtPhaseTracker {
     return null;
   }
 
-  finishRun(sessionId: string): CompletedAgentThoughtPhase | null {
+  finishRun(sessionId: string): AgentThoughtPhase | null {
     return this.completeActivePhase(sessionId);
+  }
+
+  activePhase(sessionId: string): AgentThoughtPhase | null {
+    const session = this.sessions.get(sessionId);
+    const activePhase = session?.activePhase;
+    if (!session || !activePhase || !session.userRequest.trim()) return null;
+    return {
+      sessionId,
+      phaseId: activePhase.phaseId,
+      userRequest: session.userRequest,
+      reasoningText: Array.from(activePhase.parts.values()).join("")
+    };
   }
 
   discardRun(sessionId: string): string | null {
@@ -219,7 +253,7 @@ export class AgentLiveThoughtPhaseTracker {
     return session;
   }
 
-  private completeActivePhase(sessionId: string): CompletedAgentThoughtPhase | null {
+  private completeActivePhase(sessionId: string): AgentThoughtPhase | null {
     const session = this.sessions.get(sessionId);
     const activePhase = session?.activePhase;
     if (!session || !activePhase) return null;

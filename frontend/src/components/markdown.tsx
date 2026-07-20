@@ -33,13 +33,16 @@ function prefersReducedMotion(): boolean {
   );
 }
 
-function FadingThinkingLabel({ text }: { text: string }) {
+function FadingThinkingLabel({ text, isThinking }: { text: string; isThinking: boolean }) {
   const [displayedText, setDisplayedText] = useState(text);
   const [isVisible, setIsVisible] = useState(true);
   const displayedTextRef = useRef(text);
 
   useEffect(() => {
-    if (text === displayedTextRef.current) return;
+    if (text === displayedTextRef.current) {
+      setIsVisible(true);
+      return;
+    }
 
     if (prefersReducedMotion()) {
       displayedTextRef.current = text;
@@ -62,16 +65,37 @@ function FadingThinkingLabel({ text }: { text: string }) {
     };
   }, [text]);
 
+  const showDots = isThinking || displayedText === "Thinking";
+
   return (
-    <span
-      className={cn(
-        "inline-block transition-opacity duration-150 ease-in-out motion-reduce:transition-none",
-        isVisible ? "opacity-100" : "opacity-0"
-      )}
-      aria-live="polite"
-      aria-atomic="true"
-    >
-      {displayedText}
+    <>
+      <span
+        className={cn(
+          "inline-block transition-opacity duration-150 ease-in-out motion-reduce:transition-none",
+          isVisible ? "opacity-100" : "opacity-0"
+        )}
+        aria-live="polite"
+        aria-atomic="true"
+      >
+        {displayedText}
+      </span>
+      {showDots ? <ThinkingDots /> : null}
+    </>
+  );
+}
+
+function ThinkingDots() {
+  return (
+    <span className="inline-flex items-baseline gap-1">
+      {[0, 150, 300].map((animationDelay) => (
+        <span
+          key={animationDelay}
+          className="inline-block animate-bounce"
+          style={{ animationDelay: `${animationDelay}ms` }}
+        >
+          .
+        </span>
+      ))}
     </span>
   );
 }
@@ -81,7 +105,7 @@ export interface ThinkingBlockProps {
   isThinking: boolean;
   duration?: number;
   showDuration?: boolean;
-  completedLabel?: string;
+  label?: string;
 }
 
 export function ThinkingBlock({
@@ -89,7 +113,7 @@ export function ThinkingBlock({
   isThinking,
   duration,
   showDuration = true,
-  completedLabel
+  label
 }: ThinkingBlockProps) {
   const [isExpanded, setIsExpanded] = useState(false);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
@@ -148,25 +172,22 @@ export function ThinkingBlock({
         <Brain className="h-4 w-4 shrink-0 text-muted-foreground" />
         <span className="flex min-w-0 flex-1 items-center gap-2">
           <span className="min-w-0 text-sm font-medium text-muted-foreground">
-            {isThinking ? (
-              <span className="inline-flex items-center gap-2">
-                {showDuration ? `Thinking for ${durationText} seconds` : "Thinking"}
-                <span className="inline-flex items-baseline gap-1">
-                  <span className="inline-block animate-bounce" style={{ animationDelay: "0ms" }}>
-                    .
-                  </span>
-                  <span className="inline-block animate-bounce" style={{ animationDelay: "150ms" }}>
-                    .
-                  </span>
-                  <span className="inline-block animate-bounce" style={{ animationDelay: "300ms" }}>
-                    .
-                  </span>
+            {showDuration ? (
+              isThinking ? (
+                <span className="inline-flex items-center gap-2">
+                  {`Thinking for ${durationText} seconds`}
+                  <ThinkingDots />
                 </span>
-              </span>
-            ) : showDuration ? (
-              `Thought for ${durationText} seconds`
+              ) : (
+                `Thought for ${durationText} seconds`
+              )
             ) : (
-              <FadingThinkingLabel text={completedLabel || "Thought"} />
+              <span className="inline-flex items-center gap-2">
+                <FadingThinkingLabel
+                  text={label || (isThinking ? "Thinking" : "Thought")}
+                  isThinking={isThinking}
+                />
+              </span>
             )}
           </span>
           <span className="shrink-0 text-muted-foreground" aria-hidden>

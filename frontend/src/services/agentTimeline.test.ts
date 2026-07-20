@@ -4,7 +4,7 @@ import {
   AgentLiveThoughtPhaseTracker,
   activeAgentThinkingItemId,
   agentThinkingPhaseId,
-  agentThinkingPhaseTurnId,
+  agentThoughtPhasesForLatestTurn,
   coalesceAdjacentThinkingItems,
   getAgentTurnCopyText,
   groupAgentTimelineItems,
@@ -104,14 +104,8 @@ describe("coalesceAdjacentThinkingItems", () => {
 });
 
 describe("AgentLiveThoughtPhaseTracker", () => {
-  test("derives the stable turn scope from phase IDs", () => {
-    const turnId = "assistant-after-user";
-    expect(agentThinkingPhaseTurnId(agentThinkingPhaseId(turnId, 3))).toBe(turnId);
-  });
-
   test("requests one stable label candidate when adjacent live reasoning finishes", () => {
     const tracker = new AgentLiveThoughtPhaseTracker();
-    tracker.prepareUserRequest("session", "Inspect the login flow");
     expect(
       tracker.observeTimelineItem("session", item("user-turn", "message", "user", "Inspect login"))
     ).toBeNull();
@@ -148,6 +142,35 @@ describe("AgentLiveThoughtPhaseTracker", () => {
     });
     expect(tracker.observeTimelineItem("session", item("tool-update", "tool"))).toBeNull();
     expect(tracker.finishRun("session")).toBeNull();
+  });
+
+  test("exposes the current reasoning snapshot with the same identity used at completion", () => {
+    const tracker = new AgentLiveThoughtPhaseTracker();
+    tracker.observeTimelineItem("session", item("user", "message", "user", "Inspect login"));
+    tracker.observeTimelineItem("session", {
+      ...thinking("thought", "Investigating"),
+      merge: "append"
+    });
+    tracker.observeTimelineItem("session", {
+      ...thinking("thought", " authentication"),
+      merge: "append"
+    });
+
+    const active = tracker.activePhase("session");
+    expect(active).toEqual({
+      sessionId: "session",
+      phaseId: agentThinkingPhaseId("assistant-after-user", 0),
+      userRequest: "Inspect login",
+      reasoningText: "Investigating authentication"
+    });
+
+    const completed = tracker.observeTimelineItem("session", {
+      ...item("tool", "tool"),
+      input: { private: "not label context" },
+      output: { private: "not label context" }
+    });
+    expect(completed).toEqual(active);
+    expect(tracker.activePhase("session")).toBeNull();
   });
 
   test("tools split reasoning phases into stable ordinals", () => {
@@ -348,6 +371,40 @@ describe("AgentLiveThoughtPhaseTracker", () => {
     expect(tracker.finishRun("session")?.phaseId).toBe(
       agentThinkingPhaseId("assistant-after-user", 0)
     );
+  });
+});
+
+describe("agentThoughtPhasesForLatestTurn", () => {
+  test("reconstructs only the latest turn without including tool data", () => {
+    const phases = agentThoughtPhasesForLatestTurn("session", [
+      item("old-user", "message", "user", "Old request"),
+      thinking("old-thought", "Old reasoning"),
+      item("old-answer", "message", "assistant", "Old answer"),
+      item("latest-user", "message", "user", "Fix login"),
+      thinking("first-thought", "Investigating login failures"),
+      {
+        ...item("tool", "tool"),
+        input: { private: "not label context" },
+        output: { private: "not label context" }
+      },
+      thinking("second-thought", "Formulating authentication findings"),
+      item("answer", "message", "assistant", "Done")
+    ]);
+
+    expect(phases).toEqual([
+      {
+        sessionId: "session",
+        phaseId: agentThinkingPhaseId("assistant-after-latest-user", 0),
+        userRequest: "Fix login",
+        reasoningText: "Investigating login failures"
+      },
+      {
+        sessionId: "session",
+        phaseId: agentThinkingPhaseId("assistant-after-latest-user", 1),
+        userRequest: "Fix login",
+        reasoningText: "Formulating authentication findings"
+      }
+    ]);
   });
 });
 

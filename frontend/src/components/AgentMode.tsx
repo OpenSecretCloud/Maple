@@ -110,9 +110,11 @@ import {
 } from "@/services/proxyService";
 import { agentOperationFence } from "@/services/agentOperationFence";
 import {
+  AgentThoughtLabelProvisionalScheduler,
   clearAgentThoughtLabelsForSession,
   clearAgentThoughtLabelsForTurn,
   getAgentThoughtLabel,
+  persistAgentThoughtLabel,
   requestAgentThoughtLabel,
   startAgentThoughtLabelDisplay
 } from "@/services/agentThoughtLabels";
@@ -121,12 +123,14 @@ import {
   activeAgentThinkingItemId,
   agentThinkingPhaseId,
   agentThinkingPhaseTurnId,
+  agentThoughtPhasesForLatestTurn,
   coalesceAdjacentThinkingItems,
   getAgentTurnCopyText,
   groupAgentTimelineItems,
   hasAgentUserMessage,
   isRenderableAgentTimelineItem,
-  shouldShowAgentAssistantLoader
+  shouldShowAgentAssistantLoader,
+  type AgentThoughtPhase
 } from "@/services/agentTimeline";
 import {
   DEFAULT_AGENT_MODEL,
@@ -160,6 +164,7 @@ const DEFAULT_MODE = "smart_approve";
 const NEW_SESSION_PENDING_KEY = "__maple-agent-new-session__";
 const NEW_PROJECT_OPTION_VALUE = "__maple-agent-new-project__";
 const MAX_STABLE_SESSION_LOAD_ATTEMPTS = 3;
+const THOUGHT_PHASE_SEED_RETRY_MS = 250;
 const AUTO_SCROLL_BOTTOM_THRESHOLD_PX = 100;
 const SIDEBAR_REORDER_ANIMATION_MS = 150;
 const SIDEBAR_ICON_STROKE = 2;
@@ -372,12 +377,63 @@ export function AgentMode({ userId }: { userId: string }) {
   const thoughtLabelGenerationBySessionRef = useRef(new Map<string, number>());
   const thoughtLabelGenerationByTurnRef = useRef(new Map<string, number>());
   const thoughtLabelDisplayControllersRef = useRef(new Map<string, () => void>());
+  const thoughtLabelFinalStartedPhaseKeysRef = useRef(new Set<string>());
+  const thoughtPhaseSeededRunIdsRef = useRef(new Set<string>());
+  const openaiRef = useRef(openai);
+  const userIdRef = useRef(userId);
+  const thoughtLabelProvisionalSchedulerRef = useRef<AgentThoughtLabelProvisionalScheduler | null>(
+    null
+  );
+  openaiRef.current = openai;
+  userIdRef.current = userId;
+
+  if (!thoughtLabelProvisionalSchedulerRef.current) {
+    thoughtLabelProvisionalSchedulerRef.current = new AgentThoughtLabelProvisionalScheduler({
+      request: (phase, signal) =>
+        requestAgentThoughtLabel(
+          openaiRef.current,
+          {
+            userId: userIdRef.current,
+            sessionId: phase.sessionId,
+            phaseId: phase.phaseId
+          },
+          {
+            userRequest: phase.userRequest,
+            reasoningText: phase.reasoningText
+          },
+          undefined,
+          {
+            phaseState: "streaming",
+            signal
+          }
+        ),
+      commit: (phase, label) => {
+        if (!isAgentModeMountedRef.current || deletedSessionIdsRef.current.has(phase.sessionId)) {
+          return;
+        }
+        setGeneratedThoughtLabels((current) => {
+          if (current[phase.sessionId]?.[phase.phaseId] === label) return current;
+          return {
+            ...current,
+            [phase.sessionId]: {
+              ...current[phase.sessionId],
+              [phase.phaseId]: label
+            }
+          };
+        });
+      }
+    });
+  }
 
   const cancelThoughtLabelDisplays = useCallback((sessionId?: string, assistantTurnId?: string) => {
+    thoughtLabelProvisionalSchedulerRef.current?.cancelMatching(sessionId, assistantTurnId);
     const prefix =
       sessionId === undefined
         ? ""
         : `${sessionId}\u0000${assistantTurnId ? `${assistantTurnId}:thought-` : ""}`;
+    thoughtLabelFinalStartedPhaseKeysRef.current.forEach((key) => {
+      if (key.startsWith(prefix)) thoughtLabelFinalStartedPhaseKeysRef.current.delete(key);
+    });
     thoughtLabelDisplayControllersRef.current.forEach((cancel, key) => {
       if (!key.startsWith(prefix)) return;
       cancel();
@@ -386,7 +442,10 @@ export function AgentMode({ userId }: { userId: string }) {
   }, []);
 
   const generateThoughtLabel = useCallback(
-    (phase: { sessionId: string; phaseId: string; userRequest: string; reasoningText: string }) => {
+    (phase: AgentThoughtPhase, retainedLabel: string | null = null) => {
+      const displayKey = thoughtLabelDisplayKey(phase.sessionId, phase.phaseId);
+      if (thoughtLabelFinalStartedPhaseKeysRef.current.has(displayKey)) return;
+      thoughtLabelFinalStartedPhaseKeysRef.current.add(displayKey);
       const sessionGeneration =
         thoughtLabelGenerationBySessionRef.current.get(phase.sessionId) ?? 0;
       const assistantTurnId = agentThinkingPhaseTurnId(phase.phaseId);
@@ -397,7 +456,6 @@ export function AgentMode({ userId }: { userId: string }) {
         sessionId: phase.sessionId,
         phaseId: phase.phaseId
       };
-      const displayKey = thoughtLabelDisplayKey(phase.sessionId, phase.phaseId);
       const generationIsCurrent = () =>
         isAgentModeMountedRef.current &&
         !deletedSessionIdsRef.current.has(phase.sessionId) &&
@@ -423,13 +481,23 @@ export function AgentMode({ userId }: { userId: string }) {
       thoughtLabelDisplayControllersRef.current.delete(displayKey);
       let cancelDisplay: (() => void) | null = null;
       cancelDisplay = startAgentThoughtLabelDisplay({
-        cachedLabel: getAgentThoughtLabel(identifiers),
+        cachedLabel: retainedLabel ? null : getAgentThoughtLabel(identifiers),
+        retainedLabel,
         commit: commitDisplayLabel,
         request: () =>
-          requestAgentThoughtLabel(openai, identifiers, {
-            userRequest: phase.userRequest,
-            reasoningText: phase.reasoningText
-          }).finally(() => {
+          requestAgentThoughtLabel(
+            openai,
+            identifiers,
+            {
+              userRequest: phase.userRequest,
+              reasoningText: phase.reasoningText
+            },
+            undefined,
+            {
+              phaseState: "complete",
+              bypassStoredLabel: Boolean(retainedLabel)
+            }
+          ).finally(() => {
             if (
               cancelDisplay &&
               thoughtLabelDisplayControllersRef.current.get(displayKey) === cancelDisplay
@@ -441,6 +509,71 @@ export function AgentMode({ userId }: { userId: string }) {
       if (cancelDisplay) thoughtLabelDisplayControllersRef.current.set(displayKey, cancelDisplay);
     },
     [openai, userId]
+  );
+
+  const completeThoughtPhase = useCallback(
+    (phase: AgentThoughtPhase) => {
+      const retainedLabel = thoughtLabelProvisionalSchedulerRef.current?.complete(
+        phase.sessionId,
+        phase.phaseId
+      );
+      if (retainedLabel) {
+        persistAgentThoughtLabel(
+          { userId, sessionId: phase.sessionId, phaseId: phase.phaseId },
+          retainedLabel
+        );
+      }
+      generateThoughtLabel(phase, retainedLabel ?? null);
+    },
+    [generateThoughtLabel, userId]
+  );
+
+  const observeActiveThoughtPhase = useCallback((sessionId: string) => {
+    const activePhase = thoughtPhaseTrackerRef.current.activePhase(sessionId);
+    if (activePhase) thoughtLabelProvisionalSchedulerRef.current?.observe(activePhase);
+  }, []);
+
+  const seedActiveThoughtPhases = useCallback(
+    (activeRuns: Record<string, string>) => {
+      for (const [sessionId, runId] of Object.entries(activeRuns)) {
+        if (thoughtPhaseSeededRunIdsRef.current.has(runId)) continue;
+        thoughtPhaseSeededRunIdsRef.current.add(runId);
+        void (async () => {
+          const timelineRevision = timelineRevisionBySessionRef.current.get(sessionId) || 0;
+          try {
+            const detail = await agentRuntimeService.loadSession(userId, sessionId);
+            if (
+              !isAgentModeMountedRef.current ||
+              userIdRef.current !== userId ||
+              deletedSessionIdsRef.current.has(sessionId) ||
+              activeRunsBySessionRef.current[sessionId] !== runId
+            ) {
+              thoughtPhaseSeededRunIdsRef.current.delete(runId);
+              return;
+            }
+            if ((timelineRevisionBySessionRef.current.get(sessionId) || 0) === timelineRevision) {
+              thoughtPhaseTrackerRef.current.seedActiveTimeline(sessionId, detail.timeline);
+              observeActiveThoughtPhase(sessionId);
+              return;
+            }
+            globalThis.setTimeout(() => {
+              thoughtPhaseSeededRunIdsRef.current.delete(runId);
+              if (
+                isAgentModeMountedRef.current &&
+                userIdRef.current === userId &&
+                !deletedSessionIdsRef.current.has(sessionId) &&
+                activeRunsBySessionRef.current[sessionId] === runId
+              ) {
+                seedActiveThoughtPhases({ [sessionId]: runId });
+              }
+            }, THOUGHT_PHASE_SEED_RETRY_MS);
+          } catch {
+            thoughtPhaseSeededRunIdsRef.current.delete(runId);
+          }
+        })();
+      }
+    },
+    [observeActiveThoughtPhase, userId]
   );
 
   const invalidateThoughtLabelsForTurn = useCallback(
@@ -705,8 +838,13 @@ export function AgentMode({ userId }: { userId: string }) {
       const activeRuns = status.activeRuns || {};
       activeRunsBySessionRef.current = activeRuns;
       setActiveRunsBySession(activeRuns);
+      const activeRunIds = new Set(Object.values(activeRuns));
+      thoughtPhaseSeededRunIdsRef.current.forEach((runId) => {
+        if (!activeRunIds.has(runId)) thoughtPhaseSeededRunIdsRef.current.delete(runId);
+      });
+      seedActiveThoughtPhases(activeRuns);
     },
-    []
+    [seedActiveThoughtPhases]
   );
 
   const recordActiveRun = useCallback((sessionId: string, runId: string) => {
@@ -1613,6 +1751,7 @@ export function AgentMode({ userId }: { userId: string }) {
         setTimelineItems(detail.timeline);
         if (activeRunsBySessionRef.current[detail.session.id]) {
           thoughtPhaseTrackerRef.current.seedActiveTimeline(detail.session.id, detail.timeline);
+          observeActiveThoughtPhase(detail.session.id);
         }
         const mcpError = mcpConnectionErrorMessage(detail.mcpErrors);
         if (mcpError) setError(mcpError);
@@ -1650,6 +1789,7 @@ export function AgentMode({ userId }: { userId: string }) {
       beginSessionSelection,
       clearCompletedUnreadSession,
       finishSessionSelection,
+      observeActiveThoughtPhase,
       persistSelectedProjectRoot,
       replaceSessionTimeline,
       trackAgentWorkflow,
@@ -1939,10 +2079,22 @@ export function AgentMode({ userId }: { userId: string }) {
 
   const observeLiveThoughtItem = useCallback(
     (sessionId: string, item: AgentTimelineItem) => {
+      const previousActivePhase = thoughtPhaseTrackerRef.current.activePhase(sessionId);
       const completedPhase = thoughtPhaseTrackerRef.current.observeTimelineItem(sessionId, item);
-      if (completedPhase) generateThoughtLabel(completedPhase);
+      if (completedPhase) {
+        completeThoughtPhase(completedPhase);
+      } else {
+        const activePhase = thoughtPhaseTrackerRef.current.activePhase(sessionId);
+        if (previousActivePhase && previousActivePhase.phaseId !== activePhase?.phaseId) {
+          thoughtLabelProvisionalSchedulerRef.current?.complete(
+            previousActivePhase.sessionId,
+            previousActivePhase.phaseId
+          );
+        }
+      }
+      observeActiveThoughtPhase(sessionId);
     },
-    [generateThoughtLabel]
+    [completeThoughtPhase, observeActiveThoughtPhase]
   );
 
   const handleAgentEvent = useCallback(
@@ -1985,16 +2137,33 @@ export function AgentMode({ userId }: { userId: string }) {
           break;
         case "runFinished": {
           runStateGenerationRef.current += 1;
-          if (event.runId) terminalRunIdsRef.current.add(event.runId);
+          if (event.runId) {
+            terminalRunIdsRef.current.add(event.runId);
+            thoughtPhaseSeededRunIdsRef.current.delete(event.runId);
+          }
           let finishedTimelineRevision: number | undefined;
           if (event.sessionId) {
             finishedTimelineRevision = bumpTimelineRevision(event.sessionId);
             clearActiveRun(event.sessionId, event.runId || undefined);
             if (event.message === "completed") {
+              const previousActivePhase = thoughtPhaseTrackerRef.current.activePhase(
+                event.sessionId
+              );
               const completedPhase = thoughtPhaseTrackerRef.current.finishRun(event.sessionId);
-              if (completedPhase) generateThoughtLabel(completedPhase);
+              if (completedPhase) {
+                completeThoughtPhase(completedPhase);
+              } else if (previousActivePhase) {
+                thoughtLabelProvisionalSchedulerRef.current?.complete(
+                  previousActivePhase.sessionId,
+                  previousActivePhase.phaseId
+                );
+              }
             } else {
               const discardedTurnId = thoughtPhaseTrackerRef.current.discardRun(event.sessionId);
+              thoughtLabelProvisionalSchedulerRef.current?.cancelMatching(
+                event.sessionId,
+                discardedTurnId ?? undefined
+              );
               if (event.message === "cancelled") {
                 if (discardedTurnId) {
                   invalidateThoughtLabelsForTurn(event.sessionId, discardedTurnId);
@@ -2009,7 +2178,12 @@ export function AgentMode({ userId }: { userId: string }) {
           // active-run entry immediately after emitting this event, so a
           // concurrent status snapshot could otherwise resurrect the run.
           void refreshSessionList().catch(() => {});
-          if (event.sessionId && (event.message === "completed" || event.message === "cancelled")) {
+          if (
+            event.sessionId &&
+            (event.message === "completed" ||
+              event.message === "cancelled" ||
+              event.message === "failed")
+          ) {
             if (event.message === "completed" && event.sessionId !== activeSessionIdRef.current) {
               markCompletedUnreadSession(event.sessionId);
             }
@@ -2017,11 +2191,16 @@ export function AgentMode({ userId }: { userId: string }) {
               .loadSession(userId, event.sessionId)
               .then((detail) => {
                 if (!deletedSessionIdsRef.current.has(event.sessionId!)) {
-                  replaceSessionTimeline(
+                  const replaced = replaceSessionTimeline(
                     event.sessionId!,
                     detail.timeline,
                     finishedTimelineRevision
                   );
+                  if (replaced && (event.message === "completed" || event.message === "failed")) {
+                    agentThoughtPhasesForLatestTurn(event.sessionId!, detail.timeline).forEach(
+                      completeThoughtPhase
+                    );
+                  }
                 }
               })
               .catch(() => {});
@@ -2065,6 +2244,7 @@ export function AgentMode({ userId }: { userId: string }) {
                 );
                 if (replaced && activeRunsBySessionRef.current[id]) {
                   thoughtPhaseTrackerRef.current.seedActiveTimeline(id, detail.timeline);
+                  observeActiveThoughtPhase(id);
                 }
               }
             } catch (historyError) {
@@ -2081,12 +2261,13 @@ export function AgentMode({ userId }: { userId: string }) {
       bumpTimelineRevision,
       clearActiveRun,
       clearCompletedUnreadSession,
-      generateThoughtLabel,
+      completeThoughtPhase,
       invalidateThoughtLabelsForSession,
       invalidateThoughtLabelsForTurn,
       markCompletedUnreadSession,
       mergeSessionTimelineItem,
       observeLiveThoughtItem,
+      observeActiveThoughtPhase,
       refreshSessionList,
       recordActiveRun,
       refreshSessionMcpServers,
@@ -3823,12 +4004,12 @@ function AgentTimeline({
             item.itemType === "thinking"
               ? agentThinkingPhaseId(turn.id, thinkingPhaseIndex++)
               : null;
-          const completedThinkingLabel =
+          const thoughtLabel =
             phaseId && sessionId
               ? (generatedThoughtLabels[sessionId]?.[phaseId] ??
                 getAgentThoughtLabel({ userId, sessionId, phaseId }))
               : null;
-          return { item, completedThinkingLabel };
+          return { item, thoughtLabel };
         });
 
         return (
@@ -3840,12 +4021,12 @@ function AgentTimeline({
               ) : undefined
             }
           >
-            {assistantItems.map(({ item, completedThinkingLabel }) => (
+            {assistantItems.map(({ item, thoughtLabel }) => (
               <AgentAssistantItem
                 key={item.id}
                 item={item}
                 isThinking={item.id === activeThinkingItemId}
-                completedThinkingLabel={completedThinkingLabel ?? undefined}
+                thoughtLabel={thoughtLabel ?? undefined}
                 onPermissionDecision={onPermissionDecision}
               />
             ))}
@@ -3860,12 +4041,12 @@ function AgentTimeline({
 function AgentAssistantItem({
   item,
   isThinking,
-  completedThinkingLabel,
+  thoughtLabel,
   onPermissionDecision
 }: {
   item: AgentTimelineItem;
   isThinking: boolean;
-  completedThinkingLabel?: string;
+  thoughtLabel?: string;
   onPermissionDecision: (item: AgentTimelineItem, decision: AgentPermissionDecision) => void;
 }) {
   if (item.itemType === "message") {
@@ -3881,7 +4062,7 @@ function AgentAssistantItem({
         content={item.text || ""}
         isThinking={isThinking}
         showDuration={false}
-        completedLabel={completedThinkingLabel}
+        label={thoughtLabel}
       />
     );
   }
