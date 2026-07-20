@@ -1,20 +1,49 @@
-import { useState, useEffect } from "react";
+import { useEffect, useMemo, useState } from "react";
+import {
+  AlertCircle,
+  Check,
+  CheckCircle,
+  Copy,
+  Loader2,
+  Play,
+  Server,
+  ShieldCheck,
+  Square
+} from "lucide-react";
+import { SettingsSection } from "@/components/settings/SettingsPage";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Play, Square, Loader2, AlertCircle, CheckCircle, Server, Copy, Check } from "lucide-react";
-import { proxyService, ProxyConfig, ProxyStatus } from "@/services/proxyService";
+import { Switch } from "@/components/ui/switch";
+import { DEFAULT_AGENT_MODEL } from "@/services/agentModels";
+import { proxyService, type ProxyConfig, type ProxyStatus } from "@/services/proxyService";
+import { getProxyBaseUrl, isCodingAgentModel } from "@/services/proxyModels";
+import type { OpenSecretModel } from "@/state/LocalStateContextDef";
 import { isTauriDesktop } from "@/utils/platform";
-import { QUICK_MODEL_ALIAS } from "@/utils/utils";
+import { ProxyClientGuides } from "./ProxyClientGuides";
+import { ProxyModelList } from "./ProxyModelList";
 
 interface ProxyConfigSectionProps {
   apiKeys: Array<{ name: string; created_at: string }>;
   onRequestNewApiKey: (name: string) => Promise<string>;
+  models: OpenSecretModel[];
+  isModelsLoading: boolean;
+  isModelsError: boolean;
 }
 
-export function ProxyConfigSection({ apiKeys, onRequestNewApiKey }: ProxyConfigSectionProps) {
+function isLoopbackHost(host: string): boolean {
+  return host.trim() === "127.0.0.1";
+}
+
+export function ProxyConfigSection({
+  apiKeys,
+  onRequestNewApiKey,
+  models,
+  isModelsLoading,
+  isModelsError
+}: ProxyConfigSectionProps) {
   const [proxyStatus, setProxyStatus] = useState<ProxyStatus | null>(null);
   const [config, setConfig] = useState<ProxyConfig>({
     host: "127.0.0.1",
@@ -27,14 +56,22 @@ export function ProxyConfigSection({ apiKeys, onRequestNewApiKey }: ProxyConfigS
   const [isLoading, setIsLoading] = useState(false);
   const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
   const [copied, setCopied] = useState(false);
+  const [selectedModelId, setSelectedModelId] = useState("");
   const isTauriDesktopPlatform = isTauriDesktop();
 
-  useEffect(() => {
-    if (!isTauriDesktopPlatform) return;
+  const guideModels = useMemo(() => models.filter(isCodingAgentModel), [models]);
 
-    // Load saved config and status on mount
-    loadProxyState();
-  }, [isTauriDesktopPlatform]);
+  useEffect(() => {
+    if (guideModels.length === 0) {
+      setSelectedModelId("");
+      return;
+    }
+
+    setSelectedModelId((current) => {
+      if (guideModels.some((model) => model.id === current)) return current;
+      return guideModels.find((model) => model.id === DEFAULT_AGENT_MODEL)?.id ?? guideModels[0].id;
+    });
+  }, [guideModels]);
 
   const loadProxyState = async () => {
     try {
@@ -50,70 +87,62 @@ export function ProxyConfigSection({ apiKeys, onRequestNewApiKey }: ProxyConfigS
     }
   };
 
+  useEffect(() => {
+    if (!isTauriDesktopPlatform) return;
+    void loadProxyState();
+  }, [isTauriDesktopPlatform]);
+
   const handleStartProxy = async () => {
     setIsLoading(true);
+    setMessage(null);
 
     try {
-      // If no API key is set, auto-generate one
       let apiKey = config.api_key;
       if (!apiKey) {
         const date = new Date().toISOString().split("T")[0].replace(/-/g, "");
         const keyName = `maple-desktop-${date}`;
-
-        // Check if a key with this name already exists
-        const existingKey = apiKeys.find((k) => k.name === keyName);
+        const existingKey = apiKeys.find((key) => key.name === keyName);
         if (existingKey) {
-          // Use the existing key (we don't have access to the actual key value)
           setMessage({
             type: "error",
             text: "Please select an existing API key or create a new one"
           });
-          setIsLoading(false);
           return;
         }
 
-        // Request a new API key
         try {
           apiKey = await onRequestNewApiKey(keyName);
-          setConfig((prev) => ({ ...prev, api_key: apiKey }));
+          setConfig((previous) => ({ ...previous, api_key: apiKey }));
         } catch {
           setMessage({
             type: "error",
             text: "Failed to create API key. Please create an API key manually first"
           });
-          setIsLoading(false);
           return;
         }
       }
 
-      // Validate port range (1-65535)
       const port = Number(config.port);
       if (!Number.isInteger(port) || port < 1 || port > 65535) {
         setMessage({
           type: "error",
           text: `Invalid port: ${config.port}. Port must be between 1 and 65535.`
         });
-        setIsLoading(false);
         return;
       }
 
-      // Get the backend URL from environment
       const backendUrl = import.meta.env.VITE_OPEN_SECRET_API_URL || "https://enclave.trymaple.ai";
-
       const updatedConfig = {
         ...config,
         api_key: apiKey,
         enabled: true,
         backend_url: backendUrl,
-        auto_start: config.auto_start // Preserve auto_start setting
+        auto_start: config.auto_start
       };
-      // The user is explicitly taking control of the shared proxy. The service
-      // detaches the active Agent association only after the native start
-      // succeeds, while retaining its exact key name for later revocation.
+
       const status = await proxyService.startManualProxy(updatedConfig);
       setProxyStatus(status);
       setConfig(updatedConfig);
-
       setMessage({
         type: "success",
         text: `Proxy is now running on ${config.host}:${config.port}`
@@ -127,13 +156,13 @@ export function ProxyConfigSection({ apiKeys, onRequestNewApiKey }: ProxyConfigS
 
   const handleStopProxy = async () => {
     setIsLoading(true);
+    setMessage(null);
 
     try {
       const status = await proxyService.stopManualProxy();
       setProxyStatus(status);
-      setConfig((prev) => ({ ...prev, enabled: false }));
-
-      setMessage({ type: "success", text: "The proxy server has been stopped" });
+      setConfig((previous) => ({ ...previous, enabled: false }));
+      setMessage({ type: "success", text: "The proxy has stopped" });
     } catch (error) {
       setMessage({ type: "error", text: `Failed to stop proxy: ${error}` });
     } finally {
@@ -142,236 +171,278 @@ export function ProxyConfigSection({ apiKeys, onRequestNewApiKey }: ProxyConfigS
   };
 
   const handleConfigChange = (field: keyof ProxyConfig, value: string | number | boolean) => {
-    setConfig((prev) => ({ ...prev, [field]: value }));
+    setConfig((previous) => ({ ...previous, [field]: value }));
   };
 
-  const copyProxyUrl = () => {
-    const url = `http://${config.host}:${config.port}/v1`;
-    navigator.clipboard.writeText(url);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+  const handleAutoStartChange = async (checked: boolean) => {
+    const updatedConfig = { ...config, auto_start: checked };
+    setConfig(updatedConfig);
+    try {
+      await proxyService.saveManualProxySettings(updatedConfig);
+      setMessage({
+        type: "success",
+        text: checked ? "Auto-start enabled" : "Auto-start disabled"
+      });
+    } catch {
+      setMessage({ type: "error", text: "Failed to save the auto-start setting" });
+    }
   };
 
-  if (!isTauriDesktopPlatform) {
-    return null; // Don't show proxy config on non-desktop platforms (includes mobile)
-  }
-
+  const proxyBaseUrl = getProxyBaseUrl(config.host, config.port);
   const isRunning = proxyStatus?.running || false;
+
+  const copyProxyUrl = async () => {
+    try {
+      await navigator.clipboard.writeText(proxyBaseUrl);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (error) {
+      console.error("Failed to copy proxy URL:", error);
+      setMessage({ type: "error", text: "Failed to copy the proxy URL" });
+    }
+  };
+
+  if (!isTauriDesktopPlatform) return null;
 
   return (
     <>
-      {/* Show message alerts */}
-      {message && (
-        <Alert
-          className={`${
-            message.type === "error" ? "border-destructive/50" : "border-maple-success/40"
-          } mb-3`}
-        >
-          <div className="flex items-start gap-2">
-            {message.type === "error" ? (
-              <AlertCircle className="h-4 w-4 flex-shrink-0" />
-            ) : (
-              <CheckCircle className="h-4 w-4 flex-shrink-0 text-maple-success" />
-            )}
-            <AlertDescription className="text-xs">{message.text}</AlertDescription>
-          </div>
-        </Alert>
-      )}
+      <SettingsSection
+        title="Local OpenAI proxy"
+        description="Run a local, OpenAI-compatible Chat Completions endpoint from Maple Desktop."
+      >
+        <div className="space-y-4">
+          {message && (
+            <Alert
+              className={
+                message.type === "error" ? "border-destructive/50" : "border-maple-success/40"
+              }
+            >
+              <div className="flex items-start gap-2">
+                {message.type === "error" ? (
+                  <AlertCircle className="h-4 w-4 shrink-0" />
+                ) : (
+                  <CheckCircle className="h-4 w-4 shrink-0 text-maple-success" />
+                )}
+                <AlertDescription>{message.text}</AlertDescription>
+              </div>
+            </Alert>
+          )}
 
-      <div className="flex items-center justify-between mb-3">
-        <h3 className="text-sm font-medium flex items-center gap-2">
-          <Server className="h-4 w-4" />
-          Local OpenAI Proxy
-        </h3>
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-muted-foreground">{isRunning ? "Running" : "Stopped"}</span>
           <div
-            className={`h-2 w-2 rounded-full ${isRunning ? "bg-maple-success" : "bg-muted-foreground/50"}`}
-          />
-        </div>
-      </div>
-
-      <Card className="p-4 space-y-4">
-        {/* Configuration */}
-        <div className="grid grid-cols-2 gap-4">
-          <div>
-            <Label htmlFor="proxy-host" className="text-xs">
-              Host
-            </Label>
-            <Input
-              id="proxy-host"
-              value={config.host}
-              onChange={(e) => handleConfigChange("host", e.target.value)}
-              placeholder="127.0.0.1"
-              disabled={isRunning}
-              className="h-8 text-sm"
-            />
-          </div>
-          <div>
-            <Label htmlFor="proxy-port" className="text-xs">
-              Port
-            </Label>
-            <div className="flex gap-2">
-              <Input
-                id="proxy-port"
-                type="number"
-                value={config.port}
-                onChange={(e) => handleConfigChange("port", parseInt(e.target.value) || 8080)}
-                placeholder="8080"
-                disabled={isRunning}
-                className="h-8 text-sm"
-              />
+            className="flex flex-col gap-4 rounded-xl border border-border/70 bg-background/40 p-4 sm:flex-row sm:items-center sm:justify-between"
+            aria-busy={isLoading}
+          >
+            <div className="flex min-w-0 items-start gap-3">
+              <div className="rounded-lg bg-[hsl(var(--maple-primary-container))] p-2 text-[hsl(var(--maple-primary-strong))]">
+                <Server className="h-5 w-5" />
+              </div>
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="font-medium">{isRunning ? "Proxy running" : "Proxy stopped"}</p>
+                  <Badge variant={isRunning ? "secondary" : "outline"}>
+                    {isRunning ? "Online" : "Offline"}
+                  </Badge>
+                </div>
+                <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                  {isRunning
+                    ? "Keep Maple open while connected tools are using this endpoint."
+                    : "Start the proxy when you are ready to connect an app or coding agent."}
+                </p>
+              </div>
             </div>
+            {!isRunning ? (
+              <Button onClick={handleStartProxy} disabled={isLoading} className="shrink-0">
+                {isLoading ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <Play className="mr-2 h-4 w-4" />
+                )}
+                {isLoading ? "Starting proxy..." : "Start proxy"}
+              </Button>
+            ) : (
+              <Button
+                onClick={handleStopProxy}
+                disabled={isLoading}
+                variant="destructive"
+                className="shrink-0"
+              >
+                {isLoading ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <Square className="mr-2 h-4 w-4" />
+                )}
+                {isLoading ? "Stopping proxy..." : "Stop proxy"}
+              </Button>
+            )}
           </div>
-        </div>
 
-        {/* API Key Info */}
-        {config.api_key && (
           <div>
-            <Label className="text-xs">API Key Status</Label>
-            <p className="text-xs text-muted-foreground mt-1">API key configured</p>
-          </div>
-        )}
-
-        {/* Proxy URL */}
-        {isRunning && (
-          <div>
-            <Label className="text-xs">Proxy URL</Label>
-            <div className="flex gap-2">
-              <Input
-                value={`http://${config.host}:${config.port}/v1`}
-                readOnly
-                className="h-8 text-sm font-mono"
-              />
-              <Button size="sm" variant="outline" onClick={copyProxyUrl} className="h-8">
-                {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+            <Label htmlFor="proxy-url" className="text-xs">
+              OpenAI-compatible base URL
+            </Label>
+            <div className="mt-1 flex gap-2">
+              <Input id="proxy-url" value={proxyBaseUrl} readOnly className="font-mono text-xs" />
+              <Button
+                type="button"
+                size="icon"
+                variant="outline"
+                onClick={copyProxyUrl}
+                aria-label={copied ? "Proxy URL copied" : "Copy proxy URL"}
+              >
+                {copied ? (
+                  <Check className="h-4 w-4 text-maple-success" />
+                ) : (
+                  <Copy className="h-4 w-4" />
+                )}
               </Button>
             </div>
-            <p className="text-xs text-muted-foreground mt-1">
-              Use this URL as your OpenAI base URL in any client
+            <p className="mt-1.5 text-xs text-muted-foreground">
+              Compatible with clients that use OpenAI Chat Completions.
             </p>
           </div>
-        )}
 
-        {/* Control Buttons */}
-        <div className="flex gap-2">
-          {!isRunning ? (
-            <Button onClick={handleStartProxy} disabled={isLoading} size="sm" className="flex-1">
-              {isLoading ? (
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              ) : (
-                <Play className="mr-2 h-4 w-4" />
-              )}
-              Start Proxy
-            </Button>
-          ) : (
-            <Button
-              onClick={handleStopProxy}
-              disabled={isLoading}
-              variant="destructive"
-              size="sm"
-              className="flex-1"
-            >
-              {isLoading ? (
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              ) : (
-                <Square className="mr-2 h-4 w-4" />
-              )}
-              Stop Proxy
-            </Button>
+          <Alert role="note">
+            <ShieldCheck className="h-4 w-4" />
+            <AlertDescription>
+              Local processes can use Maple&apos;s saved proxy credential without supplying their
+              own key. Keep the proxy on loopback, run only trusted clients, and remember that proxy
+              usage counts toward your Maple account.
+            </AlertDescription>
+          </Alert>
+
+          {config.enable_cors && (
+            <Alert role="note" className="border-maple-warning/40 bg-maple-warning/10">
+              <AlertCircle className="h-4 w-4 text-maple-warning" />
+              <AlertDescription>
+                CORS is enabled, so browser pages may be able to reach this proxy while it is
+                running. Turn CORS off unless a browser client specifically requires it.
+              </AlertDescription>
+            </Alert>
           )}
-        </div>
 
-        {/* CORS Toggle */}
-        <div className="flex items-center justify-between pt-2 border-t">
-          <Label htmlFor="enable-cors" className="text-xs">
-            Enable CORS (for web clients)
-          </Label>
-          <input
-            id="enable-cors"
-            type="checkbox"
-            checked={config.enable_cors ?? true}
-            onChange={(e) => handleConfigChange("enable_cors", e.target.checked)}
-            disabled={isRunning}
-            className="h-4 w-4"
-          />
-        </div>
+          {!isLoopbackHost(config.host) && (
+            <Alert role="note" className="border-maple-warning/40 bg-maple-warning/10">
+              <AlertCircle className="h-4 w-4 text-maple-warning" />
+              <AlertDescription>
+                This host may expose the proxy beyond your device. Use 127.0.0.1 unless you fully
+                understand the network and billing risk.
+              </AlertDescription>
+            </Alert>
+          )}
 
-        {/* Auto-start Toggle */}
-        <div className="flex items-center justify-between">
-          <div className="flex-1">
-            <Label htmlFor="auto-start" className="text-xs">
-              Auto-start proxy when app launches
-            </Label>
-            <p className="text-xs text-muted-foreground mt-0.5">
-              Proxy will start automatically on app launch if configured
-            </p>
-          </div>
-          <input
-            id="auto-start"
-            type="checkbox"
-            checked={config.auto_start ?? false}
-            onChange={async (e) => {
-              const newConfig = { ...config, auto_start: e.target.checked };
-              setConfig(newConfig);
-              // Save immediately when toggling auto-start
-              try {
-                await proxyService.saveManualProxySettings(newConfig);
-                setMessage({
-                  type: "success",
-                  text: e.target.checked ? "Auto-start enabled" : "Auto-start disabled"
-                });
-              } catch {
-                setMessage({ type: "error", text: "Failed to save auto-start setting" });
-              }
-            }}
-            disabled={!config.api_key} // Only enable if we have an API key
-            className="h-4 w-4"
-          />
-        </div>
-      </Card>
+          <details className="group rounded-lg border border-border/70">
+            <summary className="cursor-pointer select-none px-4 py-3 text-sm font-medium">
+              Advanced settings
+            </summary>
+            <div className="space-y-4 border-t border-border/70 p-4">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <div className="grid gap-1.5">
+                  <Label htmlFor="proxy-host" className="text-xs">
+                    Host
+                  </Label>
+                  <Input
+                    id="proxy-host"
+                    value={config.host}
+                    onChange={(event) => handleConfigChange("host", event.target.value)}
+                    placeholder="127.0.0.1"
+                    disabled={isRunning}
+                    aria-describedby="proxy-host-description"
+                  />
+                  <p id="proxy-host-description" className="text-xs text-muted-foreground">
+                    Use a numeric IPv4 address. 127.0.0.1 is recommended.
+                  </p>
+                </div>
+                <div className="grid gap-1.5">
+                  <Label htmlFor="proxy-port" className="text-xs">
+                    Port
+                  </Label>
+                  <Input
+                    id="proxy-port"
+                    type="number"
+                    value={config.port}
+                    onChange={(event) =>
+                      handleConfigChange("port", Number.parseInt(event.target.value, 10) || 8080)
+                    }
+                    placeholder="8080"
+                    disabled={isRunning}
+                  />
+                </div>
+              </div>
 
-      {/* Usage Examples */}
-      {isRunning && (
-        <div className="space-y-3">
-          <Card className="p-3">
-            <div className="text-xs">
-              <strong>Python Example:</strong>
-              <pre className="mt-2 text-xs bg-background p-2 rounded border overflow-x-auto">
-                <code>{`from openai import OpenAI
-client = OpenAI(
-  base_url="http://${config.host}:${config.port}/v1",
-  api_key="anything"  # API key handled by proxy
-)
+              <div className="flex items-start justify-between gap-4 border-t border-border/70 pt-4">
+                <div>
+                  <Label htmlFor="enable-cors" className="text-xs">
+                    Enable CORS for browser clients
+                  </Label>
+                  <p
+                    id="enable-cors-description"
+                    className="mt-1 text-xs leading-relaxed text-muted-foreground"
+                  >
+                    Desktop clients such as OpenCode do not need CORS. Turn this off unless a
+                    browser app specifically requires it.
+                  </p>
+                </div>
+                <Switch
+                  id="enable-cors"
+                  checked={config.enable_cors ?? true}
+                  onCheckedChange={(checked) => handleConfigChange("enable_cors", checked)}
+                  disabled={isRunning}
+                  aria-describedby="enable-cors-description"
+                />
+              </div>
 
-response = client.chat.completions.create(
-  model="${QUICK_MODEL_ALIAS}",
-  messages=[{"role": "user", "content": "Hello!"}],
-  stream=True
-)
+              <div className="flex items-start justify-between gap-4 border-t border-border/70 pt-4">
+                <div>
+                  <Label htmlFor="auto-start" className="text-xs">
+                    Auto-start when Maple launches
+                  </Label>
+                  <p
+                    id="auto-start-description"
+                    className="mt-1 text-xs leading-relaxed text-muted-foreground"
+                  >
+                    Available after Maple has created and saved the proxy credential.
+                  </p>
+                </div>
+                <Switch
+                  id="auto-start"
+                  checked={config.auto_start ?? false}
+                  onCheckedChange={handleAutoStartChange}
+                  disabled={!config.api_key}
+                  aria-describedby="auto-start-description"
+                />
+              </div>
 
-for chunk in response:
-    print(chunk.choices[0].delta.content or "", end="")`}</code>
-              </pre>
+              {config.api_key && (
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <ShieldCheck className="h-4 w-4 text-maple-success" />
+                  Maple has saved its proxy credential.
+                </div>
+              )}
             </div>
-          </Card>
-
-          <Card className="p-3">
-            <div className="text-xs">
-              <strong>cURL Example:</strong>
-              <pre className="mt-2 text-xs bg-background p-2 rounded border overflow-x-auto">
-                <code>{`curl -N http://${config.host}:${config.port}/v1/chat/completions \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "model": "${QUICK_MODEL_ALIAS}",
-    "messages": [{"role": "user", "content": "Hello!"}],
-    "stream": true
-  }'`}</code>
-              </pre>
-            </div>
-          </Card>
+          </details>
         </div>
-      )}
+      </SettingsSection>
+
+      <SettingsSection
+        title="Connect your tools"
+        description="Follow a built-in setup guide using this proxy URL and Maple's current model catalog."
+      >
+        <ProxyClientGuides
+          baseUrl={proxyBaseUrl}
+          isRunning={isRunning}
+          hasApiKeys={apiKeys.length > 0}
+          models={guideModels}
+          selectedModelId={selectedModelId}
+          onSelectModel={setSelectedModelId}
+        />
+      </SettingsSection>
+
+      <SettingsSection
+        title="Current Maple models"
+        description="Browse current chat model IDs recommended for Local Proxy clients."
+      >
+        <ProxyModelList models={models} isLoading={isModelsLoading} isError={isModelsError} />
+      </SettingsSection>
     </>
   );
 }
