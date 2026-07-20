@@ -50,10 +50,9 @@ const GOOSE_PERMISSION_ROUTING_MODE: GooseMode = GooseMode::SmartApprove;
 const AGENT_EVENT_NAME: &str = "agent-event";
 const MAPLE_DEVELOPER_TOOLS: [&str; 5] = ["read", "shell", "edit", "write", "read_image"];
 const MAPLE_SKILLS_TOOLS: [&str; 1] = ["load_skill"];
-// Runtime-only extension key. This is deliberately longer than Maple permits
-// for user-configured MCP names, so it cannot collide with an existing server.
-const MAPLE_SKILLS_CLIENT_KEY: &str =
-    "maple_internal_skills_client_runtime_only_key_do_not_persist_0000000000000000";
+// Goose currently renders the runtime registration key as the model-facing
+// extension heading, so keep this concise and reserve it from user MCP names.
+const MAPLE_SKILLS_CLIENT_KEY: &str = "maple-skills-extension";
 const MAPLE_GOOSE_PERMISSION_CONFIG: &str = r#"user:
   always_allow:
   - load_skill
@@ -2764,7 +2763,7 @@ fn maple_skills_extension_config() -> ExtensionConfig {
     ExtensionConfig::Platform {
         name: SKILLS_EXTENSION_NAME.to_string(),
         description: "Discover and load agent skills from the local filesystem".to_string(),
-        display_name: Some("Skills".to_string()),
+        display_name: Some("Maple Skills Extension".to_string()),
         bundled: Some(true),
         available_tools: MAPLE_SKILLS_TOOLS
             .iter()
@@ -3894,7 +3893,7 @@ fn normalize_mcp_servers(mut servers: Vec<AgentMcpServer>) -> Result<Vec<AgentMc
 }
 
 fn maple_reserved_extension_key(key: &str) -> bool {
-    key == "developer"
+    matches!(key, "developer" | MAPLE_SKILLS_CLIENT_KEY)
 }
 
 fn validate_mcp_key_values(
@@ -4749,6 +4748,14 @@ mod tests {
             skills_client_for_working_dir(&agent, &session, project.clone()).unwrap();
         attach_prepared_skills_client(&agent, initial_skills).await;
 
+        let prompt_extensions = agent.extension_manager.get_extensions_info(&project).await;
+        assert!(prompt_extensions
+            .iter()
+            .any(|extension| extension.name == MAPLE_SKILLS_CLIENT_KEY));
+        assert!(!prompt_extensions
+            .iter()
+            .any(|extension| extension.name.contains("runtime_only")));
+
         let tools = agent.list_tools(&session.id, None).await;
         let maple_tool = tools
             .iter()
@@ -4901,10 +4908,14 @@ mod tests {
         let reserved = normalize_mcp_servers(vec![stdio_mcp("Developer", true)]).unwrap_err();
         assert!(reserved.contains("reserved"));
 
+        let reserved_skills =
+            normalize_mcp_servers(vec![stdio_mcp(MAPLE_SKILLS_CLIENT_KEY, true)]).unwrap_err();
+        assert!(reserved_skills.contains("reserved"));
+
         // This was a valid user-defined MCP name before Skills support and
         // must remain recoverable after upgrade.
         assert!(normalize_mcp_servers(vec![stdio_mcp("maple_internal_skills", true)]).is_ok());
-        assert!(MAPLE_SKILLS_CLIENT_KEY.chars().count() > MAX_MCP_SERVER_NAME_CHARS);
+        assert!(MAPLE_SKILLS_CLIENT_KEY.chars().count() <= MAX_MCP_SERVER_NAME_CHARS);
     }
 
     #[test]
