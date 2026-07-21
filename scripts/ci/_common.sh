@@ -752,7 +752,7 @@ android_zipalign() {
 
   if [ -n "${ANDROID_HOME:-}" ]; then
     found="$(
-      find "${ANDROID_HOME}/build-tools" -mindepth 2 -maxdepth 4 -type f -name zipalign 2>/dev/null \
+      find -L "${ANDROID_HOME}/build-tools" -mindepth 2 -maxdepth 4 -type f -name zipalign 2>/dev/null \
         | LC_ALL=C sort -V \
         | tail -n 1 || true
     )"
