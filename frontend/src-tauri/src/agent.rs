@@ -2783,6 +2783,7 @@ fn skills_client_for_working_dir(
     skills_context.extension_manager = Some(Arc::downgrade(&agent.extension_manager));
     skills_context.session = Some(Arc::new(skills_session));
     SkillsClient::new(skills_context)
+        .map(|client| client.with_builtin_skills(false))
         .map_err(|error| format!("Failed to create Maple skills tools: {error}"))
 }
 
@@ -3041,7 +3042,14 @@ fn message_to_timeline_items_with_thinking(
     live: bool,
     thinking: Option<&str>,
 ) -> Vec<AgentTimelineItem> {
-    let role = message_role(message);
+    // Goose persists the canonical message for provider history but projects
+    // content-level audience annotations before emitting live user events.
+    // Apply the same projection when rebuilding Maple's timeline from storage.
+    let message = message.user_visible_content();
+    if !message.is_user_visible() || message.content.is_empty() {
+        return Vec::new();
+    }
+    let role = message_role(&message);
     let base_id = message
         .id
         .clone()
@@ -3052,25 +3060,40 @@ fn message_to_timeline_items_with_thinking(
         unix_ms()
     };
     let merge = if live { "append" } else { "replace" }.to_string();
+    let visible_text = message
+        .content
+        .iter()
+        .filter_map(|content| match content {
+            MessageContent::Text(text) => Some(text.text.as_str()),
+            _ => None,
+        })
+        .collect::<String>();
 
+    let mut emitted_text = false;
     let mut emitted_thinking = false;
     message
         .content
         .iter()
         .enumerate()
         .filter_map(|(index, content)| match content {
-            MessageContent::Text(text) => Some(AgentTimelineItem {
-                id: format!("{base_id}-text"),
-                item_type: "message".to_string(),
-                role: Some(role.clone()),
-                title: None,
-                text: Some(text.text.clone()),
-                status: None,
-                input: None,
-                output: None,
-                created_ms,
-                merge: merge.clone(),
-            }),
+            MessageContent::Text(_) => {
+                if emitted_text {
+                    return None;
+                }
+                emitted_text = true;
+                Some(AgentTimelineItem {
+                    id: format!("{base_id}-text"),
+                    item_type: "message".to_string(),
+                    role: Some(role.clone()),
+                    title: None,
+                    text: Some(visible_text.clone()),
+                    status: None,
+                    input: None,
+                    output: None,
+                    created_ms,
+                    merge: merge.clone(),
+                })
+            }
             MessageContent::Thinking(_) | MessageContent::RedactedThinking(_) => {
                 if emitted_thinking {
                     return None;
@@ -4507,6 +4530,7 @@ fn path_string(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rmcp::model::{AnnotateAble, RawTextContent, Role as McpRole};
 
     fn recent_roots_test_dir(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
@@ -4692,11 +4716,28 @@ mod tests {
 
     #[tokio::test]
     async fn maple_skills_registration_is_unprefixed_transient_and_coexists_with_skills_mcp() {
+        use goose::agents::mcp_client::McpClientTrait;
+        use goose::agents::ToolCallContext;
+
         let test_root = recent_roots_test_dir("skills-registration");
         let project = test_root.join("project");
         let external_root = test_root.join("external");
         fs::create_dir_all(&project).unwrap();
         fs::create_dir_all(&external_root).unwrap();
+        let project_skill_name = format!(
+            "maple-registration-skill-{}-{}",
+            std::process::id(),
+            NEXT_RUN_ID.fetch_add(1, Ordering::Relaxed)
+        );
+        let project_skill_dir = project.join(".agents/skills").join(&project_skill_name);
+        fs::create_dir_all(&project_skill_dir).unwrap();
+        fs::write(
+            project_skill_dir.join("SKILL.md"),
+            format!(
+                "---\nname: {project_skill_name}\ndescription: Maple registration test skill\n---\nUse the Maple registration test instructions."
+            ),
+        )
+        .unwrap();
 
         let session_manager = Arc::new(SessionManager::new(test_root.join("sessions")));
         let permission_manager = Arc::new(PermissionManager::new(test_root.join("permissions")));
@@ -4746,6 +4787,31 @@ mod tests {
             .await;
         let initial_skills =
             skills_client_for_working_dir(&agent, &session, project.clone()).unwrap();
+        let skills_instructions = initial_skills.get_instructions().unwrap_or_default();
+        assert!(skills_instructions.contains(&project_skill_name));
+        assert!(!skills_instructions.contains("goose-doc-guide"));
+
+        let builtin_result = initial_skills
+            .call_tool(
+                &ToolCallContext::new("test".to_string(), None, None),
+                "load_skill",
+                Some(serde_json::from_value(json!({"name": "goose-doc-guide"})).unwrap()),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(builtin_result.is_error, Some(true));
+
+        let project_result = initial_skills
+            .call_tool(
+                &ToolCallContext::new("test".to_string(), None, None),
+                "load_skill",
+                Some(serde_json::from_value(json!({"name": project_skill_name})).unwrap()),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_ne!(project_result.is_error, Some(true));
         attach_prepared_skills_client(&agent, initial_skills).await;
 
         let prompt_extensions = agent.extension_manager.get_extensions_info(&project).await;
@@ -6179,6 +6245,67 @@ mod tests {
                 || item.text.as_deref() == Some("internal grind details")
         }));
         assert!(message_to_timeline_items(&hidden, true).is_empty());
+    }
+
+    #[test]
+    fn persisted_timeline_enforces_content_audience_boundaries() {
+        let audience_text = |text: &str, audience| {
+            MessageContent::Text(
+                RawTextContent {
+                    text: text.to_string(),
+                    meta: None,
+                }
+                .no_annotation()
+                .with_audience(vec![audience]),
+            )
+        };
+
+        let mixed_text = Message::assistant()
+            .with_id("mixed-text")
+            .with_text("visible response")
+            .with_content(audience_text("provider-private-state", McpRole::Assistant))
+            .with_content(audience_text(" plus visible detail", McpRole::User));
+        let persisted_items =
+            conversation_to_timeline_items(&Conversation::new_unvalidated(
+                vec![mixed_text.clone()],
+            ));
+        let live_items = message_to_timeline_items(&mixed_text.user_visible_content(), true);
+        assert_eq!(persisted_items.len(), 1);
+        assert_eq!(
+            persisted_items[0].text.as_deref(),
+            Some("visible response plus visible detail")
+        );
+        assert!(!persisted_items[0]
+            .text
+            .as_deref()
+            .unwrap()
+            .contains("provider-private-state"));
+        assert!(timeline_projection_matches(
+            &live_items,
+            &persisted_items,
+            true
+        ));
+
+        let assistant_only = Message::assistant()
+            .with_id("assistant-only")
+            .with_content(audience_text("provider-private-state", McpRole::Assistant));
+        assert!(message_to_timeline_items(&assistant_only, false).is_empty());
+
+        let mixed_tool_result = Message::user().with_tool_response(
+            "mixed-tool",
+            Ok(rmcp::model::CallToolResult::success(vec![
+                rmcp::model::Content::text("visible tool output")
+                    .with_audience(vec![McpRole::User]),
+                rmcp::model::Content::text("provider-private-tool-state")
+                    .with_audience(vec![McpRole::Assistant]),
+            ])),
+        );
+        let tool_items = message_to_timeline_items(&mixed_tool_result, false);
+        assert_eq!(tool_items.len(), 1);
+        let output = tool_items[0].output.as_ref().unwrap();
+        assert_eq!(output["text"], "visible tool output");
+        assert_eq!(output["content"].as_array().unwrap().len(), 1);
+        assert!(!output.to_string().contains("provider-private-tool-state"));
     }
 
     #[test]

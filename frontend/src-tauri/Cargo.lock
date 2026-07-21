@@ -276,7 +276,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "parking_lot",
  "percent-encoding",
- "windows-sys 0.60.2",
+ "windows-sys 0.59.0",
  "x11rb",
 ]
 
@@ -1818,7 +1818,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2100,7 +2100,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2813,8 +2813,8 @@ dependencies = [
 
 [[package]]
 name = "goose"
-version = "1.42.0"
-source = "git+https://github.com/aaif-goose/goose.git?rev=3c1fdd692cc8aaa5f09b9175410c09a09d4dfe49#3c1fdd692cc8aaa5f09b9175410c09a09d4dfe49"
+version = "1.44.0"
+source = "git+https://github.com/aaif-goose/goose.git?rev=c3111c71cd682ed1d115741677f0ca9946c51499#c3111c71cd682ed1d115741677f0ca9946c51499"
 dependencies = [
  "agent-client-protocol",
  "agent-client-protocol-http",
@@ -2899,7 +2899,6 @@ dependencies = [
  "unicode-normalization",
  "url",
  "urlencoding",
- "utoipa",
  "uuid",
  "v_htmlescape",
  "webbrowser",
@@ -2909,8 +2908,8 @@ dependencies = [
 
 [[package]]
 name = "goose-acp-macros"
-version = "1.42.0"
-source = "git+https://github.com/aaif-goose/goose.git?rev=3c1fdd692cc8aaa5f09b9175410c09a09d4dfe49#3c1fdd692cc8aaa5f09b9175410c09a09d4dfe49"
+version = "1.44.0"
+source = "git+https://github.com/aaif-goose/goose.git?rev=c3111c71cd682ed1d115741677f0ca9946c51499#c3111c71cd682ed1d115741677f0ca9946c51499"
 dependencies = [
  "quote",
  "syn 2.0.108",
@@ -2919,7 +2918,7 @@ dependencies = [
 [[package]]
 name = "goose-download-manager"
 version = "0.1.0-alpha.0"
-source = "git+https://github.com/aaif-goose/goose.git?rev=3c1fdd692cc8aaa5f09b9175410c09a09d4dfe49#3c1fdd692cc8aaa5f09b9175410c09a09d4dfe49"
+source = "git+https://github.com/aaif-goose/goose.git?rev=c3111c71cd682ed1d115741677f0ca9946c51499#c3111c71cd682ed1d115741677f0ca9946c51499"
 dependencies = [
  "anyhow",
  "once_cell",
@@ -2927,13 +2926,12 @@ dependencies = [
  "serde",
  "tokio",
  "tracing",
- "utoipa",
 ]
 
 [[package]]
 name = "goose-provider-types"
 version = "0.1.0-alpha.0"
-source = "git+https://github.com/aaif-goose/goose.git?rev=3c1fdd692cc8aaa5f09b9175410c09a09d4dfe49#3c1fdd692cc8aaa5f09b9175410c09a09d4dfe49"
+source = "git+https://github.com/aaif-goose/goose.git?rev=c3111c71cd682ed1d115741677f0ca9946c51499#c3111c71cd682ed1d115741677f0ca9946c51499"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -2953,14 +2951,13 @@ dependencies = [
  "tokio",
  "tracing",
  "unicode-normalization",
- "utoipa",
  "uuid",
 ]
 
 [[package]]
 name = "goose-providers"
 version = "0.1.0-alpha.0"
-source = "git+https://github.com/aaif-goose/goose.git?rev=3c1fdd692cc8aaa5f09b9175410c09a09d4dfe49#3c1fdd692cc8aaa5f09b9175410c09a09d4dfe49"
+source = "git+https://github.com/aaif-goose/goose.git?rev=c3111c71cd682ed1d115741677f0ca9946c51499#c3111c71cd682ed1d115741677f0ca9946c51499"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -2979,13 +2976,12 @@ dependencies = [
  "tracing",
  "url",
  "urlencoding",
- "utoipa",
 ]
 
 [[package]]
 name = "goose-sdk-types"
 version = "0.1.0-alpha.0"
-source = "git+https://github.com/aaif-goose/goose.git?rev=3c1fdd692cc8aaa5f09b9175410c09a09d4dfe49#3c1fdd692cc8aaa5f09b9175410c09a09d4dfe49"
+source = "git+https://github.com/aaif-goose/goose.git?rev=c3111c71cd682ed1d115741677f0ca9946c51499#c3111c71cd682ed1d115741677f0ca9946c51499"
 dependencies = [
  "agent-client-protocol",
  "agent-client-protocol-schema",
@@ -3333,7 +3329,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.62.2",
+ "windows-core 0.61.2",
 ]
 
 [[package]]
@@ -4359,7 +4355,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4511,7 +4507,7 @@ version = "5.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "51e219e79014df21a225b1860a479e2dcd7cbd9130f4defd4bd0e191ea31d67d"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.21.7",
  "chrono",
  "getrandom 0.2.16",
  "http",
@@ -5593,7 +5589,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.60.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -6136,7 +6132,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -6194,7 +6190,7 @@ dependencies = [
  "security-framework 3.5.1",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -7747,7 +7743,7 @@ dependencies = [
  "getrandom 0.3.4",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -8657,30 +8653,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 
 [[package]]
-name = "utoipa"
-version = "4.2.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c5afb1a60e207dca502682537fefcfd9921e71d0b83e9576060f09abc6efab23"
-dependencies = [
- "indexmap 2.12.0",
- "serde",
- "serde_json",
- "utoipa-gen",
-]
-
-[[package]]
-name = "utoipa-gen"
-version = "4.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "20c24e8ab68ff9ee746aad22d39b5535601e6416d1b0feeabf78be986a5c4392"
-dependencies = [
- "proc-macro-error",
- "proc-macro2",
- "quote",
- "syn 2.0.108",
-]
-
-[[package]]
 name = "uuid"
 version = "1.23.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9087,7 +9059,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

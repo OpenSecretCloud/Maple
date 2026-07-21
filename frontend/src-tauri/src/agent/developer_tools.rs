@@ -5,6 +5,7 @@ use goose::agents::platform_extensions::developer::shell::{ShellOutput, ShellPar
 use goose::agents::platform_extensions::developer::DeveloperClient;
 use goose::agents::platform_extensions::PlatformExtensionContext;
 use goose::agents::ToolCallContext;
+use goose::config::{Config, DEFAULT_EXTENSION_TIMEOUT};
 use goose::conversation::message::{Message, MessageUsage};
 use goose::providers::base::Provider;
 #[cfg(unix)]
@@ -167,6 +168,7 @@ impl MapleDeveloperClient {
                             command: probe.to_string(),
                             timeout_secs: Some(5),
                         },
+                        None,
                         None,
                         CancellationToken::new(),
                     )
@@ -452,6 +454,7 @@ impl McpClientTrait for MapleDeveloperClient {
                     params,
                     working_dir,
                     login_path.as_deref(),
+                    Some(&ctx.session_id),
                     cancel_token,
                 )
                 .await);
@@ -760,17 +763,20 @@ async fn run_bounded_shell(
     params: ShellParams,
     working_dir: Option<&Path>,
     login_path: Option<&str>,
+    session_id: Option<&str>,
     cancel_token: CancellationToken,
 ) -> CallToolResult {
     if params.command.trim().is_empty() {
         return shell_error_result("Command cannot be empty.", None);
     }
 
+    let timeout_secs = Some(resolve_bounded_shell_timeout(params.timeout_secs));
     let execution = match execute_bounded_shell(
         &params.command,
-        params.timeout_secs,
+        timeout_secs,
         working_dir,
         login_path,
+        session_id,
         cancel_token,
     )
     .await
@@ -778,7 +784,15 @@ async fn run_bounded_shell(
         Ok(execution) => execution,
         Err(error) => return shell_error_result(error, None),
     };
-    render_bounded_shell_result(execution, params.timeout_secs)
+    render_bounded_shell_result(execution, timeout_secs)
+}
+
+fn resolve_bounded_shell_timeout(timeout_secs: Option<u64>) -> u64 {
+    timeout_secs.unwrap_or_else(|| {
+        Config::global()
+            .get_goose_default_extension_timeout()
+            .unwrap_or(DEFAULT_EXTENSION_TIMEOUT)
+    })
 }
 
 async fn execute_bounded_shell(
@@ -786,9 +800,11 @@ async fn execute_bounded_shell(
     timeout_secs: Option<u64>,
     working_dir: Option<&Path>,
     login_path: Option<&str>,
+    session_id: Option<&str>,
     cancel_token: CancellationToken,
 ) -> Result<BoundedShellExecution, String> {
-    let mut command = build_bounded_shell_command(command_line, working_dir, login_path);
+    let mut command =
+        build_bounded_shell_command(command_line, working_dir, login_path, session_id);
     command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -1000,6 +1016,7 @@ fn build_bounded_shell_command(
     command_line: &str,
     working_dir: Option<&Path>,
     login_path: Option<&str>,
+    session_id: Option<&str>,
 ) -> tokio::process::Command {
     #[cfg(windows)]
     let mut command = {
@@ -1047,6 +1064,7 @@ fn build_bounded_shell_command(
             if let Some(path) = login_path {
                 command.arg(format!("--env=PATH={path}"));
             }
+            apply_flatpak_session_environment(&mut command, session_id);
             command.arg(shell).args(["-c", command_line]);
             command
         } else {
@@ -1058,13 +1076,37 @@ fn build_bounded_shell_command(
             if let Some(path) = login_path {
                 command.env("PATH", path);
             }
+            apply_session_environment(&mut command, session_id);
             command
         }
     };
 
+    #[cfg(windows)]
+    apply_session_environment(&mut command, session_id);
+
     #[cfg(unix)]
     configure_subprocess(&mut command);
     command
+}
+
+fn apply_session_environment(command: &mut tokio::process::Command, session_id: Option<&str>) {
+    if let Some(session_id) = session_id.filter(|id| !id.is_empty()) {
+        command.env("AGENT_SESSION_ID", session_id);
+    } else {
+        command.env_remove("AGENT_SESSION_ID");
+    }
+}
+
+#[cfg(not(windows))]
+fn apply_flatpak_session_environment(
+    command: &mut tokio::process::Command,
+    session_id: Option<&str>,
+) {
+    if let Some(session_id) = session_id.filter(|id| !id.is_empty()) {
+        command.arg(format!("--env=AGENT_SESSION_ID={session_id}"));
+    } else {
+        command.arg("--unset-env=AGENT_SESSION_ID");
+    }
 }
 
 #[cfg(not(windows))]
@@ -2690,6 +2732,7 @@ mod tests {
                 },
                 None,
                 std::env::var("PATH").ok().as_deref(),
+                None,
                 CancellationToken::new(),
             ),
         )
@@ -2701,6 +2744,62 @@ mod tests {
         assert!(output.output_truncated);
         assert!(output.stdout.len() + output.stderr.len() <= MAX_SHELL_OUTPUT_BYTES);
         assert!(text(&result).contains("output exceeded"));
+    }
+
+    #[test]
+    fn shell_omitted_timeout_uses_goose_default_and_zero_remains_unbounded() {
+        let configured_default = Config::global()
+            .get_goose_default_extension_timeout()
+            .unwrap_or(DEFAULT_EXTENSION_TIMEOUT);
+        assert_eq!(resolve_bounded_shell_timeout(None), configured_default);
+        assert_eq!(resolve_bounded_shell_timeout(Some(42)), 42);
+        assert_eq!(resolve_bounded_shell_timeout(Some(0)), 0);
+    }
+
+    #[test]
+    fn shell_session_environment_is_set_and_stale_values_are_removed() {
+        let mut command = tokio::process::Command::new("unused");
+        apply_session_environment(&mut command, Some("maple-task-123"));
+        let session_value = command
+            .as_std()
+            .get_envs()
+            .find(|(key, _)| key.to_string_lossy() == "AGENT_SESSION_ID")
+            .and_then(|(_, value)| value)
+            .and_then(|value| value.to_str());
+        assert_eq!(session_value, Some("maple-task-123"));
+
+        apply_session_environment(&mut command, None);
+        let cleared_value = command
+            .as_std()
+            .get_envs()
+            .find(|(key, _)| key.to_string_lossy() == "AGENT_SESSION_ID")
+            .map(|(_, value)| value);
+        assert_eq!(cleared_value, Some(None));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn shell_tool_forwards_the_current_agent_session_id() {
+        let temp = TestDir::new();
+        let client =
+            MapleDeveloperClient::new(test_context(temp.path().join("sessions")), true).unwrap();
+        let context = ToolCallContext::new("maple-task-456".to_string(), None, None);
+        let result = client
+            .call_tool(
+                &context,
+                "shell",
+                Some(object!({
+                    "command": "printf %s \"$AGENT_SESSION_ID\"",
+                    "timeout_secs": 2
+                })),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let output: ShellOutput =
+            serde_json::from_value(result.structured_content.clone().unwrap()).unwrap();
+        assert_eq!(result.is_error, Some(false));
+        assert_eq!(output.stdout, "maple-task-456");
     }
 
     #[cfg(unix)]
@@ -2719,6 +2818,7 @@ mod tests {
                 },
                 None,
                 std::env::var("PATH").ok().as_deref(),
+                None,
                 CancellationToken::new(),
             ),
         )
@@ -2753,6 +2853,7 @@ mod tests {
                 },
                 None,
                 std::env::var("PATH").ok().as_deref(),
+                None,
                 CancellationToken::new(),
             ),
         )
@@ -2787,6 +2888,7 @@ mod tests {
             },
             None,
             std::env::var("PATH").ok().as_deref(),
+            None,
             CancellationToken::new(),
         )
         .await;
@@ -2824,6 +2926,7 @@ mod tests {
             },
             None,
             std::env::var("PATH").ok().as_deref(),
+            None,
             cancel_token,
         )
         .await;
@@ -2848,6 +2951,7 @@ mod tests {
             },
             None,
             std::env::var("PATH").ok().as_deref(),
+            None,
             CancellationToken::new(),
         )
         .await;
