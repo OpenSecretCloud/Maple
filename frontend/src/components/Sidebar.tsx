@@ -534,6 +534,7 @@ export function SidebarToggle({ onToggle }: { onToggle: () => void }) {
     <button
       className="h-9 w-9 flex items-center justify-center text-foreground hover:text-foreground/70 transition-colors"
       onClick={onToggle}
+      aria-label="Open menu"
     >
       <Menu className="h-4 w-4" />
     </button>

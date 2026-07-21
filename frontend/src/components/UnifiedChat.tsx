@@ -1367,15 +1367,17 @@ MessageList.displayName = "MessageList";
 type UnifiedChatProps = {
   standaloneMobile?: boolean;
   standaloneMobileConversationId?: string | null;
-  onMobileBack?: () => void;
+  mobileNavigationControl?: "back" | "menu";
+  onMobileNavigation?: () => void;
   onMobileOpenNewChat?: (projectId: string | null) => void;
-  onMobileConversationCreated?: (conversationId: string) => void;
+  onMobileConversationCreated?: (conversationId: string) => boolean;
 };
 
 export function UnifiedChat({
   standaloneMobile = false,
   standaloneMobileConversationId,
-  onMobileBack,
+  mobileNavigationControl = "back",
+  onMobileNavigation,
   onMobileOpenNewChat,
   onMobileConversationCreated
 }: UnifiedChatProps = {}) {
@@ -2980,17 +2982,22 @@ export function UnifiedChat({
           if (responseLifecycleRef.current.shouldIgnoreErrors()) return;
 
           conversationId = newConv.id;
+          const mobileNavigationAccepted = onMobileConversationCreated?.(conversationId) ?? true;
+          if (standaloneMobile && !mobileNavigationAccepted) return;
+
           setConversation(newConv as Conversation);
 
-          // Update URL with new conversation ID
-          const usp = new URLSearchParams(window.location.search);
-          usp.set("conversation_id", conversationId);
-          window.history.replaceState(null, "", `${window.location.pathname}?${usp.toString()}`);
+          // The standalone mobile shell owns its versioned URL/history state. Other layouts keep
+          // the existing direct URL update.
+          if (!standaloneMobile || !onMobileConversationCreated) {
+            const usp = new URLSearchParams(window.location.search);
+            usp.set("conversation_id", conversationId);
+            window.history.replaceState(null, "", `${window.location.pathname}?${usp.toString()}`);
+          }
 
           // Update local state but flag that we just created it
           setIsNewConversationJustCreated(true);
           setChatId(conversationId);
-          onMobileConversationCreated?.(conversationId);
 
           // Trigger sidebar refresh to show the new conversation
           window.dispatchEvent(new Event("conversationcreated"));
@@ -3293,6 +3300,7 @@ export function UnifiedChat({
       clearAllAttachments,
       processStreamingResponse,
       isWebSearchEnabled,
+      standaloneMobile,
       onMobileConversationCreated
     ]
   );
@@ -3309,6 +3317,23 @@ export function UnifiedChat({
   const sidebarLayoutStyle = getSidebarLayoutStyle({
     offsetContent: !standaloneMobile && isSidebarOpen
   });
+  const headerNavigationButton =
+    standaloneMobile && onMobileNavigation ? (
+      mobileNavigationControl === "menu" ? (
+        <SidebarToggle onToggle={onMobileNavigation} />
+      ) : (
+        <button
+          type="button"
+          className="flex h-9 w-9 items-center justify-center text-foreground transition-colors hover:text-foreground/70"
+          onClick={onMobileNavigation}
+          aria-label="Back"
+        >
+          <ArrowLeft className="h-4 w-4" />
+        </button>
+      )
+    ) : (
+      <SidebarToggle onToggle={toggleSidebar} />
+    );
 
   return (
     <div
@@ -3358,18 +3383,7 @@ export function UnifiedChat({
         {/* Sidebar toggle + wordmark — fixed except on compact layouts while chatting (two-row header below) */}
         {!isSidebarOpen && !(isCompactLayout && messages.length > 0) && (
           <div className="fixed left-4 top-[9.5px] z-20 flex items-center gap-1.5">
-            {standaloneMobile && onMobileBack ? (
-              <button
-                type="button"
-                className="flex h-9 w-9 items-center justify-center text-foreground transition-colors hover:text-foreground/70"
-                onClick={onMobileBack}
-                aria-label="Back"
-              >
-                <ArrowLeft className="h-4 w-4" />
-              </button>
-            ) : (
-              <SidebarToggle onToggle={toggleSidebar} />
-            )}
+            {headerNavigationButton}
             <MapleWordmark
               className="h-4 w-auto animate-in fade-in-0 slide-in-from-left-1 duration-300"
               aria-hidden
@@ -3381,18 +3395,7 @@ export function UnifiedChat({
         {messages.length > 0 &&
           (isLandscapeMobile && !isSidebarOpen ? (
             <div className="z-10 flex shrink-0 items-center gap-2 bg-background px-1 py-1 pr-4">
-              {standaloneMobile && onMobileBack ? (
-                <button
-                  type="button"
-                  className="flex h-9 w-9 items-center justify-center text-foreground transition-colors hover:text-foreground/70"
-                  onClick={onMobileBack}
-                  aria-label="Back"
-                >
-                  <ArrowLeft className="h-4 w-4" />
-                </button>
-              ) : (
-                <SidebarToggle onToggle={toggleSidebar} />
-              )}
+              {headerNavigationButton}
               <div className="min-w-0 overflow-hidden">
                 <MapleWordmark className="h-4 w-auto max-w-full" aria-hidden />
               </div>
@@ -3417,18 +3420,7 @@ export function UnifiedChat({
             <div className="z-10 flex shrink-0 flex-col gap-2 bg-background pb-2 pl-1 pr-4 pt-2">
               <div className="flex items-center justify-between gap-3">
                 <div className="flex min-w-0 flex-1 items-center gap-1.5">
-                  {standaloneMobile && onMobileBack ? (
-                    <button
-                      type="button"
-                      className="flex h-9 w-9 items-center justify-center text-foreground transition-colors hover:text-foreground/70"
-                      onClick={onMobileBack}
-                      aria-label="Back"
-                    >
-                      <ArrowLeft className="h-4 w-4" />
-                    </button>
-                  ) : (
-                    <SidebarToggle onToggle={toggleSidebar} />
-                  )}
+                  {headerNavigationButton}
                   <div className="min-w-0 overflow-hidden">
                     <MapleWordmark className="h-4 w-auto max-w-full" aria-hidden />
                   </div>

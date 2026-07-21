@@ -3,7 +3,12 @@ export const MOBILE_NAVIGATION_HISTORY_KEY = "__mapleMobileNavigation";
 export type MobileNavigationPage =
   | { type: "menu"; instanceId: number }
   | { type: "new-chat"; instanceId: number; projectId: string | null }
-  | { type: "chat"; instanceId: number; conversationId: string }
+  | {
+      type: "chat";
+      instanceId: number;
+      conversationId: string;
+      openedFromNewChat?: true;
+    }
   | { type: "project"; instanceId: number; projectId: string };
 
 export type MobileNavigationSnapshot = {
@@ -33,7 +38,10 @@ function isPage(value: unknown): value is MobileNavigationPage {
     case "new-chat":
       return page.projectId === null || isNonEmptyString(page.projectId);
     case "chat":
-      return isNonEmptyString(page.conversationId);
+      return (
+        isNonEmptyString(page.conversationId) &&
+        (page.openedFromNewChat === undefined || page.openedFromNewChat === true)
+      );
     case "project":
       return isNonEmptyString(page.projectId);
     default:
@@ -61,7 +69,12 @@ export function createInitialMobileNavigation(
   { nativeFreshLaunch = false }: { nativeFreshLaunch?: boolean } = {}
 ): MobileNavigationSnapshot {
   if (nativeFreshLaunch) {
-    return { version: 1, stack: [menuPage()], hasInAppParent: false, historyIndex: 0 };
+    return {
+      version: 1,
+      stack: [menuPage(), { type: "new-chat", instanceId: 1, projectId: null }],
+      hasInAppParent: false,
+      historyIndex: 0
+    };
   }
 
   const page = pageFromHref(href, 1);
@@ -125,18 +138,33 @@ export function pushMobilePage(
 
 export function promoteNewChatToConversation(
   snapshot: MobileNavigationSnapshot,
+  newChatInstanceId: number,
   conversationId: string
 ): MobileNavigationSnapshot {
   const activePage = snapshot.stack[snapshot.stack.length - 1];
-  if (activePage.type !== "new-chat") return snapshot;
+  if (activePage.type !== "new-chat" || activePage.instanceId !== newChatInstanceId)
+    return snapshot;
 
   return {
     ...snapshot,
     stack: [
       ...snapshot.stack.slice(0, -1),
-      { type: "chat", instanceId: activePage.instanceId, conversationId }
+      {
+        type: "chat",
+        instanceId: activePage.instanceId,
+        conversationId,
+        openedFromNewChat: true
+      }
     ]
   };
+}
+
+export function mobilePageUsesMenuButton(page: MobileNavigationPage) {
+  return page.type === "new-chat" || (page.type === "chat" && page.openedFromNewChat === true);
+}
+
+export function mobileMenuHistoryDelta(snapshot: MobileNavigationSnapshot) {
+  return snapshot.hasInAppParent && snapshot.historyIndex > 0 ? -snapshot.historyIndex : null;
 }
 
 export function mobilePageHref(page: MobileNavigationPage): string {

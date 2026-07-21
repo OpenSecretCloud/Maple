@@ -4,7 +4,9 @@ import {
   activeMobilePage,
   createInitialMobileNavigation,
   createMobileHistoryState,
+  mobileMenuHistoryDelta,
   mobilePageHref,
+  mobilePageUsesMenuButton,
   pageFromHref,
   promoteNewChatToConversation,
   pushMobilePage,
@@ -42,12 +44,15 @@ describe("mobile navigation URL resolution", () => {
     });
   });
 
-  it("starts a fresh native launch at the main menu even with a stale home URL", () => {
+  it("starts a fresh native launch on New Chat even with a stale home URL", () => {
     expect(
       createInitialMobileNavigation("/?conversation_id=stale", { nativeFreshLaunch: true })
     ).toEqual({
       version: 1,
-      stack: [{ type: "menu", instanceId: 0 }],
+      stack: [
+        { type: "menu", instanceId: 0 },
+        { type: "new-chat", instanceId: 1, projectId: null }
+      ],
       hasInAppParent: false,
       historyIndex: 0
     });
@@ -123,13 +128,75 @@ describe("transient new chat", () => {
       instanceId: 8,
       projectId: "project_8"
     });
-    const conversation = promoteNewChatToConversation(newChat, "conv_8");
+    const conversation = promoteNewChatToConversation(newChat, 8, "conv_8");
 
     expect(activeMobilePage(conversation)).toEqual({
       type: "chat",
       instanceId: 8,
-      conversationId: "conv_8"
+      conversationId: "conv_8",
+      openedFromNewChat: true
     });
     expect(mobilePageHref(activeMobilePage(conversation))).toBe("/?conversation_id=conv_8");
+  });
+
+  it("keeps the menu control after New Chat becomes a conversation", () => {
+    const initial = createInitialMobileNavigation("/", { nativeFreshLaunch: true });
+    const promoted = promoteNewChatToConversation(initial, 1, "conv_new");
+
+    expect(mobilePageUsesMenuButton(activeMobilePage(initial))).toBe(true);
+    expect(mobilePageUsesMenuButton(activeMobilePage(promoted))).toBe(true);
+    expect(
+      mobilePageUsesMenuButton({
+        type: "chat",
+        instanceId: 4,
+        conversationId: "conv_selected"
+      })
+    ).toBe(false);
+  });
+
+  it("ignores a late creation callback from a New Chat page that is no longer active", () => {
+    const initial = createInitialMobileNavigation("/", { nativeFreshLaunch: true });
+    const replacement = pushMobilePage(initial, {
+      type: "new-chat",
+      instanceId: 2,
+      projectId: null
+    });
+
+    expect(promoteNewChatToConversation(replacement, 1, "conv_late")).toBe(replacement);
+  });
+});
+
+describe("opening the mobile menu", () => {
+  it("returns through all pushed history entries to reach the menu", () => {
+    let snapshot = createInitialMobileNavigation("/");
+    snapshot = pushMobilePage(snapshot, {
+      type: "project",
+      instanceId: 1,
+      projectId: "project_1"
+    });
+    snapshot = pushMobilePage(snapshot, {
+      type: "new-chat",
+      instanceId: 2,
+      projectId: "project_1"
+    });
+
+    expect(mobileMenuHistoryDelta(snapshot)).toBe(-2);
+  });
+
+  it("crosses pushed entries even when the root browser entry was a direct chat", () => {
+    let snapshot = createInitialMobileNavigation("/?conversation_id=direct_chat");
+    snapshot = pushMobilePage(snapshot, {
+      type: "new-chat",
+      instanceId: 2,
+      projectId: null
+    });
+
+    // The navigation shell normalizes that direct-chat root entry to the menu after the jump.
+    expect(mobileMenuHistoryDelta(snapshot)).toBe(-1);
+  });
+
+  it("replaces a root-like native New Chat entry instead of leaving the app", () => {
+    const snapshot = createInitialMobileNavigation("/", { nativeFreshLaunch: true });
+    expect(mobileMenuHistoryDelta(snapshot)).toBeNull();
   });
 });

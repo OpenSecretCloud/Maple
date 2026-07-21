@@ -6,7 +6,8 @@ Core implementation and the iOS edge-swipe stretch goal are complete on the `mob
 branch. Navigation/history, stream-disconnect, and gesture decisions have focused automated
 coverage, and the repository's format, lint, typecheck, test, and production-build checks pass. The
 unchecked acceptance items below require interactive browser or physical iOS/Android validation and
-remain the final release-validation pass.
+remain the final release-validation pass. A mobile main-menu sizing audit is recorded below, but no
+sizing changes are included pending a product decision.
 
 ## Objective
 
@@ -14,7 +15,8 @@ Give compact/mobile layouts a traditional page hierarchy while leaving the exist
 
 - The existing menu becomes a full-screen mobile main menu.
 - Opening a chat or project pushes a detail page over its parent page.
-- Detail pages have a top-left back button.
+- New Chat and chats started from it retain a top-left menu button; destination-based detail pages
+  use a top-left back button.
 - A chat is unmounted after it leaves the screen.
 - Desktop app windows and desktop-width web browsers retain the existing sidebar-and-content layout.
 
@@ -54,9 +56,17 @@ The breakpoints and compact-layout detection logic are not changing. Larger tabl
 
 - Opening a chat pushes a full-screen chat detail page.
 - Opening New Chat pushes a transient new-chat page.
-- The mobile menu/hamburger control becomes a top-left back arrow.
+- A fresh iOS or Android app process starts on New Chat, matching the pre-navigation behavior.
+- New Chat shows the top-left hamburger/menu button.
+- After the first message turns New Chat into a conversation, that conversation retains the
+  hamburger/menu button for that navigation entry.
+- The hamburger button opens the full-screen main menu directly, even when New Chat was opened from
+  another detail page.
+- A chat selected from the main menu or project detail shows a top-left back arrow.
+- A chat loaded directly from its URL also shows a back arrow, with the main menu as its in-app
+  fallback.
 - Existing conversation headers retain the wordmark, conversation title, and New Chat action.
-- The empty new-chat page has a back arrow but does not show a redundant New Chat action.
+- The empty new-chat page does not show a redundant New Chat action.
 - Portrait and short-landscape mobile headers follow the same navigation rules.
 
 ### Mobile project detail
@@ -88,14 +98,18 @@ Changes made later to shared menu content must appear in both the desktop sideba
 
 Use a small mobile navigation stack rather than introducing a second route hierarchy.
 
-- Keep parent pages mounted while a child page is visible.
-- Hide and make covered parent pages non-interactive and inaccessible to assistive technology.
+- Keep non-chat parent surfaces such as the main menu and project detail mounted while a child page
+  is visible.
+- Hide and make those covered parent surfaces non-interactive and inaccessible to assistive
+  technology.
 - Preserve main-menu scroll position, expanded projects, search state, and selection state while a child page is open.
 - Preserve project-detail state while a chat opened from that project is visible.
-- Unmount a chat after its back transition completes.
-- If one chat is replaced by New Chat or another chat, unmount the chat that left the screen.
+- Do not keep a chat mounted merely because it is a parent navigation entry.
+- Unmount a chat after its exit transition completes; if it is replaced by New Chat or another
+  chat, unmount it when it leaves the visible flow.
 
-Keeping the parent page mounted is intentional and matches a native navigation stack. It does not keep a popped chat loaded.
+Keeping non-chat parent surfaces mounted is intentional and matches the useful state-preservation
+part of a native navigation stack. It does not keep a covered or popped chat loaded.
 
 The current root shell already keeps `AuthenticatedHomeContent` mounted and inert behind dedicated settings routes. Reuse that established mounted-surface pattern where practical rather than creating a competing persistence mechanism. Mobile navigation changes must not break the existing return-from-settings behavior managed by `PersistentHomeNavigationProvider`.
 
@@ -113,6 +127,8 @@ Continue using the current URLs:
 
 - On compact/mobile layouts, a fresh load of `/` shows the mobile main menu.
 - On desktop layouts, `/` keeps its existing new-chat behavior with the sidebar visible.
+- A fresh native iOS or Android launch is the exception: it normalizes to `/` and opens transient
+  New Chat above the main-menu root.
 
 ### Existing chats and projects
 
@@ -129,7 +145,7 @@ New Chat has no durable URL until a conversation exists:
 - Push transient in-memory browser history state without changing `/`.
 - Do not reconstruct the transient new-chat screen from that history state during a full document reload.
 - On the first successful send, continue replacing the current URL with the newly created `conversation_id`.
-- Back before the first send returns to the prior in-app page.
+- The hamburger button opens the main menu before or after the first send.
 - Reloading `/` on mobile returns to the main menu.
 
 The exact internal `history.state` shape is an implementation detail and should be centralized rather than spread across components.
@@ -138,11 +154,13 @@ The exact internal `history.state` shape is an implementation detail and should 
 
 All mobile surfaces use one shared back-navigation flow. Do not design separate flows for mobile web, iOS, or Android.
 
-- The top-left back arrow returns to the previous in-app page.
+- The top-left back arrow returns to the previous destination-based in-app page.
+- The top-left hamburger button on New Chat and chats started from it opens the main menu directly.
 - A chat opened from the main menu returns to the main menu.
 - A chat opened from project detail returns to project detail.
-- A new chat opened from an existing chat may return to that previous chat; the previous chat is reloaded when remounted.
 - A chat loaded directly from a URL with no in-app parent returns to the mobile main menu instead of sending the user out of Maple.
+- The iOS left-edge gesture follows the visible control: it pops to the previous page from a Back
+  state and opens the main menu directly from a hamburger state.
 - Browser back/forward navigation and the in-app back button must resolve through the same centralized navigation state.
 - Do not plan Android-specific native navigation handling. Verify the shared browser-history behavior on Android and address only demonstrated platform bugs.
 
@@ -156,7 +174,7 @@ All mobile surfaces use one shared back-navigation flow. Do not design separate 
 ### iOS and Android apps
 
 - If the app process remains in memory, preserve the current page through backgrounding and foregrounding.
-- If the app process launches fresh, start on the mobile main menu.
+- If the app process launches fresh, start on New Chat above the mobile main-menu root.
 - Do not persist the active navigation page across native process restarts.
 - Existing non-navigation deep-link handling remains outside this feature's scope.
 
@@ -221,20 +239,21 @@ Compact Settings follows the same root/detail hierarchy and paired motion:
 1. Extend the current authenticated-home shell with a compact-layout navigation stack that always provides the mobile main-menu parent page.
 2. Centralize interpretation of the existing URL plus transient in-memory history state.
 3. Represent main menu, new chat, existing chat, and project detail without adding routes or query parameters.
-4. Keep parent pages mounted and mark covered pages inert/hidden appropriately.
+4. Keep non-chat parent surfaces mounted and mark covered pages inert/hidden appropriately; do not
+   retain covered chats.
 5. Preserve the existing persistent-home URL capture and return flow used by settings routes.
 
 ### Phase 3: Page headers and back flow
 
-1. Replace the mobile chat hamburger with the shared back button.
-2. Add the back button to the empty new-chat header.
+1. Keep the hamburger/menu button on New Chat and conversations started from it.
+2. Use the shared back button for chats selected from the menu or project detail.
 3. Replace the mobile project-detail hamburger with the same back button.
 4. Implement the direct-URL fallback to the main menu.
-5. Synchronize header back, browser history back/forward, and transient new-chat history.
+5. Synchronize header controls, browser history back/forward, and transient new-chat history.
 
 ### Phase 4: Unmount lifecycle
 
-1. Unmount popped chat pages after their exit transition.
+1. Unmount chat pages after they are popped or replaced by another chat/New Chat surface.
 2. Disconnect local streaming work without canceling server-side processing.
 3. Confirm reopening uses the existing load-and-poll flow.
 4. Prevent duplicate prompt submission or duplicate conversation creation during back/forward transitions.
@@ -251,7 +270,7 @@ Compact Settings follows the same root/detail hierarchy and paired motion:
 
 1. Ensure web reloads honor the current URL.
 2. Ensure native resume preserves the in-memory page.
-3. Ensure a fresh native launch starts at the main menu.
+3. Ensure a fresh native launch starts on New Chat.
 4. Validate the existing compact breakpoint and short-landscape behavior.
 5. Complete desktop and menu-behavior regression testing.
 
@@ -275,9 +294,50 @@ No backend, database, or OpenSecret API change is expected.
 
 ## Gap Analysis
 
+### Mobile main-menu sizing audit — decision pending
+
+The full-screen menu currently reuses the desktop sidebar's dimensions as well as its content. That
+keeps the codebase simple, but it means the content grows from a roughly 296-pixel-wide rail to a
+roughly 390–430-pixel-wide phone surface while most vertical dimensions remain desktop-dense.
+
+Measured from the current shared component styles:
+
+- Base menu and list text is 14 pixels; section headings are 12 pixels.
+- New Chat, Search, and New Project are approximately 32–33 pixels tall with 16-pixel icons.
+- Project and chat rows are approximately 29 pixels tall.
+- Visible mobile row-overflow controls are approximately 28 by 28 pixels.
+- Search and Settings controls are 36 pixels tall; the search clear control has only a 16-pixel
+  icon-sized hit area.
+- Usage-card copy ranges from 9 to 10 pixels.
+- The page-mode header loses the desktop-only 36-pixel close control, leaving its height largely
+  defined by the 16-pixel wordmark and 12/8-pixel vertical padding.
+- The history area uses 16 pixels of left inset and 8 pixels of right inset on mobile.
+
+This supports the physical-device feedback that the full-screen menu feels too small: its available
+width increases substantially, but its type, icons, row heights, and tap targets do not. Most of the
+primary interactive targets are also below the familiar 44-point iOS touch-target convention.
+
+If a sizing pass is approved, the smallest coherent change would use compact-layout responsive
+classes inside the existing shared components rather than creating mobile-only menu markup:
+
+1. Give primary actions, search, project/chat rows, overflow controls, and Settings a 44-pixel
+   minimum touch target on compact layouts.
+2. Raise primary and list labels to 16 pixels and their icons to roughly 18–20 pixels.
+3. Give the search clear action its own full touch target and expand row title clearance alongside
+   the larger overflow control.
+4. Make the page-mode header at least 44 pixels tall, increase the wordmark modestly, and use
+   symmetric 16–20-pixel horizontal insets.
+5. Keep 12-pixel section headings, but raise usage-card copy to roughly 11–12 pixels.
+6. Verify bottom safe-area spacing, short landscape, and accessibility text sizing on devices.
+
+No recommendation above is implemented in the current branch. Desktop dimensions can remain
+unchanged by scoping any approved sizing adjustments to the existing compact-layout presentation.
+
 ### Unsent composer state
 
-Behavior is intentionally undecided when a chat or transient new-chat page is unmounted with unsent content.
+The implemented behavior discards unsent composer state when a chat or transient New Chat page is
+unmounted. Whether that state should be preserved is an unresolved follow-up, not part of this
+feature's definition of done.
 
 Relevant transient state includes:
 
@@ -286,14 +346,9 @@ Relevant transient state includes:
 - Selected documents
 - Composer-specific UI state
 
-An in-memory `draftMessages` mechanism exists in local state, but `UnifiedChat` does not currently use it. Do not silently connect, remove, or redesign that mechanism as part of this navigation work.
-
-Before implementation is finalized, record the actual resulting behavior and decide whether preserving unsent text should become a separate follow-up. Draft persistence is not currently part of the feature's definition of done.
-
-The implemented core behavior is that unsent composer text and attachments are discarded when a
-chat or transient New Chat page is popped and unmounted. Preserving them should be considered as a
-separate follow-up; this implementation does not connect or change the existing unused
-`draftMessages` state.
+An in-memory `draftMessages` mechanism exists in local state, but `UnifiedChat` does not currently
+use it. This implementation does not connect, remove, or redesign that unused state. Preserving
+unsent text or attachments should be considered separately.
 
 ## Stretch Goal: iOS Edge-Swipe Back
 
@@ -307,11 +362,14 @@ Expected behavior:
 
 - Begin only from the left screen edge.
 - Track horizontal finger movement while rejecting primarily vertical gestures.
-- Move the current page with the finger and reveal the previous mounted page underneath.
+- Move the current page with the finger and reveal its destination underneath.
+- In a back-arrow state, reveal and pop to the previous mounted page.
+- In a hamburger state, reveal and open the main menu directly, skipping intermediate detail
+  layers.
 - Complete based on distance and/or velocity.
 - Snap back cleanly when canceled.
 - Use the same centralized back action as the header button.
-- Unmount the popped chat after the completed gesture.
+- Unmount the current chat after the completed gesture.
 - Avoid intercepting controls or horizontally scrollable content away from the left-edge activation area.
 
 Implementation details:
@@ -322,6 +380,8 @@ Implementation details:
   it animates back to the current page.
 - It reuses the existing history/back destinations and skips a second non-interactive pop animation
   after the finger-driven transition completes.
+- A hamburger-state gesture crosses any transient in-app history entries and normalizes the root
+  destination to the main menu.
 - A previous chat is mounted only when needed to reveal it during an interactive gesture. Canceling
   the gesture unmounts that preview; completing it leaves the popped chat unmounted.
 - Navigation locks can opt a surface out of gesture capture, and other controls can use
@@ -347,6 +407,7 @@ the iOS Tauri runtime.
 - Changing persistent return-to-home behavior
 - Changing Agent Mode availability or navigation
 - Adding draft persistence
+- Implementing the mobile main-menu sizing recommendations before product approval
 
 ## Definition of Done
 
@@ -365,7 +426,8 @@ The core feature is complete when every agreed non-stretch behavior is implement
 
 ### Mobile hierarchy
 
-- [x] A fresh mobile root load shows the full-screen main menu.
+- [x] A fresh mobile web root load shows the full-screen main menu.
+- [x] A fresh native app process starts on New Chat above the main-menu root.
 - [x] The mobile main menu has no sidebar collapse control.
 - [x] New Chat opens a transient full-screen new-chat page without changing the URL.
 - [x] Existing chats open as full-screen detail pages using the existing `conversation_id` URL.
@@ -375,7 +437,9 @@ The core feature is complete when every agreed non-stretch behavior is implement
 
 ### Back behavior
 
-- [x] Mobile chat, new-chat, and project-detail pages show the agreed back button.
+- [x] New Chat and chats started from it show the hamburger/menu button.
+- [x] Chats selected from the menu or project detail and project-detail pages show the back button.
+- [x] The hamburger opens the main menu directly, including from a project-scoped New Chat.
 - [x] Back returns to the correct previous in-app page.
 - [x] Directly loaded chat URLs fall back to the mobile main menu from the in-app back button.
 - [x] Browser back and forward remain synchronized with the visible mobile page.
@@ -387,7 +451,7 @@ The core feature is complete when every agreed non-stretch behavior is implement
 - [x] Web refresh reloads the current chat or project URL at every viewport width.
 - [x] Refreshing mobile `/` shows the main menu rather than reconstructing transient New Chat.
 - [x] Backgrounding and foregrounding an in-memory native app preserves its current page.
-- [x] A fresh native app process starts at the main menu.
+- [x] A fresh native app process starts on New Chat.
 
 ### Chat lifecycle
 
@@ -412,6 +476,7 @@ The core feature is complete when every agreed non-stretch behavior is implement
 - [x] Horizontal movement tracks the finger while primarily vertical movement is rejected.
 - [x] Distance and velocity determine completion, and canceled gestures snap back.
 - [x] Chat, project, Settings detail, and Settings-root flows use their existing back destinations.
+- [x] Hamburger-state chat surfaces reveal and open the main menu directly.
 - [x] A completed gesture does not replay the non-interactive pop animation.
 - [x] Popped chats unmount after completion, and canceled chat previews unmount after snap-back.
 - [ ] Verify tracking, completion, cancellation, and vertical-scroll rejection on a physical iPhone.
