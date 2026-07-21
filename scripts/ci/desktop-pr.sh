@@ -71,6 +71,7 @@ case "$(host_os)" in
     ;;
   darwin)
     use_xcode_toolchain
+    "$(python3_runner)" "${REPO_ROOT}/scripts/ci/test-canonical-macho.py"
     export MACOSX_DEPLOYMENT_TARGET="13.3"
     export CMAKE_OSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET}"
     export SDKROOT="${SDKROOT:-$(xcrun --sdk macosx --show-sdk-path)}"
