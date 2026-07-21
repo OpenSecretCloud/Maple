@@ -3755,6 +3755,7 @@ fn configure_embedded_goose(
     std::env::remove_var("OPENAI_API_KEY");
     std::env::remove_var("GOOSE_DISABLE_KEYRING");
     std::env::remove_var("GOOSE_MAX_TOKENS");
+    std::env::remove_var("GOOSE_TOOL_PAIR_SUMMARIZATION");
 
     remove_maple_owned_goose_file(
         &goose_path_root.join("config").join("secrets.yaml"),
@@ -3764,6 +3765,18 @@ fn configure_embedded_goose(
     config.invalidate_secrets_cache();
     delete_goose_config_key(config, "GOOSE_DISABLE_KEYRING")?;
     delete_goose_config_key(config, "GOOSE_MAX_TOKENS")?;
+    configure_embedded_goose_params(config, model, mode, maple_proxy_base_url)?;
+
+    set_owner_only_permissions(&goose_path_root.join("config").join("config.yaml"));
+    Ok(())
+}
+
+fn configure_embedded_goose_params(
+    config: &goose::config::Config,
+    model: &str,
+    mode: &str,
+    maple_proxy_base_url: &str,
+) -> Result<(), String> {
     goose::config::set_active_provider(config, "openai", model)
         .map_err(|e| format!("Failed to configure Goose provider: {e}"))?;
     config
@@ -3772,11 +3785,14 @@ fn configure_embedded_goose(
     config
         .set_param("GOOSE_MODE", mode)
         .map_err(|e| format!("Failed to configure Goose mode: {e}"))?;
+    // Maple does not expose Goose's hidden history rewrite. Preserve exact tool evidence and
+    // provider prompt-cache continuity unless Maple supports that lifecycle end to end.
+    config
+        .set_param("GOOSE_TOOL_PAIR_SUMMARIZATION", false)
+        .map_err(|e| format!("Failed to disable Goose tool-pair summarization: {e}"))?;
     config
         .set_param("OPENAI_BASE_URL", format!("{maple_proxy_base_url}/v1"))
         .map_err(|e| format!("Failed to configure Goose OpenAI base URL: {e}"))?;
-
-    set_owner_only_permissions(&goose_path_root.join("config").join("config.yaml"));
     Ok(())
 }
 
@@ -4568,6 +4584,32 @@ mod tests {
         assert_eq!(config.default_model, DEFAULT_AGENT_MODEL);
         assert!(config.mcp_servers.is_empty());
         assert!(config.project_skills_trust.is_empty());
+    }
+
+    #[test]
+    fn embedded_goose_disables_hidden_tool_pair_summarization() {
+        let test_root = recent_roots_test_dir("embedded-goose-config");
+        let config = goose::config::Config::new_with_file_secrets(
+            test_root.join("config.yaml"),
+            test_root.join("secrets.yaml"),
+        )
+        .unwrap();
+        config
+            .set_param("GOOSE_TOOL_PAIR_SUMMARIZATION", true)
+            .unwrap();
+
+        configure_embedded_goose_params(
+            &config,
+            DEFAULT_AGENT_MODEL,
+            DEFAULT_GOOSE_MODE,
+            "http://127.0.0.1:12345",
+        )
+        .unwrap();
+
+        assert!(!config
+            .get_param::<bool>("GOOSE_TOOL_PAIR_SUMMARIZATION")
+            .unwrap());
+        let _ = fs::remove_dir_all(test_root);
     }
 
     #[test]
