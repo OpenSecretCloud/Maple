@@ -214,6 +214,8 @@ describe("AgentMode runFinished thought labels", () => {
     });
     provisionalScheduler.observe(tracker.activePhase(SESSION_ID)!);
     timers.run(AGENT_THOUGHT_LABEL_PROVISIONAL_MILESTONES_MS[1]);
+    expect(provisionalSignals).toHaveLength(1);
+    timers.run(AGENT_THOUGHT_LABEL_PROVISIONAL_MILESTONES_MS[2]);
     expect(provisionalSignals).toHaveLength(2);
 
     const finished = handleAgentModeThoughtRunFinished({

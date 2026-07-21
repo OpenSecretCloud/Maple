@@ -450,15 +450,16 @@ describe("AgentThoughtLabelProvisionalScheduler", () => {
     await Promise.resolve();
   });
 
-  test("refreshes from the latest reasoning at one, five, and fifteen seconds", async () => {
+  test("refreshes from the latest reasoning until a provisional succeeds", async () => {
     const timers = manualTimers();
     const requestedReasoning: string[] = [];
     const commits: string[] = [];
+    const results = [null, null, "Reviewing latest login evidence"];
     const scheduler = new AgentThoughtLabelProvisionalScheduler({
       schedule: timers.schedule,
       request: async (source) => {
         requestedReasoning.push(source.reasoningText);
-        return `Label ${requestedReasoning.length}`;
+        return results.shift() ?? null;
       },
       commit: (_source, label) => commits.push(label)
     });
@@ -476,7 +477,7 @@ describe("AgentThoughtLabelProvisionalScheduler", () => {
     await Promise.resolve();
 
     expect(requestedReasoning.map((reasoning) => reasoning.length)).toEqual([100, 200, 300]);
-    expect(commits).toEqual(["Label 1", "Label 2", "Label 3"]);
+    expect(commits).toEqual(["Reviewing latest login evidence"]);
   });
 
   test("makes one request when enough reasoning arrives after multiple milestones", async () => {
@@ -526,15 +527,18 @@ describe("AgentThoughtLabelProvisionalScheduler", () => {
     expect(commits).toEqual(["Comparing final options"]);
   });
 
-  test("skips unchanged snapshots and exact duplicate labels", async () => {
+  test("keeps an early provisional stable until the fifteen-second refresh", async () => {
     const timers = manualTimers();
     const commits: string[] = [];
+    const requestedLengths: number[] = [];
+    const labels = ["Comparing authentication options", "Reviewing authentication decision"];
     let requestCount = 0;
     const scheduler = new AgentThoughtLabelProvisionalScheduler({
       schedule: timers.schedule,
-      request: async () => {
+      request: async (requestedPhase) => {
         requestCount += 1;
-        return "Comparing authentication options";
+        requestedLengths.push(requestedPhase.reasoningText.length);
+        return labels.shift() ?? null;
       },
       commit: (_source, label) => commits.push(label)
     });
@@ -545,16 +549,62 @@ describe("AgentThoughtLabelProvisionalScheduler", () => {
     scheduler.observe(source);
     timers.run(firstMilestone);
     await Promise.resolve();
+    scheduler.observe({ ...source, reasoningText: `${source.reasoningText}${"r".repeat(100)}` });
     timers.run(secondMilestone);
-    scheduler.observe({ ...source, reasoningText: `${source.reasoningText} changed` });
+    await Promise.resolve();
+    expect(requestCount).toBe(1);
+
+    scheduler.observe({ ...source, reasoningText: `${source.reasoningText}${"r".repeat(200)}` });
     timers.run(thirdMilestone);
     await Promise.resolve();
 
     expect(requestCount).toBe(2);
-    expect(commits).toEqual(["Comparing authentication options"]);
+    expect(requestedLengths).toEqual([100, 300]);
+    expect(commits).toEqual([
+      "Comparing authentication options",
+      "Reviewing authentication decision"
+    ]);
   });
 
-  test("aborts an obsolete snapshot and commits only the next milestone snapshot", async () => {
+  test("keeps a sampled request alive while reasoning continues streaming", async () => {
+    const timers = manualTimers();
+    const response = deferred<string | null>();
+    const requests: Array<{ reasoningText: string; signal: AbortSignal }> = [];
+    const commits: Array<{ reasoningText: string; label: string }> = [];
+    const scheduler = new AgentThoughtLabelProvisionalScheduler({
+      schedule: timers.schedule,
+      request: (source, signal) => {
+        requests.push({ reasoningText: source.reasoningText, signal });
+        return response.promise;
+      },
+      commit: (source, label) => commits.push({ reasoningText: source.reasoningText, label })
+    });
+    const source = phase("assistant:thought-0", 100);
+
+    scheduler.observe(source);
+    timers.run(AGENT_THOUGHT_LABEL_PROVISIONAL_MILESTONES_MS[0]);
+    scheduler.observe(phase("assistant:thought-0", 150));
+    scheduler.observe(phase("assistant:thought-0", 200));
+    scheduler.observe(phase("assistant:thought-0", 250));
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0].signal.aborted).toBe(false);
+    response.resolve("Reviewing sampled login evidence");
+    await response.promise;
+    await Promise.resolve();
+
+    expect(commits).toEqual([
+      {
+        reasoningText: source.reasoningText,
+        label: "Reviewing sampled login evidence"
+      }
+    ]);
+    expect(scheduler.complete(source.sessionId, source.phaseId)).toBe(
+      "Reviewing sampled login evidence"
+    );
+  });
+
+  test("aborts an obsolete sample and commits only the next milestone sample", async () => {
     const timers = manualTimers();
     const responses = [deferred<string | null>(), deferred<string | null>()];
     const requests: Array<{ reasoningText: string; signal: AbortSignal }> = [];
@@ -573,9 +623,10 @@ describe("AgentThoughtLabelProvisionalScheduler", () => {
     scheduler.observe(phaseA);
     timers.run(AGENT_THOUGHT_LABEL_PROVISIONAL_MILESTONES_MS[0]);
     scheduler.observe(phaseB);
-    expect(requests[0].signal.aborted).toBe(true);
+    expect(requests[0].signal.aborted).toBe(false);
 
     timers.run(AGENT_THOUGHT_LABEL_PROVISIONAL_MILESTONES_MS[1]);
+    expect(requests[0].signal.aborted).toBe(true);
     expect(requests.map(({ reasoningText }) => reasoningText)).toEqual([
       phaseA.reasoningText,
       phaseB.reasoningText
@@ -593,7 +644,7 @@ describe("AgentThoughtLabelProvisionalScheduler", () => {
     expect(scheduler.complete(phaseB.sessionId, phaseB.phaseId)).toBe("Reviewing current snapshot");
   });
 
-  test("never commits a stale result that resolves before the replacement starts", async () => {
+  test("invalidates an in-flight sample when the overall task context changes", async () => {
     const timers = manualTimers();
     const responses = [deferred<string | null>(), deferred<string | null>()];
     const commits: string[] = [];
@@ -626,14 +677,22 @@ describe("AgentThoughtLabelProvisionalScheduler", () => {
     expect(commits).toEqual(["Reviewing current logout request"]);
   });
 
-  test("uses snapshot generations when reasoning changes from A to B and back to A", async () => {
+  test("uses sampled generations when reasoning changes from A to B and back to A", async () => {
     const timers = manualTimers();
-    const responses = [deferred<string | null>(), deferred<string | null>()];
+    const responses = [
+      deferred<string | null>(),
+      deferred<string | null>(),
+      deferred<string | null>()
+    ];
     const commits: string[] = [];
+    const signals: AbortSignal[] = [];
     let requestCount = 0;
     const scheduler = new AgentThoughtLabelProvisionalScheduler({
       schedule: timers.schedule,
-      request: () => responses[requestCount++].promise,
+      request: (_source, signal) => {
+        signals.push(signal);
+        return responses[requestCount++].promise;
+      },
       commit: (_source, label) => commits.push(label)
     });
     const phaseA = phase("assistant:thought-0", 100);
@@ -642,16 +701,22 @@ describe("AgentThoughtLabelProvisionalScheduler", () => {
     scheduler.observe(phaseA);
     timers.run(AGENT_THOUGHT_LABEL_PROVISIONAL_MILESTONES_MS[0]);
     scheduler.observe(phaseB);
+    timers.run(AGENT_THOUGHT_LABEL_PROVISIONAL_MILESTONES_MS[1]);
+    expect(signals[0].aborted).toBe(true);
     scheduler.observe(phaseA);
+    timers.run(AGENT_THOUGHT_LABEL_PROVISIONAL_MILESTONES_MS[2]);
+    expect(signals[1].aborted).toBe(true);
+
     responses[0].resolve("Reviewing old A snapshot");
     await responses[0].promise;
+    responses[1].resolve("Reviewing old B snapshot");
+    await responses[1].promise;
     await Promise.resolve();
     expect(commits).toEqual([]);
 
-    timers.run(AGENT_THOUGHT_LABEL_PROVISIONAL_MILESTONES_MS[1]);
-    expect(requestCount).toBe(2);
-    responses[1].resolve("Reviewing current A snapshot");
-    await responses[1].promise;
+    expect(requestCount).toBe(3);
+    responses[2].resolve("Reviewing current A snapshot");
+    await responses[2].promise;
     await Promise.resolve();
     expect(commits).toEqual(["Reviewing current A snapshot"]);
   });
@@ -762,6 +827,46 @@ describe("AgentThoughtLabelProvisionalScheduler", () => {
     await response.promise;
     await Promise.resolve();
     expect(commits).toEqual([]);
+  });
+
+  test("retains the early label when completion cancels the fifteen-second refresh", async () => {
+    const timers = manualTimers();
+    const responses = [deferred<string | null>(), deferred<string | null>()];
+    const signals: AbortSignal[] = [];
+    const commits: string[] = [];
+    let requestCount = 0;
+    const scheduler = new AgentThoughtLabelProvisionalScheduler({
+      schedule: timers.schedule,
+      request: (_source, signal) => {
+        signals.push(signal);
+        return responses[requestCount++].promise;
+      },
+      commit: (_source, label) => commits.push(label)
+    });
+    const earlySample = phase("assistant:thought-0", AGENT_THOUGHT_LABEL_PROVISIONAL_MIN_LENGTH);
+    const refreshSample = {
+      ...earlySample,
+      reasoningText: `${earlySample.reasoningText} more evidence`
+    };
+
+    scheduler.observe(earlySample);
+    timers.run(AGENT_THOUGHT_LABEL_PROVISIONAL_MILESTONES_MS[0]);
+    responses[0].resolve("Reviewing initial login evidence");
+    await responses[0].promise;
+    await Promise.resolve();
+
+    scheduler.observe(refreshSample);
+    timers.run(AGENT_THOUGHT_LABEL_PROVISIONAL_MILESTONES_MS[2]);
+    expect(signals[1].aborted).toBe(false);
+    expect(scheduler.complete(refreshSample.sessionId, refreshSample.phaseId)).toBe(
+      "Reviewing initial login evidence"
+    );
+    expect(signals[1].aborted).toBe(true);
+
+    responses[1].resolve("Reviewing later login evidence");
+    await responses[1].promise;
+    await Promise.resolve();
+    expect(commits).toEqual(["Reviewing initial login evidence"]);
   });
 
   test("cancels matching pending provisionals during turn invalidation", async () => {
