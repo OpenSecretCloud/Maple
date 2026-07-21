@@ -74,7 +74,7 @@ sha2 = "0.10"
 # Pin Goose to an exact official upstream commit. Keep this as a git dependency
 # instead of a submodule so ordinary Maple checkouts do not need the full Goose
 # history.
-goose = { git = "https://github.com/aaif-goose/goose.git", rev = "3c1fdd692cc8aaa5f09b9175410c09a09d4dfe49", package = "goose", default-features = false }
+goose = { git = "https://github.com/aaif-goose/goose.git", rev = "c3111c71cd682ed1d115741677f0ca9946c51499", package = "goose", default-features = false }
 async-trait = "0.1"
 rmcp = { version = "=1.4.0", default-features = false }
 tauri-plugin-dialog = "2.7.1"
