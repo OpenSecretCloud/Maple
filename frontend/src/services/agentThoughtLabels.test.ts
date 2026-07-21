@@ -324,7 +324,7 @@ describe("AgentThoughtLabelFinalRequestRegistry", () => {
 
     responseB.resolve("Reviewing authoritative final snapshot");
     await responseB.promise;
-    await Promise.resolve();
+    await nextTask();
     expect(state.visibleLabel).toBe("Reviewing authoritative final snapshot");
     expect(registry.begin(phaseB)).toBeNull();
 
@@ -393,7 +393,7 @@ describe("AgentThoughtLabelFinalRequestRegistry", () => {
     targetResponse.resolve("Reviewing cancelled final request");
     otherResponse.resolve("Reviewing current final request");
     await Promise.all([targetResponse.promise, otherResponse.promise]);
-    await Promise.resolve();
+    await nextTask();
     expect(descriptiveCommits).toEqual([
       { phaseId: "assistant-b:thought-0", label: "Reviewing current final request" }
     ]);
