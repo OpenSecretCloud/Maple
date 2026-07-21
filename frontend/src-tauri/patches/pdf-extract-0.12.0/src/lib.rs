@@ -18,7 +18,7 @@ use std::fmt;
 use std::str;
 use std::fs::File;
 use std::slice::Iter;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::collections::hash_map::Entry;
 use std::rc::Rc;
 use std::marker::PhantomData;
@@ -164,9 +164,14 @@ fn to_utf8(encoding: &[u16], s: &[u8]) -> String {
     if s.len() > 2 && s[0] == 0xfe && s[1] == 0xff {
         return UTF_16BE.decode_without_bom_handling_and_without_replacement(&s[2..]).unwrap().to_string()
     } else {
-        let r : Vec<u8> = s.iter().map(|x| *x).flat_map(|x| {
+        let mut r = Vec::with_capacity(s.len() * 2);
+        for &x in s {
             let k = encoding[x as usize];
-            vec![(k>>8) as u8, k as u8].into_iter()}).collect();
+            if k != 0 {
+                r.push((k >> 8) as u8);
+                r.push(k as u8);
+            }
+        }
         return UTF_16BE.decode_without_bom_handling_and_without_replacement(&r).unwrap().to_string()
     }
 }
@@ -351,17 +356,32 @@ fn is_core_font(name: &str) -> bool {
     }
 }
 
+fn glyph_encoding_to_unicode_table(encoding: &[Option<&str>]) -> Vec<u16> {
+    encoding.iter()
+        .map(|x| if let &Some(x) = x { glyphnames::name_to_unicode(x).unwrap() } else { 0 })
+        .collect()
+}
+
 fn encoding_to_unicode_table(name: &[u8]) -> Vec<u16> {
-    let encoding = match &name[..] {
-        b"MacRomanEncoding" => encodings::MAC_ROMAN_ENCODING,
-        b"MacExpertEncoding" => encodings::MAC_EXPERT_ENCODING,
-        b"WinAnsiEncoding" => encodings::WIN_ANSI_ENCODING,
+    let encoding: &[Option<&str>] = match &name[..] {
+        b"MacRomanEncoding" => &encodings::MAC_ROMAN_ENCODING,
+        b"MacExpertEncoding" => &encodings::MAC_EXPERT_ENCODING,
+        b"WinAnsiEncoding" => &encodings::WIN_ANSI_ENCODING,
         _ => panic!("unexpected encoding {:?}", pdf_to_utf8(name))
     };
-    let encoding_table = encoding.iter()
-        .map(|x| if let &Some(x) = x { glyphnames::name_to_unicode(x).unwrap() } else { 0 })
-        .collect();
-    encoding_table
+    glyph_encoding_to_unicode_table(encoding)
+}
+
+fn core_symbolic_encoding_to_unicode_table(name: &str) -> Option<Vec<u16>> {
+    match name {
+        "Symbol" => Some(glyph_encoding_to_unicode_table(&encodings::SYMBOL_ENCODING)),
+        "ZapfDingbats" => Some(encodings::ZAPFDINGBATS_ENCODING.iter()
+            .map(|glyph| glyph
+                .and_then(zapfglyphnames::zapfdigbats_names_to_unicode)
+                .unwrap_or(0))
+            .collect()),
+        _ => None,
+    }
 }
 
 /* "Glyphs in the font are selected by single-byte character codes obtained from a string that
@@ -374,6 +394,8 @@ impl<'a> PdfSimpleFont<'a> {
     fn new(doc: &'a Document, font: &'a Dictionary) -> PdfSimpleFont<'a> {
         let base_name = get_name_string(doc, font, b"BaseFont");
         let subtype = get_name_string(doc, font, b"Subtype");
+        let is_zapf_dingbats = base_name == "ZapfDingbats"
+            || base_name.ends_with("+ZapfDingbats");
 
         let encoding: Option<&Object> = get(doc, font, b"Encoding");
         dlog!("base_name {} {} enc:{:?} {:?}", base_name, subtype, encoding, font);
@@ -415,14 +437,21 @@ impl<'a> PdfSimpleFont<'a> {
                         //File::create(format!("/tmp/{}", base_name)).unwrap().write_all(&s);
                         
                         let encoding = table.encoding.get_code_to_sid_table(&table.charset);
+                        let charset: Vec<_> = (0..table.number_of_glyphs())
+                            .filter_map(|gid| table.charset.gid_to_sid(cff_parser::GlyphId(gid)))
+                            .collect();
 
                         let mapping: HashMap<u32, String> = encoding.into_iter().filter_map(|(cid, sid)| {
-                            let name = cff_parser::string_by_id(&table, sid).unwrap();
-                            if name == ".notdef" {
+                            if sid.0 == 0 || !charset.contains(&sid) {
                                 return None;
                             }
+                            let name = cff_parser::string_by_id(&table, sid).unwrap();
                             let unicode = glyphnames::name_to_unicode(&name).or_else(|| {
-                                zapfglyphnames::zapfdigbats_names_to_unicode(name)
+                                if is_zapf_dingbats {
+                                    zapfglyphnames::zapfdigbats_names_to_unicode(name)
+                                } else {
+                                    None
+                                }
                             });
                             if unicode.is_none() {
                                 warn!("Couldn't find unicode for {}", name);
@@ -449,10 +478,50 @@ impl<'a> PdfSimpleFont<'a> {
             //dlog!("charset {:?}", charset);
         }
 
-        // The PDF Encoding entry defines character codes in content streams;
-        // an embedded CFF font's built-in encoding is only a fallback.
-        if encoding.is_some() {
-            unicode_map = None;
+        // The font program's built-in encoding as a code -> unicode
+        // table, when the program carries one (a Type1 FontFile or a
+        // Type1C FontFile3), or the known built-in encoding of a
+        // symbolic Base-14 font. It is the base an /Encoding dictionary
+        // without a BaseEncoding builds on (PDF 32000-1 s9.6.6).
+        let builtin_base: Option<Vec<u16>> = if let Some(ref map) = unicode_map {
+            let mut table = vec![0u16; 256];
+            for (&code, s) in map.iter() {
+                if code < 256 {
+                    if let Some(unit) = s.encode_utf16().next() {
+                        table[code as usize] = unit;
+                    }
+                }
+            }
+            Some(table)
+        } else if let Some(ref type1_encoding) = type1_encoding {
+            let mut table = vec![0u16; 256];
+            for (code, name) in type1_encoding {
+                if *code < 256 {
+                    if let Some(unicode) = glyphnames::name_to_unicode(&pdf_to_utf8(name)) {
+                        table[*code as usize] = unicode;
+                    }
+                }
+            }
+            Some(table)
+        } else {
+            core_symbolic_encoding_to_unicode_table(&base_name)
+        };
+
+        // Without an embedded font program, the implicit base depends
+        // on whether the font is symbolic (FontDescriptor Flags bit 3).
+        let symbolic = descriptor
+            .and_then(|d| maybe_get::<i64>(doc, d, b"Flags"))
+            .map_or(base_name == "Symbol" || is_zapf_dingbats, |flags| flags & 4 != 0);
+
+        // PDF 32000-1 s9.6.6: a declared /Encoding supersedes the font
+        // program's built-in encoding, so the built-in map must not
+        // answer decode lookups ahead of the declared table -- e.g.
+        // Arbortext Type1C subsets keep Standard-slot names (Oslash at
+        // 0xE9) where the declared WinAnsi text means eacute. The map
+        // stays present-but-empty so a Differences entry with an
+        // unresolvable name (issue #76) can still register into it.
+        if matches!(encoding, Some(&Object::Name(_)) | Some(&Object::Dictionary(_))) {
+            unicode_map = unicode_map.map(|_| HashMap::new());
         }
 
         let mut unicode_map = match unicode_map {
@@ -477,6 +546,12 @@ impl<'a> PdfSimpleFont<'a> {
                 let mut table = if let Some(base_encoding) = maybe_get_name(doc, encoding, b"BaseEncoding") {
                     dlog!("BaseEncoding {:?}", base_encoding);
                     encoding_to_unicode_table(base_encoding)
+                } else if let Some(builtin) = builtin_base.clone() {
+                    // Differences overlay an embedded font program's or
+                    // nonembedded symbolic font's built-in encoding (Table 114).
+                    builtin
+                } else if !symbolic {
+                    glyph_encoding_to_unicode_table(&encodings::STANDARD_ENCODING)
                 } else {
                     Vec::from(PDFDocEncoding)
                 };
@@ -490,9 +565,18 @@ impl<'a> PdfSimpleFont<'a> {
                             &Object::Integer(i) => { code = i; },
                             &Object::Name(ref n) => {
                                 let name = pdf_to_utf8(&n);
+                                // A Difference replaces the base slot even if the
+                                // replacement is .notdef or has no Unicode mapping.
+                                table[code as usize] = 0;
                                 // XXX: names of Type1 fonts can map to arbitrary strings instead of real
                                 // unicode names, so we should probably handle this differently
-                                let unicode = glyphnames::name_to_unicode(&name);
+                                let unicode = glyphnames::name_to_unicode(&name).or_else(|| {
+                                    if is_zapf_dingbats {
+                                        zapfglyphnames::zapfdigbats_names_to_unicode(&name)
+                                    } else {
+                                        None
+                                    }
+                                });
                                 if let Some(unicode) = unicode{
                                     table[code as usize] = unicode;
                                     if let Some(ref mut unicode_map) = unicode_map {
@@ -515,12 +599,7 @@ impl<'a> PdfSimpleFont<'a> {
                                         Some(ref mut unicode_map) if base_name.contains("FontAwesome") => {
                                             // the fontawesome tex package will use glyph names that don't have a corresponding unicode
                                             // code point, so we'll use an empty string instead. See issue #76
-                                            match unicode_map.entry(code as u32) {
-                                                Entry::Vacant(v) => { v.insert("".to_owned()); }
-                                                Entry::Occupied(e) => {
-                                                    panic!("unexpected entry in unicode map")
-                                                }
-                                            }
+                                            unicode_map.entry(code as u32).or_insert_with(String::new);
                                         }
                                         _ => {
                                             warn!("unknown glyph name '{}' for font {}", name, base_name);
@@ -548,18 +627,8 @@ impl<'a> PdfSimpleFont<'a> {
                 encoding_table = Some(table);
             }
             None => {
-                if let Some(type1_encoding) = type1_encoding {
-                    let mut table = Vec::from(PDFDocEncoding);
-                    dlog!("type1encoding");
-                    for (code, name) in type1_encoding {
-                        let unicode = glyphnames::name_to_unicode(&pdf_to_utf8(&name));
-                        if let Some(unicode) = unicode {
-                            table[code as usize] = unicode;
-                        } else {
-                            dlog!("unknown character {}", pdf_to_utf8(&name));
-                        }
-                    }
-                    encoding_table = Some(table)
+                if let Some(builtin) = builtin_base {
+                    encoding_table = Some(builtin)
                 } else if subtype == "TrueType" {
                     encoding_table = Some(encodings::WIN_ANSI_ENCODING.iter()
                         .map(|x| if let &Some(x) = x { glyphnames::name_to_unicode(x).unwrap() } else { 0 })
@@ -615,7 +684,11 @@ impl<'a> PdfSimpleFont<'a> {
                     if let Some(ref encoding) = encoding_table {
                         dlog!("has encoding");
                         for w in font_metrics.2 {
-                            let c = glyphnames::name_to_unicode(w.2).unwrap();
+                            let c = if is_zapf_dingbats {
+                                zapfglyphnames::zapfdigbats_names_to_unicode(w.2)
+                            } else {
+                                glyphnames::name_to_unicode(w.2)
+                            }.unwrap();
                             for i in 0..encoding.len() {
                                 if encoding[i] == c {
                                     width_map.insert(i as CharCode, w.1 as f64);
@@ -1573,17 +1646,26 @@ fn make_colorspace<'a>(doc: &'a Document, name: &[u8], resources: &'a Dictionary
     }
 }
 
+// Match lopdf's parser nesting limit while bounding pdf-extract's separate
+// recursive walk through Form XObjects.
+const MAX_XOBJECT_DEPTH: usize = 100;
+
 struct Processor<'a> {
     font_table: HashMap<*const Dictionary, Rc<dyn PdfFont + 'a>>,
+    active_xobjects: HashSet<(*const Stream, *const Dictionary)>,
     _none: PhantomData<&'a ()>,
 }
 
 impl<'a> Processor<'a> {
     fn new() -> Processor<'a> {
-        Processor { font_table: HashMap::new(), _none: PhantomData }
+        Processor {
+            font_table: HashMap::new(),
+            active_xobjects: HashSet::new(),
+            _none: PhantomData,
+        }
     }
 
-    fn process_stream(&mut self, doc: &'a Document, content: Vec<u8>, resources: &'a Dictionary, media_box: &MediaBox, output: &mut dyn OutputDev, page_num: u32) -> Result<(), OutputError> {
+    fn process_stream(&mut self, doc: &'a Document, content: Vec<u8>, resources: &'a Dictionary, media_box: &MediaBox, output: &mut dyn OutputDev, page_num: u32, xobject_depth: usize) -> Result<(), OutputError> {
         let content = Content::decode(&content).unwrap();
         let mut gs: GraphicsState = GraphicsState {
             ts: TextState {
@@ -1867,12 +1949,25 @@ impl<'a> Processor<'a> {
                 "Do" => {
                     // `Do` process an entire subdocument, so we do a recursive call to `process_stream`
                     // with the subdocument content and resources
+                    if xobject_depth >= MAX_XOBJECT_DEPTH {
+                        return Err(lopdf::Error::InvalidStream(format!(
+                            "Form XObject nesting exceeds {MAX_XOBJECT_DEPTH} levels"
+                        )).into());
+                    }
                     let xobject: &Dictionary = get(&doc, resources, b"XObject");
                     let name = operation.operands[0].as_name().unwrap();
                     let xf: &Stream = get(&doc, xobject, name);
                     let resources = maybe_get_obj(&doc, &xf.dict, b"Resources").and_then(|n| n.as_dict().ok()).unwrap_or(resources);
+                    let xobject_key = (xf as *const Stream, resources as *const Dictionary);
+                    if !self.active_xobjects.insert(xobject_key) {
+                        return Err(lopdf::Error::InvalidStream(
+                            "recursive Form XObject reference".to_string()
+                        ).into());
+                    }
                     let contents = get_contents(xf);
-                    self.process_stream(&doc, contents, resources, &media_box, output, page_num)?;
+                    let result = self.process_stream(&doc, contents, resources, &media_box, output, page_num, xobject_depth + 1);
+                    self.active_xobjects.remove(&xobject_key);
+                    result?;
                 }
                 _ => { dlog!("unknown operation {:?}", operation); }
 
@@ -2417,7 +2512,7 @@ fn output_doc_inner<'a>(page_num: u32, object_id: ObjectId, doc: &'a Document, p
     let art_box = get::<Option<Vec<f64>>>(&doc, page_dict, b"ArtBox")
         .map(|x| (x[0], x[1], x[2], x[3]));
     output.begin_page(page_num, &media_box, art_box)?;
-    p.process_stream(&doc, doc.get_page_content(object_id).unwrap(), resources, &media_box, output, page_num)?;
+    p.process_stream(&doc, doc.get_page_content(object_id).unwrap(), resources, &media_box, output, page_num, 0)?;
     output.end_page()?;
     Ok(())
 }
