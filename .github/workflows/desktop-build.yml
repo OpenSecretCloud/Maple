@@ -83,6 +83,7 @@ jobs:
           subject-checksums: desktop-macos-artifacts.sha256
 
       - name: Upload macOS Build
+        if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # was v4
         with:
           name: maple-macos-universal
@@ -92,6 +93,7 @@ jobs:
             frontend/src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz
             frontend/src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz.sig
             frontend/src-tauri/target/reproducibility/*.sha256
+          if-no-files-found: warn
           retention-days: 5
 
   build-linux:
