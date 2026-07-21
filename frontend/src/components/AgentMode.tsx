@@ -2489,7 +2489,7 @@ function EmptyAgentState(props: AgentComposerProps) {
       <div className="flex w-full flex-col items-center gap-6 text-center landscape-short:gap-3">
         {!isExpanded ? (
           <h1 className="mb-6 overflow-visible pb-1 font-displayWide text-4xl font-normal leading-relaxed brand-gradient-text landscape-short:mb-2 landscape-short:text-2xl">
-            Work in a folder...
+            Work on anything...
           </h1>
         ) : null}
         <AgentComposer {...props} />
