@@ -20,7 +20,9 @@ import {
   activeMobilePage,
   createInitialMobileNavigation,
   createMobileHistoryState,
+  mobileMenuHistoryDelta,
   mobilePageHref,
+  mobilePageUsesMenuButton,
   promoteNewChatToConversation,
   pushMobilePage,
   readMobileHistoryState,
@@ -121,10 +123,14 @@ export function MobileNavigationStack() {
   const [incomingSnapshot, setIncomingSnapshot] = useState<MobileNavigationSnapshot | null>(null);
   const [isExiting, setIsExiting] = useState(false);
   const [enteringInstanceId, setEnteringInstanceId] = useState<number | null>(
-    activeMobilePage(snapshot).type === "menu" ? null : activeMobilePage(snapshot).instanceId
+    nativeFreshLaunchRef.current || activeMobilePage(snapshot).type === "menu"
+      ? null
+      : activeMobilePage(snapshot).instanceId
   );
   const transitionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const skipNextBackwardAnimationRef = useRef(false);
+  const pendingMenuNavigationRef = useRef<"animated" | "interactive" | null>(null);
+  const backwardTransitionActiveRef = useRef(false);
 
   const updateSnapshot = useCallback((next: MobileNavigationSnapshot) => {
     snapshotRef.current = next;
@@ -133,14 +139,26 @@ export function MobileNavigationStack() {
   }, []);
 
   const getSwipeParentSnapshot = useCallback(() => {
-    if (activeMobilePage(snapshotRef.current).type === "menu") return null;
+    const activePage = activeMobilePage(snapshotRef.current);
+    if (activePage.type === "menu") return null;
+    if (mobilePageUsesMenuButton(activePage)) return createInitialMobileNavigation("/");
     return parentSnapshotForSwipe(snapshotRef.current);
   }, []);
 
   const commitSwipeBack = useCallback(
     (_parentSnapshot: MobileNavigationSnapshot, resetSwipe: () => void) => {
       const current = snapshotRef.current;
-      if (current.hasInAppParent) {
+      const activePage = activeMobilePage(current);
+      const opensMenu = mobilePageUsesMenuButton(activePage);
+      const historyDelta = opensMenu ? mobileMenuHistoryDelta(current) : null;
+
+      if (historyDelta !== null) {
+        pendingMenuNavigationRef.current = "interactive";
+        window.history.go(historyDelta);
+        return;
+      }
+
+      if (!opensMenu && current.hasInAppParent) {
         skipNextBackwardAnimationRef.current = true;
         window.history.back();
         return;
@@ -199,6 +217,7 @@ export function MobileNavigationStack() {
   const completeBackwardNavigation = useCallback(
     (next: MobileNavigationSnapshot) => {
       if (transitionTimerRef.current) clearTimeout(transitionTimerRef.current);
+      backwardTransitionActiveRef.current = true;
       resetSwipeBack();
 
       setIncomingSnapshot(next);
@@ -207,6 +226,7 @@ export function MobileNavigationStack() {
       const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
       transitionTimerRef.current = setTimeout(
         () => {
+          backwardTransitionActiveRef.current = false;
           updateSnapshot(next);
           setIncomingSnapshot(null);
           setIsExiting(false);
@@ -222,6 +242,28 @@ export function MobileNavigationStack() {
   useEffect(() => {
     const handlePopState = () => {
       const current = snapshotRef.current;
+      const pendingMenuNavigation = pendingMenuNavigationRef.current;
+
+      if (pendingMenuNavigation !== null) {
+        pendingMenuNavigationRef.current = null;
+        const menu = createInitialMobileNavigation("/");
+        window.history.replaceState(createMobileHistoryState(menu, window.history.state), "", "/");
+        window.dispatchEvent(new CustomEvent("newchat", { detail: { projectId: null } }));
+        flushSync(() => setSelectedProjectId(null));
+
+        if (pendingMenuNavigation === "interactive") {
+          backwardTransitionActiveRef.current = false;
+          updateSnapshot(menu);
+          setIncomingSnapshot(null);
+          setIsExiting(false);
+          setEnteringInstanceId(null);
+          resetSwipeBack();
+        } else {
+          completeBackwardNavigation(menu);
+        }
+        return;
+      }
+
       const restored =
         readMobileHistoryState(window.history.state) ??
         createInitialMobileNavigation(currentHomeHref());
@@ -229,6 +271,7 @@ export function MobileNavigationStack() {
       if (restored.historyIndex < current.historyIndex) {
         if (skipNextBackwardAnimationRef.current) {
           skipNextBackwardAnimationRef.current = false;
+          backwardTransitionActiveRef.current = false;
           updateSnapshot(restored);
           setIncomingSnapshot(null);
           setIsExiting(false);
@@ -242,17 +285,19 @@ export function MobileNavigationStack() {
       }
 
       updateSnapshot(restored);
+      backwardTransitionActiveRef.current = false;
       const activePage = activeMobilePage(restored);
       setEnteringInstanceId(activePage.type === "menu" ? null : activePage.instanceId);
     };
 
     window.addEventListener("popstate", handlePopState);
     return () => window.removeEventListener("popstate", handlePopState);
-  }, [completeBackwardNavigation, resetSwipeBack, updateSnapshot]);
+  }, [completeBackwardNavigation, resetSwipeBack, setSelectedProjectId, updateSnapshot]);
 
   useEffect(() => {
     return () => {
       if (transitionTimerRef.current) clearTimeout(transitionTimerRef.current);
+      backwardTransitionActiveRef.current = false;
     };
   }, []);
 
@@ -306,18 +351,30 @@ export function MobileNavigationStack() {
     [pushPage, setSelectedProjectId]
   );
 
-  const handleConversationCreated = useCallback((conversationId: string) => {
-    const next = promoteNewChatToConversation(snapshotRef.current, conversationId);
-    if (next === snapshotRef.current) return;
+  const handleConversationCreated = useCallback(
+    (newChatInstanceId: number, conversationId: string) => {
+      if (pendingMenuNavigationRef.current !== null || backwardTransitionActiveRef.current) {
+        return false;
+      }
 
-    snapshotRef.current = next;
-    setSnapshot(next);
-    window.history.replaceState(
-      createMobileHistoryState(next, window.history.state),
-      "",
-      mobilePageHref(activeMobilePage(next))
-    );
-  }, []);
+      const next = promoteNewChatToConversation(
+        snapshotRef.current,
+        newChatInstanceId,
+        conversationId
+      );
+      if (next === snapshotRef.current) return false;
+
+      snapshotRef.current = next;
+      setSnapshot(next);
+      window.history.replaceState(
+        createMobileHistoryState(next, window.history.state),
+        "",
+        mobilePageHref(activeMobilePage(next))
+      );
+      return true;
+    },
+    []
+  );
 
   const goBack = useCallback(() => {
     if (isExiting || isSwipeBackActive) return;
@@ -335,6 +392,24 @@ export function MobileNavigationStack() {
     completeBackwardNavigation(menu);
   }, [completeBackwardNavigation, isExiting, isSwipeBackActive, setSelectedProjectId]);
 
+  const showMenu = useCallback(() => {
+    if (isExiting || isSwipeBackActive || pendingMenuNavigationRef.current !== null) return;
+
+    const current = snapshotRef.current;
+    const historyDelta = mobileMenuHistoryDelta(current);
+    if (historyDelta !== null) {
+      pendingMenuNavigationRef.current = "animated";
+      window.history.go(historyDelta);
+      return;
+    }
+
+    const menu = createInitialMobileNavigation("/");
+    flushSync(() => setSelectedProjectId(null));
+    window.history.replaceState(createMobileHistoryState(menu, window.history.state), "", "/");
+    window.dispatchEvent(new CustomEvent("newchat", { detail: { projectId: null } }));
+    completeBackwardNavigation(menu);
+  }, [completeBackwardNavigation, isExiting, isSwipeBackActive, setSelectedProjectId]);
+
   const baseActivePage = activeMobilePage(snapshot);
   const baseProjectPage = lastProjectPage(snapshot);
   const incomingActivePage = incomingSnapshot ? activeMobilePage(incomingSnapshot) : null;
@@ -342,6 +417,11 @@ export function MobileNavigationStack() {
   const targetActivePage = incomingActivePage ?? baseActivePage;
   const isMenuCovered = targetActivePage.type !== "menu";
   const swipeParentPage = swipeVisual ? activeMobilePage(swipeVisual.context) : null;
+  const isRevealingMenuDirectly =
+    (swipeParentPage?.type === "menu" && mobilePageUsesMenuButton(baseActivePage)) ||
+    (isTransitioningBackward &&
+      incomingActivePage?.type === "menu" &&
+      mobilePageUsesMenuButton(baseActivePage));
   const visibleChatPages: Array<Extract<MobileNavigationPage, { type: "chat" | "new-chat" }>> = [];
 
   if (swipeParentPage?.type === "chat" || swipeParentPage?.type === "new-chat") {
@@ -360,15 +440,22 @@ export function MobileNavigationStack() {
     }
   }
 
-  const renderChatPage = (page: Extract<MobileNavigationPage, { type: "chat" | "new-chat" }>) => (
-    <UnifiedChat
-      standaloneMobile
-      standaloneMobileConversationId={page.type === "chat" ? page.conversationId : null}
-      onMobileBack={goBack}
-      onMobileOpenNewChat={openNewChat}
-      onMobileConversationCreated={handleConversationCreated}
-    />
-  );
+  const renderChatPage = (page: Extract<MobileNavigationPage, { type: "chat" | "new-chat" }>) => {
+    const usesMenuButton = mobilePageUsesMenuButton(page);
+
+    return (
+      <UnifiedChat
+        standaloneMobile
+        standaloneMobileConversationId={page.type === "chat" ? page.conversationId : null}
+        mobileNavigationControl={usesMenuButton ? "menu" : "back"}
+        onMobileNavigation={usesMenuButton ? showMenu : goBack}
+        onMobileOpenNewChat={openNewChat}
+        onMobileConversationCreated={(conversationId) =>
+          handleConversationCreated(page.instanceId, conversationId)
+        }
+      />
+    );
+  };
 
   const renderProjectPage = (page: Extract<MobileNavigationPage, { type: "project" }>) => (
     <ProjectDetailView
@@ -422,7 +509,8 @@ export function MobileNavigationStack() {
               (swipeParentPage?.instanceId === baseProjectPage.instanceId ||
                 baseActivePage.instanceId === baseProjectPage.instanceId) &&
               "maple-navigation-page-interactive",
-            swipeVisual && baseActivePage.instanceId === baseProjectPage.instanceId && "z-20"
+            swipeVisual && baseActivePage.instanceId === baseProjectPage.instanceId && "z-20",
+            isRevealingMenuDirectly && "invisible"
           )}
           style={
             swipeParentPage?.instanceId === baseProjectPage.instanceId
