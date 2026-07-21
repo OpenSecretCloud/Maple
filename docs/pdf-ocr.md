@@ -2,7 +2,7 @@
 
 Maple uses [`pdf_oxide` 0.3.74](https://crates.io/crates/pdf_oxide/0.3.74) for native PDF text extraction, page classification, rendering, and PaddleOCR preprocessing. PDF bytes and rendered pages stay on the device.
 
-Maple pins [OpenSecretCloud's `pdf_oxide` maintenance branch](https://github.com/OpenSecretCloud/pdf_oxide/pull/2) to an immutable commit based directly on the published 0.3.74 release. The fork adds only a caller-controlled ONNX Runtime loader feature; it contains no Maple-specific parser or inference changes. This keeps iOS static linkage compatible without importing unpublished upstream work.
+Maple pins [OpenSecretCloud's `pdf_oxide` maintenance commit](https://github.com/OpenSecretCloud/pdf_oxide/commit/f24b43ba997dd91ce60839640a8ce3ac92a87a5d) based directly on the published 0.3.74 release. The fork adds only a caller-controlled ONNX Runtime loader feature; it contains no Maple-specific parser or inference changes. This keeps iOS static linkage compatible without importing unpublished upstream work.
 
 ## One inference runtime
 
