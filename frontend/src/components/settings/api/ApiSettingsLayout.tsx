@@ -14,7 +14,6 @@ import { getBillingService } from "@/billing/billingService";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { useLocalState } from "@/state/useLocalState";
-import { openExternalUrl } from "@/utils/openUrl";
 import { isIOS, isTauriDesktop } from "@/utils/platform";
 import { cn } from "@/utils/utils";
 import { SettingsPage, SettingsSection } from "../SettingsPage";
@@ -196,17 +195,6 @@ export function ApiSettingsLayout() {
     <SettingsPage
       title="API & credits"
       description="Manage API keys and configure access to Maple services."
-      actions={
-        <button
-          type="button"
-          onClick={() =>
-            void openExternalUrl("https://blog.trymaple.ai/maple-proxy-documentation/")
-          }
-          className="text-sm font-medium text-[hsl(var(--maple-primary-strong))] underline underline-offset-4 hover:text-[hsl(var(--maple-primary))]"
-        >
-          API documentation
-        </button>
-      }
     >
       <nav aria-label="API settings" className={cn("grid gap-2", navColumnClass)}>
         <ApiNavLink to="/settings/api" label="Credits" icon={CreditCard} exact />
