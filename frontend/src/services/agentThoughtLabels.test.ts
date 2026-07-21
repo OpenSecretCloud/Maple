@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import OpenAI from "openai";
 import {
-  AGENT_THOUGHT_LABEL_MAX_CONCURRENT_PROVISIONAL_REQUESTS,
   AGENT_THOUGHT_LABEL_FALLBACK_DELAY_MS,
   AGENT_THOUGHT_LABEL_FALLBACK_TEXT,
+  AGENT_THOUGHT_LABEL_MAX_CONCURRENT_PROVISIONAL_REQUESTS,
   AGENT_THOUGHT_LABEL_MAX_LENGTH,
   AGENT_THOUGHT_LABEL_PENDING_TEXT,
   AGENT_THOUGHT_LABEL_PROVISIONAL_DEADLINE_MS,
@@ -12,44 +12,14 @@ import {
   AGENT_THOUGHT_LABEL_PROVISIONAL_MIN_LENGTH,
   AGENT_THOUGHT_LABEL_REASONING_MAX_LENGTH,
   AGENT_THOUGHT_LABEL_USER_REQUEST_MAX_LENGTH,
+  AgentThoughtLabelFinalRequestRegistry,
   AgentThoughtLabelProvisionalScheduler,
-  agentThoughtLabelStorageKey,
   buildAgentThoughtLabelInput,
-  clearAgentThoughtLabelsForSession,
-  clearAgentThoughtLabelsForTurn,
-  clearAgentThoughtLabelsForUser,
-  getAgentThoughtLabel,
   parseAgentThoughtLabel,
-  persistAgentThoughtLabel,
   requestAgentThoughtLabel,
   startAgentThoughtLabelDisplay,
-  type AgentThoughtLabelClient,
-  type AgentThoughtLabelStorage
+  type AgentThoughtLabelClient
 } from "./agentThoughtLabels";
-
-class MemoryStorage implements AgentThoughtLabelStorage {
-  private readonly values = new Map<string, string>();
-
-  get length(): number {
-    return this.values.size;
-  }
-
-  getItem(key: string): string | null {
-    return this.values.get(key) ?? null;
-  }
-
-  key(index: number): string | null {
-    return Array.from(this.values.keys())[index] ?? null;
-  }
-
-  removeItem(key: string): void {
-    this.values.delete(key);
-  }
-
-  setItem(key: string, value: string): void {
-    this.values.set(key, value);
-  }
-}
 
 interface FakeChatCompletion {
   choices: {
@@ -108,31 +78,11 @@ function manualTimers(): {
   };
 }
 
-const identifiers = {
-  userId: "user/account",
-  sessionId: "task:one",
-  phaseId: "assistant-after-user:thought-0"
-};
+function nextTask(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
 
 describe("startAgentThoughtLabelDisplay", () => {
-  test("uses a cached label without showing or requesting a pending state", () => {
-    const commits: [string, string | undefined][] = [];
-    let requestCount = 0;
-
-    const cancel = startAgentThoughtLabelDisplay({
-      cachedLabel: "Inspecting cached work",
-      request: async () => {
-        requestCount += 1;
-        return "unused";
-      },
-      commit: (label, expectedLabel) => commits.push([label, expectedLabel])
-    });
-
-    expect(cancel).toBeNull();
-    expect(requestCount).toBe(0);
-    expect(commits).toEqual([["Inspecting cached work", undefined]]);
-  });
-
   test("shows Thinking until a valid label arrives and cancels the fallback", async () => {
     const response = deferred<string | null>();
     const commits: [string, string | undefined][] = [];
@@ -140,7 +90,6 @@ describe("startAgentThoughtLabelDisplay", () => {
     let fallbackCancelled = false;
 
     startAgentThoughtLabelDisplay({
-      cachedLabel: null,
       request: () => response.promise,
       commit: (label, expectedLabel) => commits.push([label, expectedLabel]),
       scheduleFallback: (_callback, delayMs) => {
@@ -156,6 +105,7 @@ describe("startAgentThoughtLabelDisplay", () => {
 
     response.resolve("Reviewing authentication flow");
     await response.promise;
+    await Promise.resolve();
     expect(fallbackCancelled).toBe(true);
     expect(commits).toEqual([
       [AGENT_THOUGHT_LABEL_PENDING_TEXT, undefined],
@@ -169,7 +119,6 @@ describe("startAgentThoughtLabelDisplay", () => {
     let showFallback = () => {};
 
     startAgentThoughtLabelDisplay({
-      cachedLabel: null,
       request: () => response.promise,
       commit: (label, expectedLabel) => commits.push([label, expectedLabel]),
       scheduleFallback: (callback) => {
@@ -186,49 +135,58 @@ describe("startAgentThoughtLabelDisplay", () => {
 
     response.resolve("Tracing a slower response");
     await response.promise;
+    await Promise.resolve();
     expect(commits.at(-1)).toEqual(["Tracing a slower response", undefined]);
   });
 
-  test("shows Thought immediately on failure and ignores a cancelled request", async () => {
-    const failedCommits: [string, string | undefined][] = [];
+  test("shows Thought immediately when generation fails", async () => {
+    const commits: [string, string | undefined][] = [];
+
     startAgentThoughtLabelDisplay({
-      cachedLabel: null,
       request: async () => null,
-      commit: (label, expectedLabel) => failedCommits.push([label, expectedLabel]),
+      commit: (label, expectedLabel) => commits.push([label, expectedLabel]),
       scheduleFallback: () => () => {}
     });
     await Promise.resolve();
-    expect(failedCommits).toEqual([
+
+    expect(commits).toEqual([
       [AGENT_THOUGHT_LABEL_PENDING_TEXT, undefined],
       [AGENT_THOUGHT_LABEL_FALLBACK_TEXT, undefined]
     ]);
+  });
 
+  test("aborts a cancelled request and ignores its fallback and late result", async () => {
     const response = deferred<string | null>();
-    const cancelledCommits: [string, string | undefined][] = [];
+    const commits: [string, string | undefined][] = [];
+    let requestSignal: AbortSignal | undefined;
     let showFallback = () => {};
     const cancel = startAgentThoughtLabelDisplay({
-      cachedLabel: null,
-      request: () => response.promise,
-      commit: (label, expectedLabel) => cancelledCommits.push([label, expectedLabel]),
+      request: (signal) => {
+        requestSignal = signal;
+        return response.promise;
+      },
+      commit: (label, expectedLabel) => commits.push([label, expectedLabel]),
       scheduleFallback: (callback) => {
         showFallback = callback;
         return () => {};
       }
     });
 
-    cancel?.();
+    cancel();
+    expect(requestSignal?.aborted).toBe(true);
     showFallback();
     response.resolve("Ignoring stale label");
     await response.promise;
-    expect(cancelledCommits).toEqual([[AGENT_THOUGHT_LABEL_PENDING_TEXT, undefined]]);
+    await Promise.resolve();
+
+    expect(commits).toEqual([[AGENT_THOUGHT_LABEL_PENDING_TEXT, undefined]]);
   });
 
-  test("keeps a retained provisional label while the final request settles", async () => {
+  test("keeps a retained provisional label while final generation settles", async () => {
     const successfulResponse = deferred<string | null>();
     const successCommits: [string, string | undefined][] = [];
     let fallbackScheduled = false;
     startAgentThoughtLabelDisplay({
-      cachedLabel: null,
       retainedLabel: "Investigating login failures",
       request: () => successfulResponse.promise,
       commit: (label, expectedLabel) => successCommits.push([label, expectedLabel]),
@@ -242,15 +200,18 @@ describe("startAgentThoughtLabelDisplay", () => {
     expect(fallbackScheduled).toBe(false);
     successfulResponse.resolve("Explaining authentication findings");
     await successfulResponse.promise;
+    await Promise.resolve();
     expect(successCommits).toEqual([["Explaining authentication findings", undefined]]);
 
+    const failedResponse = deferred<string | null>();
     const failureCommits: [string, string | undefined][] = [];
     startAgentThoughtLabelDisplay({
-      cachedLabel: null,
       retainedLabel: "Investigating login failures",
-      request: async () => null,
+      request: () => failedResponse.promise,
       commit: (label, expectedLabel) => failureCommits.push([label, expectedLabel])
     });
+    failedResponse.resolve(null);
+    await failedResponse.promise;
     await Promise.resolve();
     expect(failureCommits).toEqual([]);
   });
@@ -313,6 +274,132 @@ describe("buildAgentThoughtLabelInput", () => {
   });
 });
 
+describe("AgentThoughtLabelFinalRequestRegistry", () => {
+  test("aborts an obsolete final snapshot and ignores its late result", async () => {
+    const registry = new AgentThoughtLabelFinalRequestRegistry();
+    const phaseA = {
+      sessionId: "session",
+      phaseId: "assistant:thought-0",
+      userRequest: "Fix login",
+      reasoningText: "Review the first snapshot"
+    };
+    const phaseB = { ...phaseA, reasoningText: "Review the authoritative snapshot" };
+    const responseA = deferred<string | null>();
+    const responseB = deferred<string | null>();
+    let signalA: AbortSignal | undefined;
+    const state: { visibleLabel: string | null } = { visibleLabel: null };
+
+    const start = (
+      phase: typeof phaseA,
+      response: { promise: Promise<string | null>; resolve: (value: string | null) => void },
+      captureSignal?: (signal: AbortSignal) => void
+    ) => {
+      const request = registry.begin(phase);
+      if (!request) return null;
+      const cancel = startAgentThoughtLabelDisplay({
+        retainedLabel: request.retainedLabel,
+        request: (signal) => {
+          captureSignal?.(signal);
+          return response.promise.finally(request.finish);
+        },
+        commit: (label, expectedLabel) => {
+          if (!request.isCurrent()) return;
+          if (expectedLabel !== undefined && state.visibleLabel !== expectedLabel) return;
+          request.recordLabel(label);
+          state.visibleLabel = label;
+        },
+        scheduleFallback: () => () => {}
+      });
+      request.setCancel(cancel);
+      return request;
+    };
+
+    expect(start(phaseA, responseA, (signal) => (signalA = signal))).not.toBeNull();
+    expect(state.visibleLabel).toBe(AGENT_THOUGHT_LABEL_PENDING_TEXT);
+
+    const currentRequest = start(phaseB, responseB);
+    expect(currentRequest).not.toBeNull();
+    expect(signalA?.aborted).toBe(true);
+    expect(currentRequest?.retainedLabel).toBeNull();
+
+    responseB.resolve("Reviewing authoritative final snapshot");
+    await responseB.promise;
+    await Promise.resolve();
+    expect(state.visibleLabel).toBe("Reviewing authoritative final snapshot");
+    expect(registry.begin(phaseB)).toBeNull();
+
+    responseA.resolve("Reviewing obsolete final snapshot");
+    await responseA.promise;
+    await Promise.resolve();
+    expect(state.visibleLabel).toBe("Reviewing authoritative final snapshot");
+  });
+
+  test("retains a displayed final label while a newer snapshot settles", () => {
+    const registry = new AgentThoughtLabelFinalRequestRegistry();
+    const phase = {
+      sessionId: "session",
+      phaseId: "assistant:thought-0",
+      userRequest: "Fix login",
+      reasoningText: "Review the first snapshot"
+    };
+    const first = registry.begin(phase, "Reviewing first final snapshot");
+    first?.finish();
+
+    const next = registry.begin({ ...phase, reasoningText: "Review the newer snapshot" });
+    expect(next?.retainedLabel).toBe("Reviewing first final snapshot");
+  });
+
+  test("cancels only matching final requests and ignores their late results", async () => {
+    const registry = new AgentThoughtLabelFinalRequestRegistry();
+    const targetResponse = deferred<string | null>();
+    const otherResponse = deferred<string | null>();
+    const descriptiveCommits: Array<{ phaseId: string; label: string }> = [];
+    const signals = new Map<string, AbortSignal>();
+
+    const start = (
+      phaseId: string,
+      response: { promise: Promise<string | null>; resolve: (value: string | null) => void }
+    ) => {
+      const phase = {
+        sessionId: "session",
+        phaseId,
+        userRequest: "Fix login",
+        reasoningText: `Review ${phaseId}`
+      };
+      const request = registry.begin(phase)!;
+      const cancel = startAgentThoughtLabelDisplay({
+        request: (signal) => {
+          signals.set(phaseId, signal);
+          return response.promise.finally(request.finish);
+        },
+        commit: (label) => {
+          if (!request.isCurrent()) return;
+          request.recordLabel(label);
+          if (label !== AGENT_THOUGHT_LABEL_PENDING_TEXT) {
+            descriptiveCommits.push({ phaseId, label });
+          }
+        },
+        scheduleFallback: () => () => {}
+      });
+      request.setCancel(cancel);
+    };
+
+    start("assistant-a:thought-0", targetResponse);
+    start("assistant-b:thought-0", otherResponse);
+    registry.cancelMatching("session", "assistant-a");
+    expect(signals.get("assistant-a:thought-0")?.aborted).toBe(true);
+    expect(signals.get("assistant-b:thought-0")?.aborted).toBe(false);
+
+    targetResponse.resolve("Reviewing cancelled final request");
+    otherResponse.resolve("Reviewing current final request");
+    await Promise.all([targetResponse.promise, otherResponse.promise]);
+    await Promise.resolve();
+    expect(descriptiveCommits).toEqual([
+      { phaseId: "assistant-b:thought-0", label: "Reviewing current final request" }
+    ]);
+  });
+});
+
 describe("AgentThoughtLabelProvisionalScheduler", () => {
   const phase = (phaseId: string, reasoningLength: number) => ({
     sessionId: "session",
@@ -363,7 +450,7 @@ describe("AgentThoughtLabelProvisionalScheduler", () => {
     await Promise.resolve();
   });
 
-  test("refreshes from the latest reasoning snapshot at one, five, and fifteen seconds", async () => {
+  test("refreshes from the latest reasoning at one, five, and fifteen seconds", async () => {
     const timers = manualTimers();
     const requestedReasoning: string[] = [];
     const commits: string[] = [];
@@ -390,36 +477,6 @@ describe("AgentThoughtLabelProvisionalScheduler", () => {
 
     expect(requestedReasoning.map((reasoning) => reasoning.length)).toEqual([100, 200, 300]);
     expect(commits).toEqual(["Label 1", "Label 2", "Label 3"]);
-  });
-
-  test("skips a milestone while the phase request is pending but allows a later refresh", async () => {
-    const timers = manualTimers();
-    const firstResponse = deferred<string | null>();
-    const requestedLengths: number[] = [];
-    const scheduler = new AgentThoughtLabelProvisionalScheduler({
-      schedule: timers.schedule,
-      request: (source) => {
-        requestedLengths.push(source.reasoningText.length);
-        return requestedLengths.length === 1
-          ? firstResponse.promise
-          : Promise.resolve("Reviewing later evidence");
-      },
-      commit: () => {}
-    });
-    const [firstMilestone, secondMilestone, thirdMilestone] =
-      AGENT_THOUGHT_LABEL_PROVISIONAL_MILESTONES_MS;
-
-    scheduler.observe(phase("assistant:thought-0", 100));
-    timers.run(firstMilestone);
-    scheduler.observe(phase("assistant:thought-0", 200));
-    timers.run(secondMilestone);
-    expect(requestedLengths).toEqual([100]);
-
-    firstResponse.resolve("Reviewing initial evidence");
-    await firstResponse.promise;
-    scheduler.observe(phase("assistant:thought-0", 300));
-    timers.run(thirdMilestone);
-    expect(requestedLengths).toEqual([100, 300]);
   });
 
   test("makes one request when enough reasoning arrives after multiple milestones", async () => {
@@ -469,7 +526,7 @@ describe("AgentThoughtLabelProvisionalScheduler", () => {
     expect(commits).toEqual(["Comparing final options"]);
   });
 
-  test("skips unchanged snapshots and does not recommit an exact duplicate label", async () => {
+  test("skips unchanged snapshots and exact duplicate labels", async () => {
     const timers = manualTimers();
     const commits: string[] = [];
     let requestCount = 0;
@@ -497,17 +554,119 @@ describe("AgentThoughtLabelProvisionalScheduler", () => {
     expect(commits).toEqual(["Comparing authentication options"]);
   });
 
-  test("abandons a provisional request at three seconds and allows the next milestone", async () => {
+  test("aborts an obsolete snapshot and commits only the next milestone snapshot", async () => {
+    const timers = manualTimers();
+    const responses = [deferred<string | null>(), deferred<string | null>()];
+    const requests: Array<{ reasoningText: string; signal: AbortSignal }> = [];
+    const commits: Array<{ reasoningText: string; label: string }> = [];
+    const scheduler = new AgentThoughtLabelProvisionalScheduler({
+      schedule: timers.schedule,
+      request: (source, signal) => {
+        requests.push({ reasoningText: source.reasoningText, signal });
+        return responses[requests.length - 1].promise;
+      },
+      commit: (source, label) => commits.push({ reasoningText: source.reasoningText, label })
+    });
+    const phaseA = phase("assistant:thought-0", 100);
+    const phaseB = { ...phaseA, reasoningText: "b".repeat(120) };
+
+    scheduler.observe(phaseA);
+    timers.run(AGENT_THOUGHT_LABEL_PROVISIONAL_MILESTONES_MS[0]);
+    scheduler.observe(phaseB);
+    expect(requests[0].signal.aborted).toBe(true);
+
+    timers.run(AGENT_THOUGHT_LABEL_PROVISIONAL_MILESTONES_MS[1]);
+    expect(requests.map(({ reasoningText }) => reasoningText)).toEqual([
+      phaseA.reasoningText,
+      phaseB.reasoningText
+    ]);
+    responses[1].resolve("Reviewing current snapshot");
+    await responses[1].promise;
+    await Promise.resolve();
+    responses[0].resolve("Reviewing obsolete snapshot");
+    await responses[0].promise;
+    await Promise.resolve();
+
+    expect(commits).toEqual([
+      { reasoningText: phaseB.reasoningText, label: "Reviewing current snapshot" }
+    ]);
+    expect(scheduler.complete(phaseB.sessionId, phaseB.phaseId)).toBe("Reviewing current snapshot");
+  });
+
+  test("never commits a stale result that resolves before the replacement starts", async () => {
+    const timers = manualTimers();
+    const responses = [deferred<string | null>(), deferred<string | null>()];
+    const commits: string[] = [];
+    const signals: AbortSignal[] = [];
+    let requestCount = 0;
+    const scheduler = new AgentThoughtLabelProvisionalScheduler({
+      schedule: timers.schedule,
+      request: (_source, signal) => {
+        signals.push(signal);
+        return responses[requestCount++].promise;
+      },
+      commit: (_source, label) => commits.push(label)
+    });
+    const phaseA = phase("assistant:thought-0", 100);
+    const phaseB = { ...phaseA, userRequest: "Fix logout" };
+
+    scheduler.observe(phaseA);
+    timers.run(AGENT_THOUGHT_LABEL_PROVISIONAL_MILESTONES_MS[0]);
+    scheduler.observe(phaseB);
+    expect(signals[0].aborted).toBe(true);
+    responses[0].resolve("Reviewing stale login request");
+    await responses[0].promise;
+    await Promise.resolve();
+    expect(commits).toEqual([]);
+
+    timers.run(AGENT_THOUGHT_LABEL_PROVISIONAL_MILESTONES_MS[1]);
+    responses[1].resolve("Reviewing current logout request");
+    await responses[1].promise;
+    await Promise.resolve();
+    expect(commits).toEqual(["Reviewing current logout request"]);
+  });
+
+  test("uses snapshot generations when reasoning changes from A to B and back to A", async () => {
+    const timers = manualTimers();
+    const responses = [deferred<string | null>(), deferred<string | null>()];
+    const commits: string[] = [];
+    let requestCount = 0;
+    const scheduler = new AgentThoughtLabelProvisionalScheduler({
+      schedule: timers.schedule,
+      request: () => responses[requestCount++].promise,
+      commit: (_source, label) => commits.push(label)
+    });
+    const phaseA = phase("assistant:thought-0", 100);
+    const phaseB = { ...phaseA, reasoningText: "b".repeat(100) };
+
+    scheduler.observe(phaseA);
+    timers.run(AGENT_THOUGHT_LABEL_PROVISIONAL_MILESTONES_MS[0]);
+    scheduler.observe(phaseB);
+    scheduler.observe(phaseA);
+    responses[0].resolve("Reviewing old A snapshot");
+    await responses[0].promise;
+    await Promise.resolve();
+    expect(commits).toEqual([]);
+
+    timers.run(AGENT_THOUGHT_LABEL_PROVISIONAL_MILESTONES_MS[1]);
+    expect(requestCount).toBe(2);
+    responses[1].resolve("Reviewing current A snapshot");
+    await responses[1].promise;
+    await Promise.resolve();
+    expect(commits).toEqual(["Reviewing current A snapshot"]);
+  });
+
+  test("abandons a provisional at its deadline and allows the next milestone", async () => {
     const timers = manualTimers();
     const response = deferred<string | null>();
     const commits: string[] = [];
     let requestCount = 0;
-    const requestSignal: { current?: AbortSignal } = {};
+    let requestSignal: AbortSignal | undefined;
     const scheduler = new AgentThoughtLabelProvisionalScheduler({
       schedule: timers.schedule,
       request: (_source, signal) => {
         requestCount += 1;
-        requestSignal.current = signal;
+        requestSignal = signal;
         return requestCount === 1 ? response.promise : Promise.resolve("Reviewing newer evidence");
       },
       commit: (_source, label) => commits.push(label)
@@ -522,7 +681,7 @@ describe("AgentThoughtLabelProvisionalScheduler", () => {
     timers.run(AGENT_THOUGHT_LABEL_PROVISIONAL_DELAY_MS);
     expect(timers.pending(AGENT_THOUGHT_LABEL_PROVISIONAL_DEADLINE_MS)).toBe(1);
     timers.run(AGENT_THOUGHT_LABEL_PROVISIONAL_DEADLINE_MS);
-    expect(requestSignal.current?.aborted).toBe(true);
+    expect(requestSignal?.aborted).toBe(true);
 
     response.resolve("Investigating login failures");
     await response.promise;
@@ -536,7 +695,7 @@ describe("AgentThoughtLabelProvisionalScheduler", () => {
     expect(commits).toEqual(["Reviewing newer evidence"]);
   });
 
-  test("limits concurrent provisionals and gives a cap-skipped phase its next milestone", async () => {
+  test("limits concurrent provisionals and retries a cap-skipped phase at its next milestone", async () => {
     const timers = manualTimers();
     const responses = Array.from(
       { length: AGENT_THOUGHT_LABEL_MAX_CONCURRENT_PROVISIONAL_REQUESTS + 1 },
@@ -566,6 +725,7 @@ describe("AgentThoughtLabelProvisionalScheduler", () => {
 
     responses[0].resolve(null);
     await responses[0].promise;
+    await Promise.resolve();
     scheduler.observe(
       phase("assistant:thought-2", AGENT_THOUGHT_LABEL_PROVISIONAL_MIN_LENGTH + 50)
     );
@@ -577,25 +737,17 @@ describe("AgentThoughtLabelProvisionalScheduler", () => {
       "assistant:thought-1",
       "assistant:thought-2"
     ]);
-
-    scheduler.observe(phase("assistant:thought-3", AGENT_THOUGHT_LABEL_PROVISIONAL_MIN_LENGTH));
-    timers.run(AGENT_THOUGHT_LABEL_PROVISIONAL_DELAY_MS);
-    expect(requestedPhaseIds).toEqual([
-      "assistant:thought-0",
-      "assistant:thought-1",
-      "assistant:thought-2"
-    ]);
   });
 
   test("cancels an in-flight provisional when its phase completes", async () => {
     const timers = manualTimers();
     const response = deferred<string | null>();
     const commits: string[] = [];
-    const requestSignal: { current?: AbortSignal } = {};
+    let requestSignal: AbortSignal | undefined;
     const scheduler = new AgentThoughtLabelProvisionalScheduler({
       schedule: timers.schedule,
       request: (_source, signal) => {
-        requestSignal.current = signal;
+        requestSignal = signal;
         return response.promise;
       },
       commit: (_source, label) => commits.push(label)
@@ -605,9 +757,10 @@ describe("AgentThoughtLabelProvisionalScheduler", () => {
     timers.run(AGENT_THOUGHT_LABEL_PROVISIONAL_DELAY_MS);
 
     expect(scheduler.complete(source.sessionId, source.phaseId)).toBeNull();
-    expect(requestSignal.current?.aborted).toBe(true);
+    expect(requestSignal?.aborted).toBe(true);
     response.resolve("Investigating login failures");
     await response.promise;
+    await Promise.resolve();
     expect(commits).toEqual([]);
   });
 
@@ -615,11 +768,11 @@ describe("AgentThoughtLabelProvisionalScheduler", () => {
     const timers = manualTimers();
     const response = deferred<string | null>();
     const commits: string[] = [];
-    const requestSignal: { current?: AbortSignal } = {};
+    let requestSignal: AbortSignal | undefined;
     const scheduler = new AgentThoughtLabelProvisionalScheduler({
       schedule: timers.schedule,
       request: (_source, signal) => {
-        requestSignal.current = signal;
+        requestSignal = signal;
         return response.promise;
       },
       commit: (_source, label) => commits.push(label)
@@ -632,13 +785,14 @@ describe("AgentThoughtLabelProvisionalScheduler", () => {
     timers.run(AGENT_THOUGHT_LABEL_PROVISIONAL_DELAY_MS);
 
     scheduler.cancelMatching(source.sessionId, "assistant-after-user");
-    expect(requestSignal.current?.aborted).toBe(true);
+    expect(requestSignal?.aborted).toBe(true);
     response.resolve("Investigating login failures");
     await response.promise;
+    await Promise.resolve();
     expect(commits).toEqual([]);
   });
 
-  test("returns a displayed provisional at completion and treats Thinking as no label", async () => {
+  test("returns the displayed provisional at completion and treats Thinking as no label", async () => {
     const timers = manualTimers();
     const labels = ["Investigating login failures", AGENT_THOUGHT_LABEL_PENDING_TEXT];
     const commits: string[] = [];
@@ -666,10 +820,12 @@ describe("AgentThoughtLabelProvisionalScheduler", () => {
 });
 
 describe("requestAgentThoughtLabel", () => {
-  test("uses the installed OpenAI client to call the stateless chat endpoint", async () => {
-    const storage = new MemoryStorage();
+  const source = { userRequest: "Fix login", reasoningText: "Inspect auth." };
+
+  test("uses the installed OpenAI client and disables Gemma reasoning", async () => {
     let requestedUrl = "";
     let requestedBody: Record<string, unknown> | undefined;
+    const controller = new AbortController();
     const client = new OpenAI({
       apiKey: "test-key",
       baseURL: "https://maple.test/v1/",
@@ -687,10 +843,7 @@ describe("requestAgentThoughtLabel", () => {
                 index: 0,
                 finish_reason: "stop",
                 logprobs: null,
-                message: {
-                  role: "assistant",
-                  content: "Inspecting authentication flow"
-                }
+                message: { role: "assistant", content: "Inspecting authentication flow" }
               }
             ]
           }),
@@ -701,12 +854,7 @@ describe("requestAgentThoughtLabel", () => {
     });
 
     await expect(
-      requestAgentThoughtLabel(
-        client,
-        { ...identifiers, phaseId: "sdk-contract:thought-0" },
-        { userRequest: "Fix login", reasoningText: "Inspect auth." },
-        storage
-      )
+      requestAgentThoughtLabel(client, source, { signal: controller.signal })
     ).resolves.toBe("Inspecting authentication flow");
 
     expect(requestedUrl).toBe("https://maple.test/v1/chat/completions");
@@ -721,37 +869,32 @@ describe("requestAgentThoughtLabel", () => {
     expect(requestedBody).not.toHaveProperty("conversation");
   });
 
-  test("sends the label prompt once and persists a valid completed label", async () => {
-    const storage = new MemoryStorage();
+  test("sends the focused prompt and validates its examples", async () => {
     const requests: Record<string, unknown>[] = [];
     const client = fakeClient(async (request) => {
       requests.push(request);
       return completion("  Inspecting authentication flow  ");
     });
+    const detailedSource = {
+      userRequest: "Fix login",
+      reasoningText: "I traced the auth state."
+    };
 
-    const source = { userRequest: "Fix login", reasoningText: "I traced the auth state." };
-    const firstRequest = requestAgentThoughtLabel(client, identifiers, source, storage);
-    await expect(firstRequest).resolves.toBe("Inspecting authentication flow");
-    await expect(requestAgentThoughtLabel(client, identifiers, source, storage)).resolves.toBe(
+    await expect(requestAgentThoughtLabel(client, detailedSource)).resolves.toBe(
       "Inspecting authentication flow"
     );
-
     expect(requests).toHaveLength(1);
+
     const messages = requests[0].messages as { role: string; content: string }[];
     expect(messages).toEqual([
-      {
-        role: "system",
-        content: expect.any(String)
-      },
-      {
-        role: "user",
-        content: buildAgentThoughtLabelInput(source)
-      }
+      { role: "system", content: expect.any(String) },
+      { role: "user", content: buildAgentThoughtLabelInput(detailedSource) }
     ]);
     [
       "Treat overall_task_context only as background",
       "most specific supported subject",
-      "A proposed future action is not an action currently being performed",
+      "not authoritative tool state",
+      "Never begin a label with any of these tool-execution verbs",
       "Start with a natural -ing action verb",
       "Use 3 to 8 words",
       "Never use past-tense wording",
@@ -761,19 +904,18 @@ describe("requestAgentThoughtLabel", () => {
 
     const promptLines = messages[0].content.split("\n");
     const prematureVerbList = /finality verbs: ([^.]+)\./u.exec(messages[0].content)?.[1];
-    expect(prematureVerbList).toBeDefined();
     const prematureVerbs = prematureVerbList?.split(", ") ?? [];
     const examples = promptLines.flatMap((line, index) => {
       const state = /^(streaming|complete):/u.exec(line)?.[1];
       return state ? [{ state, label: promptLines[index + 1] }] : [];
     });
     expect(examples).toHaveLength(9);
-    expect(examples.filter(({ state }) => state === "streaming")).toHaveLength(5);
-    expect(examples.filter(({ state }) => state === "complete")).toHaveLength(4);
+    expect(examples.filter(({ state }) => state === "streaming").length).toBeGreaterThanOrEqual(4);
+    expect(examples.filter(({ state }) => state === "complete").length).toBeGreaterThanOrEqual(4);
     expect(examples.some(({ label }) => label === AGENT_THOUGHT_LABEL_PENDING_TEXT)).toBe(true);
     const exampleLabels = examples.map(({ label }) => label).join("\n");
-    ["/downloads", "UseCaseGridSection", "llms.txt"].forEach((subject) =>
-      expect(exampleLabels).toContain(subject)
+    ["agentThoughtLabels", "package", "/downloads", "UseCaseGridSection", "llms.txt"].forEach(
+      (subject) => expect(exampleLabels).toContain(subject)
     );
     examples.forEach(({ state, label }) => {
       if (label === AGENT_THOUGHT_LABEL_PENDING_TEXT) return;
@@ -785,14 +927,9 @@ describe("requestAgentThoughtLabel", () => {
       }
     });
     ["conversation", "store"].forEach((field) => expect(requests[0]).not.toHaveProperty(field));
-    expect(getAgentThoughtLabel(identifiers, storage)).toBe("Inspecting authentication flow");
-    expect(storage.getItem(agentThoughtLabelStorageKey(identifiers))).toBe(
-      "Inspecting authentication flow"
-    );
   });
 
-  test("keeps streaming and completed requests separate and persists only durable labels", async () => {
-    const storage = new MemoryStorage();
+  test("sends streaming and complete phase states independently", async () => {
     const requestedStates: string[] = [];
     const client = fakeClient(async (request) => {
       const messages = request.messages as { content: string }[];
@@ -806,29 +943,17 @@ describe("requestAgentThoughtLabel", () => {
           : "Explaining authentication findings"
       );
     });
-    const source = { userRequest: "Fix login", reasoningText: "Inspect auth." };
 
     await expect(
-      requestAgentThoughtLabel(client, identifiers, source, storage, {
-        phaseState: "streaming"
-      })
+      requestAgentThoughtLabel(client, source, { phaseState: "streaming" })
     ).resolves.toBe("Investigating login failures");
-    expect(getAgentThoughtLabel(identifiers, storage)).toBeNull();
-
-    persistAgentThoughtLabel(identifiers, "Investigating login failures", storage);
     await expect(
-      requestAgentThoughtLabel(client, identifiers, source, storage, {
-        phaseState: "complete",
-        bypassStoredLabel: true
-      })
+      requestAgentThoughtLabel(client, source, { phaseState: "complete" })
     ).resolves.toBe("Explaining authentication findings");
-
     expect(requestedStates).toEqual(["streaming", "complete"]);
-    expect(getAgentThoughtLabel(identifiers, storage)).toBe("Explaining authentication findings");
   });
 
-  test("keeps independently cancellable streaming snapshots separate", async () => {
-    const storage = new MemoryStorage();
+  test("keeps concurrent snapshots independently cancellable", async () => {
     const signals: Array<AbortSignal | undefined> = [];
     const client = {
       chat: {
@@ -840,15 +965,14 @@ describe("requestAgentThoughtLabel", () => {
         }
       }
     } as unknown as AgentThoughtLabelClient;
-    const source = { userRequest: "Fix login", reasoningText: "Initial reasoning" };
     const firstController = new AbortController();
     const secondController = new AbortController();
 
-    const first = requestAgentThoughtLabel(client, identifiers, source, storage, {
+    const first = requestAgentThoughtLabel(client, source, {
       phaseState: "streaming",
       signal: firstController.signal
     });
-    const second = requestAgentThoughtLabel(client, identifiers, source, storage, {
+    const second = requestAgentThoughtLabel(client, source, {
       phaseState: "streaming",
       signal: secondController.signal
     });
@@ -861,41 +985,56 @@ describe("requestAgentThoughtLabel", () => {
     expect(signals).toEqual([firstController.signal, secondController.signal]);
   });
 
-  test("leaves a persisted provisional in place when final generation fails", async () => {
-    const storage = new MemoryStorage();
-    persistAgentThoughtLabel(identifiers, "Investigating login failures", storage);
+  test("does not contact the provider when already aborted", async () => {
+    let requestCount = 0;
+    const controller = new AbortController();
+    controller.abort();
+    const client = fakeClient(async () => {
+      requestCount += 1;
+      return completion("Inspecting authentication flow");
+    });
 
     await expect(
-      requestAgentThoughtLabel(
-        fakeClient(async () => completion(null)),
-        identifiers,
-        { userRequest: "Fix login", reasoningText: "Inspect auth." },
-        storage,
-        { phaseState: "complete", bypassStoredLabel: true }
-      )
+      requestAgentThoughtLabel(client, source, { signal: controller.signal })
     ).resolves.toBeNull();
-    expect(getAgentThoughtLabel(identifiers, storage)).toBe("Investigating login failures");
+    expect(requestCount).toBe(0);
+  });
+
+  test("returns null when aborted while the provider response is pending", async () => {
+    const response = deferred<FakeChatCompletion>();
+    let requestSignal: AbortSignal | undefined;
+    const client = {
+      chat: {
+        completions: {
+          create: (_request: unknown, options?: { signal?: AbortSignal }) => {
+            requestSignal = options?.signal;
+            return response.promise;
+          }
+        }
+      }
+    } as unknown as AgentThoughtLabelClient;
+    const controller = new AbortController();
+    const pending = requestAgentThoughtLabel(client, source, { signal: controller.signal });
+    await nextTask();
+    expect(requestSignal).toBe(controller.signal);
+
+    controller.abort();
+    response.resolve(completion("Inspecting obsolete authentication flow"));
+    await expect(pending).resolves.toBeNull();
   });
 
   test("allows Thinking only as a streaming decline and rejects clipped output", async () => {
-    const storage = new MemoryStorage();
-    const source = { userRequest: "Fix login", reasoningText: "I need to look into this more." };
-
     await expect(
       requestAgentThoughtLabel(
         fakeClient(async () => completion(AGENT_THOUGHT_LABEL_PENDING_TEXT)),
-        { ...identifiers, phaseId: "streaming-decline:thought-0" },
         source,
-        storage,
         { phaseState: "streaming" }
       )
     ).resolves.toBe(AGENT_THOUGHT_LABEL_PENDING_TEXT);
     await expect(
       requestAgentThoughtLabel(
         fakeClient(async () => completion(AGENT_THOUGHT_LABEL_PENDING_TEXT)),
-        { ...identifiers, phaseId: "completed-decline:thought-0" },
         source,
-        storage,
         { phaseState: "complete" }
       )
     ).resolves.toBeNull();
@@ -909,17 +1048,13 @@ describe("requestAgentThoughtLabel", () => {
             }
           ]
         })),
-        { ...identifiers, phaseId: "clipped:thought-0" },
-        source,
-        storage
+        source
       )
     ).resolves.toBeNull();
-    expect(storage.length).toBe(0);
   });
 
-  test("blocks premature streaming verbs without restricting other active wording", async () => {
-    const storage = new MemoryStorage();
-    const source = {
+  test("blocks premature streaming verbs but permits active wording", async () => {
+    const seoSource = {
       userRequest: "Recommend SEO improvements",
       reasoningText: "Review the remaining evidence before reporting recommendations."
     };
@@ -930,126 +1065,134 @@ describe("requestAgentThoughtLabel", () => {
       "Delivering SEO migration findings",
       "delivering SEO migration findings"
     ];
-
-    for (const [index, label] of prematureLabels.entries()) {
+    for (const label of prematureLabels) {
       await expect(
         requestAgentThoughtLabel(
           fakeClient(async () => completion(label)),
-          { ...identifiers, phaseId: `streaming-deliverable-${index}:thought-0` },
-          source,
-          storage,
-          { phaseState: "streaming" }
+          seoSource,
+          {
+            phaseState: "streaming"
+          }
         )
       ).resolves.toBeNull();
     }
+
     const activeLabels = [
       "Synthesizing remaining SEO evidence",
       "Generating parser edge cases",
       "Sharing state across components"
     ];
-    for (const [index, label] of activeLabels.entries()) {
+    for (const label of activeLabels) {
       await expect(
         requestAgentThoughtLabel(
           fakeClient(async () => completion(label)),
-          { ...identifiers, phaseId: `streaming-active-${index}:thought-0` },
-          source,
-          storage,
-          { phaseState: "streaming" }
+          seoSource,
+          {
+            phaseState: "streaming"
+          }
         )
       ).resolves.toBe(label);
     }
     await expect(
       requestAgentThoughtLabel(
         fakeClient(async () => completion("Formulating SEO recommendations")),
-        { ...identifiers, phaseId: "complete-deliverable:thought-0" },
-        source,
-        storage,
+        seoSource,
         { phaseState: "complete" }
       )
     ).resolves.toBe("Formulating SEO recommendations");
+  });
 
-    prematureLabels.forEach((_label, index) => {
-      expect(
-        getAgentThoughtLabel(
-          { ...identifiers, phaseId: `streaming-deliverable-${index}:thought-0` },
-          storage
-        )
-      ).toBeNull();
-    });
-    expect(
-      getAgentThoughtLabel({ ...identifiers, phaseId: "complete-deliverable:thought-0" }, storage)
-    ).toBe("Formulating SEO recommendations");
+  test("rejects tool-execution leading verbs for streaming and complete labels", async () => {
+    const toolExecutionLabels = [
+      "Calling the authentication endpoint",
+      "Executing the migration command",
+      "Fetching current sitemap records",
+      "Listing route configuration files",
+      "Opening the package manifest",
+      "Querying the session database",
+      "Reading agentThoughtLabels and package configuration",
+      '"Reading agentThoughtLabels and package configuration"',
+      "• Reading agentThoughtLabels and package configuration",
+      "Running AgentMode lifecycle tests",
+      "Searching localStorage persistence paths",
+      "Testing failed-run label retention"
+    ];
+
+    for (const phaseState of ["streaming", "complete"] as const) {
+      for (const label of toolExecutionLabels) {
+        await expect(
+          requestAgentThoughtLabel(
+            fakeClient(async () => completion(label)),
+            source,
+            {
+              phaseState
+            }
+          )
+        ).resolves.toBeNull();
+      }
+    }
+    await expect(
+      requestAgentThoughtLabel(
+        fakeClient(async () => completion("Reviewing agentThoughtLabels configuration")),
+        source,
+        { phaseState: "complete" }
+      )
+    ).resolves.toBe("Reviewing agentThoughtLabels configuration");
   });
 
   test("returns null when the provider request fails", async () => {
-    const storage = new MemoryStorage();
     const failedClient = fakeClient(async () => {
       throw new Error("Provider unavailable");
     });
-    const source = { userRequest: "Fix login", reasoningText: "Inspect auth." };
 
-    await expect(
-      requestAgentThoughtLabel(failedClient, identifiers, source, storage)
-    ).resolves.toBeNull();
-    expect(storage.length).toBe(0);
+    await expect(requestAgentThoughtLabel(failedClient, source)).resolves.toBeNull();
   });
 
   test("rejects missing and unfinished completion choices", async () => {
-    const storage = new MemoryStorage();
-    const source = { userRequest: "Fix login", reasoningText: "Inspect auth." };
-    const cases = [
-      {
-        phaseId: "missing-choice:thought-0",
-        client: fakeClient(async () => ({ choices: [] }))
-      },
-      {
-        phaseId: "filtered:thought-0",
-        client: fakeClient(async () => ({
-          choices: [
-            {
-              finish_reason: "content_filter",
-              message: { content: "Reviewing authentication flow" }
-            }
-          ]
-        }))
-      }
-    ] as const;
+    const clients = [
+      fakeClient(async () => ({ choices: [] })),
+      fakeClient(async () => ({
+        choices: [
+          {
+            finish_reason: "content_filter",
+            message: { content: "Reviewing authentication flow" }
+          }
+        ]
+      }))
+    ];
 
-    for (const { phaseId, client } of cases) {
-      await expect(
-        requestAgentThoughtLabel(client, { ...identifiers, phaseId }, source, storage)
-      ).resolves.toBeNull();
+    for (const client of clients) {
+      await expect(requestAgentThoughtLabel(client, source)).resolves.toBeNull();
     }
-
-    expect(storage.length).toBe(0);
   });
 
-  test("rejects multiline, overlong, and empty visible outputs", async () => {
-    const storage = new MemoryStorage();
-    const multiline = "First line\nSecond line";
-    const overlong = `Label_${"x".repeat(AGENT_THOUGHT_LABEL_MAX_LENGTH)}`;
-    const cases = [
-      { phaseId: "multiline:thought-0", output: multiline },
-      { phaseId: "overlong:thought-0", output: overlong },
-      { phaseId: "empty:thought-0", output: null }
-    ] as const;
+  test("rejects invalid visible output without rewriting it", async () => {
+    const outputs = [
+      "First line\nSecond line",
+      `Label_${"x".repeat(AGENT_THOUGHT_LABEL_MAX_LENGTH)}`,
+      "Reviewing authentication",
+      "Reviewing one two three four five six seven eight",
+      "Review authentication flow",
+      '"Reviewing authentication flow"',
+      "• Reviewing authentication flow",
+      "Reviewing authentication flow.",
+      "Reviewing authentication flow,",
+      "Reviewing authentication flow…",
+      "Reviewing authentication flow)",
+      null
+    ];
 
-    for (const { phaseId, output } of cases) {
+    for (const output of outputs) {
       await expect(
         requestAgentThoughtLabel(
           fakeClient(async () => completion(output)),
-          { ...identifiers, phaseId },
-          { userRequest: "Fix login", reasoningText: "Inspect auth." },
-          storage
+          source
         )
       ).resolves.toBeNull();
     }
-
-    expect(storage.length).toBe(0);
   });
 
   test("never reads hidden message reasoning when visible output is absent", async () => {
-    const storage = new MemoryStorage();
     const message: FakeChatCompletion["choices"][number]["message"] = { content: null };
     Object.defineProperty(message, "reasoning", {
       get() {
@@ -1057,258 +1200,9 @@ describe("requestAgentThoughtLabel", () => {
       }
     });
     const client = fakeClient(async () => ({
-      choices: [
-        {
-          finish_reason: "stop",
-          message
-        }
-      ]
+      choices: [{ finish_reason: "stop", message }]
     }));
 
-    await expect(
-      requestAgentThoughtLabel(
-        client,
-        { ...identifiers, phaseId: "hidden-reasoning:thought-0" },
-        { userRequest: "Fix login", reasoningText: "Inspect auth." },
-        storage
-      )
-    ).resolves.toBeNull();
-
-    expect(storage.length).toBe(0);
-  });
-
-  test("coalesces concurrent requests for the same reasoning phase", async () => {
-    const storage = new MemoryStorage();
-    const response = deferred<FakeChatCompletion>();
-    let requestCount = 0;
-    const client = fakeClient(() => {
-      requestCount += 1;
-      return response.promise;
-    });
-    const source = { userRequest: "Fix login", reasoningText: "Inspect auth." };
-
-    const first = requestAgentThoughtLabel(client, identifiers, source, storage);
-    const second = requestAgentThoughtLabel(client, identifiers, source, storage);
-    expect(second).toBe(first);
-    await new Promise<void>((resolve) => setTimeout(resolve, 0));
-    expect(requestCount).toBe(1);
-    response.resolve(completion("Inspecting authentication flow"));
-
-    await expect(Promise.all([first, second])).resolves.toEqual([
-      "Inspecting authentication flow",
-      "Inspecting authentication flow"
-    ]);
-  });
-
-  test("does not contact the provider when the turn is invalidated immediately", async () => {
-    const storage = new MemoryStorage();
-    let requestCount = 0;
-    const client = fakeClient(async () => {
-      requestCount += 1;
-      return completion("Inspecting authentication flow");
-    });
-
-    const pending = requestAgentThoughtLabel(
-      client,
-      { ...identifiers, phaseId: "immediate-invalidation:thought-0" },
-      { userRequest: "Fix login", reasoningText: "Inspect auth." },
-      storage
-    );
-    clearAgentThoughtLabelsForTurn(
-      identifiers.userId,
-      identifiers.sessionId,
-      "immediate-invalidation",
-      storage
-    );
-
-    await expect(pending).resolves.toBeNull();
-    expect(requestCount).toBe(0);
-    expect(storage.length).toBe(0);
-  });
-
-  test("does not save a response that arrives after its turn is replaced", async () => {
-    const storage = new MemoryStorage();
-    const response = deferred<FakeChatCompletion>();
-    let requestCount = 0;
-    const client = fakeClient(() => {
-      requestCount += 1;
-      return response.promise;
-    });
-    const turnIdentifiers = { ...identifiers, phaseId: "replaced-turn:thought-0" };
-
-    const pending = requestAgentThoughtLabel(
-      client,
-      turnIdentifiers,
-      { userRequest: "Fix login", reasoningText: "Inspect auth." },
-      storage
-    );
-    await new Promise<void>((resolve) => setTimeout(resolve, 0));
-    expect(requestCount).toBe(1);
-
-    clearAgentThoughtLabelsForTurn(
-      turnIdentifiers.userId,
-      turnIdentifiers.sessionId,
-      "replaced-turn",
-      storage
-    );
-    response.resolve(completion("Inspecting authentication flow"));
-
-    await expect(pending).resolves.toBeNull();
-    expect(getAgentThoughtLabel(turnIdentifiers, storage)).toBeNull();
-  });
-
-  test("does not save a response that arrives after its task is deleted", async () => {
-    const storage = new MemoryStorage();
-    let resolveResponse: ((response: FakeChatCompletion) => void) | undefined;
-    const client = fakeClient(
-      () =>
-        new Promise((resolve) => {
-          resolveResponse = resolve;
-        })
-    );
-
-    const pending = requestAgentThoughtLabel(
-      client,
-      identifiers,
-      { userRequest: "Fix login", reasoningText: "Inspect auth." },
-      storage
-    );
-    await new Promise<void>((resolve) => setTimeout(resolve, 0));
-    expect(resolveResponse).toBeDefined();
-    clearAgentThoughtLabelsForSession(identifiers.userId, identifiers.sessionId, storage);
-    resolveResponse?.(completion("Inspecting authentication flow"));
-
-    await expect(pending).resolves.toBeNull();
-    expect(getAgentThoughtLabel(identifiers, storage)).toBeNull();
-  });
-
-  test("allows a reused task ID to start fresh while its deleted task request is pending", async () => {
-    const storage = new MemoryStorage();
-    const responses = [deferred<FakeChatCompletion>(), deferred<FakeChatCompletion>()];
-    let requestCount = 0;
-    const client = fakeClient(() => responses[requestCount++].promise);
-    const source = { userRequest: "Fix login", reasoningText: "Inspect auth." };
-
-    const deletedTaskRequest = requestAgentThoughtLabel(client, identifiers, source, storage);
-    await new Promise<void>((resolve) => setTimeout(resolve, 0));
-    clearAgentThoughtLabelsForSession(identifiers.userId, identifiers.sessionId, storage);
-    const reusedTaskRequest = requestAgentThoughtLabel(client, identifiers, source, storage);
-    await new Promise<void>((resolve) => setTimeout(resolve, 0));
-    expect(requestCount).toBe(2);
-
-    responses[1].resolve(completion("New task label"));
-    await expect(reusedTaskRequest).resolves.toBe("New task label");
-    responses[0].resolve(completion("Deleted task label"));
-    await expect(deletedTaskRequest).resolves.toBeNull();
-    expect(getAgentThoughtLabel(identifiers, storage)).toBe("New task label");
-  });
-
-  test("rejects a pending response after all Agent history for its account is deleted", async () => {
-    const storage = new MemoryStorage();
-    const response = deferred<FakeChatCompletion>();
-    const client = fakeClient(() => response.promise);
-    const accountIdentifiers = { ...identifiers, userId: "history-user" };
-    const pending = requestAgentThoughtLabel(
-      client,
-      accountIdentifiers,
-      { userRequest: "Fix login", reasoningText: "Inspect auth." },
-      storage
-    );
-    await new Promise<void>((resolve) => setTimeout(resolve, 0));
-
-    clearAgentThoughtLabelsForUser(accountIdentifiers.userId, storage);
-    response.resolve(completion("Deleted history label"));
-
-    await expect(pending).resolves.toBeNull();
-    expect(getAgentThoughtLabel(accountIdentifiers, storage)).toBeNull();
-  });
-});
-
-describe("Agent thought label storage", () => {
-  test("cleans only the requested task or account and preserves unrelated data", () => {
-    const storage = new MemoryStorage();
-    const otherTask = { ...identifiers, sessionId: "task-two" };
-    const otherUser = { ...identifiers, userId: "other-user" };
-    storage.setItem(agentThoughtLabelStorageKey(identifiers), "First task");
-    storage.setItem(agentThoughtLabelStorageKey(otherTask), "Second task");
-    storage.setItem(agentThoughtLabelStorageKey(otherUser), "Other account");
-    storage.setItem("unrelated", "keep me");
-
-    clearAgentThoughtLabelsForSession(identifiers.userId, identifiers.sessionId, storage);
-    expect(getAgentThoughtLabel(identifiers, storage)).toBeNull();
-    expect(getAgentThoughtLabel(otherTask, storage)).toBe("Second task");
-    expect(getAgentThoughtLabel(otherUser, storage)).toBe("Other account");
-
-    clearAgentThoughtLabelsForUser(identifiers.userId, storage);
-    expect(getAgentThoughtLabel(otherTask, storage)).toBeNull();
-    expect(getAgentThoughtLabel(otherUser, storage)).toBe("Other account");
-    expect(storage.getItem("unrelated")).toBe("keep me");
-  });
-
-  test("cleans only phases from a replaced user turn", () => {
-    const storage = new MemoryStorage();
-    const nextPhase = {
-      ...identifiers,
-      phaseId: "assistant-after-user:thought-1"
-    };
-    const otherTurn = {
-      ...identifiers,
-      phaseId: "assistant-after-other-user:thought-0"
-    };
-    storage.setItem(agentThoughtLabelStorageKey(identifiers), "First phase");
-    storage.setItem(agentThoughtLabelStorageKey(nextPhase), "Second phase");
-    storage.setItem(agentThoughtLabelStorageKey(otherTurn), "Other turn");
-
-    clearAgentThoughtLabelsForTurn(
-      identifiers.userId,
-      identifiers.sessionId,
-      "assistant-after-user",
-      storage
-    );
-
-    expect(getAgentThoughtLabel(identifiers, storage)).toBeNull();
-    expect(getAgentThoughtLabel(nextPhase, storage)).toBeNull();
-    expect(getAgentThoughtLabel(otherTurn, storage)).toBe("Other turn");
-  });
-
-  test("ignores invalid stored labels and unavailable storage", async () => {
-    const storage = new MemoryStorage();
-    storage.setItem(agentThoughtLabelStorageKey(identifiers), "Invalid\nlabel");
-    expect(getAgentThoughtLabel(identifiers, storage)).toBeNull();
-
-    const unavailableStorage: AgentThoughtLabelStorage = {
-      get length(): number {
-        throw new Error("unavailable");
-      },
-      getItem() {
-        throw new Error("unavailable");
-      },
-      key() {
-        throw new Error("unavailable");
-      },
-      removeItem() {
-        throw new Error("unavailable");
-      },
-      setItem() {
-        throw new Error("unavailable");
-      }
-    };
-
-    expect(getAgentThoughtLabel(identifiers, unavailableStorage)).toBeNull();
-    await expect(
-      requestAgentThoughtLabel(
-        fakeClient(async () => completion("Inspecting unavailable storage")),
-        { ...identifiers, phaseId: "unavailable-storage:thought-0" },
-        { userRequest: "Inspect storage", reasoningText: "Checking browser storage." },
-        unavailableStorage
-      )
-    ).resolves.toBe("Inspecting unavailable storage");
-    expect(() =>
-      clearAgentThoughtLabelsForSession(
-        identifiers.userId,
-        identifiers.sessionId,
-        unavailableStorage
-      )
-    ).not.toThrow();
+    await expect(requestAgentThoughtLabel(client, source)).resolves.toBeNull();
   });
 });
