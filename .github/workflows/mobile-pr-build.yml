@@ -56,9 +56,9 @@ jobs:
         with:
           path: |
             frontend/src-tauri/onnxruntime-ios
-          key: pr-onnxruntime-ios-artifact-1.22.2-xcode26.5-${{ steps.select_xcode.outputs.build }}-${{ hashFiles('flake.lock', 'flake.nix', 'scripts/ci/_common.sh', 'scripts/ci/ios-onnxruntime.sh', 'frontend/src-tauri/scripts/build-ios-onnxruntime-all.sh', 'frontend/src-tauri/scripts/canonicalize-static-archive.py', 'frontend/src-tauri/scripts/onnxruntime-pins.sh') }}
+          key: pr-onnxruntime-ios-artifact-1.23.2-xcode26.5-${{ steps.select_xcode.outputs.build }}-${{ hashFiles('flake.lock', 'flake.nix', 'scripts/ci/_common.sh', 'scripts/ci/ios-onnxruntime.sh', 'frontend/src-tauri/scripts/build-ios-onnxruntime-all.sh', 'frontend/src-tauri/scripts/canonicalize-static-archive.py', 'frontend/src-tauri/scripts/onnxruntime-pins.sh') }}
           restore-keys: |
-            pr-onnxruntime-ios-artifact-1.22.2-xcode26.5-${{ steps.select_xcode.outputs.build }}-
+            pr-onnxruntime-ios-artifact-1.23.2-xcode26.5-${{ steps.select_xcode.outputs.build }}-
 
       - name: Prepare ONNX Runtime iOS artifact
         run: nix develop .#apple -c ./scripts/ci/ios-onnxruntime.sh

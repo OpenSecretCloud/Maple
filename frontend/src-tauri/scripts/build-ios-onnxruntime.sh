@@ -9,7 +9,7 @@
 # - Git
 #
 # Usage: ./build-ios-onnxruntime.sh [version]
-# Example: ./build-ios-onnxruntime.sh 1.20.1
+# Example: ./build-ios-onnxruntime.sh 1.23.2
 
 set -e
 
@@ -17,8 +17,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/onnxruntime-pins.sh"
 
 TAURI_DIR="$(dirname "$SCRIPT_DIR")"
-# Use latest 1.22.2 - older versions have Eigen hash mismatch issues with GitLab
-ORT_VERSION="${1:-1.22.2}"
+ORT_VERSION="${1:-1.23.2}"
 ORT_COMMIT="${ORT_COMMIT:-$(onnxruntime_ios_commit_for_version "${ORT_VERSION}")}"
 BUILD_DIR="${TAURI_DIR}/onnxruntime-build"
 OUTPUT_DIR="${TAURI_DIR}/onnxruntime-ios"

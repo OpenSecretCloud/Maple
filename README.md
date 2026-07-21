@@ -143,7 +143,7 @@ bun tauri build --target universal-apple-darwin
 
 #### Linux: ONNX Runtime Setup
 
-Linux builds bundle `libonnxruntime.so` for local TTS (Supertonic). Before building on Linux, you must download the ONNX Runtime shared library:
+Linux builds bundle ONNX Runtime 1.23.2 for local TTS and PDF OCR. `just desktop-build` provisions it automatically. Before invoking `bun tauri build` directly, download the pinned shared library:
 
 ```bash
 cd frontend/src-tauri
@@ -152,7 +152,7 @@ cd frontend/src-tauri
 
 This downloads the pinned ONNX Runtime release, verifies its SHA-256 checksum, and extracts it to `frontend/src-tauri/onnxruntime-linux/` (which is gitignored). The script is idempotent — it skips the download if the library already exists.
 
-> **Note:** CI workflows call this script automatically. You only need to run it manually for local builds.
+> **Note:** CI workflows and the desktop `just` recipes call this script automatically. Run it manually only when invoking the lower-level Tauri commands directly.
 
 #### Linux: Running in Headless/Virtual Display Environments
 

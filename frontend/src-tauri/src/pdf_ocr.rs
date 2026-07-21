@@ -79,6 +79,11 @@ pub async fn get_or_prepare_engine(app: &AppHandle) -> Result<Arc<OcrEngine>, St
         )
     })?;
 
+    crate::onnxruntime::ensure_initialized().map_err(|error| {
+        log::error!("ONNX Runtime setup failed before OCR initialization: {error}");
+        format!("Maple couldn't start its on-device OCR engine. Try the PDF again. ({error})")
+    })?;
+
     let det_path = models_dir.join("det.onnx");
     let rec_path = models_dir.join("rec.onnx");
     let dict_path = models_dir.join("en_dict.txt");

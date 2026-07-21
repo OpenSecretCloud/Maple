@@ -361,7 +361,7 @@ verify_android_signatures_optional() {
 }
 
 verify_android() {
-  local final_manifest unsigned_manifest signed_manifest
+  local final_manifest unsigned_manifest signed_manifest artifact
 
   final_manifest="$(proof_file_required android-release-final.sha256)"
   unsigned_manifest="$(proof_file_required android-release-unsigned-canonical-payload.sha256)"
@@ -370,6 +370,9 @@ verify_android() {
   verify_file_manifest "${final_manifest}"
   verify_zip_payload_manifest "${signed_manifest}"
   verify_android_payload_equivalence "${unsigned_manifest}" "${signed_manifest}"
+  while IFS= read -r -d '' artifact; do
+    verify_android_onnxruntime_artifact "${artifact}"
+  done < <(find "${artifacts_dir}" -type f \( -name '*.apk' -o -name '*.aab' \) -print0 | LC_ALL=C sort -z)
   verify_android_signatures_optional
 }
 

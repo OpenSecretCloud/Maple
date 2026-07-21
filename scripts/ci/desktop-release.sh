@@ -82,14 +82,15 @@ case "$(host_os)" in
   darwin)
     use_xcode_toolchain
     import_apple_developer_certificate
+    prepare_macos_onnxruntime
 
-    export MACOSX_DEPLOYMENT_TARGET="13.3"
+    export MACOSX_DEPLOYMENT_TARGET="13.4"
     export CMAKE_OSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET}"
     export SDKROOT="${SDKROOT:-$(xcrun --sdk macosx --show-sdk-path)}"
     export LIBRARY_PATH="${SDKROOT}/usr/lib${LIBRARY_PATH:+:${LIBRARY_PATH}}"
     export RUSTFLAGS="${RUSTFLAGS:+${RUSTFLAGS} }-Clink-arg=-isysroot -Clink-arg=${SDKROOT}"
 
-    unsigned_config='{"build":{"beforeBuildCommand":null},"bundle":{"createUpdaterArtifacts":false,"macOS":{"minimumSystemVersion":"13.3"}}}'
+    unsigned_config='{"build":{"beforeBuildCommand":null},"bundle":{"createUpdaterArtifacts":false,"macOS":{"minimumSystemVersion":"13.4"}}}'
     signed_config="$(jq -cn --arg updaterPubkey "$(tauri_updater_public_key_config_value)" '{
       build: {
         beforeBuildCommand: null
@@ -102,7 +103,7 @@ case "$(host_os)" in
       bundle: {
         createUpdaterArtifacts: true,
         macOS: {
-          minimumSystemVersion: "13.3"
+          minimumSystemVersion: "13.4"
         }
       }
     }')"

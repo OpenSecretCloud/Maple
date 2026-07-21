@@ -9,7 +9,7 @@
 # - Git
 #
 # Usage: ./build-ios-onnxruntime-all.sh [version]
-# Example: ./build-ios-onnxruntime-all.sh 1.22.2
+# Example: ./build-ios-onnxruntime-all.sh 1.23.2
 
 set -e
 
@@ -17,7 +17,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/onnxruntime-pins.sh"
 
 TAURI_DIR="$(dirname "$SCRIPT_DIR")"
-ORT_VERSION="${1:-1.22.2}"
+ORT_VERSION="${1:-1.23.2}"
 ORT_COMMIT="${ORT_COMMIT:-$(onnxruntime_ios_commit_for_version "${ORT_VERSION}")}"
 BUILD_DIR="${TAURI_DIR}/onnxruntime-build"
 OUTPUT_DIR="${TAURI_DIR}/onnxruntime-ios"
@@ -94,8 +94,9 @@ clone_with_retry
 
 cd onnxruntime
 
-# ONNX Runtime embeds CMAKE_CXX_FLAGS in its public build-info string. Keep the
-# real compiler prefix maps, but canonicalize that generated string first.
+# ONNX Runtime embeds the source revision in its public build-info string. Use
+# the full commit so the provenance is unambiguous. Older versions also embed
+# CMAKE_CXX_FLAGS; canonicalize that optional field when it is present.
 patch_reproducible_build_info() {
     python3 - "$PWD/cmake/CMakeLists.txt" <<'PY'
 from pathlib import Path
@@ -114,13 +115,13 @@ old_commit = 'execute_process(COMMAND ${GIT_EXECUTABLE} log -1 --format=%h'
 new_commit = 'execute_process(COMMAND ${GIT_EXECUTABLE} log -1 --format=%H'
 
 changed = False
-if old_commit in text:
+if new_commit not in text:
+    if old_commit not in text:
+        sys.exit("Could not normalize the ONNX Runtime build-info commit hash.")
     text = text.replace(old_commit, new_commit, 1)
     changed = True
 
-if new not in text:
-    if old not in text:
-        sys.exit("Could not patch ONNX Runtime build info generation.")
+if old in text and new not in text:
     text = text.replace(old, new, 1)
     changed = True
 

@@ -2425,6 +2425,9 @@ export function UnifiedChat() {
         } else if (documentType === "pdf") {
           setAttachmentError("PDF files can only be processed in the Maple app");
           setTimeout(() => setAttachmentError(null), 5000);
+        } else {
+          setAttachmentError("Only PDF, TXT, and Markdown files are supported");
+          setTimeout(() => setAttachmentError(null), 5000);
         }
       } catch (error) {
         console.error("Document processing error:", error);
@@ -2443,6 +2446,8 @@ export function UnifiedChat() {
   );
 
   const removeDocument = useCallback(() => {
+    documentUploadGenerationRef.current += 1;
+    setIsProcessingDocument(false);
     setDocumentText("");
     setDocumentName("");
   }, []);

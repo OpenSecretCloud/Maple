@@ -1,10 +1,10 @@
-# iOS TTS Local Development Guide
+# iOS ONNX Runtime Local Development Guide
 
-This guide explains how to build and test the iOS TTS (Text-to-Speech) feature locally using the iOS Simulator or a physical device.
+This guide explains how to build and test the iOS ONNX Runtime used by local TTS and PDF OCR on the iOS Simulator or a physical device.
 
 ## Overview
 
-The iOS TTS feature uses ONNX Runtime to run Kokoro TTS models. ONNX Runtime must be built from source for iOS because:
+Maple pins ONNX Runtime 1.23.2 and links it statically on iOS for both TTS and PDF OCR. ONNX Runtime is built from source because:
 1. Pre-built binaries from HuggingFace are missing Abseil symbols
 2. We need both device (arm64) and simulator (arm64) builds
 3. The simulator build requires a workaround for a libiconv linking bug
@@ -25,7 +25,7 @@ The iOS TTS feature uses ONNX Runtime to run Kokoro TTS models. ONNX Runtime mus
 just ios-build-onnxruntime
 ```
 
-This builds ONNX Runtime for both device and simulator (~5-10 minutes) and automatically generates the cargo config.
+This builds and hash-verifies ONNX Runtime for both device and simulator, then generates the Cargo config. A valid cached artifact is reused; a stale or differently built artifact fails verification and is rebuilt.
 
 The output will be in `frontend/src-tauri/onnxruntime-ios/onnxruntime.xcframework/`.
 
@@ -93,7 +93,7 @@ Undefined symbols for architecture arm64:
   "_AbslInternalSpinLockDelay_lts_20240722"
 ```
 
-This means the ONNX Runtime library wasn't built from source. Pre-built binaries are missing these symbols. Run `./scripts/build-ios-onnxruntime-all.sh` to build from source.
+This means the ONNX Runtime library wasn't built through Maple's verified source pipeline. Run `just ios-build-onnxruntime`.
 
 ### Simulator Build Fails with libiconv Error
 

@@ -214,7 +214,6 @@ fn extract_pdf_with_ocr(file_bytes: Vec<u8>, engine: Arc<OcrEngine>) -> Result<S
         .map_err(|e| format!("Maple couldn't read the PDF's page list: {e}"))?;
     let mut pages = Vec::with_capacity(page_count);
     let mut extracted_bytes = 0;
-    let mut first_required_ocr_error = None;
 
     for page in 0..page_count {
         let classification = document
@@ -231,10 +230,7 @@ fn extract_pdf_with_ocr(file_bytes: Vec<u8>, engine: Arc<OcrEngine>) -> Result<S
                     Ok(fragments) => merge_native_and_ocr(&native, &fragments),
                     Err(error) => {
                         log::warn!("Required OCR failed on PDF page {}: {error}", page + 1);
-                        if first_required_ocr_error.is_none() {
-                            first_required_ocr_error = Some(error);
-                        }
-                        native
+                        return Err(error);
                     }
                 }
             }
@@ -277,13 +273,7 @@ fn extract_pdf_with_ocr(file_bytes: Vec<u8>, engine: Arc<OcrEngine>) -> Result<S
         push_page_with_budget(&mut pages, &mut extracted_bytes, text)?;
     }
 
-    let text = join_pages(pages);
-    if text.trim().is_empty() {
-        if let Some(error) = first_required_ocr_error {
-            return Err(error);
-        }
-    }
-    Ok(text)
+    Ok(join_pages(pages))
 }
 
 fn ocr_page(
@@ -668,6 +658,7 @@ mod tests {
             std::env::var("MAPLE_OCR_MODEL_DIR").expect("MAPLE_OCR_MODEL_DIR is required"),
         );
         let pdf = std::fs::read(pdf_path).expect("read OCR PDF fixture");
+        crate::onnxruntime::ensure_initialized().expect("initialize Maple's ONNX Runtime");
         let engine = OcrEngine::new(
             model_dir.join("det.onnx"),
             model_dir.join("rec.onnx"),
