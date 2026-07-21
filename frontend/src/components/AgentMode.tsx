@@ -46,6 +46,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Markdown, ThinkingBlock } from "@/components/markdown";
 import {
   CHAT_COMPOSER_TEXTAREA_CLASS,
+  ChatAssistantPendingIndicator,
   ChatAssistantPendingTurn,
   ChatAssistantTurn,
   ChatComposerSurface,
@@ -3882,6 +3883,9 @@ function AgentTimeline({
   const turns = groupAgentTimelineItems(visibleItems);
   const activeThinkingItemId = activeAgentThinkingItemId(visibleItems, isRunActive);
   const showAssistantLoader = shouldShowAgentAssistantLoader(turns, isResponsePending);
+  const trailingTurn = turns[turns.length - 1];
+  const pendingIndicatorTurnId =
+    showAssistantLoader && trailingTurn?.type === "assistant" ? trailingTurn.id : null;
 
   return (
     <div className="space-y-1">
@@ -3928,10 +3932,11 @@ function AgentTimeline({
                 onPermissionDecision={onPermissionDecision}
               />
             ))}
+            {pendingIndicatorTurnId === turn.id ? <ChatAssistantPendingIndicator /> : null}
           </ChatAssistantTurn>
         );
       })}
-      {showAssistantLoader ? <ChatAssistantPendingTurn /> : null}
+      {showAssistantLoader && pendingIndicatorTurnId === null ? <ChatAssistantPendingTurn /> : null}
     </div>
   );
 }

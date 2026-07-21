@@ -516,6 +516,19 @@ describe("shouldShowAgentAssistantLoader", () => {
     items: [thinking("thought", "Working")]
   };
 
+  function toolTurn(status: string, permissionStatus?: string) {
+    return {
+      type: "assistant" as const,
+      id: "assistant-after-user",
+      items: [
+        { ...item("tool", "tool", "assistant"), status },
+        ...(permissionStatus
+          ? [{ ...item("permission", "permission", "system"), status: permissionStatus }]
+          : [])
+      ]
+    };
+  }
+
   test("shows while a sent user turn is waiting for its first assistant activity", () => {
     expect(shouldShowAgentAssistantLoader([userTurn], true)).toBe(true);
   });
@@ -523,6 +536,36 @@ describe("shouldShowAgentAssistantLoader", () => {
   test("hides when the response is no longer pending or assistant activity has arrived", () => {
     expect(shouldShowAgentAssistantLoader([userTurn], false)).toBe(false);
     expect(shouldShowAgentAssistantLoader([userTurn, assistantTurn], true)).toBe(false);
+  });
+
+  test("shows after a tool result while the agent waits for its next response", () => {
+    expect(shouldShowAgentAssistantLoader([userTurn, toolTurn("completed")], true)).toBe(true);
+    expect(shouldShowAgentAssistantLoader([userTurn, toolTurn("failed")], true)).toBe(true);
+    expect(shouldShowAgentAssistantLoader([userTurn, toolTurn("error")], true)).toBe(true);
+  });
+
+  test("shows after a permissioned tool result whose decision row remains last", () => {
+    expect(
+      shouldShowAgentAssistantLoader([userTurn, toolTurn("completed", "allow_once")], true)
+    ).toBe(true);
+    expect(shouldShowAgentAssistantLoader([userTurn, toolTurn("failed", "allow_once")], true)).toBe(
+      true
+    );
+  });
+
+  test("keeps the tool status as the only activity while the tool is still running", () => {
+    expect(shouldShowAgentAssistantLoader([userTurn, toolTurn("running")], true)).toBe(false);
+    expect(shouldShowAgentAssistantLoader([userTurn, toolTurn("pending")], true)).toBe(false);
+    expect(
+      shouldShowAgentAssistantLoader([userTurn, toolTurn("running", "allow_once")], true)
+    ).toBe(false);
+    expect(shouldShowAgentAssistantLoader([userTurn, toolTurn("running", "pending")], true)).toBe(
+      false
+    );
+  });
+
+  test("hides after a settled tool result once the run finishes", () => {
+    expect(shouldShowAgentAssistantLoader([userTurn, toolTurn("completed")], false)).toBe(false);
   });
 
   test("does not invent an assistant turn without a user message", () => {

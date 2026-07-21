@@ -363,5 +363,23 @@ export function shouldShowAgentAssistantLoader(
   turns: AgentTimelineTurn[],
   isResponsePending: boolean
 ): boolean {
-  return isResponsePending && turns[turns.length - 1]?.type === "user";
+  if (!isResponsePending) return false;
+
+  const trailingTurn = turns[turns.length - 1];
+  if (trailingTurn?.type === "user") return true;
+  if (trailingTurn?.type !== "assistant" || turns[turns.length - 2]?.type !== "user") return false;
+
+  let trailingItemIndex = trailingTurn.items.length - 1;
+  while (trailingItemIndex >= 0) {
+    const item = trailingTurn.items[trailingItemIndex];
+    if (item.itemType !== "permission" || !item.status || item.status === "pending") break;
+    // Permission decisions update their original row in place, so a resolved
+    // card can remain after the tool row whose result arrived later.
+    trailingItemIndex -= 1;
+  }
+  const trailingItem = trailingTurn.items[trailingItemIndex];
+  return (
+    trailingItem?.itemType === "tool" &&
+    ["completed", "failed", "error"].includes(trailingItem.status ?? "")
+  );
 }
