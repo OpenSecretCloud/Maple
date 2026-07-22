@@ -54,8 +54,10 @@ rustup target add aarch64-apple-darwin x86_64-apple-darwin
 This configures Git to use the project's pre-commit hook. Managed
 `opensecret-workspaces` checkouts enable the same hook automatically. The hook
 checks formatting, builds the frontend, runs frontend tests, and runs Rust tests
-when Tauri files are staged. If Bun or Cargo is not already available and Nix
-is installed, the hook enters this repository's Nix development shell.
+when Tauri files are staged. When Nix is installed, the hook enters the pinned
+CI development shell automatically, including from macOS GUI environments that
+do not inherit the user's shell `PATH`. Without Nix, it uses compatible Bun and
+Cargo tools already available on `PATH`.
 
 ## Development
 
