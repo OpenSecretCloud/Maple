@@ -871,10 +871,48 @@ interface Conversation {
 function getToolCallQuery(functionCall: ToolCallItem): string {
   try {
     const args = JSON.parse(functionCall.arguments);
-    return args.query || "";
+    // Fall through the most-descriptive argument each tool exposes so the UI
+    // shows *what* is running rather than just the bare tool name repeated.
+    // web_search uses `query`; goose tools use command/path/pattern/etc.
+    const summary =
+      args.query ||
+      args.command ||
+      args.path ||
+      args.file_path ||
+      args.file ||
+      args.pattern ||
+      args.url ||
+      args.uri ||
+      args.name ||
+      "";
+    if (typeof summary !== "string") return "";
+    // Keep it to a single readable line.
+    const firstLine = summary.split("\n")[0].trim();
+    return firstLine.length > 80 ? `${firstLine.slice(0, 77)}…` : firstLine;
   } catch {
     return "";
   }
+}
+
+// Friendly display names for common goose tools so labels read as an action
+// ("Terminal", "Edited file") instead of the raw internal tool id ("shell",
+// "text_editor"). Unknown tools fall back to their raw name.
+const TOOL_LABELS: Record<string, string> = {
+  shell: "Terminal",
+  developer__shell: "Terminal",
+  text_editor: "Editor",
+  developer__text_editor: "Editor",
+  str_replace_editor: "Editor",
+  web_search: "Web Search",
+  read_file: "Read file",
+  write_file: "Write file",
+  list_files: "List files",
+  glob: "Find files",
+  grep: "Search"
+};
+
+function getToolLabel(name: string): string {
+  return TOOL_LABELS[name] || name;
 }
 
 // Component to render tool calls
@@ -948,8 +986,8 @@ function ToolCallRenderer({
                   ? `Searched: "${query}"`
                   : "Web Search"
                 : query
-                  ? `Ran "${functionCall.name}" for "${query}"`
-                  : `Tool "${functionCall.name}" completed`}
+                  ? `${getToolLabel(functionCall.name)}: ${query}`
+                  : `${getToolLabel(functionCall.name)}`}
             </span>
           </div>
           <div className="pl-6 text-foreground/80">
@@ -1018,15 +1056,15 @@ function ToolCallRenderer({
         <span>
           {isCompleted
             ? query
-              ? `Ran "${functionCall.name}" for "${query}"`
-              : `Ran "${functionCall.name}"`
+              ? `${getToolLabel(functionCall.name)}: ${query}`
+              : `${getToolLabel(functionCall.name)}`
             : isFailed
               ? isError
-                ? `Tool "${functionCall.name}" failed`
-                : `Tool "${functionCall.name}" incomplete`
+                ? `${getToolLabel(functionCall.name)} failed`
+                : `${getToolLabel(functionCall.name)} incomplete`
               : query
-                ? `Running "${functionCall.name}" for "${query}"...`
-                : `Running "${functionCall.name}"...`}
+                ? `${getToolLabel(functionCall.name)}: ${query}…`
+                : `${getToolLabel(functionCall.name)}…`}
         </span>
       </div>
     );
@@ -1056,7 +1094,7 @@ function ToolCallRenderer({
                 ? `Searched: "${query}"`
                 : "Web Search"
               : relatedCall
-                ? `Tool "${relatedCall.name}" result`
+                ? `${getToolLabel(relatedCall.name)} result`
                 : "Tool Result"}
           </span>
         </div>

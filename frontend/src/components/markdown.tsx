@@ -477,6 +477,20 @@ function escapeBrackets(text: string): string {
   return result;
 }
 
+// Disable Markdown's "4-space indent = code block" rule. Model output (goose via
+// mesh/OpenSecret) frequently indents wrapped lines or list continuations by 4
+// spaces, which CommonMark/GFM turn into an indented code block — so plain text
+// renders inside a <pre><code>. Fenced ``` / ~~~ blocks are unaffected; only the
+// accidental-indentation path is removed.
+function remarkNoIndentedCode(this: {
+  data: (key?: string) => Record<string, unknown>;
+}) {
+  const data = this.data() as { micromarkExtensions?: unknown[] };
+  const micromarkExtensions = (data.micromarkExtensions ||
+    (data.micromarkExtensions = [])) as unknown[];
+  micromarkExtensions.push({ disable: { null: ["codeIndented"] } });
+}
+
 function MarkDownContentToMemo(props: { content: string }) {
   const escapedContent = useMemo(() => {
     return escapeBrackets(escapeDollarNumber(props.content));
@@ -484,7 +498,7 @@ function MarkDownContentToMemo(props: { content: string }) {
 
   return (
     <ReactMarkdown
-      remarkPlugins={[RemarkMath, RemarkGfm, RemarkBreaks]}
+      remarkPlugins={[RemarkMath, RemarkGfm, RemarkBreaks, remarkNoIndentedCode]}
       rehypePlugins={[
         [
           RehypeSanitize,
