@@ -59,11 +59,11 @@ CXXFLAGS_aarch64_apple_ios_sim = { value = "${PATH_PREFIX_MAP_FLAGS}", force = t
 
 [target.aarch64-apple-ios.onnxruntime]
 rustc-link-search = ["${XCFRAMEWORK_DIR}/ios-arm64"]
-rustc-link-lib = ["static=onnxruntime", "c++"]
+rustc-link-lib = ["static=onnxruntime", "c++", "framework=Foundation"]
 
 [target.aarch64-apple-ios-sim.onnxruntime]
 rustc-link-search = ["${XCFRAMEWORK_DIR}/ios-arm64-simulator"]
-rustc-link-lib = ["static=onnxruntime", "c++"]
+rustc-link-lib = ["static=onnxruntime", "c++", "framework=Foundation"]
 EOF
 
 echo "Created: $CONFIG_FILE"

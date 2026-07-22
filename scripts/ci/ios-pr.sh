@@ -16,6 +16,9 @@ command -v xcodebuild >/dev/null 2>&1 || {
 }
 
 use_xcode_toolchain
+# Nix's macOS libiconv cannot be linked into an iOS target. The Xcode SDK
+# supplies the target-appropriate system libraries.
+unset LIBRARY_PATH
 if ! require_ios_simulator_runtime_for_xcode; then
   if [ "${MAPLE_IOS_DOWNLOAD_SIMULATOR_RUNTIME:-0}" = "1" ]; then
     xcodebuild -downloadPlatform iOS

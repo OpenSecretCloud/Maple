@@ -10,5 +10,11 @@
 # ONNX Runtime Linux (downloaded for bundling)
 /onnxruntime-linux/
 
+# ONNX Runtime macOS (downloaded for bundling)
+/onnxruntime-macos/
+
+# ONNX Runtime Android (verified AAR cache; JNI libraries are staged under gen/android)
+/onnxruntime-android/
+
 # Generated cargo config for iOS builds
 /.cargo/

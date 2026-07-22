@@ -90,6 +90,9 @@ export CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_RUSTFLAGS="${CARGO_TARGET_ARMV7_LINU
 export CARGO_TARGET_I686_LINUX_ANDROID_RUSTFLAGS="${CARGO_TARGET_I686_LINUX_ANDROID_RUSTFLAGS:-${android_page_size_flags}}"
 export CARGO_TARGET_X86_64_LINUX_ANDROID_RUSTFLAGS="${CARGO_TARGET_X86_64_LINUX_ANDROID_RUSTFLAGS:-${android_page_size_flags}}"
 
+prepare_android_onnxruntime
+verify_android_onnxruntime_staged_libraries
+
 version="$(jq -r '.version' "${TAURI_DIR}/tauri.conf.json")"
 version_code="$(jq -r '.bundle.android.versionCode' "${TAURI_DIR}/tauri.conf.json")"
 mkdir -p "${TAURI_DIR}/gen/android/app"
@@ -106,6 +109,10 @@ android_artifacts=()
 while IFS= read -r -d '' file; do
   android_artifacts+=("${file}")
 done < <(find "${TAURI_DIR}/gen/android/app/build/outputs/apk" -type f -name '*.apk' -print0 | LC_ALL=C sort -z)
+
+for artifact in "${android_artifacts[@]}"; do
+  verify_android_onnxruntime_artifact "${artifact}"
+done
 
 repro_dir="${TAURI_DIR}/target/reproducibility"
 mkdir -p "${repro_dir}"

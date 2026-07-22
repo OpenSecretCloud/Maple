@@ -7,6 +7,7 @@ FRONTEND_DIR="${REPO_ROOT}/frontend"
 TAURI_DIR="${FRONTEND_DIR}/src-tauri"
 
 source "${TAURI_DIR}/scripts/onnxruntime-pins.sh"
+source "${TAURI_DIR}/scripts/onnxruntime-android-pins.sh"
 
 export CARGO_TERM_COLOR="${CARGO_TERM_COLOR:-always}"
 
@@ -633,6 +634,198 @@ prepare_windows_onnxruntime() {
     esac
   done <<< "${ort_env}"
 }
+
+prepare_macos_onnxruntime() {
+  if [ "$(host_os)" != "darwin" ]; then
+    return 0
+  fi
+
+  local ort_env key value
+  ort_env="$("${TAURI_DIR}/scripts/provide-macos-onnxruntime.sh")"
+  printf '%s\n' "${ort_env}"
+
+  while IFS='=' read -r key value; do
+    case "${key}" in
+      ORT_LIB_LOCATION | ORT_SKIP_DOWNLOAD | ORT_DYLIB_PATH)
+        export "${key}=${value}"
+        ;;
+    esac
+  done <<< "${ort_env}"
+}
+
+prepare_android_onnxruntime() {
+  local ort_env
+
+  ort_env="$("${TAURI_DIR}/scripts/provide-android-onnxruntime.sh")"
+  printf '%s\n' "${ort_env}"
+}
+
+android_onnxruntime_jni_libs_dir() {
+  printf '%s\n' "${TAURI_DIR}/gen/android/app/src/main/jniLibs"
+}
+
+android_llvm_readelf() {
+  local found
+
+  if command -v llvm-readelf >/dev/null 2>&1; then
+    command -v llvm-readelf
+    return 0
+  fi
+
+  if command -v readelf >/dev/null 2>&1; then
+    command -v readelf
+    return 0
+  fi
+
+  if [ -n "${NDK_HOME:-}" ]; then
+    found="$(
+      find "${NDK_HOME}/toolchains/llvm/prebuilt" -type f -path '*/bin/llvm-readelf' 2>/dev/null \
+        | LC_ALL=C sort \
+        | head -n 1 || true
+    )"
+    if [ -n "${found}" ]; then
+      printf '%s\n' "${found}"
+      return 0
+    fi
+  fi
+
+  echo "llvm-readelf or readelf is required to verify Android native-library alignment." >&2
+  return 1
+}
+
+verify_android_elf_load_alignment() {
+  local library="$1"
+  local label="$2"
+  local readelf align load_count=0
+
+  readelf="$(android_llvm_readelf)"
+  while IFS= read -r align; do
+    load_count=$((load_count + 1))
+    if [[ ! "${align}" =~ ^0x[0-9a-fA-F]+$ ]] || (( align < 0x4000 )); then
+      echo "Android native library ${label} has a LOAD segment aligned below 16 KiB: ${align}." >&2
+      return 1
+    fi
+  done < <("${readelf}" -lW "${library}" | awk '$1 == "LOAD" { print $NF }')
+
+  if [ "${load_count}" -eq 0 ]; then
+    echo "Android native library ${label} has no ELF LOAD segments." >&2
+    return 1
+  fi
+
+  printf 'verified-android-elf-load-alignment  16384  %s\n' "${label}"
+}
+
+verify_android_onnxruntime_staged_libraries() {
+  local version jni_dir abi library expected actual
+
+  version="${ORT_ANDROID_VERSION:-$(onnxruntime_android_version)}"
+  jni_dir="$(android_onnxruntime_jni_libs_dir)"
+
+  while IFS= read -r abi; do
+    library="${jni_dir}/${abi}/libonnxruntime.so"
+    expected="$(onnxruntime_android_lib_sha256_for_version "${version}" "${abi}")"
+    if [ ! -f "${library}" ]; then
+      echo "Missing staged ONNX Runtime Android library: ${library}" >&2
+      return 1
+    fi
+
+    actual="$(sha256_file "${library}" | awk '{ print $1 }')"
+    if [ "${actual}" != "${expected}" ]; then
+      echo "Staged ONNX Runtime Android library SHA-256 mismatch for ${abi}." >&2
+      echo "expected=${expected}" >&2
+      echo "actual=${actual}" >&2
+      return 1
+    fi
+
+    printf 'verified-android-onnxruntime-staged  %s  %s\n' "${actual}" "${abi}"
+    verify_android_elf_load_alignment "${library}" "jniLibs/${abi}/libonnxruntime.so"
+  done < <(onnxruntime_android_abis)
+}
+
+android_zipalign() {
+  local found
+
+  if command -v zipalign >/dev/null 2>&1; then
+    command -v zipalign
+    return 0
+  fi
+
+  if [ -n "${ANDROID_HOME:-}" ]; then
+    found="$(
+      find -L "${ANDROID_HOME}/build-tools" -mindepth 2 -maxdepth 4 -type f -name zipalign 2>/dev/null \
+        | LC_ALL=C sort -V \
+        | tail -n 1 || true
+    )"
+    if [ -n "${found}" ]; then
+      printf '%s\n' "${found}"
+      return 0
+    fi
+  fi
+
+  echo "zipalign is required to verify Android APK native-library alignment." >&2
+  return 1
+}
+
+verify_android_onnxruntime_artifact() (
+  set -euo pipefail
+
+  local artifact="$1"
+  local version prefix abi entry entry_count expected actual library all_entries_count zipalign
+  local tmp
+
+  version="${ORT_ANDROID_VERSION:-$(onnxruntime_android_version)}"
+  case "${artifact}" in
+    *.apk)
+      prefix="lib"
+      ;;
+    *.aab)
+      prefix="base/lib"
+      ;;
+    *)
+      echo "Unsupported Android artifact for ONNX Runtime verification: ${artifact}" >&2
+      return 1
+      ;;
+  esac
+
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "${tmp}"' EXIT
+
+  all_entries_count="$(unzip -Z1 "${artifact}" | grep -Ec '(^|/)libonnxruntime\.so$' || true)"
+  if [ "${all_entries_count}" != "4" ]; then
+    echo "Expected four libonnxruntime.so entries in ${artifact}; found ${all_entries_count}." >&2
+    return 1
+  fi
+
+  while IFS= read -r abi; do
+    entry="${prefix}/${abi}/libonnxruntime.so"
+    entry_count="$(unzip -Z1 "${artifact}" | grep -Fxc -- "${entry}" || true)"
+    if [ "${entry_count}" != "1" ]; then
+      echo "Expected exactly one ${entry} in ${artifact}; found ${entry_count}." >&2
+      return 1
+    fi
+
+    library="${tmp}/${abi}-libonnxruntime.so"
+    unzip -p "${artifact}" "${entry}" > "${library}"
+    expected="$(onnxruntime_android_lib_sha256_for_version "${version}" "${abi}")"
+    actual="$(sha256_file "${library}" | awk '{ print $1 }')"
+    if [ "${actual}" != "${expected}" ]; then
+      echo "Packaged ONNX Runtime Android library SHA-256 mismatch for ${entry}." >&2
+      echo "expected=${expected}" >&2
+      echo "actual=${actual}" >&2
+      return 1
+    fi
+
+    printf 'verified-android-onnxruntime-package  %s  %s  %s\n' \
+      "${actual}" "$(basename "${artifact}")" "${entry}"
+    verify_android_elf_load_alignment "${library}" "$(basename "${artifact}")/${entry}"
+  done < <(onnxruntime_android_abis)
+
+  if [[ "${artifact}" == *.apk ]]; then
+    zipalign="$(android_zipalign)"
+    "${zipalign}" -c -P 16 4 "${artifact}" >/dev/null
+    printf 'verified-android-apk-zip-alignment  16384  %s\n' "$(basename "${artifact}")"
+  fi
+)
 
 stage_windows_runtime_dlls() {
   require_windows_host "stage_windows_runtime_dlls"
@@ -2239,7 +2432,7 @@ ios_onnxruntime_manifest_file() {
 }
 
 ios_onnxruntime_version() {
-  printf '%s\n' "${IOS_ONNXRUNTIME_VERSION:-1.22.2}"
+  printf '%s\n' "${IOS_ONNXRUNTIME_VERSION:-1.23.2}"
 }
 
 require_ios_onnxruntime_files() {
@@ -3518,7 +3711,7 @@ normalize_linux_desktop_packages() {
 }
 
 linux_tauri_pr_config() {
-  local ort_version="${ORT_VERSION:-1.22.0}"
+  local ort_version="${ORT_VERSION:-1.23.2}"
   local ort_arch
   ort_arch="$(linux_ort_arch)"
   local ort_rel="./onnxruntime-linux/onnxruntime-linux-${ort_arch}-${ort_version}/lib/libonnxruntime.so.${ort_version}"
@@ -3554,7 +3747,7 @@ linux_tauri_pr_config() {
 }
 
 linux_tauri_release_config() {
-  local ort_version="${ORT_VERSION:-1.22.0}"
+  local ort_version="${ORT_VERSION:-1.23.2}"
   local ort_arch updater_pubkey
   ort_arch="$(linux_ort_arch)"
   local ort_rel="./onnxruntime-linux/onnxruntime-linux-${ort_arch}-${ort_version}/lib/libonnxruntime.so.${ort_version}"

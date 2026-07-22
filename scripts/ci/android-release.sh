@@ -165,6 +165,9 @@ export CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_RUSTFLAGS="${CARGO_TARGET_ARMV7_LINU
 export CARGO_TARGET_I686_LINUX_ANDROID_RUSTFLAGS="${CARGO_TARGET_I686_LINUX_ANDROID_RUSTFLAGS:-${android_page_size_flags}}"
 export CARGO_TARGET_X86_64_LINUX_ANDROID_RUSTFLAGS="${CARGO_TARGET_X86_64_LINUX_ANDROID_RUSTFLAGS:-${android_page_size_flags}}"
 
+prepare_android_onnxruntime
+verify_android_onnxruntime_staged_libraries
+
 version="$(jq -r '.version' "${TAURI_DIR}/tauri.conf.json")"
 version_code="$(jq -r '.bundle.android.versionCode' "${TAURI_DIR}/tauri.conf.json")"
 mkdir -p "${TAURI_DIR}/gen/android/app"
@@ -349,6 +352,10 @@ if [ "${android_signing_enabled}" = "1" ]; then
 else
   android_artifacts=("${unsigned_artifacts[@]}")
 fi
+
+for artifact in "${android_artifacts[@]}"; do
+  verify_android_onnxruntime_artifact "${artifact}"
+done
 
 write_sha256_manifest "${repro_dir}/android-release-final.sha256" "${android_artifacts[@]}"
 print_file_hashes "${android_artifacts[@]}"

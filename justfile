@@ -35,9 +35,9 @@ ios-dev-sim simulator:
 ios-dev-device device:
     cd frontend && bun run tauri ios dev --device '{{device}}'
 
-# Build ONNX Runtime for iOS (device + simulator) - required for TTS
+# Build and verify ONNX Runtime for iOS (device + simulator) - used by TTS and PDF OCR
 ios-build-onnxruntime:
-    cd frontend/src-tauri && ./scripts/build-ios-onnxruntime-all.sh
+    ./scripts/ci/ios-onnxruntime.sh
 
 # Setup cargo config for iOS ONNX Runtime (run after building ONNX Runtime)
 ios-setup-cargo-config:
@@ -57,27 +57,28 @@ ios-fix-arch:
 
 # Build Tauri Android release
 android-build:
+    cd frontend/src-tauri && ./scripts/provide-android-onnxruntime.sh
     cd frontend && bun run tauri android build
 
 # Build Tauri desktop release
 desktop-build:
-    cd frontend && bun tauri build
+    cd frontend && src-tauri/scripts/run-with-desktop-onnxruntime.sh bun tauri build
 
 # Run Tauri desktop development build, using workspace-local config when available
 desktop-dev:
-    cd frontend && if [ -f ../.local/tauri-workspace.json ]; then bun tauri dev --config ../.local/tauri-workspace.json; else bun tauri dev; fi
+    cd frontend && if [ -f ../.local/tauri-workspace.json ]; then src-tauri/scripts/run-with-desktop-onnxruntime.sh bun tauri dev --config ../.local/tauri-workspace.json; else src-tauri/scripts/run-with-desktop-onnxruntime.sh bun tauri dev; fi
 
 # Build Tauri desktop debug
 desktop-build-debug:
-    cd frontend && bun tauri build --debug
+    cd frontend && src-tauri/scripts/run-with-desktop-onnxruntime.sh bun tauri build --debug
 
 # Build Tauri desktop release (with CC unset for compatibility)
 desktop-build-no-cc:
-    cd frontend && unset CC && bun tauri build
+    cd frontend && unset CC && src-tauri/scripts/run-with-desktop-onnxruntime.sh bun tauri build
 
 # Build Tauri desktop debug (with CC unset for compatibility)
 desktop-build-debug-no-cc:
-    cd frontend && unset CC && bun tauri build --debug
+    cd frontend && unset CC && src-tauri/scripts/run-with-desktop-onnxruntime.sh bun tauri build --debug
 
 # Format Rust code
 rust-fmt:

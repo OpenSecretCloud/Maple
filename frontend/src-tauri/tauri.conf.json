@@ -76,18 +76,20 @@
       "appimage": {
         "bundleMediaFramework": true,
         "files": {
-          "/usr/lib/maple/libonnxruntime.so": "./onnxruntime-linux/onnxruntime-linux-x64-1.22.0/lib/libonnxruntime.so.1.22.0"
+          "/usr/lib/maple/libonnxruntime.so": "./onnxruntime-linux/onnxruntime-linux-x64-1.23.2/lib/libonnxruntime.so.1.23.2"
         }
       },
       "deb": {
         "files": {
-          "/usr/lib/maple/libonnxruntime.so": "./onnxruntime-linux/onnxruntime-linux-x64-1.22.0/lib/libonnxruntime.so.1.22.0"
+          "/usr/lib/maple/libonnxruntime.so": "./onnxruntime-linux/onnxruntime-linux-x64-1.23.2/lib/libonnxruntime.so.1.23.2"
         }
       }
     },
     "macOS": {
-      "frameworks": [],
-      "minimumSystemVersion": "10.13",
+      "frameworks": [
+        "./onnxruntime-macos/onnxruntime-osx-universal2-1.23.2/lib/libonnxruntime.1.23.2.dylib"
+      ],
+      "minimumSystemVersion": "13.4",
       "exceptionDomain": "opensecret.cloud",
       "signingIdentity": null,
       "entitlements": "./Entitlements.plist"

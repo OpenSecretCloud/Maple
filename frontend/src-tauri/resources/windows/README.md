@@ -1,17 +1,15 @@
 # Windows bundled runtime DLLs
 
-`maple.exe` links **ONNX Runtime 1.22.0** with a load-time (compile-time
-dynamic) import of `onnxruntime.dll`. On a clean Windows install, the Windows
-loader would otherwise bind that import to the OS-shipped Windows-ML
-`C:\Windows\System32\onnxruntime.dll` (a forwarder to `onnxruntime_x64.dll`,
-currently **v1.17.x**). The version mismatch lets the app launch but **hangs**
-the first time TTS calls `Session::builder()` (see `src/tts.rs`).
+Maple loads **ONNX Runtime 1.23.2** by explicit path before PDF OCR or TTS
+creates a session. Windows also ships a Windows-ML
+`C:\Windows\System32\onnxruntime.dll` forwarder that may be an incompatible
+version, so Maple must not rely on the ambient DLL search path.
 
-To force the correct runtime, we ship these DLLs **next to `maple.exe`**. The
-executable's own directory is searched **before** `System32` in the Windows DLL
-search order, so our 1.22.0 `onnxruntime.dll` wins over the OS one.
+We ship the runtime **next to `maple.exe`**, and `src/onnxruntime.rs` passes
+that exact path to the Rust `ort` loader. This prevents the System32 copy from
+being selected accidentally.
 
-`onnxruntime.dll` 1.22.0 in turn depends on the MSVC C++ runtime
+`onnxruntime.dll` 1.23.2 in turn depends on the MSVC C++ runtime
 (`VCRUNTIME140.dll`, `VCRUNTIME140_1.dll`, `MSVCP140.dll`, `MSVCP140_1.dll`),
 which is **not** present on a fresh Windows install. Rather than running
 `vc_redist.x64.exe` (which needs admin/UAC and clashes with our per-user
@@ -34,7 +32,7 @@ land in the install dir (verified empirically — only `maple.exe` +
 
 | File                  | Source                                              |
 |-----------------------|-----------------------------------------------------|
-| `onnxruntime.dll`     | Microsoft ONNX Runtime 1.22.0 win-x64 release        |
+| `onnxruntime.dll`     | Microsoft ONNX Runtime 1.23.2 win-x64 release        |
 | `VCRUNTIME140.dll`    | MSVC 2015–2022 x64 redistributable                   |
 | `VCRUNTIME140_1.dll`  | MSVC 2015–2022 x64 redistributable                   |
 | `MSVCP140.dll`        | MSVC 2015–2022 x64 redistributable                   |
@@ -84,7 +82,7 @@ file fails the build loudly rather than shipping a broken installer.
 ## Verify after a CI build
 
 Confirm the DLLs land **next to `maple.exe`** in the installed app
-(`%LOCALAPPDATA%\Maple\`), not in a `resources\` subfolder — only then does the
-search-order override work. The running process should load
-`...\AppData\Local\Maple\onnxruntime.dll  ver 1.22.0` (check via
+(`%LOCALAPPDATA%\Maple\`), not in a `resources\` subfolder. The running process
+should load
+`...\AppData\Local\Maple\onnxruntime.dll  ver 1.23.2` (check via
 `(Get-Process maple).Modules`), not the System32 copy.

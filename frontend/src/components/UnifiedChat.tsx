@@ -32,6 +32,11 @@ import {
   maybeReadLinuxTauriClipboardImages
 } from "@/utils/imagePaste";
 import { truncateMarkdownPreservingLinks } from "@/utils/markdown";
+import {
+  getDocumentProcessingErrorMessage,
+  getSupportedDocumentType,
+  prepareExtractedPdfText
+} from "@/utils/documentUpload";
 import { useOpenAI } from "@/ai/useOpenAi";
 import { DEFAULT_MODEL_ID, getInitialWebSearchEnabled } from "@/state/LocalStateContext";
 import { Markdown, ThinkingBlock } from "@/components/markdown";
@@ -1470,6 +1475,7 @@ export function UnifiedChat() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const documentInputRef = useRef<HTMLInputElement>(null);
   const imagePasteGenerationRef = useRef(0);
+  const documentUploadGenerationRef = useRef(0);
 
   // Refs
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -1481,12 +1487,14 @@ export function UnifiedChat() {
   // Attachment cleanup function - defined early to avoid reference errors
   const clearAllAttachments = useCallback(() => {
     imagePasteGenerationRef.current += 1;
+    documentUploadGenerationRef.current += 1;
     // Clean up image URLs
     imageUrls.forEach((url) => URL.revokeObjectURL(url));
     setImageUrls(new Map());
     setDraftImages([]);
     setDocumentText("");
     setDocumentName("");
+    setIsProcessingDocument(false);
     setAttachmentError(null);
   }, [imageUrls]);
 
@@ -2348,11 +2356,15 @@ export function UnifiedChat() {
 
       setIsProcessingDocument(true);
       setAttachmentError(null);
+      const uploadGeneration = ++documentUploadGenerationRef.current;
 
       try {
+        const documentType = getSupportedDocumentType(file.name);
+
         // For text files, read directly
-        if (file.name.endsWith(".txt") || file.name.endsWith(".md")) {
+        if (documentType === "txt" || documentType === "md") {
           const text = await file.text();
+          if (uploadGeneration !== documentUploadGenerationRef.current) return;
           // Format as JSON for consistency with PDF handling
           const documentData = {
             document: {
@@ -2362,7 +2374,7 @@ export function UnifiedChat() {
           };
           setDocumentText(JSON.stringify(documentData));
           setDocumentName(file.name);
-        } else if (file.name.endsWith(".pdf") && isTauriEnv) {
+        } else if (documentType === "pdf" && isTauriEnv) {
           // For PDFs in Tauri, use the parseDocument API
           const reader = new FileReader();
           const base64Data = await new Promise<string>((resolve, reject) => {
@@ -2391,30 +2403,42 @@ export function UnifiedChat() {
             filename: file.name,
             fileType: "pdf"
           });
+          if (uploadGeneration !== documentUploadGenerationRef.current) return;
 
-          if (result.document?.text_content) {
-            // Create a cleaned version with image references removed
-            const cleanedParsed = {
-              document: {
-                filename: result.document.filename,
-                text_content: result.document.text_content.replace(/!\[Image\]\([^)]+\)/g, "")
-              }
-            };
-
-            // Store as JSON string for markdown.tsx to parse and display properly
-            setDocumentText(JSON.stringify(cleanedParsed));
-            setDocumentName(file.name);
+          const cleanedText = prepareExtractedPdfText(result.document?.text_content);
+          if (cleanedText === null) {
+            setAttachmentError("No readable text was found in this PDF");
+            setTimeout(() => setAttachmentError(null), 5000);
+            return;
           }
-        } else if (file.name.endsWith(".pdf")) {
-          setAttachmentError("PDF files can only be processed in the desktop app");
+
+          const cleanedParsed = {
+            document: {
+              filename: result.document.filename,
+              text_content: cleanedText
+            }
+          };
+
+          // Store as JSON string for markdown.tsx to parse and display properly
+          setDocumentText(JSON.stringify(cleanedParsed));
+          setDocumentName(file.name);
+        } else if (documentType === "pdf") {
+          setAttachmentError("PDF files can only be processed in the Maple app");
+          setTimeout(() => setAttachmentError(null), 5000);
+        } else {
+          setAttachmentError("Only PDF, TXT, and Markdown files are supported");
           setTimeout(() => setAttachmentError(null), 5000);
         }
       } catch (error) {
         console.error("Document processing error:", error);
-        setAttachmentError("Failed to process document");
-        setTimeout(() => setAttachmentError(null), 5000);
+        if (uploadGeneration === documentUploadGenerationRef.current) {
+          setAttachmentError(getDocumentProcessingErrorMessage(error));
+          setTimeout(() => setAttachmentError(null), 5000);
+        }
       } finally {
-        setIsProcessingDocument(false);
+        if (uploadGeneration === documentUploadGenerationRef.current) {
+          setIsProcessingDocument(false);
+        }
         e.target.value = "";
       }
     },
@@ -2422,6 +2446,8 @@ export function UnifiedChat() {
   );
 
   const removeDocument = useCallback(() => {
+    documentUploadGenerationRef.current += 1;
+    setIsProcessingDocument(false);
     setDocumentText("");
     setDocumentName("");
   }, []);
@@ -2845,7 +2871,7 @@ export function UnifiedChat() {
       const textToSend = overrideInput || input;
       const trimmedInput = textToSend.trim();
       const hasContent = trimmedInput || draftImages.length > 0 || documentText;
-      if (!hasContent || isGenerating || !openai) return;
+      if (!hasContent || isGenerating || isProcessingDocument || !openai) return;
 
       // Clear any previous error
       setError(null);
@@ -3221,6 +3247,7 @@ export function UnifiedChat() {
     [
       input,
       isGenerating,
+      isProcessingDocument,
       openai,
       os,
       conversation,
@@ -3541,8 +3568,22 @@ export function UnifiedChat() {
                                 size="sm"
                                 className="h-8 w-8 p-0 text-[hsl(var(--maple-secondary-700))] hover:bg-[hsl(var(--maple-primary-container))] hover:text-[hsl(var(--maple-secondary-700))]"
                                 disabled={isProcessingDocument}
+                                aria-busy={isProcessingDocument}
+                                aria-label={
+                                  isProcessingDocument ? "Processing document" : "Add attachment"
+                                }
                               >
-                                <Plus className="h-4 w-4 text-[hsl(var(--maple-secondary-700))]" />
+                                {isProcessingDocument ? (
+                                  <Loader2
+                                    className="h-4 w-4 animate-spin text-[hsl(var(--maple-secondary-700))]"
+                                    aria-hidden="true"
+                                  />
+                                ) : (
+                                  <Plus
+                                    className="h-4 w-4 text-[hsl(var(--maple-secondary-700))]"
+                                    aria-hidden="true"
+                                  />
+                                )}
                               </Button>
                             </DropdownMenuTrigger>
                             <DropdownMenuContent align="start">
@@ -3602,7 +3643,10 @@ export function UnifiedChat() {
                           ) : (
                             <button
                               type="submit"
-                              disabled={!input.trim() && !draftImages.length && !documentText}
+                              disabled={
+                                isProcessingDocument ||
+                                (!input.trim() && !draftImages.length && !documentText)
+                              }
                               className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-b from-[hsl(var(--maple-primary))] to-[hsl(var(--maple-primary-strong))] text-[hsl(var(--maple-on-primary))]/90 transition-all duration-200 ease-out active:scale-[0.95] disabled:pointer-events-none disabled:opacity-40 sm:h-9 sm:w-9"
                             >
                               <ArrowUp className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
@@ -3745,8 +3789,22 @@ export function UnifiedChat() {
                               size="sm"
                               className="h-8 w-8 p-0 text-[hsl(var(--maple-secondary-700))] hover:bg-[hsl(var(--maple-primary-container))] hover:text-[hsl(var(--maple-secondary-700))]"
                               disabled={isProcessingDocument}
+                              aria-busy={isProcessingDocument}
+                              aria-label={
+                                isProcessingDocument ? "Processing document" : "Add attachment"
+                              }
                             >
-                              <Plus className="h-4 w-4 text-[hsl(var(--maple-secondary-700))]" />
+                              {isProcessingDocument ? (
+                                <Loader2
+                                  className="h-4 w-4 animate-spin text-[hsl(var(--maple-secondary-700))]"
+                                  aria-hidden="true"
+                                />
+                              ) : (
+                                <Plus
+                                  className="h-4 w-4 text-[hsl(var(--maple-secondary-700))]"
+                                  aria-hidden="true"
+                                />
+                              )}
                             </Button>
                           </DropdownMenuTrigger>
                           <DropdownMenuContent align="start">
@@ -3806,7 +3864,10 @@ export function UnifiedChat() {
                         ) : (
                           <button
                             type="submit"
-                            disabled={!input.trim() && !draftImages.length && !documentText}
+                            disabled={
+                              isProcessingDocument ||
+                              (!input.trim() && !draftImages.length && !documentText)
+                            }
                             className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-b from-[hsl(var(--maple-primary))] to-[hsl(var(--maple-primary-strong))] text-[hsl(var(--maple-on-primary))]/90 transition-all duration-200 ease-out active:scale-[0.95] disabled:pointer-events-none disabled:opacity-40"
                           >
                             <ArrowUp className="h-4 w-4" />

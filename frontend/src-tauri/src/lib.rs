@@ -3,7 +3,9 @@ use tauri_plugin_deep_link::DeepLinkExt;
 
 #[cfg(desktop)]
 mod agent;
+mod onnxruntime;
 mod pdf_extractor;
+mod pdf_ocr;
 mod proxy;
 // TTS is available on desktop and iOS (not Android)
 #[cfg(any(desktop, target_os = "ios"))]

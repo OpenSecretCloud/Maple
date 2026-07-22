@@ -17,33 +17,6 @@ use std::sync::Mutex;
 use tauri::{AppHandle, Emitter};
 use unicode_normalization::UnicodeNormalization;
 
-#[cfg(target_os = "linux")]
-static ORT_ENV_INITIALIZED: Lazy<Result<bool, String>> = Lazy::new(|| {
-    ort::init_from(onnxruntime_dylib_path())
-        .commit()
-        .map_err(|e| e.to_string())
-});
-
-#[cfg(target_os = "linux")]
-fn onnxruntime_dylib_path() -> String {
-    if let Ok(path) = std::env::var("ORT_DYLIB_PATH") {
-        if !path.is_empty() {
-            return path;
-        }
-    }
-
-    if let Ok(exe_path) = std::env::current_exe() {
-        if let Some(exe_dir) = exe_path.parent() {
-            let bundled_path = exe_dir.join("../lib/maple/libonnxruntime.so");
-            if bundled_path.exists() {
-                return bundled_path.to_string_lossy().into_owned();
-            }
-        }
-    }
-
-    "libonnxruntime.so".to_string()
-}
-
 // Pre-compiled regexes for text preprocessing (compiled once, reused)
 static RE_BOLD: Lazy<Regex> = Lazy::new(|| Regex::new(r"\*\*([^*]+)\*\*").unwrap());
 static RE_BOLD2: Lazy<Regex> = Lazy::new(|| Regex::new(r"__([^_]+)__").unwrap());
@@ -698,10 +671,7 @@ fn load_voice_style(models_dir: &Path) -> Result<Style> {
 }
 
 fn load_tts_engine(models_dir: &Path) -> Result<TextToSpeech> {
-    #[cfg(target_os = "linux")]
-    ORT_ENV_INITIALIZED
-        .as_ref()
-        .map_err(|e| anyhow::anyhow!(e.clone()))?;
+    crate::onnxruntime::ensure_initialized().map_err(anyhow::Error::msg)?;
 
     let cfg_path = models_dir.join("tts.json");
     let file = File::open(&cfg_path)?;

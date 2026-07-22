@@ -72,12 +72,13 @@ case "$(host_os)" in
   darwin)
     use_xcode_toolchain
     "$(python3_runner)" "${REPO_ROOT}/scripts/ci/test-canonical-macho.py"
-    export MACOSX_DEPLOYMENT_TARGET="13.3"
+    prepare_macos_onnxruntime
+    export MACOSX_DEPLOYMENT_TARGET="13.4"
     export CMAKE_OSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET}"
     export SDKROOT="${SDKROOT:-$(xcrun --sdk macosx --show-sdk-path)}"
     export LIBRARY_PATH="${SDKROOT}/usr/lib${LIBRARY_PATH:+:${LIBRARY_PATH}}"
     export RUSTFLAGS="${RUSTFLAGS:+${RUSTFLAGS} }-Clink-arg=-isysroot -Clink-arg=${SDKROOT}"
-    bun tauri build --target universal-apple-darwin --no-sign --config '{"build":{"beforeBuildCommand":null},"bundle":{"createUpdaterArtifacts":false,"macOS":{"minimumSystemVersion":"13.3"}}}'
+    bun tauri build --target universal-apple-darwin --no-sign --config '{"build":{"beforeBuildCommand":null},"bundle":{"createUpdaterArtifacts":false,"macOS":{"minimumSystemVersion":"13.4"}}}'
 
     desktop_artifacts=()
     while IFS= read -r -d '' file; do
