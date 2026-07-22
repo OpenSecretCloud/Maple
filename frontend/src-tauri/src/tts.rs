@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use futures_util::StreamExt;
 use hound::{SampleFormat, WavSpec, WavWriter};
@@ -11,9 +11,10 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs::{self, File};
-use std::io::{BufReader, Cursor, Write};
+use std::io::{BufReader, Cursor, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::Instant;
 use tauri::{AppHandle, Emitter};
 use unicode_normalization::UnicodeNormalization;
 
@@ -26,10 +27,12 @@ static RE_STRIKE: Lazy<Regex> = Lazy::new(|| Regex::new(r"~~([^~]+)~~").unwrap()
 static RE_CODE: Lazy<Regex> = Lazy::new(|| Regex::new(r"`([^`]+)`").unwrap());
 static RE_CODEBLOCK: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?s)```[^`]*```").unwrap());
 static RE_HEADER: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?m)^#{1,6}\s*").unwrap());
+static RE_XML_TAG: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"</?[A-Za-z][A-Za-z0-9_-]*(?:\s+[^>]*)?>").unwrap());
 static RE_EMOJI: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"[\x{1F600}-\x{1F64F}\x{1F300}-\x{1F5FF}\x{1F680}-\x{1F6FF}\x{1F700}-\x{1F77F}\x{1F780}-\x{1F7FF}\x{1F800}-\x{1F8FF}\x{1F900}-\x{1F9FF}\x{1FA00}-\x{1FA6F}\x{1FA70}-\x{1FAFF}\x{2600}-\x{26FF}\x{2700}-\x{27BF}\x{1F1E6}-\x{1F1FF}]+").unwrap()
 });
-static RE_DIACRITICS: Lazy<Regex> = Lazy::new(|| {
+static RE_LEGACY_DIACRITICS: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"[\u{0302}\u{0303}\u{0304}\u{0305}\u{0306}\u{0307}\u{0308}\u{030A}\u{030B}\u{030C}\u{0327}\u{0328}\u{0329}\u{032A}\u{032B}\u{032C}\u{032D}\u{032E}\u{032F}]").unwrap()
 });
 static RE_SPACE_COMMA: Lazy<Regex> = Lazy::new(|| Regex::new(r" ,").unwrap());
@@ -48,75 +51,183 @@ static RE_ENDS_PUNCT: Lazy<Regex> = Lazy::new(|| {
 });
 static RE_SENTENCE: Lazy<Regex> = Lazy::new(|| Regex::new(r"([.!?])\s+").unwrap());
 
-// Pin model downloads to a specific repo revision to ensure integrity and reproducibility.
-const HUGGINGFACE_REVISION: &str = "b6856d033f622c63ea29441795be266a1133e227";
-const HUGGINGFACE_BASE_URL: &str = "https://huggingface.co/Supertone/supertonic/resolve";
+// Model downloads are pinned to an immutable Hugging Face revision. Keep the
+// sizes and hashes in sync with that revision so partial or substituted files
+// never become loadable sessions.
+const HUGGINGFACE_REVISION: &str = "3cadd1ee6394adea1bd021217a0e650ede09a323";
+const HUGGINGFACE_BASE_URL: &str = "https://huggingface.co/Supertone/supertonic-3/resolve";
+const MODEL_REVISION_FILE: &str = "supertonic_revision.txt";
+const SUPERTONIC3_CACHE_DIR: &str = "supertonic-3";
+const TTS_MODELS_DIR_ENV: &str = "MAPLE_TTS_MODELS_DIR";
+const DEFAULT_LANGUAGE: &str = "na";
+const DEFAULT_VOICE_STYLE: &str = "F2.json";
+const SUPERTONIC3_TOTAL_STEPS: usize = 8;
+const LEGACY_TOTAL_STEPS: usize = 10;
+const DEFAULT_CHUNK_CHARS: usize = 300;
+const CJK_CHUNK_CHARS: usize = 120;
+const SUPERTONIC3_DEFAULT_SPEED: f32 = 1.2;
+const LEGACY_DEFAULT_SPEED: f32 = 1.2;
+const MIN_TTS_SPEED: f32 = 0.5;
+const MAX_TTS_SPEED: f32 = 2.0;
 
-// (file_name, url_path, expected_size_bytes, expected_sha256_hex)
-const MODEL_FILES: &[(&str, &str, u64, &str)] = &[
-    (
-        "duration_predictor.onnx",
-        "onnx/duration_predictor.onnx",
-        1_500_789,
-        "b861580c56a0cba2a2b82aa697ecb3c5a163c3240c60a0ddfac369d21d054092",
-    ),
-    (
-        "text_encoder.onnx",
-        "onnx/text_encoder.onnx",
-        27_348_373,
-        "ba0c8ea74aeb5df00d21a89b8d47c71317f47120232e3deef95024dba37dbd88",
-    ),
-    (
-        "vector_estimator.onnx",
-        "onnx/vector_estimator.onnx",
-        132_471_364,
-        "b3f82ecd2e9decc4e2236048b03628a1c1d5f14a792ba274a59b7325107aa6a6",
-    ),
-    (
-        "vocoder.onnx",
-        "onnx/vocoder.onnx",
-        101_405_066,
-        "19bd51f47a186069c752403518a40f7ea4c647455056d2511f7249691ecddf7c",
-    ),
-    (
-        "tts.json",
-        "onnx/tts.json",
-        8_645,
-        "4dac5f986698a3ace9a97ea2545d43f6c8ba120d25e005f8c905128281be9b6d",
-    ),
-    (
-        "unicode_indexer.json",
-        "onnx/unicode_indexer.json",
-        262_134,
-        "0c3800ba4fb1fc760c9070eb43a0ad5a68279ec165742591a68ea3edca452978",
-    ),
-    (
-        "F1.json",
-        "voice_styles/F1.json",
-        420_622,
-        "1450bcad84a2790eaf73f85e763dd5bae7c399f55d692c4835cf4f7686b5a10f",
-    ),
-    (
-        "F2.json",
-        "voice_styles/F2.json",
-        420_905,
-        "47c8d44445ef8ac8aae8ef5806feca21903483cbd4f1232e405184a40520a549",
-    ),
-    (
-        "M1.json",
-        "voice_styles/M1.json",
-        421_053,
-        "273c9ba6582d2e00383d8fbe2f5d660d86e8fba849c91ff695384d1a6e2e02f1",
-    ),
-    (
-        "M2.json",
-        "voice_styles/M2.json",
-        421_027,
-        "26898a9ec3de1b5bf8cc3f6cbf41930543ca0403f2201e12aad849691ff315dd",
-    ),
+const AVAILABLE_LANGUAGES: &[&str] = &[
+    "en", "ko", "ja", "ar", "bg", "cs", "da", "de", "el", "es", "et", "fi", "fr", "hi", "hr", "hu",
+    "id", "it", "lt", "lv", "nl", "pl", "pt", "ro", "ru", "sk", "sl", "sv", "tr", "uk", "vi", "na",
 ];
 
-const TOTAL_MODEL_SIZE: u64 = 264_679_978; // bytes
+#[derive(Clone, Copy, Debug)]
+struct ModelFile {
+    name: &'static str,
+    url_path: &'static str,
+    size: u64,
+    sha256: &'static str,
+}
+
+const SUPERTONIC3_MODEL_FILES: &[ModelFile] = &[
+    ModelFile {
+        name: "duration_predictor.onnx",
+        url_path: "onnx/duration_predictor.onnx",
+        size: 3_700_147,
+        sha256: "c3eb91414d5ff8a7a239b7fe9e34e7e2bf8a8140d8375ffb14718b1c639325db",
+    },
+    ModelFile {
+        name: "text_encoder.onnx",
+        url_path: "onnx/text_encoder.onnx",
+        size: 36_416_150,
+        sha256: "c7befd5ea8c3119769e8a6c1486c4edc6a3bc8365c67621c881bbb774b9902ff",
+    },
+    ModelFile {
+        name: "vector_estimator.onnx",
+        url_path: "onnx/vector_estimator.onnx",
+        size: 256_534_781,
+        sha256: "883ac868ea0275ef0e991524dc64f16b3c0376efd7c320af6b53f5b780d7c61c",
+    },
+    ModelFile {
+        name: "vocoder.onnx",
+        url_path: "onnx/vocoder.onnx",
+        size: 101_424_195,
+        sha256: "085de76dd8e8d5836d6ca66826601f615939218f90e519f70ee8a36ed2a4c4ba",
+    },
+    ModelFile {
+        name: "tts.json",
+        url_path: "onnx/tts.json",
+        size: 8_253,
+        sha256: "42078d3aef1cd43ab43021f3c54f47d2d75ceb4e75f627f118890128b06a0d09",
+    },
+    ModelFile {
+        name: "unicode_indexer.json",
+        url_path: "onnx/unicode_indexer.json",
+        size: 277_676,
+        sha256: "9bf7346e43883a81f8645c81224f786d43c5b57f3641f6e7671a7d6c493cb24f",
+    },
+    ModelFile {
+        name: "F1.json",
+        url_path: "voice_styles/F1.json",
+        size: 292_046,
+        sha256: "bbdec6ee00231c2c742ad05483df5334cab3b52fda3ba38e6a07059c4563dbc2",
+    },
+    ModelFile {
+        name: "F2.json",
+        url_path: "voice_styles/F2.json",
+        size: 292_423,
+        sha256: "7c722c6a72707b1a77f035d67f0d1351ba187738e06f7683e8c72b1df3477fc6",
+    },
+    ModelFile {
+        name: "F3.json",
+        url_path: "voice_styles/F3.json",
+        size: 290_794,
+        sha256: "12f6ef2573baa2defa1128069cb59f203e3ab67c92af77b42df8a0e3a2f7c6ab",
+    },
+    ModelFile {
+        name: "F4.json",
+        url_path: "voice_styles/F4.json",
+        size: 291_808,
+        sha256: "c2fa764c1225a76dfc3e2c73e8aa4f70d9ee48793860eb34c295fff01c2e032b",
+    },
+    ModelFile {
+        name: "F5.json",
+        url_path: "voice_styles/F5.json",
+        size: 291_479,
+        sha256: "45966e73316415626cf41a7d1c6f3b4c70dbc1ba2bee5c1978ef0ce33244fc8d",
+    },
+    ModelFile {
+        name: "M1.json",
+        url_path: "voice_styles/M1.json",
+        size: 291_748,
+        sha256: "e35604687f5d23694b8e91593a93eec0e4eca6c0b02bb8ed69139ab2ea6b0a5b",
+    },
+    ModelFile {
+        name: "M2.json",
+        url_path: "voice_styles/M2.json",
+        size: 292_055,
+        sha256: "b76cbf62bac707c710cf0ae5aba5e31eea1a6339a9734bfae33ab98499534a50",
+    },
+    ModelFile {
+        name: "M3.json",
+        url_path: "voice_styles/M3.json",
+        size: 290_198,
+        sha256: "ea1ac35ccb91b0d7ecad533a2fbd0eec10c91513d8951e3b25fbba99954e159b",
+    },
+    ModelFile {
+        name: "M4.json",
+        url_path: "voice_styles/M4.json",
+        size: 291_522,
+        sha256: "ca8eefad4fcd989c9379032ff3e50738adc547eeb5e221b82593a6d7b3bac303",
+    },
+    ModelFile {
+        name: "M5.json",
+        url_path: "voice_styles/M5.json",
+        size: 291_469,
+        sha256: "dd22b92740314321f8ae11c5e87f8dd60d060f15dd3a632b5adf77f471f77af2",
+    },
+];
+
+const SUPERTONIC3_TOTAL_MODEL_SIZE: u64 = 401_276_744;
+
+// Supertonic 1 stored its assets directly in the root directory. Existing
+// users can keep using those models until they explicitly choose to upgrade.
+const LEGACY_MODEL_FILES: &[(&str, u64)] = &[
+    ("duration_predictor.onnx", 1_500_789),
+    ("text_encoder.onnx", 27_348_373),
+    ("vector_estimator.onnx", 132_471_364),
+    ("vocoder.onnx", 101_405_066),
+    ("tts.json", 8_645),
+    ("unicode_indexer.json", 262_134),
+    ("F1.json", 420_622),
+    ("F2.json", 420_905),
+    ("M1.json", 421_053),
+    ("M2.json", 421_027),
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelVersion {
+    Supertonic3,
+    Legacy,
+}
+
+fn default_tts_speed(model_version: ModelVersion) -> f32 {
+    match model_version {
+        ModelVersion::Supertonic3 => SUPERTONIC3_DEFAULT_SPEED,
+        ModelVersion::Legacy => LEGACY_DEFAULT_SPEED,
+    }
+}
+
+fn resolve_tts_speed(model_version: ModelVersion, requested: Option<f32>) -> f32 {
+    match requested {
+        Some(speed) if speed.is_finite() && speed > 0.0 => {
+            speed.clamp(MIN_TTS_SPEED, MAX_TTS_SPEED)
+        }
+        _ => default_tts_speed(model_version),
+    }
+}
+
+fn total_steps_for_model(model_version: ModelVersion) -> usize {
+    match model_version {
+        ModelVersion::Supertonic3 => SUPERTONIC3_TOTAL_STEPS,
+        ModelVersion::Legacy => LEGACY_TOTAL_STEPS,
+    }
+}
 
 fn bytes_to_hex(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
@@ -168,11 +279,15 @@ pub struct Style {
 
 struct UnicodeProcessor {
     indexer: Vec<i64>,
+    unknown_token_id: i64,
 }
 
 impl UnicodeProcessor {
-    fn new(indexer: Vec<i64>) -> Self {
-        UnicodeProcessor { indexer }
+    fn new(indexer: Vec<i64>, unknown_token_id: i64) -> Self {
+        UnicodeProcessor {
+            indexer,
+            unknown_token_id,
+        }
     }
 
     fn call(&self, text_list: &[String]) -> (Vec<Vec<i64>>, Array3<f32>) {
@@ -188,8 +303,7 @@ impl UnicodeProcessor {
                 if val < self.indexer.len() {
                     row[j] = self.indexer[val];
                 } else {
-                    // Use 0 (padding token) for out-of-vocabulary characters
-                    row[j] = 0;
+                    row[j] = self.unknown_token_id;
                 }
             }
             text_ids.push(row);
@@ -200,7 +314,7 @@ impl UnicodeProcessor {
     }
 }
 
-fn preprocess_text(text: &str) -> String {
+fn normalize_text_for_tts(text: &str, strip_legacy_diacritics: bool) -> String {
     let mut text: String = text.nfkd().collect();
 
     // Remove markdown formatting (using pre-compiled regexes)
@@ -212,6 +326,10 @@ fn preprocess_text(text: &str) -> String {
     text = RE_CODE.replace_all(&text, "$1").to_string();
     text = RE_CODEBLOCK.replace_all(&text, "").to_string();
     text = RE_HEADER.replace_all(&text, "").to_string();
+    // Expression tags are deliberately not exposed in Maple's first
+    // Supertonic 3 iteration. Strip arbitrary XML-like input before adding the
+    // trusted language wrapper below.
+    text = RE_XML_TAG.replace_all(&text, " ").to_string();
     text = RE_EMOJI.replace_all(&text, "").to_string();
 
     // Replace various dashes and symbols
@@ -220,6 +338,7 @@ fn preprocess_text(text: &str) -> String {
         ("‑", "-"),
         ("—", "-"),
         ("¯", " "),
+        ("_", " "),
         ("\u{201C}", "\""),
         ("\u{201D}", "\""),
         ("\u{2018}", "'"),
@@ -238,7 +357,9 @@ fn preprocess_text(text: &str) -> String {
         text = text.replace(from, to);
     }
 
-    text = RE_DIACRITICS.replace_all(&text, "").to_string();
+    if strip_legacy_diacritics {
+        text = RE_LEGACY_DIACRITICS.replace_all(&text, "").to_string();
+    }
 
     // Remove special symbols
     for symbol in &["♥", "☆", "♡", "©", "\\"] {
@@ -273,6 +394,33 @@ fn preprocess_text(text: &str) -> String {
         text.push('.');
     }
     text
+}
+
+fn normalize_language(language: Option<&str>) -> Result<&str> {
+    let language = language.unwrap_or(DEFAULT_LANGUAGE).trim();
+    if AVAILABLE_LANGUAGES.contains(&language) {
+        Ok(language)
+    } else {
+        bail!("Invalid TTS language: {language}. Available languages: {AVAILABLE_LANGUAGES:?}")
+    }
+}
+
+fn prepare_text(
+    text: &str,
+    model_version: ModelVersion,
+    language: Option<&str>,
+) -> Result<Option<String>> {
+    let normalized = normalize_text_for_tts(text, model_version == ModelVersion::Legacy);
+    if normalized.is_empty() {
+        return Ok(None);
+    }
+
+    if model_version == ModelVersion::Legacy {
+        return Ok(Some(normalized));
+    }
+
+    let language = normalize_language(language)?;
+    Ok(Some(format!("<{language}>{normalized}</{language}>")))
 }
 
 fn length_to_mask(lengths: &[usize], max_len: Option<usize>) -> Array3<f32> {
@@ -335,15 +483,38 @@ fn sample_noisy_latent(
     (noisy_latent, latent_mask)
 }
 
-/// Split text by words when it exceeds max_len
-fn split_by_words(text: &str, max_len: usize) -> Vec<String> {
-    let mut result = Vec::new();
+fn hard_split_chars(text: &str, max_chars: usize) -> Vec<String> {
+    let mut chunks = Vec::new();
+    let mut current = String::new();
+    for character in text.chars() {
+        if current.chars().count() == max_chars {
+            chunks.push(std::mem::take(&mut current));
+        }
+        current.push(character);
+    }
+    if !current.is_empty() {
+        chunks.push(current);
+    }
+    chunks
+}
+
+fn split_by_words(text: &str, max_chars: usize) -> Vec<String> {
+    let mut chunks = Vec::new();
     let mut current = String::new();
 
     for word in text.split_whitespace() {
-        if current.len() + word.len() + 1 > max_len && !current.is_empty() {
-            result.push(current.trim().to_string());
-            current.clear();
+        let word_chars = word.chars().count();
+        if word_chars > max_chars {
+            if !current.is_empty() {
+                chunks.push(std::mem::take(&mut current));
+            }
+            chunks.extend(hard_split_chars(word, max_chars));
+            continue;
+        }
+
+        let separator = usize::from(!current.is_empty());
+        if current.chars().count() + separator + word_chars > max_chars {
+            chunks.push(std::mem::take(&mut current));
         }
         if !current.is_empty() {
             current.push(' ');
@@ -352,20 +523,48 @@ fn split_by_words(text: &str, max_len: usize) -> Vec<String> {
     }
 
     if !current.is_empty() {
-        result.push(current.trim().to_string());
+        chunks.push(current);
     }
-    result
+    chunks
 }
 
-fn chunk_text(text: &str, max_len: usize) -> Vec<String> {
+fn push_chunk_unit(chunks: &mut Vec<String>, current: &mut String, unit: &str, max_chars: usize) {
+    let unit = unit.trim();
+    if unit.is_empty() {
+        return;
+    }
+
+    if unit.chars().count() > max_chars {
+        if !current.is_empty() {
+            chunks.push(std::mem::take(current));
+        }
+        chunks.extend(split_by_words(unit, max_chars));
+        return;
+    }
+
+    let separator = usize::from(!current.is_empty());
+    if current.chars().count() + separator + unit.chars().count() > max_chars {
+        chunks.push(std::mem::take(current));
+    }
+    if !current.is_empty() {
+        current.push(' ');
+    }
+    current.push_str(unit);
+}
+
+fn chunk_text(text: &str, max_chars: usize) -> Vec<String> {
+    if max_chars == 0 {
+        return Vec::new();
+    }
     let text = text.trim();
     if text.is_empty() {
-        return vec![String::new()];
+        return Vec::new();
     }
 
     static RE_PARA: Lazy<Regex> = Lazy::new(|| Regex::new(r"\n\s*\n").unwrap());
     let paragraphs: Vec<&str> = RE_PARA.split(text).collect();
     let mut chunks = Vec::new();
+    let mut current = String::new();
 
     for para in paragraphs {
         let para = para.trim();
@@ -373,87 +572,51 @@ fn chunk_text(text: &str, max_len: usize) -> Vec<String> {
             continue;
         }
 
-        if para.len() <= max_len {
-            chunks.push(para.to_string());
+        if para.chars().count() <= max_chars {
+            push_chunk_unit(&mut chunks, &mut current, para, max_chars);
             continue;
         }
 
-        // Split by sentence boundaries, keeping punctuation
-        let mut current = String::new();
         let mut last_end = 0;
 
         for m in RE_SENTENCE.find_iter(para) {
-            let sentence = para[last_end..m.start() + 1].trim(); // +1 to include punctuation
+            let sentence = para[last_end..m.start() + 1].trim();
             last_end = m.end();
-
-            if sentence.is_empty() {
-                continue;
-            }
-
-            // If single sentence exceeds max_len, split by words
-            if sentence.len() > max_len {
-                if !current.is_empty() {
-                    chunks.push(current.trim().to_string());
-                    current.clear();
-                }
-                chunks.extend(split_by_words(sentence, max_len));
-                continue;
-            }
-
-            if current.len() + sentence.len() + 1 > max_len && !current.is_empty() {
-                chunks.push(current.trim().to_string());
-                current.clear();
-            }
-
-            if !current.is_empty() {
-                current.push(' ');
-            }
-            current.push_str(sentence);
+            push_chunk_unit(&mut chunks, &mut current, sentence, max_chars);
         }
 
-        // Remaining text after last sentence boundary
         let remaining = para[last_end..].trim();
-        if !remaining.is_empty() {
-            // If remaining exceeds max_len, split by words
-            if remaining.len() > max_len {
-                if !current.is_empty() {
-                    chunks.push(current.trim().to_string());
-                }
-                chunks.extend(split_by_words(remaining, max_len));
-            } else if current.len() + remaining.len() + 1 > max_len && !current.is_empty() {
-                chunks.push(current.trim().to_string());
-                chunks.push(remaining.to_string());
-            } else {
-                if !current.is_empty() {
-                    current.push(' ');
-                }
-                current.push_str(remaining);
-                chunks.push(current.trim().to_string());
-            }
-        } else if !current.is_empty() {
-            chunks.push(current.trim().to_string());
-        }
+        push_chunk_unit(&mut chunks, &mut current, remaining, max_chars);
     }
 
-    if chunks.is_empty() {
-        vec![String::new()]
+    if !current.is_empty() {
+        chunks.push(current);
+    }
+    chunks
+}
+
+fn chunk_size_for_language(language: &str) -> usize {
+    if matches!(language, "ko" | "ja") {
+        CJK_CHUNK_CHARS
     } else {
-        chunks
+        DEFAULT_CHUNK_CHARS
     }
 }
 
 pub struct TTSState {
-    tts: Option<TextToSpeech>,
-    style: Option<Style>,
+    loaded: Option<LoadedTts>,
 }
 
 impl TTSState {
     pub fn new() -> Mutex<Self> {
-        Mutex::new(TTSState {
-            tts: None,
-            style: None,
-        })
+        Mutex::new(TTSState { loaded: None })
     }
+}
+
+struct LoadedTts {
+    engine: TextToSpeech,
+    style: Style,
+    version: ModelVersion,
 }
 
 struct TextToSpeech {
@@ -471,35 +634,62 @@ impl TextToSpeech {
         &mut self,
         text: &str,
         style: &Style,
+        model_version: ModelVersion,
+        language: Option<&str>,
         total_step: usize,
         speed: f32,
     ) -> Result<Vec<f32>> {
-        let chunks = chunk_text(text, 300);
+        let language = if model_version == ModelVersion::Supertonic3 {
+            normalize_language(language)?
+        } else {
+            DEFAULT_LANGUAGE
+        };
+        let chunks = chunk_text(text, chunk_size_for_language(language));
         let mut wav_cat: Vec<f32> = Vec::new();
         let silence_duration = 0.05;
 
-        for (i, chunk) in chunks.iter().enumerate() {
-            if chunk.is_empty() {
+        for chunk in chunks {
+            let Some(wav_chunk) = self.synthesize_one(
+                &chunk,
+                style,
+                model_version,
+                Some(language),
+                total_step,
+                speed,
+            )?
+            else {
                 continue;
-            }
+            };
 
-            let processed_chunk = preprocess_text(chunk);
-            if processed_chunk.trim().is_empty() {
-                continue;
-            }
-
-            let (wav, duration) = self.infer(&[processed_chunk], style, total_step, speed)?;
-            let dur = duration[0];
-            let wav_len = (self.sample_rate as f32 * dur) as usize;
-            let wav_chunk = &wav[..wav_len.min(wav.len())];
-
-            if i > 0 {
+            if !wav_cat.is_empty() {
                 let silence_len = (silence_duration * self.sample_rate as f32) as usize;
-                wav_cat.extend(vec![0.0f32; silence_len]);
+                wav_cat.resize(wav_cat.len() + silence_len, 0.0);
             }
-            wav_cat.extend_from_slice(wav_chunk);
+            wav_cat.extend_from_slice(&wav_chunk);
         }
         Ok(wav_cat)
+    }
+
+    fn synthesize_one(
+        &mut self,
+        text: &str,
+        style: &Style,
+        model_version: ModelVersion,
+        language: Option<&str>,
+        total_step: usize,
+        speed: f32,
+    ) -> Result<Option<Vec<f32>>> {
+        let Some(processed_text) = prepare_text(text, model_version, language)? else {
+            return Ok(None);
+        };
+
+        let (wav, duration) = self.infer(&[processed_text], style, total_step, speed)?;
+        let duration = duration
+            .first()
+            .copied()
+            .context("TTS model returned no duration")?;
+        let wav_len = (self.sample_rate as f32 * duration) as usize;
+        Ok(Some(wav[..wav_len.min(wav.len())].to_vec()))
     }
 
     fn infer(
@@ -535,8 +725,20 @@ impl TextToSpeech {
 
         let (_, duration_data) = dp_outputs["duration"].try_extract_tensor::<f32>()?;
         let mut duration: Vec<f32> = duration_data.to_vec();
+        if duration.len() != bsz {
+            bail!(
+                "TTS model returned {} durations for a batch of {bsz}",
+                duration.len()
+            );
+        }
         for dur in duration.iter_mut() {
             *dur /= speed;
+        }
+        if duration
+            .iter()
+            .any(|duration| !duration.is_finite() || *duration <= 0.0)
+        {
+            bail!("TTS model returned an invalid duration");
         }
 
         // Encode text
@@ -607,11 +809,18 @@ impl TextToSpeech {
         })?;
 
         let (_, wav_data) = vocoder_outputs["wav_tts"].try_extract_tensor::<f32>()?;
+        if wav_data.iter().any(|sample| !sample.is_finite()) {
+            bail!("TTS model returned non-finite audio samples");
+        }
         Ok((wav_data.to_vec(), duration))
     }
 }
 
-fn get_tts_models_dir() -> Result<PathBuf> {
+fn get_tts_models_root_dir() -> Result<PathBuf> {
+    if let Some(path) = std::env::var_os(TTS_MODELS_DIR_ENV).filter(|path| !path.is_empty()) {
+        return validate_tts_models_root(path.into());
+    }
+
     // On iOS, we need to use a different approach since dirs::data_local_dir() may not work
     #[cfg(target_os = "ios")]
     {
@@ -623,7 +832,7 @@ fn get_tts_models_dir() -> Result<PathBuf> {
             .join("Caches")
             .join("cloud.opensecret.maple")
             .join("tts_models");
-        return Ok(data_dir);
+        return validate_tts_models_root(data_dir);
     }
 
     #[cfg(not(target_os = "ios"))]
@@ -632,14 +841,33 @@ fn get_tts_models_dir() -> Result<PathBuf> {
             .context("Failed to get local data directory")?
             .join("cloud.opensecret.maple")
             .join("tts_models");
-        Ok(data_dir)
+        validate_tts_models_root(data_dir)
     }
 }
 
+fn validate_tts_models_root(path: PathBuf) -> Result<PathBuf> {
+    if !path.is_absolute() {
+        bail!("TTS model directory must be an absolute path");
+    }
+    if path.file_name().and_then(|name| name.to_str()) != Some("tts_models") {
+        bail!("TTS model directory must end in 'tts_models'");
+    }
+    let parent = path.parent().context("TTS model directory has no parent")?;
+    if parent.parent().is_none() {
+        bail!("TTS model directory is too broad");
+    }
+    Ok(path)
+}
+
+fn get_supertonic3_models_dir() -> Result<PathBuf> {
+    Ok(get_tts_models_root_dir()?.join(SUPERTONIC3_CACHE_DIR))
+}
+
 fn load_voice_style(models_dir: &Path) -> Result<Style> {
-    // TODO: Add voice selection API - currently hardcoded to F2
-    // Available voices: F1, F2, M1, M2
-    let style_path = models_dir.join("F2.json");
+    // F2 preserves Maple's existing bright/friendly female default. All ten
+    // published styles are pinned so a future selector does not require a new
+    // model download.
+    let style_path = models_dir.join(DEFAULT_VOICE_STYLE);
     let file = File::open(&style_path).context("Failed to open voice style file")?;
     let reader = BufReader::new(file);
     let data: VoiceStyleData = serde_json::from_reader(reader)?;
@@ -670,7 +898,7 @@ fn load_voice_style(models_dir: &Path) -> Result<Style> {
     })
 }
 
-fn load_tts_engine(models_dir: &Path) -> Result<TextToSpeech> {
+fn load_tts_engine(models_dir: &Path, model_version: ModelVersion) -> Result<TextToSpeech> {
     crate::onnxruntime::ensure_initialized().map_err(anyhow::Error::msg)?;
 
     let cfg_path = models_dir.join("tts.json");
@@ -682,7 +910,11 @@ fn load_tts_engine(models_dir: &Path) -> Result<TextToSpeech> {
     let file = File::open(&indexer_path)?;
     let reader = BufReader::new(file);
     let indexer: Vec<i64> = serde_json::from_reader(reader)?;
-    let text_processor = UnicodeProcessor::new(indexer);
+    let unknown_token_id = match model_version {
+        ModelVersion::Supertonic3 => -1,
+        ModelVersion::Legacy => 0,
+    };
+    let text_processor = UnicodeProcessor::new(indexer, unknown_token_id);
 
     let dp_ort =
         Session::builder()?.commit_from_file(models_dir.join("duration_predictor.onnx"))?;
@@ -702,6 +934,87 @@ fn load_tts_engine(models_dir: &Path) -> Result<TextToSpeech> {
         vocoder_ort,
         sample_rate,
     })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Installation {
+    None,
+    Current(PathBuf),
+    Legacy(PathBuf),
+    Incompatible,
+}
+
+impl Installation {
+    fn installed(&self) -> Option<(ModelVersion, &Path)> {
+        match self {
+            Self::Current(path) => Some((ModelVersion::Supertonic3, path)),
+            Self::Legacy(path) => Some((ModelVersion::Legacy, path)),
+            Self::None | Self::Incompatible => None,
+        }
+    }
+}
+
+fn revision_matches(models_dir: &Path) -> bool {
+    fs::read_to_string(models_dir.join(MODEL_REVISION_FILE))
+        .map(|revision| revision.trim() == HUGGINGFACE_REVISION)
+        .unwrap_or(false)
+}
+
+fn files_match_sizes(models_dir: &Path, files: &[(&str, u64)]) -> bool {
+    files.iter().all(|(name, expected_size)| {
+        fs::metadata(models_dir.join(name))
+            .map(|metadata| metadata.is_file() && metadata.len() == *expected_size)
+            .unwrap_or(false)
+    })
+}
+
+fn supertonic3_files_match_sizes(models_dir: &Path) -> bool {
+    SUPERTONIC3_MODEL_FILES.iter().all(|file| {
+        fs::metadata(models_dir.join(file.name))
+            .map(|metadata| metadata.is_file() && metadata.len() == file.size)
+            .unwrap_or(false)
+    })
+}
+
+fn legacy_artifacts_present(root_dir: &Path) -> bool {
+    LEGACY_MODEL_FILES
+        .iter()
+        .any(|(name, _)| root_dir.join(name).exists())
+}
+
+fn detect_installation(root_dir: &Path) -> Installation {
+    let supertonic3_dir = root_dir.join(SUPERTONIC3_CACHE_DIR);
+    if revision_matches(&supertonic3_dir) && supertonic3_files_match_sizes(&supertonic3_dir) {
+        return Installation::Current(supertonic3_dir);
+    }
+    if files_match_sizes(root_dir, LEGACY_MODEL_FILES) {
+        return Installation::Legacy(root_dir.to_path_buf());
+    }
+    if legacy_artifacts_present(root_dir) {
+        return Installation::Incompatible;
+    }
+    Installation::None
+}
+
+fn current_installation() -> Result<Installation> {
+    Ok(detect_installation(&get_tts_models_root_dir()?))
+}
+
+fn sha256_file(path: &Path) -> Result<String> {
+    let mut file = File::open(path)
+        .with_context(|| format!("Failed to open {} for checksum", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let bytes_read = file
+            .read(&mut buffer)
+            .with_context(|| format!("Failed to read {} for checksum", path.display()))?;
+        if bytes_read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..bytes_read]);
+    }
+    Ok(bytes_to_hex(hasher.finalize().as_ref()))
 }
 
 fn wav_to_base64(audio_data: &[f32], sample_rate: i32) -> Result<String> {
@@ -734,6 +1047,9 @@ fn wav_to_base64(audio_data: &[f32], sample_rate: i32) -> Result<String> {
 pub struct TTSStatusResponse {
     pub models_downloaded: bool,
     pub models_loaded: bool,
+    pub models_present_but_incompatible: bool,
+    pub upgrade_available: bool,
+    pub model_version: Option<ModelVersion>,
     pub total_size_mb: f64,
 }
 
@@ -741,24 +1057,24 @@ pub struct TTSStatusResponse {
 pub async fn tts_get_status(
     state: tauri::State<'_, Mutex<TTSState>>,
 ) -> Result<TTSStatusResponse, String> {
-    let models_dir = get_tts_models_dir().map_err(|e| e.to_string())?;
-
-    let models_downloaded =
-        MODEL_FILES.iter().all(|(name, _, expected_size, _)| {
-            match fs::metadata(models_dir.join(name)) {
-                Ok(meta) => meta.len() == *expected_size,
-                Err(_) => false,
-            }
-        });
-    let models_loaded = {
+    let installation = current_installation().map_err(|error| error.to_string())?;
+    let installed_version = installation.installed().map(|(version, _)| version);
+    let (models_loaded, loaded_version) = {
         let guard = state.lock().map_err(|e| e.to_string())?;
-        guard.tts.is_some() && guard.style.is_some()
+        (
+            guard.loaded.is_some(),
+            guard.loaded.as_ref().map(|loaded| loaded.version),
+        )
     };
+    let model_version = loaded_version.or(installed_version);
 
     Ok(TTSStatusResponse {
-        models_downloaded,
+        models_downloaded: installation.installed().is_some(),
         models_loaded,
-        total_size_mb: TOTAL_MODEL_SIZE as f64 / 1024.0 / 1024.0,
+        models_present_but_incompatible: installation == Installation::Incompatible,
+        upgrade_available: model_version == Some(ModelVersion::Legacy),
+        model_version,
+        total_size_mb: SUPERTONIC3_TOTAL_MODEL_SIZE as f64 / 1024.0 / 1024.0,
     })
 }
 
@@ -784,59 +1100,96 @@ pub async fn tts_download_models(app: AppHandle) -> Result<(), String> {
 async fn tts_download_models_impl(app: &AppHandle) -> Result<(), String> {
     use std::time::Duration;
 
-    let models_dir = get_tts_models_dir().map_err(|e| e.to_string())?;
+    let root_dir = get_tts_models_root_dir().map_err(|error| error.to_string())?;
+    match detect_installation(&root_dir) {
+        Installation::Legacy(_) => {
+            return Err(
+                "Your existing local TTS model must be deleted before downloading Supertonic 3."
+                    .to_string(),
+            );
+        }
+        Installation::Incompatible => {
+            return Err(
+                "Incompatible local TTS files must be deleted before downloading Supertonic 3."
+                    .to_string(),
+            );
+        }
+        Installation::None | Installation::Current(_) => {}
+    }
+
+    let models_dir = get_supertonic3_models_dir().map_err(|error| error.to_string())?;
     fs::create_dir_all(&models_dir)
         .map_err(|e| format!("Failed to create models directory: {e}"))?;
+    log::info!("Using TTS model directory: {}", models_dir.display());
 
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(300))
+        // The largest v3 graph is about 257 MB. Five minutes was too short on
+        // slower mobile connections, while retries safely reuse verified files.
+        .timeout(Duration::from_secs(30 * 60))
         .connect_timeout(Duration::from_secs(30))
         .build()
         .map_err(|e| format!("Failed to create HTTP client: {e}"))?;
     let mut total_downloaded: u64 = 0;
 
-    for (file_name, url_path, expected_size, expected_sha256) in MODEL_FILES {
-        let file_path = models_dir.join(file_name);
-        let temp_path = models_dir.join(format!("{file_name}.part"));
+    for model_file in SUPERTONIC3_MODEL_FILES {
+        let file_path = models_dir.join(model_file.name);
+        let temp_path = models_dir.join(format!("{}.part", model_file.name));
 
-        // Skip if already downloaded
+        // Reuse only files whose size and hash both match the pinned manifest.
         if file_path.exists() {
-            if let Ok(meta) = fs::metadata(&file_path) {
-                if meta.len() == *expected_size {
-                    total_downloaded += expected_size;
-                    let _ = app.emit(
-                        "tts-download-progress",
-                        DownloadProgress {
-                            downloaded: total_downloaded,
-                            total: TOTAL_MODEL_SIZE,
-                            file_name: file_name.to_string(),
-                            percent: (total_downloaded as f64 / TOTAL_MODEL_SIZE as f64) * 100.0,
-                        },
-                    );
-                    continue;
+            if fs::metadata(&file_path)
+                .map(|metadata| metadata.is_file() && metadata.len() == model_file.size)
+                .unwrap_or(false)
+            {
+                match sha256_file(&file_path) {
+                    Ok(actual_sha256) if actual_sha256 == model_file.sha256 => {
+                        total_downloaded += model_file.size;
+                        let _ = app.emit(
+                            "tts-download-progress",
+                            DownloadProgress {
+                                downloaded: total_downloaded,
+                                total: SUPERTONIC3_TOTAL_MODEL_SIZE,
+                                file_name: model_file.name.to_string(),
+                                percent: (total_downloaded as f64
+                                    / SUPERTONIC3_TOTAL_MODEL_SIZE as f64)
+                                    * 100.0,
+                            },
+                        );
+                        continue;
+                    }
+                    Ok(actual_sha256) => log::info!(
+                        "Existing TTS file {} has checksum {}, expected {}; re-downloading",
+                        model_file.name,
+                        actual_sha256,
+                        model_file.sha256
+                    ),
+                    Err(error) => log::info!(
+                        "Could not verify existing TTS file {}; re-downloading: {error}",
+                        model_file.name
+                    ),
                 }
             }
-
-            // Zero-byte or unreadable file: treat as invalid and re-download
             let _ = fs::remove_file(&file_path);
         }
 
-        // Clean up any partial download from previous attempt
         let _ = fs::remove_file(&temp_path);
 
-        let url = format!("{HUGGINGFACE_BASE_URL}/{HUGGINGFACE_REVISION}/{url_path}");
-        log::info!("Downloading TTS model: {file_name}");
+        let url = format!(
+            "{HUGGINGFACE_BASE_URL}/{HUGGINGFACE_REVISION}/{}",
+            model_file.url_path
+        );
+        log::info!("Downloading TTS model: {}", model_file.name);
 
         let response = client
             .get(&url)
             .send()
             .await
-            .map_err(|e| format!("Failed to download {file_name} from {url}: {e}"))?;
+            .map_err(|e| format!("Failed to download {} from {url}: {e}", model_file.name))?;
 
         if !response.status().is_success() {
             return Err(format!(
                 "Failed to download {} from {}: HTTP {}",
-                file_name,
+                model_file.name,
                 url,
                 response.status()
             ));
@@ -846,15 +1199,16 @@ async fn tts_download_models_impl(app: &AppHandle) -> Result<(), String> {
         let mut hasher = Sha256::new();
 
         let mut file = File::create(&temp_path)
-            .map_err(|e| format!("Failed to create file {file_name}: {e}"))?;
+            .map_err(|e| format!("Failed to create file {}: {e}", model_file.name))?;
 
         let mut stream = response.bytes_stream();
         let mut file_downloaded: u64 = 0;
 
         while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(|e| format!("Download error: {e}"))?;
+            let chunk = chunk
+                .map_err(|e| format!("Download error for {} from {url}: {e}", model_file.name))?;
             file.write_all(&chunk)
-                .map_err(|e| format!("Write error: {e}"))?;
+                .map_err(|e| format!("Write error for {}: {e}", model_file.name))?;
 
             hasher.update(&chunk);
 
@@ -865,9 +1219,9 @@ async fn tts_download_models_impl(app: &AppHandle) -> Result<(), String> {
                 "tts-download-progress",
                 DownloadProgress {
                     downloaded: current_total,
-                    total: TOTAL_MODEL_SIZE,
-                    file_name: file_name.to_string(),
-                    percent: (current_total as f64 / TOTAL_MODEL_SIZE as f64) * 100.0,
+                    total: SUPERTONIC3_TOTAL_MODEL_SIZE,
+                    file_name: model_file.name.to_string(),
+                    percent: (current_total as f64 / SUPERTONIC3_TOTAL_MODEL_SIZE as f64) * 100.0,
                 },
             );
         }
@@ -877,59 +1231,85 @@ async fn tts_download_models_impl(app: &AppHandle) -> Result<(), String> {
                 drop(file);
                 let _ = fs::remove_file(&temp_path);
                 return Err(format!(
-                    "Incomplete download for {file_name}: expected {expected_len} bytes, got {file_downloaded}"
+                    "Incomplete download for {}: expected {expected_len} bytes, got {file_downloaded}",
+                    model_file.name
                 ));
             }
         }
 
-        if file_downloaded != *expected_size {
+        if file_downloaded != model_file.size {
             drop(file);
             let _ = fs::remove_file(&temp_path);
             return Err(format!(
-                "Unexpected download size for {file_name}: expected {expected_size} bytes, got {file_downloaded}"
+                "Unexpected download size for {}: expected {} bytes, got {file_downloaded}",
+                model_file.name, model_file.size
             ));
         }
 
         let actual_sha256 = bytes_to_hex(hasher.finalize().as_ref());
-        if actual_sha256 != *expected_sha256 {
+        if actual_sha256 != model_file.sha256 {
             drop(file);
             let _ = fs::remove_file(&temp_path);
             return Err(format!(
-                "Checksum mismatch for {file_name}: expected {expected_sha256}, got {actual_sha256}"
+                "Checksum mismatch for {}: expected {}, got {actual_sha256}",
+                model_file.name, model_file.sha256
             ));
         }
 
-        // Flush and rename temp file to final path
         file.flush()
-            .map_err(|e| format!("Failed to flush file {file_name}: {e}"))?;
+            .map_err(|e| format!("Failed to flush file {}: {e}", model_file.name))?;
         file.sync_all()
-            .map_err(|e| format!("Failed to sync file {file_name}: {e}"))?;
+            .map_err(|e| format!("Failed to sync file {}: {e}", model_file.name))?;
         drop(file);
         fs::rename(&temp_path, &file_path)
-            .map_err(|e| format!("Failed to finalize {file_name}: {e}"))?;
+            .map_err(|e| format!("Failed to finalize {}: {e}", model_file.name))?;
 
-        total_downloaded += expected_size;
-        log::info!("Downloaded TTS model: {file_name}");
+        total_downloaded += model_file.size;
+        log::info!("Downloaded TTS model: {}", model_file.name);
     }
+
+    let marker_path = models_dir.join(MODEL_REVISION_FILE);
+    let marker_temp_path = models_dir.join(format!("{MODEL_REVISION_FILE}.part"));
+    fs::write(&marker_temp_path, format!("{HUGGINGFACE_REVISION}\n"))
+        .map_err(|e| format!("Failed to write TTS model revision marker: {e}"))?;
+    let _ = fs::remove_file(&marker_path);
+    fs::rename(&marker_temp_path, &marker_path)
+        .map_err(|e| format!("Failed to finalize TTS model revision marker: {e}"))?;
 
     Ok(())
 }
 
 #[tauri::command]
 pub async fn tts_load_models(state: tauri::State<'_, Mutex<TTSState>>) -> Result<(), String> {
-    let models_dir = get_tts_models_dir().map_err(|e| e.to_string())?;
+    let installation = current_installation().map_err(|error| error.to_string())?;
+    let (model_version, models_dir) = match installation {
+        Installation::Current(path) => (ModelVersion::Supertonic3, path),
+        Installation::Legacy(path) => (ModelVersion::Legacy, path),
+        Installation::Incompatible => {
+            return Err(
+                "Local TTS files are incompatible and must be deleted before setup.".to_string(),
+            );
+        }
+        Installation::None => return Err("TTS models are not downloaded.".to_string()),
+    };
 
-    log::info!("Loading TTS models from {models_dir:?}");
+    log::info!(
+        "Loading {model_version:?} TTS models from {}",
+        models_dir.display()
+    );
 
-    let tts =
-        load_tts_engine(&models_dir).map_err(|e| format!("Failed to load TTS engine: {e}"))?;
+    let engine = load_tts_engine(&models_dir, model_version)
+        .map_err(|e| format!("Failed to load TTS engine: {e}"))?;
     let style =
         load_voice_style(&models_dir).map_err(|e| format!("Failed to load voice style: {e}"))?;
 
     {
         let mut guard = state.lock().map_err(|e| e.to_string())?;
-        guard.tts = Some(tts);
-        guard.style = Some(style);
+        guard.loaded = Some(LoadedTts {
+            engine,
+            style,
+            version: model_version,
+        });
     }
 
     log::info!("TTS models loaded successfully");
@@ -941,75 +1321,164 @@ pub struct TTSSynthesizeResponse {
     pub audio_base64: String,
     pub sample_rate: i32,
     pub duration_seconds: f32,
+    pub skipped: bool,
+}
+
+#[derive(Serialize)]
+pub struct TTSChunkTextResponse {
+    pub chunks: Vec<String>,
+}
+
+fn encode_synthesis_response(audio: Vec<f32>, sample_rate: i32) -> Result<TTSSynthesizeResponse> {
+    if audio.is_empty() {
+        return Ok(TTSSynthesizeResponse {
+            audio_base64: String::new(),
+            sample_rate,
+            duration_seconds: 0.0,
+            skipped: true,
+        });
+    }
+
+    let duration_seconds = audio.len() as f32 / sample_rate as f32;
+    let audio_base64 = wav_to_base64(&audio, sample_rate)?;
+    Ok(TTSSynthesizeResponse {
+        audio_base64,
+        sample_rate,
+        duration_seconds,
+        skipped: false,
+    })
+}
+
+#[tauri::command]
+pub async fn tts_chunk_text(
+    text: String,
+    language: Option<String>,
+) -> Result<TTSChunkTextResponse, String> {
+    let language = normalize_language(language.as_deref()).map_err(|error| error.to_string())?;
+    let chunks = chunk_text(&text, chunk_size_for_language(language))
+        .into_iter()
+        .filter(|chunk| !normalize_text_for_tts(chunk, false).is_empty())
+        .collect::<Vec<_>>();
+
+    log::info!(
+        "TTS chunk plan: input_chars={}, chunks={}, language={language}",
+        text.chars().count(),
+        chunks.len()
+    );
+    Ok(TTSChunkTextResponse { chunks })
 }
 
 #[tauri::command]
 pub async fn tts_synthesize(
     text: String,
+    language: Option<String>,
+    speed: Option<f32>,
     state: tauri::State<'_, Mutex<TTSState>>,
 ) -> Result<TTSSynthesizeResponse, String> {
-    let mut guard = state.lock().map_err(|e| e.to_string())?;
-
-    // Clone the style to avoid borrow conflicts
-    let style = guard
-        .style
-        .as_ref()
-        .ok_or("Voice style not loaded")?
-        .clone();
-    let tts = guard.tts.as_mut().ok_or("TTS engine not loaded")?;
-
     if text.trim().is_empty() {
         return Err("No text to synthesize".to_string());
     }
 
-    let audio = tts
-        .synthesize(&text, &style, 10, 1.2)
+    let started = Instant::now();
+    let mut guard = state.lock().map_err(|e| e.to_string())?;
+    let loaded = guard.loaded.as_mut().ok_or("TTS engine not loaded")?;
+    let style = loaded.style.clone();
+    let speed = resolve_tts_speed(loaded.version, speed);
+    let total_steps = total_steps_for_model(loaded.version);
+    let sample_rate = loaded.engine.sample_rate;
+    let audio = loaded
+        .engine
+        .synthesize(
+            &text,
+            &style,
+            loaded.version,
+            language.as_deref(),
+            total_steps,
+            speed,
+        )
         .map_err(|e| format!("TTS synthesis failed: {e}"))?;
-
     if audio.is_empty() {
         return Err("No speakable text after preprocessing".to_string());
     }
-
-    let sample_rate = tts.sample_rate;
-    let duration_seconds = audio.len() as f32 / sample_rate as f32;
-
-    // Drop the guard before encoding to release the lock
     drop(guard);
 
-    let audio_base64 =
-        wav_to_base64(&audio, sample_rate).map_err(|e| format!("Failed to encode audio: {e}"))?;
+    let response = encode_synthesis_response(audio, sample_rate)
+        .map_err(|e| format!("Failed to encode audio: {e}"))?;
+    log::info!(
+        "TTS synthesis complete: {:.2}s audio in {}ms",
+        response.duration_seconds,
+        started.elapsed().as_millis()
+    );
+    Ok(response)
+}
 
-    log::info!("TTS synthesis complete: {duration_seconds:.2}s audio");
+#[tauri::command]
+pub async fn tts_synthesize_chunk(
+    text: String,
+    chunk_index: usize,
+    chunk_count: usize,
+    language: Option<String>,
+    speed: Option<f32>,
+    state: tauri::State<'_, Mutex<TTSState>>,
+) -> Result<TTSSynthesizeResponse, String> {
+    if chunk_index == 0 || chunk_count == 0 || chunk_index > chunk_count {
+        return Err("Invalid TTS chunk position".to_string());
+    }
 
-    Ok(TTSSynthesizeResponse {
-        audio_base64,
-        sample_rate,
-        duration_seconds,
-    })
+    let started = Instant::now();
+    let mut guard = state.lock().map_err(|e| e.to_string())?;
+    let loaded = guard.loaded.as_mut().ok_or("TTS engine not loaded")?;
+    let style = loaded.style.clone();
+    let speed = resolve_tts_speed(loaded.version, speed);
+    let total_steps = total_steps_for_model(loaded.version);
+    let sample_rate = loaded.engine.sample_rate;
+    let audio = loaded
+        .engine
+        .synthesize_one(
+            &text,
+            &style,
+            loaded.version,
+            language.as_deref(),
+            total_steps,
+            speed,
+        )
+        .map_err(|e| format!("TTS synthesis failed: {e}"))?
+        .unwrap_or_default();
+    drop(guard);
+
+    let response = encode_synthesis_response(audio, sample_rate)
+        .map_err(|e| format!("Failed to encode audio: {e}"))?;
+    log::info!(
+        "TTS chunk {chunk_index}/{chunk_count} complete: skipped={}, audio_seconds={:.2}, elapsed_ms={}",
+        response.skipped,
+        response.duration_seconds,
+        started.elapsed().as_millis()
+    );
+    Ok(response)
 }
 
 #[tauri::command]
 pub async fn tts_unload_models(state: tauri::State<'_, Mutex<TTSState>>) -> Result<(), String> {
     let mut guard = state.lock().map_err(|e| e.to_string())?;
-    guard.tts = None;
-    guard.style = None;
+    guard.loaded = None;
     log::info!("TTS models unloaded");
     Ok(())
 }
 
 #[tauri::command]
 pub async fn tts_delete_models(state: tauri::State<'_, Mutex<TTSState>>) -> Result<(), String> {
-    // First unload models from memory
-    {
+    let loaded = {
         let mut guard = state.lock().map_err(|e| e.to_string())?;
-        guard.tts = None;
-        guard.style = None;
-    }
+        guard.loaded.take()
+    };
+    // Drop ONNX sessions before removing their backing files, which is
+    // required on Windows and makes deletion deterministic everywhere.
+    drop(loaded);
 
-    // Delete the models directory
-    let models_dir = get_tts_models_dir().map_err(|e| e.to_string())?;
-    if models_dir.exists() {
-        fs::remove_dir_all(&models_dir).map_err(|e| format!("Failed to delete TTS models: {e}"))?;
+    let root_dir = get_tts_models_root_dir().map_err(|e| e.to_string())?;
+    log::info!("Deleting TTS model directory: {}", root_dir.display());
+    if root_dir.exists() {
+        fs::remove_dir_all(&root_dir).map_err(|e| format!("Failed to delete TTS models: {e}"))?;
     }
 
     log::info!("TTS models deleted");
@@ -1019,6 +1488,29 @@ pub async fn tts_delete_models(state: tauri::State<'_, Mutex<TTSState>>) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
+    use unicode_normalization::UnicodeNormalization;
+
+    fn create_sized_file(path: &Path, size: u64) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        File::create(path).unwrap().set_len(size).unwrap();
+    }
+
+    fn seed_legacy(root: &Path) {
+        for (name, size) in LEGACY_MODEL_FILES {
+            create_sized_file(&root.join(name), *size);
+        }
+    }
+
+    fn seed_supertonic3(root: &Path, revision: &str) {
+        let models_dir = root.join(SUPERTONIC3_CACHE_DIR);
+        for model_file in SUPERTONIC3_MODEL_FILES {
+            create_sized_file(&models_dir.join(model_file.name), model_file.size);
+        }
+        fs::write(models_dir.join(MODEL_REVISION_FILE), revision).unwrap();
+    }
 
     #[test]
     fn bytes_to_hex_is_lowercase_and_zero_padded() {
@@ -1026,13 +1518,47 @@ mod tests {
     }
 
     #[test]
-    fn preprocess_text_strips_markdown_and_emoji_and_adds_period() {
-        assert_eq!(preprocess_text("**Hello** _world_ 😊"), "Hello world.");
+    fn normalization_strips_markdown_emoji_and_expression_tags() {
+        assert_eq!(
+            normalize_text_for_tts("**Hello** _world_ <laugh> 😊", false),
+            "Hello world."
+        );
     }
 
     #[test]
-    fn preprocess_text_does_not_add_punctuation_if_already_present() {
-        assert_eq!(preprocess_text("Hi!"), "Hi!");
+    fn supertonic3_preserves_diacritics_and_wraps_language() {
+        let prepared = prepare_text("Grüße déjà vu", ModelVersion::Supertonic3, Some("de"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            prepared.nfc().collect::<String>(),
+            "<de>Grüße déjà vu.</de>"
+        );
+    }
+
+    #[test]
+    fn legacy_normalization_retains_existing_diacritic_behavior() {
+        let prepared = prepare_text("Grüße", ModelVersion::Legacy, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(prepared, "Gruße.");
+    }
+
+    #[test]
+    fn language_defaults_to_language_agnostic_and_validates_codes() {
+        assert_eq!(normalize_language(None).unwrap(), "na");
+        for language in AVAILABLE_LANGUAGES {
+            assert_eq!(normalize_language(Some(language)).unwrap(), *language);
+        }
+        assert!(normalize_language(Some("xx")).is_err());
+    }
+
+    #[test]
+    fn emoji_only_text_is_a_successful_skip() {
+        assert_eq!(
+            prepare_text("😊 🎉", ModelVersion::Supertonic3, None).unwrap(),
+            None
+        );
     }
 
     #[test]
@@ -1049,7 +1575,180 @@ mod tests {
     }
 
     #[test]
-    fn chunk_text_returns_single_empty_chunk_for_empty_input() {
-        assert_eq!(chunk_text("   ", 10), vec![String::new()]);
+    fn chunk_text_packs_short_paragraphs() {
+        assert_eq!(
+            chunk_text("One.\n\nTwo. Three.", 20),
+            vec!["One. Two. Three.".to_string()]
+        );
+    }
+
+    #[test]
+    fn chunk_text_hard_splits_unbroken_unicode_without_recursion() {
+        let chunks = chunk_text("ééééééééééé", 4);
+        assert_eq!(
+            chunks
+                .iter()
+                .map(|chunk| chunk.chars().count())
+                .collect::<Vec<_>>(),
+            vec![4, 4, 3]
+        );
+    }
+
+    #[test]
+    fn chunk_text_respects_cjk_character_bounds() {
+        let chunks = chunk_text("日本語の長い文章です日本語の長い文章です", 6);
+        assert!(chunks.iter().all(|chunk| chunk.chars().count() <= 6));
+        assert_eq!(chunks.concat(), "日本語の長い文章です日本語の長い文章です");
+    }
+
+    #[test]
+    fn chunk_text_returns_no_chunks_for_empty_input_or_zero_limit() {
+        assert!(chunk_text("   ", 10).is_empty());
+        assert!(chunk_text("hello", 0).is_empty());
+    }
+
+    #[test]
+    fn speed_defaults_and_clamps_are_model_specific() {
+        assert_eq!(resolve_tts_speed(ModelVersion::Supertonic3, None), 1.2);
+        assert_eq!(resolve_tts_speed(ModelVersion::Legacy, None), 1.2);
+        assert_eq!(resolve_tts_speed(ModelVersion::Supertonic3, Some(0.1)), 0.5);
+        assert_eq!(resolve_tts_speed(ModelVersion::Supertonic3, Some(3.0)), 2.0);
+        assert_eq!(resolve_tts_speed(ModelVersion::Legacy, Some(f32::NAN)), 1.2);
+        assert_eq!(total_steps_for_model(ModelVersion::Supertonic3), 8);
+        assert_eq!(total_steps_for_model(ModelVersion::Legacy), 10);
+    }
+
+    #[test]
+    fn manifest_total_and_hash_shapes_match_the_pin() {
+        assert_eq!(
+            SUPERTONIC3_MODEL_FILES
+                .iter()
+                .map(|model_file| model_file.size)
+                .sum::<u64>(),
+            SUPERTONIC3_TOTAL_MODEL_SIZE
+        );
+        assert!(SUPERTONIC3_MODEL_FILES.iter().all(|model_file| {
+            model_file.sha256.len() == 64
+                && model_file
+                    .sha256
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        }));
+    }
+
+    #[test]
+    fn detects_none_legacy_current_partial_and_incompatible_models() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().join("tts_models");
+        assert_eq!(detect_installation(&root), Installation::None);
+
+        seed_legacy(&root);
+        assert_eq!(
+            detect_installation(&root),
+            Installation::Legacy(root.clone())
+        );
+
+        fs::remove_dir_all(&root).unwrap();
+        create_sized_file(&root.join("duration_predictor.onnx"), 10);
+        assert_eq!(detect_installation(&root), Installation::Incompatible);
+
+        fs::remove_dir_all(&root).unwrap();
+        create_sized_file(
+            &root
+                .join(SUPERTONIC3_CACHE_DIR)
+                .join("duration_predictor.onnx"),
+            SUPERTONIC3_MODEL_FILES[0].size,
+        );
+        assert_eq!(detect_installation(&root), Installation::None);
+
+        fs::remove_dir_all(&root).unwrap();
+        seed_supertonic3(&root, "wrong-revision");
+        assert_eq!(detect_installation(&root), Installation::None);
+
+        fs::write(
+            root.join(SUPERTONIC3_CACHE_DIR).join(MODEL_REVISION_FILE),
+            HUGGINGFACE_REVISION,
+        )
+        .unwrap();
+        assert_eq!(
+            detect_installation(&root),
+            Installation::Current(root.join(SUPERTONIC3_CACHE_DIR))
+        );
+    }
+
+    #[test]
+    fn checksum_helper_reads_files_incrementally() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("fixture");
+        fs::write(&path, b"abc").unwrap();
+        assert_eq!(
+            sha256_file(&path).unwrap(),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
+
+    #[test]
+    fn model_root_override_validation_is_fail_closed() {
+        assert!(validate_tts_models_root(PathBuf::from("relative/tts_models")).is_err());
+        let temp_root = std::env::temp_dir().join("maple");
+        assert!(validate_tts_models_root(temp_root.join("not-models")).is_err());
+        let valid_root = temp_root.join("tts_models");
+        assert_eq!(
+            validate_tts_models_root(valid_root.clone()).unwrap(),
+            valid_root
+        );
+    }
+
+    #[test]
+    fn wav_response_is_mono_pcm16_and_skip_is_explicit() {
+        let skipped = encode_synthesis_response(Vec::new(), 44_100).unwrap();
+        assert!(skipped.skipped);
+        assert!(skipped.audio_base64.is_empty());
+
+        let response = encode_synthesis_response(vec![0.0, 0.5, -0.5], 44_100).unwrap();
+        assert!(!response.skipped);
+        let bytes = BASE64.decode(response.audio_base64).unwrap();
+        let reader = hound::WavReader::new(Cursor::new(bytes)).unwrap();
+        assert_eq!(reader.spec().channels, 1);
+        assert_eq!(reader.spec().sample_rate, 44_100);
+        assert_eq!(reader.spec().bits_per_sample, 16);
+    }
+
+    #[test]
+    #[ignore = "requires downloaded Supertonic 3 model files"]
+    fn supertonic3_smoke_produces_finite_non_silent_audio_and_valid_wav() {
+        let models_dir = PathBuf::from(
+            std::env::var("MAPLE_SUPERTONIC3_SMOKE_DIR")
+                .expect("MAPLE_SUPERTONIC3_SMOKE_DIR must point to Supertonic 3 model files"),
+        );
+        let mut engine = load_tts_engine(&models_dir, ModelVersion::Supertonic3).unwrap();
+        let style = load_voice_style(&models_dir).unwrap();
+        let audio = engine
+            .synthesize(
+                "Hello from Maple. This is a real Supertonic 3 smoke test.",
+                &style,
+                ModelVersion::Supertonic3,
+                Some("en"),
+                SUPERTONIC3_TOTAL_STEPS,
+                SUPERTONIC3_DEFAULT_SPEED,
+            )
+            .unwrap();
+
+        assert_eq!(engine.sample_rate, 44_100);
+        assert!(audio.len() > 44_100 / 4);
+        assert!(audio.iter().all(|sample| sample.is_finite()));
+        let peak = audio
+            .iter()
+            .fold(0.0_f32, |peak, sample| peak.max(sample.abs()));
+        let rms =
+            (audio.iter().map(|sample| sample * sample).sum::<f32>() / audio.len() as f32).sqrt();
+        assert!(peak > 0.001, "audio peak was {peak}");
+        assert!(rms > 0.0001, "audio RMS was {rms}");
+
+        let response = encode_synthesis_response(audio, engine.sample_rate).unwrap();
+        let wav = BASE64.decode(response.audio_base64).unwrap();
+        let reader = hound::WavReader::new(Cursor::new(wav)).unwrap();
+        assert_eq!(reader.spec().sample_rate, 44_100);
+        assert_eq!(reader.spec().channels, 1);
     }
 }
