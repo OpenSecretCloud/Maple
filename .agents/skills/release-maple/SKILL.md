@@ -20,7 +20,7 @@ Run this workflow from the `OpenSecretCloud/Maple` repository. Treat publishing 
    ```
 
 2. If `current_version` is newer than `released_version`, keep the existing version. Never bump it again merely because a release was requested.
-3. If they are equal, prepare the intended next version through the repository helpers. Use an explicitly requested version or release level; otherwise ask which version to stage. Run exactly one of:
+3. If they are equal, prepare the intended next version through the repository helpers. Proceed directly only when the user's current request explicitly names the version or patch/minor/major level. Otherwise stop and ask the user which version to stage; never infer SemVer intent from the commit list. After the user answers, run exactly one of:
 
    ```bash
    nix develop .#ci -c just update-version X.Y.Z
