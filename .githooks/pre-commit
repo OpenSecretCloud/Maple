@@ -6,6 +6,32 @@ REPO_ROOT=$(git rev-parse --show-toplevel)
 STAGED_FILES=$(git diff --cached --name-only)
 NEEDS_TOOLCHAIN=0
 
+find_nix() {
+    if command -v nix >/dev/null 2>&1; then
+        command -v nix
+        return
+    fi
+
+    for candidate in /nix/var/nix/profiles/default/bin/nix "$HOME/.nix-profile/bin/nix"; do
+        if [ -x "$candidate" ]; then
+            printf '%s\n' "$candidate"
+            return
+        fi
+    done
+}
+
+# Prefer the pinned toolchain whenever Nix is available. GUI applications on
+# macOS may not inherit the shell PATH, so also check the standard Nix paths.
+if [ "${MAPLE_HOOK_NIX_BOOTSTRAPPED:-0}" != "1" ] \
+    && [ -f "$REPO_ROOT/flake.nix" ]; then
+    NIX_BIN=$(find_nix)
+    if [ -n "$NIX_BIN" ]; then
+        echo "Entering the Maple Nix CI shell for pinned hook tools..."
+        exec "$NIX_BIN" develop "$REPO_ROOT#ci" -c env MAPLE_HOOK_NIX_BOOTSTRAPPED=1 \
+            "$REPO_ROOT/.githooks/pre-commit"
+    fi
+fi
+
 if ! command -v bun >/dev/null 2>&1; then
     NEEDS_TOOLCHAIN=1
 fi
@@ -21,9 +47,10 @@ if [ "$NEEDS_TOOLCHAIN" -eq 1 ]; then
         exit 1
     fi
 
-    if command -v nix >/dev/null 2>&1 && [ -f "$REPO_ROOT/flake.nix" ]; then
+    NIX_BIN=$(find_nix)
+    if [ -n "$NIX_BIN" ] && [ -f "$REPO_ROOT/flake.nix" ]; then
         echo "Required tools are not on PATH; entering the Maple Nix development shell..."
-        exec nix develop "$REPO_ROOT" -c env MAPLE_HOOK_NIX_BOOTSTRAPPED=1 \
+        exec "$NIX_BIN" develop "$REPO_ROOT#ci" -c env MAPLE_HOOK_NIX_BOOTSTRAPPED=1 \
             "$REPO_ROOT/.githooks/pre-commit"
     fi
 
