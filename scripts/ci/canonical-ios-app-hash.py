@@ -480,8 +480,10 @@ def canonical_macho(path):
 
     try:
         shutil.copyfile(path, tmp_path)
+        # Local symbols are not runtime content, and ld may emit otherwise
+        # identical local absolute symbols in a different order.
         subprocess.run(
-            [developer_tool("strip"), "-S", tmp_path],
+            [developer_tool("strip"), "-S", "-x", tmp_path],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             check=True,
