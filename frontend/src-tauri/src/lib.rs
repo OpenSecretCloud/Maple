@@ -113,7 +113,9 @@ pub fn run() {
             tts::tts_get_status,
             tts::tts_download_models,
             tts::tts_load_models,
+            tts::tts_chunk_text,
             tts::tts_synthesize,
+            tts::tts_synthesize_chunk,
             tts::tts_unload_models,
             tts::tts_delete_models,
         ])
@@ -347,7 +349,9 @@ pub fn run() {
             tts::tts_get_status,
             tts::tts_download_models,
             tts::tts_load_models,
+            tts::tts_chunk_text,
             tts::tts_synthesize,
+            tts::tts_synthesize_chunk,
             tts::tts_unload_models,
             tts::tts_delete_models,
         ])
