@@ -23,7 +23,6 @@ find_nix() {
 # Prefer the pinned toolchain whenever Nix is available. GUI applications on
 # macOS may not inherit the shell PATH, so also check the standard Nix paths.
 if [ "${MAPLE_HOOK_NIX_BOOTSTRAPPED:-0}" != "1" ] \
-    && [ -z "${IN_NIX_SHELL:-}" ] \
     && [ -f "$REPO_ROOT/flake.nix" ]; then
     NIX_BIN=$(find_nix)
     if [ -n "$NIX_BIN" ]; then
