@@ -1,11 +1,36 @@
 ---
 name: release-maple
-description: Publish and verify a Maple GitHub release from master. Use when asked to cut, create, publish, monitor, or finish a Maple release, including checking whether the version was bumped after the previous release, generating GitHub release notes, creating the release tag, monitoring release CI, retrying genuinely transient failures, verifying artifacts, and confirming Zapstore publication.
+description: Prepare, publish, and verify a Maple GitHub release from master. Use when asked to cut, create, publish, monitor, or finish a Maple release, including preparing a missing version bump through the pinned Nix and just workflow, generating GitHub release notes, creating the release tag, monitoring release CI, retrying genuinely transient failures, verifying artifacts, and confirming Zapstore publication.
 ---
 
 # Release Maple
 
 Run this workflow from the `OpenSecretCloud/Maple` repository. Treat publishing a release as a production action: report the intended tag and commit before creating it, then stay with all workflows until they succeed or a real defect is identified.
+
+## Prepare Version
+
+1. Start from a clean, current `master`. Compare `just get-version` with the latest published release:
+
+   ```bash
+   git switch master
+   git pull --ff-only origin master
+   current_version="$(nix develop .#ci -c just get-version | tail -n 1)"
+   released_version="$(gh api repos/OpenSecretCloud/Maple/releases/latest --jq '.tag_name | ltrimstr("v")')"
+   printf 'current=%s released=%s\n' "$current_version" "$released_version"
+   ```
+
+2. If `current_version` is newer than `released_version`, keep the existing version. Never bump it again merely because a release was requested.
+3. If they are equal, prepare the intended next version through the repository helpers. Use an explicitly requested version or release level; otherwise ask which version to stage. Run exactly one of:
+
+   ```bash
+   nix develop .#ci -c just update-version X.Y.Z
+   nix develop .#ci -c just bump-patch
+   nix develop .#ci -c just bump-minor
+   nix develop .#ci -c just bump-major
+   ```
+
+4. Review the generated manifest and lockfile diff, then commit it on a focused branch, push it, and open a PR. Do not use `just release`; it creates a local tag before the reviewed GitHub release flow.
+5. Wait for required PR checks, merge the bump, switch back to `master`, pull with `--ff-only`, and wait for every required master workflow to succeed. Then continue with preflight. Never release from the bump branch or before the merged commit's CI is green.
 
 ## Preflight
 
