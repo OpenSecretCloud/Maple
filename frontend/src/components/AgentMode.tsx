@@ -4183,67 +4183,8 @@ function sessionTitle(session: AgentSessionSummary): string {
   return session.title || "New task";
 }
 
-// Friendly display names for common goose tools so labels read as an action
-// ("Terminal", "Read file") instead of the raw internal tool id ("shell",
-// "text_editor"). Unknown tools fall back to their raw name.
-const TOOL_LABELS: Record<string, string> = {
-  shell: "Terminal",
-  developer__shell: "Terminal",
-  text_editor: "Editor",
-  developer__text_editor: "Editor",
-  str_replace_editor: "Editor",
-  web_search: "Web Search",
-  read_file: "Read file",
-  write_file: "Write file",
-  list_files: "List files",
-  glob: "Find files",
-  grep: "Search"
-};
-
-function getToolLabel(name: string): string {
-  return TOOL_LABELS[name] || name;
-}
-
-// Pull the most-descriptive argument each tool exposes so the row shows *what*
-// is running rather than just the bare tool name. web_search uses `query`;
-// goose tools use command/path/pattern/etc. Kept to a single readable line.
-function toolQueryFromInput(input: unknown): string {
-  let args: Record<string, unknown> | undefined;
-  if (typeof input === "string") {
-    try {
-      args = JSON.parse(input);
-    } catch {
-      const firstLine = input.split("\n")[0].trim();
-      return firstLine.length > 80 ? `${firstLine.slice(0, 77)}…` : firstLine;
-    }
-  } else if (input && typeof input === "object") {
-    args = input as Record<string, unknown>;
-  }
-  if (!args) return "";
-  const summary =
-    args.query ||
-    args.command ||
-    args.path ||
-    args.file_path ||
-    args.file ||
-    args.pattern ||
-    args.url ||
-    args.uri ||
-    args.name ||
-    "";
-  if (typeof summary !== "string") return "";
-  const firstLine = summary.split("\n")[0].trim();
-  return firstLine.length > 80 ? `${firstLine.slice(0, 77)}…` : firstLine;
-}
-
 function toolTitle(item: AgentTimelineItem): string {
-  // Prefer an explicit backend-supplied title when present.
-  if (item.title) {
-    const label = getToolLabel(item.title);
-    const query = toolQueryFromInput(item.input);
-    return query ? `${label}: ${query}` : label;
-  }
-  return "Tool call";
+  return item.title || "Tool call";
 }
 
 function formatUnknown(value: unknown): string {
