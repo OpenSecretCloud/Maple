@@ -10,6 +10,7 @@ import {
 import { isTauriDesktop, isIOS, isTauri } from "@/utils/platform";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { prepareAndScheduleTTSChunks } from "./ttsPlayback";
 
 export type TTSStatus =
   | "not_available"
@@ -573,8 +574,14 @@ export function TTSProvider({ children }: { children: ReactNode }) {
           );
         }
 
+        const prebufferBeforePlayback = isIOS();
+
         try {
-          if (isIOS() && "mediaSession" in navigator && typeof MediaMetadata !== "undefined") {
+          if (
+            prebufferBeforePlayback &&
+            "mediaSession" in navigator &&
+            typeof MediaMetadata !== "undefined"
+          ) {
             if (!mediaSessionPrevStateRef.current) {
               mediaSessionPrevStateRef.current = {
                 metadata: navigator.mediaSession.metadata,
@@ -652,15 +659,7 @@ export function TTSProvider({ children }: { children: ReactNode }) {
         let lastPlaybackEnded: Promise<void> | null = null;
         let startedPlayback = false;
 
-        for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex += 1) {
-          const decoded = await synthesizeAndDecodeChunk(chunkIndex);
-          if (!isActiveRequest()) {
-            return;
-          }
-          if (!decoded) {
-            continue;
-          }
-
+        const scheduleDecodedChunk = (decoded: DecodedTTSChunk) => {
           const source = audioContext.createBufferSource();
           source.buffer = decoded.audioBuffer;
           source.connect(audioContext.destination);
@@ -688,6 +687,22 @@ export function TTSProvider({ children }: { children: ReactNode }) {
             setIsPreparing(false);
             setIsPlaying(true);
           }
+        };
+
+        const completedPreparation = await prepareAndScheduleTTSChunks({
+          chunkCount: chunks.length,
+          prebufferBeforePlayback,
+          prepareChunk: synthesizeAndDecodeChunk,
+          scheduleChunk: scheduleDecodedChunk,
+          isActive: isActiveRequest,
+          beforeBufferedSchedule: async () => {
+            if (audioContext.state === "suspended") {
+              await audioContext.resume();
+            }
+          }
+        });
+        if (!completedPreparation || !isActiveRequest()) {
+          return;
         }
 
         if (!lastPlaybackEnded) {
