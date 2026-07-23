@@ -27,6 +27,22 @@ interface CacheEntry {
   values?: FlagValues;
 }
 
+// Local override to force specific feature flags on without a server-side flag.
+// Off by default; set VITE_FORCE_FEATURE_FLAGS to a comma-separated list of flag
+// keys (e.g. "agent_mode") to force them enabled. Intended for local/dev builds
+// only — real builds leave this unset so server flags remain authoritative.
+export function isForcedOn(key: string): boolean {
+  const raw = import.meta.env.VITE_FORCE_FEATURE_FLAGS;
+  if (typeof raw !== "string" || raw.trim() === "") return false;
+  const forced = new Set(
+    raw
+      .split(",")
+      .map((k) => k.trim())
+      .filter(Boolean)
+  );
+  return forced.has(key.trim());
+}
+
 function defaultBaseUrl(): string {
   const configured = import.meta.env.VITE_OS_FLAGS_BASE_URL?.trim();
   if (configured) return configured;
@@ -133,11 +149,13 @@ export class FlagsClient {
   }
 
   async isEnabled(userId: string, key: string): Promise<boolean> {
+    if (isForcedOn(key)) return true;
     const flags = await this.getFlags(userId, [key]);
     return flags[key.trim()] === true;
   }
 
   peekIsEnabled(userId: string, key: string): boolean | undefined {
+    if (isForcedOn(key)) return true;
     const normalizedUserId = userId.trim();
     const [normalizedKey] = normalizeKeys([key]);
     if (!normalizedUserId || !normalizedKey) return undefined;

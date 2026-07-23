@@ -3120,7 +3120,10 @@ fn message_to_timeline_items_with_thinking(
                 id: format!("permission-{}", request.id),
                 item_type: "permission".to_string(),
                 role: Some("system".to_string()),
-                title: Some(format_tool_title(&request.tool_name)),
+                title: Some(
+                    descriptive_tool_title(&request.tool_name, &request.arguments)
+                        .unwrap_or_else(|| format_tool_title(&request.tool_name)),
+                ),
                 text: request.prompt.clone(),
                 status: Some("pending".to_string()),
                 input: Some(Value::Object(request.arguments.clone())),
@@ -3134,7 +3137,8 @@ fn message_to_timeline_items_with_thinking(
             MessageContent::FrontendToolRequest(request) => {
                 let (title, text, input, status) = match &request.tool_call {
                     Ok(call) => (
-                        format_tool_title(call.name.as_ref()),
+                        descriptive_tool_title(call.name.as_ref(), &call.arguments)
+                            .unwrap_or_else(|| format_tool_title(call.name.as_ref())),
                         None,
                         Some(serde_json::to_value(&call.arguments).unwrap_or(Value::Null)),
                         "pending".to_string(),
@@ -3214,7 +3218,7 @@ fn tool_request_item(
             item_type: "tool".to_string(),
             role: Some("assistant".to_string()),
             title: Some(
-                skill_load_title(call.name.as_ref(), &call.arguments).unwrap_or_else(|| {
+                descriptive_tool_title(call.name.as_ref(), &call.arguments).unwrap_or_else(|| {
                     request
                         .persisted_title()
                         .unwrap_or_else(|| call.name.as_ref())
@@ -3246,6 +3250,63 @@ fn skill_load_title<T: Serialize>(tool_name: &str, arguments: &T) -> Option<Stri
     Some(format!(
         "Loading skill: {}",
         bounded_timeline_text(name, MAX_AGENT_SESSION_TITLE_CHARS)
+    ))
+}
+
+/// Friendly display label for a raw goose tool name, e.g. `developer__shell`
+/// -> "Terminal", `developer__text_editor` -> "Editor". Falls back to the
+/// mechanically-cleaned name for anything unmapped.
+fn friendly_tool_label(name: &str) -> String {
+    // Strip any `extension__` prefix so both `shell` and `developer__shell`
+    // map the same way.
+    let bare = name.rsplit("__").next().unwrap_or(name);
+    match bare {
+        "shell" => "Terminal".to_string(),
+        "text_editor" | "str_replace_editor" | "str_replace_based_edit_tool" => {
+            "Editor".to_string()
+        }
+        "web_search" => "Web Search".to_string(),
+        "read_file" => "Read file".to_string(),
+        "write_file" => "Write file".to_string(),
+        "list_files" => "List files".to_string(),
+        "glob" => "Find files".to_string(),
+        "grep" => "Search".to_string(),
+        _ => format_tool_title(name),
+    }
+}
+
+/// Build a descriptive tool title that includes the most relevant argument so
+/// the timeline shows *what* is running (e.g. "Terminal: ls -la") instead of a
+/// bare, repeated tool name ("shell"). Returns `None` when no useful argument
+/// is present, so callers can fall back to their existing title logic.
+fn descriptive_tool_title<T: Serialize>(tool_name: &str, arguments: &T) -> Option<String> {
+    // Preserve the existing, dedicated skill wording.
+    if let Some(skill) = skill_load_title(tool_name, arguments) {
+        return Some(skill);
+    }
+    let arguments = serde_json::to_value(arguments).ok()?;
+    // Most-descriptive argument per tool, in priority order.
+    let detail = [
+        "command",
+        "path",
+        "file_path",
+        "file",
+        "pattern",
+        "query",
+        "url",
+        "uri",
+    ]
+    .iter()
+    .find_map(|key| arguments.get(*key).and_then(|value| value.as_str()))
+    .map(str::trim)
+    .filter(|value| !value.is_empty())?;
+
+    // Keep it to one readable line.
+    let first_line = detail.lines().next().unwrap_or(detail).trim();
+    let label = friendly_tool_label(tool_name);
+    Some(format!(
+        "{label}: {}",
+        bounded_timeline_text(first_line, MAX_AGENT_SESSION_TITLE_CHARS)
     ))
 }
 
