@@ -893,38 +893,6 @@ pub async fn load_saved_proxy_config(app_handle: &AppHandle) -> Result<ProxyConf
     Ok(config)
 }
 
-pub async fn ensure_proxy_running(
-    app_handle: AppHandle,
-    state: State<'_, ProxyState>,
-) -> Result<ProxyStatus, String> {
-    let _lifecycle_guard = state.lifecycle.lock().await;
-    let current = state.status().await;
-    if current.running {
-        log::info!(
-            "Maple proxy already running on {}:{}",
-            current.config.host,
-            current.config.port
-        );
-        return Ok(current);
-    }
-
-    let config = load_saved_proxy_config(&app_handle)
-        .await
-        .map_err(|e| format!("Failed to load proxy config: {e}"))?;
-
-    if config.api_key.trim().is_empty() {
-        log::warn!("Maple proxy cannot auto-start because saved config has no API key");
-        return Err("Maple proxy is not configured with an API key yet".to_string());
-    }
-
-    log::info!(
-        "Starting Maple proxy from saved config on {}:{}",
-        config.host,
-        config.port
-    );
-    start_proxy_inner(app_handle, &state, config).await
-}
-
 // Initialize proxy on app startup if auto_start is enabled
 pub async fn init_proxy_on_startup_simple(app_handle: AppHandle) -> Result<()> {
     let proxy_state: tauri::State<ProxyState> = app_handle.state();

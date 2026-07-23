@@ -4591,10 +4591,13 @@ dependencies = [
  "async-trait",
  "axum",
  "base64 0.22.1",
+ "ciborium",
  "dirs",
  "futures-util",
  "goose",
+ "goose-providers",
  "hound",
+ "httpdate",
  "image 0.25.10",
  "keyring",
  "libc",
@@ -4602,11 +4605,13 @@ dependencies = [
  "maple-proxy",
  "ndarray",
  "once_cell",
+ "opensecret",
  "openssl",
  "ort",
  "pdf_oxide",
  "plist",
  "process-wrap",
+ "pulldown-cmark",
  "rand 0.8.6",
  "rand_distr 0.4.3",
  "regex",
@@ -5484,9 +5489,9 @@ dependencies = [
 
 [[package]]
 name = "opensecret"
-version = "3.4.0"
+version = "3.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a7652ddb1661444ea0cbacacbc62c13f5073f1687a2e765e0195ebf29d3e394d"
+checksum = "3079b068b873507012e3a2c41af6ee527a84ae83dbf79f6e55f684cf9039b51f"
 dependencies = [
  "aes-gcm",
  "anyhow",

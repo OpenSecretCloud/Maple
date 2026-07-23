@@ -10,7 +10,11 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useOpenSecret } from "@opensecret/react";
 import { AlertTriangle, LogOut, CreditCard } from "lucide-react";
-import { stopAgentRuntimeForUser } from "@/services/agentRuntimeService";
+import {
+  clearMapleApiAuthForUser,
+  restoreMapleApiAuthForUser,
+  stopAgentRuntimeForUser
+} from "@/services/agentRuntimeService";
 import { useState } from "react";
 import { getBillingService } from "@/billing/billingService";
 
@@ -35,9 +39,11 @@ export function GuestPaymentWarningDialog({ open, onOpenChange }: GuestPaymentWa
     setIsLoggingOut(true);
     let operationBlock: Awaited<ReturnType<typeof stopAgentRuntimeForUser>> | null = null;
     let signedOut = false;
+    let nativeAuthCleared = false;
+    const userId = os.auth.user?.user.id;
 
     try {
-      operationBlock = await stopAgentRuntimeForUser(os.auth.user?.user.id);
+      operationBlock = await stopAgentRuntimeForUser(userId);
     } catch (error) {
       console.error("Error stopping Agent Mode:", error);
       setLogoutError("Maple couldn't stop Agent Mode. Please try logging out again.");
@@ -48,7 +54,7 @@ export function GuestPaymentWarningDialog({ open, onOpenChange }: GuestPaymentWa
     try {
       // Credential reset is a required part of logout.
       const { proxyService } = await import("@/services/proxyService");
-      await proxyService.stopAndResetProxy(os.auth.user?.user.id, os.deleteApiKey);
+      await proxyService.stopAndResetProxy(userId, os.deleteApiKey);
 
       // Third-party billing tokens outlive the OpenSecret browser session. If
       // one survives logout, the next account can briefly query billing as the
@@ -59,6 +65,8 @@ export function GuestPaymentWarningDialog({ open, onOpenChange }: GuestPaymentWa
         sessionStorage.removeItem("maple_billing_token");
       }
 
+      await clearMapleApiAuthForUser(userId);
+      nativeAuthCleared = true;
       await os.signOut();
       signedOut = true;
       queryClient.clear();
@@ -69,6 +77,13 @@ export function GuestPaymentWarningDialog({ open, onOpenChange }: GuestPaymentWa
       );
     } finally {
       if (!signedOut) {
+        if (nativeAuthCleared) {
+          try {
+            await restoreMapleApiAuthForUser(userId);
+          } catch (error) {
+            console.error("Error restoring Maple API authentication:", error);
+          }
+        }
         operationBlock.release();
         setIsLoggingOut(false);
       } else {
