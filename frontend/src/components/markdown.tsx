@@ -482,9 +482,7 @@ function escapeBrackets(text: string): string {
 // spaces, which CommonMark/GFM turn into an indented code block — so plain text
 // renders inside a <pre><code>. Fenced ``` / ~~~ blocks are unaffected; only the
 // accidental-indentation path is removed.
-function remarkNoIndentedCode(this: {
-  data: (key?: string) => Record<string, unknown>;
-}) {
+function remarkNoIndentedCode(this: { data: (key?: string) => Record<string, unknown> }) {
   const data = this.data() as { micromarkExtensions?: unknown[] };
   const micromarkExtensions = (data.micromarkExtensions ||
     (data.micromarkExtensions = [])) as unknown[];

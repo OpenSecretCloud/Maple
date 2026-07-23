@@ -230,9 +230,7 @@ export function Sidebar({
   // accounts and would otherwise keep the toggle permanently hidden.
   const agentModeForced = isForcedOn(FEATURE_FLAGS.AGENT_MODE);
   const showAgentMode =
-    agentModeAvailable &&
-    (agentModeForced || billingStatus !== null) &&
-    agentModeEnabled === true;
+    agentModeAvailable && (agentModeForced || billingStatus !== null) && agentModeEnabled === true;
   const isAgentMode = mode === "agent";
 
   async function addItem() {
