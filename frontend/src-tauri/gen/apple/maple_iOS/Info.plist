@@ -64,5 +64,9 @@
 	<string>Maple needs access to your camera to take photos for your AI conversations.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Maple needs access to your microphone to record voice messages for your AI conversations.</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+	</array>
 </dict>
 </plist>
