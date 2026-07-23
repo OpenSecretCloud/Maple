@@ -110,11 +110,16 @@ and point it at the local API:
 
 ```bash
 VITE_OPEN_SECRET_API_URL=http://127.0.0.1:3000
+VITE_OPEN_SECRET_ATTESTATION_ENVIRONMENT=dev
 ```
 
 The public OpenSecret client id defaults to Maple's project id
 `ba5a14b5-d915-47b1-b7b1-afda52bc5fc6`, so `VITE_CLIENT_ID` is only needed to
-override the default. (See `.env.example`)
+override the default. (See `.env.example`.) The attestation environment defaults
+to `prod`. Selecting `dev` changes the authorized tagged-release policy; it does
+not disable verification for a remote server. The SDK's local development bypass
+only applies when an HTTP `VITE_OPEN_SECRET_API_URL` parses to an exact supported
+local-loopback host; lookalike hostnames do not qualify.
 
 ## Building
 
@@ -168,7 +173,7 @@ DISPLAY=:0 ./frontend/src-tauri/target/debug/maple
 
 These are set automatically when using `nix develop` (via `flake.nix`).
 
-If you need a new set of icons: 
+If you need a new set of icons:
 
 ```
 bun run tauri icon [path/to/png]
@@ -316,19 +321,51 @@ The GitHub Actions workflow will automatically:
 - Upload the artifacts to the release
 - Create and upload `latest.json` for auto-updates
 
-## Updating PCR0 values
+## OpenSecret enclave release authorization
 
-If there's a new version of the enclave pushed to staging or prod, append the new PCR0 value to the `pcr0Values` or `pcr0DevValues` arrays in `frontend/src/app.tsx`.
+Maple does not carry a hand-maintained PCR allowlist. Before key exchange, the
+OpenSecret SDK verifies the AWS Nitro attestation document and requires its full
+PCR0/PCR1/PCR2 measurement tuple to match an OpenSecret release authorized for
+the configured environment.
+
+Each SDK release embeds a generated snapshot of authorized measurements. The
+snapshot updater treats the tagged OpenSecret release manifest and Cosign bundle
+as untrusted input, pins the expected repository, workflow, OIDC issuer, and tag
+identity, and verifies the signature and Rekor transparency-log evidence before
+generating the snapshot. The app performs no GitHub, Sigstore, or Rekor network
+lookup during a runtime handshake.
+
+Sigstore evidence shows that the pinned release workflow signed the measurements
+and that the event was entered in the transparency log. It does not prove that
+the source is safe, that a Nix build is reproducible, or that an authorized
+release is the newest one. Rebuilding from source remains an independent
+reproducibility check, and freshness, rollback, and revocation need separate
+policy.
+
+No tagged Sigstore release assets or SDK version containing their generated
+snapshot have been published yet. This source change is stacked on an unreleased
+`@opensecret/react` API that adds the explicit attestation environment and
+enforces the release check before key exchange. The package remains pinned to
+the real published `3.2.1` release in this branch: do not merge or release this
+integration until a signed backend release exists, the SDK snapshot is generated
+and reviewed, that SDK is published, and this exact dependency is bumped.
+
+Maple also embeds `maple-proxy` for its local OpenAI-compatible transport. This
+integration branch pins the exact reviewed proxy commit with default features
+disabled; that commit pins the same secured Rust SDK. Its snapshot is still
+empty, so the pin must be updated to a snapshot-bearing commit and later to the
+published release. Updating only the TypeScript package would leave the
+embedded proxy on the legacy Rust attestation behavior.
 
 ## iOS Development
 
-Run in emulator: 
+Run in emulator:
 
 ```bash
 dotenv -e .env.local -- bun run tauri ios dev 'iPhone 16 Pro'
 ```
 
-Run on a connected phone: 
+Run on a connected phone:
 
 ```bash
 dotenv -e .env.local -- bun run tauri ios build

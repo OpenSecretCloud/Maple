@@ -54,25 +54,57 @@ function ProofDisplay({
   parsedDocument: ParsedAttestationView;
   os: ReturnType<typeof useOpenSecret>;
 }) {
+  const releaseValidation = parsedDocument.validatedPcrs;
+
   return (
     <div className="flex flex-col gap-4 text-foreground pt-8">
       <div className="flex flex-col gap-6 dark:border-white/10 border-[hsl(var(--marketing-card-border))] dark:bg-black/75 bg-[hsl(var(--marketing-card))]/80 dark:text-white p-8 border rounded-lg">
-        <h3 className="text-2xl font-medium">Server PCR0 Fingerprint</h3>
+        <h3 className="text-2xl font-medium">Server Enclave Measurements</h3>
 
-        {parsedDocument.pcrs.map(
-          (pcr) =>
-            pcr.id === 0 && (
-              <div key={pcr.id}>
-                <p>
-                  <span className="font-mono break-all">{pcr.value}</span>
-                </p>
+        <p className="text-sm dark:text-white/70 text-foreground/70">
+          The OpenSecret SDK authenticates the live AWS Nitro document and requires its exact
+          PCR0/PCR1/PCR2 tuple to appear in the SDK&apos;s embedded snapshot of authorized tagged
+          releases before accepting the enclave key.
+        </p>
 
-                <MatchIndicator
-                  isMatch={parsedDocument.validatedPcr0Hash?.isMatch ?? false}
-                  text={parsedDocument.validatedPcr0Hash?.text ?? ""}
-                />
-              </div>
-            )
+        {parsedDocument.pcrs
+          .filter((pcr) => pcr.id >= 0 && pcr.id <= 2)
+          .map((pcr) => (
+            <div key={pcr.id}>
+              <p className="font-medium">PCR{pcr.id}</p>
+              <p>
+                <span className="font-mono break-all">{pcr.value}</span>
+              </p>
+            </div>
+          ))}
+
+        <MatchIndicator isMatch={releaseValidation.isMatch} text={releaseValidation.text} />
+
+        {releaseValidation.isMatch && (
+          <div className="space-y-1 rounded bg-foreground/5 p-3 text-sm">
+            <p>
+              Authorized release:{" "}
+              <span className="font-mono">
+                {releaseValidation.releaseTag} ({releaseValidation.environment})
+              </span>
+            </p>
+            {releaseValidation.sourceCommit && (
+              <p>
+                Source commit:{" "}
+                <span className="font-mono break-all">{releaseValidation.sourceCommit}</span>
+              </p>
+            )}
+            <p>
+              SDK snapshot:{" "}
+              <span className="font-mono break-all">{releaseValidation.snapshotId}</span>
+            </p>
+            {releaseValidation.transparencyLog && (
+              <p>
+                Rekor log index:{" "}
+                <span className="font-mono">{releaseValidation.transparencyLog.logIndex}</span>
+              </p>
+            )}
+          </div>
         )}
         <p className="text-sm dark:text-white/70 text-foreground/70">
           For technical details, check out the{" "}
@@ -114,7 +146,7 @@ function ProofDisplay({
                 </p>
                 <MatchIndicator
                   isMatch={true}
-                  text="Document signature verified with this public key"
+                  text="This enclave public key is bound by the verified AWS Nitro attestation document"
                 />
               </>
             )}
@@ -126,7 +158,7 @@ function ProofDisplay({
                 <div className="mt-2 space-y-2">
                   {parsedDocument.pcrs.map(
                     (pcr) =>
-                      pcr.id !== 0 && (
+                      pcr.id > 2 && (
                         <div key={pcr.id}>
                           <p>
                             PCR{pcr.id}: <span className="font-mono break-all">{pcr.value}</span>
@@ -207,8 +239,8 @@ const DATA_FLOW_STEPS = [
   },
   {
     icon: Code,
-    title: "Open Source",
-    description: "Verifiable code with reproducible builds"
+    title: "Auditable Release",
+    description: "Measured code authorized by a signed, transparent release record"
   }
 ];
 
@@ -491,9 +523,9 @@ function ProofFAQ() {
           </summary>
           <p className="mt-4 text-[hsl(var(--marketing-text-muted))]">
             Similar concept, different implementation. Apple&apos;s Private Cloud Compute uses
-            custom silicon with Secure Enclave. Maple uses AWS Nitro Enclaves with
-            attestation-verified code. Both approaches use hardware isolation to ensure that even
-            the service operator cannot access user data during processing.
+            custom silicon with Secure Enclave. Maple uses AWS Nitro Enclaves with cryptographically
+            attested measurements. Both approaches use hardware isolation to ensure that even the
+            service operator cannot access user data during processing.
           </p>
         </details>
 
@@ -514,19 +546,24 @@ function ProofFAQ() {
             Who do I actually have to trust?
           </summary>
           <div className="mt-4 text-[hsl(var(--marketing-text-muted))] space-y-2">
-            <p>Your trust assumptions are minimal and verifiable:</p>
+            <p>The main trust assumptions are explicit:</p>
             <ul className="list-disc list-inside space-y-1 ml-4">
               <li>
                 <strong>Hardware</strong>: AWS Nitro hardware performs as documented (independently
                 audited)
               </li>
               <li>
-                <strong>Code</strong>: The open-source code running in the enclave does what it says
-                (you can audit it)
+                <strong>Client</strong>: The Maple build and its pinned OpenSecret SDK correctly
+                enforce attestation before key exchange
               </li>
               <li>
-                <strong>Attestation</strong>: The cryptographic proof on this page confirms the
-                running code matches the published source
+                <strong>Release authorization</strong>: The pinned OpenSecret release workflow and
+                Sigstore trust roots used to generate the SDK&apos;s embedded snapshot are
+                controlled as documented
+              </li>
+              <li>
+                <strong>Code</strong>: The authorized open-source enclave code does what it claims
+                (you can audit and rebuild it)
               </li>
             </ul>
           </div>
@@ -546,10 +583,12 @@ function ProofFAQ() {
             >
               server code is open source
             </a>
-            . The attestation document on this page is fetched live from our enclave and verified
-            against AWS&apos;s root certificate. You can independently reproduce the build, compare
-            the PCR0 hash, and confirm that the code running in production matches the published
-            source.
+            . The document on this page is fetched live and authenticated against AWS&apos;s Nitro
+            root. The SDK then checks the full PCR0/PCR1/PCR2 tuple against an embedded snapshot
+            generated from a verified tagged-release manifest and Cosign bundle. You can separately
+            verify that release&apos;s Sigstore/Rekor evidence and rebuild the source to compare its
+            measurements. Sigstore does not by itself prove reproducibility or that an authorized
+            release is the newest.
           </p>
         </details>
       </div>
@@ -626,8 +665,8 @@ function Verify() {
             >
               server
             </a>{" "}
-            code are public. Reproducible builds and attestation let you confirm what&apos;s
-            actually running.
+            code are public. Live Nitro attestation connects the enclave measurements to an
+            authorized tagged release; rebuilding provides a separate reproducibility check.
           </p>
         </div>
 
@@ -641,7 +680,8 @@ function Verify() {
               </span>
             </h2>
             <p className="text-xl text-[hsl(var(--marketing-text-muted))] max-w-2xl mx-auto">
-              This attestation document is fetched live from our enclave. Verify it yourself.
+              This AWS-signed document is fetched live. The SDK authenticates it and authorizes all
+              three release measurements before key exchange.
             </p>
           </div>
 
@@ -723,7 +763,7 @@ function Verify() {
                 "Data encrypted on your device before it leaves",
                 "Decrypted only inside a hardware-isolated enclave (TEE)",
                 "Your data cannot be used for model training, advertising, or tracking",
-                "Open-source code + live attestation so you can verify"
+                "AWS-signed attestation + transparent tagged-release authorization"
               ]}
               highlight
             />
@@ -749,19 +789,19 @@ function Verify() {
               />
               <SecurityFact
                 title="Code Integrity"
-                description="Enclave images are measured at boot. The PCR0 hash uniquely identifies the exact code running inside."
+                description="The enclave is measured at boot. Before key exchange, the SDK requires the exact PCR0/PCR1/PCR2 tuple to match its embedded authorized-release snapshot."
               />
               <SecurityFact
                 title="Remote Attestation"
-                description="A cryptographic attestation document, signed by AWS Nitro hardware, proves the enclave's identity and integrity."
+                description="An AWS Nitro-signed document binds the enclave public key and measurements to the client's fresh challenge, preventing an unverified key from being accepted."
               />
               <SecurityFact
                 title="Reproducible Builds"
-                description="Anyone can build our open-source code from GitHub and compare the resulting hash against the live attestation."
+                description="Anyone can rebuild the open-source release and compare its measurements. Sigstore records release provenance, but does not itself prove reproducibility."
               />
               <SecurityFact
-                title="Minimal Trust Model"
-                description="You trust the hardware (AWS Nitro) and the code (open source). No employees, no third parties, no master keys."
+                title="Release Provenance"
+                description="The SDK snapshot is generated only after the tagged manifest's Cosign identity, signature, and Rekor evidence verify. Freshness, rollback, and revocation remain separate policies."
               />
               <SecurityFact
                 title="Breach Resilience"
