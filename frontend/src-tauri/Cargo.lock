@@ -4639,7 +4639,7 @@ dependencies = [
 [[package]]
 name = "maple-proxy"
 version = "0.2.0"
-source = "git+https://github.com/OpenSecretCloud/maple-proxy?rev=45e6bf6996bcd9724000f7005c75c073b7fe0300#45e6bf6996bcd9724000f7005c75c073b7fe0300"
+source = "git+https://github.com/OpenSecretCloud/maple-proxy?rev=4df602bca0c99f7a9b8fa2fa2500c95453585ac8#4df602bca0c99f7a9b8fa2fa2500c95453585ac8"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -5484,7 +5484,7 @@ dependencies = [
 [[package]]
 name = "opensecret"
 version = "3.4.0"
-source = "git+https://github.com/OpenSecretCloud/OpenSecret-SDK?rev=94bfc4efa2cd513b160a0fbefc1acf7af77e49bc#94bfc4efa2cd513b160a0fbefc1acf7af77e49bc"
+source = "git+https://github.com/OpenSecretCloud/OpenSecret-SDK?rev=1bd7196043b26b3a2f8080534bd14031afcd5cc8#1bd7196043b26b3a2f8080534bd14031afcd5cc8"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -10188,7 +10188,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
