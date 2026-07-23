@@ -2802,6 +2802,109 @@ export async function setDefaultInstruction(instructionId: string): Promise<Inst
 }
 
 // ============================================================================
+// Web API Types
+// ============================================================================
+
+export type WebSearchWorkflow = "search" | "images" | "videos" | "news" | "podcasts";
+
+export type WebSearchTimeRelative = "day" | "week" | "month";
+
+export type WebSearchLens = {
+  sites_included?: string[];
+  sites_excluded?: string[];
+  keywords_included?: string[];
+  keywords_excluded?: string[];
+  file_type?: string;
+  time_after?: string;
+  time_before?: string;
+  time_relative?: WebSearchTimeRelative;
+  search_region?: string;
+};
+
+export type WebSearchFilters = {
+  region?: string;
+  after?: string;
+  before?: string;
+};
+
+export type WebSearchRequest = {
+  query: string;
+  /** Defaults to `search`. */
+  workflow?: WebSearchWorkflow;
+  /** One-based result page, from 1 through 10. */
+  page?: number;
+  /** Maximum results to return, from 1 through 50. Defaults to 10. */
+  limit?: number;
+  /** Whether to omit potentially unsafe content. Defaults to true. */
+  safe_search?: boolean;
+  /** Search collection timeout in seconds, from 0.5 through 4. */
+  timeout?: number;
+  lens_id?: string;
+  lens?: WebSearchLens;
+  filters?: WebSearchFilters;
+};
+
+export type WebSearchResult = {
+  category: string;
+  url: string;
+  title: string;
+  snippet?: string;
+  published_at?: string;
+};
+
+export type WebSearchResponse = {
+  trace_id?: string;
+  results: WebSearchResult[];
+};
+
+export type WebExtractRequest = {
+  /** Public HTTPS URLs to extract, from 1 through 10 entries. */
+  urls: string[];
+  /** Bulk extraction timeout in seconds, from 0.5 through 10. */
+  timeout?: number;
+};
+
+export type WebExtractPageError = {
+  code: string;
+  message: string;
+};
+
+export type WebExtractPage = {
+  url: string;
+  markdown?: string;
+  error?: WebExtractPageError;
+};
+
+export type WebExtractResponse = {
+  trace_id?: string;
+  pages: WebExtractPage[];
+};
+
+// ============================================================================
+// Web API Functions
+// ============================================================================
+
+/** Searches the public web through OpenSecret's configured search provider. */
+export async function webSearch(request: WebSearchRequest): Promise<WebSearchResponse> {
+  return authenticatedApiCall<WebSearchRequest, WebSearchResponse>(
+    `${apiUrl}/v1/web/search`,
+    "POST",
+    request,
+    "Failed to search the web"
+  );
+}
+
+/** Extracts sanitized Markdown from public URLs through OpenSecret's configured provider. */
+export async function webExtract(request: WebExtractRequest): Promise<WebExtractResponse> {
+  return authenticatedApiCall<WebExtractRequest, WebExtractResponse>(
+    `${apiUrl}/v1/web/extract`,
+    "POST",
+    request,
+    "Failed to extract web pages"
+  );
+}
+
+// ============================================================================
 // Agent API Types
 // ============================================================================
 

@@ -17,7 +17,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-opensecret = "3.4.0"
+opensecret = "3.5.0"
 bytes = "1"
 futures = "0.3"
 http = "1"
@@ -26,7 +26,7 @@ http = "1"
 ## Quick Start
 
 ```rust
-use opensecret::{OpenSecretClient, Result};
+use opensecret::{OpenSecretClient, Pcr0TrustPolicy, Result};
 use uuid::Uuid;
 
 #[tokio::main]
@@ -50,6 +50,28 @@ async fn main() -> Result<()> {
     Ok(())
 }
 ```
+
+Production clients verify both the AWS Nitro attestation and the enclave's
+PCR0 deployment identity. `OpenSecretClient::new` uses pinned official PCR0
+values and OpenSecret's signed production and development histories. Custom
+deployments can add a static allowlist without replacing official trust:
+
+```rust
+let policy = Pcr0TrustPolicy::official().with_additional_pcr0s([
+    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+])?;
+let client = OpenSecretClient::new_with_pcr0_trust_policy(
+    "https://api.opensecret.cloud",
+    policy,
+)?;
+```
+
+Use `Pcr0TrustPolicy::from_static_allowlist(...)` to disable remote history and
+trust only an explicit custom set. Remote entries are size/time bounded and
+must verify against the SDK's hardcoded OpenSecret P-384 signing key. Exact
+localhost, loopback, and unspecified-address development endpoints continue to
+use mock attestation; Android also supports the exact emulator alias
+`10.0.2.2`. Other endpoints must use HTTPS.
 
 ## Inference APIs
 
@@ -139,7 +161,10 @@ let response = client.login_with_id(
 Tokens are automatically stored after login/registration. You can:
 
 ```rust
-// Get current tokens
+// Get one coherent access/refresh pair snapshot
+let tokens = client.get_tokens()?;
+
+// Individual reads remain available when a coherent pair is not required
 let access_token = client.get_access_token()?;
 let refresh_token = client.get_refresh_token()?;
 

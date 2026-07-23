@@ -48,6 +48,17 @@ export type {
   ConversationProjectUpdateRequest,
   ConversationProjectListParams,
   ConversationProjectDeleteResponse,
+  WebSearchWorkflow,
+  WebSearchTimeRelative,
+  WebSearchLens,
+  WebSearchFilters,
+  WebSearchRequest,
+  WebSearchResult,
+  WebSearchResponse,
+  WebExtractRequest,
+  WebExtractPageError,
+  WebExtractPage,
+  WebExtractResponse,
   AgentCreatedBy,
   MainAgentResponse,
   CreateSubagentRequest,
@@ -84,6 +95,9 @@ export {
   updateConversationProject,
   deleteConversationProject
 } from "./api";
+
+// Export provider-neutral web API functions
+export { webSearch, webExtract } from "./api";
 
 // Export Agent API functions
 export {

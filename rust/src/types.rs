@@ -890,6 +890,159 @@ pub struct EmbeddingUsage {
     pub total_tokens: i32,
 }
 
+// Web API Types
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WebSearchWorkflow {
+    #[default]
+    Search,
+    Images,
+    Videos,
+    News,
+    Podcasts,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WebSearchTimeRelative {
+    Day,
+    Week,
+    Month,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WebSearchLens {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sites_included: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sites_excluded: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub keywords_included: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub keywords_excluded: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub time_after: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub time_before: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub time_relative: Option<WebSearchTimeRelative>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub search_region: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WebSearchFilters {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub after: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub before: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WebSearchRequest {
+    pub query: String,
+    /// Search result class. The server defaults to [`WebSearchWorkflow::Search`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workflow: Option<WebSearchWorkflow>,
+    /// One-based result page, from 1 through 10.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub page: Option<u8>,
+    /// Maximum results to return, from 1 through 50. The server defaults to 10.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u16>,
+    /// Whether to omit potentially unsafe content. The server defaults to true.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub safe_search: Option<bool>,
+    /// Search collection timeout in seconds, from 0.5 through 4.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lens_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lens: Option<WebSearchLens>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub filters: Option<WebSearchFilters>,
+}
+
+impl WebSearchRequest {
+    pub fn new(query: impl Into<String>) -> Self {
+        Self {
+            query: query.into(),
+            workflow: None,
+            page: None,
+            limit: None,
+            safe_search: None,
+            timeout: None,
+            lens_id: None,
+            lens: None,
+            filters: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WebSearchResult {
+    pub category: String,
+    pub url: String,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snippet: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub published_at: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WebSearchResponse {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace_id: Option<String>,
+    pub results: Vec<WebSearchResult>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WebExtractRequest {
+    /// Public HTTPS URLs to extract, from 1 through 10 entries.
+    pub urls: Vec<String>,
+    /// Bulk extraction timeout in seconds, from 0.5 through 10.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout: Option<f64>,
+}
+
+impl WebExtractRequest {
+    pub fn new(urls: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        Self {
+            urls: urls.into_iter().map(Into::into).collect(),
+            timeout: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WebExtractPageError {
+    pub code: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WebExtractPage {
+    pub url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub markdown: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<WebExtractPageError>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WebExtractResponse {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace_id: Option<String>,
+    pub pages: Vec<WebExtractPage>,
+}
+
 // Agent API Types
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1166,6 +1319,44 @@ mod tests {
         assert_eq!(response.message, "");
         assert_eq!(response.access_token.as_deref(), Some("new-access"));
         assert_eq!(response.refresh_token, None);
+    }
+
+    #[test]
+    fn web_requests_omit_unspecified_options() {
+        let search = WebSearchRequest::new("maple privacy");
+        assert_eq!(
+            serde_json::to_value(search).unwrap(),
+            json!({ "query": "maple privacy" })
+        );
+
+        let extract = WebExtractRequest::new(["https://example.com/article"]);
+        assert_eq!(
+            serde_json::to_value(extract).unwrap(),
+            json!({ "urls": ["https://example.com/article"] })
+        );
+    }
+
+    #[test]
+    fn web_responses_tolerate_absent_optional_fields() {
+        let search: WebSearchResponse = serde_json::from_value(json!({
+            "results": [{
+                "category": "search",
+                "url": "https://example.com",
+                "title": "Example"
+            }]
+        }))
+        .unwrap();
+        assert_eq!(search.trace_id, None);
+        assert_eq!(search.results[0].snippet, None);
+        assert_eq!(search.results[0].published_at, None);
+
+        let extract: WebExtractResponse = serde_json::from_value(json!({
+            "pages": [{ "url": "https://example.com" }]
+        }))
+        .unwrap();
+        assert_eq!(extract.trace_id, None);
+        assert_eq!(extract.pages[0].markdown, None);
+        assert_eq!(extract.pages[0].error, None);
     }
 
     #[test]
