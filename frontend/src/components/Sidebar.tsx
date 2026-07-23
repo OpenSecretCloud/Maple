@@ -33,7 +33,7 @@ import {
 } from "@/constants/layout";
 import { isTauriDesktop } from "@/utils/platform";
 import { useOpenSecret } from "@opensecret/react";
-import { FEATURE_FLAGS, flagsClient } from "@/services/flags";
+import { FEATURE_FLAGS, flagsClient, isForcedOn } from "@/services/flags";
 import { UpgradePromptDialog } from "@/components/UpgradePromptDialog";
 import { hasApiAccess } from "@/billing/billingAccess";
 import { WorkspaceModeSwitch, type WorkspaceMode } from "@/components/WorkspaceModeSwitch";
@@ -165,7 +165,7 @@ export function Sidebar({
 
     if (nextMode === mode) return;
 
-    if (nextMode === "agent") {
+    if (nextMode === "agent" && !agentModeForced) {
       if (billingStatus === null) return;
 
       if (!hasApiAccess(billingStatus)) {
@@ -225,7 +225,12 @@ export function Sidebar({
     agentModeFlag !== null && agentModeFlag.userId === userId
       ? agentModeFlag.enabled
       : cachedAgentModeEnabled;
-  const showAgentMode = agentModeAvailable && billingStatus !== null && agentModeEnabled === true;
+  // When agent_mode is force-enabled locally (VITE_FORCE_FEATURE_FLAGS), don't
+  // require billing to have loaded — billingStatus is often null for local/dev
+  // accounts and would otherwise keep the toggle permanently hidden.
+  const agentModeForced = isForcedOn(FEATURE_FLAGS.AGENT_MODE);
+  const showAgentMode =
+    agentModeAvailable && (agentModeForced || billingStatus !== null) && agentModeEnabled === true;
   const isAgentMode = mode === "agent";
 
   async function addItem() {
