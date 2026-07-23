@@ -11,8 +11,10 @@ import { useLocation, useRouter } from "@tanstack/react-router";
 import { useOpenSecret } from "@opensecret/react";
 import { ProjectDetailView } from "@/components/ProjectDetailView";
 import { UnifiedChat } from "@/components/UnifiedChat";
+import { MobileNavigationStack } from "@/components/MobileNavigationStack";
 import { PersistentHomeNavigationContext } from "@/contexts/PersistentHomeNavigationContext";
 import { AgentSessionSelectionMemory } from "@/services/agentSessionSelection";
+import { useIsLandscapeMobile, useIsMobile } from "@/utils/utils";
 
 const TRANSIENT_HOME_SEARCH_PARAMS = ["team_setup", "credits_success", "api_settings"];
 
@@ -139,6 +141,9 @@ export function AuthenticatedHomeContent({
 }: {
   homeLocationHref: string | null;
 }) {
+  const isMobile = useIsMobile();
+  const isLandscapeMobile = useIsLandscapeMobile();
+  const isCompactLayout = isMobile || isLandscapeMobile;
   const [selection, setSelection] = useState<HomeSelection>(readHomeSelection);
 
   const syncFromHomeLocation = useCallback(() => {
@@ -172,6 +177,10 @@ export function AuthenticatedHomeContent({
       }
     };
   }, [syncFromHomeLocation]);
+
+  if (isCompactLayout) {
+    return <MobileNavigationStack />;
+  }
 
   if (selection.projectId && !selection.hasConversationId) {
     return <ProjectDetailView projectId={selection.projectId} />;

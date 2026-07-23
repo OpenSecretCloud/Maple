@@ -39,21 +39,40 @@ import { hasApiAccess } from "@/billing/billingAccess";
 import { WorkspaceModeSwitch, type WorkspaceMode } from "@/components/WorkspaceModeSwitch";
 import { usePersistentHomeNavigation } from "@/contexts/PersistentHomeNavigationContext";
 
-export function Sidebar({
-  chatId,
-  isOpen,
-  mode = "chat",
-  navigationContent,
-  onNewItem,
-  onToggle
-}: {
+export type SidebarProps = {
   chatId?: string;
   isOpen: boolean;
   mode?: WorkspaceMode;
   navigationContent?: ReactNode;
   onNewItem?: () => void;
   onToggle: () => void;
-}) {
+};
+
+export type MainMenuProps = {
+  chatId?: string;
+  isOpen?: boolean;
+  mode?: WorkspaceMode;
+  navigationContent?: ReactNode;
+  onNewItem?: () => void;
+  onToggle?: () => void;
+  presentation?: "page" | "sidebar";
+  onOpenConversation?: (conversationId: string) => void;
+  onOpenProject?: (projectId: string) => void;
+  onOpenNewChat?: (projectId: string | null) => void;
+};
+
+export function MainMenu({
+  chatId,
+  isOpen = true,
+  mode = "chat",
+  navigationContent,
+  onNewItem,
+  onToggle = () => {},
+  presentation = "page",
+  onOpenConversation,
+  onOpenProject,
+  onOpenNewChat
+}: MainMenuProps) {
   const router = useRouter();
   const location = useLocation();
   const { returnToHome } = usePersistentHomeNavigation();
@@ -102,6 +121,14 @@ export function Sidebar({
   }, [selectedIds.size]);
 
   async function addChat() {
+    if (onOpenNewChat) {
+      flushSync(() => {
+        setSelectedProjectId(null);
+      });
+      onOpenNewChat(null);
+      return;
+    }
+
     // If sidebar is open on compact layout, close it
     if (isOpen && isCompactLayout) {
       onToggle();
@@ -266,7 +293,7 @@ export function Sidebar({
   // Only applies on mobile - desktop users use the toggle button
   const handleClickOutside = useCallback(
     (event: MouseEvent | TouchEvent) => {
-      if (isOpen && isCompactLayout) {
+      if (presentation === "sidebar" && isOpen && isCompactLayout) {
         // Check if the click was inside a dropdown or dialog
         const target = event.target as HTMLElement;
         const isInDropdown = target.closest('[role="menu"]');
@@ -278,7 +305,7 @@ export function Sidebar({
         }
       }
     },
-    [isOpen, onToggle, isCompactLayout]
+    [isOpen, onToggle, isCompactLayout, presentation]
   );
 
   useClickOutside(sidebarRef, handleClickOutside);
@@ -296,7 +323,7 @@ export function Sidebar({
   // but preserves search state between navigations
   useEffect(() => {
     // Only subscribe if we're on compact layout and sidebar is open
-    if (!isCompactLayout || !isOpen) return;
+    if (presentation !== "sidebar" || !isCompactLayout || !isOpen) return;
 
     const unsubscribe = router.subscribe("onResolved", () => {
       // Use a microtask to avoid state updates during render
@@ -319,22 +346,27 @@ export function Sidebar({
     return () => {
       unsubscribe();
     };
-  }, [router, isOpen, onToggle, isCompactLayout, isAgentMode]);
+  }, [router, isOpen, onToggle, isCompactLayout, isAgentMode, presentation]);
 
   return (
     <div
       ref={sidebarRef}
-      style={SIDEBAR_LAYOUT_STYLE}
-      className={cn([
-        "fixed md:static landscape-short:fixed z-10 h-full overflow-x-hidden overflow-y-hidden",
-        isOpen ? `block ${SIDEBAR_WIDTH_CLASS}` : "hidden"
-      ])}
+      style={presentation === "sidebar" ? SIDEBAR_LAYOUT_STYLE : undefined}
+      className={cn(
+        presentation === "sidebar"
+          ? [
+              "fixed md:static landscape-short:fixed z-10 h-full overflow-x-hidden overflow-y-hidden",
+              isOpen ? `block ${SIDEBAR_WIDTH_CLASS}` : "hidden"
+            ]
+          : "relative z-0 h-full min-h-0 w-full overflow-hidden"
+      )}
     >
       <div
         className={cn(
-          "flex h-full min-h-0 min-w-0 flex-col items-stretch overflow-x-hidden border-r border-border/20 bg-muted backdrop-blur-lg dark:bg-[hsl(var(--sidebar))]",
-          SIDEBAR_WIDTH_CLASS,
-          SIDEBAR_MAX_WIDTH_CLASS
+          "flex h-full min-h-0 min-w-0 flex-col items-stretch overflow-x-hidden bg-muted backdrop-blur-lg dark:bg-[hsl(var(--sidebar))]",
+          presentation === "sidebar"
+            ? ["border-r border-border/20", SIDEBAR_WIDTH_CLASS, SIDEBAR_MAX_WIDTH_CLASS]
+            : "w-full max-w-none"
         )}
       >
         {/* Header section */}
@@ -343,14 +375,16 @@ export function Sidebar({
             <div className="min-w-0 flex-1">
               <MapleWordmark className="h-4 w-auto" />
             </div>
-            <button
-              type="button"
-              className="flex h-9 w-9 shrink-0 items-center justify-center text-foreground transition-colors hover:text-foreground/70"
-              onClick={onToggle}
-              aria-label="Close sidebar"
-            >
-              <ArrowLeftFromLine className="h-4 w-4" />
-            </button>
+            {presentation === "sidebar" ? (
+              <button
+                type="button"
+                className="flex h-9 w-9 shrink-0 items-center justify-center text-foreground transition-colors hover:text-foreground/70"
+                onClick={onToggle}
+                aria-label="Close sidebar"
+              >
+                <ArrowLeftFromLine className="h-4 w-4" />
+              </button>
+            ) : null}
           </div>
           {(showAgentMode || isAgentMode) && (
             <div className="mb-2 px-8">
@@ -465,6 +499,13 @@ export function Sidebar({
                 selectedIds={selectedIds}
                 onSelectionChange={setSelectedIds}
                 containerRef={historyContainerRef}
+                onOpenConversation={
+                  onOpenConversation
+                    ? (conversation) => onOpenConversation(conversation.id)
+                    : undefined
+                }
+                onOpenProject={onOpenProject}
+                onOpenNewChat={onOpenNewChat}
               />
             )}
             {/* Real empty tail so the last row sits in clear space — no overlay on hit targets */}
@@ -489,11 +530,16 @@ export function Sidebar({
   );
 }
 
+export function Sidebar(props: SidebarProps) {
+  return <MainMenu {...props} presentation="sidebar" />;
+}
+
 export function SidebarToggle({ onToggle }: { onToggle: () => void }) {
   return (
     <button
       className="h-9 w-9 flex items-center justify-center text-foreground hover:text-foreground/70 transition-colors"
       onClick={onToggle}
+      aria-label="Open menu"
     >
       <Menu className="h-4 w-4" />
     </button>

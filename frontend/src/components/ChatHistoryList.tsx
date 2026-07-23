@@ -69,6 +69,9 @@ interface ChatHistoryListProps {
   selectedIds: Set<string>;
   onSelectionChange: (ids: Set<string>) => void;
   containerRef?: React.RefObject<HTMLElement>;
+  onOpenConversation?: (conversation: Conversation) => void;
+  onOpenProject?: (projectId: string) => void;
+  onOpenNewChat?: (projectId: string | null) => void;
 }
 
 export function ChatHistoryList({
@@ -79,7 +82,10 @@ export function ChatHistoryList({
   onExitSelectionMode,
   selectedIds,
   onSelectionChange,
-  containerRef
+  containerRef,
+  onOpenConversation,
+  onOpenProject,
+  onOpenNewChat
 }: ChatHistoryListProps) {
   const opensecret = useOpenSecret();
   const router = useRouter();
@@ -848,6 +854,11 @@ export function ChatHistoryList({
       setSelectedProjectId(projectId);
       setExpandedProjectId(projectId);
 
+      if (onOpenProject) {
+        onOpenProject(projectId);
+        return;
+      }
+
       if (window.location.pathname !== "/") {
         await router.navigate({ to: "/" });
       }
@@ -860,12 +871,17 @@ export function ChatHistoryList({
       window.dispatchEvent(new CustomEvent("newchat", { detail: { projectId } }));
       window.dispatchEvent(new Event("projectselected"));
     },
-    [router, setSelectedProjectId]
+    [onOpenProject, router, setSelectedProjectId]
   );
 
   const handleNewChatInProject = useCallback(
     async (projectId: string) => {
       setSelectedProjectId(projectId);
+
+      if (onOpenNewChat) {
+        onOpenNewChat(projectId);
+        return;
+      }
 
       if (window.location.pathname !== "/") {
         await router.navigate({ to: "/" });
@@ -878,7 +894,7 @@ export function ChatHistoryList({
       window.dispatchEvent(new CustomEvent("newchat", { detail: { projectId } }));
       setTimeout(() => document.getElementById("message")?.focus(), 0);
     },
-    [router, setSelectedProjectId]
+    [onOpenNewChat, router, setSelectedProjectId]
   );
 
   const handleCreateProject = useCallback(
@@ -994,6 +1010,11 @@ export function ChatHistoryList({
     async (conversation: Conversation) => {
       setSelectedProjectId(conversation.project_id ?? null);
 
+      if (onOpenConversation) {
+        onOpenConversation(conversation);
+        return;
+      }
+
       if (window.location.pathname !== "/") {
         await router.navigate({ to: "/" });
       }
@@ -1009,7 +1030,7 @@ export function ChatHistoryList({
         })
       );
     },
-    [router, setSelectedProjectId]
+    [onOpenConversation, router, setSelectedProjectId]
   );
 
   // Listen for conversation created event to refresh the list
