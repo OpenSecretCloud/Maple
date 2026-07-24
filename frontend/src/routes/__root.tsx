@@ -11,7 +11,6 @@ import { TeamSeatMismatchAlert } from "@/components/team/TeamSeatMismatchAlert";
 import { VerificationModal } from "@/components/VerificationModal";
 import { transitionAgentAuthUser } from "@/services/agentRuntimeService";
 import { getSafeInternalRedirect } from "@/utils/internalRedirect";
-import { rememberWorkspaceModeForPath } from "@/services/workspaceModePreference";
 
 interface RootRouterContext {
   os: OpenSecretContextType;
@@ -54,10 +53,6 @@ function Root() {
     // A failed transition is surfaced by Agent Mode's matching wait gate.
     void transitionAgentAuthUser(userId).catch(() => {});
   }, [userId]);
-
-  useEffect(() => {
-    if (userId) rememberWorkspaceModeForPath(location.pathname, location.searchStr);
-  }, [location.pathname, location.searchStr, userId]);
 
   useEffect(() => {
     const persistentHome = persistentHomeRef.current;

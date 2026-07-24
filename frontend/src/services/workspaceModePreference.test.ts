@@ -4,9 +4,7 @@ import {
   getLaunchWorkspacePath,
   getStoredWorkspaceMode,
   rememberWorkspaceMode,
-  rememberWorkspaceModeForPath,
-  WORKSPACE_MODE_STORAGE_KEY,
-  workspaceModeForPath
+  WORKSPACE_MODE_STORAGE_KEY
 } from "./workspaceModePreference";
 
 class MemoryStorage {
@@ -56,27 +54,6 @@ describe("workspace mode preference", () => {
 
     expect(getStoredWorkspaceMode(unreadableStorage)).toBe("chat");
     expect(() => rememberWorkspaceMode("agent", unreadableStorage)).not.toThrow();
-  });
-
-  test("derives a preference only from workspace routes", () => {
-    expect(workspaceModeForPath("/")).toBe("chat");
-    expect(workspaceModeForPath("/", "?conversation_id=chat-id")).toBe("chat");
-    expect(workspaceModeForPath("/agent")).toBe("agent");
-    expect(workspaceModeForPath("/settings")).toBeNull();
-    expect(workspaceModeForPath("/login")).toBeNull();
-  });
-
-  test("does not replace Agent Mode during settings or transient home redirects", () => {
-    const storage = new MemoryStorage();
-
-    rememberWorkspaceModeForPath("/agent", "", storage);
-    rememberWorkspaceModeForPath("/settings", "", storage);
-    rememberWorkspaceModeForPath("/", "?credits_success=true", storage);
-    rememberWorkspaceModeForPath("/", "?team_setup=true", storage);
-    rememberWorkspaceModeForPath("/", "?api_settings=true", storage);
-    rememberWorkspaceModeForPath("/", "?login=true", storage);
-
-    expect(getStoredWorkspaceMode(storage)).toBe("agent");
   });
 
   test("restores Agent Mode from a bare desktop home launch", () => {

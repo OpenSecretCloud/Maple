@@ -34,6 +34,7 @@ import {
 import { isTauriDesktop } from "@/utils/platform";
 import { useOpenSecret } from "@opensecret/react";
 import { FEATURE_FLAGS, flagsClient, isForcedOn } from "@/services/flags";
+import { rememberWorkspaceMode } from "@/services/workspaceModePreference";
 import { UpgradePromptDialog } from "@/components/UpgradePromptDialog";
 import { hasApiAccess } from "@/billing/billingAccess";
 import { WorkspaceModeSwitch, type WorkspaceMode } from "@/components/WorkspaceModeSwitch";
@@ -145,11 +146,13 @@ export function Sidebar({
 
     if (nextMode === "chat") {
       returnToHome({ replace: false });
+      rememberWorkspaceMode(nextMode);
       return;
     }
 
     try {
       await router.navigate({ to: "/agent" });
+      rememberWorkspaceMode(nextMode);
     } catch (error) {
       workspaceModeNavigationStartedRef.current = false;
       setPendingWorkspaceMode(null);

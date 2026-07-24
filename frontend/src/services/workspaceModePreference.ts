@@ -1,7 +1,6 @@
 export type WorkspaceMode = "chat" | "agent";
 
 export const WORKSPACE_MODE_STORAGE_KEY = "workspaceMode";
-const TRANSIENT_HOME_SEARCH_PARAMS = ["login", "team_setup", "credits_success", "api_settings"];
 
 type WorkspaceModeStorage = Pick<Storage, "getItem" | "setItem">;
 
@@ -45,25 +44,6 @@ export function rememberWorkspaceMode(
   } catch {
     // A storage failure should never prevent the user from changing modes.
   }
-}
-
-export function workspaceModeForPath(pathname: string, search = ""): WorkspaceMode | null {
-  if (pathname === "/") {
-    const searchParams = new URLSearchParams(search);
-    if (TRANSIENT_HOME_SEARCH_PARAMS.some((key) => searchParams.has(key))) return null;
-    return "chat";
-  }
-  if (pathname === "/agent") return "agent";
-  return null;
-}
-
-export function rememberWorkspaceModeForPath(
-  pathname: string,
-  search = "",
-  storage: WorkspaceModeStorage | null = getBrowserStorage()
-): void {
-  const mode = workspaceModeForPath(pathname, search);
-  if (mode) rememberWorkspaceMode(mode, storage);
 }
 
 export function getLaunchWorkspacePath(
