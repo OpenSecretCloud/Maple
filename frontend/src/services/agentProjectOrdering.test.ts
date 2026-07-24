@@ -3,13 +3,16 @@ import { describe, expect, test } from "bun:test";
 import type { AgentSessionSummary, RecentProjectRoot } from "./agentRuntimeService";
 import {
   createProjectOrderState,
+  firstVisibleProjectRoot,
   groupAgentSessionsByRoot,
   hasExceededProjectDragThreshold,
   mergeAgentProjectRoots,
   projectInsertionIndex,
   projectOrderForExistingRegistration,
   projectOrderReducer,
-  reorderProjectRoots
+  projectRootFallbackAfterRemoval,
+  reorderProjectRoots,
+  visibleAgentSessions
 } from "./agentProjectOrdering";
 
 function root(path: string, lastUsedMs = 1): RecentProjectRoot {
@@ -69,6 +72,47 @@ describe("mergeAgentProjectRoots", () => {
       "/x",
       "/y"
     ]);
+  });
+
+  test("does not resurrect removed roots from saved, active, or session state", () => {
+    const removed = new Set(["/removed"]);
+    const merged = mergeAgentProjectRoots(
+      [root("/saved"), root("/removed")],
+      "/removed",
+      [session("removed-task", "/removed", 20), session("visible-task", "/visible", 10)],
+      removed
+    );
+
+    expect(merged.map((item) => item.path)).toEqual(["/saved", "/visible"]);
+    expect(
+      visibleAgentSessions(
+        [session("removed-task", "/removed", 20), session("visible-task", "/visible", 10)],
+        removed
+      ).map((item) => item.id)
+    ).toEqual(["visible-task"]);
+  });
+});
+
+describe("project removal selection", () => {
+  const roots = [root("/a"), root("/b"), root("/c")];
+
+  test("selects the next adjacent project, then the previous project", () => {
+    expect(projectRootFallbackAfterRemoval(roots, "/b")).toBe("/c");
+    expect(projectRootFallbackAfterRemoval(roots, "/c")).toBe("/b");
+  });
+
+  test("returns no fallback when the final project is removed", () => {
+    expect(projectRootFallbackAfterRemoval([root("/only")], "/only")).toBeNull();
+  });
+
+  test("startup skips removed default and runtime roots", () => {
+    expect(
+      firstVisibleProjectRoot(
+        ["/removed-default", "/removed-runtime", "/visible"],
+        new Set(["/removed-default", "/removed-runtime"])
+      )
+    ).toBe("/visible");
+    expect(firstVisibleProjectRoot(["/removed"], new Set(["/removed"]))).toBe("");
   });
 });
 

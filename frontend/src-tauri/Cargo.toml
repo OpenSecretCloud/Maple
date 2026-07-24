@@ -85,6 +85,7 @@ tokio-util = { version = "0.7", features = ["codec", "io"] }
 httpdate = "1"
 process-wrap = { version = "=9.1.0", default-features = false, features = ["tokio1", "creation-flags", "job-object", "process-group"] }
 pulldown-cmark = { version = "0.13", default-features = false }
+tempfile = "3"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
@@ -115,9 +116,7 @@ keyring = { version = "3", features = ["windows-native"] }
 windows = { version = "0.62.2", features = ["Win32_System_Threading"] }
 
 [dev-dependencies]
-tempfile = "3"
 ciborium = "0.2"
-
 [patch.crates-io]
 # Local patch for tao 0.35.2 Android intent crashes:
 # https://github.com/tauri-apps/tao/issues/1217
