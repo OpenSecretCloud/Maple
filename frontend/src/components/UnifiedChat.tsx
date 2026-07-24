@@ -16,7 +16,8 @@ import {
   Shrink,
   Volume2,
   Square,
-  LockKeyhole
+  LockKeyhole,
+  ChevronRight
 } from "lucide-react";
 import RecordRTC from "recordrtc";
 import { useQueryClient } from "@tanstack/react-query";
@@ -877,6 +878,125 @@ function getToolCallQuery(functionCall: ToolCallItem): string {
   }
 }
 
+function isOpenUrlTool(functionCall: ToolCallItem): boolean {
+  return functionCall.name === "open_url" || functionCall.name === "open_urls";
+}
+
+type ChatWebToolCardStatus = "active" | "completed" | "incomplete" | "error";
+
+function ChatWebToolCard({
+  title,
+  status,
+  output,
+  preview,
+  hasMore = false,
+  isExpanded = false,
+  onToggleExpanded
+}: {
+  title: string;
+  status: ChatWebToolCardStatus;
+  output?: string;
+  preview?: string;
+  hasMore?: boolean;
+  isExpanded?: boolean;
+  onToggleExpanded?: () => void;
+}) {
+  const isActive = status === "active";
+  const isError = status === "error";
+  const isIncomplete = status === "incomplete";
+  const statusText = isActive
+    ? "In progress"
+    : isError
+      ? "Failed"
+      : isIncomplete
+        ? "Incomplete"
+        : "Completed";
+  const statusIcon = isActive ? (
+    <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" aria-hidden="true" />
+  ) : isError ? (
+    <X className="h-4 w-4 shrink-0 text-destructive" aria-hidden="true" />
+  ) : isIncomplete ? (
+    <X className="h-4 w-4 shrink-0 text-maple-warning" aria-hidden="true" />
+  ) : (
+    <Check className="h-4 w-4 shrink-0 text-maple-success" aria-hidden="true" />
+  );
+  const summary = (
+    <div className="flex min-w-0 flex-1 items-center gap-2">
+      {statusIcon}
+      <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground" title={title}>
+        {title}
+      </span>
+      <span
+        className={`shrink-0 text-xs ${
+          isError
+            ? "text-destructive"
+            : isIncomplete
+              ? "text-maple-warning"
+              : "text-muted-foreground"
+        }`}
+        role="status"
+        aria-live="polite"
+      >
+        {statusText}
+      </span>
+    </div>
+  );
+
+  if (output === undefined) {
+    return (
+      <div
+        className={`mb-2 flex items-center gap-2 rounded-2xl px-3 py-2 text-sm ${
+          isError ? "bg-destructive/5" : "bg-muted/30"
+        }`}
+      >
+        {summary}
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className={`mb-2 rounded-3xl border px-4 py-3 text-sm ${
+        isError ? "border-destructive/35 bg-destructive/5" : "border-muted/40 bg-muted/20"
+      }`}
+    >
+      {hasMore && onToggleExpanded ? (
+        <button
+          type="button"
+          onClick={onToggleExpanded}
+          className="flex w-full cursor-pointer list-none items-center gap-2 text-left"
+          aria-expanded={isExpanded}
+        >
+          <ChevronRight
+            className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform ${
+              isExpanded ? "rotate-90" : ""
+            }`}
+            aria-hidden="true"
+          />
+          {summary}
+        </button>
+      ) : (
+        <div className="flex items-center gap-2">
+          <span className="h-4 w-4 shrink-0" aria-hidden="true" />
+          {summary}
+        </div>
+      )}
+      <div className="mt-2 pl-6 text-foreground/80">
+        <Markdown content={isExpanded ? output : (preview ?? output)} />
+        {hasMore && onToggleExpanded ? (
+          <button
+            type="button"
+            onClick={onToggleExpanded}
+            className="ml-2 text-xs font-medium text-primary hover:text-primary/80"
+          >
+            {isExpanded ? "Show less" : "Show more"}
+          </button>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 // Component to render tool calls
 function ToolCallRenderer({
   tool,
@@ -891,32 +1011,21 @@ function ToolCallRenderer({
 
   if (tool.type === "web_search_call") {
     const webSearch = tool as ResponseFunctionWebSearch;
-    const statusText =
-      webSearch.status === "in_progress"
-        ? "Searching the web..."
-        : webSearch.status === "searching"
-          ? "Searching..."
-          : webSearch.status === "completed"
-            ? "Searched the web"
-            : "Search failed";
-
     const isActive = webSearch.status === "in_progress" || webSearch.status === "searching";
 
     return (
-      <div className="mb-2 flex items-center gap-2 rounded-2xl bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
-        {isActive ? (
-          <Loader2 className="h-3.5 w-3.5 animate-spin" />
-        ) : (
-          <Search className="h-3.5 w-3.5" />
-        )}
-        <span>{statusText}</span>
-      </div>
+      <ChatWebToolCard
+        title="Web Search"
+        status={isActive ? "active" : webSearch.status === "completed" ? "completed" : "error"}
+      />
     );
   }
 
   if (tool.type === "tool_call") {
     const functionCall = tool as ToolCallItem;
     const isWebSearch = functionCall.name === "web_search";
+    const isOpenUrl = isOpenUrlTool(functionCall);
+    const isWebTool = isWebSearch || isOpenUrl;
     const query = getToolCallQuery(functionCall);
     const availableToolOutputs = toolOutputs ?? [];
     const combinedOutput = availableToolOutputs
@@ -933,6 +1042,20 @@ function ToolCallRenderer({
     if (hasToolOutput) {
       const preview = truncateMarkdownPreservingLinks(combinedOutput, 150);
       const hasMore = combinedOutput.length > 150;
+
+      if (isWebTool) {
+        return (
+          <ChatWebToolCard
+            title={isWebSearch ? (query ? `Web Search: "${query}"` : "Web Search") : "Open URL"}
+            status={isError ? "error" : isIncomplete ? "incomplete" : "completed"}
+            output={combinedOutput}
+            preview={preview}
+            hasMore={hasMore}
+            isExpanded={isExpanded}
+            onToggleExpanded={() => setIsExpanded(!isExpanded)}
+          />
+        );
+      }
 
       return (
         <div className="mb-2 rounded-3xl border border-muted/40 bg-muted/20 px-4 py-3 text-sm">
@@ -967,38 +1090,14 @@ function ToolCallRenderer({
       );
     }
 
-    if (isWebSearch) {
+    if (isWebTool) {
       return (
-        <div className="mb-2 flex items-center gap-2 rounded-2xl bg-muted/30 px-3 py-2 text-sm">
-          {isActive ? (
-            <Loader2 className="h-4 w-4 animate-spin flex-shrink-0 text-[hsl(var(--maple-primary))]" />
-          ) : isFailed ? (
-            <X
-              className={`h-4 w-4 flex-shrink-0 ${
-                isError ? "text-maple-error" : "text-maple-warning"
-              }`}
-            />
-          ) : (
-            <Search className="h-4 w-4 flex-shrink-0 text-[hsl(var(--maple-primary))]" />
-          )}
-          <span className="text-foreground">
-            {isFailed
-              ? isError
-                ? query
-                  ? `Search for "${query}" failed`
-                  : "Web search failed"
-                : query
-                  ? `Search for "${query}" incomplete`
-                  : "Web search incomplete"
-              : isCompleted
-                ? query
-                  ? `Searched: "${query}"`
-                  : "Web search completed"
-                : query
-                  ? `Searching for "${query}"...`
-                  : "Searching the web..."}
-          </span>
-        </div>
+        <ChatWebToolCard
+          title={isWebSearch ? (query ? `Web Search: "${query}"` : "Web Search") : "Open URL"}
+          status={
+            isError ? "error" : isIncomplete ? "incomplete" : isActive ? "active" : "completed"
+          }
+        />
       );
     }
 
@@ -1037,10 +1136,31 @@ function ToolCallRenderer({
     const output = toolOutput.output || "";
     const query = relatedCall ? getToolCallQuery(relatedCall) : "";
     const isWebSearch = relatedCall?.name === "web_search";
+    const isOpenUrl = relatedCall ? isOpenUrlTool(relatedCall) : false;
 
     // Show preview (first 150 chars to match grouped rendering)
     const preview = truncateMarkdownPreservingLinks(output, 150);
     const hasMore = output.length > 150;
+
+    if (isWebSearch || isOpenUrl) {
+      return (
+        <ChatWebToolCard
+          title={isWebSearch ? (query ? `Web Search: "${query}"` : "Web Search") : "Open URL"}
+          status={
+            toolOutput.status === "error"
+              ? "error"
+              : toolOutput.status === "incomplete"
+                ? "incomplete"
+                : "completed"
+          }
+          output={output}
+          preview={preview}
+          hasMore={hasMore}
+          isExpanded={isExpanded}
+          onToggleExpanded={() => setIsExpanded(!isExpanded)}
+        />
+      );
+    }
 
     return (
       <div className="mb-2 rounded-3xl border border-muted/40 bg-muted/20 px-4 py-3 text-sm">
