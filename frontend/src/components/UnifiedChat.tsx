@@ -2063,7 +2063,7 @@ export function UnifiedChat() {
           (error) => ({ ok: false as const, error })
         );
         const itemsPromise = openai.conversations.items.list(conversationId, {
-          limit: 10,
+          limit: 20,
           order: "desc"
         });
 
@@ -2153,9 +2153,9 @@ export function UnifiedChat() {
     setIsLoadingOlderMessages(true);
 
     try {
-      // Fetch next 10 older items using the oldest item ID we have
+      // Fetch next 20 older items using the oldest item ID we have
       const itemsResponse = await openai.conversations.items.list(conversation.id, {
-        limit: 10,
+        limit: 20,
         order: "desc",
         after: oldestItemId
       });
