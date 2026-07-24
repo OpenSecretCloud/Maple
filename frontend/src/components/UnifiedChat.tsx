@@ -955,32 +955,19 @@ function ChatWebToolCard({
   }
 
   return (
-    <div
-      className={`mb-2 rounded-3xl border px-4 py-3 text-sm ${
+    <details
+      open={isError}
+      className={`group mb-2 rounded-3xl border px-4 py-3 text-sm ${
         isError ? "border-destructive/35 bg-destructive/5" : "border-muted/40 bg-muted/20"
       }`}
     >
-      {hasMore && onToggleExpanded ? (
-        <button
-          type="button"
-          onClick={onToggleExpanded}
-          className="flex w-full cursor-pointer list-none items-center gap-2 text-left"
-          aria-expanded={isExpanded}
-        >
-          <ChevronRight
-            className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform ${
-              isExpanded ? "rotate-90" : ""
-            }`}
-            aria-hidden="true"
-          />
-          {summary}
-        </button>
-      ) : (
-        <div className="flex items-center gap-2">
-          <span className="h-4 w-4 shrink-0" aria-hidden="true" />
-          {summary}
-        </div>
-      )}
+      <summary className="flex cursor-pointer list-none items-center gap-2">
+        <ChevronRight
+          className="h-4 w-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-90"
+          aria-hidden="true"
+        />
+        {summary}
+      </summary>
       <div className="mt-2 pl-6 text-foreground/80">
         <Markdown content={isExpanded ? output : (preview ?? output)} />
         {hasMore && onToggleExpanded ? (
@@ -993,7 +980,7 @@ function ChatWebToolCard({
           </button>
         ) : null}
       </div>
-    </div>
+    </details>
   );
 }
 
