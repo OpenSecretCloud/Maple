@@ -1,13 +1,18 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import App from "./app";
-import { waitForPlatform } from "@/utils/platform";
+import { isTauriDesktop, waitForPlatform } from "@/utils/platform";
+import { restoreWorkspaceModeAtLaunch } from "@/services/workspaceModePreference";
 
 // Initialize platform detection before rendering
 async function initializeApp() {
   // Wait for platform detection to complete
   // This ensures all platform checks are correct from the first render
   await waitForPlatform();
+  restoreWorkspaceModeAtLaunch(isTauriDesktop());
+
+  // Create the router only after restoring the launch route so its first
+  // location snapshot matches the user's saved mode.
+  const { default: App } = await import("./app");
 
   // Render the app
   const rootElement = document.getElementById("root")!;

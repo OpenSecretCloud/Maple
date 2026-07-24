@@ -1,8 +1,9 @@
 import { Bot, MessageCircle, type LucideIcon } from "lucide-react";
 
+import type { WorkspaceMode } from "@/services/workspaceModePreference";
 import { cn } from "@/utils/utils";
 
-export type WorkspaceMode = "chat" | "agent";
+export type { WorkspaceMode } from "@/services/workspaceModePreference";
 
 type WorkspaceModeOption = {
   mode: WorkspaceMode;
