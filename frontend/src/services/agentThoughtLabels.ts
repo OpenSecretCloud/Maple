@@ -7,10 +7,11 @@ export const AGENT_THOUGHT_LABEL_PENDING_TEXT = "Thinking";
 export const AGENT_THOUGHT_LABEL_FALLBACK_TEXT = "Thought";
 export const AGENT_THOUGHT_LABEL_FALLBACK_DELAY_MS = 5_000;
 export const AGENT_THOUGHT_LABEL_PROVISIONAL_DELAY_MS = 1_000;
+export const AGENT_THOUGHT_LABEL_PROVISIONAL_REFRESH_MS = 15_000;
 export const AGENT_THOUGHT_LABEL_PROVISIONAL_MILESTONES_MS = [
   AGENT_THOUGHT_LABEL_PROVISIONAL_DELAY_MS,
   5_000,
-  15_000
+  AGENT_THOUGHT_LABEL_PROVISIONAL_REFRESH_MS
 ] as const;
 export const AGENT_THOUGHT_LABEL_PROVISIONAL_MIN_LENGTH = 100;
 export const AGENT_THOUGHT_LABEL_PROVISIONAL_DEADLINE_MS = 3_000;
@@ -127,6 +128,7 @@ type AgentThoughtLabelSchedule = (callback: () => void, delayMs: number) => () =
 
 interface ProvisionalEntry {
   phase: AgentThoughtLabelPhase;
+  sampledPhase: AgentThoughtLabelPhase | null;
   snapshotGeneration: number;
   waitingForMinimumLength: boolean;
   visibleLabel: string | null;
@@ -214,11 +216,10 @@ export class AgentThoughtLabelProvisionalScheduler {
     const key = thoughtLabelPhaseKey(phase.sessionId, phase.phaseId);
     const existing = this.entries.get(key);
     if (existing) {
-      const snapshotChanged =
-        existing.phase.userRequest !== phase.userRequest ||
-        existing.phase.reasoningText !== phase.reasoningText;
+      const contextChanged = existing.phase.userRequest !== phase.userRequest;
       existing.phase = phase;
-      if (snapshotChanged) {
+      if (contextChanged) {
+        existing.sampledPhase = null;
         existing.snapshotGeneration += 1;
         const abortController = existing.abortController;
         abortController?.abort();
@@ -231,6 +232,7 @@ export class AgentThoughtLabelProvisionalScheduler {
     const schedule = this.options.schedule ?? scheduleAgentThoughtLabelTimer;
     const entry: ProvisionalEntry = {
       phase,
+      sampledPhase: null,
       snapshotGeneration: 0,
       waitingForMinimumLength: false,
       visibleLabel: null,
@@ -241,7 +243,10 @@ export class AgentThoughtLabelProvisionalScheduler {
     };
     this.entries.set(key, entry);
     entry.cancelMilestones = AGENT_THOUGHT_LABEL_PROVISIONAL_MILESTONES_MS.map((delayMs) =>
-      schedule(() => this.tryStart(key, entry), delayMs)
+      schedule(
+        () => this.tryStart(key, entry, delayMs === AGENT_THOUGHT_LABEL_PROVISIONAL_REFRESH_MS),
+        delayMs
+      )
     );
   }
 
@@ -260,20 +265,28 @@ export class AgentThoughtLabelProvisionalScheduler {
     }
   }
 
-  private tryStart(key: string, entry: ProvisionalEntry): void {
+  private tryStart(key: string, entry: ProvisionalEntry, refreshVisibleLabel = false): void {
     if (this.entries.get(key) !== entry) return;
-    if (entry.abortController) return;
+    if (entry.visibleLabel && !refreshVisibleLabel) return;
     const reasoningCharacters = reasoningCharacterLength(entry.phase.reasoningText);
     if (reasoningCharacters < AGENT_THOUGHT_LABEL_PROVISIONAL_MIN_LENGTH) {
       entry.waitingForMinimumLength = true;
       return;
     }
     entry.waitingForMinimumLength = false;
-    if (this.activeRequests >= AGENT_THOUGHT_LABEL_MAX_CONCURRENT_PROVISIONAL_REQUESTS) return;
+    // Live reasoning stays buffered in phase until a milestone promotes the next request sample.
+    if (!entry.sampledPhase || !thoughtLabelSnapshotsMatch(entry.sampledPhase, entry.phase)) {
+      entry.sampledPhase = { ...entry.phase };
+      entry.snapshotGeneration += 1;
+      const abortController = entry.abortController;
+      abortController?.abort();
+      if (abortController) this.finishRequest(entry, abortController);
+    }
     if (entry.snapshotGeneration === entry.lastRequestedGeneration) return;
+    if (this.activeRequests >= AGENT_THOUGHT_LABEL_MAX_CONCURRENT_PROVISIONAL_REQUESTS) return;
 
     this.activeRequests += 1;
-    const requestPhase = { ...entry.phase };
+    const requestPhase = { ...entry.sampledPhase };
     const requestSnapshotGeneration = entry.snapshotGeneration;
     entry.lastRequestedGeneration = requestSnapshotGeneration;
     const abortController = new AbortController();
@@ -312,8 +325,8 @@ export class AgentThoughtLabelProvisionalScheduler {
     if (this.entries.get(key) !== entry || !this.finishRequest(entry, abortController)) return;
     if (
       entry.snapshotGeneration !== requestSnapshotGeneration ||
-      entry.phase.userRequest !== requestPhase.userRequest ||
-      entry.phase.reasoningText !== requestPhase.reasoningText
+      !entry.sampledPhase ||
+      !thoughtLabelSnapshotsMatch(entry.sampledPhase, requestPhase)
     ) {
       return;
     }
