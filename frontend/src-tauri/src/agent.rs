@@ -1,7 +1,10 @@
 mod developer_tools;
+pub(crate) mod provider;
 mod shell_permission;
+mod web_permission;
+mod web_tools;
 
-use crate::proxy;
+use crate::maple_api::{account_scope, MapleApiAuthState, MapleApiSession};
 use developer_tools::MapleDeveloperClient;
 use futures_util::StreamExt;
 use goose::agents::extension::Envs;
@@ -17,15 +20,15 @@ use goose::conversation::message::{
     ActionRequiredData, Message, MessageContent, SystemNotificationContent, SystemNotificationType,
 };
 use goose::conversation::Conversation;
-use goose::execution::manager::AgentManager;
+use goose::execution::manager::{AgentManager, AgentManagerGetResult, RuntimeContext};
 use goose::permission::permission_confirmation::PrincipalType;
 use goose::permission::{Permission, PermissionConfirmation};
 use goose::session::session_manager::{Session, SessionType};
 use goose::session::SessionManager;
 use goose::skills::{SkillsClient, EXTENSION_NAME as SKILLS_EXTENSION_NAME};
+use provider::{MapleProvider, MAPLE_PROVIDER_NAME};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 use shell_permission::{
     local_read_image_request_id, local_read_request_id, ShellPermissionClassifier,
     ShellPermissionOutcome, ShellPermissionRequest,
@@ -40,6 +43,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::{oneshot, Mutex};
 use tokio_util::sync::CancellationToken;
+use web_permission::{
+    web_search_request_id, OpenUrlPermissionRequest, WebPermissionClassifier, WebPermissionContext,
+    WebPermissionOutcome,
+};
+use web_tools::{WebProvenanceSnapshot, WebToolState};
 
 const DEFAULT_AGENT_MODEL: &str = "glm-5-2";
 const LEGACY_AGENT_DEFAULT_MODEL: &str = "auto:powerful";
@@ -48,7 +56,15 @@ const DEFAULT_GOOSE_MODE: &str = "smart_approve";
 // policy at every tool boundary, including when the user changes it mid-run.
 const GOOSE_PERMISSION_ROUTING_MODE: GooseMode = GooseMode::SmartApprove;
 const AGENT_EVENT_NAME: &str = "agent-event";
-const MAPLE_DEVELOPER_TOOLS: [&str; 5] = ["read", "shell", "edit", "write", "read_image"];
+const MAPLE_DEVELOPER_TOOLS: [&str; 7] = [
+    "read",
+    "shell",
+    "edit",
+    "write",
+    "read_image",
+    "web_search",
+    "open_url",
+];
 const MAPLE_SKILLS_TOOLS: [&str; 1] = ["load_skill"];
 // Goose currently renders the runtime registration key as the model-facing
 // extension heading, so keep this concise and reserve it from user MCP names.
@@ -62,6 +78,8 @@ const MAPLE_GOOSE_PERMISSION_CONFIG: &str = r#"user:
   - edit
   - write
   - read_image
+  - web_search
+  - open_url
   never_allow: []
 "#;
 const RUN_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
@@ -343,8 +361,10 @@ type SessionPermissionModes = Arc<Mutex<HashMap<String, GooseMode>>>;
 struct AgentRuntime {
     agent_manager: Arc<AgentManager>,
     session_manager: Arc<SessionManager>,
+    maple_api_session: Arc<MapleApiSession>,
     active_runs: HashMap<String, ActiveAgentRun>,
     permission_modes: SessionPermissionModes,
+    web_tool_state: Arc<WebToolState>,
     project_root: PathBuf,
     model: String,
     mode: String,
@@ -421,15 +441,6 @@ impl AgentRuntimeState {
             live_timelines: Arc::new(Mutex::new(HashMap::new())),
         }
     }
-}
-
-fn account_scope(user_id: &str) -> Result<String, String> {
-    let user_id = user_id.trim();
-    if user_id.is_empty() {
-        return Err("Agent Mode requires a signed-in account".to_string());
-    }
-    let digest = Sha256::digest(user_id.as_bytes());
-    Ok(format!("{digest:x}"))
 }
 
 fn ensure_runtime_account(runtime: &AgentRuntime, account_scope: &str) -> Result<(), String> {
@@ -579,7 +590,7 @@ async fn stop_runtime_inner(
     state: &AgentRuntimeState,
     requested_scope: Option<&str>,
 ) -> Result<(), String> {
-    let (agent_manager, active_runs) = {
+    let (agent_manager, active_runs, web_tool_state) = {
         let mut runtime = state.inner.lock().await;
         let Some(current) = runtime.as_mut() else {
             return Ok(());
@@ -590,6 +601,7 @@ async fn stop_runtime_inner(
         (
             Arc::clone(&current.agent_manager),
             std::mem::take(&mut current.active_runs),
+            Arc::clone(&current.web_tool_state),
         )
     };
 
@@ -615,6 +627,7 @@ async fn stop_runtime_inner(
 
     state.pending_permissions.lock().await.clear();
     state.live_timelines.lock().await.clear();
+    web_tool_state.clear_all().await;
     *state.inner.lock().await = None;
     Ok(())
 }
@@ -663,7 +676,7 @@ pub async fn agent_get_runtime_status(
 pub async fn agent_start_runtime(
     app_handle: AppHandle,
     state: State<'_, AgentRuntimeState>,
-    proxy_state: State<'_, proxy::ProxyState>,
+    api_auth_state: State<'_, MapleApiAuthState>,
     user_id: String,
     request: Option<AgentStartRequest>,
 ) -> Result<AgentRuntimeStatus, String> {
@@ -671,13 +684,13 @@ pub async fn agent_start_runtime(
     let generation = account_generation(&state, &account_scope).await;
     let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
     ensure_account_generation(&state, &account_scope, generation).await?;
-    start_runtime_for_user(app_handle, &state, proxy_state, user_id, request).await
+    start_runtime_for_user(app_handle, &state, &api_auth_state, user_id, request).await
 }
 
 async fn start_runtime_for_user(
     app_handle: AppHandle,
     state: &AgentRuntimeState,
-    proxy_state: State<'_, proxy::ProxyState>,
+    api_auth_state: &MapleApiAuthState,
     user_id: String,
     request: Option<AgentStartRequest>,
 ) -> Result<AgentRuntimeStatus, String> {
@@ -690,6 +703,12 @@ async fn start_runtime_for_user(
         }
     }
 
+    let maple_api_session = api_auth_state.session_for(&user_id).await?;
+    maple_api_session
+        .validate_user()
+        .await
+        .map_err(|error| format!("Failed to validate Maple API authentication: {error}"))?;
+
     let mut agent_config = load_agent_config_inner(&app_handle, &user_id)
         .map_err(|error| format!("Failed to load Agent config: {error}"))?;
     let request = request.unwrap_or(AgentStartRequest {
@@ -697,15 +716,6 @@ async fn start_runtime_for_user(
         model: None,
         mode: None,
     });
-
-    let proxy_status = proxy::ensure_proxy_running(app_handle.clone(), proxy_state).await?;
-    let proxy_config = proxy_status.config;
-    let proxy_host = if proxy_config.host == "0.0.0.0" {
-        "127.0.0.1".to_string()
-    } else {
-        proxy_config.host.clone()
-    };
-    let maple_proxy_base_url = format!("http://{}:{}", proxy_host, proxy_config.port);
 
     let project_root = resolve_project_root(request.project_root.as_deref(), &agent_config)
         .map_err(|e| format!("Failed to resolve Agent Mode project root: {e}"))?;
@@ -734,7 +744,6 @@ async fn start_runtime_for_user(
             .join("goose-runtime"),
         &model,
         DEFAULT_GOOSE_MODE,
-        &maple_proxy_base_url,
     )?;
     let session_manager = Arc::new(SessionManager::new(goose_path_root.join("data")));
     let permission_manager = Arc::new(PermissionManager::new(goose_path_root.join("config")));
@@ -752,12 +761,20 @@ async fn start_runtime_for_user(
             .await
             .map_err(|e| format!("Failed to create Goose agent manager: {e}"))?,
     );
+    // Goose cannot reconstruct this account-scoped provider from its built-in
+    // registry. Keep it available for new or uncached sessions; each turn still
+    // reapplies the session's selected model below.
+    agent_manager
+        .set_default_provider(Arc::new(MapleProvider::new(Arc::clone(&maple_api_session))))
+        .await;
 
     let runtime = AgentRuntime {
         agent_manager,
         session_manager,
+        maple_api_session,
         active_runs: HashMap::new(),
         permission_modes: Arc::new(Mutex::new(HashMap::new())),
+        web_tool_state: Arc::new(WebToolState::default()),
         project_root: project_root.clone(),
         model: model.clone(),
         mode: mode.clone(),
@@ -810,7 +827,7 @@ pub async fn agent_stop_runtime(
 pub async fn agent_restart_runtime(
     app_handle: AppHandle,
     state: State<'_, AgentRuntimeState>,
-    proxy_state: State<'_, proxy::ProxyState>,
+    api_auth_state: State<'_, MapleApiAuthState>,
     user_id: String,
     request: Option<AgentStartRequest>,
 ) -> Result<AgentRuntimeStatus, String> {
@@ -819,7 +836,7 @@ pub async fn agent_restart_runtime(
     let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
     ensure_account_generation(&state, &account_scope, generation).await?;
     stop_runtime_for_user(&state, &user_id).await?;
-    start_runtime_for_user(app_handle, &state, proxy_state, user_id, request).await
+    start_runtime_for_user(app_handle, &state, &api_auth_state, user_id, request).await
 }
 
 #[tauri::command]
@@ -1048,7 +1065,9 @@ pub async fn agent_create_session(
     let (
         agent_manager,
         session_manager,
+        maple_api_session,
         permission_modes,
+        web_tool_state,
         runtime_project_root,
         runtime_model,
         runtime_mode,
@@ -1061,7 +1080,9 @@ pub async fn agent_create_session(
         (
             Arc::clone(&current.agent_manager),
             Arc::clone(&current.session_manager),
+            Arc::clone(&current.maple_api_session),
             Arc::clone(&current.permission_modes),
+            Arc::clone(&current.web_tool_state),
             current.project_root.clone(),
             current.model.clone(),
             current.mode.clone(),
@@ -1107,10 +1128,14 @@ pub async fn agent_create_session(
             },
             &agent_manager,
             &session_manager,
-            &session,
-            &model,
-            &mode,
-            false,
+            &maple_api_session,
+            SessionAgentConfiguration {
+                web_tool_state: &web_tool_state,
+                session: &session,
+                model: &model,
+                mode: &mode,
+                primary_model_supports_vision: false,
+            },
         )
         .await?;
         if !selected_extensions.is_empty() {
@@ -1318,7 +1343,7 @@ pub async fn agent_set_session_mcp_server_enabled(
         return Err("That MCP server cannot be changed".to_string());
     }
 
-    let (agent_manager, session_manager) = {
+    let (agent_manager, session_manager, maple_api_session) = {
         let runtime = state.inner.lock().await;
         let current = runtime
             .as_ref()
@@ -1330,6 +1355,7 @@ pub async fn agent_set_session_mcp_server_enabled(
         (
             Arc::clone(&current.agent_manager),
             Arc::clone(&current.session_manager),
+            Arc::clone(&current.maple_api_session),
         )
     };
     let configured = normalize_mcp_servers(
@@ -1342,13 +1368,14 @@ pub async fn agent_set_session_mcp_server_enabled(
         .await
         .map_err(|error| format!("Failed to load Agent task: {error}"))?;
     let session_mcp_keys = session_mcp_extension_keys(&session);
-    let manager_result = agent_manager
-        .get_or_create_agent_with_runtime_context(
-            session_id.clone(),
-            goose::execution::manager::RuntimeContext::default(),
-        )
-        .await
-        .map_err(|error| format!("Failed to load Goose agent: {error}"))?;
+    let manager_result = get_or_create_session_agent(
+        &agent_manager,
+        &maple_api_session,
+        &session,
+        RuntimeContext::default(),
+    )
+    .await
+    .map_err(|error| format!("Failed to load Goose agent: {error}"))?;
     for error in mcp_connection_errors(manager_result.extension_results, &session_mcp_keys) {
         log::warn!(
             "Failed to restore MCP server {}: {}",
@@ -1437,7 +1464,7 @@ pub async fn agent_delete_session(
     }
 
     let _session_lifecycle_guard = state.session_lifecycle.lock().await;
-    let (agent_manager, session_manager, permission_modes) = {
+    let (agent_manager, session_manager, permission_modes, web_tool_state) = {
         let runtime = state.inner.lock().await;
         match runtime.as_ref() {
             Some(current) => {
@@ -1449,9 +1476,15 @@ pub async fn agent_delete_session(
                     Some(Arc::clone(&current.agent_manager)),
                     Arc::clone(&current.session_manager),
                     Some(Arc::clone(&current.permission_modes)),
+                    Some(Arc::clone(&current.web_tool_state)),
                 )
             }
-            None => (None, account_session_manager(&app_handle, &user_id)?, None),
+            None => (
+                None,
+                account_session_manager(&app_handle, &user_id)?,
+                None,
+                None,
+            ),
         }
     };
 
@@ -1459,6 +1492,7 @@ pub async fn agent_delete_session(
         session_manager.as_ref(),
         &state.pending_permissions,
         &state.live_timelines,
+        web_tool_state.as_deref(),
         &session_id,
     )
     .await?;
@@ -1480,6 +1514,7 @@ async fn delete_persisted_agent_session(
     session_manager: &SessionManager,
     pending_permissions: &PendingPermissions,
     live_timelines: &LiveTimelines,
+    web_tool_state: Option<&WebToolState>,
     session_id: &str,
 ) -> Result<(), String> {
     session_manager
@@ -1496,6 +1531,9 @@ async fn delete_persisted_agent_session(
         .lock()
         .await
         .retain(|(pending_session_id, _), _| pending_session_id != session_id);
+    if let Some(web_tool_state) = web_tool_state {
+        web_tool_state.clear_session(session_id).await;
+    }
 
     Ok(())
 }
@@ -1504,14 +1542,21 @@ struct AgentTurnSnapshot {
     conversation: Conversation,
     autogenerated_title: Option<String>,
     live_timeline: Option<LiveTimeline>,
+    web_provenance: WebProvenanceSnapshot,
 }
 
 async fn rollback_cancelled_agent_turn(
     session_manager: &SessionManager,
     live_timelines: &LiveTimelines,
+    web_tool_state: &WebToolState,
     session_id: &str,
     snapshot: &AgentTurnSnapshot,
 ) -> Result<(), String> {
+    // A cancelled turn is removed from model history, so URLs learned only
+    // during that turn must not remain eligible for later automatic fetches.
+    web_tool_state
+        .restore_session(session_id, &snapshot.web_provenance)
+        .await;
     session_manager
         .replace_conversation(session_id, &snapshot.conversation)
         .await
@@ -1570,8 +1615,17 @@ pub async fn agent_send_message(
     let run_id = next_run_id();
     let cancel_token = CancellationToken::new();
     let prompt_title = session_title_from_prompt(&text);
+    let web_permission_context = WebPermissionContext::from_user_prompt(&text);
     let user_message = Message::user().with_text(text).with_generated_id();
-    let (agent_manager, session_manager, permission_modes, model, mode) = {
+    let (
+        agent_manager,
+        session_manager,
+        maple_api_session,
+        permission_modes,
+        web_tool_state,
+        model,
+        mode,
+    ) = {
         let runtime = state.inner.lock().await;
         let current = runtime
             .as_ref()
@@ -1580,7 +1634,9 @@ pub async fn agent_send_message(
         (
             Arc::clone(&current.agent_manager),
             Arc::clone(&current.session_manager),
+            Arc::clone(&current.maple_api_session),
             Arc::clone(&current.permission_modes),
+            Arc::clone(&current.web_tool_state),
             request
                 .model
                 .clone()
@@ -1630,13 +1686,16 @@ pub async fn agent_send_message(
             &model,
         )?;
         let should_restore_autogenerated_title = should_name_session_from_prompt(&session);
+        let turn_live_timeline = live_timelines.lock().await.get(&session.id).cloned();
+        let turn_web_provenance = web_tool_state.snapshot_session(&session.id).await;
         // Cancellation must be able to reverse Goose compaction or recovery
         // that rewrites history during this turn. Move the loaded conversation
         // into the snapshot to avoid cloning large persisted image payloads.
         let turn_snapshot = AgentTurnSnapshot {
             conversation: session.conversation.take().unwrap_or_default(),
             autogenerated_title: should_restore_autogenerated_title.then(|| session.name.clone()),
-            live_timeline: live_timelines.lock().await.get(&session.id).cloned(),
+            live_timeline: turn_live_timeline,
+            web_provenance: turn_web_provenance,
         };
         if should_restore_autogenerated_title {
             session_manager
@@ -1669,10 +1728,14 @@ pub async fn agent_send_message(
             },
             &agent_manager,
             &session_manager,
-            &session,
-            &model,
-            &effective_mode,
-            request.vision_capable,
+            &maple_api_session,
+            SessionAgentConfiguration {
+                web_tool_state: &web_tool_state,
+                session: &session,
+                model: &model,
+                mode: &effective_mode,
+                primary_model_supports_vision: request.vision_capable,
+            },
         )
         .await?;
         Ok((agent, turn_snapshot, mcp_errors))
@@ -1714,6 +1777,7 @@ pub async fn agent_send_message(
     let task_agent_manager = Arc::clone(&agent_manager);
     let task_session_manager = Arc::clone(&session_manager);
     let task_permission_modes = Arc::clone(&permission_modes);
+    let task_web_tool_state = Arc::clone(&web_tool_state);
     let task_user_message = user_message.clone();
     let task_cancel_token = cancel_token.clone();
     let (start_tx, start_rx) = oneshot::channel();
@@ -1724,18 +1788,23 @@ pub async fn agent_send_message(
             start = start_rx => start.is_ok(),
         };
         let result = if should_run {
-            run_agent_prompt(AgentPromptRun {
-                app_handle: app_handle_for_task.clone(),
-                agent,
-                session_manager: Arc::clone(&task_session_manager),
-                live_timelines: live_timelines.clone(),
-                session_id: session_id.clone(),
-                run_id: task_run_id.clone(),
-                user_message: task_user_message,
-                permission_modes: task_permission_modes,
-                cancel_token: task_cancel_token.clone(),
-                pending_permissions,
-            })
+            provider::with_run_cancellation(
+                task_cancel_token.clone(),
+                run_agent_prompt(AgentPromptRun {
+                    app_handle: app_handle_for_task.clone(),
+                    agent,
+                    session_manager: Arc::clone(&task_session_manager),
+                    live_timelines: live_timelines.clone(),
+                    session_id: session_id.clone(),
+                    run_id: task_run_id.clone(),
+                    user_message: task_user_message,
+                    permission_modes: task_permission_modes,
+                    web_tool_state: Arc::clone(&task_web_tool_state),
+                    web_permission_context,
+                    cancel_token: task_cancel_token.clone(),
+                    pending_permissions,
+                }),
+            )
             .await
         } else {
             Ok(AgentPromptOutcome::default())
@@ -1749,6 +1818,7 @@ pub async fn agent_send_message(
             rollback_cancelled_agent_turn(
                 task_session_manager.as_ref(),
                 &live_timelines,
+                &task_web_tool_state,
                 &session_id,
                 &task_turn_snapshot,
             )
@@ -1937,7 +2007,7 @@ pub async fn agent_set_permission_mode(
         return Err("Agent permission mode update requires a task ID".to_string());
     }
     let goose_mode = parse_user_permission_mode(&request.mode)?;
-    let (agent_manager, session_manager, permission_modes) = {
+    let (agent_manager, session_manager, maple_api_session, permission_modes) = {
         let runtime = state.inner.lock().await;
         let current = runtime
             .as_ref()
@@ -1946,6 +2016,7 @@ pub async fn agent_set_permission_mode(
         (
             Arc::clone(&current.agent_manager),
             Arc::clone(&current.session_manager),
+            Arc::clone(&current.maple_api_session),
             Arc::clone(&current.permission_modes),
         )
     };
@@ -1963,10 +2034,19 @@ pub async fn agent_set_permission_mode(
         None
     };
     let update_result: Result<Arc<Agent>, String> = async {
-        let agent = agent_manager
-            .get_or_create_agent(session_id.clone())
+        let session = session_manager
+            .get_session(&session_id, false)
             .await
-            .map_err(|error| format!("Failed to resolve Goose agent for mode update: {error}"))?;
+            .map_err(|error| format!("Failed to load Agent task: {error}"))?;
+        let agent = get_or_create_session_agent(
+            &agent_manager,
+            &maple_api_session,
+            &session,
+            RuntimeContext::default(),
+        )
+        .await
+        .map_err(|error| format!("Failed to resolve Goose agent for mode update: {error}"))?
+        .agent;
         agent
             .update_goose_mode(GOOSE_PERMISSION_ROUTING_MODE, &session_id)
             .await
@@ -2162,6 +2242,8 @@ struct AgentPromptRun {
     run_id: String,
     user_message: Message,
     permission_modes: SessionPermissionModes,
+    web_tool_state: Arc<WebToolState>,
+    web_permission_context: WebPermissionContext,
     cancel_token: CancellationToken,
     pending_permissions: PendingPermissions,
 }
@@ -2308,15 +2390,29 @@ async fn claim_pending_permission_if_auto(
     true
 }
 
+struct PermissionAutomationContext<'a> {
+    permission_modes: &'a SessionPermissionModes,
+    web_tool_state: &'a WebToolState,
+    web_permission_context: &'a WebPermissionContext,
+    working_dir: &'a Path,
+    cancel_token: &'a CancellationToken,
+}
+
 async fn automatically_handle_permissions(
     agent: &Agent,
     session_id: &str,
-    permission_modes: &SessionPermissionModes,
-    working_dir: &Path,
     message: &Message,
-    cancel_token: &CancellationToken,
+    context: PermissionAutomationContext<'_>,
 ) -> HashSet<String> {
-    let classifier = ShellPermissionClassifier;
+    let PermissionAutomationContext {
+        permission_modes,
+        web_tool_state,
+        web_permission_context,
+        working_dir,
+        cancel_token,
+    } = context;
+    let shell_classifier = ShellPermissionClassifier;
+    let web_classifier = WebPermissionClassifier;
     let mut handled = HashSet::new();
 
     for content in &message.content {
@@ -2345,6 +2441,60 @@ async fn automatically_handle_permissions(
         let current_mode = selected_permission_mode(permission_modes, session_id)
             .await
             .to_string();
+        if let Some(request_id) = web_search_request_id(&current_mode, action) {
+            let request_id = request_id.to_string();
+            let permission = if cancel_token.is_cancelled() {
+                Permission::Cancel
+            } else {
+                log::info!("Auto-approved Agent Mode web search request {request_id}");
+                Permission::AllowOnce
+            };
+            deliver_tool_permission(agent, request_id.clone(), permission).await;
+            handled.insert(request_id);
+            continue;
+        }
+        if let Some(request) =
+            OpenUrlPermissionRequest::from_action(&current_mode, action, web_permission_context)
+        {
+            let request_id = request.request_id().to_string();
+            let outcome = if cancel_token.is_cancelled() {
+                WebPermissionOutcome::Cancelled
+            } else if web_tool_state
+                .contains_search_url(session_id, request.url())
+                .await
+            {
+                log::info!("Auto-approved search-derived Agent Mode URL request {request_id}");
+                WebPermissionOutcome::AllowOnce
+            } else {
+                web_classifier
+                    .classify(agent, session_id, &request, cancel_token)
+                    .await
+            };
+            if deliver_tool_permission_if_auto(
+                agent,
+                session_id,
+                permission_modes,
+                &request_id,
+                cancel_token,
+            )
+            .await
+            {
+                handled.insert(request_id);
+                continue;
+            }
+            let permission = if cancel_token.is_cancelled() {
+                Permission::Cancel
+            } else {
+                match outcome {
+                    WebPermissionOutcome::AllowOnce => Permission::AllowOnce,
+                    WebPermissionOutcome::Cancelled => Permission::Cancel,
+                    WebPermissionOutcome::RequiresApproval => continue,
+                }
+            };
+            deliver_tool_permission(agent, request_id.clone(), permission).await;
+            handled.insert(request_id);
+            continue;
+        }
         if let Some(request_id) = local_read_request_id(&current_mode, action)
             .or_else(|| local_read_image_request_id(&current_mode, action))
             .map(str::to_string)
@@ -2377,7 +2527,7 @@ async fn automatically_handle_permissions(
             continue;
         };
         let request_id = request.request_id().to_string();
-        let outcome = classifier
+        let outcome = shell_classifier
             .classify(agent, session_id, &request, cancel_token)
             .await;
         if deliver_tool_permission_if_auto(
@@ -2422,6 +2572,8 @@ async fn run_agent_prompt(run: AgentPromptRun) -> Result<AgentPromptOutcome, Str
         run_id,
         user_message,
         permission_modes,
+        web_tool_state,
+        web_permission_context,
         cancel_token,
         pending_permissions,
     } = run;
@@ -2460,10 +2612,14 @@ async fn run_agent_prompt(run: AgentPromptRun) -> Result<AgentPromptOutcome, Str
                 let automatically_handled = automatically_handle_permissions(
                     &agent,
                     &session_id,
-                    &permission_modes,
-                    &working_dir,
                     &message,
-                    &cancel_token,
+                    PermissionAutomationContext {
+                        permission_modes: &permission_modes,
+                        web_tool_state: &web_tool_state,
+                        web_permission_context: &web_permission_context,
+                        working_dir: &working_dir,
+                        cancel_token: &cancel_token,
+                    },
                 )
                 .await;
                 let mut items = message_to_timeline_items(&message, true);
@@ -2815,23 +2971,102 @@ struct AgentSkillsScope<'a> {
     user_id: &'a str,
 }
 
+struct SessionAgentConfiguration<'a> {
+    web_tool_state: &'a Arc<WebToolState>,
+    session: &'a Session,
+    model: &'a str,
+    mode: &'a str,
+    primary_model_supports_vision: bool,
+}
+
+async fn install_maple_provider<T>(
+    agent: &Arc<Agent>,
+    transport: &Arc<T>,
+    session_id: &str,
+    model: &str,
+) -> Result<(), String>
+where
+    T: provider::MapleInferenceTransport + 'static,
+{
+    let model_config =
+        goose::model_config::model_config_from_user_config(MAPLE_PROVIDER_NAME, model)
+            .map_err(|e| format!("Failed to configure Goose model {model}: {e}"))?;
+    install_maple_provider_config(agent, transport, session_id, model_config).await
+}
+
+async fn install_maple_provider_config<T>(
+    agent: &Arc<Agent>,
+    transport: &Arc<T>,
+    session_id: &str,
+    model_config: goose_providers::model::ModelConfig,
+) -> Result<(), String>
+where
+    T: provider::MapleInferenceTransport + 'static,
+{
+    let provider = Arc::new(MapleProvider::new(Arc::clone(transport)));
+    agent
+        .update_provider(provider, model_config, session_id)
+        .await
+        .map_err(|e| format!("Failed to update Goose provider: {e}"))
+}
+
+async fn get_or_create_session_agent<T>(
+    agent_manager: &Arc<AgentManager>,
+    transport: &Arc<T>,
+    session: &Session,
+    runtime_context: RuntimeContext,
+) -> Result<AgentManagerGetResult, String>
+where
+    T: provider::MapleInferenceTransport + 'static,
+{
+    let manager_result = agent_manager
+        .get_or_create_agent_with_runtime_context(session.id.clone(), runtime_context)
+        .await
+        .map_err(|e| format!("Failed to load Agent for task {}: {e}", session.id))?;
+
+    // Goose's built-in registry cannot reconstruct Maple's caller-owned
+    // provider. Its default-provider fallback uses the runtime-global model and
+    // persists that model immediately, so a cold admin action could otherwise
+    // overwrite this task's locked model before the next send. Restore the
+    // session snapshot while the caller still holds Maple's lifecycle guard.
+    if manager_result.agent_created && session.provider_name.as_deref() == Some(MAPLE_PROVIDER_NAME)
+    {
+        if let Some(model_config) = session.model_config.as_ref() {
+            install_maple_provider_config(
+                &manager_result.agent,
+                transport,
+                &session.id,
+                model_config.clone(),
+            )
+            .await?;
+        }
+    }
+
+    Ok(manager_result)
+}
+
 async fn configure_session_agent(
     skills_scope: AgentSkillsScope<'_>,
     agent_manager: &Arc<AgentManager>,
     session_manager: &Arc<SessionManager>,
-    session: &Session,
-    model: &str,
-    mode: &str,
-    primary_model_supports_vision: bool,
+    maple_api_session: &Arc<MapleApiSession>,
+    configuration: SessionAgentConfiguration<'_>,
 ) -> Result<(Arc<Agent>, Vec<AgentMcpConnectionError>), String> {
+    let SessionAgentConfiguration {
+        web_tool_state,
+        session,
+        model,
+        mode,
+        primary_model_supports_vision,
+    } = configuration;
     let session_mcp_keys = session_mcp_extension_keys(session);
-    let manager_result = agent_manager
-        .get_or_create_agent_with_runtime_context(
-            session.id.clone(),
-            goose::execution::manager::RuntimeContext::default(),
-        )
-        .await
-        .map_err(|e| format!("Failed to load Agent for task {}: {e}", session.id))?;
+    let manager_result = get_or_create_session_agent(
+        agent_manager,
+        maple_api_session,
+        session,
+        RuntimeContext::default(),
+    )
+    .await?;
     let agent = manager_result.agent;
     let skills_client = prepare_transient_skills_client(
         skills_scope.app_handle,
@@ -2840,19 +3075,7 @@ async fn configure_session_agent(
         session,
     )?;
     let mcp_errors = mcp_connection_errors(manager_result.extension_results, &session_mcp_keys);
-    let provider = goose::providers::create_with_working_dir(
-        "openai",
-        Vec::new(),
-        session.working_dir.clone(),
-    )
-    .await
-    .map_err(|e| format!("Failed to create Goose OpenAI provider: {e}"))?;
-    let model_config = goose::model_config::model_config_from_user_config("openai", model)
-        .map_err(|e| format!("Failed to configure Goose model {model}: {e}"))?;
-    agent
-        .update_provider(provider, model_config, &session.id)
-        .await
-        .map_err(|e| format!("Failed to update Goose provider: {e}"))?;
+    install_maple_provider(&agent, maple_api_session, &session.id, model).await?;
     agent
         .update_goose_mode(GOOSE_PERMISSION_ROUTING_MODE, &session.id)
         .await
@@ -2872,9 +3095,14 @@ async fn configure_session_agent(
     if !primary_model_supports_vision {
         developer_context.extension_manager = Some(Arc::downgrade(&agent.extension_manager));
     }
-    let developer_client =
-        MapleDeveloperClient::new(developer_context, primary_model_supports_vision)
-            .map_err(|e| format!("Failed to create Maple developer tools: {e}"))?;
+    let web_transport: Arc<dyn crate::maple_api::MapleWebTransport> = maple_api_session.clone();
+    let developer_client = MapleDeveloperClient::new(
+        developer_context,
+        primary_model_supports_vision,
+        web_transport,
+        Arc::clone(web_tool_state),
+    )
+    .map_err(|e| format!("Failed to create Maple developer tools: {e}"))?;
     agent
         .extension_manager
         .add_client(
@@ -2932,18 +3160,19 @@ fn conversation_to_timeline_items(conversation: &Conversation) -> Vec<AgentTimel
             state.surfaced_thinking_in_inference = false;
         }
 
+        let visible_message = message.user_visible_content();
         // Match Goose's own session presentation contract: agent-only grind,
         // retry, goal, and other internal messages stay in provider history but
         // never become user-facing Maple timeline rows.
-        if !message.is_user_visible() {
+        if !visible_message.is_user_visible() || visible_message.content.is_empty() {
             if inference_ends {
                 state.surfaced_thinking_in_inference = false;
             }
             continue;
         }
 
-        let mut thinking = message_thinking_projection(message);
-        let has_tool_request = message.content.iter().any(|content| {
+        let mut thinking = message_thinking_projection(&visible_message);
+        let has_tool_request = visible_message.content.iter().any(|content| {
             matches!(
                 content,
                 MessageContent::ToolRequest(_) | MessageContent::FrontendToolRequest(_)
@@ -2971,7 +3200,7 @@ fn conversation_to_timeline_items(conversation: &Conversation) -> Vec<AgentTimel
         }
 
         items.extend(message_to_timeline_items_with_thinking(
-            message,
+            &visible_message,
             false,
             thinking.as_deref(),
         ));
@@ -2985,11 +3214,14 @@ fn conversation_to_timeline_items(conversation: &Conversation) -> Vec<AgentTimel
 }
 
 fn is_real_user_message(message: &Message, role: &str) -> bool {
-    role == "user"
-        && message
-            .content
-            .iter()
-            .any(|content| !matches!(content, MessageContent::ToolResponse(_)))
+    if role != "user" || !message.is_user_visible() {
+        return false;
+    }
+    message
+        .user_visible_content()
+        .content
+        .iter()
+        .any(|content| !matches!(content, MessageContent::ToolResponse(_)))
 }
 
 fn provider_inference_has_usage_boundary(messages: &[Message]) -> bool {
@@ -3678,7 +3910,7 @@ async fn reseed_live_timeline_after_history_replaced(
         .rev()
         .find(|message| {
             let role = message_role(message);
-            message.is_user_visible() && is_real_user_message(message, &role)
+            is_real_user_message(message, &role)
         })
         .and_then(|message| {
             coalesce_timeline_items(message_to_timeline_items(message, false))
@@ -3796,12 +4028,7 @@ fn emit_agent_event(app_handle: &AppHandle, event: AgentEventEnvelope) {
     }
 }
 
-fn configure_embedded_goose(
-    goose_path_root: &Path,
-    model: &str,
-    mode: &str,
-    maple_proxy_base_url: &str,
-) -> Result<(), String> {
+fn configure_embedded_goose(goose_path_root: &Path, model: &str, mode: &str) -> Result<(), String> {
     fs::create_dir_all(goose_path_root.join("config"))
         .map_err(|e| format!("Failed to create Goose config dir: {e}"))?;
     fs::create_dir_all(goose_path_root.join("data"))
@@ -3810,13 +4037,15 @@ fn configure_embedded_goose(
         .map_err(|e| format!("Failed to create Goose state dir: {e}"))?;
 
     std::env::set_var("GOOSE_PATH_ROOT", goose_path_root);
-    // The embedded Goose provider talks only to Maple's loopback proxy. The
-    // proxy owns upstream authentication, so Goose must not receive or persist
-    // an API key of its own.
+    // Maple's native provider owns upstream authentication. Goose must never
+    // receive or persist a credential or retain the legacy loopback proxy URL.
     std::env::remove_var("OPENAI_API_KEY");
+    std::env::remove_var("OPENAI_BASE_URL");
     std::env::remove_var("GOOSE_DISABLE_KEYRING");
     std::env::remove_var("GOOSE_MAX_TOKENS");
     std::env::remove_var("GOOSE_TOOL_PAIR_SUMMARIZATION");
+    std::env::remove_var("GOOSE_PROVIDER");
+    std::env::remove_var("GOOSE_MODEL");
 
     remove_maple_owned_goose_file(
         &goose_path_root.join("config").join("secrets.yaml"),
@@ -3826,7 +4055,8 @@ fn configure_embedded_goose(
     config.invalidate_secrets_cache();
     delete_goose_config_key(config, "GOOSE_DISABLE_KEYRING")?;
     delete_goose_config_key(config, "GOOSE_MAX_TOKENS")?;
-    configure_embedded_goose_params(config, model, mode, maple_proxy_base_url)?;
+    delete_goose_config_key(config, "OPENAI_BASE_URL")?;
+    configure_embedded_goose_params(config, model, mode)?;
 
     set_owner_only_permissions(&goose_path_root.join("config").join("config.yaml"));
     Ok(())
@@ -3836,9 +4066,8 @@ fn configure_embedded_goose_params(
     config: &goose::config::Config,
     model: &str,
     mode: &str,
-    maple_proxy_base_url: &str,
 ) -> Result<(), String> {
-    goose::config::set_active_provider(config, "openai", model)
+    goose::config::set_active_provider(config, MAPLE_PROVIDER_NAME, model)
         .map_err(|e| format!("Failed to configure Goose provider: {e}"))?;
     config
         .set_param("GOOSE_FAST_MODEL", model)
@@ -3851,9 +4080,6 @@ fn configure_embedded_goose_params(
     config
         .set_param("GOOSE_TOOL_PAIR_SUMMARIZATION", false)
         .map_err(|e| format!("Failed to disable Goose tool-pair summarization: {e}"))?;
-    config
-        .set_param("OPENAI_BASE_URL", format!("{maple_proxy_base_url}/v1"))
-        .map_err(|e| format!("Failed to configure Goose OpenAI base URL: {e}"))?;
     Ok(())
 }
 
@@ -4609,6 +4835,21 @@ mod tests {
     use super::*;
     use rmcp::model::{AnnotateAble, RawTextContent, Role as McpRole};
 
+    struct InertMapleTransport;
+
+    #[async_trait::async_trait]
+    impl provider::MapleInferenceTransport for InertMapleTransport {
+        async fn send_inference_request(
+            self: Arc<Self>,
+            _request: opensecret::InferenceRequest,
+            _cancel_token: CancellationToken,
+        ) -> opensecret::Result<opensecret::InferenceResponse> {
+            Err(opensecret::Error::Other(
+                "test transport should not be called".to_string(),
+            ))
+        }
+    }
+
     fn recent_roots_test_dir(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
             "maple-agent-recent-roots-{label}-{}-{}",
@@ -4659,17 +4900,106 @@ mod tests {
             .set_param("GOOSE_TOOL_PAIR_SUMMARIZATION", true)
             .unwrap();
 
-        configure_embedded_goose_params(
-            &config,
-            DEFAULT_AGENT_MODEL,
-            DEFAULT_GOOSE_MODE,
-            "http://127.0.0.1:12345",
-        )
-        .unwrap();
+        configure_embedded_goose_params(&config, DEFAULT_AGENT_MODEL, DEFAULT_GOOSE_MODE).unwrap();
 
         assert!(!config
             .get_param::<bool>("GOOSE_TOOL_PAIR_SUMMARIZATION")
             .unwrap());
+        let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[tokio::test]
+    async fn cold_session_agent_preserves_its_persisted_maple_model() {
+        let test_root = recent_roots_test_dir("cold-session-model");
+        let session_manager = Arc::new(SessionManager::new(test_root.join("sessions")));
+        let permission_manager = Arc::new(PermissionManager::new(test_root.join("permissions")));
+        let agent_manager = Arc::new(
+            AgentManager::new(
+                GooseAgentConfig::new(
+                    Arc::clone(&session_manager),
+                    permission_manager,
+                    None,
+                    GooseMode::SmartApprove,
+                    true,
+                    GoosePlatform::GooseDesktop,
+                ),
+                Some(2),
+            )
+            .await
+            .unwrap(),
+        );
+        let transport = Arc::new(InertMapleTransport);
+        agent_manager
+            .set_default_provider(Arc::new(MapleProvider::new(Arc::clone(&transport))))
+            .await;
+
+        let session = session_manager
+            .create_session(
+                test_root.clone(),
+                "Cold task".to_string(),
+                SessionType::User,
+                GooseMode::SmartApprove,
+            )
+            .await
+            .unwrap();
+        let persisted_model_config = goose_providers::model::ModelConfig::new("gemma-3-27b")
+            .with_context_limit(Some(64_321))
+            .with_temperature(Some(0.42));
+        session_manager
+            .update(&session.id)
+            .provider_name(MAPLE_PROVIDER_NAME)
+            .model_config(persisted_model_config)
+            .apply()
+            .await
+            .unwrap();
+        let session = session_manager
+            .get_session(&session.id, false)
+            .await
+            .unwrap();
+
+        let manager_result = get_or_create_session_agent(
+            &agent_manager,
+            &transport,
+            &session,
+            RuntimeContext::default(),
+        )
+        .await
+        .unwrap();
+
+        assert!(manager_result.agent_created);
+        assert_eq!(
+            manager_result.agent.provider().await.unwrap().get_name(),
+            MAPLE_PROVIDER_NAME
+        );
+        let persisted = session_manager
+            .get_session(&session.id, false)
+            .await
+            .unwrap();
+        assert_eq!(
+            persisted
+                .model_config
+                .as_ref()
+                .map(|model| model.model_name.as_str()),
+            Some("gemma-3-27b")
+        );
+        assert_eq!(
+            persisted
+                .model_config
+                .as_ref()
+                .and_then(|model| model.context_limit),
+            Some(64_321)
+        );
+        assert_eq!(
+            persisted
+                .model_config
+                .as_ref()
+                .and_then(|model| model.temperature),
+            Some(0.42)
+        );
+
+        drop(manager_result);
+        drop(agent_manager);
+        drop(session_manager);
         let _ = fs::remove_dir_all(test_root);
     }
 
@@ -5706,6 +6036,82 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
+    #[tokio::test]
+    async fn explicit_web_ask_before_overrides_annotations_and_smart_cache() {
+        use goose::permission::permission_inspector::PermissionInspector;
+        use goose::tool_inspection::{InspectionAction, ToolInspector};
+        use rmcp::model::CallToolRequestParams;
+
+        let root = std::env::temp_dir().join(format!(
+            "maple-web-permissions-{}-{}",
+            std::process::id(),
+            NEXT_RUN_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&root).unwrap();
+        reset_maple_owned_permission_file(&root.join("permission.yaml")).unwrap();
+        let manager = Arc::new(PermissionManager::new(root.clone()));
+        let provider: goose::agents::types::SharedProvider = Arc::new(Mutex::new(None));
+        let inspector = PermissionInspector::new(
+            Arc::clone(&manager),
+            provider,
+            Arc::new(SessionManager::new(root.join("data"))),
+        );
+        inspector
+            .apply_tool_annotations(&[web_tools::web_search_tool(), web_tools::open_url_tool()]);
+        for tool in ["web_search", "open_url"] {
+            manager.update_smart_approve_permission(
+                tool,
+                goose::config::permission::PermissionLevel::AlwaysAllow,
+            );
+        }
+
+        let message = Message::assistant()
+            .with_tool_request(
+                "search-request",
+                Ok(CallToolRequestParams::new("web_search".to_string())
+                    .with_arguments(rmcp::object!({ "query": "maple" }))),
+            )
+            .with_tool_request(
+                "open-request",
+                Ok(
+                    CallToolRequestParams::new("open_url".to_string()).with_arguments(
+                        rmcp::object!({
+                            "url": "https://example.com",
+                            "purpose": "Read the source"
+                        }),
+                    ),
+                ),
+            );
+        let requests = message
+            .content
+            .iter()
+            .filter_map(|content| match content {
+                MessageContent::ToolRequest(request) => Some(request.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let results = inspector
+            .inspect("session", &requests, &[], GooseMode::SmartApprove)
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 2);
+        assert!(results
+            .iter()
+            .all(|result| matches!(result.action, InspectionAction::RequireApproval(None))));
+        for tool in ["web_search", "open_url"] {
+            assert_eq!(
+                manager.get_smart_approve_permission(tool),
+                Some(goose::config::permission::PermissionLevel::AlwaysAllow)
+            );
+            assert_eq!(
+                manager.get_user_permission(tool),
+                Some(goose::config::permission::PermissionLevel::AskBefore)
+            );
+        }
+
+        let _ = fs::remove_dir_all(root);
+    }
+
     #[test]
     fn legacy_powerful_agent_default_migrates_to_glm() {
         let mut config = AgentConfig {
@@ -6586,6 +6992,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn history_replaced_ignores_user_rows_emptied_by_audience_projection() {
+        let session_id = "history-replaced-audience-boundary";
+        let current_user = Message::user()
+            .with_id("current-user")
+            .with_text("Current turn");
+        let provider_only_user =
+            Message::user()
+                .with_id("provider-only-user")
+                .with_content(MessageContent::Text(
+                    RawTextContent {
+                        text: "provider-private-state".to_string(),
+                        meta: None,
+                    }
+                    .no_annotation()
+                    .with_audience(vec![McpRole::Assistant]),
+                ));
+        let conversation =
+            Conversation::new_unvalidated(vec![current_user.clone(), provider_only_user]);
+        let live_timelines = Arc::new(Mutex::new(HashMap::from([(
+            session_id.to_string(),
+            LiveTimeline::Streaming(message_to_timeline_items(&current_user, false)),
+        )])));
+
+        reseed_live_timeline_after_history_replaced(&live_timelines, session_id, &conversation)
+            .await;
+
+        let timelines = live_timelines.lock().await;
+        let items = timelines
+            .get(session_id)
+            .expect("the latest visible user boundary should survive")
+            .items();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].id, "current-user-text");
+        assert!(!items[0]
+            .text
+            .as_deref()
+            .unwrap_or_default()
+            .contains("provider-private-state"));
+    }
+
+    #[tokio::test]
     async fn history_replaced_boundary_prevents_post_compaction_replay_on_reload() {
         let session_id = "post-compaction-reload";
         let prior_user = Message::user()
@@ -6830,10 +7277,27 @@ mod tests {
             ((target.id.clone(), "target-request".to_string()), ()),
             ((survivor.id.clone(), "survivor-request".to_string()), ()),
         ])));
+        let web_tool_state = WebToolState::default();
+        let provenance_cancel = CancellationToken::new();
+        web_tool_state
+            .record_search_urls(
+                &target.id,
+                ["https://example.com/target"],
+                &provenance_cancel,
+            )
+            .await;
+        web_tool_state
+            .record_search_urls(
+                &survivor.id,
+                ["https://example.com/survivor"],
+                &provenance_cancel,
+            )
+            .await;
         delete_persisted_agent_session(
             &session_manager,
             &pending_permissions,
             &live_timelines,
+            Some(&web_tool_state),
             &target.id,
         )
         .await
@@ -6856,6 +7320,17 @@ mod tests {
         assert!(permissions
             .keys()
             .any(|(session_id, _)| session_id == &survivor.id));
+        drop(permissions);
+        assert!(
+            !web_tool_state
+                .contains_search_url(&target.id, "https://example.com/target")
+                .await
+        );
+        assert!(
+            web_tool_state
+                .contains_search_url(&survivor.id, "https://example.com/survivor")
+                .await
+        );
 
         let _ = fs::remove_dir_all(test_root);
     }
@@ -6897,18 +7372,30 @@ mod tests {
             session.id.clone(),
             LiveTimeline::Streaming(vec![prior_live_item.clone()]),
         )])));
+        let web_tool_state = WebToolState::default();
+        let provenance_cancel = CancellationToken::new();
+        web_tool_state
+            .record_search_urls(
+                &session.id,
+                ["https://example.com/prior"],
+                &provenance_cancel,
+            )
+            .await;
 
         let mut before_turn = session_manager
             .get_session(&session.id, true)
             .await
             .expect("pre-turn session should load");
+        let snapshot_live_timeline = live_timelines.lock().await.get(&session.id).cloned();
+        let snapshot_web_provenance = web_tool_state.snapshot_session(&session.id).await;
         let snapshot = AgentTurnSnapshot {
             conversation: before_turn
                 .conversation
                 .take()
                 .expect("pre-turn conversation should be loaded"),
             autogenerated_title: None,
-            live_timeline: live_timelines.lock().await.get(&session.id).cloned(),
+            live_timeline: snapshot_live_timeline,
+            web_provenance: snapshot_web_provenance,
         };
 
         let configured_model_name = "configured-after-snapshot";
@@ -6956,14 +7443,43 @@ mod tests {
             session.id.clone(),
             LiveTimeline::Streaming(vec![post_history_replaced_item.clone()]),
         );
-        rollback_cancelled_agent_turn(&session_manager, &live_timelines, &session.id, &snapshot)
-            .await
-            .expect("cancelled turn should be discarded");
+        web_tool_state
+            .record_search_urls(
+                &session.id,
+                ["https://example.com/cancelled"],
+                &provenance_cancel,
+            )
+            .await;
+        rollback_cancelled_agent_turn(
+            &session_manager,
+            &live_timelines,
+            &web_tool_state,
+            &session.id,
+            &snapshot,
+        )
+        .await
+        .expect("cancelled turn should be discarded");
         // Restoring the exact snapshot is idempotent, including when
         // cancellation raced before Goose persisted any part of the turn.
-        rollback_cancelled_agent_turn(&session_manager, &live_timelines, &session.id, &snapshot)
-            .await
-            .expect("repeated snapshot restoration should be a no-op");
+        rollback_cancelled_agent_turn(
+            &session_manager,
+            &live_timelines,
+            &web_tool_state,
+            &session.id,
+            &snapshot,
+        )
+        .await
+        .expect("repeated snapshot restoration should be a no-op");
+        assert!(
+            web_tool_state
+                .contains_search_url(&session.id, "https://example.com/prior")
+                .await
+        );
+        assert!(
+            !web_tool_state
+                .contains_search_url(&session.id, "https://example.com/cancelled")
+                .await
+        );
 
         let reloaded = session_manager
             .get_session(&session.id, true)
@@ -7023,17 +7539,22 @@ mod tests {
             .get_session(&first_turn_session.id, true)
             .await
             .expect("first-turn snapshot should load");
+        let first_turn_live_timeline = live_timelines
+            .lock()
+            .await
+            .get(&first_turn_session.id)
+            .cloned();
+        let first_turn_web_provenance = web_tool_state
+            .snapshot_session(&first_turn_session.id)
+            .await;
         let first_turn_snapshot = AgentTurnSnapshot {
             conversation: first_turn_before
                 .conversation
                 .take()
                 .expect("empty first-turn conversation should be loaded"),
             autogenerated_title: Some(first_turn_before.name.clone()),
-            live_timeline: live_timelines
-                .lock()
-                .await
-                .get(&first_turn_session.id)
-                .cloned(),
+            live_timeline: first_turn_live_timeline,
+            web_provenance: first_turn_web_provenance,
         };
         session_manager
             .update(&first_turn_session.id)
@@ -7055,6 +7576,7 @@ mod tests {
         rollback_cancelled_agent_turn(
             &session_manager,
             &live_timelines,
+            &web_tool_state,
             &first_turn_session.id,
             &first_turn_snapshot,
         )

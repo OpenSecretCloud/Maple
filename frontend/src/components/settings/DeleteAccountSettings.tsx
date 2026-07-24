@@ -9,7 +9,11 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useSettingsNavigationLock } from "@/contexts/SettingsNavigationLockContext";
-import { clearAgentDataForUser } from "@/services/agentRuntimeService";
+import {
+  clearAgentDataForUser,
+  clearMapleApiAuthForUser,
+  restoreMapleApiAuthForUser
+} from "@/services/agentRuntimeService";
 import { SettingsPage, SettingsSection } from "./SettingsPage";
 
 export function DeleteAccountSettings() {
@@ -60,10 +64,10 @@ export function DeleteAccountSettings() {
     let deletionConfirmed = isAccountDeleted;
     let agentDataCleared = cleanupBlockRef.current !== null;
     let proxyReset = false;
+    let nativeAuthCleared = false;
+    const userId = os.auth.user?.user.id;
 
     try {
-      const userId = os.auth.user?.user.id;
-
       if (!cleanupBlockRef.current) {
         // Clear local Agent data before the irreversible remote deletion.
         cleanupBlockRef.current = await clearAgentDataForUser(userId);
@@ -75,6 +79,9 @@ export function DeleteAccountSettings() {
       const { proxyService } = await import("@/services/proxyService");
       await proxyService.stopAndResetProxy(userId, os.deleteApiKey);
       proxyReset = true;
+
+      await clearMapleApiAuthForUser(userId);
+      nativeAuthCleared = true;
 
       if (!deletionConfirmed) {
         await os.confirmAccountDeletion(confirmationCode, secret);
@@ -99,6 +106,13 @@ export function DeleteAccountSettings() {
       // If remote deletion did not happen, the authenticated user must be able
       // to start a fresh Agent runtime after this attempt.
       if (!deletionConfirmed) {
+        if (nativeAuthCleared) {
+          try {
+            await restoreMapleApiAuthForUser(userId);
+          } catch (restoreError) {
+            console.error("Error restoring Maple API authentication:", restoreError);
+          }
+        }
         cleanupBlockRef.current?.release();
         cleanupBlockRef.current = null;
       }
@@ -107,9 +121,11 @@ export function DeleteAccountSettings() {
           ? "Maple could not safely stop and clear local Agent Mode data. Your account was not deleted; please retry."
           : deletionConfirmed
             ? "Your account data was deleted, but Maple could not finish resetting local credentials or signing out. Please retry."
-            : !proxyReset
-              ? "Local Agent Mode history was cleared, but Maple could not reset its proxy credentials. Your account was not deleted; please retry."
-              : "Local Agent Mode history was cleared, but account deletion was not confirmed. Verify the code and retry if you still want to delete your account."
+            : !nativeAuthCleared
+              ? "Local Agent Mode history was cleared, but Maple could not reset its native authentication. Your account was not deleted; please retry."
+              : !proxyReset
+                ? "Local Agent Mode history was cleared, but Maple could not reset its proxy credentials. Your account was not deleted; please retry."
+                : "Local Agent Mode history was cleared, but account deletion was not confirmed. Verify the code and retry if you still want to delete your account."
       );
       setIsLoading(false);
     }

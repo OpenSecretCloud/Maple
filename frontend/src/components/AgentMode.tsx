@@ -105,11 +105,6 @@ import {
   userFacingAgentError
 } from "@/services/agentMcpErrors";
 import { reconcileNewChatMcpServerNames } from "@/services/agentMcpServers";
-import {
-  AgentProxyManualConfigConflictError,
-  AgentProxyReplacementSetupError,
-  proxyService
-} from "@/services/proxyService";
 import { agentOperationFence } from "@/services/agentOperationFence";
 import {
   AgentThoughtLabelFinalRequestRegistry,
@@ -197,7 +192,8 @@ const AGENT_PERMISSION_MODES: Array<{
   {
     value: "smart_approve",
     label: "Read only",
-    description: "Auto-runs local reads; asks before writes and remote access"
+    description:
+      "Auto-runs local reads and Maple web research; asks before writes and other external access"
   },
   {
     value: "auto",
@@ -276,9 +272,7 @@ function buildFallbackModelAliases(models: OpenSecretModel[]): OpenSecretModelAl
 }
 
 export function AgentMode({ userId }: { userId: string }) {
-  const os = useOpenSecret();
   const openai = useOpenAI();
-  const { createApiKey, deleteApiKey } = os;
   const { availableModels, modelAliases } = useLocalState();
   const { agentSessionSelection } = usePersistentHomeNavigation();
   const isMobile = useIsMobile();
@@ -315,10 +309,8 @@ export function AgentMode({ userId }: { userId: string }) {
     () => localStorage.getItem("agentFullscreen") === "true"
   );
   const [error, setError] = useState<string | null>(null);
-  const [hasManualProxyConflict, setHasManualProxyConflict] = useState(false);
   const [isAuthTransitionReady, setIsAuthTransitionReady] = useState(false);
   const [isInitializing, setIsInitializing] = useState(true);
-  const [isReplacingManualProxy, setIsReplacingManualProxy] = useState(false);
   const [isStarting, setIsStarting] = useState(false);
   const [isPermissionModeUpdating, setIsPermissionModeUpdating] = useState(false);
   const [isProjectRootRegistrationPending, setIsProjectRootRegistrationPending] = useState(false);
@@ -642,9 +634,7 @@ export function AgentMode({ userId }: { userId: string }) {
     isProjectRootRegistrationPending ||
     isProjectSkillsTrustLoading ||
     isProjectSkillsTrustSaving ||
-    projectSkillsTrustPrompt !== null ||
-    isReplacingManualProxy ||
-    hasManualProxyConflict;
+    projectSkillsTrustPrompt !== null;
   const hasStartedAgentSession =
     hasAgentUserMessage(timelineItems) ||
     sessions.some((session) => session.id === activeSessionId && session.messageCount > 0);
@@ -850,30 +840,6 @@ export function AgentMode({ userId }: { userId: string }) {
     [userId]
   );
 
-  const ensureMapleProxyReady = useCallback(async () => {
-    try {
-      const status = await trackAgentWorkflow(async () => {
-        return await proxyService.ensureProxyReady(
-          userId,
-          async (name) => {
-            const response = await createApiKey(name);
-            return response.key;
-          },
-          async (name) => {
-            await deleteApiKey(name);
-          }
-        );
-      });
-      setHasManualProxyConflict(false);
-      return status;
-    } catch (proxyError) {
-      if (proxyError instanceof AgentProxyManualConfigConflictError) {
-        setHasManualProxyConflict(true);
-      }
-      throw proxyError;
-    }
-  }, [createApiKey, deleteApiKey, trackAgentWorkflow, userId]);
-
   const enqueueProjectRootMutation = useCallback(
     async <T,>(mutation: () => Promise<T>): Promise<T> => {
       const previousOperation = projectRootPersistenceQueues.get(userId) ?? Promise.resolve();
@@ -1039,8 +1005,7 @@ export function AgentMode({ userId }: { userId: string }) {
       const status = await agentRuntimeService.getRuntimeStatus(userId);
       applyRuntimeStatus(status, runStateGeneration);
       if (!status.running) {
-        // Session history is account-scoped local data and does not require a
-        // live runtime or verified proxy credential.
+        // Session history is account-scoped local data and does not require a live runtime.
         await refreshSessionList();
         return;
       }
@@ -1192,17 +1157,13 @@ export function AgentMode({ userId }: { userId: string }) {
         setModel(nextModel);
         applyAuthoritativeMode(nextMode);
 
-        // Session history is local account data and remains browseable even
-        // when an existing proxy credential requires explicit replacement.
+        // Session history is local account data and remains browseable before
+        // the authenticated native runtime is started.
         await refreshSessionList();
         if (cancelled || interactionGenerationRef.current !== initializationGeneration) {
           return;
         }
 
-        await ensureMapleProxyReady();
-        if (cancelled || interactionGenerationRef.current !== initializationGeneration) {
-          return;
-        }
         if (status.running) {
           await refreshSessions();
         } else if (root) {
@@ -1219,11 +1180,7 @@ export function AgentMode({ userId }: { userId: string }) {
           await refreshSessions();
         }
       } catch (loadError) {
-        if (
-          !cancelled &&
-          interactionGenerationRef.current === initializationGeneration &&
-          !(loadError instanceof AgentProxyManualConfigConflictError)
-        ) {
+        if (!cancelled && interactionGenerationRef.current === initializationGeneration) {
           setError(errorMessage(loadError));
         }
       }
@@ -1235,11 +1192,7 @@ export function AgentMode({ userId }: { userId: string }) {
         await trackAgentWorkflow(loadInitialState);
       })
       .catch((loadError) => {
-        if (
-          !cancelled &&
-          interactionGenerationRef.current === initializationGeneration &&
-          !(loadError instanceof AgentProxyManualConfigConflictError)
-        ) {
+        if (!cancelled && interactionGenerationRef.current === initializationGeneration) {
           setError(errorMessage(loadError));
         }
       })
@@ -1255,7 +1208,6 @@ export function AgentMode({ userId }: { userId: string }) {
   }, [
     applyAuthoritativeMode,
     applyRuntimeStatus,
-    ensureMapleProxyReady,
     refreshSessionList,
     refreshSessions,
     trackAgentWorkflow,
@@ -1407,7 +1359,6 @@ export function AgentMode({ userId }: { userId: string }) {
           if (!projectRoot) {
             throw new Error("Select a project folder first");
           }
-          await ensureMapleProxyReady();
           const requestedMode = selectedModeRef.current;
           const request = { projectRoot, model: model || DEFAULT_MODEL, mode: requestedMode };
           const runStateGeneration = runStateGenerationRef.current;
@@ -1430,8 +1381,7 @@ export function AgentMode({ userId }: { userId: string }) {
       } catch (startError) {
         if (
           startRequestGenerationRef.current === requestGeneration &&
-          interactionGenerationRef.current === interactionGeneration &&
-          !(startError instanceof AgentProxyManualConfigConflictError)
+          interactionGenerationRef.current === interactionGeneration
         ) {
           setError(errorMessage(startError));
         }
@@ -1445,7 +1395,6 @@ export function AgentMode({ userId }: { userId: string }) {
     [
       applyAuthoritativeMode,
       applyRuntimeStatus,
-      ensureMapleProxyReady,
       model,
       projectRoot,
       refreshSessions,
@@ -1453,49 +1402,6 @@ export function AgentMode({ userId }: { userId: string }) {
       userId
     ]
   );
-
-  const replaceManualProxyForAgent = useCallback(async () => {
-    interactionGenerationRef.current += 1;
-    setError(null);
-    setIsReplacingManualProxy(true);
-    try {
-      await trackAgentWorkflow(async () => {
-        await proxyService.replaceOwnerlessProxyAndEnsureReady(
-          userId,
-          async (name) => {
-            const response = await createApiKey(name);
-            return response.key;
-          },
-          async (name) => {
-            await deleteApiKey(name);
-          }
-        );
-      });
-      setHasManualProxyConflict(false);
-      if (projectRoot) {
-        await startRuntime(Boolean(runtimeStatus?.running));
-      }
-    } catch (replaceError) {
-      if (replaceError instanceof AgentProxyManualConfigConflictError) {
-        setHasManualProxyConflict(true);
-      } else if (replaceError instanceof AgentProxyReplacementSetupError) {
-        setHasManualProxyConflict(false);
-        setError(replaceError.message);
-      } else {
-        setError(errorMessage(replaceError));
-      }
-    } finally {
-      setIsReplacingManualProxy(false);
-    }
-  }, [
-    createApiKey,
-    deleteApiKey,
-    projectRoot,
-    runtimeStatus?.running,
-    startRuntime,
-    trackAgentWorkflow,
-    userId
-  ]);
 
   const ensureRuntimeAndSession = useCallback(
     async (
@@ -2340,36 +2246,6 @@ export function AgentMode({ userId }: { userId: string }) {
             newItemLabel="New Task"
           />
         ) : null}
-
-        {hasManualProxyConflict && (
-          <div className="mx-auto mt-3 w-full max-w-6xl px-4">
-            <div className="flex flex-col gap-3 rounded-md border border-maple-warning/40 bg-maple-warning/10 px-3 py-3 text-sm sm:flex-row sm:items-center sm:justify-between">
-              <div className="flex min-w-0 items-start gap-2">
-                <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-maple-warning" />
-                <div className="min-w-0">
-                  <p className="font-medium">Saved local proxy credential</p>
-                  <p className="mt-0.5 text-xs text-muted-foreground">
-                    Maple cannot verify that this existing Local OpenAI Proxy key belongs to the
-                    signed-in account. This can happen once after upgrading from an older Agent Mode
-                    build. Your tasks remain available; replace the saved local setup before sending
-                    another message. The existing backend key will remain in API Management.
-                  </p>
-                </div>
-              </div>
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                className="shrink-0"
-                disabled={isReplacingManualProxy}
-                onClick={() => void replaceManualProxyForAgent()}
-              >
-                {isReplacingManualProxy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-                Replace local setup
-              </Button>
-            </div>
-          </div>
-        )}
 
         {error && (
           <div className="mx-auto mt-3 w-full max-w-6xl px-4">

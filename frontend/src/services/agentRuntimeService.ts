@@ -1,6 +1,7 @@
 import { isTauriDesktop } from "@/utils/platform";
 import { agentOperationFence, type AgentOperationBlock } from "@/services/agentOperationFence";
 import { AgentAuthLifecycleCoordinator } from "@/services/agentAuthLifecycle";
+import { mapleApiAuthService } from "@/services/mapleApiAuthService";
 
 export interface AgentConfig {
   defaultProjectRoot?: string | null;
@@ -143,7 +144,21 @@ export interface AgentEventEnvelope {
 export type AgentEventHandler = (event: AgentEventEnvelope) => void;
 export type UnlistenAgentEvents = () => void;
 
-class AgentRuntimeService {
+export interface AgentRuntimeBridge {
+  syncAuth(userId: string): Promise<void>;
+  runForUser<T>(userId: string, operation: () => Promise<T>): Promise<T>;
+  invoke<T>(command: string, args?: Record<string, unknown>): Promise<T>;
+}
+
+const defaultAgentRuntimeBridge: AgentRuntimeBridge = {
+  syncAuth: async (userId) => await mapleApiAuthService.sync(userId),
+  runForUser: async (userId, operation) => await agentOperationFence.run(userId, operation),
+  invoke: invokeAgent
+};
+
+export class AgentRuntimeService {
+  constructor(private readonly bridge: AgentRuntimeBridge = defaultAgentRuntimeBridge) {}
+
   async getRuntimeStatus(userId: string): Promise<AgentRuntimeStatus> {
     return await this.invokeForUser<AgentRuntimeStatus>(userId, "agent_get_runtime_status");
   }
@@ -279,7 +294,9 @@ class AgentRuntimeService {
   }
 
   async cancelRun(userId: string, runId: string): Promise<void> {
-    await this.invokeForUser(userId, "agent_cancel_run", { userId, runId });
+    // Cancellation is a local control-plane operation. Keep it account-fenced,
+    // but never delay Stop on remote credential validation or token refresh.
+    await this.invokeLocalForUser(userId, "agent_cancel_run", { userId, runId });
   }
 
   async setPermissionMode(userId: string, sessionId: string, mode: string): Promise<void> {
@@ -317,8 +334,19 @@ class AgentRuntimeService {
     command: string,
     args?: Record<string, unknown>
   ): Promise<T> {
-    return await agentOperationFence.run(userId, async () => {
-      return await invokeAgent<T>(command, { userId, ...args });
+    return await this.bridge.runForUser(userId, async () => {
+      await this.bridge.syncAuth(userId);
+      return await this.bridge.invoke<T>(command, { userId, ...args });
+    });
+  }
+
+  private async invokeLocalForUser<T>(
+    userId: string,
+    command: string,
+    args?: Record<string, unknown>
+  ): Promise<T> {
+    return await this.bridge.runForUser(userId, async () => {
+      return await this.bridge.invoke<T>(command, { userId, ...args });
     });
   }
 }
@@ -338,6 +366,7 @@ const agentAuthLifecycle = new AgentAuthLifecycleCoordinator(
     if (!isTauriDesktop()) return;
     const block = await stopAgentRuntimeForUser(userId);
     try {
+      await mapleApiAuthService.clear(userId);
       // Auth may already be gone, so remote revocation is not reliable here.
       // Scrub the local credential immediately; the exact tracked backend-key
       // record remains available for retry if this account signs in again.
@@ -347,7 +376,10 @@ const agentAuthLifecycle = new AgentAuthLifecycleCoordinator(
       block.retainUntilNextSession();
     }
   },
-  (userId) => agentOperationFence.activateUserSession(userId)
+  async (userId) => {
+    await mapleApiAuthService.activate(userId);
+    agentOperationFence.activateUserSession(userId);
+  }
 );
 
 export function transitionAgentAuthUser(userId?: string | null): Promise<void> {
@@ -355,7 +387,19 @@ export function transitionAgentAuthUser(userId?: string | null): Promise<void> {
 }
 
 export async function awaitAgentAuthUser(userId: string): Promise<void> {
-  await agentAuthLifecycle.waitForUser(userId);
+  await agentAuthLifecycle.ensureCurrentUser(userId);
+}
+
+export async function clearMapleApiAuthForUser(userId?: string | null): Promise<void> {
+  if (!isTauriDesktop()) return;
+  if (!userId) throw new Error("Cannot clear Maple API authentication without a signed-in user");
+  await mapleApiAuthService.clear(userId);
+}
+
+export async function restoreMapleApiAuthForUser(userId?: string | null): Promise<void> {
+  if (!isTauriDesktop()) return;
+  if (!userId) throw new Error("Cannot restore Maple API authentication without a signed-in user");
+  await mapleApiAuthService.activate(userId);
 }
 
 export async function stopAgentRuntimeForUser(

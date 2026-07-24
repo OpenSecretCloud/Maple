@@ -14,7 +14,11 @@ import { Loader2, CheckCircle, LogOut } from "lucide-react";
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
 import { AlertDestructive } from "./AlertDestructive";
-import { stopAgentRuntimeForUser } from "@/services/agentRuntimeService";
+import {
+  clearMapleApiAuthForUser,
+  restoreMapleApiAuthForUser,
+  stopAgentRuntimeForUser
+} from "@/services/agentRuntimeService";
 import { getBillingService } from "@/billing/billingService";
 import { navigateToSafeInternalRedirect } from "@/utils/internalRedirect";
 
@@ -115,9 +119,11 @@ export function VerificationModal() {
     setIsSigningOut(true);
     let operationBlock: Awaited<ReturnType<typeof stopAgentRuntimeForUser>> | null = null;
     let signedOut = false;
+    let nativeAuthCleared = false;
+    const userId = os.auth.user?.user.id;
 
     try {
-      operationBlock = await stopAgentRuntimeForUser(os.auth.user?.user.id);
+      operationBlock = await stopAgentRuntimeForUser(userId);
     } catch (error) {
       console.error("Error stopping Agent Mode:", error);
       setSignOutError("Maple couldn't stop Agent Mode. Please try logging out again.");
@@ -128,7 +134,7 @@ export function VerificationModal() {
     try {
       // Credential reset is a required part of logout.
       const { proxyService } = await import("@/services/proxyService");
-      await proxyService.stopAndResetProxy(os.auth.user?.user.id, os.deleteApiKey);
+      await proxyService.stopAndResetProxy(userId, os.deleteApiKey);
 
       // Do not carry this account's third-party billing JWT into the next
       // authenticated session in the same WebView.
@@ -138,6 +144,8 @@ export function VerificationModal() {
         sessionStorage.removeItem("maple_billing_token");
       }
 
+      await clearMapleApiAuthForUser(userId);
+      nativeAuthCleared = true;
       await os.signOut();
       signedOut = true;
       queryClient.clear();
@@ -148,6 +156,13 @@ export function VerificationModal() {
       );
     } finally {
       if (!signedOut) {
+        if (nativeAuthCleared) {
+          try {
+            await restoreMapleApiAuthForUser(userId);
+          } catch (error) {
+            console.error("Error restoring Maple API authentication:", error);
+          }
+        }
         operationBlock.release();
         setIsSigningOut(false);
       } else {

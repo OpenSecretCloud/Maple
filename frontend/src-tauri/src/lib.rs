@@ -3,6 +3,8 @@ use tauri_plugin_deep_link::DeepLinkExt;
 
 #[cfg(desktop)]
 mod agent;
+#[cfg(desktop)]
+mod maple_api;
 mod onnxruntime;
 mod pdf_extractor;
 mod pdf_ocr;
@@ -73,6 +75,7 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(agent::AgentRuntimeState::new())
+        .manage(maple_api::MapleApiAuthState::new())
         .manage(proxy::ProxyState::new())
         .manage(tts::TTSState::new())
         .invoke_handler(tauri::generate_handler![
@@ -101,6 +104,9 @@ pub fn run() {
             agent::agent_permission_respond,
             agent::agent_clear_user_history,
             agent::agent_clear_user_data,
+            maple_api::maple_api_set_auth,
+            maple_api::maple_api_get_auth,
+            maple_api::maple_api_clear_auth,
             proxy::start_proxy,
             proxy::stop_proxy,
             proxy::stop_and_reset_proxy,
