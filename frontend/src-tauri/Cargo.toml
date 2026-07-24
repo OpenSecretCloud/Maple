@@ -76,11 +76,15 @@ dirs = "6.0"
 # instead of a submodule so ordinary Maple checkouts do not need the full Goose
 # history.
 goose = { git = "https://github.com/aaif-goose/goose.git", rev = "c3111c71cd682ed1d115741677f0ca9946c51499", package = "goose", default-features = false }
+goose-providers = { git = "https://github.com/aaif-goose/goose.git", rev = "c3111c71cd682ed1d115741677f0ca9946c51499", package = "goose-providers", default-features = false }
+opensecret = "3.5.0"
 async-trait = "0.1"
 rmcp = { version = "=1.4.0", default-features = false }
 tauri-plugin-dialog = "2.7.1"
-tokio-util = "0.7"
+tokio-util = { version = "0.7", features = ["codec", "io"] }
+httpdate = "1"
 process-wrap = { version = "=9.1.0", default-features = false, features = ["tokio1", "creation-flags", "job-object", "process-group"] }
+pulldown-cmark = { version = "0.13", default-features = false }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
@@ -112,6 +116,7 @@ windows = { version = "0.62.2", features = ["Win32_System_Threading"] }
 
 [dev-dependencies]
 tempfile = "3"
+ciborium = "0.2"
 
 [patch.crates-io]
 # Local patch for tao 0.35.2 Android intent crashes:
