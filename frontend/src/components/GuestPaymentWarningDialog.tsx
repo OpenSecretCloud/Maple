@@ -15,6 +15,7 @@ import {
   restoreMapleApiAuthForUser,
   stopAgentRuntimeForUser
 } from "@/services/agentRuntimeService";
+import { resetWorkspaceModePreference } from "@/services/workspaceModePreference";
 import { useState } from "react";
 import { getBillingService } from "@/billing/billingService";
 
@@ -69,6 +70,7 @@ export function GuestPaymentWarningDialog({ open, onOpenChange }: GuestPaymentWa
       nativeAuthCleared = true;
       await os.signOut();
       signedOut = true;
+      resetWorkspaceModePreference();
       queryClient.clear();
     } catch (error) {
       console.error("Error during sign out:", error);

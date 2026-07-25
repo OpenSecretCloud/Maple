@@ -19,6 +19,7 @@ import {
   restoreMapleApiAuthForUser,
   stopAgentRuntimeForUser
 } from "@/services/agentRuntimeService";
+import { resetWorkspaceModePreference } from "@/services/workspaceModePreference";
 import { getBillingService } from "@/billing/billingService";
 import { navigateToSafeInternalRedirect } from "@/utils/internalRedirect";
 
@@ -148,6 +149,7 @@ export function VerificationModal() {
       nativeAuthCleared = true;
       await os.signOut();
       signedOut = true;
+      resetWorkspaceModePreference();
       queryClient.clear();
     } catch (error) {
       console.error("Error during sign out:", error);
