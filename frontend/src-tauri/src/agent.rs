@@ -35,6 +35,7 @@ use shell_permission::{
 };
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -122,6 +123,8 @@ pub struct AgentConfig {
     pub mcp_servers: Vec<AgentMcpServer>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub project_skills_trust: Vec<AgentProjectSkillsTrust>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub removed_project_roots: Vec<String>,
 }
 
 fn default_agent_model() -> String {
@@ -135,6 +138,7 @@ impl Default for AgentConfig {
             default_model: default_agent_model(),
             mcp_servers: Vec::new(),
             project_skills_trust: Vec::new(),
+            removed_project_roots: Vec::new(),
         }
     }
 }
@@ -244,6 +248,14 @@ pub struct RecentProjectRoot {
     pub path: String,
     pub name: String,
     pub last_used_ms: u128,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentProjectRootRegistration {
+    pub project_root: String,
+    pub roots: Vec<RecentProjectRoot>,
+    pub config: AgentConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -865,6 +877,17 @@ pub async fn agent_clear_user_data(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(format!("Failed to clear Agent Mode data: {error}")),
     }
+    let local_account_dir =
+        account_local_data_dir_path(&app_handle, &user_id).map_err(|error| error.to_string())?;
+    match fs::remove_dir_all(local_account_dir) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(format!(
+                "Failed to clear device-local Agent Mode data: {error}"
+            ))
+        }
+    }
     Ok(())
 }
 
@@ -977,14 +1000,124 @@ pub async fn agent_save_recent_project_root(
     state: State<'_, AgentRuntimeState>,
     user_id: String,
     path: String,
-) -> Result<Vec<RecentProjectRoot>, String> {
+) -> Result<AgentProjectRootRegistration, String> {
     let account_scope = account_scope(&user_id)?;
     let generation = account_generation(&state, &account_scope).await;
     let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
     ensure_account_generation(&state, &account_scope, generation).await?;
     let project_root = normalize_project_root(Path::new(&path))?;
-    register_explicit_project_root_inner(&app_handle, &user_id, &project_root)
-        .map_err(|e| e.to_string())
+    let mut config =
+        load_agent_config_inner(&app_handle, &user_id).map_err(|error| error.to_string())?;
+    let canonical_path = path_string(&project_root);
+    let restoring = config
+        .removed_project_roots
+        .iter()
+        .any(|removed| removed == &canonical_path);
+    let roots = if restoring {
+        restore_explicit_project_root_inner(&app_handle, &user_id, &project_root)
+    } else {
+        register_explicit_project_root_inner(&app_handle, &user_id, &project_root)
+    }
+    .map_err(|error| error.to_string())?;
+
+    config
+        .removed_project_roots
+        .retain(|removed| removed != &canonical_path);
+    config.default_project_root = Some(canonical_path.clone());
+    save_agent_config_inner(&app_handle, &user_id, &config).map_err(|error| error.to_string())?;
+    // Clear the device-local tombstone last. If registration or ordinary
+    // config persistence fails, the project remains hidden.
+    if restoring {
+        save_removed_project_roots_inner(&app_handle, &user_id, &config.removed_project_roots)
+            .map_err(|error| error.to_string())?;
+    }
+
+    Ok(AgentProjectRootRegistration {
+        project_root: canonical_path,
+        roots,
+        config,
+    })
+}
+
+#[tauri::command]
+pub async fn agent_remove_project_root(
+    app_handle: AppHandle,
+    state: State<'_, AgentRuntimeState>,
+    user_id: String,
+    path: String,
+    fallback_path: Option<String>,
+) -> Result<AgentConfig, String> {
+    let account_scope = account_scope(&user_id)?;
+    let generation = account_generation(&state, &account_scope).await;
+    let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
+    ensure_account_generation(&state, &account_scope, generation).await?;
+    let _session_lifecycle_guard = state.session_lifecycle.lock().await;
+
+    let path = path.trim().to_string();
+    if !structurally_valid_project_root(&path) {
+        return Err("Project path must be an absolute folder path".to_string());
+    }
+    let fallback_path = fallback_path
+        .map(|fallback| fallback.trim().to_string())
+        .filter(|fallback| !fallback.is_empty());
+    if let Some(fallback) = fallback_path.as_deref() {
+        if fallback == path || !structurally_valid_project_root(fallback) {
+            return Err("Project fallback must be a different absolute folder path".to_string());
+        }
+    }
+
+    let (session_manager, active_session_ids) = {
+        let runtime = state.inner.lock().await;
+        match runtime.as_ref() {
+            Some(current) => {
+                ensure_runtime_account(current, &account_scope)?;
+                (
+                    Arc::clone(&current.session_manager),
+                    current
+                        .active_runs
+                        .values()
+                        .map(|run| run.session_id.clone())
+                        .collect::<HashSet<_>>(),
+                )
+            }
+            None => (
+                account_session_manager(&app_handle, &user_id)?,
+                HashSet::new(),
+            ),
+        }
+    };
+    let sessions = session_manager
+        .list_all_sessions()
+        .await
+        .map_err(|error| format!("Failed to inspect Agent tasks: {error}"))?;
+    let session_roots = sessions
+        .iter()
+        .map(|session| (session.id.clone(), path_string(&session.working_dir)))
+        .collect::<HashMap<_, _>>();
+    if project_has_active_session_run(&session_roots, &active_session_ids, &path) {
+        return Err("Stop the running agent before removing this project".to_string());
+    }
+
+    let mut config =
+        load_agent_config_inner(&app_handle, &user_id).map_err(|error| error.to_string())?;
+    apply_project_root_removal(&mut config, &path, fallback_path.as_deref())?;
+    // The tombstone is the only persistent removal state. Saving the fallback
+    // into roaming config would let this device's removal alter another
+    // device. Runtime/UI use the fallback immediately; startup filters the
+    // stale hidden default before selecting any project.
+    save_removed_project_roots_inner(&app_handle, &user_id, &config.removed_project_roots)
+        .map_err(|error| error.to_string())?;
+
+    let mut runtime = state.inner.lock().await;
+    if let Some(current) = runtime.as_mut() {
+        update_runtime_project_root_after_removal(
+            &mut current.project_root,
+            &path,
+            fallback_path.as_deref(),
+        );
+    }
+
+    Ok(config)
 }
 
 #[tauri::command]
@@ -1089,10 +1222,13 @@ pub async fn agent_create_session(
         )
     };
 
+    let config =
+        load_agent_config_inner(&app_handle, &user_id).map_err(|error| error.to_string())?;
     let root = match request.project_root.as_deref() {
         Some(path) if !path.trim().is_empty() => normalize_project_root(Path::new(path))?,
         _ => runtime_project_root,
     };
+    ensure_session_project_root_is_visible(&root, &config.removed_project_roots)?;
     let title = request
         .title
         .filter(|value| !value.trim().is_empty())
@@ -1100,11 +1236,7 @@ pub async fn agent_create_session(
     let mode = request.mode.unwrap_or(runtime_mode);
     let permission_mode = parse_user_permission_mode(&mode)?;
     let model = request.model.unwrap_or(runtime_model);
-    let configured_mcp = normalize_mcp_servers(
-        load_agent_config_inner(&app_handle, &user_id)
-            .map_err(|error| format!("Failed to load MCP servers: {error}"))?
-            .mcp_servers,
-    )?;
+    let configured_mcp = normalize_mcp_servers(config.mcp_servers)?;
     let selected_mcp = select_mcp_servers(&configured_mcp, request.mcp_server_names.as_deref())?;
     let selected_extensions = selected_mcp
         .iter()
@@ -4522,6 +4654,18 @@ fn account_config_dir_path(
     Ok(agent_root_dir(app_handle)?.join("accounts").join(scope))
 }
 
+fn account_local_data_dir_path(
+    app_handle: &AppHandle,
+    user_id: &str,
+) -> Result<PathBuf, anyhow::Error> {
+    let scope = account_scope(user_id).map_err(anyhow::Error::msg)?;
+    let base = app_handle
+        .path()
+        .app_local_data_dir()
+        .map_err(|error| anyhow::anyhow!("Failed to resolve app local data dir: {error}"))?;
+    Ok(base.join("agent").join("accounts").join(scope))
+}
+
 fn agent_config_dir(app_handle: &AppHandle, user_id: &str) -> Result<PathBuf, anyhow::Error> {
     let path = account_config_dir_path(app_handle, user_id)?;
     fs::create_dir_all(&path)?;
@@ -4566,9 +4710,24 @@ fn load_agent_config_inner(
     user_id: &str,
 ) -> Result<AgentConfig, anyhow::Error> {
     let path = agent_config_dir(app_handle, user_id)?.join("config.json");
-    let mut config = load_agent_config_file(&path)?;
-    if migrate_agent_config(&mut config) {
-        save_agent_config_inner(app_handle, user_id, &config)?;
+    let removed_project_roots_path =
+        account_local_data_dir_path(app_handle, user_id)?.join("removed_project_roots.json");
+    load_agent_config_files(&path, &removed_project_roots_path)
+}
+
+fn load_agent_config_files(
+    config_path: &Path,
+    removed_project_roots_path: &Path,
+) -> Result<AgentConfig, anyhow::Error> {
+    let mut config = load_agent_config_file(config_path)?;
+    // This field was introduced by the unshipped remove-project work. Never
+    // adopt it from the roaming config: on Windows it may have come from a
+    // different device using the same roaming profile.
+    let had_roaming_removed_project_roots = !config.removed_project_roots.is_empty();
+    let migrated = migrate_agent_config(&mut config);
+    config.removed_project_roots = load_removed_project_roots_file(removed_project_roots_path)?;
+    if migrated || had_roaming_removed_project_roots {
+        save_agent_config_file(config_path, &config)?;
     }
     Ok(config)
 }
@@ -4582,11 +4741,15 @@ fn load_agent_config_file(path: &Path) -> Result<AgentConfig, anyhow::Error> {
 }
 
 fn migrate_agent_config(config: &mut AgentConfig) -> bool {
-    if config.default_model != LEGACY_AGENT_DEFAULT_MODEL {
-        return false;
+    let mut changed = false;
+    if config.default_model == LEGACY_AGENT_DEFAULT_MODEL {
+        config.default_model = default_agent_model();
+        changed = true;
     }
-    config.default_model = default_agent_model();
-    true
+    let original_removed_roots = config.removed_project_roots.clone();
+    config.removed_project_roots =
+        sanitize_project_root_paths(std::mem::take(&mut config.removed_project_roots));
+    changed || config.removed_project_roots != original_removed_roots
 }
 
 fn save_agent_config_inner(
@@ -4595,7 +4758,35 @@ fn save_agent_config_inner(
     config: &AgentConfig,
 ) -> Result<(), anyhow::Error> {
     let path = agent_config_dir(app_handle, user_id)?.join("config.json");
-    write_json_file(&path, config)
+    save_agent_config_file(&path, config)
+}
+
+fn save_agent_config_file(path: &Path, config: &AgentConfig) -> Result<(), anyhow::Error> {
+    let mut roaming_config = config.clone();
+    roaming_config.removed_project_roots.clear();
+    write_json_file(path, &roaming_config)
+}
+
+fn load_removed_project_roots_file(path: &Path) -> Result<Vec<String>, anyhow::Error> {
+    if !path.try_exists()? {
+        return Ok(Vec::new());
+    }
+    let contents = fs::read_to_string(path)?;
+    let roots = serde_json::from_str::<Vec<String>>(&contents)?;
+    let sanitized = sanitize_project_root_paths(roots.clone());
+    if sanitized != roots {
+        write_device_local_json_file(path, &sanitized)?;
+    }
+    Ok(sanitized)
+}
+
+fn save_removed_project_roots_inner(
+    app_handle: &AppHandle,
+    user_id: &str,
+    roots: &[String],
+) -> Result<(), anyhow::Error> {
+    let path = account_local_data_dir_path(app_handle, user_id)?.join("removed_project_roots.json");
+    write_device_local_json_file(&path, roots)
 }
 
 fn project_skills_trust_status(
@@ -4665,6 +4856,14 @@ fn structurally_valid_project_root(path: &str) -> bool {
     !path.is_empty() && !path.contains('\0') && Path::new(path).is_absolute()
 }
 
+fn sanitize_project_root_paths(paths: Vec<String>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    paths
+        .into_iter()
+        .filter(|path| structurally_valid_project_root(path) && seen.insert(path.clone()))
+        .collect()
+}
+
 fn sanitize_recent_project_roots(roots: Vec<RecentProjectRoot>) -> Vec<RecentProjectRoot> {
     let mut seen = HashSet::new();
     roots
@@ -4728,6 +4927,43 @@ fn register_explicit_project_root_inner(
     register_explicit_project_root_file(&file_path, project_root, unix_ms())
 }
 
+fn restore_explicit_project_root(
+    roots: Vec<RecentProjectRoot>,
+    project_root: &Path,
+    last_used_ms: u128,
+) -> Vec<RecentProjectRoot> {
+    let path = path_string(project_root);
+    let mut roots = sanitize_recent_project_roots(roots)
+        .into_iter()
+        .filter(|root| root.path != path)
+        .collect::<Vec<_>>();
+    roots.insert(0, project_root_record(path, last_used_ms));
+    roots
+}
+
+fn restore_explicit_project_root_file(
+    file_path: &Path,
+    project_root: &Path,
+    last_used_ms: u128,
+) -> Result<Vec<RecentProjectRoot>, anyhow::Error> {
+    let roots = restore_explicit_project_root(
+        read_recent_project_roots_file(file_path)?,
+        project_root,
+        last_used_ms,
+    );
+    write_json_file(file_path, &roots)?;
+    Ok(roots)
+}
+
+fn restore_explicit_project_root_inner(
+    app_handle: &AppHandle,
+    user_id: &str,
+    project_root: &Path,
+) -> Result<Vec<RecentProjectRoot>, anyhow::Error> {
+    let file_path = agent_config_dir(app_handle, user_id)?.join("recent_roots.json");
+    restore_explicit_project_root_file(&file_path, project_root, unix_ms())
+}
+
 fn apply_project_root_order(
     roots: Vec<RecentProjectRoot>,
     paths: Vec<String>,
@@ -4782,9 +5018,20 @@ fn save_project_root_order_file(
 fn save_project_root_order_inner(
     app_handle: &AppHandle,
     user_id: &str,
-    paths: Vec<String>,
+    mut paths: Vec<String>,
 ) -> Result<Vec<RecentProjectRoot>, anyhow::Error> {
     let file_path = agent_config_dir(app_handle, user_id)?.join("recent_roots.json");
+    let removed = load_agent_config_inner(app_handle, user_id)?
+        .removed_project_roots
+        .into_iter()
+        .collect::<HashSet<_>>();
+    let requested = paths.iter().cloned().collect::<HashSet<_>>();
+    paths.extend(
+        read_recent_project_roots_file(&file_path)?
+            .into_iter()
+            .filter(|root| removed.contains(&root.path) && !requested.contains(&root.path))
+            .map(|root| root.path),
+    );
     save_project_root_order_file(&file_path, paths, unix_ms())
 }
 
@@ -4792,11 +5039,95 @@ fn has_active_session_run(active_runs: &HashMap<String, ActiveAgentRun>, session
     active_runs.values().any(|run| run.session_id == session_id)
 }
 
+fn project_has_active_session_run(
+    session_roots: &HashMap<String, String>,
+    active_session_ids: &HashSet<String>,
+    project_root: &str,
+) -> bool {
+    active_session_ids.iter().any(|session_id| {
+        session_roots
+            .get(session_id)
+            .is_some_and(|root| root == project_root)
+    })
+}
+
+fn apply_project_root_removal(
+    config: &mut AgentConfig,
+    project_root: &str,
+    fallback_path: Option<&str>,
+) -> Result<(), String> {
+    if fallback_path.is_some_and(|fallback| {
+        config
+            .removed_project_roots
+            .iter()
+            .any(|removed| removed == fallback)
+    }) {
+        return Err("Project fallback is already removed".to_string());
+    }
+    if !config
+        .removed_project_roots
+        .iter()
+        .any(|removed| removed == project_root)
+    {
+        config.removed_project_roots.push(project_root.to_string());
+    }
+    if config.default_project_root.as_deref() == Some(project_root) {
+        config.default_project_root = fallback_path.map(ToOwned::to_owned);
+    }
+    Ok(())
+}
+
+fn update_runtime_project_root_after_removal(
+    runtime_project_root: &mut PathBuf,
+    removed_project_root: &str,
+    fallback_path: Option<&str>,
+) {
+    if runtime_project_root == Path::new(removed_project_root) {
+        *runtime_project_root = fallback_path.map(PathBuf::from).unwrap_or_default();
+    }
+}
+
+fn ensure_session_project_root_is_visible(
+    project_root: &Path,
+    removed_project_roots: &[String],
+) -> Result<(), String> {
+    let project_root = path_string(project_root);
+    if project_root.is_empty()
+        || removed_project_roots
+            .iter()
+            .any(|removed| removed == &project_root)
+    {
+        return Err("Select a project folder before creating an Agent task".to_string());
+    }
+    Ok(())
+}
+
 fn write_json_file<T: Serialize>(path: &Path, value: &T) -> Result<(), anyhow::Error> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
     fs::write(path, serde_json::to_string_pretty(value)?)?;
+    set_owner_only_permissions(path);
+    Ok(())
+}
+
+fn write_device_local_json_file<T: Serialize + ?Sized>(
+    path: &Path,
+    value: &T,
+) -> Result<(), anyhow::Error> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("Device-local Agent data path has no parent"))?;
+    fs::create_dir_all(parent)?;
+    set_owner_only_dir_permissions(parent);
+
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+    let json = serde_json::to_string_pretty(value)?;
+    temporary.write_all(json.as_bytes())?;
+    temporary.as_file_mut().sync_all()?;
+    temporary
+        .persist(path)
+        .map_err(|error| anyhow::Error::new(error.error))?;
     set_owner_only_permissions(path);
     Ok(())
 }
@@ -4886,6 +5217,121 @@ mod tests {
         assert_eq!(config.default_model, DEFAULT_AGENT_MODEL);
         assert!(config.mcp_servers.is_empty());
         assert!(config.project_skills_trust.is_empty());
+    }
+
+    #[test]
+    fn removed_project_roots_round_trip_only_through_device_local_storage() {
+        let test_root = recent_roots_test_dir("device-local-removed-roots");
+        let config_path = test_root.join("roaming/config.json");
+        let removed_roots_path = test_root.join("local/removed_project_roots.json");
+        let removed = test_project_path("device-local-removed");
+        let mut config = AgentConfig {
+            default_project_root: Some(removed.clone()),
+            ..AgentConfig::default()
+        };
+        config.removed_project_roots = vec![removed.clone()];
+
+        save_agent_config_file(&config_path, &config).unwrap();
+        write_device_local_json_file(&removed_roots_path, &config.removed_project_roots).unwrap();
+
+        let roaming = serde_json::from_slice::<Value>(&fs::read(&config_path).unwrap()).unwrap();
+        assert!(roaming.get("removedProjectRoots").is_none());
+        let loaded = load_agent_config_files(&config_path, &removed_roots_path).unwrap();
+        assert_eq!(loaded.removed_project_roots, vec![removed.clone()]);
+        assert_eq!(
+            serde_json::to_value(&loaded).unwrap()["removedProjectRoots"],
+            json!([removed])
+        );
+
+        let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[test]
+    fn device_local_removed_project_roots_do_not_cross_devices() {
+        let test_root = recent_roots_test_dir("cross-device-removed-roots");
+        let config_path = test_root.join("roaming/config.json");
+        let device_a_path = test_root.join("device-a/removed_project_roots.json");
+        let device_b_path = test_root.join("device-b/removed_project_roots.json");
+        let removed = test_project_path("cross-device-removed");
+        save_agent_config_file(&config_path, &AgentConfig::default()).unwrap();
+        write_device_local_json_file(&device_a_path, std::slice::from_ref(&removed)).unwrap();
+
+        let device_a = load_agent_config_files(&config_path, &device_a_path).unwrap();
+        let device_b = load_agent_config_files(&config_path, &device_b_path).unwrap();
+
+        assert_eq!(device_a.removed_project_roots, vec![removed]);
+        assert!(device_b.removed_project_roots.is_empty());
+
+        let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[test]
+    fn roaming_removed_project_roots_are_ignored_and_scrubbed() {
+        let test_root = recent_roots_test_dir("ignore-roaming-removed-roots");
+        let config_path = test_root.join("roaming/config.json");
+        let removed_roots_path = test_root.join("local/removed_project_roots.json");
+        let removed = test_project_path("roaming-removed");
+        let config = AgentConfig {
+            removed_project_roots: vec![removed],
+            ..AgentConfig::default()
+        };
+        write_json_file(&config_path, &config).unwrap();
+
+        let loaded = load_agent_config_files(&config_path, &removed_roots_path).unwrap();
+
+        assert!(loaded.removed_project_roots.is_empty());
+        let roaming = serde_json::from_slice::<Value>(&fs::read(&config_path).unwrap()).unwrap();
+        assert!(roaming.get("removedProjectRoots").is_none());
+
+        let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[test]
+    fn device_local_removed_project_roots_are_sanitized_on_load() {
+        let test_root = recent_roots_test_dir("sanitize-local-removed-roots");
+        let path = test_root.join("removed_project_roots.json");
+        let removed = test_project_path("sanitize-local-removed");
+        write_json_file(
+            &path,
+            &vec![
+                removed.clone(),
+                "relative/project".to_string(),
+                removed.clone(),
+            ],
+        )
+        .unwrap();
+
+        let loaded = load_removed_project_roots_file(&path).unwrap();
+
+        assert_eq!(loaded, vec![removed.clone()]);
+        let persisted = serde_json::from_slice::<Vec<String>>(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(persisted, vec![removed]);
+
+        let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[test]
+    fn device_local_serialization_failure_preserves_existing_state() {
+        struct RejectSerialization;
+        impl Serialize for RejectSerialization {
+            fn serialize<S>(&self, _serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: serde::Serializer,
+            {
+                Err(serde::ser::Error::custom("injected serialization failure"))
+            }
+        }
+
+        let test_root = recent_roots_test_dir("local-write-rollback");
+        let path = test_root.join("removed_project_roots.json");
+        let removed = vec![test_project_path("local-write-rollback")];
+        write_device_local_json_file(&path, &removed).unwrap();
+        let before = fs::read(&path).unwrap();
+
+        assert!(write_device_local_json_file(&path, &RejectSerialization).is_err());
+        assert_eq!(fs::read(&path).unwrap(), before);
+
+        let _ = fs::remove_dir_all(test_root);
     }
 
     #[test]
@@ -5612,6 +6058,101 @@ mod tests {
     }
 
     #[test]
+    fn restoring_removed_project_promotes_it_without_touching_other_roots() {
+        let first = test_recent_root("restore-first", 10);
+        let restored = test_recent_root("restore-target", 20);
+        let third = test_recent_root("restore-third", 30);
+
+        let roots = restore_explicit_project_root(
+            vec![first.clone(), restored.clone(), third.clone()],
+            Path::new(&restored.path),
+            1_000,
+        );
+
+        assert_eq!(
+            recent_root_paths(&roots),
+            vec![restored.path, first.path, third.path]
+        );
+        assert_eq!(roots[0].last_used_ms, 1_000);
+    }
+
+    #[test]
+    fn removing_project_preserves_tasks_mcp_and_skills_configuration_boundaries() {
+        let removed = test_project_path("remove-target");
+        let fallback = test_project_path("remove-fallback");
+        let mut config = AgentConfig {
+            default_project_root: Some(removed.clone()),
+            default_model: "test-model".to_string(),
+            mcp_servers: vec![stdio_mcp("kept-mcp", true)],
+            project_skills_trust: vec![AgentProjectSkillsTrust {
+                path: removed.clone(),
+                trusted: true,
+            }],
+            removed_project_roots: Vec::new(),
+        };
+
+        apply_project_root_removal(&mut config, &removed, Some(&fallback)).unwrap();
+
+        assert_eq!(
+            config.default_project_root.as_deref(),
+            Some(fallback.as_str())
+        );
+        assert_eq!(config.removed_project_roots, vec![removed.clone()]);
+        assert_eq!(config.mcp_servers, vec![stdio_mcp("kept-mcp", true)]);
+        assert_eq!(
+            config.project_skills_trust,
+            vec![AgentProjectSkillsTrust {
+                path: removed,
+                trusted: true,
+            }]
+        );
+    }
+
+    #[test]
+    fn final_project_removal_clears_runtime_root_and_blocks_hidden_session_creation() {
+        let removed = test_project_path("remove-final");
+        let mut runtime_root = PathBuf::from(&removed);
+
+        update_runtime_project_root_after_removal(&mut runtime_root, &removed, None);
+
+        assert!(runtime_root.as_os_str().is_empty());
+        assert!(ensure_session_project_root_is_visible(
+            &runtime_root,
+            std::slice::from_ref(&removed)
+        )
+        .is_err());
+        assert!(ensure_session_project_root_is_visible(
+            Path::new(&removed),
+            std::slice::from_ref(&removed),
+        )
+        .is_err());
+        assert!(ensure_session_project_root_is_visible(
+            Path::new(&test_project_path("remove-visible")),
+            std::slice::from_ref(&removed),
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn running_task_guard_matches_only_tasks_in_the_removed_project() {
+        let session_roots = HashMap::from([
+            ("running-target".to_string(), "/target".to_string()),
+            ("running-other".to_string(), "/other".to_string()),
+        ]);
+        let active = HashSet::from(["running-target".to_string()]);
+        assert!(project_has_active_session_run(
+            &session_roots,
+            &active,
+            "/target"
+        ));
+        assert!(!project_has_active_session_run(
+            &session_roots,
+            &active,
+            "/other"
+        ));
+    }
+
+    #[test]
     fn only_explicit_folder_add_can_call_recent_project_registration() {
         // Starting a runtime and creating/loading a session need the full Goose/Tauri stack in
         // command tests. Guard the stronger architectural invariant instead: the registration
@@ -6119,6 +6660,7 @@ mod tests {
             default_model: LEGACY_AGENT_DEFAULT_MODEL.to_string(),
             mcp_servers: Vec::new(),
             project_skills_trust: Vec::new(),
+            removed_project_roots: Vec::new(),
         };
 
         assert!(migrate_agent_config(&mut config));
@@ -6134,6 +6676,7 @@ mod tests {
                 default_model: model.to_string(),
                 mcp_servers: Vec::new(),
                 project_skills_trust: Vec::new(),
+                removed_project_roots: Vec::new(),
             };
 
             assert!(!migrate_agent_config(&mut config));

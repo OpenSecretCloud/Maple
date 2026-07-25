@@ -7,6 +7,7 @@ export interface AgentConfig {
   defaultProjectRoot?: string | null;
   defaultModel: string;
   projectSkillsTrust?: AgentProjectSkillsTrust[];
+  removedProjectRoots?: string[];
 }
 
 export interface AgentProjectSkillsTrust {
@@ -77,6 +78,12 @@ export interface RecentProjectRoot {
   path: string;
   name: string;
   lastUsedMs: number;
+}
+
+export interface AgentProjectRootRegistration {
+  projectRoot: string;
+  roots: RecentProjectRoot[];
+  config: AgentConfig;
 }
 
 export interface AgentCreateSessionRequest {
@@ -221,10 +228,26 @@ export class AgentRuntimeService {
     return await this.invokeForUser<RecentProjectRoot[]>(userId, "agent_list_recent_project_roots");
   }
 
-  async saveRecentProjectRoot(userId: string, path: string): Promise<RecentProjectRoot[]> {
-    return await this.invokeForUser<RecentProjectRoot[]>(userId, "agent_save_recent_project_root", {
+  async saveRecentProjectRoot(userId: string, path: string): Promise<AgentProjectRootRegistration> {
+    return await this.invokeForUser<AgentProjectRootRegistration>(
       userId,
-      path
+      "agent_save_recent_project_root",
+      {
+        userId,
+        path
+      }
+    );
+  }
+
+  async removeProjectRoot(
+    userId: string,
+    path: string,
+    fallbackPath?: string | null
+  ): Promise<AgentConfig> {
+    return await this.invokeForUser<AgentConfig>(userId, "agent_remove_project_root", {
+      userId,
+      path,
+      fallbackPath: fallbackPath ?? null
     });
   }
 

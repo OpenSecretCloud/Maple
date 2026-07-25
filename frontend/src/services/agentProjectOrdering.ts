@@ -58,13 +58,14 @@ export function projectOrderReducer<T extends { path: string }>(
 export function mergeAgentProjectRoots(
   savedRoots: readonly RecentProjectRoot[],
   activeRoot: string,
-  sessions: readonly AgentSessionSummary[]
+  sessions: readonly AgentSessionSummary[],
+  removedRoots: ReadonlySet<string> = new Set()
 ): RecentProjectRoot[] {
   const dedupedSavedRoots: RecentProjectRoot[] = [];
   const savedPaths = new Set<string>();
 
   for (const root of savedRoots) {
-    if (!validPath(root.path) || savedPaths.has(root.path)) continue;
+    if (!validPath(root.path) || removedRoots.has(root.path) || savedPaths.has(root.path)) continue;
     savedPaths.add(root.path);
     dedupedSavedRoots.push(root);
   }
@@ -72,7 +73,7 @@ export function mergeAgentProjectRoots(
   const merged: RecentProjectRoot[] = [];
   const visiblePaths = new Set<string>();
   const addRoot = (root: RecentProjectRoot) => {
-    if (!validPath(root.path) || visiblePaths.has(root.path)) return;
+    if (!validPath(root.path) || removedRoots.has(root.path) || visiblePaths.has(root.path)) return;
     visiblePaths.add(root.path);
     merged.push(root);
   };
@@ -89,6 +90,29 @@ export function mergeAgentProjectRoots(
   [...unseenPaths].sort(comparePaths).forEach((path) => addRoot(syntheticRoot(path)));
 
   return merged;
+}
+
+export function visibleAgentSessions(
+  sessions: readonly AgentSessionSummary[],
+  removedRoots: ReadonlySet<string>
+): AgentSessionSummary[] {
+  return sessions.filter((session) => !removedRoots.has(session.projectRoot));
+}
+
+export function projectRootFallbackAfterRemoval<T extends { path: string }>(
+  visibleRoots: readonly T[],
+  removedPath: string
+): string | null {
+  const removedIndex = visibleRoots.findIndex((root) => root.path === removedPath);
+  if (removedIndex < 0) return null;
+  return visibleRoots[removedIndex + 1]?.path ?? visibleRoots[removedIndex - 1]?.path ?? null;
+}
+
+export function firstVisibleProjectRoot(
+  candidates: readonly (string | null | undefined)[],
+  removedRoots: ReadonlySet<string>
+): string {
+  return candidates.find((path) => validPath(path || "") && !removedRoots.has(path || "")) || "";
 }
 
 export function groupAgentSessionsByRoot(

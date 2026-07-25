@@ -93,11 +93,14 @@ import {
   createProjectOrderState,
   groupAgentSessionsByRoot,
   hasExceededProjectDragThreshold,
+  firstVisibleProjectRoot,
   mergeAgentProjectRoots,
   projectInsertionIndex,
   projectOrderForExistingRegistration,
   projectOrderReducer,
-  reorderProjectRoots
+  projectRootFallbackAfterRemoval,
+  reorderProjectRoots,
+  visibleAgentSessions
 } from "@/services/agentProjectOrdering";
 import {
   isMcpConnectionErrorEvent,
@@ -285,9 +288,13 @@ export function AgentMode({ userId }: { userId: string }) {
     createProjectOrderState<RecentProjectRoot>([])
   );
   const recentRoots = projectOrderState.visible;
+  const [removedProjectRoots, setRemovedProjectRoots] = useState<Set<string>>(() => new Set());
   const [sessions, setSessions] = useState<AgentSessionSummary[]>([]);
   const [isSessionHistoryReady, setIsSessionHistoryReady] = useState(false);
   const [sessionToDelete, setSessionToDelete] = useState<AgentSessionSummary | null>(null);
+  const [projectToRemove, setProjectToRemove] = useState<RecentProjectRoot | null>(null);
+  const [projectRemovalError, setProjectRemovalError] = useState<string | null>(null);
+  const [isProjectRemovalPending, setIsProjectRemovalPending] = useState(false);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [projectRoot, setProjectRoot] = useState("");
   const [model, setModel] = useState(DEFAULT_MODEL);
@@ -602,8 +609,12 @@ export function AgentMode({ userId }: { userId: string }) {
   }, [scrollTimelineToBottom, timelineItems]);
 
   const visibleProjectRoots = useMemo(
-    () => mergeAgentProjectRoots(recentRoots, projectRoot, sessions),
-    [projectRoot, recentRoots, sessions]
+    () => mergeAgentProjectRoots(recentRoots, projectRoot, sessions, removedProjectRoots),
+    [projectRoot, recentRoots, removedProjectRoots, sessions]
+  );
+  const visibleSessions = useMemo(
+    () => visibleAgentSessions(sessions, removedProjectRoots),
+    [removedProjectRoots, sessions]
   );
   const visibleProjectRootsRef = useRef<RecentProjectRoot[]>([]);
   visibleProjectRootsRef.current = visibleProjectRoots;
@@ -632,6 +643,7 @@ export function AgentMode({ userId }: { userId: string }) {
     isSubmitting ||
     isProjectOrderSaving ||
     isProjectRootRegistrationPending ||
+    isProjectRemovalPending ||
     isProjectSkillsTrustLoading ||
     isProjectSkillsTrustSaving ||
     projectSkillsTrustPrompt !== null;
@@ -880,9 +892,8 @@ export function AgentMode({ userId }: { userId: string }) {
     async (
       path: string,
       orderedVisibleRoots: RecentProjectRoot[]
-    ): Promise<RecentProjectRoot[]> => {
+    ): Promise<{ projectRoot: string; roots: RecentProjectRoot[]; config: AgentConfig }> => {
       return await enqueueProjectRootMutation(async () => {
-        const config = await agentRuntimeService.loadConfig(userId);
         const existingOrder = projectOrderForExistingRegistration(
           orderedVisibleRoots,
           projectOrderState.confirmed,
@@ -891,15 +902,15 @@ export function AgentMode({ userId }: { userId: string }) {
         // A legacy-capped project can already be visible through session history without being in
         // recent_roots.json. Add only that project after the confirmed roots instead of promoting
         // it or materializing unrelated session-derived projects.
-        const roots = existingOrder
-          ? await agentRuntimeService.saveProjectRootOrder(userId, existingOrder)
-          : await agentRuntimeService.saveRecentProjectRoot(userId, path);
-        const nextConfig: AgentConfig = {
-          ...config,
-          defaultProjectRoot: path
-        };
+        if (!existingOrder) {
+          return await agentRuntimeService.saveRecentProjectRoot(userId, path);
+        }
+
+        const roots = await agentRuntimeService.saveProjectRootOrder(userId, existingOrder);
+        const config = await agentRuntimeService.loadConfig(userId);
+        const nextConfig: AgentConfig = { ...config, defaultProjectRoot: path };
         await agentRuntimeService.saveConfig(userId, nextConfig);
-        return roots;
+        return { projectRoot: path, roots, config: nextConfig };
       });
     },
     [enqueueProjectRootMutation, projectOrderState.confirmed, userId]
@@ -1145,12 +1156,21 @@ export function AgentMode({ userId }: { userId: string }) {
 
         applyRuntimeStatus(status, runStateGeneration);
         dispatchProjectOrder({ type: "replace", roots });
+        const removedRoots = new Set(config.removedProjectRoots || []);
+        setRemovedProjectRoots(removedRoots);
         setMcpServers(savedMcpServers);
         setNewChatMcpServerNames(
           new Set(savedMcpServers.filter((server) => server.enabled).map((server) => server.name))
         );
         setIsMcpServersLoading(false);
-        const root = config.defaultProjectRoot || status.projectRoot || roots[0]?.path || "";
+        const root = firstVisibleProjectRoot(
+          [
+            config.defaultProjectRoot,
+            status.projectRoot,
+            ...roots.map((candidate) => candidate.path)
+          ],
+          removedRoots
+        );
         const nextModel = status.model || config.defaultModel || DEFAULT_MODEL;
         const nextMode = normalizeAgentPermissionMode(status.mode);
         setProjectRoot(root);
@@ -1225,17 +1245,21 @@ export function AgentMode({ userId }: { userId: string }) {
           title: "Select project folder"
         });
         if (typeof selected === "string") {
-          invalidateSessionSelection();
-          agentSessionSelection.forget(userId);
-          shouldAutoScrollRef.current = true;
-          setProjectRoot(selected);
-          activeSessionIdRef.current = null;
-          setActiveSessionId(null);
-          setTimelineItems([]);
           setIsProjectRootRegistrationPending(true);
           try {
-            const roots = await registerProjectRoot(selected, visibleProjectRootsRef.current);
-            dispatchProjectOrder({ type: "replace", roots });
+            const registration = await registerProjectRoot(
+              selected,
+              visibleProjectRootsRef.current
+            );
+            invalidateSessionSelection();
+            agentSessionSelection.forget(userId);
+            shouldAutoScrollRef.current = true;
+            setProjectRoot(registration.projectRoot);
+            activeSessionIdRef.current = null;
+            setActiveSessionId(null);
+            setTimelineItems([]);
+            setRemovedProjectRoots(new Set(registration.config.removedProjectRoots || []));
+            dispatchProjectOrder({ type: "replace", roots: registration.roots });
           } finally {
             setIsProjectRootRegistrationPending(false);
           }
@@ -1471,6 +1495,10 @@ export function AgentMode({ userId }: { userId: string }) {
   );
 
   const createSession = useCallback(async () => {
+    if (!projectRoot.trim()) {
+      setError("Select a project folder before creating a task");
+      return;
+    }
     if (pendingSessionSelectionIdRef.current === NEW_SESSION_PENDING_KEY) return;
     const selectionGeneration = beginSessionSelection(NEW_SESSION_PENDING_KEY);
     const interactionGeneration = interactionGenerationRef.current;
@@ -1643,7 +1671,7 @@ export function AgentMode({ userId }: { userId: string }) {
     }
 
     hasAttemptedSessionRestoreRef.current = true;
-    const rememberedSessionId = agentSessionSelection.resolve(userId, sessions);
+    const rememberedSessionId = agentSessionSelection.resolve(userId, visibleSessions);
     if (rememberedSessionId) {
       void loadSession(rememberedSessionId);
     }
@@ -1653,7 +1681,7 @@ export function AgentMode({ userId }: { userId: string }) {
     isInitializing,
     isSessionHistoryReady,
     loadSession,
-    sessions,
+    visibleSessions,
     userId
   ]);
 
@@ -1878,6 +1906,53 @@ export function AgentMode({ userId }: { userId: string }) {
       }
     },
     [removeSessionFromState, userId]
+  );
+
+  const removeProjectRoot = useCallback(
+    async (root: RecentProjectRoot) => {
+      if (isProjectRemovalPending) return;
+      const visibleRoots = visibleProjectRootsRef.current;
+      const fallback = projectRootFallbackAfterRemoval(visibleRoots, root.path);
+      setError(null);
+      setProjectRemovalError(null);
+      setIsProjectRemovalPending(true);
+      try {
+        const config = await enqueueProjectRootMutation(() =>
+          agentRuntimeService.removeProjectRoot(userId, root.path, fallback)
+        );
+        setRemovedProjectRoots(new Set(config.removedProjectRoots || []));
+        setProjectRemovalError(null);
+        setProjectToRemove(null);
+
+        if (projectRoot === root.path) {
+          invalidateSessionSelection();
+          agentSessionSelection.forget(userId);
+          activeSessionIdRef.current = null;
+          setActiveSessionId(null);
+          setTimelineItems([]);
+          setSessionMcpServers([]);
+          setSessionMcpServersSessionId(null);
+          setProjectRoot(fallback || "");
+          shouldAutoScrollRef.current = true;
+        }
+        await refreshSessions().catch((refreshError) => {
+          setError(errorMessage(refreshError));
+        });
+      } catch (removeError) {
+        setProjectRemovalError(errorMessage(removeError));
+      } finally {
+        setIsProjectRemovalPending(false);
+      }
+    },
+    [
+      agentSessionSelection,
+      enqueueProjectRootMutation,
+      invalidateSessionSelection,
+      isProjectRemovalPending,
+      projectRoot,
+      refreshSessions,
+      userId
+    ]
   );
 
   useEffect(() => {
@@ -2149,16 +2224,20 @@ export function AgentMode({ userId }: { userId: string }) {
             completedUnreadSessionIds={completedUnreadSessionIds}
             disabled={areAgentSettingsLocked}
             runningSessionIds={runningSessionIds}
-            sessions={sessions}
+            sessions={visibleSessions}
             onChooseProjectRoot={chooseProjectRoot}
             onCreateSession={() => void createSession()}
             onProjectOrderChange={saveProjectRootOrder}
+            onProjectRemove={(root) => {
+              setProjectRemovalError(null);
+              setProjectToRemove(root);
+            }}
             onProjectRootChange={selectProjectRoot}
             onSessionDelete={setSessionToDelete}
             onSessionSelect={(sessionId) => void loadSession(sessionId)}
           />
         }
-        onNewItem={areAgentSettingsLocked ? undefined : () => void createSession()}
+        onNewItem={areAgentSettingsLocked || !projectRoot ? undefined : () => void createSession()}
         onToggle={toggleSidebar}
       />
 
@@ -2174,6 +2253,53 @@ export function AgentMode({ userId }: { userId: string }) {
           onConfirm={() => void deleteSession(sessionToDelete.id)}
         />
       ) : null}
+
+      <AlertDialog
+        open={projectToRemove !== null}
+        onOpenChange={(open) => {
+          if (!open && !isProjectRemovalPending) {
+            setProjectRemovalError(null);
+            setProjectToRemove(null);
+          }
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Remove {projectToRemove?.name || "project"}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Removing this project from Maple won&apos;t delete its files or existing tasks. Add
+              the same folder again to restore its tasks on this account and device.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {projectToRemove ? (
+            <div className="rounded-md border bg-muted/40 px-3 py-2 font-mono text-xs break-all">
+              {projectToRemove.path}
+            </div>
+          ) : null}
+          {projectRemovalError ? (
+            <div
+              role="alert"
+              className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive"
+            >
+              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+              <span className="min-w-0 break-words">{projectRemovalError}</span>
+            </div>
+          ) : null}
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isProjectRemovalPending}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={isProjectRemovalPending || !projectToRemove}
+              onClick={(event) => {
+                event.preventDefault();
+                if (projectToRemove) void removeProjectRoot(projectToRemove);
+              }}
+            >
+              {isProjectRemovalPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+              {projectRemovalError ? "Retry" : "Remove"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <AgentMcpServersDialog
         open={isMcpServersDialogOpen}
@@ -2393,6 +2519,7 @@ interface AgentSidebarContentProps {
   onChooseProjectRoot: () => void;
   onCreateSession: () => void;
   onProjectOrderChange: (roots: RecentProjectRoot[]) => void;
+  onProjectRemove: (root: RecentProjectRoot) => void;
   onProjectRootChange: (value: string) => void;
   onSessionDelete: (session: AgentSessionSummary) => void;
   onSessionSelect: (sessionId: string) => void;
@@ -2429,6 +2556,7 @@ function AgentSidebarContent({
   onChooseProjectRoot,
   onCreateSession,
   onProjectOrderChange,
+  onProjectRemove,
   onProjectRootChange,
   onSessionDelete,
   onSessionSelect
@@ -2936,6 +3064,34 @@ function AgentSidebarContent({
                       <MessageSquarePlus className="h-4 w-4" />
                     </Button>
                   ) : null}
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <button
+                        type="button"
+                        className={AGENT_SIDEBAR_ELLIPSIS_BUTTON}
+                        disabled={disabled}
+                        onPointerDown={(event) => event.stopPropagation()}
+                        onClick={(event) => {
+                          event.preventDefault();
+                          event.stopPropagation();
+                        }}
+                        aria-label={`Open project menu for ${root.name}`}
+                      >
+                        <MoreHorizontal className="h-4 w-4" strokeWidth={SIDEBAR_ICON_STROKE} />
+                      </button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuItem
+                        disabled={disabled || hasRunningSession}
+                        onClick={() => onProjectRemove(root)}
+                      >
+                        <X className="mr-2 h-4 w-4" strokeWidth={SIDEBAR_ICON_STROKE} />
+                        {hasRunningSession
+                          ? "Stop Agent Before Removing Project"
+                          : "Remove Project"}
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
                 </div>
 
                 {!isCollapsed ? (
