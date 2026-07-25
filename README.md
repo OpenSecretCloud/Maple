@@ -171,7 +171,7 @@ bun tauri build --target universal-apple-darwin
 
 #### Linux: ONNX Runtime Setup
 
-Linux builds bundle ONNX Runtime 1.23.2 for local TTS and PDF OCR. `just desktop-build` provisions it automatically. Before invoking `bun tauri build` directly, download the pinned shared library:
+Linux builds bundle ONNX Runtime 1.23.2 for PDF OCR. `just desktop-build` provisions it automatically. Before invoking `bun tauri build` directly, download the pinned shared library:
 
 ```bash
 cd frontend/src-tauri

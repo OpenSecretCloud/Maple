@@ -1,10 +1,10 @@
 # iOS ONNX Runtime Local Development Guide
 
-This guide explains how to build and test the iOS ONNX Runtime used by local TTS and PDF OCR on the iOS Simulator or a physical device.
+This guide explains how to build and test the iOS ONNX Runtime used by PDF OCR on the iOS Simulator or a physical device.
 
 ## Overview
 
-Maple pins ONNX Runtime 1.23.2 and links it statically on iOS for both TTS and PDF OCR. ONNX Runtime is built from source because:
+Maple pins ONNX Runtime 1.23.2 and links it statically on iOS for PDF OCR. ONNX Runtime is built from source because:
 1. Pre-built binaries from HuggingFace are missing Abseil symbols
 2. We need both device (arm64) and simulator (arm64) builds
 3. The simulator build requires a workaround for a libiconv linking bug
@@ -165,4 +165,4 @@ rm -rf frontend/src-tauri/onnxruntime-build frontend/src-tauri/onnxruntime-ios
 ## Related Documentation
 
 - [troubleshooting-ios-build.md](./troubleshooting-ios-build.md) - arm64-sim architecture fix
-- [tts-research.md](./tts-research.md) - TTS implementation details
+- [pdf-ocr.md](./pdf-ocr.md) - PDF extraction and OCR architecture

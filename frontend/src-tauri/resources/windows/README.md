@@ -1,7 +1,7 @@
 # Windows bundled runtime DLLs
 
-Maple loads **ONNX Runtime 1.23.2** by explicit path before PDF OCR or TTS
-creates a session. Windows also ships a Windows-ML
+Maple loads **ONNX Runtime 1.23.2** by explicit path before PDF OCR creates a
+session. Windows also ships a Windows-ML
 `C:\Windows\System32\onnxruntime.dll` forwarder that may be an incompatible
 version, so Maple must not rely on the ambient DLL search path.
 

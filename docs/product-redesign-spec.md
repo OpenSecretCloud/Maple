@@ -114,7 +114,6 @@ These are reachable from the logged-in product and should receive redesign polis
 - `DeleteChatDialog`
 - `BulkDeleteDialog`
 - `WebSearchInfoDialog`
-- `TTSDownloadDialog`
 - `UpgradePromptDialog`
 - `PromoDialog`
 - `VerificationModal`
@@ -250,7 +249,7 @@ The new chat UI must still support:
 - Document attachments
 - Desktop/Tauri PDF support behavior
 - Voice recording + transcription
-- TTS playback/download behavior
+- TTS playback behavior
 - Cancel generation
 - Fullscreen composer mode
 - Pagination/loading older messages
@@ -278,7 +277,7 @@ Do not regress platform-specific handling already present in the app.
 - Desktop vs mobile layout differences
 - Tauri vs web link opening
 - iOS-specific billing/API gating
-- Tauri-only features such as local PDF/TTS flows
+- Tauri-only features such as local PDF processing
 
 ## 4.7 Master-first reconciliation rule
 
@@ -1329,7 +1328,6 @@ Use PR #465 mostly as a semantic cleanup guide here.
 - `ContextLimitDialog`
 - `DeleteChatDialog`
 - `BulkDeleteDialog`
-- `TTSDownloadDialog`
 - `VerificationModal`
 - `GuestPaymentWarningDialog`
 

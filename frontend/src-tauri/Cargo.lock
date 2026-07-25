@@ -3598,12 +3598,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "hound"
-version = "3.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "62adaabb884c94955b19907d60019f4e145d091c75345379e70d1ee696f7854f"
-
-[[package]]
 name = "html5ever"
 version = "0.38.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3986,7 +3980,7 @@ dependencies = [
  "nalgebra",
  "num",
  "rand 0.10.2",
- "rand_distr 0.6.0",
+ "rand_distr",
  "rayon",
  "rustdct",
 ]
@@ -4592,18 +4586,15 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "ciborium",
- "dirs",
  "futures-util",
  "goose",
  "goose-providers",
- "hound",
  "httpdate",
  "image 0.25.10",
  "keyring",
  "libc",
  "log",
  "maple-proxy",
- "ndarray",
  "once_cell",
  "opensecret",
  "openssl",
@@ -4613,8 +4604,6 @@ dependencies = [
  "process-wrap",
  "pulldown-cmark",
  "rand 0.8.6",
- "rand_distr 0.4.3",
- "regex",
  "reqwest 0.13.2",
  "rmcp",
  "rustls",
@@ -4637,7 +4626,6 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tower-http 0.6.8",
- "unicode-normalization",
  "webpki-roots",
  "windows 0.62.2",
 ]
@@ -4899,7 +4887,6 @@ dependencies = [
  "portable-atomic",
  "portable-atomic-util",
  "rawpointer",
- "rayon",
 ]
 
 [[package]]
@@ -6538,16 +6525,6 @@ name = "rand_core"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "63b8176103e19a2643978565ca18b50549f6101881c443590420e4dc998a3c69"
-
-[[package]]
-name = "rand_distr"
-version = "0.4.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "32cb0b9bc82b0a0876c2dd994a7e7a2683d3e7390ca40e6886785ef0c7e3ee31"
-dependencies = [
- "num-traits",
- "rand 0.8.6",
-]
 
 [[package]]
 name = "rand_distr"

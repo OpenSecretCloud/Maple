@@ -1,70 +1,63 @@
+import { useOpenSecret } from "@opensecret/react";
 import {
   createContext,
-  useContext,
-  useState,
   useCallback,
-  useRef,
+  useContext,
   useEffect,
-  ReactNode
+  useReducer,
+  useRef,
+  useState,
+  type ReactNode
 } from "react";
-import { isTauriDesktop, isIOS, isTauri } from "@/utils/platform";
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { isIOS } from "@/utils/platform";
+import {
+  INITIAL_TTS_PLAYBACK_STATE,
+  prepareAndScheduleTTSChunks,
+  reduceTTSPlaybackState
+} from "./ttsPlayback";
+import {
+  DEFAULT_TTS_PLAYBACK_SPEED,
+  getStoredTTSPlaybackSpeed,
+  getStoredTTSVoice,
+  rememberTTSPlaybackSpeed,
+  rememberTTSVoice,
+  resetTTSPlaybackSpeed,
+  type VoxtralTTSVoice
+} from "./ttsPreferences";
+import { calculateTTSLoudnessAdjustment } from "./ttsLoudness";
+import { isPaidTTSAccessError, synthesizeTTSChunk } from "./ttsSynthesis";
+import { chunkTextForTTS } from "./ttsText";
 
-export const TTS_MIN_PLAYBACK_SPEED = 0.5;
-export const TTS_MAX_PLAYBACK_SPEED = 2;
-export const TTS_PLAYBACK_SPEED_STEP = 0.1;
-const DEFAULT_TTS_PLAYBACK_SPEED = 1.2;
-const TTS_PLAYBACK_SPEED_STORAGE_KEY = "ttsPlaybackSpeed";
-
-export type TTSStatus =
-  | "not_available"
-  | "checking"
-  | "not_downloaded"
-  | "downloading"
-  | "loading"
-  | "ready"
-  | "deleting"
-  | "error";
-
-interface TTSStatusResponse {
-  models_downloaded: boolean;
-  models_loaded: boolean;
-  total_size_mb: number;
+interface DecodedTTSChunk {
+  audioBuffer: AudioBuffer;
+  chunkIndex: number;
+  playbackGain: number;
 }
 
-interface TTSSynthesizeResponse {
-  audio_base64: string;
-  sample_rate: number;
-  duration_seconds: number;
+interface AudioSessionLike {
+  type: string;
 }
 
-interface DownloadProgress {
-  downloaded: number;
-  total: number;
-  file_name: string;
-  percent: number;
-}
+type NavigatorWithAudioSession = Navigator & {
+  audioSession?: AudioSessionLike;
+};
+
+type WindowWithWebkitAudioContext = Window &
+  typeof globalThis & {
+    webkitAudioContext?: typeof AudioContext;
+  };
 
 interface TTSContextValue {
-  status: TTSStatus;
-  error: string | null;
   playbackError: string | null;
-  downloadProgress: number;
-  downloadDetail: string;
-  totalSizeMB: number;
   playbackSpeed: number;
   hasCustomPlaybackSpeed: boolean;
+  voice: VoxtralTTSVoice;
   isPreparing: boolean;
   isPlaying: boolean;
   currentPlayingId: string | null;
-  isTauriEnv: boolean;
-
-  checkStatus: () => Promise<void>;
-  startDownload: () => Promise<void>;
-  deleteModels: () => Promise<void>;
   setPlaybackSpeed: (speed: number) => void;
   resetPlaybackSpeed: () => void;
+  setVoice: (voice: VoxtralTTSVoice) => void;
   speak: (text: string, messageId: string) => Promise<void>;
   stop: () => void;
   clearPlaybackError: () => void;
@@ -83,208 +76,44 @@ function errorMessage(error: unknown, fallback: string): string {
     error &&
     typeof error === "object" &&
     "message" in error &&
-    typeof (error as { message: unknown }).message === "string"
+    typeof error.message === "string"
   ) {
-    return (error as { message: string }).message;
+    return error.message;
   }
   return fallback;
 }
 
-function isNoSpeakableTextError(error: unknown): boolean {
-  const message = errorMessage(error, "").toLowerCase();
-  return message.includes("no speakable text") || message.includes("no text to synthesize");
-}
-
-function clampPlaybackSpeed(speed: number): number {
-  if (!Number.isFinite(speed)) {
-    return DEFAULT_TTS_PLAYBACK_SPEED;
-  }
-  return (
-    Math.round(Math.min(TTS_MAX_PLAYBACK_SPEED, Math.max(TTS_MIN_PLAYBACK_SPEED, speed)) * 10) / 10
-  );
-}
-
-function loadPlaybackSpeed(): number {
-  if (typeof window === "undefined") {
-    return DEFAULT_TTS_PLAYBACK_SPEED;
-  }
-  try {
-    const stored = window.localStorage.getItem(TTS_PLAYBACK_SPEED_STORAGE_KEY);
-    if (stored !== null) {
-      return clampPlaybackSpeed(Number(stored));
-    }
-  } catch {
-    // Storage is optional; use the model default when it is unavailable.
-  }
-  return DEFAULT_TTS_PLAYBACK_SPEED;
-}
-
 export function TTSProvider({ children }: { children: ReactNode }) {
-  // Check Tauri environment - TTS is available on desktop and iOS (not Android)
-  const isTauriEnv = isTauriDesktop() || (isTauri() && isIOS());
+  const { aiCustomFetch, apiUrl } = useOpenSecret();
 
-  // Initial status depends on whether we're in Tauri
-  const [status, setStatus] = useState<TTSStatus>(isTauriEnv ? "checking" : "not_available");
-  const [error, setError] = useState<string | null>(null);
-  const [downloadProgress, setDownloadProgress] = useState(0);
-  const [downloadDetail, setDownloadDetail] = useState("");
-  const [totalSizeMB, setTotalSizeMB] = useState(264);
-  const [playbackSpeed, setPlaybackSpeedState] = useState(loadPlaybackSpeed);
-  const [isPreparing, setIsPreparing] = useState(false);
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [currentPlayingId, setCurrentPlayingId] = useState<string | null>(null);
+  const [{ isPreparing, isPlaying, currentPlayingId }, dispatchPlayback] = useReducer(
+    reduceTTSPlaybackState,
+    INITIAL_TTS_PLAYBACK_STATE
+  );
   const [playbackError, setPlaybackError] = useState<string | null>(null);
+  const [playbackSpeed, setPlaybackSpeedState] = useState(getStoredTTSPlaybackSpeed);
+  const [voice, setVoiceState] = useState(getStoredTTSVoice);
 
+  const mountedRef = useRef(true);
+  const playbackRequestIdRef = useRef(0);
+  const abortControllerRef = useRef<AbortController | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
-  const sourceNodeRef = useRef<AudioBufferSourceNode | null>(null);
-  const audioUrlRef = useRef<string | null>(null);
+  const scheduledSourceNodesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
   const audioSessionPrevTypeRef = useRef<string | null>(null);
   const mediaSessionPrevStateRef = useRef<{
     metadata: MediaMetadata | null;
     playbackState: MediaSessionPlaybackState;
   } | null>(null);
-  const unlistenRef = useRef<(() => void) | null>(null);
-  const playbackRequestRef = useRef(0);
-  const mountedRef = useRef(true);
 
-  const setPlaybackSpeed = useCallback((speed: number) => {
-    const clamped = clampPlaybackSpeed(speed);
-    setPlaybackSpeedState(clamped);
-    try {
-      window.localStorage.setItem(TTS_PLAYBACK_SPEED_STORAGE_KEY, String(clamped));
-    } catch {
-      // Keep the in-memory preference if storage is unavailable.
-    }
-  }, []);
-
-  const resetPlaybackSpeed = useCallback(() => {
-    setPlaybackSpeedState(DEFAULT_TTS_PLAYBACK_SPEED);
-    try {
-      window.localStorage.removeItem(TTS_PLAYBACK_SPEED_STORAGE_KEY);
-    } catch {
-      // Keep the in-memory default if storage is unavailable.
-    }
-  }, []);
-
-  const cleanupDownloadListener = useCallback(() => {
-    if (unlistenRef.current) {
-      unlistenRef.current();
-      unlistenRef.current = null;
-    }
-  }, []);
-
-  // Check TTS status from Rust backend
-  const checkStatus = useCallback(async () => {
-    if (!isTauriEnv) {
-      setStatus("not_available");
-      return;
-    }
-
-    try {
-      const result = await invoke<TTSStatusResponse>("tts_get_status");
-      setTotalSizeMB(result.total_size_mb);
-
-      if (result.models_loaded) {
-        setStatus("ready");
-      } else if (result.models_downloaded) {
-        // Models downloaded but not loaded - load them
-        setStatus("loading");
-        try {
-          await invoke("tts_load_models");
-          setStatus("ready");
-        } catch (loadErr) {
-          console.error("Failed to load TTS models:", loadErr);
-          setStatus("error");
-          setError(errorMessage(loadErr, "Failed to load TTS models"));
-        }
-      } else {
-        setStatus("not_downloaded");
-      }
-    } catch (err) {
-      console.error("Failed to check TTS status:", err);
-      setStatus("error");
-      setError(errorMessage(err, "Failed to check TTS status"));
-    }
-  }, [isTauriEnv]);
-
-  // Auto-check status on mount if in Tauri
-  useEffect(() => {
-    if (isTauriEnv) {
-      checkStatus();
-    }
-  }, [isTauriEnv, checkStatus]);
-
-  const startDownload = useCallback(async () => {
-    if (!isTauriEnv) return;
-
-    try {
-      setStatus("downloading");
-      setDownloadProgress(0);
-      setDownloadDetail("Starting download...");
-      setError(null);
-
-      cleanupDownloadListener();
-
-      // Set up event listener for progress
-      const unlisten = await listen<DownloadProgress>("tts-download-progress", (event) => {
-        const { percent, file_name } = event.payload;
-        setDownloadProgress(percent);
-        setDownloadDetail(`Downloading ${file_name}...`);
-      });
-      unlistenRef.current = unlisten;
-
-      // Start the download
-      await invoke("tts_download_models");
-
-      // Load the models after download
-      setStatus("loading");
-      setDownloadDetail("Loading models...");
-      await invoke("tts_load_models");
-
-      setStatus("ready");
-      setDownloadDetail("");
-    } catch (err) {
-      console.error("TTS download failed:", err);
-      setStatus("error");
-      // Tauri commands returning Result<_, String> reject with a plain string,
-      // so `err instanceof Error` is false — surface the string directly instead
-      // of hiding the real cause behind a generic message. See PR #520 review.
-      setError(errorMessage(err, "Failed to download TTS models"));
-    } finally {
-      cleanupDownloadListener();
-    }
-  }, [isTauriEnv, cleanupDownloadListener]);
-
-  const stop = useCallback(() => {
-    playbackRequestRef.current += 1;
-    if (audioUrlRef.current) {
-      URL.revokeObjectURL(audioUrlRef.current);
-      audioUrlRef.current = null;
-    }
-    if (sourceNodeRef.current) {
+  const restorePlatformAudioSession = useCallback(() => {
+    if (audioSessionPrevTypeRef.current !== null) {
       try {
-        sourceNodeRef.current.stop();
-      } catch {
-        // Ignore error if already stopped
-      }
-      sourceNodeRef.current = null;
-    }
-    if (audioContextRef.current) {
-      void audioContextRef.current.close().catch(() => {
-        // Ignore
-      });
-      audioContextRef.current = null;
-    }
-
-    if (audioSessionPrevTypeRef.current) {
-      try {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const nav = navigator as any;
-        if (nav.audioSession && typeof nav.audioSession.type === "string") {
-          nav.audioSession.type = audioSessionPrevTypeRef.current;
+        const audioSession = (navigator as NavigatorWithAudioSession).audioSession;
+        if (audioSession && typeof audioSession.type === "string") {
+          audioSession.type = audioSessionPrevTypeRef.current;
         }
       } catch {
-        // Ignore
+        // Ignore optional platform API failures.
       }
       audioSessionPrevTypeRef.current = null;
     }
@@ -296,79 +125,101 @@ export function TTSProvider({ children }: { children: ReactNode }) {
           navigator.mediaSession.playbackState = mediaSessionPrevStateRef.current.playbackState;
         }
       } catch {
-        // Ignore
+        // Ignore optional platform API failures.
       }
       mediaSessionPrevStateRef.current = null;
     }
-    if (mountedRef.current) {
-      setIsPreparing(false);
-      setIsPlaying(false);
-      setCurrentPlayingId(null);
-    }
   }, []);
 
-  const deleteModels = useCallback(async () => {
-    if (!isTauriEnv) return;
+  const cleanupPlaybackResources = useCallback(() => {
+    playbackRequestIdRef.current += 1;
 
-    try {
-      setStatus("deleting");
-      setError(null);
+    abortControllerRef.current?.abort();
+    abortControllerRef.current = null;
 
-      // Stop any playing audio first
-      stop();
-
-      await invoke("tts_delete_models");
-      setStatus("not_downloaded");
-    } catch (err) {
-      console.error("Failed to delete TTS models:", err);
-      setStatus("error");
-      setError(errorMessage(err, "Failed to delete TTS models"));
+    for (const source of scheduledSourceNodesRef.current) {
+      try {
+        source.stop();
+      } catch {
+        // Ignore sources that have already ended.
+      }
     }
-  }, [isTauriEnv, stop]);
+    scheduledSourceNodesRef.current.clear();
+
+    const audioContext = audioContextRef.current;
+    audioContextRef.current = null;
+    if (audioContext) {
+      void audioContext.close().catch(() => {
+        // Ignore contexts that have already closed.
+      });
+    }
+
+    restorePlatformAudioSession();
+  }, [restorePlatformAudioSession]);
+
+  const stop = useCallback(() => {
+    cleanupPlaybackResources();
+    dispatchPlayback({ type: "idle" });
+  }, [cleanupPlaybackResources]);
+
+  const setPlaybackSpeed = useCallback((speed: number) => {
+    setPlaybackSpeedState(rememberTTSPlaybackSpeed(speed));
+  }, []);
+
+  const resetPlaybackSpeed = useCallback(() => {
+    resetTTSPlaybackSpeed();
+    setPlaybackSpeedState(DEFAULT_TTS_PLAYBACK_SPEED);
+  }, []);
+
+  const setVoice = useCallback((selectedVoice: VoxtralTTSVoice) => {
+    rememberTTSVoice(selectedVoice);
+    setVoiceState(selectedVoice);
+  }, []);
 
   const speak = useCallback(
     async (text: string, messageId: string) => {
-      if (!isTauriEnv || status !== "ready") return;
-
-      // Stop any currently playing audio
       stop();
+      setPlaybackError(null);
 
-      // Preprocess text to remove think blocks and other non-speakable content
-      const processedText = preprocessTextForTTS(text);
-      if (!processedText) {
+      const chunks = chunkTextForTTS(text);
+      if (chunks.length === 0) {
         return;
       }
 
-      const requestId = playbackRequestRef.current;
-      try {
-        setIsPreparing(true);
-        setIsPlaying(false);
-        setCurrentPlayingId(messageId);
+      const requestId = playbackRequestIdRef.current + 1;
+      playbackRequestIdRef.current = requestId;
+      const abortController = new AbortController();
+      abortControllerRef.current = abortController;
+      const isActiveRequest = () =>
+        mountedRef.current &&
+        playbackRequestIdRef.current === requestId &&
+        !abortController.signal.aborted;
 
-        const result = await invoke<TTSSynthesizeResponse>("tts_synthesize", {
-          text: processedText,
-          speed: playbackSpeed
-        });
-        if (!mountedRef.current || requestId !== playbackRequestRef.current) {
-          return;
+      try {
+        dispatchPlayback({ type: "prepare", messageId });
+
+        const audioWindow = window as WindowWithWebkitAudioContext;
+        const AudioContextClass = audioWindow.AudioContext ?? audioWindow.webkitAudioContext;
+        if (!AudioContextClass) {
+          throw new Error(
+            "Audio playback is not available. If you have Lockdown Mode enabled, text-to-speech will not work."
+          );
         }
 
-        // Create audio from base64
-        const audioBlob = base64ToBlob(result.audio_base64, "audio/wav");
-        const audioUrl = URL.createObjectURL(audioBlob);
-        audioUrlRef.current = audioUrl;
+        const prebufferBeforePlayback = isIOS();
 
-        // iOS: set Now Playing metadata so the audio UI shows Maple instead of the origin hostname.
-        // This is iOS-only and should not affect desktop media controls.
         try {
-          if (isIOS() && "mediaSession" in navigator && typeof MediaMetadata !== "undefined") {
+          if (
+            prebufferBeforePlayback &&
+            "mediaSession" in navigator &&
+            typeof MediaMetadata !== "undefined"
+          ) {
             if (!mediaSessionPrevStateRef.current) {
               mediaSessionPrevStateRef.current = {
                 metadata: navigator.mediaSession.metadata,
                 playbackState: navigator.mediaSession.playbackState
               };
             }
-
             navigator.mediaSession.metadata = new MediaMetadata({
               title: "Maple AI",
               artist: "Text to Speech",
@@ -384,201 +235,180 @@ export function TTSProvider({ children }: { children: ReactNode }) {
             navigator.mediaSession.playbackState = "playing";
           }
         } catch {
-          // Ignore
+          // Ignore optional Media Session failures.
         }
 
-        // Use Web Audio API instead of HTMLAudioElement to avoid hijacking media controls
-        // iOS Safari requires webkitAudioContext fallback
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-        if (!AudioContextClass) {
-          throw new Error(
-            "Audio playback is not available. If you have Lockdown Mode enabled, TTS will not work."
-          );
-        }
-
-        // iOS: try to force media playback routing (speaker) for Web Audio.
-        // This helps avoid “only works with headphones / earpiece” routing issues.
         try {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const nav = navigator as any;
-          if (nav.audioSession && typeof nav.audioSession.type === "string") {
-            audioSessionPrevTypeRef.current = nav.audioSession.type;
-            nav.audioSession.type = "playback";
+          const audioSession = (navigator as NavigatorWithAudioSession).audioSession;
+          if (audioSession && typeof audioSession.type === "string") {
+            audioSessionPrevTypeRef.current = audioSession.type;
+            audioSession.type = "playback";
           }
         } catch {
-          // Ignore
+          // Ignore optional Audio Session failures.
         }
 
-        const audioContext = new AudioContextClass() as AudioContext;
+        // Preserve the established iOS routing order: select the playback
+        // audio-session category before constructing Web Audio.
+        const audioContext = new AudioContextClass();
+        audioContextRef.current = audioContext;
 
-        // iOS requires user interaction to start audio - resume if suspended
         if (audioContext.state === "suspended") {
           await audioContext.resume();
-        }
-
-        const arrayBuffer = await audioBlob.arrayBuffer();
-        const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
-        if (!mountedRef.current || requestId !== playbackRequestRef.current) {
-          void audioContext.close().catch(() => {
-            // Ignore
-          });
-          return;
-        }
-
-        const source = audioContext.createBufferSource();
-        source.buffer = audioBuffer;
-        source.connect(audioContext.destination);
-
-        // Store context and source for stop functionality
-        audioContextRef.current = audioContext;
-        sourceNodeRef.current = source;
-
-        source.onended = () => {
-          if (
-            sourceNodeRef.current !== source ||
-            requestId !== playbackRequestRef.current ||
-            !mountedRef.current
-          ) {
+          if (!isActiveRequest()) {
             return;
           }
-          setIsPreparing(false);
-          setIsPlaying(false);
-          setCurrentPlayingId(null);
+        }
 
-          if (audioUrlRef.current === audioUrl) {
-            URL.revokeObjectURL(audioUrlRef.current);
-            audioUrlRef.current = null;
+        const synthesizeAndDecodeChunk = async (
+          chunkIndex: number
+        ): Promise<DecodedTTSChunk | null> => {
+          const audioBytes = await synthesizeTTSChunk(
+            aiCustomFetch,
+            apiUrl,
+            chunks[chunkIndex],
+            { voice, speed: playbackSpeed },
+            abortController.signal
+          );
+          if (!isActiveRequest()) {
+            return null;
           }
-          void audioContext.close().catch(() => {
-            // Ignore
+
+          const audioBuffer = await audioContext.decodeAudioData(audioBytes);
+          if (!isActiveRequest()) {
+            return null;
+          }
+
+          const loudnessAdjustment = calculateTTSLoudnessAdjustment(audioBuffer);
+          console.debug(
+            `[TTS] Prepared chunk ${chunkIndex + 1}/${chunks.length}: ` +
+              `active=${loudnessAdjustment.activeRmsDbfs?.toFixed(1) ?? "silent"} dBFS, ` +
+              `peak=${loudnessAdjustment.peakDbfs?.toFixed(1) ?? "silent"} dBFS, ` +
+              `gain=${loudnessAdjustment.gainDb >= 0 ? "+" : ""}${loudnessAdjustment.gainDb.toFixed(1)} dB`
+          );
+          return { audioBuffer, chunkIndex, playbackGain: loudnessAdjustment.gain };
+        };
+
+        let scheduledEndTime = audioContext.currentTime;
+        let lastPlaybackEnded: Promise<void> | null = null;
+        let startedPlayback = false;
+
+        const scheduleDecodedChunk = (decoded: DecodedTTSChunk) => {
+          const source = audioContext.createBufferSource();
+          const gainNode = audioContext.createGain();
+          source.buffer = decoded.audioBuffer;
+          gainNode.gain.value = decoded.playbackGain;
+          source.connect(gainNode);
+          gainNode.connect(audioContext.destination);
+          scheduledSourceNodesRef.current.add(source);
+
+          const playbackEnded = new Promise<void>((resolve) => {
+            source.onended = () => {
+              gainNode.disconnect();
+              scheduledSourceNodesRef.current.delete(source);
+              if (isActiveRequest()) {
+                console.debug(`[TTS] Finished chunk ${decoded.chunkIndex + 1}/${chunks.length}`);
+              }
+              resolve();
+            };
           });
-          audioContextRef.current = null;
-          sourceNodeRef.current = null;
 
-          if (audioSessionPrevTypeRef.current) {
-            try {
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              const nav = navigator as any;
-              if (nav.audioSession && typeof nav.audioSession.type === "string") {
-                nav.audioSession.type = audioSessionPrevTypeRef.current;
-              }
-            } catch {
-              // Ignore
-            }
-            audioSessionPrevTypeRef.current = null;
+          const startAt = Math.max(scheduledEndTime, audioContext.currentTime);
+          scheduledEndTime = startAt + decoded.audioBuffer.duration;
+          try {
+            source.start(startAt);
+          } catch (sourceError) {
+            gainNode.disconnect();
+            scheduledSourceNodesRef.current.delete(source);
+            throw sourceError;
           }
 
-          if (mediaSessionPrevStateRef.current) {
-            try {
-              if ("mediaSession" in navigator) {
-                navigator.mediaSession.metadata = mediaSessionPrevStateRef.current.metadata;
-                navigator.mediaSession.playbackState =
-                  mediaSessionPrevStateRef.current.playbackState;
-              }
-            } catch {
-              // Ignore
-            }
-            mediaSessionPrevStateRef.current = null;
+          console.debug(
+            `[TTS] Scheduled chunk ${decoded.chunkIndex + 1}/${chunks.length} ` +
+              `at ${startAt.toFixed(3)}s for ${decoded.audioBuffer.duration.toFixed(3)}s`
+          );
+          lastPlaybackEnded = playbackEnded;
+          if (!startedPlayback) {
+            startedPlayback = true;
+            dispatchPlayback({ type: "play" });
           }
         };
 
-        setIsPreparing(false);
-        setIsPlaying(true);
-        source.start(0);
-      } catch (err) {
-        if (!mountedRef.current || playbackRequestRef.current !== requestId) {
+        const completedPreparation = await prepareAndScheduleTTSChunks({
+          chunkCount: chunks.length,
+          prebufferBeforePlayback,
+          prepareChunk: synthesizeAndDecodeChunk,
+          scheduleChunk: scheduleDecodedChunk,
+          isActive: isActiveRequest,
+          beforeBufferedSchedule: async () => {
+            if (audioContext.state === "suspended") {
+              await audioContext.resume();
+            }
+          }
+        });
+        if (!completedPreparation || !isActiveRequest()) {
           return;
         }
-        if (isNoSpeakableTextError(err)) {
+
+        if (!lastPlaybackEnded) {
           stop();
           return;
         }
-        console.error("TTS playback failed:", err);
-        setPlaybackError(errorMessage(err, "TTS playback failed"));
+
+        await lastPlaybackEnded;
+        if (!isActiveRequest()) {
+          return;
+        }
+
+        cleanupPlaybackResources();
+        if (mountedRef.current) {
+          dispatchPlayback({ type: "idle" });
+        }
+      } catch (playbackFailure) {
+        if (!isActiveRequest()) {
+          return;
+        }
+
+        console.error("TTS playback failed:", playbackFailure);
+        setPlaybackError(
+          isPaidTTSAccessError(playbackFailure)
+            ? "Text-to-speech is available on paid Maple plans."
+            : errorMessage(playbackFailure, "Text-to-speech playback failed")
+        );
         stop();
       }
     },
-    [isTauriEnv, playbackSpeed, status, stop]
+    [aiCustomFetch, apiUrl, cleanupPlaybackResources, playbackSpeed, stop, voice]
   );
 
   const clearPlaybackError = useCallback(() => {
     setPlaybackError(null);
   }, []);
 
-  // Clean up on unmount
   useEffect(() => {
     mountedRef.current = true;
+    const scheduledSources = scheduledSourceNodesRef.current;
+
     return () => {
       mountedRef.current = false;
-      playbackRequestRef.current += 1;
-      if (unlistenRef.current) {
-        unlistenRef.current();
-      }
-      if (sourceNodeRef.current) {
-        try {
-          sourceNodeRef.current.stop();
-        } catch {
-          // Ignore
-        }
-      }
-      if (audioContextRef.current) {
-        void audioContextRef.current.close().catch(() => {
-          // Ignore
-        });
-      }
-      if (audioUrlRef.current) {
-        URL.revokeObjectURL(audioUrlRef.current);
-        audioUrlRef.current = null;
-      }
-
-      if (audioSessionPrevTypeRef.current) {
-        try {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const nav = navigator as any;
-          if (nav.audioSession && typeof nav.audioSession.type === "string") {
-            nav.audioSession.type = audioSessionPrevTypeRef.current;
-          }
-        } catch {
-          // Ignore
-        }
-        audioSessionPrevTypeRef.current = null;
-      }
-
-      if (mediaSessionPrevStateRef.current) {
-        try {
-          if ("mediaSession" in navigator) {
-            navigator.mediaSession.metadata = mediaSessionPrevStateRef.current.metadata;
-            navigator.mediaSession.playbackState = mediaSessionPrevStateRef.current.playbackState;
-          }
-        } catch {
-          // Ignore
-        }
-        mediaSessionPrevStateRef.current = null;
-      }
+      cleanupPlaybackResources();
+      scheduledSources.clear();
     };
-  }, []);
+  }, [cleanupPlaybackResources]);
 
   return (
     <TTSContext.Provider
       value={{
-        status,
-        error,
         playbackError,
-        downloadProgress,
-        downloadDetail,
-        totalSizeMB,
         playbackSpeed,
         hasCustomPlaybackSpeed: playbackSpeed !== DEFAULT_TTS_PLAYBACK_SPEED,
+        voice,
         isPreparing,
         isPlaying,
         currentPlayingId,
-        isTauriEnv,
-        checkStatus,
-        startDownload,
-        deleteModels,
         setPlaybackSpeed,
         resetPlaybackSpeed,
+        setVoice,
         speak,
         stop,
         clearPlaybackError
@@ -595,68 +425,4 @@ export function useTTS() {
     throw new Error("useTTS must be used within a TTSProvider");
   }
   return context;
-}
-
-/**
- * Preprocess text for TTS by removing think blocks and other non-speakable content
- */
-function preprocessTextForTTS(text: string): string {
-  let processed = text;
-
-  // Remove fenced code blocks (```lang\n...\n```), including optional language tags
-  processed = stripFencedCodeBlocks(processed);
-
-  // Remove <think>...</think> blocks (chain of thought reasoning)
-  processed = processed.replace(/<think>[\s\S]*?<\/think>/g, "");
-
-  // Remove unclosed <think> tags (streaming edge case)
-  processed = processed.replace(/<think>[\s\S]*$/g, "");
-
-  return processed.trim();
-}
-
-function stripFencedCodeBlocks(text: string): string {
-  const lines = text.split(/\r?\n/);
-  const output: string[] = [];
-
-  let inFence = false;
-  let fenceChar: "`" | "~" | null = null;
-  let fenceLen = 0;
-
-  for (const line of lines) {
-    if (!inFence) {
-      const openMatch = line.match(/^\s*(?:>+\s*)?([`~]{3,})[^\n]*$/);
-      if (openMatch) {
-        inFence = true;
-        fenceChar = openMatch[1][0] as "`" | "~";
-        fenceLen = openMatch[1].length;
-        continue;
-      }
-
-      output.push(line);
-      continue;
-    }
-
-    const closeMatch = line.match(/^\s*(?:>+\s*)?([`~]{3,})\s*$/);
-    if (closeMatch) {
-      const fence = closeMatch[1];
-      if (fenceChar && fence[0] === fenceChar && fence.length >= fenceLen) {
-        inFence = false;
-        fenceChar = null;
-        fenceLen = 0;
-      }
-    }
-  }
-
-  return output.join("\n");
-}
-
-function base64ToBlob(base64: string, mimeType: string): Blob {
-  const byteCharacters = atob(base64);
-  const byteNumbers = new Array(byteCharacters.length);
-  for (let i = 0; i < byteCharacters.length; i++) {
-    byteNumbers[i] = byteCharacters.charCodeAt(i);
-  }
-  const byteArray = new Uint8Array(byteNumbers);
-  return new Blob([byteArray], { type: mimeType });
 }

@@ -3,15 +3,14 @@ use tauri_plugin_deep_link::DeepLinkExt;
 
 #[cfg(desktop)]
 mod agent;
+#[cfg(any(desktop, target_os = "ios"))]
+mod legacy_tts_cleanup;
 #[cfg(desktop)]
 mod maple_api;
 mod onnxruntime;
 mod pdf_extractor;
 mod pdf_ocr;
 mod proxy;
-// TTS is available on desktop and iOS (not Android)
-#[cfg(any(desktop, target_os = "ios"))]
-mod tts;
 
 #[cfg(desktop)]
 #[tauri::command]
@@ -88,7 +87,6 @@ pub fn run() {
         .manage(agent::AgentRuntimeState::new())
         .manage(maple_api::MapleApiAuthState::new())
         .manage(proxy::ProxyState::new())
-        .manage(tts::TTSState::new())
         .invoke_handler(tauri::generate_handler![
             agent::agent_get_runtime_status,
             agent::agent_start_runtime,
@@ -129,14 +127,10 @@ pub fn run() {
             pdf_extractor::extract_document_content,
             restart_for_update,
             get_pending_update_failure,
-            tts::tts_get_status,
-            tts::tts_download_models,
-            tts::tts_load_models,
-            tts::tts_synthesize,
-            tts::tts_unload_models,
-            tts::tts_delete_models,
         ])
         .setup(|app| {
+            legacy_tts_cleanup::schedule(app.handle());
+
             // Initialize proxy auto-start
             {
                 let app_handle_proxy = app.handle().clone();
@@ -320,13 +314,7 @@ pub fn run() {
         builder = builder.plugin(tauri_plugin_sign_in_with_apple::init());
     }
 
-    // Add TTS state management for iOS
-    #[cfg(all(not(desktop), target_os = "ios"))]
-    {
-        builder = builder.manage(tts::TTSState::new());
-    }
-
-    // Android-specific configuration (no TTS)
+    // Android-specific configuration
     #[cfg(all(not(desktop), target_os = "android"))]
     let app = builder
         .invoke_handler(tauri::generate_handler![
@@ -348,19 +336,15 @@ pub fn run() {
         })
         .plugin(tauri_plugin_updater::Builder::new().build());
 
-    // iOS-specific configuration (with TTS)
+    // iOS-specific configuration
     #[cfg(all(not(desktop), target_os = "ios"))]
     let app = builder
         .invoke_handler(tauri::generate_handler![
             pdf_extractor::extract_document_content,
-            tts::tts_get_status,
-            tts::tts_download_models,
-            tts::tts_load_models,
-            tts::tts_synthesize,
-            tts::tts_unload_models,
-            tts::tts_delete_models,
         ])
         .setup(|app| {
+            legacy_tts_cleanup::schedule(app.handle());
+
             // Set up the deep link handler for mobile
             let app_handle = app.handle().clone();
 

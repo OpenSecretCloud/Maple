@@ -35,7 +35,7 @@ ios-dev-sim simulator:
 ios-dev-device device:
     cd frontend && bun run tauri ios dev --device '{{device}}'
 
-# Build and verify ONNX Runtime for iOS (device + simulator) - used by TTS and PDF OCR
+# Build and verify ONNX Runtime for iOS (device + simulator) - used by PDF OCR
 ios-build-onnxruntime:
     ./scripts/ci/ios-onnxruntime.sh
 

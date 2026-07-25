@@ -4,9 +4,9 @@ use std::path::PathBuf;
 
 static ORT_ENVIRONMENT: Lazy<Result<(), String>> = Lazy::new(initialize);
 
-/// Initializes Maple's single ONNX Runtime environment before either OCR or
-/// TTS creates a session. Dynamic targets share the same explicitly packaged
-/// runtime; iOS keeps its existing static-library linkage.
+/// Initializes Maple's ONNX Runtime environment before OCR creates a session.
+/// Dynamic targets use the explicitly packaged runtime; iOS keeps its existing
+/// static-library linkage.
 pub fn ensure_initialized() -> Result<(), String> {
     ORT_ENVIRONMENT
         .as_ref()
