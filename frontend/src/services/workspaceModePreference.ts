@@ -46,6 +46,12 @@ export function rememberWorkspaceMode(
   }
 }
 
+export function resetWorkspaceModePreference(
+  storage: WorkspaceModeStorage | null = getBrowserStorage()
+): void {
+  rememberWorkspaceMode("chat", storage);
+}
+
 export function getLaunchWorkspacePath(
   location: LaunchLocation,
   storage: WorkspaceModeStorage | null = getBrowserStorage()

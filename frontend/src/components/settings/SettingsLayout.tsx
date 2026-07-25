@@ -33,6 +33,7 @@ import {
   restoreMapleApiAuthForUser,
   stopAgentRuntimeForUser
 } from "@/services/agentRuntimeService";
+import { resetWorkspaceModePreference } from "@/services/workspaceModePreference";
 import { useLocalState } from "@/state/useLocalState";
 import type { TeamStatus } from "@/types/team";
 import { isIOS } from "@/utils/platform";
@@ -328,6 +329,7 @@ function SettingsLayoutContent() {
       nativeAuthCleared = true;
       await os.signOut();
       signedOut = true;
+      resetWorkspaceModePreference();
       queryClient.clear();
       await router.invalidate();
       await router.navigate({ to: "/" });

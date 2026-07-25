@@ -14,6 +14,7 @@ import {
   clearMapleApiAuthForUser,
   restoreMapleApiAuthForUser
 } from "@/services/agentRuntimeService";
+import { resetWorkspaceModePreference } from "@/services/workspaceModePreference";
 import { SettingsPage, SettingsSection } from "./SettingsPage";
 
 export function DeleteAccountSettings() {
@@ -89,6 +90,8 @@ export function DeleteAccountSettings() {
         setIsAccountDeleted(true);
         cleanupBlockRef.current.retainUntilNextSession();
       }
+
+      resetWorkspaceModePreference();
 
       try {
         getBillingService().clearToken();

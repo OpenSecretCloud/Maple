@@ -4,6 +4,7 @@ import {
   getLaunchWorkspacePath,
   getStoredWorkspaceMode,
   rememberWorkspaceMode,
+  resetWorkspaceModePreference,
   WORKSPACE_MODE_STORAGE_KEY
 } from "./workspaceModePreference";
 
@@ -40,6 +41,15 @@ describe("workspace mode preference", () => {
 
     rememberWorkspaceMode("agent", storage);
     expect(getStoredWorkspaceMode(storage)).toBe("agent");
+  });
+
+  test("resets the launch preference to Chat when an account leaves", () => {
+    const storage = new MemoryStorage();
+    rememberWorkspaceMode("agent", storage);
+
+    resetWorkspaceModePreference(storage);
+
+    expect(getStoredWorkspaceMode(storage)).toBe("chat");
   });
 
   test("ignores unavailable storage", () => {
