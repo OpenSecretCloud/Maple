@@ -8,6 +8,7 @@ type ChatTurnProps = {
   actions?: ReactNode;
   containerRef?: Ref<HTMLDivElement>;
   className?: string;
+  historyAnchorIds?: string;
 };
 
 export function MapleChatAvatar() {
@@ -23,10 +24,17 @@ export function MapleChatAvatar() {
   );
 }
 
-export function ChatUserTurn({ children, actions, containerRef, className }: ChatTurnProps) {
+export function ChatUserTurn({
+  children,
+  actions,
+  containerRef,
+  className,
+  historyAnchorIds
+}: ChatTurnProps) {
   return (
     <div
       ref={containerRef}
+      data-history-anchor-ids={historyAnchorIds}
       className={cn("group/user flex flex-col items-end py-4 landscape-short:py-1.5", className)}
     >
       <div className="max-w-[min(100%,42rem)] rounded-2xl border border-border bg-muted px-4 py-3 backdrop-blur-lg dark:bg-card landscape-short:px-3 landscape-short:py-2">

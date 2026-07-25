@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback, memo, useMemo } from "react";
+import { useState, useRef, useEffect, useLayoutEffect, useCallback, memo, useMemo } from "react";
 import { flushSync } from "react-dom";
 import {
   ArrowUp,
@@ -68,6 +68,15 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { isLinux, isTauri } from "@/utils/platform";
 import { ConversationProjectPicker } from "@/components/ConversationProjectPicker";
+import {
+  CHAT_HISTORY_TOP_MARGIN_PX,
+  ChatHistoryPaginationGate,
+  chatHistoryCursorProgressed,
+  requiredChatHistoryBottomCompensation,
+  restoredChatHistoryAnchorScrollTop,
+  restoredChatHistoryScrollTop,
+  type ChatHistoryScrollSnapshot
+} from "@/components/chatHistoryPagination";
 import {
   getSidebarLayoutStyle,
   SIDEBAR_AWARE_FIXED_CENTER_CLASS,
@@ -1089,8 +1098,6 @@ const MessageList = memo(
     messages,
     isGenerating,
     chatId,
-    firstMessageRef,
-    isLoadingOlderMessages,
     onTTSSetupOpen,
     onTTSUpgradeAvailable,
     onTTSManage
@@ -1098,8 +1105,6 @@ const MessageList = memo(
     messages: Message[];
     isGenerating: boolean;
     chatId?: string;
-    firstMessageRef?: React.RefObject<HTMLDivElement>;
-    isLoadingOlderMessages?: boolean;
     onTTSSetupOpen: () => void;
     onTTSUpgradeAvailable: (continuePlayback?: () => Promise<void>) => void;
     onTTSManage: () => void;
@@ -1194,7 +1199,13 @@ const MessageList = memo(
           }
 
           renderedItems.push(
-            <div key={item.id} className="mb-2">
+            <div
+              key={item.id}
+              data-history-anchor-ids={[item.id, ...matchedOutputs.map((output) => output.id)].join(
+                " "
+              )}
+              className="mb-2"
+            >
               <ToolCallRenderer tool={renderedToolCall} toolOutputs={matchedOutputs} />
             </div>
           );
@@ -1209,7 +1220,7 @@ const MessageList = memo(
         if (itemType === "tool_output") {
           const output = item as ToolOutputItem;
           renderedItems.push(
-            <div key={item.id} className="mb-2">
+            <div key={item.id} data-history-anchor-ids={item.id} className="mb-2">
               <ToolCallRenderer tool={output} relatedCall={toolCallsByCallId.get(output.call_id)} />
             </div>
           );
@@ -1219,7 +1230,7 @@ const MessageList = memo(
         if (itemType === "web_search_call") {
           const webSearch = item as unknown as ResponseFunctionWebSearch;
           renderedItems.push(
-            <div key={item.id} className="mb-2">
+            <div key={item.id} data-history-anchor-ids={item.id} className="mb-2">
               <ToolCallRenderer tool={webSearch} />
             </div>
           );
@@ -1235,7 +1246,7 @@ const MessageList = memo(
           const isThinking = reasoning.status === "in_progress" || reasoning.status === "streaming";
 
           renderedItems.push(
-            <div key={item.id} className="mb-2">
+            <div key={item.id} data-history-anchor-ids={item.id} className="mb-2">
               <ThinkingBlock content={text} isThinking={isThinking} />
             </div>
           );
@@ -1252,7 +1263,7 @@ const MessageList = memo(
           }
 
           renderedItems.push(
-            <div key={item.id}>
+            <div key={item.id} data-history-anchor-ids={item.id}>
               <div className="prose prose-sm dark:prose-invert max-w-none">
                 <div className="space-y-3">
                   {message.content?.map((part, partIdx) => {
@@ -1341,18 +1352,7 @@ const MessageList = memo(
 
     return (
       <>
-        {/* Loading indicator for older messages */}
-        {isLoadingOlderMessages && (
-          <div className="flex items-center justify-center py-4">
-            <div className="flex items-center gap-2 text-sm text-muted-foreground">
-              <div className="w-2 h-2 bg-foreground/60 rounded-full animate-pulse" />
-              <div className="w-2 h-2 bg-foreground/60 rounded-full animate-pulse delay-75" />
-              <div className="w-2 h-2 bg-foreground/60 rounded-full animate-pulse delay-150" />
-            </div>
-          </div>
-        )}
-
-        {groupedMessages.map((group, groupIndex) => {
+        {groupedMessages.map((group) => {
           if (group.type === "user") {
             const message = group.message;
             if (!message.content || message.content.length === 0) return null;
@@ -1362,7 +1362,7 @@ const MessageList = memo(
             return (
               <ChatUserTurn
                 key={group.id}
-                containerRef={groupIndex === 0 ? firstMessageRef : undefined}
+                historyAnchorIds={message.id}
                 actions={userText ? <ChatCopyButton text={userText} /> : undefined}
               >
                 {message.content.map((part, partIdx) => {
@@ -1417,7 +1417,6 @@ const MessageList = memo(
             return (
               <ChatAssistantTurn
                 key={group.id}
-                containerRef={groupIndex === 0 ? firstMessageRef : undefined}
                 actions={
                   textContent ? (
                     <>
@@ -1604,6 +1603,16 @@ export function UnifiedChat() {
   const isUserScrollingRef = useRef(false);
   const prevMessageCountRef = useRef(0);
   const prevStreamingRef = useRef(false);
+  const historyPaginationGateRef = useRef(new ChatHistoryPaginationGate());
+  const pendingHistoryScrollRestoreRef = useRef<ChatHistoryScrollSnapshot | null>(null);
+  const wheelGestureEndTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const touchGestureEndTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const keyIntentTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const previousTouchYRef = useRef<number | null>(null);
+  const touchHistoryGestureActiveRef = useRef(false);
+  const pointerHistoryGestureActiveRef = useRef(false);
+  const previousPointerScrollTopRef = useRef(0);
+  const suppressedHistoryScrollEndsRef = useRef(0);
   const [hasNewPolledMessages, setHasNewPolledMessages] = useState(false);
   const recorderRef = useRef<RecordRTC | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -1620,8 +1629,57 @@ export function UnifiedChat() {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const chatContainerRef = useRef<HTMLDivElement>(null);
-  const firstMessageRef = useRef<HTMLDivElement>(null);
+  const historyTopSentinelRef = useRef<HTMLDivElement>(null);
+  const historyBottomCompensationRef = useRef<HTMLDivElement>(null);
   const activeConversationLoadRef = useRef(0);
+
+  const clearHistoryBottomCompensation = useCallback(() => {
+    if (historyBottomCompensationRef.current) {
+      historyBottomCompensationRef.current.style.height = "0px";
+    }
+  }, []);
+
+  useLayoutEffect(() => {
+    clearHistoryBottomCompensation();
+  }, [chatId, clearHistoryBottomCompensation]);
+
+  useEffect(() => {
+    historyPaginationGateRef.current.resetIntent();
+    pendingHistoryScrollRestoreRef.current = null;
+    previousTouchYRef.current = null;
+    touchHistoryGestureActiveRef.current = false;
+    pointerHistoryGestureActiveRef.current = false;
+    suppressedHistoryScrollEndsRef.current = 0;
+
+    if (wheelGestureEndTimeoutRef.current) {
+      clearTimeout(wheelGestureEndTimeoutRef.current);
+      wheelGestureEndTimeoutRef.current = null;
+    }
+    if (keyIntentTimeoutRef.current) {
+      clearTimeout(keyIntentTimeoutRef.current);
+      keyIntentTimeoutRef.current = null;
+    }
+    if (touchGestureEndTimeoutRef.current) {
+      clearTimeout(touchGestureEndTimeoutRef.current);
+      touchGestureEndTimeoutRef.current = null;
+    }
+
+    return () => {
+      suppressedHistoryScrollEndsRef.current = 0;
+      if (wheelGestureEndTimeoutRef.current) {
+        clearTimeout(wheelGestureEndTimeoutRef.current);
+        wheelGestureEndTimeoutRef.current = null;
+      }
+      if (keyIntentTimeoutRef.current) {
+        clearTimeout(keyIntentTimeoutRef.current);
+        keyIntentTimeoutRef.current = null;
+      }
+      if (touchGestureEndTimeoutRef.current) {
+        clearTimeout(touchGestureEndTimeoutRef.current);
+        touchGestureEndTimeoutRef.current = null;
+      }
+    };
+  }, [chatId]);
 
   // Attachment cleanup function - defined early to avoid reference errors
   const clearAllAttachments = useCallback(() => {
@@ -1683,24 +1741,38 @@ export function UnifiedChat() {
     const container = chatContainerRef.current;
     if (!container) return;
 
+    const compensation = historyBottomCompensationRef.current;
+    const compensationHeight = compensation?.offsetHeight ?? 0;
+    if (
+      compensation &&
+      compensationHeight > 0 &&
+      container.scrollTop <= container.scrollHeight - compensationHeight - container.clientHeight
+    ) {
+      clearHistoryBottomCompensation();
+    }
+
     const { scrollTop, scrollHeight, clientHeight } = container;
     const isNearBottom = scrollHeight - scrollTop - clientHeight < 100;
     setIsUserScrolling(!isNearBottom);
-  }, []);
+  }, [clearHistoryBottomCompensation]);
 
   useEffect(() => {
     isUserScrollingRef.current = isUserScrolling;
   }, [isUserScrolling]);
 
   // Scroll to bottom helper
-  const scrollToBottom = useCallback((behavior: ScrollBehavior = "smooth") => {
-    if (chatContainerRef.current) {
-      chatContainerRef.current.scrollTo({
-        top: chatContainerRef.current.scrollHeight,
-        behavior
-      });
-    }
-  }, []);
+  const scrollToBottom = useCallback(
+    (behavior: ScrollBehavior = "smooth") => {
+      if (chatContainerRef.current) {
+        clearHistoryBottomCompensation();
+        chatContainerRef.current.scrollTo({
+          top: chatContainerRef.current.scrollHeight,
+          behavior
+        });
+      }
+    },
+    [clearHistoryBottomCompensation]
+  );
 
   const getScrollDebugSnapshot = useCallback(() => {
     const container = chatContainerRef.current;
@@ -1755,6 +1827,57 @@ export function UnifiedChat() {
 
     return () => container.removeEventListener("scroll", handleScroll);
   }, [handleScroll]);
+
+  useLayoutEffect(() => {
+    if (isLoadingOlderMessages || !pendingHistoryScrollRestoreRef.current) return;
+
+    const container = chatContainerRef.current;
+    const snapshot = pendingHistoryScrollRestoreRef.current;
+    pendingHistoryScrollRestoreRef.current = null;
+
+    if (!container) return;
+
+    let restoredScrollTop = restoredChatHistoryScrollTop(snapshot, container.scrollHeight);
+
+    const { anchorId, anchorOffset } = snapshot;
+    if (anchorId && anchorOffset !== undefined) {
+      const anchor = Array.from(
+        container.querySelectorAll<HTMLElement>("[data-history-anchor-ids]")
+      ).find((candidate) => candidate.dataset.historyAnchorIds?.split(" ").includes(anchorId));
+
+      if (anchor) {
+        const nextAnchorOffset =
+          anchor.getBoundingClientRect().top - container.getBoundingClientRect().top;
+        restoredScrollTop = restoredChatHistoryAnchorScrollTop(
+          container.scrollTop,
+          anchorOffset,
+          nextAnchorOffset
+        );
+      }
+    }
+
+    const compensation = historyBottomCompensationRef.current;
+    const currentCompensation = compensation?.offsetHeight ?? 0;
+    const missingScrollRange = requiredChatHistoryBottomCompensation(
+      restoredScrollTop,
+      container.scrollHeight - currentCompensation,
+      container.clientHeight
+    );
+    if (compensation) {
+      // scrollHeight is integer-rounded, so keep one extra pixel available rather than
+      // allowing the browser to clamp the restored fractional scroll position.
+      compensation.style.height = missingScrollRange > 0 ? `${missingScrollRange + 1}px` : "0px";
+    }
+
+    const previousScrollTop = container.scrollTop;
+    container.scrollTop = restoredScrollTop;
+    if (Math.abs(container.scrollTop - previousScrollTop) > 0.5) {
+      // WKWebView emits `scrollend` for this programmatic anchor restore even
+      // when trackpad momentum is still active. Ignore that one synthetic end;
+      // the real gesture end (or the compatibility timer) must release the gate.
+      suppressedHistoryScrollEndsRef.current += 1;
+    }
+  }, [isLoadingOlderMessages, messages]);
 
   // Initial load - scroll to bottom instantly
   useEffect(() => {
@@ -1969,16 +2092,11 @@ export function UnifiedChat() {
         const messagesInChronologicalOrder = loadedMessages.reverse();
         setMessages(messagesInChronologicalOrder);
 
-        // Set pagination state
-        // Before reversal, last item was the oldest. After reversal, it's now first item.
-        // But for the API "after" parameter, we still need the chronologically oldest ID
-        if (loadedMessages.length > 0) {
-          // After reversal, the FIRST message is the oldest (chronologically earliest)
-          const oldestId = messagesInChronologicalOrder[0].id;
+        // Use the API's raw-item cursor rather than a normalized rendered-message ID.
+        const oldestId = itemsResponse.last_id || itemsResponse.data.at(-1)?.id;
+        if (oldestId) {
           setOldestItemId(oldestId);
-          // If we got a full page, there might be more
-          const hasMore = loadedMessages.length === 10;
-          setHasMoreOlderMessages(hasMore);
+          setHasMoreOlderMessages(itemsResponse.has_more);
         } else {
           setOldestItemId(undefined);
           setHasMoreOlderMessages(false);
@@ -2027,7 +2145,10 @@ export function UnifiedChat() {
 
   // Load older messages for pagination
   const loadOlderMessages = useCallback(async () => {
-    if (!conversation?.id || !openai || !oldestItemId || isLoadingOlderMessages) return;
+    if (!conversation?.id || !openai || !oldestItemId) {
+      historyPaginationGateRef.current.finishLoad();
+      return;
+    }
 
     setIsLoadingOlderMessages(true);
 
@@ -2055,30 +2176,54 @@ export function UnifiedChat() {
         }>
       );
 
-      if (olderMessages.length > 0) {
-        // Reverse for chronological order (API returns desc, we need asc for display)
-        const olderMessagesInChronologicalOrder = olderMessages.reverse();
+      // Reverse for chronological order (API returns desc, we need asc for display).
+      const olderMessagesInChronologicalOrder = olderMessages.reverse();
+      const newOldestId = itemsResponse.last_id || itemsResponse.data.at(-1)?.id;
 
-        // Prepend older messages to the existing messages using merge helper
-        // This ensures no duplicates if a message was already loaded
-        setMessages((prev) => mergeMessagesById(olderMessagesInChronologicalOrder, prev));
-
-        // Update pagination state
-        // After reversal, the FIRST message is the chronologically oldest
-        const newOldestId = olderMessagesInChronologicalOrder[0].id;
-        const hasMore = olderMessages.length === 10;
-        setOldestItemId(newOldestId);
-        setHasMoreOlderMessages(hasMore);
-      } else {
-        // No more messages to load
+      if (!chatHistoryCursorProgressed(oldestItemId, newOldestId)) {
         setHasMoreOlderMessages(false);
+        return;
+      }
+
+      setOldestItemId(newOldestId);
+      setHasMoreOlderMessages(itemsResponse.has_more);
+
+      if (olderMessagesInChronologicalOrder.length > 0) {
+        const container = chatContainerRef.current;
+        if (container) {
+          const containerRect = container.getBoundingClientRect();
+          const firstVisibleAnchor = Array.from(
+            container.querySelectorAll<HTMLElement>("[data-history-anchor-ids]")
+          ).find((candidate) => {
+            const candidateRect = candidate.getBoundingClientRect();
+            return (
+              candidateRect.bottom > containerRect.top && candidateRect.top < containerRect.bottom
+            );
+          });
+          const anchorId = firstVisibleAnchor?.dataset.historyAnchorIds?.split(" ").find(Boolean);
+          const anchorOffset = firstVisibleAnchor
+            ? firstVisibleAnchor.getBoundingClientRect().top - containerRect.top
+            : undefined;
+
+          pendingHistoryScrollRestoreRef.current = {
+            scrollTop: container.scrollTop,
+            scrollHeight: container.scrollHeight,
+            anchorId,
+            anchorOffset
+          };
+        }
+
+        // Prepend older messages while keeping IDs unique. Restore the pending scroll
+        // snapshot after this render commits; the loading overlay does not affect layout.
+        setMessages((prev) => mergeMessagesById(olderMessagesInChronologicalOrder, prev));
       }
     } catch (error) {
       console.error("Failed to load older messages:", error);
     } finally {
+      historyPaginationGateRef.current.finishLoad();
       setIsLoadingOlderMessages(false);
     }
-  }, [conversation?.id, openai, oldestItemId, isLoadingOlderMessages]);
+  }, [conversation?.id, openai, oldestItemId]);
 
   // Polling mechanism for conversation updates
   const pollForNewItems = useCallback(async () => {
@@ -2274,30 +2419,314 @@ export function UnifiedChat() {
     };
   }, [conversation?.id, conversation?.metadata?.title, openai, queryClient]);
 
-  // Set up IntersectionObserver for loading older messages
+  const isHistoryTopBoundaryNear = useCallback(() => {
+    const container = chatContainerRef.current;
+    const sentinel = historyTopSentinelRef.current;
+    if (!container || !sentinel) return false;
+
+    const containerRect = container.getBoundingClientRect();
+    const sentinelRect = sentinel.getBoundingClientRect();
+    if (container.scrollHeight <= container.clientHeight + 1) return true;
+
+    return (
+      sentinelRect.bottom >= containerRect.top - CHAT_HISTORY_TOP_MARGIN_PX &&
+      sentinelRect.top <= containerRect.top + CHAT_HISTORY_TOP_MARGIN_PX
+    );
+  }, []);
+
+  const maybeLoadOlderMessages = useCallback(() => {
+    const canLoad = Boolean(hasMoreOlderMessages && conversation?.id && openai && oldestItemId);
+    const shouldLoad = historyPaginationGateRef.current.tryStartLoad({
+      canLoad,
+      topBoundaryVisible: isHistoryTopBoundaryNear()
+    });
+
+    if (shouldLoad) {
+      void loadOlderMessages();
+    }
+  }, [
+    conversation?.id,
+    hasMoreOlderMessages,
+    isHistoryTopBoundaryNear,
+    loadOlderMessages,
+    oldestItemId,
+    openai
+  ]);
+
+  // Only direct backward-navigation input can arm history pagination. Intersection,
+  // resize, initial positioning, and card expansion merely update boundary visibility.
   useEffect(() => {
-    if (!firstMessageRef.current || !hasMoreOlderMessages) return;
+    const container = chatContainerRef.current;
+    if (!container) return;
+
+    const gate = historyPaginationGateRef.current;
+
+    const finishWheelGesture = () => {
+      gate.endGesture();
+      wheelGestureEndTimeoutRef.current = null;
+    };
+
+    const finishTouchGesture = () => {
+      touchHistoryGestureActiveRef.current = false;
+      gate.endGesture();
+      touchGestureEndTimeoutRef.current = null;
+    };
+
+    const handleHistoryScrollEnd = () => {
+      // `scrollend` follows the browser's real wheel/trackpad and keyboard gesture
+      // boundary, including momentum. Keep the timers below as a compatibility
+      // fallback for WebViews that do not dispatch it.
+      if (suppressedHistoryScrollEndsRef.current > 0) {
+        suppressedHistoryScrollEndsRef.current -= 1;
+        return;
+      }
+      if (pointerHistoryGestureActiveRef.current) return;
+      if (touchHistoryGestureActiveRef.current) {
+        if (touchGestureEndTimeoutRef.current) {
+          clearTimeout(touchGestureEndTimeoutRef.current);
+        }
+        finishTouchGesture();
+        return;
+      }
+
+      if (wheelGestureEndTimeoutRef.current) {
+        clearTimeout(wheelGestureEndTimeoutRef.current);
+        // WKWebView can also emit `scrollend` between the direct and momentum
+        // phases, or while an anchor restoration is settling. Give the wheel
+        // stream one short quiet period; any residual event cancels this release
+        // before it can re-arm pagination.
+        wheelGestureEndTimeoutRef.current = setTimeout(finishWheelGesture, 80);
+        return;
+      }
+      if (keyIntentTimeoutRef.current) {
+        clearTimeout(keyIntentTimeoutRef.current);
+        keyIntentTimeoutRef.current = null;
+      }
+      gate.endGesture();
+    };
+
+    const scheduleTouchGestureEnd = () => {
+      if (touchGestureEndTimeoutRef.current) {
+        clearTimeout(touchGestureEndTimeoutRef.current);
+      }
+      touchGestureEndTimeoutRef.current = setTimeout(finishTouchGesture, 250);
+    };
+
+    const handleHistoryWheel = (event: WheelEvent) => {
+      if (event.deltaY >= 0) {
+        if (event.deltaY > 0) {
+          gate.endGesture();
+          clearHistoryBottomCompensation();
+          if (wheelGestureEndTimeoutRef.current) {
+            clearTimeout(wheelGestureEndTimeoutRef.current);
+            wheelGestureEndTimeoutRef.current = null;
+          }
+        }
+        return;
+      }
+
+      gate.beginGesture();
+      maybeLoadOlderMessages();
+
+      if (wheelGestureEndTimeoutRef.current) {
+        clearTimeout(wheelGestureEndTimeoutRef.current);
+      }
+      wheelGestureEndTimeoutRef.current = setTimeout(finishWheelGesture, 180);
+    };
+
+    const handleHistoryTouchStart = (event: TouchEvent) => {
+      if (touchGestureEndTimeoutRef.current) {
+        clearTimeout(touchGestureEndTimeoutRef.current);
+        touchGestureEndTimeoutRef.current = null;
+      }
+      touchHistoryGestureActiveRef.current = true;
+      previousTouchYRef.current = event.touches[0]?.clientY ?? null;
+      gate.endGesture();
+    };
+
+    const handleHistoryTouchMove = (event: TouchEvent) => {
+      const nextTouchY = event.touches[0]?.clientY;
+      const previousTouchY = previousTouchYRef.current;
+      if (nextTouchY === undefined || previousTouchY === null) return;
+
+      const deltaY = nextTouchY - previousTouchY;
+      previousTouchYRef.current = nextTouchY;
+
+      if (deltaY > 2) {
+        gate.beginGesture();
+        maybeLoadOlderMessages();
+      } else if (deltaY < -2) {
+        gate.endGesture();
+        clearHistoryBottomCompensation();
+      }
+    };
+
+    const handleHistoryTouchEnd = () => {
+      previousTouchYRef.current = null;
+      maybeLoadOlderMessages();
+      scheduleTouchGestureEnd();
+    };
+
+    const handleHistoryTouchCancel = () => {
+      previousTouchYRef.current = null;
+      finishTouchGesture();
+    };
+
+    const handleHistoryPointerDown = (event: PointerEvent) => {
+      if (event.pointerType !== "mouse" || !event.isPrimary || event.button !== 0) return;
+
+      if (wheelGestureEndTimeoutRef.current) {
+        clearTimeout(wheelGestureEndTimeoutRef.current);
+        wheelGestureEndTimeoutRef.current = null;
+      }
+      gate.endGesture();
+      pointerHistoryGestureActiveRef.current = true;
+      previousPointerScrollTopRef.current = container.scrollTop;
+    };
+
+    const handleHistoryPointerEnd = () => {
+      if (!pointerHistoryGestureActiveRef.current) return;
+
+      pointerHistoryGestureActiveRef.current = false;
+      gate.endGesture();
+    };
+
+    const handleHistoryScroll = () => {
+      const nextScrollTop = container.scrollTop;
+
+      if (
+        pointerHistoryGestureActiveRef.current &&
+        nextScrollTop < previousPointerScrollTopRef.current
+      ) {
+        gate.beginGesture();
+        maybeLoadOlderMessages();
+      } else if (
+        (pointerHistoryGestureActiveRef.current ||
+          (touchHistoryGestureActiveRef.current && previousTouchYRef.current === null)) &&
+        nextScrollTop > previousPointerScrollTopRef.current
+      ) {
+        clearHistoryBottomCompensation();
+      }
+      previousPointerScrollTopRef.current = nextScrollTop;
+
+      // Keep touch intent alive until inertial scrolling has actually settled.
+      if (touchHistoryGestureActiveRef.current && previousTouchYRef.current === null) {
+        maybeLoadOlderMessages();
+        scheduleTouchGestureEnd();
+      }
+    };
+
+    const isBackwardHistoryKey = (event: KeyboardEvent) =>
+      event.key === "ArrowUp" ||
+      event.key === "PageUp" ||
+      event.key === "Home" ||
+      (event.shiftKey && (event.key === " " || event.key === "Spacebar"));
+
+    const isForwardHistoryKey = (event: KeyboardEvent) =>
+      event.key === "ArrowDown" ||
+      event.key === "PageDown" ||
+      event.key === "End" ||
+      (!event.shiftKey && (event.key === " " || event.key === "Spacebar"));
+
+    const handleHistoryKeyDown = (event: KeyboardEvent) => {
+      const target = event.target;
+      if (
+        target instanceof Element &&
+        target.closest(
+          "input, textarea, select, button, a, [contenteditable='true'], [role='button'], [role='textbox']"
+        )
+      ) {
+        return;
+      }
+
+      if (isForwardHistoryKey(event)) {
+        gate.endGesture();
+        clearHistoryBottomCompensation();
+        if (keyIntentTimeoutRef.current) {
+          clearTimeout(keyIntentTimeoutRef.current);
+          keyIntentTimeoutRef.current = null;
+        }
+        return;
+      }
+      if (!isBackwardHistoryKey(event)) return;
+
+      gate.beginGesture();
+      maybeLoadOlderMessages();
+
+      if (keyIntentTimeoutRef.current) {
+        clearTimeout(keyIntentTimeoutRef.current);
+      }
+      keyIntentTimeoutRef.current = setTimeout(() => {
+        gate.endGesture();
+        keyIntentTimeoutRef.current = null;
+      }, 500);
+    };
+
+    const handleHistoryKeyUp = (event: KeyboardEvent) => {
+      if (!isBackwardHistoryKey(event)) return;
+
+      if (keyIntentTimeoutRef.current) {
+        clearTimeout(keyIntentTimeoutRef.current);
+        keyIntentTimeoutRef.current = null;
+      }
+      gate.endGesture();
+    };
+
+    container.addEventListener("wheel", handleHistoryWheel, { passive: true });
+    container.addEventListener("touchstart", handleHistoryTouchStart, { passive: true });
+    container.addEventListener("touchmove", handleHistoryTouchMove, { passive: true });
+    container.addEventListener("touchend", handleHistoryTouchEnd, { passive: true });
+    container.addEventListener("touchcancel", handleHistoryTouchCancel, { passive: true });
+    container.addEventListener("pointerdown", handleHistoryPointerDown);
+    container.addEventListener("scroll", handleHistoryScroll, { passive: true });
+    container.addEventListener("scrollend", handleHistoryScrollEnd);
+    window.addEventListener("pointerup", handleHistoryPointerEnd);
+    window.addEventListener("pointercancel", handleHistoryPointerEnd);
+    window.addEventListener("keydown", handleHistoryKeyDown);
+    window.addEventListener("keyup", handleHistoryKeyUp);
+
+    return () => {
+      container.removeEventListener("wheel", handleHistoryWheel);
+      container.removeEventListener("touchstart", handleHistoryTouchStart);
+      container.removeEventListener("touchmove", handleHistoryTouchMove);
+      container.removeEventListener("touchend", handleHistoryTouchEnd);
+      container.removeEventListener("touchcancel", handleHistoryTouchCancel);
+      container.removeEventListener("pointerdown", handleHistoryPointerDown);
+      container.removeEventListener("scroll", handleHistoryScroll);
+      container.removeEventListener("scrollend", handleHistoryScrollEnd);
+      window.removeEventListener("pointerup", handleHistoryPointerEnd);
+      window.removeEventListener("pointercancel", handleHistoryPointerEnd);
+      window.removeEventListener("keydown", handleHistoryKeyDown);
+      window.removeEventListener("keyup", handleHistoryKeyUp);
+    };
+  }, [clearHistoryBottomCompensation, maybeLoadOlderMessages]);
+
+  // Observe a persistent list-top sentinel rather than the first rendered turn. A long
+  // assistant turn can overlap the viewport even when its actual top is far above it.
+  useEffect(() => {
+    const container = chatContainerRef.current;
+    const sentinel = historyTopSentinelRef.current;
+    if (!container || !sentinel || !hasMoreOlderMessages) return;
 
     const observer = new IntersectionObserver(
       (entries) => {
-        // When the first message comes into view, load older messages
-        if (entries[0].isIntersecting && hasMoreOlderMessages && !isLoadingOlderMessages) {
-          loadOlderMessages();
+        if (entries[0]?.isIntersecting) {
+          maybeLoadOlderMessages();
         }
       },
       {
-        root: chatContainerRef.current,
-        rootMargin: "100px", // Start loading a bit before the message is visible
-        threshold: 0.1
+        root: container,
+        rootMargin: `${CHAT_HISTORY_TOP_MARGIN_PX}px 0px 0px 0px`,
+        threshold: 0
       }
     );
 
-    observer.observe(firstMessageRef.current);
+    observer.observe(sentinel);
 
     return () => {
       observer.disconnect();
     };
-  }, [hasMoreOlderMessages, isLoadingOlderMessages, loadOlderMessages]);
+  }, [hasMoreOlderMessages, maybeLoadOlderMessages]);
 
   // Auto-clear error after 3 seconds
   useEffect(() => {
@@ -3527,19 +3956,35 @@ export function UnifiedChat() {
         {/* Messages Area */}
         <div
           ref={chatContainerRef}
+          data-testid="chat-scroll-container"
           className="flex-1 min-h-0 overflow-y-auto overscroll-y-contain flex flex-col relative"
         >
+          {isLoadingOlderMessages && (
+            <div className="pointer-events-none absolute inset-x-0 top-0 z-10 flex items-center justify-center py-4">
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <div className="w-2 h-2 bg-foreground/60 rounded-full animate-pulse" />
+                <div className="w-2 h-2 bg-foreground/60 rounded-full animate-pulse delay-75" />
+                <div className="w-2 h-2 bg-foreground/60 rounded-full animate-pulse delay-150" />
+              </div>
+            </div>
+          )}
+
           {/* Only show messages when there are messages */}
           {messages.length > 0 && (
-            <div className="mx-auto w-full max-w-4xl p-4 md:p-6 landscape-short:p-2">
+            <div className="mx-auto flex min-h-full w-full max-w-4xl flex-col p-4 md:p-6 landscape-short:p-2">
+              <div
+                ref={historyTopSentinelRef}
+                data-testid="chat-history-top"
+                className="h-px w-full"
+                aria-hidden="true"
+              />
+
               {/* Message list with modern ChatGPT/Claude style */}
               <div className="space-y-1">
                 <MessageList
                   messages={messages}
                   isGenerating={isGenerating}
                   chatId={chatId}
-                  firstMessageRef={firstMessageRef}
-                  isLoadingOlderMessages={isLoadingOlderMessages}
                   onTTSSetupOpen={handleTTSSetupOpen}
                   onTTSUpgradeAvailable={handleTTSUpgradeAvailable}
                   onTTSManage={handleTTSManage}
@@ -3547,6 +3992,12 @@ export function UnifiedChat() {
               </div>
 
               <div ref={messagesEndRef} />
+              <div
+                ref={historyBottomCompensationRef}
+                data-testid="chat-history-bottom-compensation"
+                className="shrink-0"
+                aria-hidden="true"
+              />
             </div>
           )}
         </div>
