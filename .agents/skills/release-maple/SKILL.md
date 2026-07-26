@@ -125,3 +125,58 @@ gh release view "$tag" --repo OpenSecretCloud/Maple \
 ```
 
 Report the release URL, tag, commit SHA, main workflow URL and attempt count, Zapstore workflow URL, any retry and its evidence, and final success. Do not call the release complete while any required workflow is queued or running.
+
+## Manual Post-GitHub Release Distribution
+
+The GitHub and Zapstore workflows do not complete distribution through Apple or Google stores. Treat every item in this section as a manual human action. Do not open a store UI, upload a build, submit for review, or change a rollout unless the user explicitly authorizes that action at the time.
+
+Keep release-specific facts separate from general instructions. Record exact build numbers, version codes, review outcomes, and rollout choices only after a human or the relevant store confirms them.
+
+### Apple TestFlight and App Store
+
+Recorded handoff fact from July 26, 2026:
+
+- [x] In App Store Connect TestFlight, the user added the `Maple Beta Testers` external tester group to the most recent Maple `master` build/version. No exact build number has been recorded here.
+
+User-reported App Store Connect setup actions for v3.3.0:
+
+1. [x] The user created the new App Store version `3.3.0`.
+2. [x] The user populated `What's New` from the prepared v3.3.0 release summary.
+3. [x] The user attached the same current `master` build used for TestFlight. No exact build number has been recorded here.
+4. [x] The user saved the App Store version changes.
+5. [x] The user selected the action to add the version for review.
+6. [ ] Wait for App Store Connect to report that the resulting preparation or review state succeeded, and have the human record the exact status transition.
+7. [ ] After step 6 is confirmed, have the human submit v3.3.0 for App Review and record the resulting submission status.
+
+Steps 1-5 record user-performed setup actions only. They do not establish that App Store Connect accepted a status transition, that step 7 was submitted, or that Apple approved the release. A human must explicitly confirm each status transition, final submission, review outcome, and release state before it is recorded as complete.
+
+Remaining human checklist:
+
+- [ ] Confirm the selected build has finished App Store Connect processing and has no blocking validation, export-compliance, or encryption questions.
+- [ ] If App Store Connect requires Beta App Review for external testing, complete the required beta metadata and submit the build for Beta App Review; record the result.
+- [ ] Confirm the approved build is available to the intended external testers and enable or publish the public TestFlight link when the user chooses to release it publicly.
+- [ ] For App Store submission, select the intended build and complete the version metadata, screenshots, privacy details, age rating, review information, export compliance, and any other required declarations.
+- [ ] Ask the user to choose the App Store release control, such as manual release, automatic release after approval, or a scheduled/phased release, before submission.
+- [ ] Submit for App Review only with explicit user authorization, then record the submitted build/version, review status, and chosen release control.
+
+### Google Play
+
+Recorded Google Play Console workflow for v3.3.0:
+
+1. [x] The user downloaded the signed `app-universal-release.aab` for v3.3.0.
+2. [x] In Internal testing, the user uploaded the AAB, allowed the release details to auto-fill, used the GitHub release summary as the release notes, and saved and published the internal release without errors.
+3. [x] After refreshing Google Play Console, the user promoted the internal release to Open testing and completed the required `Next` and `Save` steps until it was ready. The user chose not to continue to Publishing overview at that point.
+4. [x] The user returned to Internal testing, selected promotion to Production, and repeated the required save and next steps to attempt the production promotion.
+5. [ ] Production promotion did not succeed. Google Play blocked it with: `Your app does not support 16 KB memory page sizes.` Treat this as an active regression-investigation blocker, not as a published production release.
+
+The completed items above record human-performed console actions only. They do not establish that v3.3.0 reached Production. A human must confirm any later blocker resolution, production submission, review, rollout, and publication before those states are recorded as complete.
+
+Prerequisites and remaining human checklist:
+
+- [ ] Identify the signed `app-universal-release.aab` attached to the exact GitHub release tag and commit. Verify its GitHub artifact digest and the release reproducibility evidence before uploading it.
+- [ ] Confirm access to the correct Google Play Console application and verify that Play App Signing and the expected upload-key configuration are in place.
+- [ ] Confirm the AAB's application ID and version code are correct and that the version code has not already been used in Google Play.
+- [ ] Ask the user which track to use, such as internal testing, closed testing, open testing, or production, and whether any staged rollout is intended.
+- [ ] Create the release in the chosen track, upload the verified AAB, add the appropriate release notes, and resolve any Play Console warnings or required declarations.
+- [ ] Present the final track, version code, countries or audience, rollout percentage, and Play Console review summary to the user before submission.
+- [ ] Submit or roll out the Google Play release only with explicit user authorization, then record the resulting review and publication status.
