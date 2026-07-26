@@ -718,6 +718,14 @@ verify_android_elf_load_alignment() {
 prepare_android_cargo_config() {
   local cargo_dir="${TAURI_DIR}/.cargo"
   local config_file="${cargo_dir}/config.toml"
+  local page_size_flags="-C link-arg=-Wl,-z,max-page-size=16384"
+
+  # configure_reproducible_build_metadata sets RUSTFLAGS for path remapping.
+  # Cargo gives RUSTFLAGS precedence over target.<triple>.rustflags, so carry
+  # the Android linker setting there as well while preserving the remap flags.
+  # Tauri's Android Cargo invocations use --target, keeping these flags scoped
+  # to the Android target rather than host build scripts and proc macros.
+  append_env_words_once RUSTFLAGS "${page_size_flags}"
 
   # Tauri's Gradle task starts nested Cargo builds. Keep the target linker
   # settings file-backed so they survive that process boundary.
