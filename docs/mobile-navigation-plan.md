@@ -2,12 +2,12 @@
 
 ## Status
 
-Core implementation and the iOS edge-swipe stretch goal are complete on the `mobile-navigation`
-branch. Navigation/history, stream-disconnect, and gesture decisions have focused automated
-coverage, and the repository's format, lint, typecheck, test, and production-build checks pass. The
-unchecked acceptance items below require interactive browser or physical iOS/Android validation and
-remain the final release-validation pass. A mobile main-menu sizing audit is recorded below, but no
-sizing changes are included pending a product decision.
+Core implementation, the iOS edge-swipe stretch goal, and the compact main-menu sizing pass are
+complete on the `mobile-navigation` branch. Navigation/history, stream-disconnect, gesture, and
+compact Settings decisions have focused automated coverage. The full-screen menu now uses
+phone-scale controls while retaining the same menu implementation and the original 296-pixel
+desktop sidebar presentation. Unchecked acceptance items below still require authenticated
+interactive browser or physical iOS/Android validation.
 
 ## Objective
 
@@ -294,13 +294,13 @@ No backend, database, or OpenSecret API change is expected.
 
 ## Gap Analysis
 
-### Mobile main-menu sizing audit — decision pending
+### Mobile main-menu sizing audit — implemented
 
-The full-screen menu currently reuses the desktop sidebar's dimensions as well as its content. That
-keeps the codebase simple, but it means the content grows from a roughly 296-pixel-wide rail to a
-roughly 390–430-pixel-wide phone surface while most vertical dimensions remain desktop-dense.
+The initial full-screen menu reused the desktop sidebar's dimensions as well as its content. That
+kept the codebase simple, but it meant the content grew from a roughly 296-pixel-wide rail to a
+roughly 390–430-pixel-wide phone surface while most vertical dimensions remained desktop-dense.
 
-Measured from the current shared component styles:
+The pre-sizing audit measured:
 
 - Base menu and list text is 14 pixels; section headings are 12 pixels.
 - New Chat, Search, and New Project are approximately 32–33 pixels tall with 16-pixel icons.
@@ -313,25 +313,51 @@ Measured from the current shared component styles:
   defined by the 16-pixel wordmark and 12/8-pixel vertical padding.
 - The history area uses 16 pixels of left inset and 8 pixels of right inset on mobile.
 
-This supports the physical-device feedback that the full-screen menu feels too small: its available
-width increases substantially, but its type, icons, row heights, and tap targets do not. Most of the
-primary interactive targets are also below the familiar 44-point iOS touch-target convention.
+The implemented pass scopes proportional sizing to `MainMenu`'s page presentation and passes that
+presentation state through the existing shared history, account, and usage components. It does not
+add a second menu or change the responsive breakpoints.
 
-If a sizing pass is approved, the smallest coherent change would use compact-layout responsive
-classes inside the existing shared components rather than creating mobile-only menu markup:
+- The full-screen header, New Chat, Search, New Project, project rows, chat rows, overflow buttons,
+  Settings, selection actions, selection hit areas, and context-menu actions use a 44-pixel minimum
+  target.
+- Primary and list labels are 16 pixels; their primary icons, disclosure icons, pinned indicators,
+  and overflow icons are 20 pixels. Section headings remain 12 pixels.
+- The search field is 44 pixels tall with 48 pixels of trailing clearance, and its clear action has
+  a real 44-by-44-pixel hit area.
+- Chat and project titles reserve 60 pixels at the trailing edge for the enlarged 44-pixel overflow
+  control, so long titles truncate before the control instead of sitting beneath it.
+- The page header is at least 44 pixels tall and uses a 20-pixel-high wordmark.
+- Page-level horizontal insets are a symmetric 16 pixels. The desktop-only workspace-mode switch is
+  not rendered in page mode.
+- Mobile usage copy is 12 pixels, with 11-pixel plan/API labels. The account row aligns that card
+  with an exact 44-by-44-pixel Settings control.
+- Portaled menu content is constrained to the viewport, scrolls vertically when necessary, uses
+  16-pixel collision padding, and gives its menu items 44-pixel targets with 16-pixel labels and
+  20-pixel icons.
+- The footer uses the greater of 16 pixels or the device bottom safe-area inset. In short landscape,
+  the full menu surface becomes the vertical scroller and the decorative history tail/fade
+  contracts, so every section remains reachable.
 
-1. Give primary actions, search, project/chat rows, overflow controls, and Settings a 44-pixel
-   minimum touch target on compact layouts.
-2. Raise primary and list labels to 16 pixels and their icons to roughly 18–20 pixels.
-3. Give the search clear action its own full touch target and expand row title clearance alongside
-   the larger overflow control.
-4. Make the page-mode header at least 44 pixels tall, increase the wordmark modestly, and use
-   symmetric 16–20-pixel horizontal insets.
-5. Keep 12-pixel section headings, but raise usage-card copy to roughly 11–12 pixels.
-6. Verify bottom safe-area spacing, short landscape, and accessibility text sizing on devices.
+All original desktop sizing branches remain in place: the 296-pixel sidebar retains its 14-pixel
+labels, 16-pixel icons, dense rows, 36-pixel Settings control, original asymmetric history padding,
+and existing overflow behavior.
 
-No recommendation above is implemented in the current branch. Desktop dimensions can remain
-unchanged by scoping any approved sizing adjustments to the existing compact-layout presentation.
+Validation for this pass:
+
+- The complete frontend suite passes with 286 tests, including focused mobile-navigation,
+  response-lifecycle, Settings-navigation, swipe, and history-pagination coverage.
+- TypeScript, formatting, lint, and the production build pass. Lint remains at the existing
+  12-warning/zero-error baseline.
+- The production CSS contains the 44-pixel height/width/min-height utilities, 60-pixel title
+  clearance, viewport-limited dropdown height, and bottom safe-area expression used by page mode.
+- A source-level branch audit confirmed that the new dimensions are reachable only through
+  `presentation="page"` / `pagePresentation`; the desktop sidebar retains its original class
+  branches. The desktop-only workspace-mode switch is omitted from page mode.
+- Authenticated interactive viewport validation was not available in this workspace:
+  `opensecret-workspaces` is not installed, the assigned OpenSecret/Billing/Maple ports had no
+  listeners, and the remote branch preview required a Cloudflare Access sign-in. The representative
+  portrait, short-landscape, breakpoint, light/dark, safe-area, and physical-device checks therefore
+  remain unchecked below rather than being claimed from source inspection.
 
 ### Unsent composer state
 
@@ -407,7 +433,6 @@ the iOS Tauri runtime.
 - Changing persistent return-to-home behavior
 - Changing Agent Mode availability or navigation
 - Adding draft persistence
-- Implementing the mobile main-menu sizing recommendations before product approval
 
 ## Definition of Done
 
@@ -423,6 +448,23 @@ The core feature is complete when every agreed non-stretch behavior is implement
 - [ ] Existing platform and feature-flag visibility rules remain unchanged.
 - [ ] Projects, pinned chats, recents, search, selection, pull-to-refresh, and account controls still work.
 - [ ] Leaving for settings and returning home still restores the correct home URL and surface.
+
+### Compact main-menu sizing
+
+- [x] Page-mode primary, list, overflow, Settings, selection, and context-menu controls have
+      44-pixel minimum targets.
+- [x] Page-mode primary/list labels are 16 pixels and icons are 20 pixels; 12-pixel section headings
+      retain their hierarchy.
+- [x] The search clear action has a 44-by-44-pixel target and row titles clear enlarged overflow
+      controls.
+- [x] The page header is at least 44 pixels tall with a 20-pixel wordmark and symmetric 16-pixel
+      horizontal insets.
+- [x] Mobile usage copy is 11–12 pixels and aligns with an exact 44-by-44-pixel Settings control.
+- [x] The menu footer accounts for the bottom safe area, and short-landscape page mode has a
+      full-surface vertical-scroll fallback.
+- [x] The 296-pixel desktop sidebar retains its existing sizing classes and behavior branches.
+- [ ] Verify authenticated light/dark layouts, long titles, menus, selection, and safe areas on
+      representative phone viewports and physical devices.
 
 ### Mobile hierarchy
 

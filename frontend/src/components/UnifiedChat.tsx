@@ -183,6 +183,7 @@ import {
   registerChatOptimisticMessage,
   unregisterChatOptimisticMessage
 } from "@/services/chatOptimisticMessageOwnership";
+import { resolveMobileDraftProjectId } from "@/utils/mobileNavigation";
 
 const CHAT_ALERT_CLASS = "absolute top-16 left-1/2 z-50 w-full max-w-2xl -translate-x-1/2 px-4";
 const STREAM_EVENT_DEBUG_STORAGE_KEY = "maple:sse-debug";
@@ -1576,20 +1577,26 @@ type UnifiedChatProps = {
   isVisible?: boolean;
   standaloneMobile?: boolean;
   standaloneMobileConversationId?: string | null;
+  standaloneMobileProjectId?: string | null;
+  standaloneMobileNavigationInstanceId?: number;
   mobileNavigationControl?: "back" | "menu";
   onMobileNavigation?: () => void;
   onMobileOpenNewChat?: (projectId: string | null) => void;
   onMobileConversationCreated?: (conversationId: string) => boolean;
+  onMobileConversationNotFound?: (instanceId: number) => void;
 };
 
 export function UnifiedChat({
   isVisible = true,
   standaloneMobile = false,
   standaloneMobileConversationId,
+  standaloneMobileProjectId,
+  standaloneMobileNavigationInstanceId,
   mobileNavigationControl = "back",
   onMobileNavigation,
   onMobileOpenNewChat,
-  onMobileConversationCreated
+  onMobileConversationCreated,
+  onMobileConversationNotFound
 }: UnifiedChatProps = {}) {
   const isMobile = useIsMobile();
   const isLandscapeMobile = useIsLandscapeMobile();
@@ -1614,13 +1621,17 @@ export function UnifiedChat({
       standaloneMobile && standaloneMobileConversationId !== undefined
         ? (standaloneMobileConversationId ?? undefined)
         : (params.get("conversation_id") ?? undefined);
-    const initialDraftProjectId = selectedProjectId ?? null;
+    const initialDraftProjectId = resolveMobileDraftProjectId(
+      standaloneMobile ? standaloneMobileProjectId : undefined,
+      selectedProjectId
+    );
     const runtimeKey = runtimeKeyForChatLocation(urlConversationId, window.history.state, () =>
       resumeOrCreateChatDraftKey(runtimeStore, initialDraftProjectId, () =>
         createChatDraftKey(`unified-chat-${runtimeInstanceId}`)
       )
     );
     return {
+      draftProjectId: initialDraftProjectId,
       runtimeKey,
       conversationId:
         urlConversationId ?? conversationIdFromChatRuntimeKey(runtimeStore.resolveKey(runtimeKey))
@@ -1637,7 +1648,7 @@ export function UnifiedChat({
     ? activeRuntimeKey
     : (runtimeStore.getActiveKey() ?? activeRuntimeKey);
   runtimeStore.ensure(renderedRuntimeKey, {
-    composer: createChatComposerState(selectedProjectId ?? null)
+    composer: createChatComposerState(initialRuntimeSelection.draftProjectId)
   });
   const activeRuntimeKeyRef = useRef(renderedRuntimeKey);
 
@@ -2753,6 +2764,18 @@ export function UnifiedChat({
 
         const err = error as { status?: number; message?: string };
         if (err.status === 404) {
+          if (standaloneMobile) {
+            if (
+              standaloneMobileNavigationInstanceId !== undefined &&
+              onMobileConversationNotFound
+            ) {
+              onMobileConversationNotFound(standaloneMobileNavigationInstanceId);
+            } else {
+              setErrorForKey(runtimeKey, "Conversation not found");
+            }
+            return;
+          }
+
           // Conversation doesn't exist - clear and start fresh
           // Conversation not found, starting new
           const projectedRuntimeWasDeleted =
@@ -2762,7 +2785,11 @@ export function UnifiedChat({
             if (isRuntimeSelected(runtimeKey)) {
               const params = new URLSearchParams(window.location.search);
               params.delete("conversation_id");
-              window.history.replaceState({}, "", params.toString() ? `/?${params}` : "/");
+              window.history.replaceState(
+                window.history.state,
+                "",
+                params.toString() ? `/?${params}` : "/"
+              );
             }
             selectFreshDraftRuntime(selectedProjectId ?? null);
           }
@@ -2776,11 +2803,14 @@ export function UnifiedChat({
     [
       activeConversationLoadRef,
       isRuntimeSelected,
+      onMobileConversationNotFound,
       openai,
       runtimeStore,
       selectFreshDraftRuntime,
       selectedProjectId,
-      setErrorForKey
+      setErrorForKey,
+      standaloneMobile,
+      standaloneMobileNavigationInstanceId
     ]
   );
 
@@ -3562,6 +3592,11 @@ export function UnifiedChat({
 
   const handleNewChatFromUpgrade = useCallback(() => {
     const projectId = selectedProjectId ?? null;
+    if (standaloneMobile && onMobileOpenNewChat) {
+      onMobileOpenNewChat(projectId);
+      return;
+    }
+
     const draftRuntimeKey = resumeOrCreateChatDraftKey(runtimeStore, projectId);
     const chatEntry = createChatHistoryEntryForDraft(draftRuntimeKey);
     const params = new URLSearchParams(window.location.search);
@@ -3573,7 +3608,7 @@ export function UnifiedChat({
         detail: { projectId, draftRuntimeKey: chatEntry.draftRuntimeKey }
       })
     );
-  }, [runtimeStore, selectedProjectId]);
+  }, [onMobileOpenNewChat, runtimeStore, selectedProjectId, standaloneMobile]);
 
   // Check user's billing access
   const hasProAccess =

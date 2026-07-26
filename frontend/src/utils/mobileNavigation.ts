@@ -18,6 +18,12 @@ export type MobileNavigationSnapshot = {
   historyIndex: number;
 };
 
+export type MissingMobileConversationResolution = {
+  sanitizedSnapshot: MobileNavigationSnapshot;
+  targetSnapshot: MobileNavigationSnapshot;
+  historyDelta: number | null;
+};
+
 function menuPage(): MobileNavigationPage {
   return { type: "menu", instanceId: 0 };
 }
@@ -156,6 +162,60 @@ export function promoteNewChatToConversation(
         openedFromNewChat: true
       }
     ]
+  };
+}
+
+export function resolveMobileDraftProjectId(
+  explicitProjectId: string | null | undefined,
+  selectedProjectId: string | null
+) {
+  return explicitProjectId === undefined ? selectedProjectId : explicitProjectId;
+}
+
+export function resolveMissingMobileConversation(
+  snapshot: MobileNavigationSnapshot,
+  instanceId: number
+): MissingMobileConversationResolution | null {
+  const missingPage = activeMobilePage(snapshot);
+  if (missingPage.type !== "chat" || missingPage.instanceId !== instanceId) return null;
+
+  if (missingPage.openedFromNewChat) {
+    const targetSnapshot = createInitialMobileNavigation("/");
+    const historyDelta = mobileMenuHistoryDelta(snapshot);
+    return {
+      sanitizedSnapshot: {
+        ...targetSnapshot,
+        hasInAppParent: snapshot.hasInAppParent,
+        historyIndex: snapshot.historyIndex
+      },
+      targetSnapshot,
+      historyDelta
+    };
+  }
+
+  const parentStack = snapshot.stack.slice(0, -1);
+  if (parentStack.length === 0) return null;
+
+  const hasBrowserParent = snapshot.hasInAppParent && snapshot.historyIndex > 0;
+  const targetHistoryIndex = hasBrowserParent
+    ? Math.max(0, snapshot.historyIndex - 1)
+    : snapshot.historyIndex;
+  const targetSnapshot: MobileNavigationSnapshot = {
+    ...snapshot,
+    stack: parentStack,
+    hasInAppParent: targetHistoryIndex > 0,
+    historyIndex: targetHistoryIndex
+  };
+  const sanitizedSnapshot: MobileNavigationSnapshot = {
+    ...targetSnapshot,
+    hasInAppParent: snapshot.hasInAppParent,
+    historyIndex: snapshot.historyIndex
+  };
+
+  return {
+    sanitizedSnapshot,
+    targetSnapshot,
+    historyDelta: hasBrowserParent ? targetHistoryIndex - snapshot.historyIndex : null
   };
 }
 

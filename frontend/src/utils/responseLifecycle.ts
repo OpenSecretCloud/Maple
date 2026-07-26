@@ -4,10 +4,18 @@
  */
 export class ResponseLifecycleFence {
   private responseAborted = false;
+  private responseInFlight = false;
   private unmounted = false;
 
   beginResponse() {
-    if (!this.unmounted) this.responseAborted = false;
+    if (this.unmounted || this.responseInFlight) return false;
+    this.responseAborted = false;
+    this.responseInFlight = true;
+    return true;
+  }
+
+  finishResponse() {
+    this.responseInFlight = false;
   }
 
   abortResponse() {
@@ -17,6 +25,7 @@ export class ResponseLifecycleFence {
   unmount() {
     this.unmounted = true;
     this.responseAborted = true;
+    this.responseInFlight = false;
   }
 
   shouldIgnoreErrors() {

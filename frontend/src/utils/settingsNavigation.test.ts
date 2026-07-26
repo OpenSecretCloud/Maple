@@ -5,7 +5,8 @@ import {
   isSettingsPath,
   isSettingsRootPath,
   SETTINGS_HOME_PARENT_STATE_KEY,
-  shouldAnimateSettingsPop
+  shouldAnimateSettingsPop,
+  shouldSuspendCoveredHomeChats
 } from "./settingsNavigation";
 
 describe("compact settings navigation", () => {
@@ -61,5 +62,33 @@ describe("compact settings navigation", () => {
         action: "BACK"
       })
     ).toBe(false);
+  });
+
+  test("unmounts a covered chat only after Settings has fully entered", () => {
+    expect(
+      shouldSuspendCoveredHomeChats({
+        isSettingsRoute: true,
+        hasSettingsShellEntered: true,
+        isSettingsPopping: false,
+        isSettingsShellSwipeActive: false
+      })
+    ).toBe(true);
+
+    for (const override of [
+      { isSettingsRoute: false },
+      { hasSettingsShellEntered: false },
+      { isSettingsPopping: true },
+      { isSettingsShellSwipeActive: true }
+    ]) {
+      expect(
+        shouldSuspendCoveredHomeChats({
+          isSettingsRoute: true,
+          hasSettingsShellEntered: true,
+          isSettingsPopping: false,
+          isSettingsShellSwipeActive: false,
+          ...override
+        })
+      ).toBe(false);
+    }
   });
 });

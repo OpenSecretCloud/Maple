@@ -54,3 +54,19 @@ export function shouldAnimateSettingsPop({
     (action === "BACK" || action === "GO")
   );
 }
+
+export function shouldSuspendCoveredHomeChats({
+  isSettingsRoute,
+  hasSettingsShellEntered,
+  isSettingsPopping,
+  isSettingsShellSwipeActive
+}: {
+  isSettingsRoute: boolean;
+  hasSettingsShellEntered: boolean;
+  isSettingsPopping: boolean;
+  isSettingsShellSwipeActive: boolean;
+}) {
+  return (
+    isSettingsRoute && hasSettingsShellEntered && !isSettingsPopping && !isSettingsShellSwipeActive
+  );
+}
