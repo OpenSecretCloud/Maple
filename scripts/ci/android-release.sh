@@ -44,6 +44,8 @@ keystore_properties_file="${TAURI_DIR}/gen/android/keystore.properties"
 fake_android_keystore_dir=""
 
 cleanup_android_release() {
+  remove_generated_android_cargo_config
+
   if [ -n "${tmp_toolchain_bin:-}" ]; then
     rm -rf "${tmp_toolchain_bin}"
   fi
@@ -164,6 +166,7 @@ export CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS="${CARGO_TARGET_AARCH64_LINU
 export CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_RUSTFLAGS="${CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_RUSTFLAGS:-${android_page_size_flags}}"
 export CARGO_TARGET_I686_LINUX_ANDROID_RUSTFLAGS="${CARGO_TARGET_I686_LINUX_ANDROID_RUSTFLAGS:-${android_page_size_flags}}"
 export CARGO_TARGET_X86_64_LINUX_ANDROID_RUSTFLAGS="${CARGO_TARGET_X86_64_LINUX_ANDROID_RUSTFLAGS:-${android_page_size_flags}}"
+prepare_android_cargo_config
 
 prepare_android_onnxruntime
 verify_android_onnxruntime_staged_libraries
@@ -354,6 +357,7 @@ else
 fi
 
 for artifact in "${android_artifacts[@]}"; do
+  verify_android_artifact_native_libraries "${artifact}"
   verify_android_onnxruntime_artifact "${artifact}"
 done
 

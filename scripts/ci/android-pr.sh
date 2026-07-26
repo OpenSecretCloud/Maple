@@ -56,7 +56,11 @@ fi
 export PATH="${toolchain_prebuilt}/bin:${PATH}"
 
 tmp_toolchain_bin="$(mktemp -d)"
-trap 'rm -rf "${tmp_toolchain_bin}"' EXIT
+cleanup_android_pr() {
+  remove_generated_android_cargo_config
+  rm -rf "${tmp_toolchain_bin}"
+}
+trap cleanup_android_pr EXIT
 
 ln -sf "${toolchain_prebuilt}/bin/llvm-ranlib" "${tmp_toolchain_bin}/aarch64-linux-android-ranlib"
 ln -sf "${toolchain_prebuilt}/bin/llvm-ranlib" "${tmp_toolchain_bin}/armv7a-linux-androideabi-ranlib"
@@ -89,6 +93,7 @@ export CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS="${CARGO_TARGET_AARCH64_LINU
 export CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_RUSTFLAGS="${CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_RUSTFLAGS:-${android_page_size_flags}}"
 export CARGO_TARGET_I686_LINUX_ANDROID_RUSTFLAGS="${CARGO_TARGET_I686_LINUX_ANDROID_RUSTFLAGS:-${android_page_size_flags}}"
 export CARGO_TARGET_X86_64_LINUX_ANDROID_RUSTFLAGS="${CARGO_TARGET_X86_64_LINUX_ANDROID_RUSTFLAGS:-${android_page_size_flags}}"
+prepare_android_cargo_config
 
 prepare_android_onnxruntime
 verify_android_onnxruntime_staged_libraries
@@ -111,6 +116,7 @@ while IFS= read -r -d '' file; do
 done < <(find "${TAURI_DIR}/gen/android/app/build/outputs/apk" -type f -name '*.apk' -print0 | LC_ALL=C sort -z)
 
 for artifact in "${android_artifacts[@]}"; do
+  verify_android_artifact_native_libraries "${artifact}"
   verify_android_onnxruntime_artifact "${artifact}"
 done
 

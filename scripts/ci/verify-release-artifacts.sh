@@ -371,6 +371,7 @@ verify_android() {
   verify_zip_payload_manifest "${signed_manifest}"
   verify_android_payload_equivalence "${unsigned_manifest}" "${signed_manifest}"
   while IFS= read -r -d '' artifact; do
+    verify_android_artifact_native_libraries "${artifact}"
     verify_android_onnxruntime_artifact "${artifact}"
   done < <(find "${artifacts_dir}" -type f \( -name '*.apk' -o -name '*.aab' \) -print0 | LC_ALL=C sort -z)
   verify_android_signatures_optional
