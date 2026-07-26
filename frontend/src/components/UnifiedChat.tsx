@@ -109,8 +109,6 @@ import type { Message as OpenAIMessage } from "openai/resources/conversations/co
 import { usePersistentSidebarState } from "@/contexts/PersistentHomeNavigationContext";
 
 const CHAT_ALERT_CLASS = `fixed top-16 left-1/2 -translate-x-1/2 z-50 w-full max-w-2xl px-4 ${SIDEBAR_AWARE_FIXED_CENTER_CLASS}`;
-const TTS_UPGRADE_DISMISSED_STORAGE_KEY = "ttsUpgradeDismissedVersion";
-const SUPERTONIC3_UPGRADE_TARGET = "supertonic3";
 
 type ConversationContent =
   | InputTextContent
@@ -707,26 +705,14 @@ function TTSButton({
   text,
   messageId,
   onNeedsSetup,
-  onUpgradeAvailable,
   onManage
 }: {
   text: string;
   messageId: string;
   onNeedsSetup: () => void;
-  onUpgradeAvailable: (continuePlayback?: () => Promise<void>) => void;
   onManage: () => void;
 }) {
-  const {
-    status,
-    modelVersion,
-    upgradeAvailable,
-    isPreparing,
-    isPlaying,
-    currentPlayingId,
-    speak,
-    stop,
-    isTauriEnv
-  } = useTTS();
+  const { status, isPreparing, isPlaying, currentPlayingId, speak, stop, isTauriEnv } = useTTS();
   const isThisPreparing = isPreparing && currentPlayingId === messageId;
   const isThisPlaying = isPlaying && currentPlayingId === messageId;
   const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -752,11 +738,6 @@ function TTSButton({
       return;
     }
 
-    if (status === "upgrade_available") {
-      onUpgradeAvailable();
-      return;
-    }
-
     if (status === "not_downloaded" || status === "error") {
       onNeedsSetup();
       return;
@@ -769,12 +750,7 @@ function TTSButton({
         if (isPlaying) {
           stop();
         }
-        const continuePlayback = () => speak(text, messageId);
-        if (modelVersion === "legacy" && upgradeAvailable) {
-          onUpgradeAvailable(continuePlayback);
-          return;
-        }
-        await continuePlayback();
+        await speak(text, messageId);
       }
     }
   };
@@ -812,12 +788,7 @@ function TTSButton({
     status === "loading" ||
     status === "deleting" ||
     (isPreparing && !isThisPreparing);
-  const showSpinner =
-    isThisPreparing ||
-    status === "checking" ||
-    status === "downloading" ||
-    status === "loading" ||
-    status === "deleting";
+  const showSpinner = isThisPreparing || isDisabled;
 
   const ariaLabel = isThisPreparing
     ? "Stop preparing speech"
@@ -833,13 +804,9 @@ function TTSButton({
               ? "Deleting text-to-speech models"
               : isPreparing
                 ? "Text-to-speech is preparing another message"
-                : status === "not_downloaded" ||
-                    status === "upgrade_available" ||
-                    status === "error"
+                : status === "not_downloaded" || status === "error"
                   ? "Set up text-to-speech"
-                  : modelVersion === "legacy" && upgradeAvailable
-                    ? "Read aloud; Supertonic 3 upgrade available"
-                    : "Read aloud";
+                  : "Read aloud";
 
   return (
     <Button
@@ -1206,14 +1173,12 @@ const MessageList = memo(
     isGenerating,
     chatId,
     onTTSSetupOpen,
-    onTTSUpgradeAvailable,
     onTTSManage
   }: {
     messages: Message[];
     isGenerating: boolean;
     chatId?: string;
     onTTSSetupOpen: () => void;
-    onTTSUpgradeAvailable: (continuePlayback?: () => Promise<void>) => void;
     onTTSManage: () => void;
   }) => {
     const toolCallsByCallId = useMemo(() => {
@@ -1532,7 +1497,6 @@ const MessageList = memo(
                         text={textContent}
                         messageId={group.id}
                         onNeedsSetup={onTTSSetupOpen}
-                        onUpgradeAvailable={onTTSUpgradeAvailable}
                         onManage={onTTSManage}
                       />
                     </>
@@ -1608,62 +1572,6 @@ export function UnifiedChat() {
   const [documentPlatformDialogOpen, setDocumentPlatformDialogOpen] = useState(false);
   const [contextLimitDialogOpen, setContextLimitDialogOpen] = useState(false);
   const [ttsSetupDialogOpen, setTtsSetupDialogOpen] = useState(false);
-  const [ttsDialogMode, setTtsDialogMode] = useState<"manage" | "upgrade">("manage");
-  const pendingLegacyPlaybackRef = useRef<(() => Promise<void>) | null>(null);
-
-  const handleTTSSetupOpen = useCallback(() => {
-    pendingLegacyPlaybackRef.current = null;
-    setTtsDialogMode("manage");
-    setTtsSetupDialogOpen(true);
-  }, []);
-
-  const handleTTSManage = useCallback(() => {
-    pendingLegacyPlaybackRef.current = null;
-    setTtsDialogMode("manage");
-    setTtsSetupDialogOpen(true);
-  }, []);
-
-  const handleTTSUpgradeAvailable = useCallback((continuePlayback?: () => Promise<void>) => {
-    if (continuePlayback) {
-      try {
-        if (
-          window.localStorage.getItem(TTS_UPGRADE_DISMISSED_STORAGE_KEY) ===
-          SUPERTONIC3_UPGRADE_TARGET
-        ) {
-          void continuePlayback();
-          return;
-        }
-      } catch {
-        // A storage failure should not prevent the upgrade prompt.
-      }
-    }
-
-    pendingLegacyPlaybackRef.current = continuePlayback ?? null;
-    setTtsDialogMode("upgrade");
-    setTtsSetupDialogOpen(true);
-  }, []);
-
-  const handleKeepCurrentTTSVoice = useCallback(() => {
-    try {
-      window.localStorage.setItem(TTS_UPGRADE_DISMISSED_STORAGE_KEY, SUPERTONIC3_UPGRADE_TARGET);
-    } catch {
-      // Keep the user's choice for this click even if it cannot be persisted.
-    }
-
-    const continuePlayback = pendingLegacyPlaybackRef.current;
-    pendingLegacyPlaybackRef.current = null;
-    setTtsSetupDialogOpen(false);
-    if (continuePlayback) {
-      void continuePlayback();
-    }
-  }, []);
-
-  const handleTTSDialogOpenChange = useCallback((open: boolean) => {
-    setTtsSetupDialogOpen(open);
-    if (!open) {
-      pendingLegacyPlaybackRef.current = null;
-    }
-  }, []);
 
   // Audio recording states
   const [isRecording, setIsRecording] = useState(false);
@@ -4092,9 +4000,8 @@ export function UnifiedChat() {
                   messages={messages}
                   isGenerating={isGenerating}
                   chatId={chatId}
-                  onTTSSetupOpen={handleTTSSetupOpen}
-                  onTTSUpgradeAvailable={handleTTSUpgradeAvailable}
-                  onTTSManage={handleTTSManage}
+                  onTTSSetupOpen={() => setTtsSetupDialogOpen(true)}
+                  onTTSManage={() => setTtsSetupDialogOpen(true)}
                 />
               </div>
 
@@ -4627,16 +4534,7 @@ export function UnifiedChat() {
         />
 
         {/* TTS setup dialog */}
-        <TTSDownloadDialog
-          open={ttsSetupDialogOpen}
-          onOpenChange={handleTTSDialogOpenChange}
-          mode={ttsDialogMode}
-          onKeepCurrentVoice={
-            ttsDialogMode === "upgrade" && pendingLegacyPlaybackRef.current
-              ? handleKeepCurrentTTSVoice
-              : undefined
-          }
-        />
+        <TTSDownloadDialog open={ttsSetupDialogOpen} onOpenChange={setTtsSetupDialogOpen} />
 
         {/* Hidden file inputs - must be outside conditional rendering to work in both views */}
         <input
