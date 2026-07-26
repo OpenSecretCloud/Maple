@@ -15,13 +15,16 @@ import { getSafeInternalRedirect } from "@/utils/internalRedirect";
 import {
   isSettingsRootPath,
   SETTINGS_SHELL_POP_EVENT,
-  SETTINGS_SHELL_SWIPE_BACK_EVENT
+  SETTINGS_SHELL_SWIPE_BACK_EVENT,
+  shouldSuspendCoveredHomeChats
 } from "@/utils/settingsNavigation";
 import { cn, useIsLandscapeMobile, useIsMobile } from "@/utils/utils";
 
 interface RootRouterContext {
   os: OpenSecretContextType;
 }
+
+const SETTINGS_SHELL_TRANSITION_MS = 320;
 
 export type RootSearchParams = {
   login?: string;
@@ -54,6 +57,7 @@ function Root() {
   const isLandscapeMobile = useIsLandscapeMobile();
   const isCompactLayout = isMobile || isLandscapeMobile;
   const [isSettingsPopping, setIsSettingsPopping] = useState(false);
+  const [hasSettingsShellEntered, setHasSettingsShellEntered] = useState(false);
 
   const isHomeRoute = location.pathname === "/";
   const isSettingsRoute =
@@ -83,6 +87,26 @@ function Root() {
     getContext: getSettingsShellSwipeContext,
     onComplete: commitSettingsShellSwipe
   });
+  const suspendCoveredHomeChats = shouldSuspendCoveredHomeChats({
+    isSettingsRoute,
+    hasSettingsShellEntered,
+    isSettingsPopping,
+    isSettingsShellSwipeActive
+  });
+
+  useEffect(() => {
+    if (!isSettingsRoute) {
+      setHasSettingsShellEntered(false);
+      return;
+    }
+
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const timeout = setTimeout(
+      () => setHasSettingsShellEntered(true),
+      reducedMotion ? 0 : SETTINGS_SHELL_TRANSITION_MS
+    );
+    return () => clearTimeout(timeout);
+  }, [isSettingsRoute]);
 
   useLayoutEffect(() => {
     // Queue cleanup before route-level passive effects initialize Agent Mode.
@@ -151,7 +175,10 @@ function Root() {
           )}
           style={isSettingsShellSwipeActive ? homeSwipeStyle : undefined}
         >
-          <AuthenticatedHomeContent homeLocationHref={isHomeRoute ? location.href : null} />
+          <AuthenticatedHomeContent
+            homeLocationHref={isHomeRoute ? location.href : null}
+            suspendChats={suspendCoveredHomeChats}
+          />
         </div>
       )}
 

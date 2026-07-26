@@ -109,6 +109,7 @@ import type {
 } from "openai/resources/responses/responses.js";
 import type { Message as OpenAIMessage } from "openai/resources/conversations/conversations.js";
 import { usePersistentSidebarState } from "@/contexts/PersistentHomeNavigationContext";
+import { resolveMobileDraftProjectId } from "@/utils/mobileNavigation";
 
 const CHAT_ALERT_CLASS = `fixed top-16 left-1/2 -translate-x-1/2 z-50 w-full max-w-2xl px-4 ${SIDEBAR_AWARE_FIXED_CENTER_CLASS}`;
 const TTS_UPGRADE_DISMISSED_STORAGE_KEY = "ttsUpgradeDismissedVersion";
@@ -1561,19 +1562,25 @@ MessageList.displayName = "MessageList";
 type UnifiedChatProps = {
   standaloneMobile?: boolean;
   standaloneMobileConversationId?: string | null;
+  standaloneMobileProjectId?: string | null;
+  standaloneMobileNavigationInstanceId?: number;
   mobileNavigationControl?: "back" | "menu";
   onMobileNavigation?: () => void;
   onMobileOpenNewChat?: (projectId: string | null) => void;
   onMobileConversationCreated?: (conversationId: string) => boolean;
+  onMobileConversationNotFound?: (instanceId: number) => void;
 };
 
 export function UnifiedChat({
   standaloneMobile = false,
   standaloneMobileConversationId,
+  standaloneMobileProjectId,
+  standaloneMobileNavigationInstanceId,
   mobileNavigationControl = "back",
   onMobileNavigation,
   onMobileOpenNewChat,
-  onMobileConversationCreated
+  onMobileConversationCreated,
+  onMobileConversationNotFound
 }: UnifiedChatProps = {}) {
   const isMobile = useIsMobile();
   const isLandscapeMobile = useIsLandscapeMobile();
@@ -1602,9 +1609,15 @@ export function UnifiedChat({
   const [conversation, setConversation] = useState<Conversation | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
-  const [draftProjectId, setDraftProjectId] = useState<string | null>(() => selectedProjectId);
+  const [draftProjectId, setDraftProjectId] = useState<string | null>(() =>
+    resolveMobileDraftProjectId(
+      standaloneMobile ? standaloneMobileProjectId : undefined,
+      selectedProjectId
+    )
+  );
   const [isGenerating, setIsGenerating] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = usePersistentSidebarState(isCompactLayout);
+  const effectiveSidebarOpen = !standaloneMobile && isSidebarOpen;
   const [error, setError] = useState<string | null>(null);
   const [lastSeenItemId, setLastSeenItemId] = useState<string | undefined>();
   const [isNewConversationJustCreated, setIsNewConversationJustCreated] = useState(false);
@@ -1709,10 +1722,10 @@ export function UnifiedChat({
   useEffect(() => {
     const enteredLandscapeMobile = isLandscapeMobile && !wasLandscapeMobileRef.current;
     wasLandscapeMobileRef.current = isLandscapeMobile;
-    if (enteredLandscapeMobile && isSidebarOpen) {
+    if (!standaloneMobile && enteredLandscapeMobile && isSidebarOpen) {
       setIsSidebarOpen(false);
     }
-  }, [isLandscapeMobile, isSidebarOpen, setIsSidebarOpen]);
+  }, [isLandscapeMobile, isSidebarOpen, setIsSidebarOpen, standaloneMobile]);
 
   // Save fullscreen preference to localStorage when it changes
   useEffect(() => {
@@ -2269,24 +2282,41 @@ export function UnifiedChat({
 
         const err = error as { status?: number; message?: string };
         if (err.status === 404) {
+          if (standaloneMobile) {
+            if (
+              standaloneMobileNavigationInstanceId !== undefined &&
+              onMobileConversationNotFound
+            ) {
+              onMobileConversationNotFound(standaloneMobileNavigationInstanceId);
+            } else {
+              setError("Conversation not found");
+            }
+            return;
+          }
+
           // Conversation doesn't exist - clear and start fresh
           // Conversation not found, starting new
           setConversation(null);
           setMessages([]);
           setError(null);
+          setChatId(undefined);
           setOldestItemId(undefined);
           setHasMoreOlderMessages(false);
           // Clear the invalid conversation_id from URL
           const params = new URLSearchParams(window.location.search);
           params.delete("conversation_id");
-          window.history.replaceState({}, "", params.toString() ? `/?${params}` : "/");
+          window.history.replaceState(
+            window.history.state,
+            "",
+            params.toString() ? `/?${params}` : "/"
+          );
         } else {
           console.error("Failed to load conversation:", error);
           setError(err.message || "Failed to load conversation");
         }
       }
     },
-    [openai]
+    [onMobileConversationNotFound, openai, standaloneMobile, standaloneMobileNavigationInstanceId]
   );
 
   // Load older messages for pagination
@@ -2465,7 +2495,12 @@ export function UnifiedChat({
       // Clear if no conversation ID
       setConversation(null);
       setMessages([]);
-      setDraftProjectId(selectedProjectId ?? null);
+      setDraftProjectId(
+        resolveMobileDraftProjectId(
+          standaloneMobile ? standaloneMobileProjectId : undefined,
+          selectedProjectId
+        )
+      );
       setLastSeenItemId(undefined);
       // Clear pagination state
       setOldestItemId(undefined);
@@ -2474,7 +2509,14 @@ export function UnifiedChat({
       // Reset scroll tracking
       prevMessageCountRef.current = 0;
     }
-  }, [chatId, openai, loadConversation, selectedProjectId]);
+  }, [
+    chatId,
+    loadConversation,
+    openai,
+    selectedProjectId,
+    standaloneMobile,
+    standaloneMobileProjectId
+  ]);
 
   // Set up progressive polling interval
   useEffect(() => {
@@ -3592,78 +3634,77 @@ export function UnifiedChat({
       const hasContent = trimmedInput || draftImages.length > 0 || documentText;
       if (!hasContent || isGenerating || isProcessingDocument || !openai) return;
 
-      responseLifecycleRef.current.beginResponse();
+      if (!responseLifecycleRef.current.beginResponse()) return;
+      setIsGenerating(true);
 
-      // Clear any previous error
-      setError(null);
-
-      // Build the message content - always as an array
-      // Using the input types since we're building user input
-      const messageContent: (InputTextContent | InputImageContent)[] = [];
-
-      // Combine document text with input if both exist
-      let finalText = trimmedInput;
-      if (documentText) {
-        finalText = documentText + (trimmedInput ? `\n\n${trimmedInput}` : "");
-      }
-
-      // Add text part if exists
-      if (finalText) {
-        const textContent: InputTextContent = {
-          type: "input_text",
-          text: finalText
-        };
-        messageContent.push(textContent);
-      }
-
-      // Add image parts if we have images
-      for (const file of draftImages) {
-        try {
-          const dataUrl = await fileToDataURL(file);
-          const imageContent: InputImageContent = {
-            type: "input_image",
-            image_url: dataUrl,
-            detail: "auto",
-            file_id: null
-          };
-          messageContent.push(imageContent);
-        } catch (error) {
-          console.error("Failed to convert image:", error);
-        }
-      }
-
-      if (responseLifecycleRef.current.shouldIgnoreErrors()) return;
-
-      // Add user message immediately with a local UUID
-      const localMessageId = uuidv4();
-      const userMessage = {
-        id: localMessageId,
-        type: "message",
-        role: "user",
-        content: messageContent,
-        status: "completed"
-      } as unknown as Message;
-
-      // Use merge helper to add user message (prevents duplicates)
-      setMessages((prev) => mergeMessagesById(prev, [userMessage]));
-      // Set lastSeenItemId to our local message ID
-      // The backend should map this via internal_message_id
-      setLastSeenItemId(localMessageId);
-
-      // Store the original input and attachments in case we need to restore them
       const originalInput = trimmedInput;
       const originalImages = [...draftImages];
       const originalDocumentText = documentText;
       const originalDocumentName = documentName;
-
-      // Only clear input if not using override (voice already cleared it)
-      if (!overrideInput) {
-        setInput("");
-        clearAllAttachments();
-      }
-      setIsGenerating(true);
+      const messageContent: (InputTextContent | InputImageContent)[] = [];
+      let localMessageId: string | null = null;
 
       try {
+        // Clear any previous error
+        setError(null);
+
+        // Build the message content - always as an array
+        // Using the input types since we're building user input
+        // Combine document text with input if both exist
+        let finalText = trimmedInput;
+        if (documentText) {
+          finalText = documentText + (trimmedInput ? `\n\n${trimmedInput}` : "");
+        }
+
+        // Add text part if exists
+        if (finalText) {
+          const textContent: InputTextContent = {
+            type: "input_text",
+            text: finalText
+          };
+          messageContent.push(textContent);
+        }
+
+        // Add image parts if we have images
+        for (const file of draftImages) {
+          try {
+            const dataUrl = await fileToDataURL(file);
+            const imageContent: InputImageContent = {
+              type: "input_image",
+              image_url: dataUrl,
+              detail: "auto",
+              file_id: null
+            };
+            messageContent.push(imageContent);
+          } catch (error) {
+            console.error("Failed to convert image:", error);
+          }
+        }
+
+        if (responseLifecycleRef.current.shouldIgnoreErrors()) return;
+
+        // Add user message immediately with a local UUID
+        localMessageId = uuidv4();
+        const userMessage = {
+          id: localMessageId,
+          type: "message",
+          role: "user",
+          content: messageContent,
+          status: "completed"
+        } as unknown as Message;
+
+        // Use merge helper to add user message (prevents duplicates)
+        setMessages((prev) => mergeMessagesById(prev, [userMessage]));
+        // Set lastSeenItemId to our local message ID
+        // The backend should map this via internal_message_id
+        setLastSeenItemId(localMessageId);
+
+        // Only clear input if not using override (voice already cleared it)
+        if (!overrideInput) {
+          setInput("");
+          clearAllAttachments();
+        }
+
         // Create conversation if we don't have one
         let conversationId = conversation?.id;
         if (!conversationId) {
@@ -3745,6 +3786,10 @@ export function UnifiedChat({
         if (responseLifecycleRef.current.shouldIgnoreErrors()) return;
 
         console.error("Failed to send message:", error);
+        if (localMessageId === null) {
+          setError(error instanceof Error ? error.message : "Failed to prepare message");
+          return;
+        }
 
         // Handle usage limit errors with upsell dialogs
         // The SDK throws errors with the message "Request failed with status 403: {json}" or "Request failed with status 413: {json}"
@@ -3980,6 +4025,7 @@ export function UnifiedChat({
           }
         }
       } finally {
+        responseLifecycleRef.current.finishResponse();
         if (responseLifecycleRef.current.canUpdateState()) {
           setIsGenerating(false);
           setCurrentResponseId(undefined);
@@ -4017,7 +4063,7 @@ export function UnifiedChat({
   };
 
   const sidebarLayoutStyle = getSidebarLayoutStyle({
-    offsetContent: !standaloneMobile && isSidebarOpen
+    offsetContent: effectiveSidebarOpen
   });
   const headerNavigationButton =
     standaloneMobile && onMobileNavigation ? (
@@ -4041,7 +4087,7 @@ export function UnifiedChat({
     <div
       style={sidebarLayoutStyle}
       className={`grid h-dvh min-h-0 w-full grid-cols-1 overflow-hidden ${
-        !standaloneMobile && isSidebarOpen ? SIDEBAR_GRID_COLUMNS_CLASS : ""
+        effectiveSidebarOpen ? SIDEBAR_GRID_COLUMNS_CLASS : ""
       }`}
     >
       {/* Use the existing Sidebar component */}
@@ -4083,7 +4129,7 @@ export function UnifiedChat({
         )}
 
         {/* Sidebar toggle + wordmark — fixed except on compact layouts while chatting (two-row header below) */}
-        {!isSidebarOpen && !(isCompactLayout && messages.length > 0) && (
+        {!effectiveSidebarOpen && !(isCompactLayout && messages.length > 0) && (
           <div className="fixed left-4 top-[9.5px] z-20 flex items-center gap-1.5">
             {headerNavigationButton}
             <MapleWordmark
@@ -4095,7 +4141,7 @@ export function UnifiedChat({
 
         {/* Only show header when there are messages (conversation exists) */}
         {messages.length > 0 &&
-          (isLandscapeMobile && !isSidebarOpen ? (
+          (isLandscapeMobile && !effectiveSidebarOpen ? (
             <div className="z-10 flex shrink-0 items-center gap-2 bg-background px-1 py-1 pr-4">
               {headerNavigationButton}
               <div className="min-w-0 overflow-hidden">
@@ -4118,7 +4164,7 @@ export function UnifiedChat({
                 <SquarePen className="h-4 w-4" />
               </Button>
             </div>
-          ) : isMobile && !isSidebarOpen ? (
+          ) : isMobile && !effectiveSidebarOpen ? (
             <div className="z-10 flex shrink-0 flex-col gap-2 bg-background pb-2 pl-1 pr-4 pt-2">
               <div className="flex items-center justify-between gap-3">
                 <div className="flex min-w-0 flex-1 items-center gap-1.5">
@@ -4149,7 +4195,7 @@ export function UnifiedChat({
             <ChatDesktopConversationHeader
               title={conversation?.metadata?.title || "Chat"}
               titleClassName={titleJustUpdated ? "title-update-animation" : undefined}
-              isSidebarOpen={isSidebarOpen}
+              isSidebarOpen={effectiveSidebarOpen}
               onNewChat={handleNewChatFromHeader}
             />
           ))}
@@ -4692,6 +4738,7 @@ export function UnifiedChat({
         <UpgradePromptDialog
           open={upgradeDialogOpen}
           onOpenChange={setUpgradeDialogOpen}
+          onNewChat={standaloneMobile && onMobileOpenNewChat ? handleNewChatFromHeader : undefined}
           feature={
             upgradeFeature === "document"
               ? "document"

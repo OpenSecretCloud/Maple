@@ -137,9 +137,11 @@ export function PersistentHomeNavigationProvider({ children }: { children: React
 }
 
 export function AuthenticatedHomeContent({
-  homeLocationHref
+  homeLocationHref,
+  suspendChats = false
 }: {
   homeLocationHref: string | null;
+  suspendChats?: boolean;
 }) {
   const isMobile = useIsMobile();
   const isLandscapeMobile = useIsLandscapeMobile();
@@ -179,7 +181,9 @@ export function AuthenticatedHomeContent({
   }, [syncFromHomeLocation]);
 
   if (isCompactLayout) {
-    return <MobileNavigationStack />;
+    return (
+      <MobileNavigationStack homeLocationHref={homeLocationHref} suspendChats={suspendChats} />
+    );
   }
 
   if (selection.projectId && !selection.hasConversationId) {

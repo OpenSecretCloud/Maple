@@ -11,6 +11,8 @@ import {
   promoteNewChatToConversation,
   pushMobilePage,
   readMobileHistoryState,
+  resolveMissingMobileConversation,
+  resolveMobileDraftProjectId,
   type MobileNavigationPage
 } from "./mobileNavigation";
 
@@ -67,9 +69,10 @@ describe("mobile navigation history state", () => {
       instanceId: 2,
       conversationId: "conv_2"
     });
-    const state = createMobileHistoryState(pushed, { routerIndex: 4 });
+    const state = createMobileHistoryState(pushed, { routerIndex: 4, __TSR_index: 9 });
 
     expect(state.routerIndex).toBe(4);
+    expect(state.__TSR_index).toBe(9);
     expect(readMobileHistoryState(state)).toEqual(pushed);
   });
 
@@ -112,6 +115,12 @@ describe("mobile navigation history state", () => {
 });
 
 describe("transient new chat", () => {
+  it("uses an explicit project scope, including explicit unscoped New Chat", () => {
+    expect(resolveMobileDraftProjectId("project_8", "stale_project")).toBe("project_8");
+    expect(resolveMobileDraftProjectId(null, "stale_project")).toBeNull();
+    expect(resolveMobileDraftProjectId(undefined, "selected_project")).toBe("selected_project");
+  });
+
   it("keeps New Chat on the root URL", () => {
     const page: MobileNavigationPage = {
       type: "new-chat",
@@ -163,6 +172,150 @@ describe("transient new chat", () => {
     });
 
     expect(promoteNewChatToConversation(replacement, 1, "conv_late")).toBe(replacement);
+  });
+});
+
+describe("missing mobile conversations", () => {
+  it("sanitizes a pushed chat before returning to its project parent", () => {
+    let snapshot = createInitialMobileNavigation("/");
+    snapshot = pushMobilePage(snapshot, {
+      type: "project",
+      instanceId: 1,
+      projectId: "project_1"
+    });
+    snapshot = pushMobilePage(snapshot, {
+      type: "chat",
+      instanceId: 2,
+      conversationId: "missing"
+    });
+
+    expect(resolveMissingMobileConversation(snapshot, 2)).toEqual({
+      sanitizedSnapshot: {
+        version: 1,
+        stack: [
+          { type: "menu", instanceId: 0 },
+          { type: "project", instanceId: 1, projectId: "project_1" }
+        ],
+        hasInAppParent: true,
+        historyIndex: 2
+      },
+      targetSnapshot: {
+        version: 1,
+        stack: [
+          { type: "menu", instanceId: 0 },
+          { type: "project", instanceId: 1, projectId: "project_1" }
+        ],
+        hasInAppParent: true,
+        historyIndex: 1
+      },
+      historyDelta: -1
+    });
+  });
+
+  it("falls back in place for a directly loaded missing chat", () => {
+    const snapshot = createInitialMobileNavigation("/?conversation_id=missing");
+
+    expect(resolveMissingMobileConversation(snapshot, 1)).toEqual({
+      sanitizedSnapshot: {
+        version: 1,
+        stack: [{ type: "menu", instanceId: 0 }],
+        hasInAppParent: false,
+        historyIndex: 0
+      },
+      targetSnapshot: {
+        version: 1,
+        stack: [{ type: "menu", instanceId: 0 }],
+        hasInAppParent: false,
+        historyIndex: 0
+      },
+      historyDelta: null
+    });
+  });
+
+  it("returns a missing promoted project New Chat directly to the menu", () => {
+    let snapshot = createInitialMobileNavigation("/");
+    snapshot = pushMobilePage(snapshot, {
+      type: "project",
+      instanceId: 1,
+      projectId: "project_1"
+    });
+    snapshot = pushMobilePage(snapshot, {
+      type: "new-chat",
+      instanceId: 2,
+      projectId: "project_1"
+    });
+    snapshot = promoteNewChatToConversation(snapshot, 2, "missing");
+
+    expect(resolveMissingMobileConversation(snapshot, 2)).toEqual({
+      sanitizedSnapshot: {
+        version: 1,
+        stack: [{ type: "menu", instanceId: 0 }],
+        hasInAppParent: true,
+        historyIndex: 2
+      },
+      targetSnapshot: {
+        version: 1,
+        stack: [{ type: "menu", instanceId: 0 }],
+        hasInAppParent: false,
+        historyIndex: 0
+      },
+      historyDelta: -2
+    });
+  });
+
+  it("replaces a root-like missing promoted New Chat with the menu", () => {
+    const snapshot = promoteNewChatToConversation(
+      createInitialMobileNavigation("/", { nativeFreshLaunch: true }),
+      1,
+      "missing"
+    );
+
+    expect(resolveMissingMobileConversation(snapshot, 1)).toEqual({
+      sanitizedSnapshot: {
+        version: 1,
+        stack: [{ type: "menu", instanceId: 0 }],
+        hasInAppParent: false,
+        historyIndex: 0
+      },
+      targetSnapshot: {
+        version: 1,
+        stack: [{ type: "menu", instanceId: 0 }],
+        hasInAppParent: false,
+        historyIndex: 0
+      },
+      historyDelta: null
+    });
+  });
+
+  it("crosses a direct-chat root when a pushed promoted New Chat is missing", () => {
+    let snapshot = createInitialMobileNavigation("/?conversation_id=direct_chat");
+    snapshot = pushMobilePage(snapshot, {
+      type: "new-chat",
+      instanceId: 2,
+      projectId: null
+    });
+    snapshot = promoteNewChatToConversation(snapshot, 2, "missing");
+
+    expect(resolveMissingMobileConversation(snapshot, 2)?.historyDelta).toBe(-1);
+    expect(resolveMissingMobileConversation(snapshot, 2)?.targetSnapshot).toEqual(
+      createInitialMobileNavigation("/")
+    );
+  });
+
+  it("ignores a stale missing-chat callback from a page that is no longer active", () => {
+    let snapshot = createInitialMobileNavigation("/");
+    snapshot = pushMobilePage(snapshot, {
+      type: "chat",
+      instanceId: 1,
+      conversationId: "missing"
+    });
+    snapshot = pushMobilePage(snapshot, {
+      type: "new-chat",
+      instanceId: 2,
+      projectId: null
+    });
+
+    expect(resolveMissingMobileConversation(snapshot, 1)).toBeNull();
   });
 });
 

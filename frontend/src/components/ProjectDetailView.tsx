@@ -171,10 +171,10 @@ export function ProjectDetailView({
   useEffect(() => {
     const enteredLandscapeMobile = isLandscapeMobile && !wasLandscapeMobileRef.current;
     wasLandscapeMobileRef.current = isLandscapeMobile;
-    if (enteredLandscapeMobile && isSidebarOpen) {
+    if (!standaloneMobile && enteredLandscapeMobile && isSidebarOpen) {
       setIsSidebarOpen(false);
     }
-  }, [isLandscapeMobile, isSidebarOpen, setIsSidebarOpen]);
+  }, [isLandscapeMobile, isSidebarOpen, setIsSidebarOpen, standaloneMobile]);
 
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [hasMoreConversations, setHasMoreConversations] = useState(false);
@@ -373,11 +373,23 @@ export function ProjectDetailView({
     await os.deleteConversationProject(projectId);
     await invalidateConversationData();
     setSelectedProjectId(null);
+
+    if (standaloneMobile && onMobileProjectDeleted) {
+      onMobileProjectDeleted();
+      return;
+    }
+
     window.history.replaceState({}, "", "/");
     window.dispatchEvent(new CustomEvent("newchat", { detail: { projectId: null } }));
     window.dispatchEvent(new Event("projectselected"));
-    onMobileProjectDeleted?.();
-  }, [invalidateConversationData, onMobileProjectDeleted, os, projectId, setSelectedProjectId]);
+  }, [
+    invalidateConversationData,
+    onMobileProjectDeleted,
+    os,
+    projectId,
+    setSelectedProjectId,
+    standaloneMobile
+  ]);
 
   const handleRenameConversation = useCallback(
     async (conversationId: string, newTitle: string) => {
