@@ -1,5 +1,7 @@
 export type ChatRuntimeKey = string;
 
+const EMPTY_CHAT_RUNTIME_KEYS: readonly ChatRuntimeKey[] = Object.freeze([]);
+
 export type DraftChatRuntimeKey = `draft:${string}`;
 export type ConversationChatRuntimeKey = `conversation:${string}`;
 
@@ -142,6 +144,7 @@ export class ChatRuntimeStore<TConversation, TMessage, TComposer> {
   >();
   private readonly aliases = new Map<ChatRuntimeKey, ChatRuntimeKey>();
   private readonly listeners = new Set<() => void>();
+  private readonly activeRunListeners = new Set<() => void>();
   private readonly createComposer: () => TComposer;
   private readonly maxInactiveCompletedEntries: number;
   private readonly canEvict: (
@@ -154,6 +157,7 @@ export class ChatRuntimeStore<TConversation, TMessage, TComposer> {
       ) => void)
     | undefined;
   private activeKey: ChatRuntimeKey | null = null;
+  private activeRunKeysSnapshot = EMPTY_CHAT_RUNTIME_KEYS;
   private subscriberRevision = 0;
   private nextRunToken = 0;
   private touchRevision = 0;
@@ -182,6 +186,14 @@ export class ChatRuntimeStore<TConversation, TMessage, TComposer> {
   };
 
   readonly getSubscriberRevision = (): number => this.subscriberRevision;
+
+  readonly subscribeActiveRuns = (listener: () => void): (() => void) => {
+    this.assertNotDisposed();
+    this.activeRunListeners.add(listener);
+    return () => this.activeRunListeners.delete(listener);
+  };
+
+  readonly getActiveRunKeys = (): readonly ChatRuntimeKey[] => this.activeRunKeysSnapshot;
 
   subscribeKey(key: ChatRuntimeKey, listener: () => void): () => void {
     let lastSnapshot = this.get(key);
@@ -607,10 +619,13 @@ export class ChatRuntimeStore<TConversation, TMessage, TComposer> {
     this.disposed = true;
     const currentEntries = Array.from(this.entries.values());
     const currentListeners = Array.from(this.listeners);
+    const currentActiveRunListeners = Array.from(this.activeRunListeners);
     this.entries.clear();
     this.aliases.clear();
     this.activeKey = null;
+    this.activeRunKeysSnapshot = EMPTY_CHAT_RUNTIME_KEYS;
     this.listeners.clear();
+    this.activeRunListeners.clear();
     this.subscriberRevision += 1;
 
     this.runAll([
@@ -618,7 +633,8 @@ export class ChatRuntimeStore<TConversation, TMessage, TComposer> {
         entry.activeRun ? [() => entry.activeRun!.controller.abort()] : []
       ),
       ...currentEntries.map((entry) => () => this.disposeEntry?.(entry.snapshot, "disposed")),
-      () => this.notifyListeners(currentListeners)
+      () => this.notifyListeners(currentListeners),
+      () => this.notifyListeners(currentActiveRunListeners)
     ]);
   }
 
@@ -757,8 +773,27 @@ export class ChatRuntimeStore<TConversation, TMessage, TComposer> {
   }
 
   private publish(): void {
+    this.publishActiveRunKeys();
     this.subscriberRevision += 1;
     this.notifyListeners(this.listeners);
+  }
+
+  private publishActiveRunKeys(): void {
+    const nextKeys = Array.from(this.entries.entries())
+      .filter(([, entry]) => entry.activeRun !== null)
+      .map(([key]) => key);
+    const previousKeys = this.activeRunKeysSnapshot;
+
+    if (
+      nextKeys.length === previousKeys.length &&
+      nextKeys.every((key, index) => key === previousKeys[index])
+    ) {
+      return;
+    }
+
+    this.activeRunKeysSnapshot =
+      nextKeys.length === 0 ? EMPTY_CHAT_RUNTIME_KEYS : Object.freeze(nextKeys);
+    this.notifyListeners(this.activeRunListeners);
   }
 
   private notifyListeners(listeners: Iterable<() => void>): void {

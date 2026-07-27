@@ -1,4 +1,12 @@
-import { useState, useMemo, useCallback, useEffect, useRef, useContext } from "react";
+import {
+  useState,
+  useMemo,
+  useCallback,
+  useEffect,
+  useRef,
+  useContext,
+  useSyncExternalStore
+} from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   MoreHorizontal,
@@ -13,7 +21,8 @@ import {
   FolderInput,
   Pin,
   PinOff,
-  SquarePen
+  SquarePen,
+  Loader2
 } from "lucide-react";
 import {
   DropdownMenu,
@@ -45,6 +54,14 @@ import {
   pushFreshChatHistoryEntry,
   type NewChatNavigationDetail
 } from "@/services/chatRuntimeNavigation";
+import { useChatRuntimeStore } from "@/contexts/ChatRuntimeContext";
+import { createConversationChatKey } from "@/services/chatRuntimeStore";
+import {
+  INITIAL_CHAT_HISTORY_RETRY_COUNT,
+  conversationHistoryQueryKey,
+  initialChatHistoryPage,
+  shouldLoadConversationHistory
+} from "@/services/chatHistoryAccountScope";
 
 const MAX_PROJECTS = 10;
 /** Lucide default; keep sidebar list icons visually consistent. */
@@ -91,6 +108,13 @@ export function ChatHistoryList({
   const localState = useContext(LocalStateContext);
   const { selectedProjectId, setSelectedProjectId } = localState;
   const userId = opensecret.auth.user?.user.id;
+  const runtimeStore = useChatRuntimeStore<Conversation, unknown>();
+  const activeRunKeys = useSyncExternalStore(
+    runtimeStore.subscribeActiveRuns,
+    runtimeStore.getActiveRunKeys,
+    runtimeStore.getActiveRunKeys
+  );
+  const activeRunKeySet = useMemo(() => new Set(activeRunKeys), [activeRunKeys]);
   const [isRenameDialogOpen, setIsRenameDialogOpen] = useState(false);
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
   const [isBulkDeleteDialogOpen, setIsBulkDeleteDialogOpen] = useState(false);
@@ -112,6 +136,14 @@ export function ChatHistoryList({
   const isLoadingMoreRef = useRef(false);
   const lastConversationRef = useRef<HTMLDivElement>(null);
   const [conversations, setConversations] = useState<Conversation[]>([]);
+
+  useEffect(() => {
+    setConversations([]);
+    setOldestConversationId(undefined);
+    setHasMoreConversations(false);
+    setIsLoadingMore(false);
+    isLoadingMoreRef.current = false;
+  }, [userId]);
 
   // Pull-to-refresh (imperative updates to avoid reflow/re-render jank on iOS)
   const [isPullRefreshing, setIsPullRefreshing] = useState(false);
@@ -193,48 +225,39 @@ export function ChatHistoryList({
   }, [setPullDistancePx]);
 
   // Fetch initial conversations from API using the OpenSecret SDK
-  const { isPending, error } = useQuery({
-    queryKey: ["conversations"],
+  const {
+    data: initialConversations,
+    isPending,
+    error
+  } = useQuery({
+    queryKey: conversationHistoryQueryKey(userId),
     queryFn: async () => {
-      if (!opensecret) return [];
-
-      try {
-        // Load initial 20 conversations (newest first by default)
-        const response = await opensecret.listConversations({
-          limit: 20,
-          unassigned_project: true
-        });
-
-        const loadedConversations = response.data || [];
-
-        // Set initial state only on first load
-        setConversations(loadedConversations);
-
-        // Set pagination state
-        if (loadedConversations.length > 0) {
-          // Last conversation in the array is the oldest (for pagination)
-          const oldestId = loadedConversations[loadedConversations.length - 1].id;
-          setOldestConversationId(oldestId);
-          // If we got a full page, there might be more
-          setHasMoreConversations(loadedConversations.length === 20);
-        } else {
-          setOldestConversationId(undefined);
-          setHasMoreConversations(false);
-        }
-
-        return loadedConversations;
-      } catch (error) {
-        console.error("Failed to load conversations:", error);
-        return [];
-      }
+      const response = await opensecret.listConversations({
+        limit: 20,
+        unassigned_project: true
+      });
+      return response.data || [];
     },
-    enabled: !!opensecret
+    enabled: shouldLoadConversationHistory(userId),
+    retry: INITIAL_CHAT_HISTORY_RETRY_COUNT,
+    retryDelay: 250
     // No refetchInterval - we'll use manual polling instead
   });
 
+  // Query data is authoritative across remounts and request deduplication. Keeping
+  // setState outside queryFn ensures a newly mounted sidebar consumes a request
+  // that may have been started by the previous authenticated surface.
+  useEffect(() => {
+    if (!userId || initialConversations === undefined) return;
+    const page = initialChatHistoryPage(initialConversations);
+    setConversations([...page.conversations]);
+    setOldestConversationId(page.oldestConversationId);
+    setHasMoreConversations(page.hasMoreConversations);
+  }, [initialConversations, userId]);
+
   // Smart polling function - only fetches NEW conversations using the same pattern as UnifiedChat
   const pollForUpdates = useCallback(async () => {
-    if (!opensecret) return;
+    if (!userId) return;
 
     try {
       // Fetch latest conversations to detect new ones or metadata changes
@@ -286,7 +309,7 @@ export function ChatHistoryList({
       console.error("Polling error:", error);
       // Fail silently - don't disrupt the UI
     }
-  }, [opensecret]);
+  }, [opensecret, userId]);
 
   // Pull-to-refresh handler
   const handleRefresh = useCallback(async () => {
@@ -422,7 +445,7 @@ export function ChatHistoryList({
 
   // Set up polling every 60 seconds
   useEffect(() => {
-    if (!opensecret || conversations.length === 0) return;
+    if (!userId) return;
 
     const intervalId = setInterval(() => {
       pollForUpdates();
@@ -431,7 +454,7 @@ export function ChatHistoryList({
     return () => {
       clearInterval(intervalId);
     };
-  }, [opensecret, pollForUpdates, conversations.length]);
+  }, [pollForUpdates, userId]);
 
   // Load more older conversations for pagination
   const loadMoreConversations = useCallback(async () => {
@@ -1029,7 +1052,7 @@ export function ChatHistoryList({
     return () => window.removeEventListener("conversationcreated", handleConversationCreated);
   }, [pollForUpdates, queryClient]);
 
-  if (error) {
+  if (error && conversations.length === 0) {
     return <div>{error.message}</div>;
   }
 
@@ -1057,6 +1080,7 @@ export function ChatHistoryList({
     const title = getConversationTitle(conversation);
     const isActive = conversation.id === currentChatId;
     const isSelected = selectedIds.has(conversation.id);
+    const isRunning = activeRunKeySet.has(createConversationChatKey(conversation.id));
     const titlePaddingClass = "pr-8";
 
     const isBoldState = (isActive && !isSelectionMode) || (isSelectionMode && isSelected);
@@ -1070,10 +1094,13 @@ export function ChatHistoryList({
         className="group relative isolate flex w-full min-w-0 select-none items-stretch gap-0.5 rounded-2xl"
         onContextMenu={(event) => event.preventDefault()}
       >
-        <div
+        <button
+          type="button"
           data-testid="conversation-row"
           data-conversation-id={conversation.id}
+          data-running={isRunning || undefined}
           aria-current={isActive ? "page" : undefined}
+          aria-label={isRunning ? `${title}, running` : title}
           onClick={() => {
             if (isSelectionMode) {
               toggleSelection(conversation.id);
@@ -1088,12 +1115,21 @@ export function ChatHistoryList({
           onTouchMove={handleLongPressMove}
           onTouchEnd={handleLongPressEnd}
           onTouchCancel={handleLongPressEnd}
-          className={`relative ${ROW_CONTENT_Z} min-w-0 flex-1 py-1 pr-2 ${rowTextClass} ${
+          className={`relative ${ROW_CONTENT_Z} min-w-0 flex-1 py-1 pr-2 text-left ${rowTextClass} ${
             isSelectionMode ? "pl-8" : "pl-0"
           } cursor-pointer`}
         >
           <div className={titlePaddingClass}>
             <div className="relative z-0 flex min-w-0 items-center gap-1.5">
+              {isRunning ? (
+                <>
+                  <Loader2
+                    className="h-3 w-3 shrink-0 animate-spin text-[hsl(var(--maple-primary))]"
+                    aria-hidden="true"
+                  />
+                  <span className="sr-only">Response in progress</span>
+                </>
+              ) : null}
               {conversation.pinned ? (
                 <Pin
                   className="h-3.5 w-3.5 shrink-0 fill-none text-foreground"
@@ -1107,7 +1143,7 @@ export function ChatHistoryList({
               {new Date(conversation.last_activity_at * 1000).toLocaleDateString()}
             </div>
           </div>
-        </div>
+        </button>
         {isSelectionMode ? (
           <div
             className={`absolute left-1.5 top-1/2 ${ROW_CHECKBOX_Z} -translate-y-1/2`}

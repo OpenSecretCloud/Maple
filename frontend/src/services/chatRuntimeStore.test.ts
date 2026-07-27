@@ -624,6 +624,45 @@ describe("ChatRuntimeStore", () => {
     expect(aNotifications).toBe(1);
   });
 
+  test("publishes active-run keys only when run membership changes", () => {
+    const store = createStore();
+    const snapshots: string[][] = [];
+    const initialSnapshot = store.getActiveRunKeys();
+    store.subscribeActiveRuns(() => {
+      snapshots.push([...store.getActiveRunKeys()]);
+    });
+
+    const runA = store.beginRun(A);
+    const afterA = store.getActiveRunKeys();
+    expect(afterA).toEqual([A]);
+    expect(Object.isFrozen(afterA)).toBe(true);
+
+    store.updateForRun(A, runA.token, (snapshot) => ({
+      ...snapshot,
+      messages: [streamingMessage("a-assistant", "delta")]
+    }));
+    expect(store.getActiveRunKeys()).toBe(afterA);
+    expect(snapshots).toEqual([[A]]);
+
+    const runB = store.beginRun(B);
+    expect(new Set(store.getActiveRunKeys())).toEqual(new Set([A, B]));
+    expect(store.finishRun(A, runA.token)).toBe(true);
+    expect(store.getActiveRunKeys()).toEqual([B]);
+    expect(store.cancelRun(B, runB.token)?.key).toBe(B);
+    expect(store.getActiveRunKeys()).toBe(initialSnapshot);
+
+    const draft = createChatDraftKey("active-rekey");
+    const conversation = createConversationChatKey("active-rekeyed-conversation");
+    const draftRun = store.beginRun(draft);
+    expect(store.getActiveRunKeys()).toEqual([draft]);
+    expect(store.rekey(draft, conversation, draftRun.token)).toBe(conversation);
+    expect(store.getActiveRunKeys()).toEqual([conversation]);
+
+    store.dispose();
+    expect(store.getActiveRunKeys()).toBe(initialSnapshot);
+    expect(snapshots).toEqual([[A], [A, B], [B], [], [draft], [conversation], []]);
+  });
+
   test("evicts only least-recent inactive completed entries and disposes their resources", () => {
     const disposed: Array<{ key: string; reason: string }> = [];
     const store = createStore({
