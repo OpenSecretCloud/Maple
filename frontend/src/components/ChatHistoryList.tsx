@@ -155,6 +155,7 @@ export function ChatHistoryList({
   const [selectedProject, setSelectedProject] = useState<ConversationProjectListItem | null>(null);
   const [expandedProjectId, setExpandedProjectId] = useState<string | null>(selectedProjectId);
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const preventProjectMenuFocusRestoreRef = useRef(false);
 
   // Pagination states
   const [oldestConversationId, setOldestConversationId] = useState<string | undefined>();
@@ -953,6 +954,7 @@ export function ChatHistoryList({
 
   const handleNewChatInProject = useCallback(
     async (projectId: string) => {
+      preventProjectMenuFocusRestoreRef.current = true;
       setSelectedProjectId(projectId);
 
       if (window.location.pathname !== "/") {
@@ -1469,7 +1471,13 @@ export function ChatHistoryList({
                             <MoreHorizontal className="h-4 w-4" strokeWidth={ICON_STROKE} />
                           </button>
                         </DropdownMenuTrigger>
-                        <DropdownMenuContent>
+                        <DropdownMenuContent
+                          onCloseAutoFocus={(event) => {
+                            if (!preventProjectMenuFocusRestoreRef.current) return;
+                            preventProjectMenuFocusRestoreRef.current = false;
+                            event.preventDefault();
+                          }}
+                        >
                           <DropdownMenuItem onClick={() => void handleNewChatInProject(project.id)}>
                             <SquarePen className="mr-2 h-4 w-4" strokeWidth={ICON_STROKE} />
                             New Chat in Project
