@@ -176,6 +176,26 @@ describe("AgentMode runFinished thought labels", () => {
   }
 
   test("cancelled discards its provisional and ignores an obsolete request", async () => {
+    const authoritativeTimeline: AgentTimelineItem[] = [
+      ...timeline(`${REASONING} while checking redirect handling`),
+      {
+        id: "completed-tool",
+        itemType: "tool",
+        role: "assistant",
+        title: "Completed tool",
+        status: "completed",
+        createdMs: 2,
+        merge: "replace"
+      },
+      {
+        id: "stopped",
+        itemType: "system",
+        role: "system",
+        text: "Stopped by user",
+        createdMs: 3,
+        merge: "replace"
+      }
+    ];
     const tracker = liveTracker();
     const timers = manualTimers();
     const obsoleteResponse = deferred<string | null>();
@@ -184,6 +204,7 @@ describe("AgentMode runFinished thought labels", () => {
     let provisionalRequestCount = 0;
     let provisionalCommitCount = 0;
     let finalRequestCount = 0;
+    const reloadedTimelines: AgentTimelineItem[][] = [];
     let visibleLabel: string | null = AGENT_THOUGHT_LABEL_PENDING_TEXT;
     const provisionalScheduler = new AgentThoughtLabelProvisionalScheduler({
       schedule: timers.schedule,
@@ -235,9 +256,12 @@ describe("AgentMode runFinished thought labels", () => {
         finalRegistry.cancelMatching(sessionId, assistantTurnId ?? undefined);
         visibleLabel = null;
       },
-      loadTimeline: async () => timeline(`${REASONING} while checking redirect handling`),
+      loadTimeline: async () => authoritativeTimeline,
       canApplyTimeline: () => true,
-      replaceTimeline: () => true
+      replaceTimeline: (_sessionId, timeline) => {
+        reloadedTimelines.push(timeline);
+        return true;
+      }
     });
 
     expect(finished).not.toBeNull();
@@ -245,6 +269,14 @@ describe("AgentMode runFinished thought labels", () => {
     expect(visibleLabel).toBeNull();
     await finished;
     expect(finalRequestCount).toBe(0);
+    expect(reloadedTimelines).toHaveLength(1);
+    expect(reloadedTimelines[0]).toBe(authoritativeTimeline);
+    expect(reloadedTimelines[0].map((item) => item.id)).toEqual([
+      "user",
+      "thought",
+      "completed-tool",
+      "stopped"
+    ]);
 
     obsoleteResponse.resolve("Investigating cancelled login flow");
     await obsoleteResponse.promise;
