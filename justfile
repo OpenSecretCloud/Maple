@@ -96,6 +96,11 @@ rust-clippy:
 rust-lint:
     cd frontend/src-tauri && cargo fmt --check && cargo clippy -- -D warnings
 
+# Remove only this checkout's final Cargo artifacts. Raw `cargo clean` also
+# removes CARGO_BUILD_BUILD_DIR, which may be shared by multiple workspaces.
+clean-local:
+    cd frontend/src-tauri && CARGO_BUILD_BUILD_DIR=target cargo clean
+
 # Update version across all required files
 update-version version:
     #!/usr/bin/env bash

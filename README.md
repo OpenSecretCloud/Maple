@@ -118,6 +118,32 @@ override the default. (See `.env.example`)
 
 ## Building
 
+### Shared Rust build cache with Nix
+
+Local Maple Nix shells use Cargo's separate build directory support to share
+Rust intermediate artifacts across Maple checkouts. Final artifacts remain in
+the current checkout under `frontend/src-tauri/target`, so existing Tauri,
+debugger, and packaging paths do not change.
+
+The default cache is separated by host system and pinned Rust version:
+
+```text
+$HOME/.cache/opensecret-workspaces/cargo-build/maple/<nix-system>/rust-<version>
+```
+
+An existing `CARGO_BUILD_BUILD_DIR` takes precedence. To temporarily restore
+Cargo's traditional checkout-local layout, set
+`MAPLE_DISABLE_SHARED_CARGO_BUILD_DIR=1` before entering `nix develop`. CI does
+not enable the local shared cache automatically.
+
+Raw `cargo clean` removes both the checkout's target directory and the
+configured shared build directory. To clean only the current checkout without
+invalidating other Maple workspaces, run:
+
+```bash
+nix develop -c just clean-local
+```
+
 ### Desktop Builds
 
 Use the `just` commands for desktop builds:
