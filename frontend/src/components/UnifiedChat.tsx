@@ -1967,6 +1967,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
 
   // Refs
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const placeComposerCaretAtEndRef = useRef(true);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const historyTopSentinelRef = useRef<HTMLDivElement>(null);
@@ -2112,6 +2113,10 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
 
   // Auto-focus textbox on desktop (not mobile/landscape-mobile to avoid keyboard popup interrupting reading)
   // Focus when: app launches, new chat, conversation loads, or assistant finishes streaming
+  useLayoutEffect(() => {
+    placeComposerCaretAtEndRef.current = true;
+  }, [renderedRuntimeKey]);
+
   useEffect(() => {
     // Skip on compact layouts (mobile + landscape mobile) to avoid keyboard popup
     if (isCompactLayout) return;
@@ -2124,10 +2129,9 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
         if (!textarea) return;
 
         textarea.focus();
-        if (
-          isDraftChatRuntimeKey(runtimeStore.resolveKey(renderedRuntimeKey)) &&
-          textarea.value.length > 0
-        ) {
+        const shouldPlaceCaretAtEnd = placeComposerCaretAtEndRef.current;
+        placeComposerCaretAtEndRef.current = false;
+        if (shouldPlaceCaretAtEnd && textarea.value.length > 0) {
           const end = textarea.value.length;
           textarea.setSelectionRange(end, end);
         }
@@ -2135,7 +2139,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
 
       return () => clearTimeout(focusTimeout);
     }
-  }, [isCompactLayout, isGenerating, messages.length, chatId, renderedRuntimeKey, runtimeStore]);
+  }, [isCompactLayout, isGenerating, messages.length, chatId, renderedRuntimeKey]);
 
   // Improved scroll detection - track if user is near bottom
   const handleScroll = useCallback(() => {
