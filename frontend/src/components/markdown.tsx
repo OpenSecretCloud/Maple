@@ -101,7 +101,14 @@ function ThinkingDots() {
 }
 
 function ThinkingShimmer() {
-  return <span className="thinking-shimmer">Thinking</span>;
+  return (
+    <span className="thinking-shimmer">
+      Thinking
+      <span className="thinking-shimmer-highlight" aria-hidden="true">
+        Thinking
+      </span>
+    </span>
+  );
 }
 
 export interface ThinkingBlockProps {

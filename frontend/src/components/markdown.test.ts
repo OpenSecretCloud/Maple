@@ -112,8 +112,10 @@ describe("ThinkingBlock labels", () => {
     const afterSwitch = renderStreaming(1);
 
     expect(afterSwitch).toBe(beforeSwitch);
-    expect(afterSwitch).toContain(">Thinking<");
+    expect(afterSwitch).toContain(">Thinking<span");
     expect(afterSwitch).toContain("thinking-shimmer");
+    expect(afterSwitch).toContain("thinking-shimmer-highlight");
+    expect(afterSwitch).toContain('aria-hidden="true"');
     expect(afterSwitch).not.toContain("Thinking for");
     expect(afterSwitch).not.toContain("seconds");
     expect(afterSwitch).not.toContain("animate-bounce");
