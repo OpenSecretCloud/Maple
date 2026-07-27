@@ -968,6 +968,7 @@ interface Conversation {
   id: string;
   object: "conversation";
   created_at: number;
+  project_id?: string | null;
   metadata?: {
     title?: string;
     [key: string]: unknown;
@@ -1649,7 +1650,7 @@ const MessageList = memo(
 
 MessageList.displayName = "MessageList";
 
-export function UnifiedChat() {
+export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
   const isMobile = useIsMobile();
   const isLandscapeMobile = useIsLandscapeMobile();
   const isCompactLayout = isMobile || isLandscapeMobile;
@@ -1664,6 +1665,7 @@ export function UnifiedChat() {
   const { playbackError, clearPlaybackError } = useTTS();
   const runtimeStore = useChatRuntimeStore<Conversation, Message>();
   const runtimeInstanceId = useId();
+  const visibleChatOwner = useRef<object>({}).current;
 
   const [initialRuntimeSelection] = useState(() => {
     const params = new URLSearchParams(window.location.search);
@@ -1681,22 +1683,27 @@ export function UnifiedChat() {
   const [activeRuntimeKey, setActiveRuntimeKey] = useState<ChatRuntimeKey>(
     initialRuntimeSelection.runtimeKey
   );
-  runtimeStore.ensure(activeRuntimeKey, {
+  // Runtime selection is updated synchronously before the matching React state
+  // update commits. If the old chat is deleted in that gap, render the store's
+  // selected replacement instead of recreating the deleted runtime.
+  const renderedRuntimeKey = runtimeStore.get(activeRuntimeKey)
+    ? activeRuntimeKey
+    : (runtimeStore.getActiveKey() ?? activeRuntimeKey);
+  runtimeStore.ensure(renderedRuntimeKey, {
     composer: createChatComposerState(selectedProjectId ?? null)
   });
-  const activeRuntimeKeyRef = useRef(activeRuntimeKey);
-  const isUnifiedChatMountedRef = useRef(true);
-  activeRuntimeKeyRef.current = runtimeStore.resolveKey(activeRuntimeKey);
+  const activeRuntimeKeyRef = useRef(renderedRuntimeKey);
+  activeRuntimeKeyRef.current = runtimeStore.resolveKey(renderedRuntimeKey);
 
   const subscribeToActiveRuntime = useCallback(
-    (listener: () => void) => runtimeStore.subscribeKey(activeRuntimeKey, listener),
-    [activeRuntimeKey, runtimeStore]
+    (listener: () => void) => runtimeStore.subscribeKey(renderedRuntimeKey, listener),
+    [renderedRuntimeKey, runtimeStore]
   );
   const getActiveRuntimeSnapshot = useCallback(() => {
-    const snapshot = runtimeStore.get(activeRuntimeKey);
-    if (!snapshot) throw new Error(`Missing chat runtime for ${activeRuntimeKey}`);
+    const snapshot = runtimeStore.get(renderedRuntimeKey);
+    if (!snapshot) throw new Error(`Missing chat runtime for ${renderedRuntimeKey}`);
     return snapshot;
-  }, [activeRuntimeKey, runtimeStore]);
+  }, [renderedRuntimeKey, runtimeStore]);
   const activeRuntime = useSyncExternalStore(
     subscribeToActiveRuntime,
     getActiveRuntimeSnapshot,
@@ -1704,11 +1711,14 @@ export function UnifiedChat() {
   );
 
   useLayoutEffect(() => {
-    runtimeStore.select(activeRuntimeKey);
-  }, [activeRuntimeKey, runtimeStore]);
+    if (!isVisible) return;
+    runtimeStore.select(renderedRuntimeKey);
+    const lease = runtimeStore.claimVisibleChat(visibleChatOwner, renderedRuntimeKey);
+    return () => runtimeStore.releaseVisibleChat(lease);
+  }, [isVisible, renderedRuntimeKey, runtimeStore, visibleChatOwner]);
 
   useLayoutEffect(() => {
-    const canonicalKey = runtimeStore.resolveKey(activeRuntimeKey);
+    const canonicalKey = runtimeStore.resolveKey(renderedRuntimeKey);
     const canonicalConversationId = conversationIdFromChatRuntimeKey(canonicalKey);
     if (canonicalConversationId) {
       canonicalizeConversationHistoryEntry(canonicalConversationId);
@@ -1722,19 +1732,10 @@ export function UnifiedChat() {
       "",
       window.location.href
     );
-  }, [activeRuntimeKey, runtimeStore]);
-
-  useEffect(() => {
-    isUnifiedChatMountedRef.current = true;
-    return () => {
-      isUnifiedChatMountedRef.current = false;
-    };
-  }, []);
+  }, [renderedRuntimeKey, runtimeStore]);
 
   const isRuntimeSelected = useCallback(
-    (key: ChatRuntimeKey) =>
-      isUnifiedChatMountedRef.current &&
-      runtimeStore.resolveKey(activeRuntimeKeyRef.current) === runtimeStore.resolveKey(key),
+    (key: ChatRuntimeKey) => runtimeStore.isChatVisible(key),
     [runtimeStore]
   );
 
@@ -2554,10 +2555,12 @@ export function UnifiedChat() {
         if (!conv.ok) {
           throw conv.error;
         }
+        const conversation = conv.value as Conversation;
         runtimeStore.update(runtimeKey, (snapshot) => ({
           ...snapshot,
-          conversation: conv.value as Conversation
+          conversation
         }));
+        runtimeStore.updateActivityGroup(runtimeKey, conversation.project_id ?? null);
       } catch (error) {
         if (isStaleRequest()) return;
 
@@ -2565,13 +2568,18 @@ export function UnifiedChat() {
         if (err.status === 404) {
           // Conversation doesn't exist - clear and start fresh
           // Conversation not found, starting new
-          runtimeStore.delete(runtimeKey);
-          if (isRuntimeSelected(runtimeKey)) {
-            const params = new URLSearchParams(window.location.search);
-            params.delete("conversation_id");
-            window.history.replaceState({}, "", params.toString() ? `/?${params}` : "/");
+          const projectedRuntimeWasDeleted =
+            runtimeStore.resolveKey(activeRuntimeKeyRef.current) ===
+            runtimeStore.resolveKey(runtimeKey);
+          if (projectedRuntimeWasDeleted) {
+            if (isRuntimeSelected(runtimeKey)) {
+              const params = new URLSearchParams(window.location.search);
+              params.delete("conversation_id");
+              window.history.replaceState({}, "", params.toString() ? `/?${params}` : "/");
+            }
             selectFreshDraftRuntime(selectedProjectId ?? null);
           }
+          runtimeStore.delete(runtimeKey);
         } else {
           console.error("Failed to load conversation:", error);
           setErrorForKey(runtimeKey, err.message || "Failed to load conversation");
@@ -3893,7 +3901,7 @@ export function UnifiedChat() {
       runToken: number,
       optimisticMessageId: string,
       discardOwnedItemsOnError: boolean
-    ) => {
+    ): Promise<ChatStreamTerminalState> => {
       const messageTextBuffers = new Map<string, Map<number, string>>();
       const reasoningTextBuffers = new Map<string, Map<number, string>>();
       const ownedItemIds = new Set<string>();
@@ -4249,6 +4257,8 @@ export function UnifiedChat() {
         deltaCoalescer.finish();
         unregisterChatStreamDeltaCoalescer(runtimeStore, runToken, deltaCoalescer);
       }
+
+      return terminalState;
     },
     [logStreamEvent, runtimeStore]
   );
@@ -4281,11 +4291,18 @@ export function UnifiedChat() {
         startSnapshot.conversation?.id ?? conversationIdFromChatRuntimeKey(runtimeKey);
       const isFollowUpConversation =
         Boolean(existingConversationId) && startSnapshot.messages.length > 1;
-      const run = runtimeStore.beginRun(runtimeKey);
+      const run = runtimeStore.beginRun(runtimeKey, {
+        groupId:
+          startSnapshot.conversation?.project_id ??
+          originalComposer.draftProjectId ??
+          selectedProjectId ??
+          null
+      });
       const localMessageId = uuidv4();
       let conversationId = existingConversationId;
       let composerRestored = false;
       let adoptedExistingDestination = false;
+      let completedSuccessfully = false;
 
       const restoreOriginComposer = (message: string) => {
         if (composerRestored) return true;
@@ -4361,9 +4378,9 @@ export function UnifiedChat() {
           { signal: run.signal }
         );
 
-        if (!runtimeStore.setAssistantStreaming(runtimeKey, run.token, true)) return;
+        if (!runtimeStore.setAssistantStreaming(runtimeKey, run.token, true)) return null;
         try {
-          await processStreamingResponse(
+          return await processStreamingResponse(
             stream,
             runtimeKey,
             run.token,
@@ -4525,7 +4542,7 @@ export function UnifiedChat() {
           }));
 
           const keepSelection = shouldProjectMigratedConversation(
-            isUnifiedChatMountedRef.current,
+            runtimeStore.isChatVisible(runtimeKey),
             sourceWasSelected,
             migration.destinationWasSelected
           );
@@ -4538,7 +4555,8 @@ export function UnifiedChat() {
           window.dispatchEvent(new Event("conversationcreated"));
         }
 
-        await createResponseStream(conversationId, isFollowUpConversation);
+        const terminalState = await createResponseStream(conversationId, isFollowUpConversation);
+        completedSuccessfully = terminalState === "completed";
         scheduleBillingRefresh();
       } catch (error) {
         console.error("Failed to send message:", error);
@@ -4613,7 +4631,8 @@ export function UnifiedChat() {
               if (!runtimeStore.isRunCurrent(runtimeKey, run.token)) return;
 
               console.log("Retrying request once...");
-              await createResponseStream(conversationId, false);
+              const terminalState = await createResponseStream(conversationId, false);
+              completedSuccessfully = terminalState === "completed";
               scheduleBillingRefresh();
               console.log("Retry completed successfully");
               return;
@@ -4655,7 +4674,11 @@ export function UnifiedChat() {
         }
       } finally {
         unregisterChatOptimisticMessage(runtimeStore, run.token, localMessageId);
-        runtimeStore.finishRun(runtimeKey, run.token);
+        if (completedSuccessfully) {
+          runtimeStore.completeRun(runtimeKey, run.token);
+        } else {
+          runtimeStore.finishRun(runtimeKey, run.token);
+        }
       }
     },
     [
@@ -4666,7 +4689,8 @@ export function UnifiedChat() {
       openai,
       processStreamingResponse,
       queryClient,
-      runtimeStore
+      runtimeStore,
+      selectedProjectId
     ]
   );
 

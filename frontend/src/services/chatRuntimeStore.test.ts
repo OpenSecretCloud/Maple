@@ -663,6 +663,249 @@ describe("ChatRuntimeStore", () => {
     expect(snapshots).toEqual([[A], [A, B], [B], [], [draft], [conversation], []]);
   });
 
+  test("uses identity-safe visible-chat ownership to classify successful completions", () => {
+    const store = createStore();
+    const owner = {};
+
+    const staleLease = store.claimVisibleChat(owner, A);
+    const replacementLease = store.claimVisibleChat(owner, B);
+    expect(Object.isFrozen(staleLease)).toBe(true);
+    expect(Object.isFrozen(replacementLease)).toBe(true);
+    expect(replacementLease.sequence).toBeGreaterThan(staleLease.sequence);
+    store.releaseVisibleChat(staleLease);
+    expect(store.isChatVisible(A)).toBe(false);
+    expect(store.isChatVisible(B)).toBe(true);
+
+    const visibleRun = store.beginRun(B, { groupId: "project-visible" });
+    expect(store.completeRun(B, visibleRun.token)).toBe(true);
+    expect(store.getCompletedUnreadKeys()).toEqual([]);
+
+    const offscreenRun = store.beginRun(A, { groupId: "project-offscreen" });
+    expect(store.completeRun(A, offscreenRun.token)).toBe(true);
+    expect(store.getCompletedUnreadKeys()).toEqual([A]);
+    expect(store.getCompletedUnreadGroupId(A)).toBe("project-offscreen");
+
+    store.releaseVisibleChat(replacementLease);
+    expect(store.isChatVisible(B)).toBe(false);
+    const formerlyVisibleRun = store.beginRun(B, { groupId: "project-visible" });
+    expect(store.completeRun(B, formerlyVisibleRun.token)).toBe(true);
+    expect(new Set(store.getCompletedUnreadKeys())).toEqual(new Set([A, B]));
+  });
+
+  test("clears completed-unread state on visibility, a new run, and an explicit read", () => {
+    const store = createStore();
+    const owner = {};
+
+    const first = store.beginRun(A, { groupId: "project-a" });
+    expect(store.completeRun(A, first.token)).toBe(true);
+    expect(store.getCompletedUnreadKeys()).toEqual([A]);
+
+    store.select(A);
+    expect(store.getCompletedUnreadKeys()).toEqual([A]);
+    const visibleLease = store.claimVisibleChat(owner, A);
+    expect(store.getCompletedUnreadKeys()).toEqual([]);
+    store.releaseVisibleChat(visibleLease);
+
+    store.clearSelection();
+    const second = store.beginRun(A, { groupId: "project-a" });
+    expect(store.completeRun(A, second.token)).toBe(true);
+    expect(store.getCompletedUnreadKeys()).toEqual([A]);
+
+    const replacement = store.beginRun(A, { groupId: "project-a" });
+    expect(store.getCompletedUnreadKeys()).toEqual([]);
+    expect(store.finishRun(A, replacement.token)).toBe(true);
+
+    const third = store.beginRun(A, { groupId: "project-a" });
+    expect(store.completeRun(A, third.token)).toBe(true);
+    expect(store.markCompletionRead(A)).toBe(true);
+    expect(store.markCompletionRead(A)).toBe(false);
+    expect(store.getCompletedUnreadKeys()).toEqual([]);
+  });
+
+  test("does not mark failures, cancellations, or stale completions unread", () => {
+    const store = createStore();
+
+    const failed = store.beginRun(A, { groupId: "project-a" });
+    expect(store.finishRun(A, failed.token)).toBe(true);
+    expect(store.getCompletedUnreadKeys()).toEqual([]);
+
+    const cancelled = store.beginRun(B, { groupId: "project-b" });
+    expect(store.cancelRun(B, cancelled.token)?.key).toBe(B);
+    expect(store.completeRun(B, cancelled.token)).toBe(false);
+    expect(store.getCompletedUnreadKeys()).toEqual([]);
+
+    const stale = store.beginRun(A, { groupId: "project-old" });
+    expect(store.finishRun(A, stale.token)).toBe(true);
+    const current = store.beginRun(A, { groupId: "project-current" });
+
+    expect(store.completeRun(A, stale.token)).toBe(false);
+    expect(store.getCompletedUnreadKeys()).toEqual([]);
+    expect(store.isRunCurrent(A, current.token)).toBe(true);
+    expect(store.finishRun(A, current.token)).toBe(true);
+  });
+
+  test("keeps unread completion canonical through draft rekey and visible aliases", () => {
+    const store = createStore();
+    const draft = createChatDraftKey("completion-alias");
+    const conversation = createConversationChatKey("completion-canonical");
+    const run = store.beginRun(draft, { groupId: "project-a" });
+
+    expect(store.rekey(draft, conversation, run.token)).toBe(conversation);
+    expect(store.completeRun(draft, run.token)).toBe(true);
+    expect(store.getCompletedUnreadKeys()).toEqual([conversation]);
+    expect(store.getCompletedUnreadGroupId(draft)).toBe("project-a");
+
+    expect(store.markCompletionRead(draft)).toBe(true);
+    expect(store.getCompletedUnreadKeys()).toEqual([]);
+
+    const owner = {};
+    const visibleDraft = createChatDraftKey("visible-completion-alias");
+    const visibleConversation = createConversationChatKey("visible-completion-canonical");
+    const visibleRun = store.beginRun(visibleDraft, { groupId: "project-b" });
+    store.claimVisibleChat(owner, visibleDraft);
+
+    expect(store.rekey(visibleDraft, visibleConversation, visibleRun.token)).toBe(
+      visibleConversation
+    );
+    expect(store.completeRun(visibleDraft, visibleRun.token)).toBe(true);
+    expect(store.getCompletedUnreadKeys()).toEqual([]);
+  });
+
+  test("retains unread metadata across LRU eviction and clears unread-only deletion", () => {
+    const store = createStore({ maxInactiveCompletedEntries: 0 });
+    const run = store.beginRun(A, { groupId: "project-a" });
+
+    expect(store.completeRun(A, run.token)).toBe(true);
+    expect(store.get(A)).toBeUndefined();
+    expect(store.getCompletedUnreadKeys()).toEqual([A]);
+    expect(store.getCompletedUnreadGroupId(A)).toBe("project-a");
+
+    expect(store.delete(A)).toBe(true);
+    expect(store.getCompletedUnreadKeys()).toEqual([]);
+    expect(store.getCompletedUnreadGroupId(A)).toBeUndefined();
+    expect(store.delete(A)).toBe(false);
+  });
+
+  test("publishes stable, targeted activity notifications for group changes", () => {
+    const store = createStore();
+    let activeNotifications = 0;
+    let unreadNotifications = 0;
+    store.subscribeActiveRuns(() => {
+      activeNotifications += 1;
+    });
+    store.subscribeCompletedUnread(() => {
+      unreadNotifications += 1;
+    });
+
+    const runA = store.beginRun(A, { groupId: "project-one" });
+    const activeAfterBegin = store.getActiveRunKeys();
+    expect(activeNotifications).toBe(1);
+    expect(unreadNotifications).toBe(0);
+    expect(Object.isFrozen(activeAfterBegin)).toBe(true);
+
+    store.updateForRun(A, runA.token, (snapshot) => ({
+      ...snapshot,
+      messages: [streamingMessage("a-assistant", "delta")]
+    }));
+    expect(store.getActiveRunKeys()).toBe(activeAfterBegin);
+    expect(activeNotifications).toBe(1);
+    expect(unreadNotifications).toBe(0);
+
+    expect(store.updateActivityGroup(A, "project-two")).toBe(true);
+    const activeAfterGroupChange = store.getActiveRunKeys();
+    expect(activeAfterGroupChange).toEqual([A]);
+    expect(activeAfterGroupChange).not.toBe(activeAfterBegin);
+    expect(store.getActiveRunGroupId(A)).toBe("project-two");
+    expect(activeNotifications).toBe(2);
+    expect(unreadNotifications).toBe(0);
+
+    expect(store.updateActivityGroup(A, "project-two")).toBe(false);
+    expect(store.getActiveRunKeys()).toBe(activeAfterGroupChange);
+    expect(activeNotifications).toBe(2);
+
+    expect(store.completeRun(A, runA.token)).toBe(true);
+    const unreadAfterCompletion = store.getCompletedUnreadKeys();
+    expect(unreadAfterCompletion).toEqual([A]);
+    expect(Object.isFrozen(unreadAfterCompletion)).toBe(true);
+    expect(activeNotifications).toBe(3);
+    expect(unreadNotifications).toBe(1);
+
+    expect(store.updateActivityGroup(A, "project-three")).toBe(true);
+    expect(store.getCompletedUnreadKeys()).toEqual([A]);
+    expect(store.getCompletedUnreadKeys()).not.toBe(unreadAfterCompletion);
+    expect(store.getCompletedUnreadGroupId(A)).toBe("project-three");
+    expect(activeNotifications).toBe(3);
+    expect(unreadNotifications).toBe(2);
+
+    const runB = store.beginRun(B, { groupId: "project-three" });
+    expect(store.reassignActivityGroup("project-three", "project-four")).toBe(true);
+    expect(store.getActiveRunGroupId(B)).toBe("project-four");
+    expect(store.getCompletedUnreadGroupId(A)).toBe("project-four");
+    expect(activeNotifications).toBe(5);
+    expect(unreadNotifications).toBe(3);
+
+    expect(store.finishRun(B, runB.token)).toBe(true);
+  });
+
+  test("deletes active and unread members of an activity group", () => {
+    const store = createStore();
+    const idle = createConversationChatKey("idle-project-member");
+    const activeRun = store.beginRun(A, { groupId: "project-delete" });
+    const unreadRun = store.beginRun(B, { groupId: "project-delete" });
+    expect(store.completeRun(B, unreadRun.token)).toBe(true);
+    store.ensure(idle, { historyLoaded: true });
+    expect(store.updateActivityGroup(idle, "project-delete")).toBe(true);
+    expect(store.getActivityGroupId(idle)).toBe("project-delete");
+
+    const deleted = store.deleteActivityGroup("project-delete");
+
+    expect(new Set(deleted)).toEqual(new Set([A, B, idle]));
+    expect(Object.isFrozen(deleted)).toBe(true);
+    expect(activeRun.signal.aborted).toBe(true);
+    expect(store.get(A)).toBeUndefined();
+    expect(store.get(B)).toBeUndefined();
+    expect(store.get(idle)).toBeUndefined();
+    expect(store.getActiveRunKeys()).toEqual([]);
+    expect(store.getCompletedUnreadKeys()).toEqual([]);
+    expect(store.deleteActivityGroup("project-delete")).toEqual([]);
+  });
+
+  test("dispose resets unread and visible ownership state and notifies subscribers", () => {
+    const store = createStore();
+    const emptyActiveSnapshot = store.getActiveRunKeys();
+    const emptyUnreadSnapshot = store.getCompletedUnreadKeys();
+    const owner = {};
+    const completed = store.beginRun(A, { groupId: "project-a" });
+    expect(store.completeRun(A, completed.token)).toBe(true);
+    const active = store.beginRun(B, { groupId: "project-b" });
+    const visibleLease = store.claimVisibleChat(owner, B);
+    let activeNotifications = 0;
+    let unreadNotifications = 0;
+    store.subscribeActiveRuns(() => {
+      activeNotifications += 1;
+    });
+    store.subscribeCompletedUnread(() => {
+      unreadNotifications += 1;
+    });
+
+    store.dispose();
+
+    expect(active.signal.aborted).toBe(true);
+    expect(store.getActiveRunKeys()).toBe(emptyActiveSnapshot);
+    expect(store.getCompletedUnreadKeys()).toBe(emptyUnreadSnapshot);
+    expect(store.getCompletedUnreadGroupId(A)).toBeUndefined();
+    expect(activeNotifications).toBe(1);
+    expect(unreadNotifications).toBe(1);
+    expect(() => store.claimVisibleChat(owner, A)).toThrow("has been disposed");
+    expect(() => store.releaseVisibleChat(visibleLease)).not.toThrow();
+    expect(store.isChatVisible(B)).toBe(false);
+    expect(() => store.markCompletionRead(A)).toThrow("has been disposed");
+    expect(() => store.updateActivityGroup(A, null)).toThrow("has been disposed");
+    expect(() => store.reassignActivityGroup("project-a", null)).toThrow("has been disposed");
+    expect(() => store.deleteActivityGroup("project-a")).toThrow("has been disposed");
+    expect(() => store.subscribeCompletedUnread(() => {})).toThrow("has been disposed");
+  });
+
   test("evicts only least-recent inactive completed entries and disposes their resources", () => {
     const disposed: Array<{ key: string; reason: string }> = [];
     const store = createStore({

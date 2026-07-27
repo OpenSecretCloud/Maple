@@ -178,5 +178,5 @@ export function AuthenticatedHomeContent({
     return <ProjectDetailView projectId={selection.projectId} />;
   }
 
-  return <UnifiedChat />;
+  return <UnifiedChat isVisible={homeLocationHref !== null} />;
 }

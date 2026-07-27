@@ -100,6 +100,15 @@ export type ChatRuntimeRunHandle = Readonly<{
   signal: AbortSignal;
 }>;
 
+export type ChatRuntimeRunContext = Readonly<{
+  groupId?: string | null;
+}>;
+
+export type ChatRuntimeVisibleLease = Readonly<{
+  owner: object;
+  sequence: number;
+}>;
+
 export type CancelledChatRuntimeRun = Readonly<{
   key: ChatRuntimeKey;
   token: number;
@@ -120,11 +129,13 @@ export type ChatRuntimeStoreOptions<TConversation, TMessage, TComposer> = Readon
 type ActiveRun = {
   token: number;
   controller: AbortController;
+  groupId: string | null;
 };
 
 type RuntimeEntry<TConversation, TMessage, TComposer> = {
   snapshot: ChatRuntimeSnapshot<TConversation, TMessage, TComposer>;
   activeRun: ActiveRun | null;
+  groupId: string | null;
   lastTouched: number;
 };
 
@@ -145,6 +156,8 @@ export class ChatRuntimeStore<TConversation, TMessage, TComposer> {
   private readonly aliases = new Map<ChatRuntimeKey, ChatRuntimeKey>();
   private readonly listeners = new Set<() => void>();
   private readonly activeRunListeners = new Set<() => void>();
+  private readonly completedUnreadListeners = new Set<() => void>();
+  private readonly completedUnreadGroups = new Map<ChatRuntimeKey, string | null>();
   private readonly createComposer: () => TComposer;
   private readonly maxInactiveCompletedEntries: number;
   private readonly canEvict: (
@@ -158,6 +171,10 @@ export class ChatRuntimeStore<TConversation, TMessage, TComposer> {
     | undefined;
   private activeKey: ChatRuntimeKey | null = null;
   private activeRunKeysSnapshot = EMPTY_CHAT_RUNTIME_KEYS;
+  private completedUnreadKeysSnapshot = EMPTY_CHAT_RUNTIME_KEYS;
+  private visibleChatLease: ChatRuntimeVisibleLease | null = null;
+  private visibleChatKey: ChatRuntimeKey | null = null;
+  private nextVisibleChatLeaseSequence = 0;
   private subscriberRevision = 0;
   private nextRunToken = 0;
   private touchRevision = 0;
@@ -194,6 +211,138 @@ export class ChatRuntimeStore<TConversation, TMessage, TComposer> {
   };
 
   readonly getActiveRunKeys = (): readonly ChatRuntimeKey[] => this.activeRunKeysSnapshot;
+
+  readonly subscribeCompletedUnread = (listener: () => void): (() => void) => {
+    this.assertNotDisposed();
+    this.completedUnreadListeners.add(listener);
+    return () => this.completedUnreadListeners.delete(listener);
+  };
+
+  readonly getCompletedUnreadKeys = (): readonly ChatRuntimeKey[] =>
+    this.completedUnreadKeysSnapshot;
+
+  getActiveRunGroupId(key: ChatRuntimeKey): string | null | undefined {
+    return this.entries.get(this.resolveKey(key))?.activeRun?.groupId;
+  }
+
+  getCompletedUnreadGroupId(key: ChatRuntimeKey): string | null | undefined {
+    return this.completedUnreadGroups.get(this.resolveKey(key));
+  }
+
+  getActivityGroupId(key: ChatRuntimeKey): string | null | undefined {
+    const canonicalKey = this.resolveKey(key);
+    return this.entries.get(canonicalKey)?.groupId ?? this.completedUnreadGroups.get(canonicalKey);
+  }
+
+  claimVisibleChat(owner: object, key: ChatRuntimeKey): ChatRuntimeVisibleLease {
+    this.assertNotDisposed();
+    const canonicalKey = this.resolveKey(key);
+    const lease = Object.freeze({
+      owner,
+      sequence: ++this.nextVisibleChatLeaseSequence
+    });
+    this.visibleChatLease = lease;
+    this.visibleChatKey = canonicalKey;
+    if (this.completedUnreadGroups.delete(canonicalKey)) this.publish();
+    return lease;
+  }
+
+  releaseVisibleChat(lease: ChatRuntimeVisibleLease): void {
+    if (this.disposed) return;
+    if (this.visibleChatLease !== lease) return;
+    this.visibleChatLease = null;
+    this.visibleChatKey = null;
+  }
+
+  isChatVisible(key: ChatRuntimeKey): boolean {
+    return (
+      this.visibleChatLease !== null &&
+      this.visibleChatKey !== null &&
+      this.resolveKey(this.visibleChatKey) === this.resolveKey(key)
+    );
+  }
+
+  markCompletionRead(key: ChatRuntimeKey): boolean {
+    this.assertNotDisposed();
+    if (!this.completedUnreadGroups.delete(this.resolveKey(key))) return false;
+    this.publish();
+    return true;
+  }
+
+  updateActivityGroup(key: ChatRuntimeKey, groupId: string | null): boolean {
+    this.assertNotDisposed();
+    const canonicalKey = this.resolveKey(key);
+    const entry = this.entries.get(canonicalKey);
+    const activeRun = entry?.activeRun;
+    let entryGroupChanged = false;
+    let activeGroupChanged = false;
+    let unreadGroupChanged = false;
+
+    if (entry && entry.groupId !== groupId) {
+      entry.groupId = groupId;
+      entryGroupChanged = true;
+    }
+    if (activeRun && activeRun.groupId !== groupId) {
+      activeRun.groupId = groupId;
+      activeGroupChanged = true;
+    }
+    if (
+      this.completedUnreadGroups.has(canonicalKey) &&
+      this.completedUnreadGroups.get(canonicalKey) !== groupId
+    ) {
+      this.completedUnreadGroups.set(canonicalKey, groupId);
+      unreadGroupChanged = true;
+    }
+
+    if (entryGroupChanged || activeGroupChanged || unreadGroupChanged) {
+      this.publish(activeGroupChanged, unreadGroupChanged);
+    }
+    return entryGroupChanged || activeGroupChanged || unreadGroupChanged;
+  }
+
+  reassignActivityGroup(fromGroupId: string, toGroupId: string | null): boolean {
+    this.assertNotDisposed();
+    let entryGroupChanged = false;
+    let activeGroupChanged = false;
+    let unreadGroupChanged = false;
+
+    for (const entry of this.entries.values()) {
+      if (entry.groupId === fromGroupId) {
+        entry.groupId = toGroupId;
+        entryGroupChanged = true;
+      }
+      if (entry.activeRun?.groupId === fromGroupId) {
+        entry.activeRun.groupId = toGroupId;
+        activeGroupChanged = true;
+      }
+    }
+    for (const [key, groupId] of this.completedUnreadGroups) {
+      if (groupId === fromGroupId) {
+        this.completedUnreadGroups.set(key, toGroupId);
+        unreadGroupChanged = true;
+      }
+    }
+
+    if (entryGroupChanged || activeGroupChanged || unreadGroupChanged) {
+      this.publish(activeGroupChanged, unreadGroupChanged);
+    }
+    return entryGroupChanged || activeGroupChanged || unreadGroupChanged;
+  }
+
+  deleteActivityGroup(groupId: string): readonly ChatRuntimeKey[] {
+    this.assertNotDisposed();
+    const keys = new Set<ChatRuntimeKey>();
+
+    for (const [key, entry] of this.entries) {
+      if (entry.groupId === groupId || entry.activeRun?.groupId === groupId) keys.add(key);
+    }
+    for (const [key, completedGroupId] of this.completedUnreadGroups) {
+      if (completedGroupId === groupId) keys.add(key);
+    }
+
+    for (const key of keys) this.delete(key);
+    return Object.freeze(Array.from(keys));
+  }
 
   subscribeKey(key: ChatRuntimeKey, listener: () => void): () => void {
     let lastSnapshot = this.get(key);
@@ -272,7 +421,6 @@ export class ChatRuntimeStore<TConversation, TMessage, TComposer> {
       this.activeKey = canonicalKey;
       changed = true;
     }
-
     changed = this.evictInactiveCompletedEntries() || changed;
     if (changed) this.publish();
     return entry.snapshot;
@@ -338,7 +486,7 @@ export class ChatRuntimeStore<TConversation, TMessage, TComposer> {
     return true;
   }
 
-  beginRun(key: ChatRuntimeKey): ChatRuntimeRunHandle {
+  beginRun(key: ChatRuntimeKey, context: ChatRuntimeRunContext = {}): ChatRuntimeRunHandle {
     this.assertNotDisposed();
     const canonicalKey = this.resolveKey(key);
     const entry = this.entries.get(canonicalKey) ?? this.createAndStoreEntry(canonicalKey);
@@ -348,7 +496,10 @@ export class ChatRuntimeStore<TConversation, TMessage, TComposer> {
     const controller = new AbortController();
     const token = ++this.nextRunToken;
 
-    entry.activeRun = { token, controller };
+    this.completedUnreadGroups.delete(canonicalKey);
+    const groupId = context.groupId === undefined ? entry.groupId : context.groupId;
+    entry.groupId = groupId;
+    entry.activeRun = { token, controller, groupId };
     entry.snapshot = this.updatedSnapshot(
       entry.snapshot,
       {
@@ -394,12 +545,30 @@ export class ChatRuntimeStore<TConversation, TMessage, TComposer> {
     token: number,
     updater?: ChatRuntimeRunUpdater<TConversation, TMessage, TComposer>
   ): boolean {
+    return this.settleRun(key, token, false, updater);
+  }
+
+  completeRun(
+    key: ChatRuntimeKey,
+    token: number,
+    updater?: ChatRuntimeRunUpdater<TConversation, TMessage, TComposer>
+  ): boolean {
+    return this.settleRun(key, token, true, updater);
+  }
+
+  private settleRun(
+    key: ChatRuntimeKey,
+    token: number,
+    completedSuccessfully: boolean,
+    updater?: ChatRuntimeRunUpdater<TConversation, TMessage, TComposer>
+  ): boolean {
     if (this.disposed) return false;
     const canonicalKey = this.resolveKey(key);
     const entry = this.entries.get(canonicalKey);
     if (!entry || entry.activeRun?.token !== token) return false;
 
     const completed = updater ? { ...entry.snapshot, ...updater(entry.snapshot) } : entry.snapshot;
+    const completedGroupId = entry.activeRun.groupId;
     entry.activeRun = null;
     entry.snapshot = this.updatedSnapshot(
       entry.snapshot,
@@ -416,18 +585,17 @@ export class ChatRuntimeStore<TConversation, TMessage, TComposer> {
         runToken: null
       }
     );
+    const visibleChatKey =
+      this.visibleChatLease && this.visibleChatKey ? this.resolveKey(this.visibleChatKey) : null;
+    if (completedSuccessfully && visibleChatKey !== canonicalKey) {
+      this.completedUnreadGroups.set(canonicalKey, completedGroupId);
+    } else {
+      this.completedUnreadGroups.delete(canonicalKey);
+    }
     this.touch(entry);
     this.evictInactiveCompletedEntries();
     this.publish();
     return true;
-  }
-
-  completeRun(
-    key: ChatRuntimeKey,
-    token: number,
-    updater?: ChatRuntimeRunUpdater<TConversation, TMessage, TComposer>
-  ): boolean {
-    return this.finishRun(key, token, updater);
   }
 
   cancelRun(key: ChatRuntimeKey, token: number): CancelledChatRuntimeRun | null {
@@ -438,6 +606,7 @@ export class ChatRuntimeStore<TConversation, TMessage, TComposer> {
     if (!entry || !run || run.token !== token) return null;
 
     const responseId = entry.snapshot.currentResponseId;
+    this.completedUnreadGroups.delete(canonicalKey);
     entry.activeRun = null;
     entry.snapshot = this.updatedSnapshot(
       entry.snapshot,
@@ -568,6 +737,9 @@ export class ChatRuntimeStore<TConversation, TMessage, TComposer> {
       );
     }
 
+    this.completedUnreadGroups.delete(canonicalFrom);
+    this.completedUnreadGroups.delete(canonicalTo);
+
     this.entries.delete(canonicalFrom);
     // An adopted idle destination is replaced atomically. Its resource-bearing
     // state must have been transferred by mergedUpdate, so no disposal callback
@@ -589,6 +761,13 @@ export class ChatRuntimeStore<TConversation, TMessage, TComposer> {
     if (sourceWasSelected || destinationWasSelected) {
       this.activeKey = canonicalTo;
     }
+    if (
+      this.visibleChatKey !== null &&
+      (this.resolveKey(this.visibleChatKey) === canonicalFrom ||
+        this.resolveKey(this.visibleChatKey) === canonicalTo)
+    ) {
+      this.visibleChatKey = canonicalTo;
+    }
 
     this.publish();
     return canonicalTo;
@@ -600,12 +779,18 @@ export class ChatRuntimeStore<TConversation, TMessage, TComposer> {
     const entry = this.entries.get(canonicalKey);
     if (!entry) {
       const removedAlias = this.detachAliases(canonicalKey);
-      if (removedAlias) this.publish();
-      return removedAlias;
+      const removedUnread = this.completedUnreadGroups.delete(canonicalKey);
+      if (removedAlias || removedUnread) this.publish();
+      return removedAlias || removedUnread;
     }
 
+    this.completedUnreadGroups.delete(canonicalKey);
     this.detachEntry(canonicalKey);
     if (this.activeKey === canonicalKey) this.activeKey = null;
+    if (this.visibleChatKey && this.resolveKey(this.visibleChatKey) === canonicalKey) {
+      this.visibleChatLease = null;
+      this.visibleChatKey = null;
+    }
     this.runAll([
       () => entry.activeRun?.controller.abort(),
       () => this.disposeEntry?.(entry.snapshot, "deleted"),
@@ -620,12 +805,18 @@ export class ChatRuntimeStore<TConversation, TMessage, TComposer> {
     const currentEntries = Array.from(this.entries.values());
     const currentListeners = Array.from(this.listeners);
     const currentActiveRunListeners = Array.from(this.activeRunListeners);
+    const currentCompletedUnreadListeners = Array.from(this.completedUnreadListeners);
     this.entries.clear();
     this.aliases.clear();
+    this.completedUnreadGroups.clear();
     this.activeKey = null;
+    this.visibleChatLease = null;
+    this.visibleChatKey = null;
     this.activeRunKeysSnapshot = EMPTY_CHAT_RUNTIME_KEYS;
+    this.completedUnreadKeysSnapshot = EMPTY_CHAT_RUNTIME_KEYS;
     this.listeners.clear();
     this.activeRunListeners.clear();
+    this.completedUnreadListeners.clear();
     this.subscriberRevision += 1;
 
     this.runAll([
@@ -634,7 +825,8 @@ export class ChatRuntimeStore<TConversation, TMessage, TComposer> {
       ),
       ...currentEntries.map((entry) => () => this.disposeEntry?.(entry.snapshot, "disposed")),
       () => this.notifyListeners(currentListeners),
-      () => this.notifyListeners(currentActiveRunListeners)
+      () => this.notifyListeners(currentActiveRunListeners),
+      () => this.notifyListeners(currentCompletedUnreadListeners)
     ]);
   }
 
@@ -658,6 +850,7 @@ export class ChatRuntimeStore<TConversation, TMessage, TComposer> {
         runToken: null
       }),
       activeRun: null,
+      groupId: null,
       lastTouched: ++this.touchRevision
     };
   }
@@ -772,19 +965,21 @@ export class ChatRuntimeStore<TConversation, TMessage, TComposer> {
     if (hasError) throw firstError;
   }
 
-  private publish(): void {
-    this.publishActiveRunKeys();
+  private publish(forceActiveRunKeys = false, forceCompletedUnreadKeys = false): void {
+    this.publishActiveRunKeys(forceActiveRunKeys);
+    this.publishCompletedUnreadKeys(forceCompletedUnreadKeys);
     this.subscriberRevision += 1;
     this.notifyListeners(this.listeners);
   }
 
-  private publishActiveRunKeys(): void {
+  private publishActiveRunKeys(force = false): void {
     const nextKeys = Array.from(this.entries.entries())
       .filter(([, entry]) => entry.activeRun !== null)
       .map(([key]) => key);
     const previousKeys = this.activeRunKeysSnapshot;
 
     if (
+      !force &&
       nextKeys.length === previousKeys.length &&
       nextKeys.every((key, index) => key === previousKeys[index])
     ) {
@@ -794,6 +989,23 @@ export class ChatRuntimeStore<TConversation, TMessage, TComposer> {
     this.activeRunKeysSnapshot =
       nextKeys.length === 0 ? EMPTY_CHAT_RUNTIME_KEYS : Object.freeze(nextKeys);
     this.notifyListeners(this.activeRunListeners);
+  }
+
+  private publishCompletedUnreadKeys(force = false): void {
+    const nextKeys = Array.from(this.completedUnreadGroups.keys());
+    const previousKeys = this.completedUnreadKeysSnapshot;
+
+    if (
+      !force &&
+      nextKeys.length === previousKeys.length &&
+      nextKeys.every((key, index) => key === previousKeys[index])
+    ) {
+      return;
+    }
+
+    this.completedUnreadKeysSnapshot =
+      nextKeys.length === 0 ? EMPTY_CHAT_RUNTIME_KEYS : Object.freeze(nextKeys);
+    this.notifyListeners(this.completedUnreadListeners);
   }
 
   private notifyListeners(listeners: Iterable<() => void>): void {
