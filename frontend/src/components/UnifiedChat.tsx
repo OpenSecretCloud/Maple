@@ -89,6 +89,12 @@ import {
   type ChatHistoryScrollSnapshot
 } from "@/components/chatHistoryPagination";
 import {
+  ChatProjectionScrollCoordinator,
+  chatProjectionScrollTarget,
+  projectedUserTurnScrollTop,
+  type ChatProjectionScrollLease
+} from "@/components/chatProjectionScroll";
+import {
   getSidebarLayoutStyle,
   SIDEBAR_AWARE_FIXED_CENTER_CLASS,
   SIDEBAR_GRID_COLUMNS_CLASS
@@ -1911,8 +1917,10 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
   // Scroll state
   const [isUserScrolling, setIsUserScrolling] = useState(false);
   const isUserScrollingRef = useRef(false);
-  const prevMessageCountRef = useRef(0);
   const prevStreamingRef = useRef(false);
+  const projectionScrollCoordinatorRef = useRef(
+    new ChatProjectionScrollCoordinator<ChatRuntimeKey>()
+  );
   const historyPaginationGateRef = useRef(new ChatHistoryPaginationGate());
   const pendingHistoryScrollRestoreRef = useRef<ChatHistoryScrollSnapshot | null>(null);
   const pendingHistoryScrollRestoreKeyRef = useRef<ChatRuntimeKey | null>(null);
@@ -1924,7 +1932,9 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
   const pointerHistoryGestureActiveRef = useRef(false);
   const previousPointerScrollTopRef = useRef(0);
   const suppressedHistoryScrollEndsRef = useRef(0);
-  const [hasNewPolledMessages, setHasNewPolledMessages] = useState(false);
+  const [newPolledMessagesOwnerKey, setNewPolledMessagesOwnerKey] = useState<ChatRuntimeKey | null>(
+    null
+  );
   const recorderRef = useRef<RecordRTC | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const billingRefreshTimeoutsRef = useRef(new Set<ReturnType<typeof setTimeout>>());
@@ -2021,7 +2031,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
 
   useLayoutEffect(() => {
     clearHistoryBottomCompensation();
-  }, [chatId, clearHistoryBottomCompensation]);
+  }, [renderedRuntimeKey, clearHistoryBottomCompensation]);
 
   useEffect(() => {
     historyPaginationGateRef.current.resetIntent();
@@ -2060,7 +2070,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
         touchGestureEndTimeoutRef.current = null;
       }
     };
-  }, [chatId]);
+  }, [renderedRuntimeKey]);
 
   // Auto-resize textarea
   useEffect(() => {
@@ -2131,6 +2141,34 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
       }
     },
     [clearHistoryBottomCompensation]
+  );
+
+  const resolveScrollProjectionKey = useCallback(
+    (key: ChatRuntimeKey) => runtimeStore.resolveKey(key),
+    [runtimeStore]
+  );
+
+  const runForProjectedRuntime = useCallback(
+    (lease: ChatProjectionScrollLease<ChatRuntimeKey> | null, action: () => void) => {
+      if (
+        !lease ||
+        !isRuntimeSelected(lease.ownerKey) ||
+        !projectionScrollCoordinatorRef.current.ownsLease(lease, resolveScrollProjectionKey)
+      ) {
+        return false;
+      }
+
+      action();
+      return true;
+    },
+    [isRuntimeSelected, resolveScrollProjectionKey]
+  );
+
+  const lastMessageId = messages.length > 0 ? messages[messages.length - 1].id : null;
+  const prevLastMessageId = useRef(lastMessageId);
+  const hasStreamingMessage = messages.some(
+    (message) =>
+      message.type === "message" && (message as { status?: string }).status === "streaming"
   );
 
   const getScrollDebugSnapshot = useCallback(() => {
@@ -2252,25 +2290,88 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
     }
   }, [isLoadingOlderMessages, isRuntimeSelected, messages]);
 
-  // Initial load - scroll to bottom instantly
-  useEffect(() => {
-    if (messages.length > 0 && prevMessageCountRef.current === 0 && !isLoadingOlderMessages) {
-      // First load of messages - scroll instantly to bottom
-      setTimeout(() => {
-        scrollToBottom("instant");
-      }, 0);
+  // The message runtime changes independently from this shared DOM scroller.
+  // Position each newly projected runtime explicitly instead of inheriting the
+  // previous chat's numeric scrollTop. A growing stream is anchored to its
+  // newest user turn so later deltas cannot turn a one-time bottom scroll into
+  // an arbitrary midpoint.
+  useLayoutEffect(() => {
+    const coordinator = projectionScrollCoordinatorRef.current;
+
+    if (!isVisible) {
+      coordinator.deactivate();
+      return;
     }
-    // Don't update count when loading older messages, to avoid triggering scroll
-    if (!isLoadingOlderMessages) {
-      prevMessageCountRef.current = messages.length;
+
+    const projectionChanged = coordinator.activate(renderedRuntimeKey, resolveScrollProjectionKey);
+
+    if (projectionChanged) {
+      clearHistoryBottomCompensation();
+      historyPaginationGateRef.current.resetIntent();
+      pendingHistoryScrollRestoreRef.current = null;
+      pendingHistoryScrollRestoreKeyRef.current = null;
+      isUserScrollingRef.current = false;
+      setIsUserScrolling(false);
+      prevLastMessageId.current = lastMessageId;
+      prevStreamingRef.current = hasStreamingMessage;
     }
-  }, [messages.length, scrollToBottom, isLoadingOlderMessages]);
+
+    const container = chatContainerRef.current;
+    const canonicalKey = runtimeStore.resolveKey(renderedRuntimeKey);
+    const isFreshDraft = isDraftChatRuntimeKey(canonicalKey);
+    const projectionReady = Boolean(
+      container &&
+      !isLoadingOlderMessages &&
+      (messages.length > 0 || activeRuntime.historyLoaded || isFreshDraft)
+    );
+
+    if (
+      !container ||
+      !coordinator.takePositionRequest(
+        renderedRuntimeKey,
+        projectionReady,
+        resolveScrollProjectionKey
+      )
+    ) {
+      return;
+    }
+
+    const target = chatProjectionScrollTarget(messages, isGenerating);
+
+    if (target.type === "latest-user") {
+      const userTurn = Array.from(
+        container.querySelectorAll<HTMLElement>("[data-history-anchor-ids]")
+      ).find((candidate) =>
+        candidate.dataset.historyAnchorIds?.split(" ").includes(target.messageId)
+      );
+
+      if (userTurn) {
+        container.scrollTop = projectedUserTurnScrollTop({
+          currentScrollTop: container.scrollTop,
+          containerTop: container.getBoundingClientRect().top,
+          userTurnTop: userTurn.getBoundingClientRect().top
+        });
+        return;
+      }
+    }
+
+    container.scrollTop = container.scrollHeight;
+  }, [
+    activeRuntime.historyLoaded,
+    clearHistoryBottomCompensation,
+    hasStreamingMessage,
+    isGenerating,
+    isLoadingOlderMessages,
+    isVisible,
+    lastMessageId,
+    messages,
+    renderedRuntimeKey,
+    resolveScrollProjectionKey,
+    runtimeStore
+  ]);
 
   // Auto-scroll when user sends a message
   // Track the LAST message ID (at the end of the array), not the count
-  const lastMessageId = messages.length > 0 ? messages[messages.length - 1].id : null;
-  const prevLastMessageId = useRef(lastMessageId);
-
   useEffect(() => {
     // Only scroll if the LAST message changed, which means an item was added to the END
     // (not prepended while loading older history).
@@ -2282,28 +2383,42 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
         isAssistantConversationItem(lastItem) && !isUserScrolling;
 
       if (isUserMessage || shouldAutoScrollAssistantItem) {
+        const projectionLease = projectionScrollCoordinatorRef.current.captureLease(
+          renderedRuntimeKey,
+          resolveScrollProjectionKey
+        );
         setTimeout(
           () => {
-            scrollToBottom("smooth");
+            runForProjectedRuntime(projectionLease, () => scrollToBottom("smooth"));
           },
           isUserMessage ? 50 : 0
         );
       }
     }
     prevLastMessageId.current = lastMessageId;
-  }, [isUserScrolling, lastMessageId, messages, scrollToBottom]);
+  }, [
+    isUserScrolling,
+    lastMessageId,
+    messages,
+    renderedRuntimeKey,
+    resolveScrollProjectionKey,
+    runForProjectedRuntime,
+    scrollToBottom
+  ]);
 
   // Auto-scroll when assistant starts streaming (but not while streaming)
   useEffect(() => {
-    const hasStreamingMessage = messages.some(
-      (m) => m.type === "message" && (m as { status?: string }).status === "streaming"
-    );
-
     if (hasStreamingMessage && !prevStreamingRef.current && !isUserScrolling) {
       // Just started streaming - scroll slightly to show the loading indicator
+      const projectionLease = projectionScrollCoordinatorRef.current.captureLease(
+        renderedRuntimeKey,
+        resolveScrollProjectionKey
+      );
       setTimeout(() => {
-        const container = chatContainerRef.current;
-        if (container) {
+        runForProjectedRuntime(projectionLease, () => {
+          const container = chatContainerRef.current;
+          if (!container) return;
+
           // Scroll just enough to show the streaming message started
           const currentScroll = container.scrollTop;
           const maxScroll = container.scrollHeight - container.clientHeight;
@@ -2313,25 +2428,40 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
             top: targetScroll,
             behavior: "smooth"
           });
-        }
+        });
       }, 100);
     }
 
     prevStreamingRef.current = hasStreamingMessage;
-  }, [messages, isUserScrolling]);
+  }, [
+    hasStreamingMessage,
+    isUserScrolling,
+    renderedRuntimeKey,
+    resolveScrollProjectionKey,
+    runForProjectedRuntime
+  ]);
 
   // Auto-scroll when new messages arrive from polling
   useEffect(() => {
-    if (hasNewPolledMessages) {
+    if (newPolledMessagesOwnerKey) {
       // New messages arrived from polling - scroll to bottom to show them
+      const projectionLease = projectionScrollCoordinatorRef.current.captureLease(
+        newPolledMessagesOwnerKey,
+        resolveScrollProjectionKey
+      );
       setTimeout(() => {
-        scrollToBottom("smooth");
+        runForProjectedRuntime(projectionLease, () => scrollToBottom("smooth"));
       }, 100);
 
       // Reset the flag
-      setHasNewPolledMessages(false);
+      setNewPolledMessagesOwnerKey(null);
     }
-  }, [hasNewPolledMessages, scrollToBottom]);
+  }, [
+    newPolledMessagesOwnerKey,
+    resolveScrollProjectionKey,
+    runForProjectedRuntime,
+    scrollToBottom
+  ]);
 
   const selectConversationRuntime = useCallback(
     (conversationId: string) => {
@@ -2341,7 +2471,6 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
       activeRuntimeKeyRef.current = key;
       setActiveRuntimeKey(key);
       setChatId(conversationId);
-      prevMessageCountRef.current = 0;
       return key;
     },
     [runtimeStore, stopRecordingForNavigation]
@@ -2357,7 +2486,6 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
       activeRuntimeKeyRef.current = key;
       setActiveRuntimeKey(key);
       setChatId(undefined);
-      prevMessageCountRef.current = 0;
       window.history.replaceState(
         historyStateWithDraftRuntimeKey(window.history.state, key),
         "",
@@ -2491,9 +2619,6 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
       const isStaleRequest = () =>
         !runtimeStore.get(runtimeKey) ||
         activeConversationLoadRef.current.get(runtimeStore.resolveKey(runtimeKey)) !== requestId;
-
-      // Reset message count before loading new conversation
-      prevMessageCountRef.current = 0;
 
       try {
         // Start both fetches immediately in parallel
@@ -2760,7 +2885,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
 
               // Mark that we have new polled messages for scrolling
               if (trulyNewMessages.length > 0 && isRuntimeSelected(runtimeKey)) {
-                setHasNewPolledMessages(true);
+                setNewPolledMessagesOwnerKey(runtimeKey);
               }
 
               return {
