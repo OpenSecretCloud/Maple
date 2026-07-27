@@ -40,21 +40,41 @@ import { hasApiAccess } from "@/billing/billingAccess";
 import { WorkspaceModeSwitch, type WorkspaceMode } from "@/components/WorkspaceModeSwitch";
 import { usePersistentHomeNavigation } from "@/contexts/PersistentHomeNavigationContext";
 
-export function Sidebar({
-  chatId,
-  isOpen,
-  mode = "chat",
-  navigationContent,
-  onNewItem,
-  onToggle
-}: {
+export type SidebarProps = {
   chatId?: string;
   isOpen: boolean;
   mode?: WorkspaceMode;
   navigationContent?: ReactNode;
   onNewItem?: () => void;
   onToggle: () => void;
-}) {
+};
+
+export type MainMenuProps = {
+  chatId?: string;
+  isOpen?: boolean;
+  mode?: WorkspaceMode;
+  navigationContent?: ReactNode;
+  onNewItem?: () => void;
+  onToggle?: () => void;
+  presentation?: "page" | "sidebar";
+  onOpenConversation?: (conversationId: string) => void;
+  onOpenProject?: (projectId: string) => void;
+  onOpenNewChat?: (projectId: string | null) => void;
+};
+
+export function MainMenu({
+  chatId,
+  isOpen = true,
+  mode = "chat",
+  navigationContent,
+  onNewItem,
+  onToggle = () => {},
+  presentation = "page",
+  onOpenConversation,
+  onOpenProject,
+  onOpenNewChat
+}: MainMenuProps) {
+  const isPagePresentation = presentation === "page";
   const router = useRouter();
   const location = useLocation();
   const { returnToHome } = usePersistentHomeNavigation();
@@ -103,6 +123,14 @@ export function Sidebar({
   }, [selectedIds.size]);
 
   async function addChat() {
+    if (onOpenNewChat) {
+      flushSync(() => {
+        setSelectedProjectId(null);
+      });
+      onOpenNewChat(null);
+      return;
+    }
+
     // If sidebar is open on compact layout, close it
     if (isOpen && isCompactLayout) {
       onToggle();
@@ -214,6 +242,8 @@ export function Sidebar({
   const isMobile = useIsMobile();
   const isLandscapeMobile = useIsLandscapeMobile();
   const isCompactLayout = isMobile || isLandscapeMobile;
+  const chatHistoryContainerRef =
+    isPagePresentation && isLandscapeMobile ? sidebarRef : historyContainerRef;
   const agentModeAvailable = isTauriDesktop();
   const [agentModeFlag, setAgentModeFlag] = useState<{
     userId: string;
@@ -269,7 +299,7 @@ export function Sidebar({
   // Only applies on mobile - desktop users use the toggle button
   const handleClickOutside = useCallback(
     (event: MouseEvent | TouchEvent) => {
-      if (isOpen && isCompactLayout) {
+      if (presentation === "sidebar" && isOpen && isCompactLayout) {
         // Check if the click was inside a dropdown or dialog
         const target = event.target as HTMLElement;
         const isInDropdown = target.closest('[role="menu"]');
@@ -281,7 +311,7 @@ export function Sidebar({
         }
       }
     },
-    [isOpen, onToggle, isCompactLayout]
+    [isOpen, onToggle, isCompactLayout, presentation]
   );
 
   useClickOutside(sidebarRef, handleClickOutside);
@@ -299,7 +329,7 @@ export function Sidebar({
   // but preserves search state between navigations
   useEffect(() => {
     // Only subscribe if we're on compact layout and sidebar is open
-    if (!isCompactLayout || !isOpen) return;
+    if (presentation !== "sidebar" || !isCompactLayout || !isOpen) return;
 
     const unsubscribe = router.subscribe("onResolved", () => {
       // Use a microtask to avoid state updates during render
@@ -322,40 +352,57 @@ export function Sidebar({
     return () => {
       unsubscribe();
     };
-  }, [router, isOpen, onToggle, isCompactLayout, isAgentMode]);
+  }, [router, isOpen, onToggle, isCompactLayout, isAgentMode, presentation]);
 
   return (
     <div
       ref={sidebarRef}
-      style={SIDEBAR_LAYOUT_STYLE}
-      className={cn([
-        "fixed md:static landscape-short:fixed z-10 h-full overflow-x-hidden overflow-y-hidden",
-        isOpen ? `block ${SIDEBAR_WIDTH_CLASS}` : "hidden"
-      ])}
+      style={presentation === "sidebar" ? SIDEBAR_LAYOUT_STYLE : undefined}
+      className={cn(
+        presentation === "sidebar"
+          ? [
+              "fixed md:static landscape-short:fixed z-10 h-full overflow-x-hidden overflow-y-hidden",
+              isOpen ? `block ${SIDEBAR_WIDTH_CLASS}` : "hidden"
+            ]
+          : "relative z-0 h-full min-h-0 w-full overflow-x-hidden overflow-y-hidden landscape-short:overflow-y-auto"
+      )}
     >
       <div
         className={cn(
-          "flex h-full min-h-0 min-w-0 flex-col items-stretch overflow-x-hidden border-r border-border/20 bg-muted backdrop-blur-lg dark:bg-[hsl(var(--sidebar))]",
-          SIDEBAR_WIDTH_CLASS,
-          SIDEBAR_MAX_WIDTH_CLASS
+          "flex h-full min-h-0 min-w-0 flex-col items-stretch overflow-x-hidden bg-muted backdrop-blur-lg dark:bg-[hsl(var(--sidebar))]",
+          presentation === "sidebar"
+            ? ["border-r border-border/20", SIDEBAR_WIDTH_CLASS, SIDEBAR_MAX_WIDTH_CLASS]
+            : "w-full max-w-none overflow-y-hidden landscape-short:h-auto landscape-short:min-h-full landscape-short:overflow-y-visible"
         )}
       >
         {/* Header section */}
-        <div className="flex flex-col gap-2 pt-3 pb-2">
-          <div className="flex items-center pl-4 pr-[8px]">
+        <div
+          className={cn(
+            "flex flex-col gap-2",
+            isPagePresentation ? "shrink-0 pb-2 pt-3" : "pt-3 pb-2"
+          )}
+        >
+          <div
+            className={cn(
+              "flex items-center",
+              isPagePresentation ? "min-h-11 px-4" : "pl-4 pr-[8px]"
+            )}
+          >
             <div className="min-w-0 flex-1">
-              <MapleWordmark className="h-4 w-auto" />
+              <MapleWordmark className={cn("w-auto", isPagePresentation ? "h-5" : "h-4")} />
             </div>
-            <button
-              type="button"
-              className="flex h-9 w-9 shrink-0 items-center justify-center text-foreground transition-colors hover:text-foreground/70"
-              onClick={onToggle}
-              aria-label="Close sidebar"
-            >
-              <ArrowLeftFromLine className="h-4 w-4" />
-            </button>
+            {presentation === "sidebar" ? (
+              <button
+                type="button"
+                className="flex h-9 w-9 shrink-0 items-center justify-center text-foreground transition-colors hover:text-foreground/70"
+                onClick={onToggle}
+                aria-label="Close sidebar"
+              >
+                <ArrowLeftFromLine className="h-4 w-4" />
+              </button>
+            ) : null}
           </div>
-          {(showAgentMode || isAgentMode) && (
+          {!isPagePresentation && (showAgentMode || isAgentMode) && (
             <div className="mb-2 px-8">
               <WorkspaceModeSwitch
                 mode={pendingWorkspaceMode ?? mode}
@@ -371,38 +418,46 @@ export function Sidebar({
           <div className="flex flex-col gap-2 px-4">
             <button
               type="button"
-              className="flex w-full items-center justify-start gap-2 py-1.5 pr-1 pl-0 text-sm text-[hsl(var(--maple-primary-strong))] transition-colors hover:text-[hsl(var(--maple-primary))] disabled:cursor-not-allowed disabled:opacity-50 dark:text-[hsl(var(--maple-primary))] dark:hover:text-[hsl(var(--maple-primary-strong))]"
+              className={cn(
+                "flex w-full items-center justify-start gap-2 pr-1 pl-0 text-[hsl(var(--maple-primary-strong))] transition-colors hover:text-[hsl(var(--maple-primary))] disabled:cursor-not-allowed disabled:opacity-50 dark:text-[hsl(var(--maple-primary))] dark:hover:text-[hsl(var(--maple-primary-strong))]",
+                isPagePresentation ? "min-h-11 text-base" : "py-1.5 text-sm"
+              )}
               disabled={isAgentMode && !onNewItem}
               onClick={() => void addItem()}
             >
-              <SquarePenIcon className="h-4 w-4 shrink-0" />
+              <SquarePenIcon
+                className={cn("shrink-0", isPagePresentation ? "h-5 w-5" : "h-4 w-4")}
+              />
               {isAgentMode ? "New Task" : "New Chat"}
             </button>
             {!isAgentMode && (
               <button
-                className="flex w-full items-center justify-start gap-2 py-1.5 pr-1 pl-0 text-sm text-foreground hover:text-foreground/70 transition-colors"
+                className={cn(
+                  "flex w-full items-center justify-start gap-2 pr-1 pl-0 text-foreground hover:text-foreground/70 transition-colors",
+                  isPagePresentation ? "min-h-11 text-base" : "py-1.5 text-sm"
+                )}
                 onClick={toggleSearch}
                 aria-label={isSearchVisible ? "Hide search" : "Search chat history"}
               >
-                <Search className="h-4 w-4" />
+                <Search className={isPagePresentation ? "h-5 w-5" : "h-4 w-4"} />
                 Search
               </button>
             )}
           </div>
         </div>
         {!isAgentMode && isSelectionMode && (
-          <div className="mb-2 space-y-2 px-4">
+          <div className={cn("mb-2 space-y-2 px-4", isPagePresentation && "shrink-0")}>
             <div className="flex items-center gap-2">
               <Button
                 variant="ghost"
                 size="icon"
-                className="h-8 w-8"
+                className={isPagePresentation ? "h-11 w-11" : "h-8 w-8"}
                 onClick={exitSelectionMode}
                 aria-label="Cancel selection"
               >
-                <X className="h-4 w-4" />
+                <X className={isPagePresentation ? "h-5 w-5" : "h-4 w-4"} />
               </Button>
-              <span className="text-sm font-medium">
+              <span className={cn("font-medium", isPagePresentation ? "text-base" : "text-sm")}>
                 {selectedIds.size >= 20 ? "max" : selectedIds.size} selected
               </span>
             </div>
@@ -410,33 +465,41 @@ export function Sidebar({
               <Button
                 variant="outline"
                 size="sm"
-                className="h-8 flex-1"
+                className={cn("flex-1", isPagePresentation ? "h-11 text-base" : "h-8")}
                 onClick={handleMoveSelected}
                 disabled={selectedIds.size === 0}
               >
-                <FolderInput className="mr-1 h-4 w-4" />
+                <FolderInput className={cn("mr-1", isPagePresentation ? "h-5 w-5" : "h-4 w-4")} />
                 Move
               </Button>
               <Button
                 variant="destructive"
                 size="sm"
-                className="h-8 flex-1"
+                className={cn("flex-1", isPagePresentation ? "h-11 text-base" : "h-8")}
                 onClick={handleDeleteSelected}
                 disabled={selectedIds.size === 0}
               >
-                <Trash2 className="mr-1 h-4 w-4" />
+                <Trash2 className={cn("mr-1", isPagePresentation ? "h-5 w-5" : "h-4 w-4")} />
                 Delete
               </Button>
             </div>
           </div>
         )}
         {!isAgentMode && isSearchVisible && (
-          <div className="relative transition-all duration-200 ease-in-out px-4">
+          <div
+            className={cn(
+              "relative transition-all duration-200 ease-in-out px-4",
+              isPagePresentation && "shrink-0"
+            )}
+          >
             <Input
               ref={searchInputRef}
               type="text"
               placeholder="Search chat titles..."
-              className="pl-4 pr-8 h-9 rounded-full"
+              className={cn(
+                "rounded-full pl-4",
+                isPagePresentation ? "h-11 pr-12 text-base" : "h-9 pr-8"
+              )}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               onKeyDown={handleKeyDown}
@@ -444,19 +507,35 @@ export function Sidebar({
             />
             {searchQuery && (
               <button
+                type="button"
                 onClick={clearSearch}
-                className="absolute right-6 top-2.5 text-muted-foreground hover:text-foreground"
+                className={cn(
+                  "absolute text-muted-foreground hover:text-foreground",
+                  isPagePresentation
+                    ? "right-4 top-0 flex h-11 w-11 items-center justify-center"
+                    : "right-6 top-2.5"
+                )}
                 aria-label="Clear search"
               >
-                <XCircle className="h-4 w-4" />
+                <XCircle className={isPagePresentation ? "h-5 w-5" : "h-4 w-4"} />
               </button>
             )}
           </div>
         )}
-        <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
+        <div
+          className={cn(
+            "relative flex min-h-0 min-w-0 flex-1 flex-col",
+            isPagePresentation && "landscape-short:flex-none"
+          )}
+        >
           <nav
             ref={historyContainerRef}
-            className="sidebar-scrollbar relative flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto overflow-x-clip pl-4 pr-2 pt-5 md:px-4"
+            className={cn(
+              "sidebar-scrollbar relative flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto overflow-x-clip pt-5",
+              isPagePresentation
+                ? "px-4 landscape-short:flex-none landscape-short:overflow-y-visible"
+                : "pl-4 pr-2 md:px-4"
+            )}
           >
             {navigationContent || (
               <ChatHistoryList
@@ -467,20 +546,42 @@ export function Sidebar({
                 onExitSelectionMode={exitSelectionMode}
                 selectedIds={selectedIds}
                 onSelectionChange={setSelectedIds}
-                containerRef={historyContainerRef}
+                containerRef={chatHistoryContainerRef}
+                pagePresentation={isPagePresentation}
+                onOpenConversation={
+                  onOpenConversation
+                    ? (conversation) => onOpenConversation(conversation.id)
+                    : undefined
+                }
+                onOpenProject={onOpenProject}
+                onOpenNewChat={onOpenNewChat}
               />
             )}
             {/* Real empty tail so the last row sits in clear space — no overlay on hit targets */}
-            <div aria-hidden className="min-h-[7.5rem] shrink-0 bg-transparent" />
+            <div
+              aria-hidden
+              className={cn(
+                "min-h-[7.5rem] shrink-0 bg-transparent",
+                isPagePresentation && "landscape-short:min-h-4"
+              )}
+            />
           </nav>
           {/* Bottom scroll fade */}
           <div
             aria-hidden
-            className="pointer-events-none absolute bottom-0 left-0 z-[8] h-8 w-[calc(100%-10px)] max-w-full bg-gradient-to-b from-transparent to-muted/75 dark:to-[hsl(var(--sidebar)/0.75)]"
+            className={cn(
+              "pointer-events-none absolute bottom-0 left-0 z-[8] h-8 w-[calc(100%-10px)] max-w-full bg-gradient-to-b from-transparent to-muted/75 dark:to-[hsl(var(--sidebar)/0.75)]",
+              isPagePresentation && "landscape-short:hidden"
+            )}
           />
         </div>
-        <div className="w-full border-t border-border/25 px-4 pb-4 pt-2">
-          <AccountMenu />
+        <div
+          className={cn(
+            "w-full border-t border-border/25 px-4 pt-2",
+            isPagePresentation ? "shrink-0 pb-[max(1rem,env(safe-area-inset-bottom))]" : "pb-4"
+          )}
+        >
+          <AccountMenu pagePresentation={isPagePresentation} />
         </div>
       </div>
       <UpgradePromptDialog
@@ -492,11 +593,16 @@ export function Sidebar({
   );
 }
 
+export function Sidebar(props: SidebarProps) {
+  return <MainMenu {...props} presentation="sidebar" />;
+}
+
 export function SidebarToggle({ onToggle }: { onToggle: () => void }) {
   return (
     <button
       className="h-9 w-9 flex items-center justify-center text-foreground hover:text-foreground/70 transition-colors"
       onClick={onToggle}
+      aria-label="Open menu"
     >
       <Menu className="h-4 w-4" />
     </button>

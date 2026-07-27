@@ -9,6 +9,7 @@ function toPlanNameLabel(rawPlanName: string | undefined): string {
 }
 
 type CreditUsageViewProps = {
+  pagePresentation: boolean;
   planLabel: string;
   percentUsed?: number;
   roundedUsed?: number;
@@ -25,11 +26,21 @@ function CreditUsageView(p: CreditUsageViewProps) {
 
   return (
     <div
-      className="w-full rounded-xl bg-[hsl(var(--sidebar-chrome))] p-2 transition-colors group-hover/credit-link:bg-[hsl(var(--sidebar-chrome-hover))]"
+      className={`w-full rounded-xl bg-[hsl(var(--sidebar-chrome))] p-2 transition-colors group-hover/credit-link:bg-[hsl(var(--sidebar-chrome-hover))] ${
+        p.pagePresentation ? "h-full min-h-11" : ""
+      }`}
       title={p.resetFullLabel || undefined}
     >
-      <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[10px] leading-tight">
-        <span className="inline-flex shrink-0 items-center rounded-full border border-border/50 bg-muted px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-foreground">
+      <div
+        className={`flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 leading-tight ${
+          p.pagePresentation ? "text-xs" : "text-[10px]"
+        }`}
+      >
+        <span
+          className={`inline-flex shrink-0 items-center rounded-full border border-border/50 bg-muted px-1.5 py-0.5 font-semibold uppercase tracking-wider text-foreground ${
+            p.pagePresentation ? "text-[11px]" : "text-[9px]"
+          }`}
+        >
           {p.planLabel}
         </span>
         {hasUsageMeter ? (
@@ -62,7 +73,11 @@ function CreditUsageView(p: CreditUsageViewProps) {
             />
           </div>
           {p.hasApiCredits && (
-            <div className="pt-1.5 text-[9.5px] leading-none text-muted-foreground">
+            <div
+              className={`pt-1.5 leading-none text-muted-foreground ${
+                p.pagePresentation ? "text-[11px]" : "text-[9.5px]"
+              }`}
+            >
               <span className="min-w-0 truncate tabular-nums text-[hsl(var(--maple-success))]">
                 +{p.formatCredits(p.apiBalance ?? 0)} credits
               </span>
@@ -74,7 +89,7 @@ function CreditUsageView(p: CreditUsageViewProps) {
   );
 }
 
-export function CreditUsage() {
+export function CreditUsage({ pagePresentation = false }: { pagePresentation?: boolean }) {
   const { billingStatus } = useLocalState();
 
   const totalLive = billingStatus?.total_tokens;
@@ -98,6 +113,7 @@ export function CreditUsage() {
     : undefined;
 
   const props: CreditUsageViewProps = {
+    pagePresentation,
     planLabel,
     ...(shouldShowUsageMeter
       ? {

@@ -59,27 +59,39 @@ function sidebarEllipsisTriggerRowClass(isMobile: boolean): string {
 }
 const SIDEBAR_ELLIPSIS_BTN =
   "relative z-10 shrink-0 rounded-full border-0 bg-muted p-1.5 text-foreground/40 transition-colors dark:bg-[hsl(var(--sidebar))] hover:text-foreground group-hover:text-foreground focus-visible:text-foreground focus-visible:outline-none";
+const PAGE_ELLIPSIS_BTN =
+  "relative z-10 flex h-11 w-11 shrink-0 items-center justify-center rounded-full border-0 bg-muted p-0 text-foreground/40 transition-colors dark:bg-[hsl(var(--sidebar))] hover:text-foreground group-hover:text-foreground focus-visible:text-foreground focus-visible:outline-none";
+const PAGE_DROPDOWN_CONTENT =
+  "max-h-[calc(100dvh-2rem)] max-w-[calc(100vw-2rem)] !overflow-y-auto overflow-x-hidden [&_[role=menuitem]]:min-h-11 [&_[role=menuitem]]:text-base [&_[role=menuitem]_svg]:h-5 [&_[role=menuitem]_svg]:w-5";
 
 interface ChatHistoryListProps {
   currentChatId?: string;
   searchQuery?: string;
   isMobile?: boolean;
+  pagePresentation?: boolean;
   isSelectionMode?: boolean;
   onExitSelectionMode?: () => void;
   selectedIds: Set<string>;
   onSelectionChange: (ids: Set<string>) => void;
   containerRef?: React.RefObject<HTMLElement>;
+  onOpenConversation?: (conversation: Conversation) => void;
+  onOpenProject?: (projectId: string) => void;
+  onOpenNewChat?: (projectId: string | null) => void;
 }
 
 export function ChatHistoryList({
   currentChatId,
   searchQuery = "",
   isMobile = false,
+  pagePresentation = false,
   isSelectionMode = false,
   onExitSelectionMode,
   selectedIds,
   onSelectionChange,
-  containerRef
+  containerRef,
+  onOpenConversation,
+  onOpenProject,
+  onOpenNewChat
 }: ChatHistoryListProps) {
   const opensecret = useOpenSecret();
   const router = useRouter();
@@ -848,6 +860,11 @@ export function ChatHistoryList({
       setSelectedProjectId(projectId);
       setExpandedProjectId(projectId);
 
+      if (onOpenProject) {
+        onOpenProject(projectId);
+        return;
+      }
+
       if (window.location.pathname !== "/") {
         await router.navigate({ to: "/" });
       }
@@ -860,12 +877,17 @@ export function ChatHistoryList({
       window.dispatchEvent(new CustomEvent("newchat", { detail: { projectId } }));
       window.dispatchEvent(new Event("projectselected"));
     },
-    [router, setSelectedProjectId]
+    [onOpenProject, router, setSelectedProjectId]
   );
 
   const handleNewChatInProject = useCallback(
     async (projectId: string) => {
       setSelectedProjectId(projectId);
+
+      if (onOpenNewChat) {
+        onOpenNewChat(projectId);
+        return;
+      }
 
       if (window.location.pathname !== "/") {
         await router.navigate({ to: "/" });
@@ -878,7 +900,7 @@ export function ChatHistoryList({
       window.dispatchEvent(new CustomEvent("newchat", { detail: { projectId } }));
       setTimeout(() => document.getElementById("message")?.focus(), 0);
     },
-    [router, setSelectedProjectId]
+    [onOpenNewChat, router, setSelectedProjectId]
   );
 
   const handleCreateProject = useCallback(
@@ -915,7 +937,11 @@ export function ChatHistoryList({
         const params = new URLSearchParams(window.location.search);
         params.delete("conversation_id");
         params.delete("project_id");
-        window.history.replaceState({}, "", params.toString() ? `/?${params.toString()}` : "/");
+        window.history.replaceState(
+          window.history.state,
+          "",
+          params.toString() ? `/?${params.toString()}` : "/"
+        );
         window.dispatchEvent(new CustomEvent("newchat", { detail: { projectId: null } }));
         window.dispatchEvent(new Event("projectselected"));
       }
@@ -994,6 +1020,11 @@ export function ChatHistoryList({
     async (conversation: Conversation) => {
       setSelectedProjectId(conversation.project_id ?? null);
 
+      if (onOpenConversation) {
+        onOpenConversation(conversation);
+        return;
+      }
+
       if (window.location.pathname !== "/") {
         await router.navigate({ to: "/" });
       }
@@ -1009,7 +1040,7 @@ export function ChatHistoryList({
         })
       );
     },
-    [router, setSelectedProjectId]
+    [onOpenConversation, router, setSelectedProjectId]
   );
 
   // Listen for conversation created event to refresh the list
@@ -1052,7 +1083,7 @@ export function ChatHistoryList({
     const title = getConversationTitle(conversation);
     const isActive = conversation.id === currentChatId;
     const isSelected = selectedIds.has(conversation.id);
-    const titlePaddingClass = "pr-8";
+    const titlePaddingClass = pagePresentation ? "pr-[3.75rem]" : "pr-8";
 
     const isBoldState = (isActive && !isSelectionMode) || (isSelectionMode && isSelected);
     const rowTextClass = isBoldState
@@ -1062,7 +1093,9 @@ export function ChatHistoryList({
     return (
       <div
         key={conversation.id}
-        className="group relative isolate flex w-full min-w-0 select-none items-stretch gap-0.5 rounded-2xl"
+        className={`group relative isolate flex w-full min-w-0 select-none items-stretch gap-0.5 rounded-2xl ${
+          pagePresentation ? "min-h-11 text-base" : ""
+        }`}
         onContextMenu={(event) => event.preventDefault()}
       >
         <div
@@ -1080,15 +1113,17 @@ export function ChatHistoryList({
           onTouchMove={handleLongPressMove}
           onTouchEnd={handleLongPressEnd}
           onTouchCancel={handleLongPressEnd}
-          className={`relative ${ROW_CONTENT_Z} min-w-0 flex-1 py-1 pr-2 ${rowTextClass} ${
-            isSelectionMode ? "pl-8" : "pl-0"
-          } cursor-pointer`}
+          className={`relative ${ROW_CONTENT_Z} min-w-0 flex-1 pr-2 ${rowTextClass} ${
+            pagePresentation ? "flex min-h-11 items-center py-0" : "py-1"
+          } ${isSelectionMode ? (pagePresentation ? "pl-12" : "pl-8") : "pl-0"} cursor-pointer`}
         >
           <div className={titlePaddingClass}>
             <div className="relative z-0 flex min-w-0 items-center gap-1.5">
               {conversation.pinned ? (
                 <Pin
-                  className="h-3.5 w-3.5 shrink-0 fill-none text-foreground"
+                  className={`shrink-0 fill-none text-foreground ${
+                    pagePresentation ? "h-5 w-5" : "h-3.5 w-3.5"
+                  }`}
                   strokeWidth={ICON_STROKE}
                   aria-hidden
                 />
@@ -1102,14 +1137,21 @@ export function ChatHistoryList({
         </div>
         {isSelectionMode ? (
           <div
-            className={`absolute left-1.5 top-1/2 ${ROW_CHECKBOX_Z} -translate-y-1/2`}
-            onClick={(e) => e.stopPropagation()}
+            className={`absolute top-1/2 ${ROW_CHECKBOX_Z} -translate-y-1/2 ${
+              pagePresentation
+                ? "left-0 flex h-11 w-11 cursor-pointer items-center justify-center"
+                : "left-1.5"
+            }`}
+            onClick={(event) => {
+              event.stopPropagation();
+              if (pagePresentation) toggleSelection(conversation.id);
+            }}
           >
             <Checkbox
               checked={isSelected}
               onCheckedChange={() => toggleSelection(conversation.id)}
               onClick={(event) => event.stopPropagation()}
-              className="data-[state=checked]:bg-primary"
+              className={`data-[state=checked]:bg-primary ${pagePresentation ? "h-5 w-5" : ""}`}
             />
           </div>
         ) : null}
@@ -1121,16 +1163,23 @@ export function ChatHistoryList({
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
                     <button
-                      className={SIDEBAR_ELLIPSIS_BTN}
+                      className={pagePresentation ? PAGE_ELLIPSIS_BTN : SIDEBAR_ELLIPSIS_BTN}
                       onClick={(event) => {
                         event.preventDefault();
                         event.stopPropagation();
                       }}
+                      aria-label={`Open actions for ${title}`}
                     >
-                      <MoreHorizontal className="h-4 w-4" strokeWidth={ICON_STROKE} />
+                      <MoreHorizontal
+                        className={pagePresentation ? "h-5 w-5" : "h-4 w-4"}
+                        strokeWidth={ICON_STROKE}
+                      />
                     </button>
                   </DropdownMenuTrigger>
-                  <DropdownMenuContent>
+                  <DropdownMenuContent
+                    className={pagePresentation ? PAGE_DROPDOWN_CONTENT : undefined}
+                    collisionPadding={pagePresentation ? 16 : undefined}
+                  >
                     <DropdownMenuItem onClick={() => onSelectionChange(new Set([conversation.id]))}>
                       <CheckSquare className="mr-2 h-4 w-4" strokeWidth={ICON_STROKE} />
                       Select
@@ -1148,7 +1197,10 @@ export function ChatHistoryList({
                         <FolderInput className="mr-2 h-4 w-4" strokeWidth={ICON_STROKE} />
                         Move to Project
                       </DropdownMenuSubTrigger>
-                      <DropdownMenuSubContent>
+                      <DropdownMenuSubContent
+                        className={pagePresentation ? PAGE_DROPDOWN_CONTENT : undefined}
+                        collisionPadding={pagePresentation ? 16 : undefined}
+                      >
                         <DropdownMenuItem
                           onClick={() => handleMoveConversationToProject(conversation, null)}
                         >
@@ -1200,14 +1252,18 @@ export function ChatHistoryList({
       >
         <RefreshCw
           ref={refreshIconRef}
-          className={`h-4 w-4 text-muted-foreground ${isPullRefreshing ? "animate-spin" : ""}`}
+          className={`${pagePresentation ? "h-5 w-5" : "h-4 w-4"} text-muted-foreground ${
+            isPullRefreshing ? "animate-spin" : ""
+          }`}
           strokeWidth={ICON_STROKE}
         />
       </div>
 
       <div
         ref={pullContentRef}
-        className="flex min-w-0 w-full max-w-full flex-col gap-5"
+        className={`flex min-w-0 w-full max-w-full flex-col gap-5 ${
+          pagePresentation ? "text-base" : ""
+        }`}
         style={{ willChange: "transform" }}
       >
         <div className="space-y-2">
@@ -1220,9 +1276,14 @@ export function ChatHistoryList({
                 <button
                   type="button"
                   disabled
-                  className="flex w-full items-center gap-2 rounded-2xl py-1.5 pl-0 pr-1 text-left text-muted-foreground/50 cursor-not-allowed"
+                  className={`flex w-full items-center gap-2 rounded-2xl pl-0 pr-1 text-left text-muted-foreground/50 cursor-not-allowed ${
+                    pagePresentation ? "min-h-11 text-base" : "py-1.5"
+                  }`}
                 >
-                  <FolderPlus className="h-4 w-4" strokeWidth={ICON_STROKE} />
+                  <FolderPlus
+                    className={pagePresentation ? "h-5 w-5" : "h-4 w-4"}
+                    strokeWidth={ICON_STROKE}
+                  />
                   <span>New project</span>
                 </button>
               </TooltipTrigger>
@@ -1234,9 +1295,14 @@ export function ChatHistoryList({
             <button
               type="button"
               onClick={handleOpenCreateProjectDialog}
-              className="flex w-full items-center gap-2 rounded-2xl py-1.5 pl-0 pr-1 text-left text-foreground/95 transition-colors hover:text-foreground"
+              className={`flex w-full items-center gap-2 rounded-2xl pl-0 pr-1 text-left text-foreground/95 transition-colors hover:text-foreground ${
+                pagePresentation ? "min-h-11 text-base" : "py-1.5"
+              }`}
             >
-              <FolderPlus className="h-4 w-4" strokeWidth={ICON_STROKE} />
+              <FolderPlus
+                className={pagePresentation ? "h-5 w-5" : "h-4 w-4"}
+                strokeWidth={ICON_STROKE}
+              />
               <span>New project</span>
             </button>
           )}
@@ -1250,17 +1316,29 @@ export function ChatHistoryList({
                   <button
                     type="button"
                     onClick={() => handleToggleProjectExpanded(project.id)}
-                    className={`relative ${ROW_CONTENT_Z} w-full rounded-2xl py-1 text-left ${
+                    className={`relative ${ROW_CONTENT_Z} w-full rounded-2xl text-left ${
+                      pagePresentation ? "flex min-h-11 items-center py-0 text-base" : "py-1"
+                    } ${
                       isProjectExpanded || isProjectSelected
                         ? "font-bold text-foreground"
                         : "text-foreground"
                     }`}
                   >
-                    <div className="relative z-0 flex items-center gap-2 pr-8">
+                    <div
+                      className={`relative z-0 flex items-center gap-2 ${
+                        pagePresentation ? "w-full pr-[3.75rem]" : "pr-8"
+                      }`}
+                    >
                       {isProjectExpanded ? (
-                        <ChevronDown className="h-4 w-4 shrink-0" strokeWidth={ICON_STROKE} />
+                        <ChevronDown
+                          className={pagePresentation ? "h-5 w-5 shrink-0" : "h-4 w-4 shrink-0"}
+                          strokeWidth={ICON_STROKE}
+                        />
                       ) : (
-                        <ChevronRight className="h-4 w-4 shrink-0" strokeWidth={ICON_STROKE} />
+                        <ChevronRight
+                          className={pagePresentation ? "h-5 w-5 shrink-0" : "h-4 w-4 shrink-0"}
+                          strokeWidth={ICON_STROKE}
+                        />
                       )}
                       <span className="truncate">{project.name}</span>
                     </div>
@@ -1271,16 +1349,23 @@ export function ChatHistoryList({
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
                           <button
-                            className={SIDEBAR_ELLIPSIS_BTN}
+                            className={pagePresentation ? PAGE_ELLIPSIS_BTN : SIDEBAR_ELLIPSIS_BTN}
                             onClick={(event) => {
                               event.preventDefault();
                               event.stopPropagation();
                             }}
+                            aria-label={`Open actions for ${project.name}`}
                           >
-                            <MoreHorizontal className="h-4 w-4" strokeWidth={ICON_STROKE} />
+                            <MoreHorizontal
+                              className={pagePresentation ? "h-5 w-5" : "h-4 w-4"}
+                              strokeWidth={ICON_STROKE}
+                            />
                           </button>
                         </DropdownMenuTrigger>
-                        <DropdownMenuContent>
+                        <DropdownMenuContent
+                          className={pagePresentation ? PAGE_DROPDOWN_CONTENT : undefined}
+                          collisionPadding={pagePresentation ? 16 : undefined}
+                        >
                           <DropdownMenuItem onClick={() => void handleNewChatInProject(project.id)}>
                             <SquarePen className="mr-2 h-4 w-4" strokeWidth={ICON_STROKE} />
                             New Chat in Project
@@ -1332,7 +1417,11 @@ export function ChatHistoryList({
           {filteredRecentConversations.length > 0 ? (
             filteredRecentConversations.map((conversation) => renderConversationRow(conversation))
           ) : (
-            <div className="py-2 text-sm text-muted-foreground">No recent chats.</div>
+            <div
+              className={`py-2 text-muted-foreground ${pagePresentation ? "text-base" : "text-sm"}`}
+            >
+              No recent chats.
+            </div>
           )}
         </div>
 
