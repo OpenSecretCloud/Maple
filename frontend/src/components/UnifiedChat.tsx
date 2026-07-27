@@ -2119,11 +2119,23 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
     // Focus when not generating and textbox is not disabled
     if (!isGenerating && textareaRef.current && !textareaRef.current.disabled) {
       // Small delay to ensure DOM is ready
-      setTimeout(() => {
-        textareaRef.current?.focus();
+      const focusTimeout = setTimeout(() => {
+        const textarea = textareaRef.current;
+        if (!textarea) return;
+
+        textarea.focus();
+        if (
+          isDraftChatRuntimeKey(runtimeStore.resolveKey(renderedRuntimeKey)) &&
+          textarea.value.length > 0
+        ) {
+          const end = textarea.value.length;
+          textarea.setSelectionRange(end, end);
+        }
       }, 100);
+
+      return () => clearTimeout(focusTimeout);
     }
-  }, [isCompactLayout, isGenerating, messages.length, chatId]);
+  }, [isCompactLayout, isGenerating, messages.length, chatId, renderedRuntimeKey, runtimeStore]);
 
   // Improved scroll detection - track if user is near bottom
   const handleScroll = useCallback(() => {
