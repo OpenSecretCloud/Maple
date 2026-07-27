@@ -48,6 +48,8 @@ import { MoveChatsDialog } from "@/components/MoveChatsDialog";
 import { listAllConversationProjects } from "@/utils/paginatedLists";
 import { SIDEBAR_GRID_COLUMNS_CLASS, SIDEBAR_LAYOUT_STYLE } from "@/constants/layout";
 import { usePersistentSidebarState } from "@/contexts/PersistentHomeNavigationContext";
+import { useChatRuntimeStore } from "@/contexts/ChatRuntimeContext";
+import { createConversationChatKey } from "@/services/chatRuntimeStore";
 
 const PROJECT_PAGE_SIZE = 20;
 const MAX_SELECTION = 20;
@@ -151,6 +153,7 @@ export function ProjectDetailView({ projectId }: ProjectDetailViewProps) {
   const isCompactLayout = isMobile || isLandscapeMobile;
   const { setSelectedProjectId } = useLocalState();
   const hasAuthUser = !!os.auth.user;
+  const runtimeStore = useChatRuntimeStore<Conversation, unknown>();
 
   const [isSidebarOpen, setIsSidebarOpen] = usePersistentSidebarState(isCompactLayout);
   const wasLandscapeMobileRef = useRef(isLandscapeMobile);
@@ -304,6 +307,22 @@ export function ProjectDetailView({ projectId }: ProjectDetailViewProps) {
     await loadConversations();
   }, [invalidateConversationData, loadConversations]);
 
+  const updateRuntimeConversationProject = useCallback(
+    (conversationId: string, targetProjectId: string | null) => {
+      const key = createConversationChatKey(conversationId);
+      if (runtimeStore.get(key)) {
+        runtimeStore.update(key, (snapshot) => ({
+          ...snapshot,
+          conversation: snapshot.conversation
+            ? { ...snapshot.conversation, project_id: targetProjectId }
+            : null
+        }));
+      }
+      runtimeStore.updateActivityGroup(key, targetProjectId);
+    },
+    [runtimeStore]
+  );
+
   const handleStartNewChat = useCallback(() => {
     setSelectedProjectId(projectId);
     const params = new URLSearchParams(window.location.search);
@@ -316,6 +335,7 @@ export function ProjectDetailView({ projectId }: ProjectDetailViewProps) {
 
   const handleSelectConversation = useCallback(
     (conversation: Conversation) => {
+      runtimeStore.markCompletionRead(createConversationChatKey(conversation.id));
       setSelectedProjectId(conversation.project_id ?? null);
       const params = new URLSearchParams(window.location.search);
       params.delete("project_id");
@@ -327,7 +347,7 @@ export function ProjectDetailView({ projectId }: ProjectDetailViewProps) {
         })
       );
     },
-    [setSelectedProjectId]
+    [runtimeStore, setSelectedProjectId]
   );
 
   const handleSaveProjectInstructions = useCallback(
@@ -348,12 +368,13 @@ export function ProjectDetailView({ projectId }: ProjectDetailViewProps) {
 
   const handleDeleteProject = useCallback(async () => {
     await os.deleteConversationProject(projectId);
+    runtimeStore.deleteActivityGroup(projectId);
     await invalidateConversationData();
     setSelectedProjectId(null);
     window.history.replaceState({}, "", "/");
     window.dispatchEvent(new CustomEvent("newchat", { detail: { projectId: null } }));
     window.dispatchEvent(new Event("projectselected"));
-  }, [invalidateConversationData, os, projectId, setSelectedProjectId]);
+  }, [invalidateConversationData, os, projectId, runtimeStore, setSelectedProjectId]);
 
   const handleRenameConversation = useCallback(
     async (conversationId: string, newTitle: string) => {
@@ -366,6 +387,7 @@ export function ProjectDetailView({ projectId }: ProjectDetailViewProps) {
   const handleDeleteConversation = useCallback(
     async (conversationId: string) => {
       await os.deleteConversation(conversationId);
+      runtimeStore.delete(createConversationChatKey(conversationId));
       setSelectedIds((prev) => {
         const next = new Set(prev);
         next.delete(conversationId);
@@ -373,7 +395,7 @@ export function ProjectDetailView({ projectId }: ProjectDetailViewProps) {
       });
       await refreshProjectPage();
     },
-    [os, refreshProjectPage]
+    [os, refreshProjectPage, runtimeStore]
   );
 
   const handleToggleConversationPin = useCallback(
@@ -389,6 +411,7 @@ export function ProjectDetailView({ projectId }: ProjectDetailViewProps) {
   const handleMoveConversationToProject = useCallback(
     async (conversation: Conversation, targetProjectId: string | null) => {
       await os.batchUpdateConversationProject([conversation.id], targetProjectId);
+      updateRuntimeConversationProject(conversation.id, targetProjectId);
       setSelectedIds((prev) => {
         const next = new Set(prev);
         next.delete(conversation.id);
@@ -396,7 +419,7 @@ export function ProjectDetailView({ projectId }: ProjectDetailViewProps) {
       });
       await refreshProjectPage();
     },
-    [os, refreshProjectPage]
+    [os, refreshProjectPage, updateRuntimeConversationProject]
   );
 
   const handleBulkDelete = useCallback(async () => {
@@ -405,7 +428,10 @@ export function ProjectDetailView({ projectId }: ProjectDetailViewProps) {
     setIsBulkDeleting(true);
     setError(null);
     try {
-      await os.batchDeleteConversations(Array.from(selectedIds));
+      const result = await os.batchDeleteConversations(Array.from(selectedIds));
+      for (const item of result.data) {
+        if (item.deleted) runtimeStore.delete(createConversationChatKey(item.id));
+      }
       setSelectedIds(new Set());
       setIsBulkDeleteDialogOpen(false);
       await refreshProjectPage();
@@ -415,7 +441,7 @@ export function ProjectDetailView({ projectId }: ProjectDetailViewProps) {
     } finally {
       setIsBulkDeleting(false);
     }
-  }, [os, refreshProjectPage, selectedIds]);
+  }, [os, refreshProjectPage, runtimeStore, selectedIds]);
 
   const handleMoveSelectedConversations = useCallback(
     async (targetProjectId: string | null) => {
@@ -423,7 +449,9 @@ export function ProjectDetailView({ projectId }: ProjectDetailViewProps) {
 
       setIsBulkMoving(true);
       try {
-        await os.batchUpdateConversationProject(Array.from(selectedIds), targetProjectId);
+        const ids = Array.from(selectedIds);
+        await os.batchUpdateConversationProject(ids, targetProjectId);
+        for (const id of ids) updateRuntimeConversationProject(id, targetProjectId);
         setSelectedIds(new Set());
         await refreshProjectPage();
       } catch (error) {
@@ -433,7 +461,7 @@ export function ProjectDetailView({ projectId }: ProjectDetailViewProps) {
         setIsBulkMoving(false);
       }
     },
-    [os, refreshProjectPage, selectedIds]
+    [os, refreshProjectPage, selectedIds, updateRuntimeConversationProject]
   );
 
   const toggleSelection = useCallback((conversationId: string) => {

@@ -1,4 +1,12 @@
-import { useState, useMemo, useCallback, useEffect, useRef, useContext } from "react";
+import {
+  useState,
+  useMemo,
+  useCallback,
+  useEffect,
+  useRef,
+  useContext,
+  useSyncExternalStore
+} from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   MoreHorizontal,
@@ -13,7 +21,8 @@ import {
   FolderInput,
   Pin,
   PinOff,
-  SquarePen
+  SquarePen,
+  Loader2
 } from "lucide-react";
 import {
   DropdownMenu,
@@ -41,6 +50,18 @@ import { ConversationProjectDialog } from "@/components/ConversationProjectDialo
 import { DeleteConversationProjectDialog } from "@/components/DeleteConversationProjectDialog";
 import { MoveChatsDialog } from "@/components/MoveChatsDialog";
 import { listAllConversationProjects, listAllConversations } from "@/utils/paginatedLists";
+import {
+  pushFreshChatHistoryEntry,
+  type NewChatNavigationDetail
+} from "@/services/chatRuntimeNavigation";
+import { useChatRuntimeStore } from "@/contexts/ChatRuntimeContext";
+import { createConversationChatKey } from "@/services/chatRuntimeStore";
+import {
+  INITIAL_CHAT_HISTORY_RETRY_COUNT,
+  conversationHistoryQueryKey,
+  initialChatHistoryPage,
+  shouldLoadConversationHistory
+} from "@/services/chatHistoryAccountScope";
 
 const MAX_PROJECTS = 10;
 /** Lucide default; keep sidebar list icons visually consistent. */
@@ -87,6 +108,35 @@ export function ChatHistoryList({
   const localState = useContext(LocalStateContext);
   const { selectedProjectId, setSelectedProjectId } = localState;
   const userId = opensecret.auth.user?.user.id;
+  const runtimeStore = useChatRuntimeStore<Conversation, unknown>();
+  const activeRunKeys = useSyncExternalStore(
+    runtimeStore.subscribeActiveRuns,
+    runtimeStore.getActiveRunKeys,
+    runtimeStore.getActiveRunKeys
+  );
+  const completedUnreadKeys = useSyncExternalStore(
+    runtimeStore.subscribeCompletedUnread,
+    runtimeStore.getCompletedUnreadKeys,
+    runtimeStore.getCompletedUnreadKeys
+  );
+  const activeRunKeySet = useMemo(() => new Set(activeRunKeys), [activeRunKeys]);
+  const completedUnreadKeySet = useMemo(() => new Set(completedUnreadKeys), [completedUnreadKeys]);
+  const activeRunProjectIds = useMemo(() => {
+    const projectIds = new Set<string>();
+    for (const key of activeRunKeys) {
+      const projectId = runtimeStore.getActiveRunGroupId(key);
+      if (projectId) projectIds.add(projectId);
+    }
+    return projectIds;
+  }, [activeRunKeys, runtimeStore]);
+  const completedUnreadProjectIds = useMemo(() => {
+    const projectIds = new Set<string>();
+    for (const key of completedUnreadKeys) {
+      const projectId = runtimeStore.getCompletedUnreadGroupId(key);
+      if (projectId) projectIds.add(projectId);
+    }
+    return projectIds;
+  }, [completedUnreadKeys, runtimeStore]);
   const [isRenameDialogOpen, setIsRenameDialogOpen] = useState(false);
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
   const [isBulkDeleteDialogOpen, setIsBulkDeleteDialogOpen] = useState(false);
@@ -108,6 +158,14 @@ export function ChatHistoryList({
   const isLoadingMoreRef = useRef(false);
   const lastConversationRef = useRef<HTMLDivElement>(null);
   const [conversations, setConversations] = useState<Conversation[]>([]);
+
+  useEffect(() => {
+    setConversations([]);
+    setOldestConversationId(undefined);
+    setHasMoreConversations(false);
+    setIsLoadingMore(false);
+    isLoadingMoreRef.current = false;
+  }, [userId]);
 
   // Pull-to-refresh (imperative updates to avoid reflow/re-render jank on iOS)
   const [isPullRefreshing, setIsPullRefreshing] = useState(false);
@@ -189,48 +247,39 @@ export function ChatHistoryList({
   }, [setPullDistancePx]);
 
   // Fetch initial conversations from API using the OpenSecret SDK
-  const { isPending, error } = useQuery({
-    queryKey: ["conversations"],
+  const {
+    data: initialConversations,
+    isPending,
+    error
+  } = useQuery({
+    queryKey: conversationHistoryQueryKey(userId),
     queryFn: async () => {
-      if (!opensecret) return [];
-
-      try {
-        // Load initial 20 conversations (newest first by default)
-        const response = await opensecret.listConversations({
-          limit: 20,
-          unassigned_project: true
-        });
-
-        const loadedConversations = response.data || [];
-
-        // Set initial state only on first load
-        setConversations(loadedConversations);
-
-        // Set pagination state
-        if (loadedConversations.length > 0) {
-          // Last conversation in the array is the oldest (for pagination)
-          const oldestId = loadedConversations[loadedConversations.length - 1].id;
-          setOldestConversationId(oldestId);
-          // If we got a full page, there might be more
-          setHasMoreConversations(loadedConversations.length === 20);
-        } else {
-          setOldestConversationId(undefined);
-          setHasMoreConversations(false);
-        }
-
-        return loadedConversations;
-      } catch (error) {
-        console.error("Failed to load conversations:", error);
-        return [];
-      }
+      const response = await opensecret.listConversations({
+        limit: 20,
+        unassigned_project: true
+      });
+      return response.data || [];
     },
-    enabled: !!opensecret
+    enabled: shouldLoadConversationHistory(userId),
+    retry: INITIAL_CHAT_HISTORY_RETRY_COUNT,
+    retryDelay: 250
     // No refetchInterval - we'll use manual polling instead
   });
 
+  // Query data is authoritative across remounts and request deduplication. Keeping
+  // setState outside queryFn ensures a newly mounted sidebar consumes a request
+  // that may have been started by the previous authenticated surface.
+  useEffect(() => {
+    if (!userId || initialConversations === undefined) return;
+    const page = initialChatHistoryPage(initialConversations);
+    setConversations([...page.conversations]);
+    setOldestConversationId(page.oldestConversationId);
+    setHasMoreConversations(page.hasMoreConversations);
+  }, [initialConversations, userId]);
+
   // Smart polling function - only fetches NEW conversations using the same pattern as UnifiedChat
   const pollForUpdates = useCallback(async () => {
-    if (!opensecret) return;
+    if (!userId) return;
 
     try {
       // Fetch latest conversations to detect new ones or metadata changes
@@ -282,7 +331,7 @@ export function ChatHistoryList({
       console.error("Polling error:", error);
       // Fail silently - don't disrupt the UI
     }
-  }, [opensecret]);
+  }, [opensecret, userId]);
 
   // Pull-to-refresh handler
   const handleRefresh = useCallback(async () => {
@@ -418,7 +467,7 @@ export function ChatHistoryList({
 
   // Set up polling every 60 seconds
   useEffect(() => {
-    if (!opensecret || conversations.length === 0) return;
+    if (!userId) return;
 
     const intervalId = setInterval(() => {
       pollForUpdates();
@@ -427,7 +476,7 @@ export function ChatHistoryList({
     return () => {
       clearInterval(intervalId);
     };
-  }, [opensecret, pollForUpdates, conversations.length]);
+  }, [pollForUpdates, userId]);
 
   // Load more older conversations for pagination
   const loadMoreConversations = useCallback(async () => {
@@ -619,13 +668,27 @@ export function ChatHistoryList({
     []
   );
 
+  const updateRuntimeConversationProject = useCallback(
+    (conversationId: string, projectId: string | null) => {
+      const key = createConversationChatKey(conversationId);
+      if (runtimeStore.get(key)) {
+        runtimeStore.update(key, (snapshot) => ({
+          ...snapshot,
+          conversation: snapshot.conversation
+            ? { ...snapshot.conversation, project_id: projectId }
+            : null
+        }));
+      }
+      runtimeStore.updateActivityGroup(key, projectId);
+    },
+    [runtimeStore]
+  );
+
   // Handle conversation deletion via API
   const handleDeleteConversation = useCallback(
     async (conversationId: string) => {
       try {
         await opensecret.deleteConversation(conversationId);
-        setConversations((prev) => prev.filter((conv) => conv.id !== conversationId));
-        await invalidateConversationData();
 
         if (conversationId === currentChatId) {
           const params = new URLSearchParams(window.location.search);
@@ -633,11 +696,20 @@ export function ChatHistoryList({
           window.history.replaceState({}, "", params.toString() ? `/?${params}` : "/");
           window.dispatchEvent(new Event("newchat"));
         }
+
+        setConversations((prev) => prev.filter((conv) => conv.id !== conversationId));
+        try {
+          await invalidateConversationData();
+        } finally {
+          // Let the replacement draft commit before removing a runtime that
+          // UnifiedChat may still be subscribed to during this event turn.
+          runtimeStore.delete(createConversationChatKey(conversationId));
+        }
       } catch (error) {
         console.error("Error deleting conversation:", error);
       }
     },
-    [currentChatId, invalidateConversationData, opensecret]
+    [currentChatId, invalidateConversationData, opensecret, runtimeStore]
   );
 
   const MAX_SELECTION = 20;
@@ -673,16 +745,23 @@ export function ChatHistoryList({
         const result = await opensecret.batchDeleteConversations(idsToDelete);
 
         result.data.filter((item) => item.deleted).forEach((item) => deletedIds.add(item.id));
-        setConversations((prev) => prev.filter((conv) => !deletedIds.has(conv.id)));
-        await invalidateConversationData();
-      }
+        // If current chat was deleted, project a replacement before the old
+        // runtime is removed so useSyncExternalStore never observes a gap.
+        if (currentChatId && deletedIds.has(currentChatId)) {
+          const params = new URLSearchParams(window.location.search);
+          params.delete("conversation_id");
+          window.history.replaceState({}, "", params.toString() ? `/?${params}` : "/");
+          window.dispatchEvent(new Event("newchat"));
+        }
 
-      // If current chat was deleted, navigate to home
-      if (currentChatId && deletedIds.has(currentChatId)) {
-        const params = new URLSearchParams(window.location.search);
-        params.delete("conversation_id");
-        window.history.replaceState({}, "", params.toString() ? `/?${params}` : "/");
-        window.dispatchEvent(new Event("newchat"));
+        setConversations((prev) => prev.filter((conv) => !deletedIds.has(conv.id)));
+        try {
+          await invalidateConversationData();
+        } finally {
+          for (const id of deletedIds) {
+            runtimeStore.delete(createConversationChatKey(id));
+          }
+        }
       }
 
       // Clear selection and exit selection mode
@@ -700,7 +779,8 @@ export function ChatHistoryList({
     invalidateConversationData,
     currentChatId,
     onSelectionChange,
-    onExitSelectionMode
+    onExitSelectionMode,
+    runtimeStore
   ]);
 
   // Long press handlers for mobile selection mode activation
@@ -766,6 +846,7 @@ export function ChatHistoryList({
     async (conversation: Conversation, projectId: string | null) => {
       try {
         await opensecret.batchUpdateConversationProject([conversation.id], projectId);
+        updateRuntimeConversationProject(conversation.id, projectId);
         await invalidateConversationData();
 
         if (conversation.id === currentChatId) {
@@ -784,7 +865,8 @@ export function ChatHistoryList({
       dispatchConversationMetadataUpdated,
       invalidateConversationData,
       opensecret,
-      setSelectedProjectId
+      setSelectedProjectId,
+      updateRuntimeConversationProject
     ]
   );
 
@@ -813,6 +895,7 @@ export function ChatHistoryList({
       try {
         const ids = Array.from(selectedIds);
         await opensecret.batchUpdateConversationProject(ids, projectId);
+        for (const id of ids) updateRuntimeConversationProject(id, projectId);
         await invalidateConversationData();
 
         if (currentChatId && selectedIds.has(currentChatId)) {
@@ -835,7 +918,8 @@ export function ChatHistoryList({
       onSelectionChange,
       opensecret,
       selectedIds,
-      setSelectedProjectId
+      setSelectedProjectId,
+      updateRuntimeConversationProject
     ]
   );
 
@@ -874,8 +958,9 @@ export function ChatHistoryList({
       const params = new URLSearchParams(window.location.search);
       params.delete("conversation_id");
       params.delete("project_id");
-      window.history.replaceState({}, "", params.toString() ? `/?${params.toString()}` : "/");
-      window.dispatchEvent(new CustomEvent("newchat", { detail: { projectId } }));
+      const url = params.toString() ? `/?${params.toString()}` : "/";
+      const detail = pushFreshChatHistoryEntry(window.history, url, projectId);
+      window.dispatchEvent(new CustomEvent<NewChatNavigationDetail>("newchat", { detail }));
       setTimeout(() => document.getElementById("message")?.focus(), 0);
     },
     [router, setSelectedProjectId]
@@ -901,34 +986,57 @@ export function ChatHistoryList({
 
   const handleDeleteProject = useCallback(async () => {
     if (!selectedProject) return;
+    let replacementDispatched = false;
+    const projectAwayFromDeletedProject = () => {
+      if (replacementDispatched) return;
+      const deletingProjectedChat =
+        selectedProjectId === selectedProject.id ||
+        (currentChatId
+          ? runtimeStore.getActivityGroupId(createConversationChatKey(currentChatId)) ===
+            selectedProject.id
+          : false);
+      if (!deletingProjectedChat) return;
+
+      replacementDispatched = true;
+      setSelectedProjectId(null);
+      const params = new URLSearchParams(window.location.search);
+      params.delete("conversation_id");
+      params.delete("project_id");
+      window.history.replaceState({}, "", params.toString() ? `/?${params.toString()}` : "/");
+      window.dispatchEvent(new CustomEvent("newchat", { detail: { projectId: null } }));
+      window.dispatchEvent(new Event("projectselected"));
+    };
 
     try {
       await opensecret.deleteConversationProject(selectedProject.id);
-      await invalidateConversationData();
+      projectAwayFromDeletedProject();
 
       if (expandedProjectId === selectedProject.id) {
         setExpandedProjectId(null);
       }
 
-      if (selectedProjectId === selectedProject.id) {
-        setSelectedProjectId(null);
-        const params = new URLSearchParams(window.location.search);
-        params.delete("conversation_id");
-        params.delete("project_id");
-        window.history.replaceState({}, "", params.toString() ? `/?${params.toString()}` : "/");
-        window.dispatchEvent(new CustomEvent("newchat", { detail: { projectId: null } }));
-        window.dispatchEvent(new Event("projectselected"));
+      try {
+        await invalidateConversationData();
+      } finally {
+        // Metadata can finish loading while the delete request/refetch is in
+        // flight, so re-check membership immediately before grouped cleanup.
+        projectAwayFromDeletedProject();
+        // A selected chat in this project has now committed its replacement;
+        // grouped background runtimes can be aborted and discarded safely.
+        runtimeStore.deleteActivityGroup(selectedProject.id);
       }
     } catch (error) {
       console.error("Error deleting project:", error);
       throw error;
     }
   }, [
+    currentChatId,
     expandedProjectId,
     invalidateConversationData,
     opensecret,
     selectedProject,
     selectedProjectId,
+    runtimeStore,
     setSelectedProjectId
   ]);
 
@@ -992,6 +1100,7 @@ export function ChatHistoryList({
   // Handle conversation selection
   const handleSelectConversation = useCallback(
     async (conversation: Conversation) => {
+      runtimeStore.markCompletionRead(createConversationChatKey(conversation.id));
       setSelectedProjectId(conversation.project_id ?? null);
 
       if (window.location.pathname !== "/") {
@@ -1009,7 +1118,7 @@ export function ChatHistoryList({
         })
       );
     },
-    [router, setSelectedProjectId]
+    [router, runtimeStore, setSelectedProjectId]
   );
 
   // Listen for conversation created event to refresh the list
@@ -1024,7 +1133,7 @@ export function ChatHistoryList({
     return () => window.removeEventListener("conversationcreated", handleConversationCreated);
   }, [pollForUpdates, queryClient]);
 
-  if (error) {
+  if (error && conversations.length === 0) {
     return <div>{error.message}</div>;
   }
 
@@ -1052,6 +1161,9 @@ export function ChatHistoryList({
     const title = getConversationTitle(conversation);
     const isActive = conversation.id === currentChatId;
     const isSelected = selectedIds.has(conversation.id);
+    const runtimeKey = createConversationChatKey(conversation.id);
+    const isRunning = activeRunKeySet.has(runtimeKey);
+    const isUnreadCompleted = !isRunning && completedUnreadKeySet.has(runtimeKey);
     const titlePaddingClass = "pr-8";
 
     const isBoldState = (isActive && !isSelectionMode) || (isSelectionMode && isSelected);
@@ -1065,7 +1177,20 @@ export function ChatHistoryList({
         className="group relative isolate flex w-full min-w-0 select-none items-stretch gap-0.5 rounded-2xl"
         onContextMenu={(event) => event.preventDefault()}
       >
-        <div
+        <button
+          type="button"
+          data-testid="conversation-row"
+          data-conversation-id={conversation.id}
+          data-running={isRunning || undefined}
+          data-unread={isUnreadCompleted || undefined}
+          aria-current={isActive ? "page" : undefined}
+          aria-label={
+            isRunning
+              ? `${title}, running`
+              : isUnreadCompleted
+                ? `${title}, completed, unread`
+                : title
+          }
           onClick={() => {
             if (isSelectionMode) {
               toggleSelection(conversation.id);
@@ -1080,12 +1205,26 @@ export function ChatHistoryList({
           onTouchMove={handleLongPressMove}
           onTouchEnd={handleLongPressEnd}
           onTouchCancel={handleLongPressEnd}
-          className={`relative ${ROW_CONTENT_Z} min-w-0 flex-1 py-1 pr-2 ${rowTextClass} ${
+          className={`relative ${ROW_CONTENT_Z} min-w-0 flex-1 py-1 pr-2 text-left ${rowTextClass} ${
             isSelectionMode ? "pl-8" : "pl-0"
           } cursor-pointer`}
         >
           <div className={titlePaddingClass}>
             <div className="relative z-0 flex min-w-0 items-center gap-1.5">
+              {isRunning ? (
+                <>
+                  <Loader2
+                    className="h-3 w-3 shrink-0 animate-spin text-[hsl(var(--maple-primary))]"
+                    aria-hidden="true"
+                  />
+                  <span className="sr-only">Response in progress</span>
+                </>
+              ) : isUnreadCompleted ? (
+                <span
+                  className="h-2 w-2 shrink-0 rounded-full bg-maple-success"
+                  aria-hidden="true"
+                />
+              ) : null}
               {conversation.pinned ? (
                 <Pin
                   className="h-3.5 w-3.5 shrink-0 fill-none text-foreground"
@@ -1099,7 +1238,7 @@ export function ChatHistoryList({
               {new Date(conversation.last_activity_at * 1000).toLocaleDateString()}
             </div>
           </div>
-        </div>
+        </button>
         {isSelectionMode ? (
           <div
             className={`absolute left-1.5 top-1/2 ${ROW_CHECKBOX_Z} -translate-y-1/2`}
@@ -1244,12 +1383,36 @@ export function ChatHistoryList({
           {filteredProjects.map((project) => {
             const isProjectExpanded = expandedProjectId === project.id;
             const isProjectSelected = selectedProjectId === project.id;
+            const showProjectRunningIndicator =
+              !isProjectExpanded && activeRunProjectIds.has(project.id);
+            const showProjectUnreadIndicator =
+              !isProjectExpanded &&
+              !showProjectRunningIndicator &&
+              completedUnreadProjectIds.has(project.id);
+            const projectAccessibleStatus = showProjectRunningIndicator
+              ? "running"
+              : showProjectUnreadIndicator
+                ? "completed, unread"
+                : null;
             return (
-              <div key={project.id} className="relative">
+              <div
+                key={project.id}
+                data-testid="project-row"
+                data-project-id={project.id}
+                data-running={showProjectRunningIndicator || undefined}
+                data-unread={showProjectUnreadIndicator || undefined}
+                className="relative"
+              >
                 <div className="relative isolate group w-full min-w-0">
                   <button
                     type="button"
                     onClick={() => handleToggleProjectExpanded(project.id)}
+                    aria-expanded={isProjectExpanded}
+                    aria-label={
+                      projectAccessibleStatus
+                        ? `${project.name}, ${projectAccessibleStatus}`
+                        : project.name
+                    }
                     className={`relative ${ROW_CONTENT_Z} w-full rounded-2xl py-1 text-left ${
                       isProjectExpanded || isProjectSelected
                         ? "font-bold text-foreground"
@@ -1262,7 +1425,18 @@ export function ChatHistoryList({
                       ) : (
                         <ChevronRight className="h-4 w-4 shrink-0" strokeWidth={ICON_STROKE} />
                       )}
-                      <span className="truncate">{project.name}</span>
+                      <span className="min-w-0 flex-1 truncate">{project.name}</span>
+                      {showProjectRunningIndicator ? (
+                        <Loader2
+                          className="h-3.5 w-3.5 shrink-0 animate-spin text-[hsl(var(--maple-primary))]"
+                          aria-hidden="true"
+                        />
+                      ) : showProjectUnreadIndicator ? (
+                        <span
+                          className="h-2 w-2 shrink-0 rounded-full bg-maple-success"
+                          aria-hidden="true"
+                        />
+                      ) : null}
                     </div>
                   </button>
                   <div className={sidebarEllipsisTriggerRowClass(isMobile)}>

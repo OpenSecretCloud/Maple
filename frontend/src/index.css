@@ -314,6 +314,51 @@
     caret-color: hsl(var(--maple-primary));
   }
 
+  @keyframes thinking-shimmer {
+    0%,
+    20% {
+      background-position: 200% center;
+    }
+    80%,
+    100% {
+      background-position: -100% center;
+    }
+  }
+
+  .thinking-shimmer {
+    position: relative;
+    display: inline-block;
+    color: inherit;
+  }
+
+  .thinking-shimmer-highlight {
+    position: absolute;
+    inset: 0;
+    color: transparent;
+    pointer-events: none;
+    background-image: linear-gradient(
+      90deg,
+      transparent 0%,
+      transparent 38%,
+      hsl(var(--foreground) / 0.65) 50%,
+      transparent 62%,
+      transparent 100%
+    );
+    background-position: 200% center;
+    background-repeat: no-repeat;
+    background-size: 250% 100%;
+    background-clip: text;
+    -webkit-background-clip: text;
+    animation: thinking-shimmer 2.4s linear infinite;
+  }
+
+  @media (prefers-reduced-motion: reduce), (forced-colors: active) {
+    .thinking-shimmer-highlight {
+      display: none;
+      animation: none;
+    }
+  }
+
   /* Title animation for conversation title updates */
   @keyframes title-flash {
     0% {

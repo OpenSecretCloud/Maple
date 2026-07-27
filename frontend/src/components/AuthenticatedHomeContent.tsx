@@ -13,6 +13,7 @@ import { ProjectDetailView } from "@/components/ProjectDetailView";
 import { UnifiedChat } from "@/components/UnifiedChat";
 import { PersistentHomeNavigationContext } from "@/contexts/PersistentHomeNavigationContext";
 import { AgentSessionSelectionMemory } from "@/services/agentSessionSelection";
+import { ChatRuntimeProvider } from "@/contexts/ChatRuntimeContext";
 
 const TRANSIENT_HOME_SEARCH_PARAMS = ["team_setup", "credits_success", "api_settings"];
 
@@ -129,7 +130,7 @@ export function PersistentHomeNavigationProvider({ children }: { children: React
 
   return (
     <PersistentHomeNavigationContext.Provider value={value}>
-      {children}
+      <ChatRuntimeProvider key={userId ?? "signed-out"}>{children}</ChatRuntimeProvider>
     </PersistentHomeNavigationContext.Provider>
   );
 }
@@ -177,5 +178,5 @@ export function AuthenticatedHomeContent({
     return <ProjectDetailView projectId={selection.projectId} />;
   }
 
-  return <UnifiedChat />;
+  return <UnifiedChat isVisible={homeLocationHref !== null} />;
 }

@@ -39,6 +39,10 @@ import { UpgradePromptDialog } from "@/components/UpgradePromptDialog";
 import { hasApiAccess } from "@/billing/billingAccess";
 import { WorkspaceModeSwitch, type WorkspaceMode } from "@/components/WorkspaceModeSwitch";
 import { usePersistentHomeNavigation } from "@/contexts/PersistentHomeNavigationContext";
+import {
+  createFreshChatHistoryEntry,
+  type NewChatNavigationDetail
+} from "@/services/chatRuntimeNavigation";
 
 export function Sidebar({
   chatId,
@@ -65,7 +69,6 @@ export function Sidebar({
     setSearchQuery,
     isSearchVisible,
     setIsSearchVisible,
-    selectedProjectId,
     setSelectedProjectId,
     billingStatus
   } = useLocalState();
@@ -112,22 +115,15 @@ export function Sidebar({
       setSelectedProjectId(null);
     });
 
-    if (
-      location.pathname === "/" &&
-      (window.location.search.includes("conversation_id") ||
-        window.location.search.includes("project_id"))
-    ) {
-      // Just clear the query params without navigation
-      window.history.replaceState(null, "", "/");
-      // Clear messages by triggering a re-render
-      window.dispatchEvent(new CustomEvent("newchat", { detail: { projectId: null } }));
-      document.getElementById("message")?.focus();
-    } else if (location.pathname === "/") {
-      // Already on home with no conversation_id, just focus
-      if (selectedProjectId) {
-        window.dispatchEvent(new CustomEvent("newchat", { detail: { projectId: null } }));
-      }
-      document.getElementById("message")?.focus();
+    if (location.pathname === "/") {
+      const freshChat = createFreshChatHistoryEntry();
+      window.history.pushState(freshChat.historyState, "", "/");
+      window.dispatchEvent(
+        new CustomEvent<NewChatNavigationDetail>("newchat", {
+          detail: { projectId: null, draftRuntimeKey: freshChat.draftRuntimeKey }
+        })
+      );
+      setTimeout(() => document.getElementById("message")?.focus(), 0);
     } else {
       try {
         // Navigate to home without any query params
@@ -497,6 +493,7 @@ export function SidebarToggle({ onToggle }: { onToggle: () => void }) {
     <button
       className="h-9 w-9 flex items-center justify-center text-foreground hover:text-foreground/70 transition-colors"
       onClick={onToggle}
+      aria-label="Open sidebar"
     >
       <Menu className="h-4 w-4" />
     </button>

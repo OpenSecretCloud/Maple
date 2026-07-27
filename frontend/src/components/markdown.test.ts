@@ -98,4 +98,51 @@ describe("ThinkingBlock labels", () => {
     expect(pending).toContain("transition-opacity");
     expect(pending).toContain("animate-bounce");
   });
+
+  it("renders an untimed shimmer while a main-chat thought is streaming", () => {
+    const renderStreaming = (duration: number) =>
+      renderToStaticMarkup(
+        React.createElement(ThinkingBlock, {
+          content: "Streaming reasoning tokens.",
+          isThinking: true,
+          duration
+        })
+      );
+    const beforeSwitch = renderStreaming(20);
+    const afterSwitch = renderStreaming(1);
+
+    expect(afterSwitch).toBe(beforeSwitch);
+    expect(afterSwitch).toContain(">Thinking<span");
+    expect(afterSwitch).toContain("thinking-shimmer");
+    expect(afterSwitch).toContain("thinking-shimmer-highlight");
+    expect(afterSwitch).toContain('aria-hidden="true"');
+    expect(afterSwitch).not.toContain("Thinking for");
+    expect(afterSwitch).not.toContain("seconds");
+    expect(afterSwitch).not.toContain("animate-bounce");
+  });
+
+  it("keeps the completed main-chat thought duration", () => {
+    const completed = renderToStaticMarkup(
+      React.createElement(ThinkingBlock, {
+        content: "Finished reasoning tokens.",
+        isThinking: false,
+        duration: 23
+      })
+    );
+
+    expect(completed).toContain("Thought for 23 seconds");
+    expect(completed).not.toContain("thinking-shimmer");
+  });
+
+  it("keeps estimating a completed main-chat thought when no duration is reported", () => {
+    const completed = renderToStaticMarkup(
+      React.createElement(ThinkingBlock, {
+        content: Array.from({ length: 52 }, () => "word").join(" "),
+        isThinking: false
+      })
+    );
+
+    expect(completed).toContain("Thought for 2 seconds");
+    expect(completed).not.toContain("thinking-shimmer");
+  });
 });
