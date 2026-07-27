@@ -100,6 +100,10 @@ function ThinkingDots() {
   );
 }
 
+function ThinkingShimmer() {
+  return <span className="thinking-shimmer">Thinking</span>;
+}
+
 export interface ThinkingBlockProps {
   content: string;
   isThinking: boolean;
@@ -116,48 +120,17 @@ export function ThinkingBlock({
   label
 }: ThinkingBlockProps) {
   const [isExpanded, setIsExpanded] = useState(false);
-  const [elapsedSeconds, setElapsedSeconds] = useState(0);
-  const startTimeRef = useRef<number | null>(null);
 
-  // Update elapsed time every second while thinking
-  useEffect(() => {
-    if (!isThinking) {
-      return;
-    }
-
-    // Set start time when thinking begins
-    if (startTimeRef.current === null) {
-      startTimeRef.current = Date.now();
-    }
-
-    // Start counting immediately
-    const elapsed = Math.floor((Date.now() - startTimeRef.current) / 1000);
-    setElapsedSeconds(elapsed);
-
-    const interval = setInterval(() => {
-      if (startTimeRef.current !== null) {
-        const elapsed = Math.floor((Date.now() - startTimeRef.current) / 1000);
-        setElapsedSeconds(elapsed);
-      }
-    }, 1000);
-
-    return () => {
-      clearInterval(interval);
-      startTimeRef.current = null;
-    };
-  }, [isThinking]);
-
-  // Calculate duration text - use actual duration, elapsed time, or estimate based on word count
+  // Use the reported duration when available, otherwise estimate completed thoughts by word count.
   const displayDuration = useMemo(() => {
     if (duration) return duration;
-    if (isThinking) return elapsedSeconds;
 
     // Fallback: estimate based on word count
     const wordCount = content.trim().split(/\s+/).length;
     // Slower estimation to better match observed times (26 actual vs 23 estimated)
     const estimatedSeconds = Math.max(1, Math.round(wordCount / 26)); // ~26 words per second
     return estimatedSeconds;
-  }, [content, duration, isThinking, elapsedSeconds]);
+  }, [content, duration]);
 
   const durationText = `${displayDuration}`;
 
@@ -174,10 +147,7 @@ export function ThinkingBlock({
           <span className="min-w-0 text-sm font-medium text-muted-foreground">
             {showDuration ? (
               isThinking ? (
-                <span className="inline-flex items-center gap-2">
-                  {`Thinking for ${durationText} seconds`}
-                  <ThinkingDots />
-                </span>
+                <ThinkingShimmer />
               ) : (
                 `Thought for ${durationText} seconds`
               )
