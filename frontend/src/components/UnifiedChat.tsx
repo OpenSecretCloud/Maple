@@ -129,6 +129,12 @@ import {
   type ChatComposerState
 } from "@/contexts/ChatRuntimeContext";
 import {
+  draftScopeForRuntimeSelection,
+  moveRememberedChatDraftToScope,
+  rememberChatDraftInScope,
+  resumeOrCreateChatDraftKey
+} from "@/services/chatDraftSelection";
+import {
   createChatDraftKey,
   createConversationChatKey,
   type ChatRuntimeKey,
@@ -137,7 +143,7 @@ import {
 import {
   canonicalConversationHistoryHref,
   conversationIdFromChatRuntimeKey,
-  createFreshChatHistoryEntry,
+  createChatHistoryEntryForDraft,
   draftRuntimeKeyFromHistoryState,
   historyStateWithDraftRuntimeKey,
   isDraftChatRuntimeKey,
@@ -1676,8 +1682,11 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
   const [initialRuntimeSelection] = useState(() => {
     const params = new URLSearchParams(window.location.search);
     const urlConversationId = params.get("conversation_id") || undefined;
+    const initialDraftProjectId = selectedProjectId ?? null;
     const runtimeKey = runtimeKeyForChatLocation(urlConversationId, window.history.state, () =>
-      createChatDraftKey(`unified-chat-${runtimeInstanceId}`)
+      resumeOrCreateChatDraftKey(runtimeStore, initialDraftProjectId, () =>
+        createChatDraftKey(`unified-chat-${runtimeInstanceId}`)
+      )
     );
     return {
       runtimeKey,
@@ -1724,6 +1733,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
   }, [isVisible, renderedRuntimeKey, runtimeStore, visibleChatOwner]);
 
   useLayoutEffect(() => {
+    if (!isVisible) return;
     const canonicalKey = runtimeStore.resolveKey(renderedRuntimeKey);
     const canonicalConversationId = conversationIdFromChatRuntimeKey(canonicalKey);
     if (canonicalConversationId) {
@@ -1731,6 +1741,9 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
       return;
     }
     if (!isDraftChatRuntimeKey(canonicalKey)) return;
+    const draftProjectId = activeRuntime.composer.draftProjectId;
+    rememberChatDraftInScope(runtimeStore, canonicalKey, draftProjectId);
+    if (selectedProjectId !== draftProjectId) setSelectedProjectId(draftProjectId);
     if (draftRuntimeKeyFromHistoryState(window.history.state) === canonicalKey) return;
 
     window.history.replaceState(
@@ -1738,7 +1751,14 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
       "",
       window.location.href
     );
-  }, [renderedRuntimeKey, runtimeStore]);
+  }, [
+    activeRuntime.composer.draftProjectId,
+    isVisible,
+    renderedRuntimeKey,
+    runtimeStore,
+    selectedProjectId,
+    setSelectedProjectId
+  ]);
 
   const isRuntimeSelected = useCallback(
     (key: ChatRuntimeKey) => runtimeStore.isChatVisible(key),
@@ -1771,13 +1791,6 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
       return true;
     },
     [runtimeStore]
-  );
-
-  const updateActiveComposer = useCallback(
-    (updater: (composer: ChatComposerState) => ChatComposerState) => {
-      updateComposerForKey(activeRuntimeKeyRef.current, updater);
-    },
-    [updateComposerForKey]
   );
 
   // The active view is only a projection. Background conversations keep their
@@ -1856,12 +1869,19 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
     [setInputForKey]
   );
   const setDraftProjectId = useCallback(
-    (update: StateUpdate<string | null>) =>
-      updateActiveComposer((composer) => ({
+    (update: StateUpdate<string | null>) => {
+      const key = activeRuntimeKeyRef.current;
+      const snapshot = runtimeStore.get(key);
+      if (!snapshot) return;
+      const nextDraftProjectId = resolveStateUpdate(snapshot.composer.draftProjectId, update);
+      if (moveRememberedChatDraftToScope(runtimeStore, key, nextDraftProjectId)) return;
+
+      updateComposerForKey(key, (composer) => ({
         ...composer,
-        draftProjectId: resolveStateUpdate(composer.draftProjectId, update)
-      })),
-    [updateActiveComposer]
+        draftProjectId: nextDraftProjectId
+      }));
+    },
+    [runtimeStore, updateComposerForKey]
   );
   const [upgradeDialogOpen, setUpgradeDialogOpen] = useState(false);
   const [upgradeFeature, setUpgradeFeature] = useState<
@@ -2479,13 +2499,16 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
   const selectFreshDraftRuntime = useCallback(
     (projectId: string | null, requestedDraftKey?: DraftChatRuntimeKey) => {
       const key = requestedDraftKey ?? createChatDraftKey();
+      const draftProjectId = draftScopeForRuntimeSelection(runtimeStore, key, projectId);
       stopRecordingForNavigation(key);
       runtimeStore.select(key, {
-        composer: createChatComposerState(projectId)
+        composer: createChatComposerState(draftProjectId)
       });
+      rememberChatDraftInScope(runtimeStore, key, draftProjectId);
       activeRuntimeKeyRef.current = key;
       setActiveRuntimeKey(key);
       setChatId(undefined);
+      setSelectedProjectId(draftProjectId);
       window.history.replaceState(
         historyStateWithDraftRuntimeKey(window.history.state, key),
         "",
@@ -2493,7 +2516,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
       );
       return key;
     },
-    [runtimeStore, stopRecordingForNavigation]
+    [runtimeStore, setSelectedProjectId, stopRecordingForNavigation]
   );
 
   // Unified event handling for conversation changes. Selection never clears or
@@ -3373,17 +3396,33 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
     const newUrl = usp.toString()
       ? `${window.location.pathname}?${usp.toString()}`
       : window.location.pathname;
-    const freshChat = createFreshChatHistoryEntry();
-    window.history.pushState(freshChat.historyState, "", newUrl);
+    const draftRuntimeKey = resumeOrCreateChatDraftKey(runtimeStore, null);
+    const chatEntry = createChatHistoryEntryForDraft(draftRuntimeKey);
+    window.history.pushState(chatEntry.historyState, "", newUrl);
     window.dispatchEvent(
       new CustomEvent<NewChatNavigationDetail>("newchat", {
-        detail: { projectId: null, draftRuntimeKey: freshChat.draftRuntimeKey }
+        detail: { projectId: null, draftRuntimeKey: chatEntry.draftRuntimeKey }
       })
     );
     if (isSidebarOpen) {
       toggleSidebar();
     }
-  }, [isSidebarOpen, setSelectedProjectId, toggleSidebar]);
+  }, [isSidebarOpen, runtimeStore, setSelectedProjectId, toggleSidebar]);
+
+  const handleNewChatFromUpgrade = useCallback(() => {
+    const projectId = selectedProjectId ?? null;
+    const draftRuntimeKey = resumeOrCreateChatDraftKey(runtimeStore, projectId);
+    const chatEntry = createChatHistoryEntryForDraft(draftRuntimeKey);
+    const params = new URLSearchParams(window.location.search);
+    params.delete("conversation_id");
+    const url = params.toString() ? `/?${params.toString()}` : "/";
+    window.history.replaceState(chatEntry.historyState, "", url);
+    window.dispatchEvent(
+      new CustomEvent<NewChatNavigationDetail>("newchat", {
+        detail: { projectId, draftRuntimeKey: chatEntry.draftRuntimeKey }
+      })
+    );
+  }, [runtimeStore, selectedProjectId]);
 
   // Check user's billing access
   const billingStatus = localState.billingStatus;
@@ -5510,6 +5549,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
         <UpgradePromptDialog
           open={upgradeDialogOpen}
           onOpenChange={setUpgradeDialogOpen}
+          onStartNewChat={handleNewChatFromUpgrade}
           feature={
             upgradeFeature === "document"
               ? "document"

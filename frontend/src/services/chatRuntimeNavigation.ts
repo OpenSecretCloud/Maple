@@ -82,7 +82,13 @@ export function createFreshChatHistoryEntry(draftId?: string): Readonly<{
   draftRuntimeKey: DraftChatRuntimeKey;
   historyState: Record<string, unknown>;
 }> {
-  const draftRuntimeKey = createChatDraftKey(draftId);
+  return createChatHistoryEntryForDraft(createChatDraftKey(draftId));
+}
+
+export function createChatHistoryEntryForDraft(draftRuntimeKey: DraftChatRuntimeKey): Readonly<{
+  draftRuntimeKey: DraftChatRuntimeKey;
+  historyState: Record<string, unknown>;
+}> {
   return {
     draftRuntimeKey,
     historyState: historyStateWithDraftRuntimeKey({}, draftRuntimeKey)
@@ -95,7 +101,16 @@ export function pushFreshChatHistoryEntry(
   projectId: string | null,
   draftId?: string
 ): NewChatNavigationDetail {
-  const freshChat = createFreshChatHistoryEntry(draftId);
-  history.pushState(freshChat.historyState, "", url);
-  return { projectId, draftRuntimeKey: freshChat.draftRuntimeKey };
+  return pushChatHistoryEntryForDraft(history, url, projectId, createChatDraftKey(draftId));
+}
+
+export function pushChatHistoryEntryForDraft(
+  history: Pick<History, "pushState">,
+  url: string,
+  projectId: string | null,
+  draftRuntimeKey: DraftChatRuntimeKey
+): NewChatNavigationDetail {
+  const entry = createChatHistoryEntryForDraft(draftRuntimeKey);
+  history.pushState(entry.historyState, "", url);
+  return { projectId, draftRuntimeKey: entry.draftRuntimeKey };
 }

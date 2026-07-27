@@ -28,13 +28,15 @@ interface UpgradePromptDialogProps {
   onOpenChange: (open: boolean) => void;
   feature: "image" | "voice" | "model" | "document" | "usage" | "tokens" | "agent";
   modelName?: string;
+  onStartNewChat?: () => void;
 }
 
 export function UpgradePromptDialog({
   open,
   onOpenChange,
   feature,
-  modelName
+  modelName,
+  onStartNewChat
 }: UpgradePromptDialogProps) {
   const navigate = useNavigate();
   const localState = useLocalState();
@@ -51,6 +53,10 @@ export function UpgradePromptDialog({
 
   const handleNewChat = () => {
     onOpenChange(false);
+    if (onStartNewChat) {
+      onStartNewChat();
+      return;
+    }
     // Trigger new chat event
     window.dispatchEvent(new Event("newchat"));
     // Clear the URL

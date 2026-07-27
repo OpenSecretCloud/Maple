@@ -158,6 +158,7 @@ export class ChatRuntimeStore<TConversation, TMessage, TComposer> {
   private readonly activeRunListeners = new Set<() => void>();
   private readonly completedUnreadListeners = new Set<() => void>();
   private readonly completedUnreadGroups = new Map<ChatRuntimeKey, string | null>();
+  private readonly rememberedDraftKeys = new Map<string | null, DraftChatRuntimeKey>();
   private readonly createComposer: () => TComposer;
   private readonly maxInactiveCompletedEntries: number;
   private readonly canEvict: (
@@ -232,6 +233,28 @@ export class ChatRuntimeStore<TConversation, TMessage, TComposer> {
   getActivityGroupId(key: ChatRuntimeKey): string | null | undefined {
     const canonicalKey = this.resolveKey(key);
     return this.entries.get(canonicalKey)?.groupId ?? this.completedUnreadGroups.get(canonicalKey);
+  }
+
+  rememberDraftKey(scopeId: string | null, key: DraftChatRuntimeKey): void {
+    this.assertNotDisposed();
+    this.rememberedDraftKeys.set(scopeId, key);
+  }
+
+  getRememberedDraftKey(scopeId: string | null): DraftChatRuntimeKey | null {
+    this.assertNotDisposed();
+    return this.rememberedDraftKeys.get(scopeId) ?? null;
+  }
+
+  forgetRememberedDraftKey(scopeId: string | null, expectedKey?: DraftChatRuntimeKey): boolean {
+    this.assertNotDisposed();
+    const rememberedKey = this.rememberedDraftKeys.get(scopeId);
+    if (
+      rememberedKey === undefined ||
+      (expectedKey !== undefined && rememberedKey !== expectedKey)
+    ) {
+      return false;
+    }
+    return this.rememberedDraftKeys.delete(scopeId);
   }
 
   claimVisibleChat(owner: object, key: ChatRuntimeKey): ChatRuntimeVisibleLease {
@@ -340,6 +363,7 @@ export class ChatRuntimeStore<TConversation, TMessage, TComposer> {
       if (completedGroupId === groupId) keys.add(key);
     }
 
+    this.rememberedDraftKeys.delete(groupId);
     for (const key of keys) this.delete(key);
     return Object.freeze(Array.from(keys));
   }
@@ -723,6 +747,8 @@ export class ChatRuntimeStore<TConversation, TMessage, TComposer> {
     const sourceWasSelected = this.activeKey === canonicalFrom;
     const destinationWasSelected = this.activeKey === canonicalTo;
 
+    this.forgetDraftKeysResolvingTo(canonicalFrom);
+
     if (mergedUpdate) {
       const previous = entry.snapshot;
       entry.snapshot = this.updatedSnapshot(
@@ -778,13 +804,15 @@ export class ChatRuntimeStore<TConversation, TMessage, TComposer> {
     const canonicalKey = this.resolveKey(key);
     const entry = this.entries.get(canonicalKey);
     if (!entry) {
+      const removedRememberedDraft = this.forgetDraftKeysResolvingTo(canonicalKey);
       const removedAlias = this.detachAliases(canonicalKey);
       const removedUnread = this.completedUnreadGroups.delete(canonicalKey);
-      if (removedAlias || removedUnread) this.publish();
-      return removedAlias || removedUnread;
+      if (removedRememberedDraft || removedAlias || removedUnread) this.publish();
+      return removedRememberedDraft || removedAlias || removedUnread;
     }
 
     this.completedUnreadGroups.delete(canonicalKey);
+    this.forgetDraftKeysResolvingTo(canonicalKey);
     this.detachEntry(canonicalKey);
     if (this.activeKey === canonicalKey) this.activeKey = null;
     if (this.visibleChatKey && this.resolveKey(this.visibleChatKey) === canonicalKey) {
@@ -809,6 +837,7 @@ export class ChatRuntimeStore<TConversation, TMessage, TComposer> {
     this.entries.clear();
     this.aliases.clear();
     this.completedUnreadGroups.clear();
+    this.rememberedDraftKeys.clear();
     this.activeKey = null;
     this.visibleChatLease = null;
     this.visibleChatKey = null;
@@ -943,6 +972,16 @@ export class ChatRuntimeStore<TConversation, TMessage, TComposer> {
       }
     }
     return removed;
+  }
+
+  private forgetDraftKeysResolvingTo(canonicalKey: ChatRuntimeKey): boolean {
+    let changed = false;
+    for (const [scopeId, draftKey] of this.rememberedDraftKeys) {
+      if (this.resolveKey(draftKey) !== canonicalKey) continue;
+      this.rememberedDraftKeys.delete(scopeId);
+      changed = true;
+    }
+    return changed;
   }
 
   private assertNotDisposed(): void {
