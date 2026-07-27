@@ -1,4 +1,14 @@
-import { useState, useRef, useEffect, useLayoutEffect, useCallback, memo, useMemo } from "react";
+import {
+  useState,
+  useRef,
+  useEffect,
+  useLayoutEffect,
+  useCallback,
+  useSyncExternalStore,
+  memo,
+  useMemo,
+  useId
+} from "react";
 import { flushSync } from "react-dom";
 import {
   ArrowUp,
@@ -107,8 +117,84 @@ import type {
 } from "openai/resources/responses/responses.js";
 import type { Message as OpenAIMessage } from "openai/resources/conversations/conversations.js";
 import { usePersistentSidebarState } from "@/contexts/PersistentHomeNavigationContext";
+import {
+  createChatComposerState,
+  useChatRuntimeStore,
+  type ChatComposerState
+} from "@/contexts/ChatRuntimeContext";
+import {
+  createChatDraftKey,
+  createConversationChatKey,
+  type ChatRuntimeKey,
+  type DraftChatRuntimeKey
+} from "@/services/chatRuntimeStore";
+import {
+  canonicalConversationHistoryHref,
+  conversationIdFromChatRuntimeKey,
+  createFreshChatHistoryEntry,
+  draftRuntimeKeyFromHistoryState,
+  historyStateWithDraftRuntimeKey,
+  isDraftChatRuntimeKey,
+  runtimeKeyForChatLocation,
+  shouldProjectMigratedConversation,
+  type NewChatNavigationDetail
+} from "@/services/chatRuntimeNavigation";
+import {
+  canAdoptRecordingDestination,
+  cleanupRecordingForNavigation,
+  cleanupRecordingForTeardown,
+  isRecordingOwnershipCurrent
+} from "@/services/chatRecordingNavigation";
+import {
+  canAdoptAttachmentDestination,
+  mutateAttachmentComposerWhenIdle,
+  planRestoredImageUrls
+} from "@/services/chatAttachmentOwnership";
+import {
+  classifyChatStreamEof,
+  createChatStreamDeltaCoalescer,
+  flushRegisteredChatStreamDeltas,
+  isTerminalChatStreamErrorEvent,
+  registerChatStreamDeltaCoalescer,
+  removeOwnedChatStreamAttemptItems,
+  unregisterChatStreamDeltaCoalescer,
+  type ChatStreamTerminalState
+} from "@/services/chatStreamDeltaCoalescer";
+import { recoverFailedSendAfterDestinationAdoption } from "@/services/chatSendFailureRecovery";
+import {
+  getRegisteredChatOptimisticMessage,
+  markOptimisticMessageIncomplete,
+  registerChatOptimisticMessage,
+  unregisterChatOptimisticMessage
+} from "@/services/chatOptimisticMessageOwnership";
 
 const CHAT_ALERT_CLASS = `fixed top-16 left-1/2 -translate-x-1/2 z-50 w-full max-w-2xl px-4 ${SIDEBAR_AWARE_FIXED_CENTER_CLASS}`;
+const STREAM_EVENT_DEBUG_STORAGE_KEY = "maple:sse-debug";
+
+function isStreamEventDebugLoggingEnabled(): boolean {
+  if (!import.meta.env.DEV || typeof window === "undefined") return false;
+  try {
+    return window.localStorage.getItem(STREAM_EVENT_DEBUG_STORAGE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+type StateUpdate<T> = T | ((previous: T) => T);
+
+function resolveStateUpdate<T>(previous: T, update: StateUpdate<T>): T {
+  return typeof update === "function" ? (update as (value: T) => T)(previous) : update;
+}
+
+function canonicalizeConversationHistoryEntry(
+  conversationId: string,
+  state: unknown = window.history.state
+): void {
+  const href = canonicalConversationHistoryHref(window.location, conversationId);
+  const currentHref = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+  if (href === currentHref) return;
+  window.history.replaceState(state, "", href);
+}
 
 type ConversationContent =
   | InputTextContent
@@ -579,9 +665,14 @@ function summarizeStreamEventForLog(eventType: string, event: unknown): Record<s
   }
 }
 
-function updateActiveItemStatuses(messages: Message[], status: "error" | "incomplete"): Message[] {
+function updateActiveItemStatuses(
+  messages: Message[],
+  status: "error" | "incomplete",
+  ownedItemIds?: ReadonlySet<string>
+): Message[] {
   const updatedMessages = messages
     .filter((message) => {
+      if (ownedItemIds && !ownedItemIds.has(message.id)) return false;
       const currentStatus = (message as { status?: string }).status;
       return (
         currentStatus === "in_progress" ||
@@ -684,6 +775,44 @@ function mergeStreamingConversationItem(messages: Message[], item: Message): Mes
   }
 
   return mergeMessagesById(messages, [item]);
+}
+
+function reconcileLoadedMessage(serverMessage: Message, localMessage: Message): Message {
+  const merged = mergeStreamingConversationItem([serverMessage], localMessage)[0];
+  const serverStatus = (serverMessage as { status?: string }).status;
+  if (serverStatus === "completed" || serverStatus === "incomplete" || serverStatus === "error") {
+    return { ...merged, status: serverStatus } as Message;
+  }
+  return merged;
+}
+
+function mergeLoadedMessagesWithRuntime(loaded: Message[], cached: readonly Message[]): Message[] {
+  if (cached.length === 0) return loaded;
+
+  const cachedById = new Map(cached.map((message) => [message.id, message]));
+  const loadedIds = new Set(loaded.map((message) => message.id));
+  const reconciledLoaded = loaded.map((serverMessage) => {
+    const localMessage = cachedById.get(serverMessage.id);
+    if (!localMessage) return serverMessage;
+
+    return reconcileLoadedMessage(serverMessage, localMessage);
+  });
+
+  // Optimistic and live SSE items may not be checkpointed by the server until
+  // terminal events. Keep them in their existing order after the loaded page.
+  return [...reconciledLoaded, ...cached.filter((message) => !loadedIds.has(message.id))];
+}
+
+function mergePolledMessagesWithRuntime(cached: readonly Message[], polled: Message[]): Message[] {
+  if (cached.length === 0) return polled;
+  const polledById = new Map(polled.map((message) => [message.id, message]));
+  const cachedIds = new Set(cached.map((message) => message.id));
+  const reconciledCached = cached.map((localMessage) => {
+    const serverMessage = polledById.get(localMessage.id);
+    return serverMessage ? reconcileLoadedMessage(serverMessage, localMessage) : localMessage;
+  });
+
+  return [...reconciledCached, ...polled.filter((message) => !cachedIds.has(message.id))];
 }
 
 // Helper function to convert conversation items - just returns them as-is (flat, no grouping)
@@ -1533,38 +1662,200 @@ export function UnifiedChat() {
   const isLinuxTauriEnv = isTauriEnv && isLinuxEnv;
   const queryClient = useQueryClient();
   const { playbackError, clearPlaybackError } = useTTS();
+  const runtimeStore = useChatRuntimeStore<Conversation, Message>();
+  const runtimeInstanceId = useId();
 
-  // Track chatId from URL - use state so we can update it
-  const [chatId, setChatId] = useState<string | undefined>(() => {
+  const [initialRuntimeSelection] = useState(() => {
     const params = new URLSearchParams(window.location.search);
-    return params.get("conversation_id") || undefined;
+    const urlConversationId = params.get("conversation_id") || undefined;
+    const runtimeKey = runtimeKeyForChatLocation(urlConversationId, window.history.state, () =>
+      createChatDraftKey(`unified-chat-${runtimeInstanceId}`)
+    );
+    return {
+      runtimeKey,
+      conversationId:
+        urlConversationId ?? conversationIdFromChatRuntimeKey(runtimeStore.resolveKey(runtimeKey))
+    };
   });
+  const [chatId, setChatId] = useState<string | undefined>(initialRuntimeSelection.conversationId);
+  const [activeRuntimeKey, setActiveRuntimeKey] = useState<ChatRuntimeKey>(
+    initialRuntimeSelection.runtimeKey
+  );
+  runtimeStore.ensure(activeRuntimeKey, {
+    composer: createChatComposerState(selectedProjectId ?? null)
+  });
+  const activeRuntimeKeyRef = useRef(activeRuntimeKey);
+  const isUnifiedChatMountedRef = useRef(true);
+  activeRuntimeKeyRef.current = runtimeStore.resolveKey(activeRuntimeKey);
 
-  // State
-  const [conversation, setConversation] = useState<Conversation | null>(null);
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [input, setInput] = useState("");
-  const [draftProjectId, setDraftProjectId] = useState<string | null>(() => selectedProjectId);
-  const [isGenerating, setIsGenerating] = useState(false);
+  const subscribeToActiveRuntime = useCallback(
+    (listener: () => void) => runtimeStore.subscribeKey(activeRuntimeKey, listener),
+    [activeRuntimeKey, runtimeStore]
+  );
+  const getActiveRuntimeSnapshot = useCallback(() => {
+    const snapshot = runtimeStore.get(activeRuntimeKey);
+    if (!snapshot) throw new Error(`Missing chat runtime for ${activeRuntimeKey}`);
+    return snapshot;
+  }, [activeRuntimeKey, runtimeStore]);
+  const activeRuntime = useSyncExternalStore(
+    subscribeToActiveRuntime,
+    getActiveRuntimeSnapshot,
+    getActiveRuntimeSnapshot
+  );
+
+  useLayoutEffect(() => {
+    runtimeStore.select(activeRuntimeKey);
+  }, [activeRuntimeKey, runtimeStore]);
+
+  useLayoutEffect(() => {
+    const canonicalKey = runtimeStore.resolveKey(activeRuntimeKey);
+    const canonicalConversationId = conversationIdFromChatRuntimeKey(canonicalKey);
+    if (canonicalConversationId) {
+      canonicalizeConversationHistoryEntry(canonicalConversationId);
+      return;
+    }
+    if (!isDraftChatRuntimeKey(canonicalKey)) return;
+    if (draftRuntimeKeyFromHistoryState(window.history.state) === canonicalKey) return;
+
+    window.history.replaceState(
+      historyStateWithDraftRuntimeKey(window.history.state, canonicalKey),
+      "",
+      window.location.href
+    );
+  }, [activeRuntimeKey, runtimeStore]);
+
+  useEffect(() => {
+    isUnifiedChatMountedRef.current = true;
+    return () => {
+      isUnifiedChatMountedRef.current = false;
+    };
+  }, []);
+
+  const isRuntimeSelected = useCallback(
+    (key: ChatRuntimeKey) =>
+      isUnifiedChatMountedRef.current &&
+      runtimeStore.resolveKey(activeRuntimeKeyRef.current) === runtimeStore.resolveKey(key),
+    [runtimeStore]
+  );
+
+  const updateComposerForKey = useCallback(
+    (key: ChatRuntimeKey, updater: (composer: ChatComposerState) => ChatComposerState) => {
+      if (!runtimeStore.get(key)) return false;
+      runtimeStore.update(key, (snapshot) => ({
+        ...snapshot,
+        composer: updater(snapshot.composer)
+      }));
+      return true;
+    },
+    [runtimeStore]
+  );
+
+  const updateIdleAttachmentComposerForKey = useCallback(
+    (key: ChatRuntimeKey, updater: (composer: ChatComposerState) => ChatComposerState) => {
+      const startSnapshot = runtimeStore.get(key);
+      if (!startSnapshot || startSnapshot.isGenerating) return false;
+
+      const result = mutateAttachmentComposerWhenIdle(startSnapshot, updater);
+      if (!result.didMutate) return false;
+      runtimeStore.update(key, (snapshot) => ({
+        ...snapshot,
+        composer: result.composer
+      }));
+      return true;
+    },
+    [runtimeStore]
+  );
+
+  const updateActiveComposer = useCallback(
+    (updater: (composer: ChatComposerState) => ChatComposerState) => {
+      updateComposerForKey(activeRuntimeKeyRef.current, updater);
+    },
+    [updateComposerForKey]
+  );
+
+  // The active view is only a projection. Background conversations keep their
+  // own messages, composer, cursors, and run lifecycle in runtimeStore.
+  const conversation = activeRuntime.conversation;
+  const messages = activeRuntime.messages as Message[];
+  const input = activeRuntime.composer.input;
+  const draftProjectId = activeRuntime.composer.draftProjectId;
+  const isGenerating = activeRuntime.isGenerating;
   const [isSidebarOpen, setIsSidebarOpen] = usePersistentSidebarState(isCompactLayout);
-  const [error, setError] = useState<string | null>(null);
-  const [lastSeenItemId, setLastSeenItemId] = useState<string | undefined>();
-  const [isNewConversationJustCreated, setIsNewConversationJustCreated] = useState(false);
-  const [currentResponseId, setCurrentResponseId] = useState<string | undefined>();
-  const [titleJustUpdated, setTitleJustUpdated] = useState(false);
+  const error = activeRuntime.error;
+  const [titleJustUpdatedKey, setTitleJustUpdatedKey] = useState<ChatRuntimeKey | null>(null);
+  const titleJustUpdated = Boolean(
+    titleJustUpdatedKey &&
+    runtimeStore.resolveKey(titleJustUpdatedKey) === runtimeStore.resolveKey(activeRuntimeKey)
+  );
 
   // Pagination states
-  const [oldestItemId, setOldestItemId] = useState<string | undefined>();
-  const [isLoadingOlderMessages, setIsLoadingOlderMessages] = useState(false);
-  const [hasMoreOlderMessages, setHasMoreOlderMessages] = useState(false);
+  const { oldestItemId, isLoadingOlderMessages, hasMoreOlderMessages } =
+    activeRuntime.composer.pagination;
 
   // Attachment states
-  const [draftImages, setDraftImages] = useState<File[]>([]);
-  const [imageUrls, setImageUrls] = useState<Map<File, string>>(new Map());
-  const [documentText, setDocumentText] = useState<string>("");
-  const [documentName, setDocumentName] = useState<string>("");
-  const [isProcessingDocument, setIsProcessingDocument] = useState(false);
-  const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  const {
+    draftImages,
+    imageUrls,
+    documentText,
+    documentName,
+    isProcessingDocument,
+    attachmentError,
+    audioError
+  } = activeRuntime.composer;
+
+  const setConversationForKey = useCallback(
+    (key: ChatRuntimeKey, update: StateUpdate<Conversation | null>) => {
+      if (!runtimeStore.get(key)) return false;
+      runtimeStore.update(key, (snapshot) => ({
+        ...snapshot,
+        conversation: resolveStateUpdate(snapshot.conversation, update)
+      }));
+      return true;
+    },
+    [runtimeStore]
+  );
+  const setErrorForKey = useCallback(
+    (key: ChatRuntimeKey, update: StateUpdate<string | null>) => {
+      if (!runtimeStore.get(key)) return false;
+      runtimeStore.update(key, (snapshot) => ({
+        ...snapshot,
+        error: resolveStateUpdate(snapshot.error, update)
+      }));
+      return true;
+    },
+    [runtimeStore]
+  );
+  const setLastSeenItemIdForKey = useCallback(
+    (key: ChatRuntimeKey, update: StateUpdate<string | undefined>) => {
+      if (!runtimeStore.get(key)) return false;
+      runtimeStore.update(key, (snapshot) => ({
+        ...snapshot,
+        lastSeenItemId: resolveStateUpdate(snapshot.lastSeenItemId, update)
+      }));
+      return true;
+    },
+    [runtimeStore]
+  );
+  const setInputForKey = useCallback(
+    (key: ChatRuntimeKey, update: StateUpdate<string>) =>
+      updateComposerForKey(key, (composer) => ({
+        ...composer,
+        input: resolveStateUpdate(composer.input, update)
+      })),
+    [updateComposerForKey]
+  );
+  const setInput = useCallback(
+    (update: StateUpdate<string>) => setInputForKey(activeRuntimeKeyRef.current, update),
+    [setInputForKey]
+  );
+  const setDraftProjectId = useCallback(
+    (update: StateUpdate<string | null>) =>
+      updateActiveComposer((composer) => ({
+        ...composer,
+        draftProjectId: resolveStateUpdate(composer.draftProjectId, update)
+      })),
+    [updateActiveComposer]
+  );
   const [upgradeDialogOpen, setUpgradeDialogOpen] = useState(false);
   const [upgradeFeature, setUpgradeFeature] = useState<
     "image" | "document" | "voice" | "usage" | "tokens"
@@ -1577,7 +1868,10 @@ export function UnifiedChat() {
   const [isRecording, setIsRecording] = useState(false);
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [isProcessingSend, setIsProcessingSend] = useState(false);
-  const [audioError, setAudioError] = useState<string | null>(null);
+  const [recordingOwnerKey, setRecordingOwnerKey] = useState<ChatRuntimeKey | null>(null);
+  const isRecordingForActive = Boolean(
+    isRecording && recordingOwnerKey && isRuntimeSelected(recordingOwnerKey)
+  );
 
   // Web search toggle state - persisted in localStorage, billing-aware initial default
   const [isWebSearchEnabled, setIsWebSearchEnabled] = useState(getInitialWebSearchEnabled);
@@ -1620,6 +1914,7 @@ export function UnifiedChat() {
   const prevStreamingRef = useRef(false);
   const historyPaginationGateRef = useRef(new ChatHistoryPaginationGate());
   const pendingHistoryScrollRestoreRef = useRef<ChatHistoryScrollSnapshot | null>(null);
+  const pendingHistoryScrollRestoreKeyRef = useRef<ChatRuntimeKey | null>(null);
   const wheelGestureEndTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const touchGestureEndTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const keyIntentTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1631,14 +1926,13 @@ export function UnifiedChat() {
   const [hasNewPolledMessages, setHasNewPolledMessages] = useState(false);
   const recorderRef = useRef<RecordRTC | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
-  const assistantStreamingRef = useRef(false);
-
-  const abortControllerRef = useRef<AbortController | null>(null);
-  const billingRefreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const billingRefreshTimeoutsRef = useRef(new Set<ReturnType<typeof setTimeout>>());
   const fileInputRef = useRef<HTMLInputElement>(null);
   const documentInputRef = useRef<HTMLInputElement>(null);
-  const imagePasteGenerationRef = useRef(0);
-  const documentUploadGenerationRef = useRef(0);
+  const fileInputOwnerKeyRef = useRef<ChatRuntimeKey | null>(null);
+  const documentInputOwnerKeyRef = useRef<ChatRuntimeKey | null>(null);
+  const recordingOwnerKeyRef = useRef<ChatRuntimeKey | null>(null);
+  const recordingSessionTokenRef = useRef(0);
 
   // Refs
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -1646,7 +1940,77 @@ export function UnifiedChat() {
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const historyTopSentinelRef = useRef<HTMLDivElement>(null);
   const historyBottomCompensationRef = useRef<HTMLDivElement>(null);
-  const activeConversationLoadRef = useRef(0);
+  const activeConversationLoadRef = useRef(new Map<ChatRuntimeKey, number>());
+
+  const stopRecordingForNavigation = useCallback(
+    (destinationKey: ChatRuntimeKey) => {
+      const rawOwnerKey = recordingOwnerKeyRef.current;
+      const ownerKey = rawOwnerKey ? runtimeStore.resolveKey(rawOwnerKey) : null;
+      const ownerSessionToken = recordingSessionTokenRef.current;
+      const recorder = recorderRef.current;
+      const stream = streamRef.current;
+      const result = cleanupRecordingForNavigation({
+        ownerKey,
+        destinationKey: runtimeStore.resolveKey(destinationKey),
+        recorder: recorder
+          ? { stopRecording: (callback) => recorder.stopRecording(callback) }
+          : null,
+        stream,
+        clearOwnership: () => {
+          const currentOwnerKey = recordingOwnerKeyRef.current;
+          if (
+            currentOwnerKey &&
+            runtimeStore.resolveKey(currentOwnerKey) === ownerKey &&
+            recordingSessionTokenRef.current === ownerSessionToken
+          ) {
+            recordingOwnerKeyRef.current = null;
+            recordingSessionTokenRef.current += 1;
+            setRecordingOwnerKey(null);
+            setIsRecording(false);
+            setIsTranscribing(false);
+            setIsProcessingSend(false);
+          }
+        },
+        clearRecorder: () => {
+          if (recorderRef.current === recorder) recorderRef.current = null;
+        },
+        clearStream: () => {
+          if (streamRef.current === stream) streamRef.current = null;
+        }
+      });
+      if (result.errors.length > 0) {
+        console.error("Failed to fully stop recording during chat navigation:", result.errors);
+      }
+    },
+    [runtimeStore]
+  );
+
+  useEffect(
+    () => () => {
+      const recorder = recorderRef.current;
+      const stream = streamRef.current;
+      const result = cleanupRecordingForTeardown({
+        recorder: recorder
+          ? { stopRecording: (callback) => recorder.stopRecording(callback) }
+          : null,
+        stream,
+        clearOwnership: () => {
+          recordingOwnerKeyRef.current = null;
+          recordingSessionTokenRef.current += 1;
+        },
+        clearRecorder: () => {
+          if (recorderRef.current === recorder) recorderRef.current = null;
+        },
+        clearStream: () => {
+          if (streamRef.current === stream) streamRef.current = null;
+        }
+      });
+      if (result.errors.length > 0) {
+        console.error("Failed to fully clean up recording during teardown:", result.errors);
+      }
+    },
+    []
+  );
 
   const clearHistoryBottomCompensation = useCallback(() => {
     if (historyBottomCompensationRef.current) {
@@ -1661,6 +2025,7 @@ export function UnifiedChat() {
   useEffect(() => {
     historyPaginationGateRef.current.resetIntent();
     pendingHistoryScrollRestoreRef.current = null;
+    pendingHistoryScrollRestoreKeyRef.current = null;
     previousTouchYRef.current = null;
     touchHistoryGestureActiveRef.current = false;
     pointerHistoryGestureActiveRef.current = false;
@@ -1696,28 +2061,6 @@ export function UnifiedChat() {
     };
   }, [chatId]);
 
-  // Attachment cleanup function - defined early to avoid reference errors
-  const clearAllAttachments = useCallback(() => {
-    imagePasteGenerationRef.current += 1;
-    documentUploadGenerationRef.current += 1;
-    // Clean up image URLs
-    imageUrls.forEach((url) => URL.revokeObjectURL(url));
-    setImageUrls(new Map());
-    setDraftImages([]);
-    setDocumentText("");
-    setDocumentName("");
-    setIsProcessingDocument(false);
-    setAttachmentError(null);
-  }, [imageUrls]);
-
-  // Invalidate delayed clipboard reads when switching conversations or unmounting.
-  useEffect(() => {
-    imagePasteGenerationRef.current += 1;
-    return () => {
-      imagePasteGenerationRef.current += 1;
-    };
-  }, [chatId]);
-
   // Auto-resize textarea
   useEffect(() => {
     if (textareaRef.current) {
@@ -1729,10 +2072,10 @@ export function UnifiedChat() {
 
   // Cleanup billing refresh timeout on unmount
   useEffect(() => {
+    const billingRefreshTimeouts = billingRefreshTimeoutsRef.current;
     return () => {
-      if (billingRefreshTimeoutRef.current) {
-        clearTimeout(billingRefreshTimeoutRef.current);
-      }
+      for (const timeout of billingRefreshTimeouts) clearTimeout(timeout);
+      billingRefreshTimeouts.clear();
     };
   }, []);
 
@@ -1806,8 +2149,18 @@ export function UnifiedChat() {
     };
   }, []);
 
+  const [streamEventDebugLoggingEnabled] = useState(isStreamEventDebugLoggingEnabled);
   const logStreamEvent = useCallback(
-    (streamStartedAt: number, eventIndex: number, eventType: string, event: unknown) => {
+    (
+      runtimeKey: ChatRuntimeKey,
+      runToken: number,
+      streamStartedAt: number,
+      eventIndex: number,
+      eventType: string,
+      event: unknown
+    ) => {
+      if (!streamEventDebugLoggingEnabled) return;
+
       const includeScrollSnapshot =
         eventType === "response.output_item.added" ||
         eventType === "response.output_item.done" ||
@@ -1817,10 +2170,12 @@ export function UnifiedChat() {
       console.log("🔵 SSE Event", {
         at: new Date().toISOString(),
         elapsedMs: Math.round(performance.now() - streamStartedAt),
+        runtimeKey: runtimeStore.resolveKey(runtimeKey),
+        runToken,
         eventIndex,
         eventType,
         ...summarizeStreamEventForLog(eventType, event),
-        ...(includeScrollSnapshot
+        ...(includeScrollSnapshot && isRuntimeSelected(runtimeKey)
           ? {
               isUserScrolling: isUserScrollingRef.current,
               scroll: getScrollDebugSnapshot()
@@ -1828,7 +2183,7 @@ export function UnifiedChat() {
           : {})
       });
     },
-    [getScrollDebugSnapshot]
+    [getScrollDebugSnapshot, isRuntimeSelected, runtimeStore, streamEventDebugLoggingEnabled]
   );
 
   // Attach scroll listener
@@ -1848,9 +2203,11 @@ export function UnifiedChat() {
 
     const container = chatContainerRef.current;
     const snapshot = pendingHistoryScrollRestoreRef.current;
+    const ownerKey = pendingHistoryScrollRestoreKeyRef.current;
     pendingHistoryScrollRestoreRef.current = null;
+    pendingHistoryScrollRestoreKeyRef.current = null;
 
-    if (!container) return;
+    if (!container || !ownerKey || !isRuntimeSelected(ownerKey)) return;
 
     let restoredScrollTop = restoredChatHistoryScrollTop(snapshot, container.scrollHeight);
 
@@ -1892,7 +2249,7 @@ export function UnifiedChat() {
       // the real gesture end (or the compatibility timer) must release the gate.
       suppressedHistoryScrollEndsRef.current += 1;
     }
-  }, [isLoadingOlderMessages, messages]);
+  }, [isLoadingOlderMessages, isRuntimeSelected, messages]);
 
   // Initial load - scroll to bottom instantly
   useEffect(() => {
@@ -1975,55 +2332,97 @@ export function UnifiedChat() {
     }
   }, [hasNewPolledMessages, scrollToBottom]);
 
-  // Unified event handling for conversation changes
+  const selectConversationRuntime = useCallback(
+    (conversationId: string) => {
+      const key = createConversationChatKey(conversationId);
+      stopRecordingForNavigation(key);
+      runtimeStore.select(key);
+      activeRuntimeKeyRef.current = key;
+      setActiveRuntimeKey(key);
+      setChatId(conversationId);
+      prevMessageCountRef.current = 0;
+      return key;
+    },
+    [runtimeStore, stopRecordingForNavigation]
+  );
+
+  const selectFreshDraftRuntime = useCallback(
+    (projectId: string | null, requestedDraftKey?: DraftChatRuntimeKey) => {
+      const key = requestedDraftKey ?? createChatDraftKey();
+      stopRecordingForNavigation(key);
+      runtimeStore.select(key, {
+        composer: createChatComposerState(projectId)
+      });
+      activeRuntimeKeyRef.current = key;
+      setActiveRuntimeKey(key);
+      setChatId(undefined);
+      prevMessageCountRef.current = 0;
+      window.history.replaceState(
+        historyStateWithDraftRuntimeKey(window.history.state, key),
+        "",
+        window.location.href
+      );
+      return key;
+    },
+    [runtimeStore, stopRecordingForNavigation]
+  );
+
+  // Unified event handling for conversation changes. Selection never clears or
+  // aborts the previous runtime; background streams retain their owning key.
   useEffect(() => {
     // Handle new chat event
     const handleNewChat = (event?: Event) => {
+      const detail =
+        event instanceof CustomEvent && event.detail && typeof event.detail === "object"
+          ? (event.detail as NewChatNavigationDetail)
+          : undefined;
       const nextProjectId =
-        event instanceof CustomEvent && event.detail && "projectId" in event.detail
-          ? (event.detail.projectId ?? null)
-          : (selectedProjectId ?? null);
+        detail && "projectId" in detail ? (detail.projectId ?? null) : (selectedProjectId ?? null);
+      const requestedDraftKey = isDraftChatRuntimeKey(detail?.draftRuntimeKey)
+        ? detail.draftRuntimeKey
+        : undefined;
 
-      activeConversationLoadRef.current += 1;
-      setChatId(undefined);
-      setConversation(null);
-      setMessages([]);
-      setInput("");
-      setDraftProjectId(nextProjectId);
-      setError(null);
-      setLastSeenItemId(undefined);
-      // Clear pagination state
-      setOldestItemId(undefined);
-      setHasMoreOlderMessages(false);
-      setIsLoadingOlderMessages(false);
-      // Clear attachments
-      clearAllAttachments();
-      // Reset scroll tracking
-      prevMessageCountRef.current = 0;
+      selectFreshDraftRuntime(nextProjectId, requestedDraftKey);
     };
 
     // Handle conversation selection from sidebar
     const handleConversationSelected = (event: CustomEvent) => {
       const { conversationId } = event.detail;
       if (conversationId && conversationId !== chatId) {
-        // Reset scroll tracking for new conversation
-        prevMessageCountRef.current = 0;
-        activeConversationLoadRef.current += 1;
-        // Update our local chatId state to trigger load
-        setChatId(conversationId);
-        setError(null);
+        selectConversationRuntime(conversationId);
       }
     };
 
     // Handle browser back/forward navigation
-    const handlePopState = () => {
+    const handlePopState = (event: PopStateEvent) => {
       const params = new URLSearchParams(window.location.search);
       const newChatId = params.get("conversation_id") || undefined;
-      if (newChatId !== chatId) {
-        // Reset scroll tracking for navigation
-        prevMessageCountRef.current = 0;
-        activeConversationLoadRef.current += 1;
-        setChatId(newChatId);
+      if (params.has("project_id")) return;
+
+      if (newChatId) {
+        if (newChatId !== chatId) {
+          selectConversationRuntime(newChatId);
+        }
+        return;
+      }
+
+      const savedDraftKey = draftRuntimeKeyFromHistoryState(event.state);
+      if (savedDraftKey) {
+        const restoredConversationId = conversationIdFromChatRuntimeKey(
+          runtimeStore.resolveKey(savedDraftKey)
+        );
+        if (restoredConversationId) {
+          canonicalizeConversationHistoryEntry(restoredConversationId, event.state);
+          if (restoredConversationId !== chatId) {
+            selectConversationRuntime(restoredConversationId);
+          }
+          return;
+        }
+      }
+
+      const currentKey = runtimeStore.resolveKey(activeRuntimeKeyRef.current);
+      if (!savedDraftKey || currentKey !== runtimeStore.resolveKey(savedDraftKey)) {
+        selectFreshDraftRuntime(selectedProjectId ?? null, savedDraftKey ?? undefined);
       }
     };
 
@@ -2039,34 +2438,58 @@ export function UnifiedChat() {
       );
       window.removeEventListener("popstate", handlePopState);
     };
-  }, [chatId, clearAllAttachments, selectedProjectId]);
+  }, [chatId, runtimeStore, selectConversationRuntime, selectFreshDraftRuntime, selectedProjectId]);
 
   // Cancel the current response
   const handleCancelResponse = useCallback(async () => {
-    if (!currentResponseId || !openai) return;
+    const runtimeKey = activeRuntimeKeyRef.current;
+    const runToken = runtimeStore.get(runtimeKey)?.runToken;
+    if (runToken === null || runToken === undefined) return;
+    const optimisticMessageId = getRegisteredChatOptimisticMessage(runtimeStore, runToken);
+    // Commit the final partial frame while this run still owns its token. Once
+    // cancelRun clears ownership, any delayed callback must fail closed.
+    flushRegisteredChatStreamDeltas(runtimeStore, runToken);
+    const cancelled = runtimeStore.cancelRun(runtimeKey, runToken);
+    if (!cancelled) return;
+
+    runtimeStore.update(runtimeKey, (snapshot) => ({
+      ...snapshot,
+      messages: cancelled.responseId
+        ? updateActiveItemStatuses(snapshot.messages as Message[], "incomplete")
+        : updateActiveItemStatuses(
+            markOptimisticMessageIncomplete(snapshot.messages as Message[], optimisticMessageId),
+            "incomplete"
+          )
+    }));
+    if (optimisticMessageId) {
+      unregisterChatOptimisticMessage(runtimeStore, runToken, optimisticMessageId);
+    }
 
     try {
-      await (openai.responses as { cancel: (id: string) => Promise<unknown> }).cancel(
-        currentResponseId
-      );
-      setIsGenerating(false);
-      setCurrentResponseId(undefined);
-      abortControllerRef.current?.abort();
-      abortControllerRef.current = null;
-      assistantStreamingRef.current = false;
+      if (cancelled.responseId && openai) {
+        await (openai.responses as { cancel: (id: string) => Promise<unknown> }).cancel(
+          cancelled.responseId
+        );
+      }
     } catch (error) {
       console.error("Failed to cancel response:", error);
-      setError("Failed to cancel response. Please try again.");
+      if (runtimeStore.get(runtimeKey)) {
+        setErrorForKey(runtimeKey, "Failed to cancel response. Please try again.");
+      }
     }
-  }, [currentResponseId, openai]);
+  }, [openai, runtimeStore, setErrorForKey]);
 
   // Load conversation from API
   const loadConversation = useCallback(
-    async (conversationId: string) => {
+    async (runtimeKey: ChatRuntimeKey, conversationId: string) => {
       if (!openai) return;
 
-      const requestId = ++activeConversationLoadRef.current;
-      const isStaleRequest = () => requestId !== activeConversationLoadRef.current;
+      const canonicalKey = runtimeStore.resolveKey(runtimeKey);
+      const requestId = (activeConversationLoadRef.current.get(canonicalKey) ?? 0) + 1;
+      activeConversationLoadRef.current.set(canonicalKey, requestId);
+      const isStaleRequest = () =>
+        !runtimeStore.get(runtimeKey) ||
+        activeConversationLoadRef.current.get(runtimeStore.resolveKey(runtimeKey)) !== requestId;
 
       // Reset message count before loading new conversation
       prevMessageCountRef.current = 0;
@@ -2105,26 +2528,25 @@ export function UnifiedChat() {
         // Reverse the array for display (we want oldest first/at top, newest last/at bottom)
         // API returns desc (newest first), but chat UI needs chronological order
         const messagesInChronologicalOrder = loadedMessages.reverse();
-        setMessages(messagesInChronologicalOrder);
-
-        // Use the API's raw-item cursor rather than a normalized rendered-message ID.
         const oldestId = itemsResponse.last_id || itemsResponse.data.at(-1)?.id;
-        if (oldestId) {
-          setOldestItemId(oldestId);
-          setHasMoreOlderMessages(itemsResponse.has_more);
-        } else {
-          setOldestItemId(undefined);
-          setHasMoreOlderMessages(false);
-        }
-
-        // Set last seen ID for polling - use the NEWEST message (first in desc response)
-        // Skip in_progress messages by finding the first completed one
         const newestCompletedItem = itemsResponse.data.find(
           (item) => (item as Message).status !== "in_progress"
         );
-        if (newestCompletedItem) {
-          setLastSeenItemId(newestCompletedItem.id);
-        }
+        runtimeStore.update(runtimeKey, (snapshot) => ({
+          ...snapshot,
+          messages: mergeLoadedMessagesWithRuntime(messagesInChronologicalOrder, snapshot.messages),
+          lastSeenItemId: newestCompletedItem?.id ?? snapshot.lastSeenItemId,
+          historyLoaded: true,
+          composer: {
+            ...snapshot.composer,
+            pagination: {
+              ...snapshot.composer.pagination,
+              oldestItemId: oldestId,
+              hasMoreOlderMessages: oldestId ? itemsResponse.has_more : false,
+              isLoadingOlderMessages: false
+            }
+          }
+        }));
 
         // Then handle conversation metadata when it arrives
         const conv = await convPromise;
@@ -2132,7 +2554,10 @@ export function UnifiedChat() {
         if (!conv.ok) {
           throw conv.error;
         }
-        setConversation(conv.value as Conversation);
+        runtimeStore.update(runtimeKey, (snapshot) => ({
+          ...snapshot,
+          conversation: conv.value as Conversation
+        }));
       } catch (error) {
         if (isStaleRequest()) return;
 
@@ -2140,39 +2565,53 @@ export function UnifiedChat() {
         if (err.status === 404) {
           // Conversation doesn't exist - clear and start fresh
           // Conversation not found, starting new
-          setConversation(null);
-          setMessages([]);
-          setError(null);
-          setOldestItemId(undefined);
-          setHasMoreOlderMessages(false);
-          // Clear the invalid conversation_id from URL
-          const params = new URLSearchParams(window.location.search);
-          params.delete("conversation_id");
-          window.history.replaceState({}, "", params.toString() ? `/?${params}` : "/");
+          runtimeStore.delete(runtimeKey);
+          if (isRuntimeSelected(runtimeKey)) {
+            const params = new URLSearchParams(window.location.search);
+            params.delete("conversation_id");
+            window.history.replaceState({}, "", params.toString() ? `/?${params}` : "/");
+            selectFreshDraftRuntime(selectedProjectId ?? null);
+          }
         } else {
           console.error("Failed to load conversation:", error);
-          setError(err.message || "Failed to load conversation");
+          setErrorForKey(runtimeKey, err.message || "Failed to load conversation");
         }
       }
     },
-    [openai]
+    [
+      isRuntimeSelected,
+      openai,
+      runtimeStore,
+      selectFreshDraftRuntime,
+      selectedProjectId,
+      setErrorForKey
+    ]
   );
 
   // Load older messages for pagination
   const loadOlderMessages = useCallback(async () => {
-    if (!conversation?.id || !openai || !oldestItemId) {
+    const runtimeKey = activeRuntimeKeyRef.current;
+    const snapshot = runtimeStore.get(runtimeKey);
+    const conversationId =
+      snapshot?.conversation?.id ??
+      conversationIdFromChatRuntimeKey(runtimeStore.resolveKey(runtimeKey));
+    const requestOldestItemId = snapshot?.composer.pagination.oldestItemId;
+    if (!conversationId || !openai || !requestOldestItemId) {
       historyPaginationGateRef.current.finishLoad();
       return;
     }
 
-    setIsLoadingOlderMessages(true);
+    updateComposerForKey(runtimeKey, (composer) => ({
+      ...composer,
+      pagination: { ...composer.pagination, isLoadingOlderMessages: true }
+    }));
 
     try {
       // Fetch next 20 older items using the oldest item ID we have
-      const itemsResponse = await openai.conversations.items.list(conversation.id, {
+      const itemsResponse = await openai.conversations.items.list(conversationId, {
         limit: 20,
         order: "desc",
-        after: oldestItemId
+        after: requestOldestItemId
       });
 
       // Convert items to messages, grouping tool calls with their messages
@@ -2195,16 +2634,16 @@ export function UnifiedChat() {
       const olderMessagesInChronologicalOrder = olderMessages.reverse();
       const newOldestId = itemsResponse.last_id || itemsResponse.data.at(-1)?.id;
 
-      if (!chatHistoryCursorProgressed(oldestItemId, newOldestId)) {
-        setHasMoreOlderMessages(false);
+      if (!chatHistoryCursorProgressed(requestOldestItemId, newOldestId)) {
+        updateComposerForKey(runtimeKey, (composer) => ({
+          ...composer,
+          pagination: { ...composer.pagination, hasMoreOlderMessages: false }
+        }));
         return;
       }
 
-      setOldestItemId(newOldestId);
-      setHasMoreOlderMessages(itemsResponse.has_more);
-
       if (olderMessagesInChronologicalOrder.length > 0) {
-        const container = chatContainerRef.current;
+        const container = isRuntimeSelected(runtimeKey) ? chatContainerRef.current : null;
         if (container) {
           const containerRect = container.getBoundingClientRect();
           const firstVisibleAnchor = Array.from(
@@ -2226,128 +2665,136 @@ export function UnifiedChat() {
             anchorId,
             anchorOffset
           };
+          pendingHistoryScrollRestoreKeyRef.current = runtimeKey;
         }
 
         // Prepend older messages while keeping IDs unique. Restore the pending scroll
         // snapshot after this render commits; the loading overlay does not affect layout.
-        setMessages((prev) => mergeMessagesById(olderMessagesInChronologicalOrder, prev));
+        runtimeStore.update(runtimeKey, (current) => ({
+          ...current,
+          messages: mergeMessagesById(
+            olderMessagesInChronologicalOrder,
+            current.messages as Message[]
+          ),
+          composer: {
+            ...current.composer,
+            pagination: {
+              ...current.composer.pagination,
+              oldestItemId: newOldestId,
+              hasMoreOlderMessages: itemsResponse.has_more
+            }
+          }
+        }));
+      } else {
+        updateComposerForKey(runtimeKey, (composer) => ({
+          ...composer,
+          pagination: {
+            ...composer.pagination,
+            oldestItemId: newOldestId,
+            hasMoreOlderMessages: itemsResponse.has_more
+          }
+        }));
       }
     } catch (error) {
       console.error("Failed to load older messages:", error);
     } finally {
       historyPaginationGateRef.current.finishLoad();
-      setIsLoadingOlderMessages(false);
+      const current = runtimeStore.get(runtimeKey);
+      if (current) {
+        updateComposerForKey(runtimeKey, (composer) => ({
+          ...composer,
+          pagination: { ...composer.pagination, isLoadingOlderMessages: false }
+        }));
+      }
     }
-  }, [conversation?.id, openai, oldestItemId]);
+  }, [isRuntimeSelected, openai, runtimeStore, updateComposerForKey]);
 
   // Polling mechanism for conversation updates
-  const pollForNewItems = useCallback(async () => {
-    if (!conversation?.id || !openai) return;
-    if (assistantStreamingRef.current) return;
+  const pollForNewItems = useCallback(
+    async (runtimeKey: ChatRuntimeKey) => {
+      const snapshot = runtimeStore.get(runtimeKey);
+      const conversationId =
+        snapshot?.conversation?.id ??
+        conversationIdFromChatRuntimeKey(runtimeStore.resolveKey(runtimeKey));
+      if (!snapshot || !conversationId || !openai || snapshot.assistantStreaming) return;
 
-    try {
-      // Fetch NEW items that came after the last seen ID
-      // Use order=asc to get items chronologically after the lastSeenItemId
-      const response = await openai.conversations.items.list(conversation.id, {
-        ...(lastSeenItemId ? { after: lastSeenItemId, order: "asc" } : {}),
-        limit: 20 // Smaller limit since we only expect a few new messages
-      });
+      try {
+        // Fetch NEW items that came after the last seen ID
+        // Use order=asc to get items chronologically after the lastSeenItemId
+        const response = await openai.conversations.items.list(conversationId, {
+          ...(snapshot.lastSeenItemId ? { after: snapshot.lastSeenItemId, order: "asc" } : {}),
+          limit: 20 // Smaller limit since we only expect a few new messages
+        });
 
-      if (response.data.length > 0) {
-        // Convert API items to UI messages, grouping tool calls with their messages
-        const newMessages = convertItemsToMessages(
-          response.data as Array<{
-            id: string;
-            type: string;
-            role?: string;
-            content?: unknown;
-            name?: string;
-            arguments?: string;
-            call_id?: string;
-            output?: string;
-            status?: string;
-            created_at?: number;
-          }>
-        );
+        if (response.data.length > 0) {
+          // Convert API items to UI messages, grouping tool calls with their messages
+          const newMessages = convertItemsToMessages(
+            response.data as Array<{
+              id: string;
+              type: string;
+              role?: string;
+              content?: unknown;
+              name?: string;
+              arguments?: string;
+              call_id?: string;
+              output?: string;
+              status?: string;
+              created_at?: number;
+            }>
+          );
 
-        if (newMessages.length > 0) {
-          // Merge new messages with deduplication using helper
-          setMessages((prev) => {
-            // Check if there are truly new messages (not already in prev)
-            const prevIds = new Set(prev.map((m) => m.id));
-            const trulyNewMessages = newMessages.filter((m) => !prevIds.has(m.id));
+          if (newMessages.length > 0) {
+            // Merge new messages with deduplication using helper
+            runtimeStore.update(runtimeKey, (current) => {
+              // Check if there are truly new messages (not already in prev)
+              const prevIds = new Set(current.messages.map((m) => m.id));
+              const trulyNewMessages = newMessages.filter((m) => !prevIds.has(m.id));
 
-            // Mark that we have new polled messages for scrolling
-            if (trulyNewMessages.length > 0) {
-              setHasNewPolledMessages(true);
+              // Mark that we have new polled messages for scrolling
+              if (trulyNewMessages.length > 0 && isRuntimeSelected(runtimeKey)) {
+                setHasNewPolledMessages(true);
+              }
+
+              return {
+                ...current,
+                messages: mergePolledMessagesWithRuntime(current.messages, newMessages)
+              };
+            });
+
+            // Update last seen item ID for next poll
+            // Since we're using order=asc, the LAST item is the newest
+            // Skip in_progress messages by finding the last completed one
+            const newestCompletedItem = [...response.data]
+              .reverse()
+              .find((item) => (item as Message).status !== "in_progress");
+            if (newestCompletedItem) {
+              setLastSeenItemIdForKey(runtimeKey, newestCompletedItem.id);
             }
-
-            // Use merge helper to combine, which will deduplicate and update existing messages
-            return mergeMessagesById(prev, newMessages);
-          });
-
-          // Update last seen item ID for next poll
-          // Since we're using order=asc, the LAST item is the newest
-          // Skip in_progress messages by finding the last completed one
-          const newestCompletedItem = [...response.data]
-            .reverse()
-            .find((item) => (item as Message).status !== "in_progress");
-          if (newestCompletedItem) {
-            setLastSeenItemId(newestCompletedItem.id);
-          }
-
-          // Check if we're no longer generating
-          // Only stop if assistant message is completed or incomplete, not if still in_progress
-          if (
-            isGenerating &&
-            newMessages.some(
-              (m) =>
-                m.type === "message" &&
-                (m as ExtendedMessage).role === "assistant" &&
-                ((m as ExtendedMessage).status === "completed" ||
-                  (m as ExtendedMessage).status === "incomplete")
-            )
-          ) {
-            setIsGenerating(false);
           }
         }
+      } catch (error) {
+        console.error("Polling error:", error);
+        // Don't throw - polling should fail silently
       }
-    } catch (error) {
-      console.error("Polling error:", error);
-      // Don't throw - polling should fail silently
-    }
-  }, [conversation?.id, lastSeenItemId, isGenerating, openai]);
+    },
+    [isRuntimeSelected, openai, runtimeStore, setLastSeenItemIdForKey]
+  );
 
-  // Load conversation when URL changes or on mount
+  // Load conversation when URL changes or on mount. Cached runtimes—including
+  // active offscreen streams—remain authoritative and do not get reloaded.
   useEffect(() => {
-    // Skip if we just created a new conversation
-    if (isNewConversationJustCreated) {
-      // Reset the flag for next time
-      setIsNewConversationJustCreated(false);
-      return;
-    }
-
     if (chatId && openai) {
-      // Load the conversation from URL
-      loadConversation(chatId);
-    } else if (!chatId) {
-      // Clear if no conversation ID
-      setConversation(null);
-      setMessages([]);
-      setDraftProjectId(selectedProjectId ?? null);
-      setLastSeenItemId(undefined);
-      // Clear pagination state
-      setOldestItemId(undefined);
-      setHasMoreOlderMessages(false);
-      setIsLoadingOlderMessages(false);
-      // Reset scroll tracking
-      prevMessageCountRef.current = 0;
+      const snapshot = runtimeStore.get(activeRuntimeKey);
+      if (!snapshot?.historyLoaded) {
+        void loadConversation(activeRuntimeKey, chatId);
+      }
     }
-  }, [chatId, openai, loadConversation, selectedProjectId]);
+  }, [activeRuntimeKey, chatId, openai, loadConversation, runtimeStore]);
 
   // Set up progressive polling interval
   useEffect(() => {
     if (!conversation?.id || !openai) return;
+    const runtimeKey = activeRuntimeKey;
 
     // Progressive intervals: 2s, 5s, 10s, 15s, 20s, 30s, 60s (then 60s forever)
     const intervals = [2000, 5000, 10000, 15000, 20000, 30000, 60000];
@@ -2359,7 +2806,7 @@ export function UnifiedChat() {
       const currentInterval = intervals[Math.min(currentIntervalIndex, intervals.length - 1)];
 
       timeoutId = setTimeout(() => {
-        pollForNewItems();
+        void pollForNewItems(runtimeKey);
 
         // Move to next interval if not at the end
         if (currentIntervalIndex < intervals.length - 1) {
@@ -2377,11 +2824,12 @@ export function UnifiedChat() {
     return () => {
       if (timeoutId) clearTimeout(timeoutId);
     };
-  }, [conversation?.id, openai, pollForNewItems]);
+  }, [activeRuntimeKey, conversation?.id, openai, pollForNewItems]);
 
   // Poll for title updates when it's "New Conversation" with exponential backoff
   useEffect(() => {
     const currentTitle = conversation?.metadata?.title;
+    const runtimeKey = activeRuntimeKey;
 
     // Only poll if we have a conversation and the title is "New Conversation"
     if (!conversation?.id || !openai || currentTitle !== "New Conversation") {
@@ -2392,20 +2840,29 @@ export function UnifiedChat() {
     let currentDelay = 500; // Start at 0.5s
     const maxDelay = 10000; // Cap at 10s
     let timeoutId: ReturnType<typeof setTimeout>;
+    let cancelled = false;
 
     const checkTitle = async () => {
       try {
         // Fetch updated conversation metadata
         const updatedConv = await openai.conversations.retrieve(conversation.id);
+        if (cancelled || !runtimeStore.get(runtimeKey)) return;
         const newTitle = (updatedConv as Conversation).metadata?.title;
 
         // If title changed from "New Conversation", update local state and sidebar
         if (newTitle && newTitle !== "New Conversation") {
-          setConversation(updatedConv as Conversation);
+          setConversationForKey(runtimeKey, updatedConv as Conversation);
           // Trigger title animation
-          setTitleJustUpdated(true);
+          if (isRuntimeSelected(runtimeKey)) setTitleJustUpdatedKey(runtimeKey);
           // Remove animation class after animation completes (800ms for flash animation)
-          setTimeout(() => setTitleJustUpdated(false), 850);
+          setTimeout(() => {
+            setTitleJustUpdatedKey((currentKey) =>
+              currentKey &&
+              runtimeStore.resolveKey(currentKey) === runtimeStore.resolveKey(runtimeKey)
+                ? null
+                : currentKey
+            );
+          }, 850);
           // Refresh all sidebar conversation lists
           await Promise.all([
             queryClient.invalidateQueries({ queryKey: ["conversations"] }),
@@ -2420,6 +2877,7 @@ export function UnifiedChat() {
         timeoutId = setTimeout(checkTitle, currentDelay);
       } catch (error) {
         console.error("Failed to check title update:", error);
+        if (cancelled) return;
         // Continue polling even on error
         currentDelay = Math.min(currentDelay * 2, maxDelay);
         timeoutId = setTimeout(checkTitle, currentDelay);
@@ -2430,9 +2888,19 @@ export function UnifiedChat() {
     timeoutId = setTimeout(checkTitle, currentDelay);
 
     return () => {
+      cancelled = true;
       if (timeoutId) clearTimeout(timeoutId);
     };
-  }, [conversation?.id, conversation?.metadata?.title, openai, queryClient]);
+  }, [
+    activeRuntimeKey,
+    conversation?.id,
+    conversation?.metadata?.title,
+    isRuntimeSelected,
+    openai,
+    queryClient,
+    runtimeStore,
+    setConversationForKey
+  ]);
 
   const isHistoryTopBoundaryNear = useCallback(() => {
     const container = chatContainerRef.current;
@@ -2746,13 +3214,17 @@ export function UnifiedChat() {
   // Auto-clear error after 3 seconds
   useEffect(() => {
     if (error) {
+      const ownerKey = activeRuntimeKey;
+      const ownerError = error;
       const timeoutId = setTimeout(() => {
-        setError(null);
+        if (runtimeStore.get(ownerKey)?.error === ownerError) {
+          setErrorForKey(ownerKey, null);
+        }
       }, 3000);
 
       return () => clearTimeout(timeoutId);
     }
-  }, [error]);
+  }, [activeRuntimeKey, error, runtimeStore, setErrorForKey]);
 
   // Toggle sidebar
   const toggleSidebar = useCallback(() => setIsSidebarOpen((prev) => !prev), [setIsSidebarOpen]);
@@ -2768,8 +3240,13 @@ export function UnifiedChat() {
     const newUrl = usp.toString()
       ? `${window.location.pathname}?${usp.toString()}`
       : window.location.pathname;
-    window.history.replaceState(null, "", newUrl);
-    window.dispatchEvent(new CustomEvent("newchat", { detail: { projectId: null } }));
+    const freshChat = createFreshChatHistoryEntry();
+    window.history.pushState(freshChat.historyState, "", newUrl);
+    window.dispatchEvent(
+      new CustomEvent<NewChatNavigationDetail>("newchat", {
+        detail: { projectId: null, draftRuntimeKey: freshChat.draftRuntimeKey }
+      })
+    );
     if (isSidebarOpen) {
       toggleSidebar();
     }
@@ -2791,93 +3268,143 @@ export function UnifiedChat() {
   const canUseDocuments = hasProAccess;
   const canUseVoice = hasProAccess && localState.hasWhisperModel;
 
+  const setComposerErrorForKey = useCallback(
+    (
+      key: ChatRuntimeKey,
+      field: "attachmentError" | "audioError",
+      message: string | null,
+      duration = 5000
+    ) => {
+      if (!updateComposerForKey(key, (composer) => ({ ...composer, [field]: message }))) return;
+      if (!message) return;
+
+      setTimeout(() => {
+        const snapshot = runtimeStore.get(key);
+        if (snapshot?.composer[field] !== message) return;
+        updateComposerForKey(key, (composer) => ({ ...composer, [field]: null }));
+      }, duration);
+    },
+    [runtimeStore, updateComposerForKey]
+  );
+
   const handleAddImages = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
-      if (!e.target.files) return;
+      const ownerKey = fileInputOwnerKeyRef.current ?? activeRuntimeKeyRef.current;
+      fileInputOwnerKeyRef.current = null;
+      const selectedFiles = Array.from(e.currentTarget.files ?? []);
+      e.currentTarget.value = "";
+      const ownerSnapshot = runtimeStore.get(ownerKey);
+      if (selectedFiles.length === 0 || !ownerSnapshot || ownerSnapshot.isGenerating) return;
 
       const supportedTypes = ["image/jpeg", "image/jpg", "image/png", "image/webp"];
-      const maxSizeInBytes = 10 * 1024 * 1024; // 10MB
+      const maxSizeInBytes = 10 * 1024 * 1024;
+      let validationError: string | null = null;
 
-      const validFiles = Array.from(e.target.files).filter((file) => {
+      const validFiles = selectedFiles.filter((file) => {
         if (!supportedTypes.includes(file.type.toLowerCase())) {
-          setAttachmentError("Only JPEG, PNG, and WebP images are supported");
-          setTimeout(() => setAttachmentError(null), 5000);
+          validationError = "Only JPEG, PNG, and WebP images are supported";
           return false;
         }
         if (file.size > maxSizeInBytes) {
-          setAttachmentError(`Image too large (max 10MB)`);
-          setTimeout(() => setAttachmentError(null), 5000);
+          validationError = "Image too large (max 10MB)";
           return false;
         }
         return true;
       });
+      if (validationError) {
+        setComposerErrorForKey(ownerKey, "attachmentError", validationError);
+      }
+      if (validFiles.length === 0) return;
 
-      // Create object URLs for previews
-      const newUrlMap = new Map(imageUrls);
-      validFiles.forEach((file) => {
-        if (!newUrlMap.has(file)) {
-          newUrlMap.set(file, URL.createObjectURL(file));
-        }
-      });
-      setImageUrls(newUrlMap);
-      setDraftImages((prev) => [...prev, ...validFiles]);
-
-      // Clear input to allow re-uploading same file
-      e.target.value = "";
+      const newUrls = validFiles.map((file) => [file, URL.createObjectURL(file)] as const);
+      const attached = updateIdleAttachmentComposerForKey(ownerKey, (composer) => ({
+        ...composer,
+        imageUrls: new Map([...composer.imageUrls, ...newUrls]),
+        draftImages: [...composer.draftImages, ...validFiles]
+      }));
+      if (!attached) for (const [, url] of newUrls) URL.revokeObjectURL(url);
     },
-    [imageUrls, localState]
+    [runtimeStore, setComposerErrorForKey, updateIdleAttachmentComposerForKey]
   );
 
   const attachPastedImages = useCallback(
-    (imageFiles: File[]) => {
+    (imageFiles: File[], ownerKey: ChatRuntimeKey, expectedGeneration: number) => {
+      const ownerSnapshot = runtimeStore.get(ownerKey);
+      if (!ownerSnapshot || ownerSnapshot.isGenerating) return;
+
       if (!canUseImages) {
-        setUpgradeFeature("image");
-        setUpgradeDialogOpen(true);
+        if (isRuntimeSelected(ownerKey)) {
+          setUpgradeFeature("image");
+          setUpgradeDialogOpen(true);
+        }
         return;
       }
 
       const supportedTypes = ["image/jpeg", "image/jpg", "image/png", "image/webp"];
-      const maxSizeInBytes = 10 * 1024 * 1024; // 10MB
+      const maxSizeInBytes = 10 * 1024 * 1024;
+      let validationError: string | null = null;
 
       const validFiles = imageFiles.filter((file) => {
         if (!supportedTypes.includes(file.type.toLowerCase())) {
-          setAttachmentError("Only JPEG, PNG, and WebP images are supported");
-          setTimeout(() => setAttachmentError(null), 5000);
+          validationError = "Only JPEG, PNG, and WebP images are supported";
           return false;
         }
         if (file.size > maxSizeInBytes) {
-          setAttachmentError("Image too large (max 10MB)");
-          setTimeout(() => setAttachmentError(null), 5000);
+          validationError = "Image too large (max 10MB)";
           return false;
         }
         return true;
       });
+      if (validationError) {
+        setComposerErrorForKey(ownerKey, "attachmentError", validationError);
+      }
 
       if (validFiles.length === 0) return;
 
       const newUrls = validFiles.map((file) => [file, URL.createObjectURL(file)] as const);
-      setImageUrls((currentUrls) => new Map([...currentUrls, ...newUrls]));
-      setDraftImages((prev) => [...prev, ...validFiles]);
+      let generationMatched = false;
+      const attached = updateIdleAttachmentComposerForKey(ownerKey, (composer) => {
+        if (composer.imagePasteGeneration !== expectedGeneration) return composer;
+        generationMatched = true;
+        return {
+          ...composer,
+          imageUrls: new Map([...composer.imageUrls, ...newUrls]),
+          draftImages: [...composer.draftImages, ...validFiles]
+        };
+      });
+      if (!attached || !generationMatched) {
+        for (const [, url] of newUrls) URL.revokeObjectURL(url);
+      }
     },
-    [canUseImages]
+    [
+      canUseImages,
+      isRuntimeSelected,
+      runtimeStore,
+      setComposerErrorForKey,
+      updateIdleAttachmentComposerForKey
+    ]
   );
 
   const handlePaste = useCallback(
     (e: React.ClipboardEvent) => {
-      const pasteGeneration = ++imagePasteGenerationRef.current;
+      const ownerKey = activeRuntimeKeyRef.current;
+      const startSnapshot = runtimeStore.get(ownerKey);
+      if (!startSnapshot || startSnapshot.isGenerating) return;
+      const pasteGeneration = startSnapshot.composer.imagePasteGeneration + 1;
+      updateComposerForKey(ownerKey, (composer) => ({
+        ...composer,
+        imagePasteGeneration: pasteGeneration
+      }));
       const items = e.clipboardData?.items;
       if (!items) return;
 
       const imageFiles = getImageFilesFromClipboardItems(items);
       if (imageFiles.length > 0) {
-        // Preserve the existing DOM clipboard path whenever WebKit exposes the image.
         e.preventDefault();
-        attachPastedImages(imageFiles);
+        attachPastedImages(imageFiles, ownerKey, pasteGeneration);
         return;
       }
 
-      // WebKitGTK can hide a clipboard image from the paste DataTransfer while
-      // exposing either no items (screenshots) or one HTML item (browser Copy Image).
       if (!isLinuxTauriEnv) return;
 
       const fallback = maybeReadLinuxTauriClipboardImages({
@@ -2893,72 +3420,110 @@ export function UnifiedChat() {
         }
       });
 
-      // Do not prevent the native paste while an async read is pending. An
-      // image-only clipboard has no useful textarea default, and this keeps
-      // ordinary text paste intact if clipboard access is unavailable.
       void fallback?.then((fallbackFiles) => {
-        if (fallbackFiles.length > 0 && pasteGeneration === imagePasteGenerationRef.current) {
-          attachPastedImages(fallbackFiles);
-        }
+        const snapshot = runtimeStore.get(ownerKey);
+        if (
+          fallbackFiles.length === 0 ||
+          snapshot?.composer.imagePasteGeneration !== pasteGeneration
+        )
+          return;
+        attachPastedImages(fallbackFiles, ownerKey, pasteGeneration);
       });
     },
-    [attachPastedImages, isLinuxEnv, isLinuxTauriEnv, isTauriEnv]
+    [
+      attachPastedImages,
+      isLinuxEnv,
+      isLinuxTauriEnv,
+      isTauriEnv,
+      runtimeStore,
+      updateComposerForKey
+    ]
   );
 
   const removeImage = useCallback(
     (idx: number) => {
-      setDraftImages((prev) => {
-        const fileToRemove = prev[idx];
-        const url = imageUrls.get(fileToRemove);
-        if (url) {
-          URL.revokeObjectURL(url);
-          setImageUrls((prevUrls) => {
-            const newUrls = new Map(prevUrls);
-            newUrls.delete(fileToRemove);
-            return newUrls;
-          });
-        }
-        return prev.filter((_, i) => i !== idx);
+      const ownerKey = activeRuntimeKeyRef.current;
+      const snapshot = runtimeStore.get(ownerKey);
+      if (!snapshot || snapshot.isGenerating) return;
+      const fileToRemove = snapshot?.composer.draftImages[idx];
+      if (!fileToRemove) return;
+      const url = snapshot.composer.imageUrls.get(fileToRemove);
+      const removed = updateIdleAttachmentComposerForKey(ownerKey, (composer) => {
+        const nextUrls = new Map(composer.imageUrls);
+        nextUrls.delete(fileToRemove);
+        return {
+          ...composer,
+          imageUrls: nextUrls,
+          draftImages: composer.draftImages.filter((file) => file !== fileToRemove)
+        };
       });
+      if (removed && url) URL.revokeObjectURL(url);
     },
-    [imageUrls]
+    [runtimeStore, updateIdleAttachmentComposerForKey]
   );
 
   const handleDocumentUpload = useCallback(
     async (e: React.ChangeEvent<HTMLInputElement>) => {
-      const file = e.target.files?.[0];
+      const ownerKey = documentInputOwnerKeyRef.current ?? activeRuntimeKeyRef.current;
+      documentInputOwnerKeyRef.current = null;
+      const inputElement = e.currentTarget;
+      const file = inputElement.files?.[0];
       if (!file) return;
 
-      const maxSizeInBytes = 10 * 1024 * 1024; // 10MB
-      if (file.size > maxSizeInBytes) {
-        setAttachmentError("Document too large (max 10MB)");
-        setTimeout(() => setAttachmentError(null), 5000);
-        e.target.value = "";
+      const startSnapshot = runtimeStore.get(ownerKey);
+      if (!startSnapshot || startSnapshot.isGenerating) {
+        inputElement.value = "";
         return;
       }
 
-      setIsProcessingDocument(true);
-      setAttachmentError(null);
-      const uploadGeneration = ++documentUploadGenerationRef.current;
+      const maxSizeInBytes = 10 * 1024 * 1024;
+      if (file.size > maxSizeInBytes) {
+        setComposerErrorForKey(ownerKey, "attachmentError", "Document too large (max 10MB)");
+        inputElement.value = "";
+        return;
+      }
+
+      const uploadGeneration = startSnapshot.composer.documentUploadGeneration + 1;
+      const started = updateIdleAttachmentComposerForKey(ownerKey, (composer) => ({
+        ...composer,
+        isProcessingDocument: true,
+        attachmentError: null,
+        documentUploadGeneration: uploadGeneration
+      }));
+      if (!started) {
+        inputElement.value = "";
+        return;
+      }
+
+      const updateDocumentIfCurrent = (
+        updater: (composer: ChatComposerState) => ChatComposerState
+      ) => {
+        let generationMatched = false;
+        const updated = updateIdleAttachmentComposerForKey(ownerKey, (composer) => {
+          if (composer.documentUploadGeneration !== uploadGeneration) return composer;
+          generationMatched = true;
+          return updater(composer);
+        });
+        return updated && generationMatched;
+      };
 
       try {
         const documentType = getSupportedDocumentType(file.name);
 
-        // For text files, read directly
         if (documentType === "txt" || documentType === "md") {
           const text = await file.text();
-          if (uploadGeneration !== documentUploadGenerationRef.current) return;
-          // Format as JSON for consistency with PDF handling
           const documentData = {
             document: {
               filename: file.name,
               text_content: text
             }
           };
-          setDocumentText(JSON.stringify(documentData));
-          setDocumentName(file.name);
+          updateDocumentIfCurrent((composer) => ({
+            ...composer,
+            documentText: JSON.stringify(documentData),
+            documentName: file.name
+          }));
         } else if (documentType === "pdf" && isTauriEnv) {
-          // For PDFs in Tauri, use the parseDocument API
           const reader = new FileReader();
           const base64Data = await new Promise<string>((resolve, reject) => {
             reader.onload = () => {
@@ -2969,10 +3534,8 @@ export function UnifiedChat() {
             reader.readAsDataURL(file);
           });
 
-          // Use the Tauri API directly for parsing PDFs
           const { invoke } = await import("@tauri-apps/api/core");
 
-          // Define the response type to match Rust
           interface RustDocumentResponse {
             document: {
               filename: string;
@@ -2986,12 +3549,16 @@ export function UnifiedChat() {
             filename: file.name,
             fileType: "pdf"
           });
-          if (uploadGeneration !== documentUploadGenerationRef.current) return;
+          if (runtimeStore.get(ownerKey)?.composer.documentUploadGeneration !== uploadGeneration)
+            return;
 
           const cleanedText = prepareExtractedPdfText(result.document?.text_content);
           if (cleanedText === null) {
-            setAttachmentError("No readable text was found in this PDF");
-            setTimeout(() => setAttachmentError(null), 5000);
+            setComposerErrorForKey(
+              ownerKey,
+              "attachmentError",
+              "No readable text was found in this PDF"
+            );
             return;
           }
 
@@ -3002,58 +3569,92 @@ export function UnifiedChat() {
             }
           };
 
-          // Store as JSON string for markdown.tsx to parse and display properly
-          setDocumentText(JSON.stringify(cleanedParsed));
-          setDocumentName(file.name);
+          updateDocumentIfCurrent((composer) => ({
+            ...composer,
+            documentText: JSON.stringify(cleanedParsed),
+            documentName: file.name
+          }));
         } else if (documentType === "pdf") {
-          setAttachmentError("PDF files can only be processed in the Maple app");
-          setTimeout(() => setAttachmentError(null), 5000);
+          setComposerErrorForKey(
+            ownerKey,
+            "attachmentError",
+            "PDF files can only be processed in the Maple app"
+          );
         } else {
-          setAttachmentError("Only PDF, TXT, and Markdown files are supported");
-          setTimeout(() => setAttachmentError(null), 5000);
+          setComposerErrorForKey(
+            ownerKey,
+            "attachmentError",
+            "Only PDF, TXT, and Markdown files are supported"
+          );
         }
       } catch (error) {
         console.error("Document processing error:", error);
-        if (uploadGeneration === documentUploadGenerationRef.current) {
-          setAttachmentError(getDocumentProcessingErrorMessage(error));
-          setTimeout(() => setAttachmentError(null), 5000);
+        if (runtimeStore.get(ownerKey)?.composer.documentUploadGeneration === uploadGeneration) {
+          setComposerErrorForKey(
+            ownerKey,
+            "attachmentError",
+            getDocumentProcessingErrorMessage(error)
+          );
         }
       } finally {
-        if (uploadGeneration === documentUploadGenerationRef.current) {
-          setIsProcessingDocument(false);
-        }
-        e.target.value = "";
+        updateDocumentIfCurrent((composer) => ({
+          ...composer,
+          isProcessingDocument: false
+        }));
+        inputElement.value = "";
       }
     },
-    [isTauriEnv]
+    [isTauriEnv, runtimeStore, setComposerErrorForKey, updateIdleAttachmentComposerForKey]
   );
 
   const removeDocument = useCallback(() => {
-    documentUploadGenerationRef.current += 1;
-    setIsProcessingDocument(false);
-    setDocumentText("");
-    setDocumentName("");
-  }, []);
+    const ownerKey = activeRuntimeKeyRef.current;
+    updateIdleAttachmentComposerForKey(ownerKey, (composer) => ({
+      ...composer,
+      isProcessingDocument: false,
+      documentText: "",
+      documentName: "",
+      documentUploadGeneration: composer.documentUploadGeneration + 1
+    }));
+  }, [updateIdleAttachmentComposerForKey]);
 
   // Audio recording functions
   const startRecording = async () => {
-    // Prevent duplicate starts
-    if (isRecording || isTranscribing) return;
+    if (isRecording || isTranscribing || recordingOwnerKeyRef.current) return;
 
-    // Check if user has access
     if (!canUseVoice) {
       setUpgradeFeature("voice");
       setUpgradeDialogOpen(true);
       return;
     }
 
+    const ownerKey = runtimeStore.resolveKey(activeRuntimeKeyRef.current);
+    const ownerSessionToken = recordingSessionTokenRef.current + 1;
+    recordingSessionTokenRef.current = ownerSessionToken;
+    recordingOwnerKeyRef.current = ownerKey;
+    setRecordingOwnerKey(ownerKey);
+
     try {
-      // Check if getUserMedia is available
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        setAudioError(
-          "Microphone access is blocked. Please check your browser permissions or disable Lockdown Mode for this site (Settings > Safari > Advanced > Lockdown Mode)."
+        setComposerErrorForKey(
+          ownerKey,
+          "audioError",
+          "Microphone access is blocked. Please check your browser permissions or disable Lockdown Mode for this site (Settings > Safari > Advanced > Lockdown Mode).",
+          8000
         );
-        setTimeout(() => setAudioError(null), 8000);
+        if (
+          isRecordingOwnershipCurrent(
+            ownerKey,
+            ownerSessionToken,
+            recordingOwnerKeyRef.current,
+            recordingSessionTokenRef.current,
+            Boolean(runtimeStore.get(ownerKey))
+          )
+        ) {
+          recordingOwnerKeyRef.current = null;
+          recordingSessionTokenRef.current += 1;
+          setRecordingOwnerKey(null);
+        }
         return;
       }
 
@@ -3065,10 +3666,29 @@ export function UnifiedChat() {
           sampleRate: 16000
         }
       });
+      if (
+        !isRecordingOwnershipCurrent(
+          ownerKey,
+          ownerSessionToken,
+          recordingOwnerKeyRef.current,
+          recordingSessionTokenRef.current,
+          Boolean(runtimeStore.get(ownerKey))
+        )
+      ) {
+        stream.getTracks().forEach((track) => track.stop());
+        if (
+          recordingOwnerKeyRef.current === ownerKey &&
+          recordingSessionTokenRef.current === ownerSessionToken
+        ) {
+          recordingOwnerKeyRef.current = null;
+          recordingSessionTokenRef.current += 1;
+          setRecordingOwnerKey(null);
+        }
+        return;
+      }
 
       streamRef.current = stream;
 
-      // Create RecordRTC instance configured for WAV
       const recorder = new RecordRTC(stream, {
         type: "audio",
         mimeType: "audio/wav",
@@ -3080,60 +3700,130 @@ export function UnifiedChat() {
       recorderRef.current = recorder;
       recorder.startRecording();
       setIsRecording(true);
-      setAudioError(null);
+      setComposerErrorForKey(ownerKey, "audioError", null);
     } catch (error) {
       console.error("Failed to start recording:", error);
-      const err = error as Error & { name?: string };
-
-      // Handle different error types
-      if (err.name === "NotAllowedError" || err.name === "PermissionDeniedError") {
-        setAudioError(
-          "Microphone access denied. Please enable microphone permissions in Settings > Maple."
-        );
-      } else if (err.name === "NotFoundError" || err.name === "DevicesNotFoundError") {
-        setAudioError("No microphone found. Please check your device.");
-      } else if (err.name === "NotReadableError" || err.name === "TrackStartError") {
-        setAudioError("Microphone is already in use by another app.");
-      } else {
-        setAudioError(
-          `Failed to access microphone: ${err.name || "Unknown error"} - ${err.message || "Please try again"}`
-        );
+      if (
+        !isRecordingOwnershipCurrent(
+          ownerKey,
+          ownerSessionToken,
+          recordingOwnerKeyRef.current,
+          recordingSessionTokenRef.current,
+          Boolean(runtimeStore.get(ownerKey))
+        )
+      ) {
+        return;
       }
+      const err = error as Error & { name?: string };
+      let errorMessage: string;
 
-      setTimeout(() => setAudioError(null), 5000);
+      if (err.name === "NotAllowedError" || err.name === "PermissionDeniedError") {
+        errorMessage =
+          "Microphone access denied. Please enable microphone permissions in Settings > Maple.";
+      } else if (err.name === "NotFoundError" || err.name === "DevicesNotFoundError") {
+        errorMessage = "No microphone found. Please check your device.";
+      } else if (err.name === "NotReadableError" || err.name === "TrackStartError") {
+        errorMessage = "Microphone is already in use by another app.";
+      } else {
+        errorMessage = `Failed to access microphone: ${err.name || "Unknown error"} - ${err.message || "Please try again"}`;
+      }
+      const failedRecorder = recorderRef.current;
+      const failedStream = streamRef.current;
+      const cleanupResult = cleanupRecordingForTeardown({
+        recorder: failedRecorder
+          ? { stopRecording: (callback) => failedRecorder.stopRecording(callback) }
+          : null,
+        stream: failedStream,
+        clearOwnership: () => {
+          if (
+            recordingOwnerKeyRef.current === ownerKey &&
+            recordingSessionTokenRef.current === ownerSessionToken
+          ) {
+            recordingOwnerKeyRef.current = null;
+            recordingSessionTokenRef.current += 1;
+            setRecordingOwnerKey(null);
+            setIsRecording(false);
+            setIsTranscribing(false);
+            setIsProcessingSend(false);
+          }
+        },
+        clearRecorder: () => {
+          if (recorderRef.current === failedRecorder) recorderRef.current = null;
+        },
+        clearStream: () => {
+          if (streamRef.current === failedStream) streamRef.current = null;
+        }
+      });
+      if (cleanupResult.errors.length > 0) {
+        console.error("Failed to fully clean up microphone startup:", cleanupResult.errors);
+      }
+      setComposerErrorForKey(ownerKey, "audioError", errorMessage);
     }
   };
 
   const stopRecording = (shouldSend: boolean = false) => {
-    if (recorderRef.current && isRecording) {
-      // Only hide immediately if canceling, keep visible if sending
+    const recorder = recorderRef.current;
+    const ownerKey = recordingOwnerKeyRef.current;
+    const ownerSessionToken = recordingSessionTokenRef.current;
+    if (recorder && ownerKey && isRecording) {
+      const ownedStream = streamRef.current;
       if (!shouldSend) {
         setIsRecording(false);
       } else {
         setIsProcessingSend(true);
       }
 
-      recorderRef.current.stopRecording(async () => {
-        const blob = recorderRef.current?.getBlob();
+      recorder.stopRecording(async () => {
+        let released = false;
 
-        if (!blob || blob.size === 0) {
-          console.error("No audio recorded or empty recording");
-          if (shouldSend) {
-            setAudioError("No audio was recorded. Please try again.");
-            setTimeout(() => setAudioError(null), 5000);
-          }
-          // Clean up
-          if (streamRef.current) {
-            streamRef.current.getTracks().forEach((track) => track.stop());
+        const releaseRecording = () => {
+          if (released) return;
+          released = true;
+          ownedStream?.getTracks().forEach((track) => track.stop());
+          if (streamRef.current === ownedStream) {
             streamRef.current = null;
           }
-          recorderRef.current = null;
-          setIsProcessingSend(false);
-          setIsRecording(false);
+          if (recorderRef.current === recorder) recorderRef.current = null;
+          if (
+            recordingOwnerKeyRef.current === ownerKey &&
+            recordingSessionTokenRef.current === ownerSessionToken
+          ) {
+            recordingOwnerKeyRef.current = null;
+            recordingSessionTokenRef.current += 1;
+            setRecordingOwnerKey((current) => (current === ownerKey ? null : current));
+            setIsProcessingSend(false);
+            setIsTranscribing(false);
+            setIsRecording(false);
+          }
+        };
+
+        if (
+          !isRecordingOwnershipCurrent(
+            ownerKey,
+            ownerSessionToken,
+            recordingOwnerKeyRef.current,
+            recordingSessionTokenRef.current,
+            Boolean(runtimeStore.get(ownerKey))
+          )
+        ) {
+          releaseRecording();
           return;
         }
 
-        // Create a proper WAV file
+        const blob = recorder.getBlob();
+        if (!blob || blob.size === 0) {
+          console.error("No audio recorded or empty recording");
+          if (shouldSend) {
+            setComposerErrorForKey(
+              ownerKey,
+              "audioError",
+              "No audio was recorded. Please try again."
+            );
+          }
+          releaseRecording();
+          return;
+        }
+
         const audioFile = new File([blob], "recording.wav", {
           type: "audio/wav"
         });
@@ -3142,53 +3832,80 @@ export function UnifiedChat() {
           setIsTranscribing(true);
           try {
             const result = await os.transcribeAudio(audioFile, "whisper-large-v3");
+            if (
+              !isRecordingOwnershipCurrent(
+                ownerKey,
+                ownerSessionToken,
+                recordingOwnerKeyRef.current,
+                recordingSessionTokenRef.current,
+                Boolean(runtimeStore.get(ownerKey))
+              )
+            ) {
+              return;
+            }
             const transcribedText = result.text.trim();
 
             if (transcribedText) {
-              // Combine with existing input if any
-              const newValue = input ? `${input} ${transcribedText}` : transcribedText;
-
-              // Clear states before sending
-              setInput("");
-              clearAllAttachments();
-              setIsRecording(false);
-              setIsTranscribing(false);
-              setIsProcessingSend(false);
-
-              // Send the message directly with the transcribed text
-              await handleSendMessage(undefined, newValue);
+              const ownerInput = runtimeStore.get(ownerKey)?.composer.input ?? "";
+              const newValue = ownerInput ? `${ownerInput} ${transcribedText}` : transcribedText;
+              const send = handleSendMessage(undefined, newValue, ownerKey);
+              releaseRecording();
+              await send;
             } else {
-              setAudioError("No speech detected. Please try again.");
-              setTimeout(() => setAudioError(null), 5000);
+              setComposerErrorForKey(
+                ownerKey,
+                "audioError",
+                "No speech detected. Please try again."
+              );
             }
           } catch (error) {
             console.error("Transcription failed:", error);
-            setAudioError("Failed to transcribe audio. Please try again.");
-            setTimeout(() => setAudioError(null), 5000);
+            if (
+              isRecordingOwnershipCurrent(
+                ownerKey,
+                ownerSessionToken,
+                recordingOwnerKeyRef.current,
+                recordingSessionTokenRef.current,
+                Boolean(runtimeStore.get(ownerKey))
+              )
+            ) {
+              setComposerErrorForKey(
+                ownerKey,
+                "audioError",
+                "Failed to transcribe audio. Please try again."
+              );
+            }
           } finally {
-            setIsTranscribing(false);
-            setIsProcessingSend(false);
-            setIsRecording(false);
+            releaseRecording();
           }
+        } else {
+          releaseRecording();
         }
-
-        // Clean up resources
-        if (streamRef.current) {
-          streamRef.current.getTracks().forEach((track) => track.stop());
-          streamRef.current = null;
-        }
-        recorderRef.current = null;
       });
     }
   };
 
   // Helper function to process streaming response - used by both initial request and retry
   const processStreamingResponse = useCallback(
-    async (stream: AsyncIterable<unknown>) => {
+    async (
+      stream: AsyncIterable<unknown>,
+      runtimeKey: ChatRuntimeKey,
+      runToken: number,
+      optimisticMessageId: string,
+      discardOwnedItemsOnError: boolean
+    ) => {
       const messageTextBuffers = new Map<string, Map<number, string>>();
       const reasoningTextBuffers = new Map<string, Map<number, string>>();
+      const ownedItemIds = new Set<string>();
       const streamStartedAt = performance.now();
       let streamEventCount = 0;
+      let terminalState: ChatStreamTerminalState = null;
+
+      const updateRunMessages = (updater: (messages: Message[]) => Message[]) =>
+        runtimeStore.updateForRun(runtimeKey, runToken, (snapshot) => ({
+          ...snapshot,
+          messages: updater(snapshot.messages as Message[])
+        }));
 
       const appendBufferedText = (
         buffers: Map<string, Map<number, string>>,
@@ -3215,632 +3932,741 @@ export function UnifiedChat() {
         return text;
       };
 
-      for await (const event of stream) {
-        const eventType = (event as { type: string }).type;
-        streamEventCount += 1;
-        logStreamEvent(streamStartedAt, streamEventCount, eventType, event);
+      const deltaCoalescer = createChatStreamDeltaCoalescer({
+        isCurrent: () => runtimeStore.isRunCurrent(runtimeKey, runToken),
+        onFlush: (deltas) => {
+          runtimeStore.updateForRun(runtimeKey, runToken, (snapshot) => {
+            let nextMessages = snapshot.messages as Message[];
 
-        if (eventType === "response.created") {
-          const eventWithResponse = event as { response?: { id?: string } };
-          if (eventWithResponse.response?.id) {
-            setCurrentResponseId(eventWithResponse.response.id);
-          }
-        } else if (eventType === "response.output_item.added") {
-          const addedEvent = event as ResponseOutputItemAddedEvent;
-          const item = normalizeConversationItem(addedEvent.item);
-
-          if (item) {
-            setMessages((prev) => mergeStreamingConversationItem(prev, item));
-          }
-        } else if (eventType === "response.web_search_call.in_progress") {
-          const webSearchEvent = event as { item_id?: string };
-          if (webSearchEvent.item_id) {
-            setMessages((prev) =>
-              updateMessageById(prev, webSearchEvent.item_id!, (message) =>
-                message.type === "web_search_call"
-                  ? ({ ...message, status: "in_progress" } as unknown as Message)
-                  : message
-              )
-            );
-          }
-        } else if (eventType === "response.web_search_call.searching") {
-          const webSearchEvent = event as { item_id?: string };
-          if (webSearchEvent.item_id) {
-            setMessages((prev) =>
-              updateMessageById(prev, webSearchEvent.item_id!, (message) =>
-                message.type === "web_search_call"
-                  ? ({ ...message, status: "searching" } as unknown as Message)
-                  : message
-              )
-            );
-          }
-        } else if (eventType === "response.web_search_call.completed") {
-          const webSearchEvent = event as { item_id?: string };
-          if (webSearchEvent.item_id) {
-            setMessages((prev) =>
-              updateMessageById(prev, webSearchEvent.item_id!, (message) =>
-                message.type === "web_search_call"
-                  ? ({ ...message, status: "completed" } as unknown as Message)
-                  : message
-              )
-            );
-          }
-        } else if (eventType === "tool_call.created") {
-          const toolCallEvent = event as {
-            tool_call_id?: string;
-            name?: string;
-            arguments?: { query?: string };
-          };
-          if (toolCallEvent.tool_call_id) {
-            const toolCallItem: ToolCallItem = {
-              id: toolCallEvent.tool_call_id,
-              call_id: toolCallEvent.tool_call_id,
-              type: "tool_call",
-              name: toolCallEvent.name || "function",
-              arguments: JSON.stringify(toolCallEvent.arguments || {}),
-              status: "in_progress"
-            };
-
-            setMessages((prev) => {
-              const existingToolCall = prev.find(
-                (message) => message.id === toolCallEvent.tool_call_id
-              );
-
-              if (existingToolCall && isToolCallItem(existingToolCall)) {
-                return mergeMessagesById(prev, [
-                  {
-                    ...existingToolCall,
-                    ...toolCallItem,
-                    status: existingToolCall.status || toolCallItem.status
-                  }
-                ]);
+            for (const delta of deltas) {
+              if (delta.kind === "reasoning") {
+                const nextText = appendBufferedText(
+                  reasoningTextBuffers,
+                  delta.itemId,
+                  delta.contentIndex,
+                  delta.delta
+                );
+                nextMessages = updateMessageById(nextMessages, delta.itemId, (message) =>
+                  message.type === "reasoning"
+                    ? upsertReasoningTextContent(
+                        message as ReasoningItem,
+                        delta.contentIndex,
+                        nextText,
+                        "streaming"
+                      )
+                    : message
+                );
+              } else {
+                const nextText = appendBufferedText(
+                  messageTextBuffers,
+                  delta.itemId,
+                  delta.contentIndex,
+                  delta.delta
+                );
+                nextMessages = updateMessageById(nextMessages, delta.itemId, (message) =>
+                  message.type === "message"
+                    ? (upsertAssistantTextContent(
+                        message as ExtendedMessage,
+                        delta.contentIndex,
+                        nextText,
+                        "streaming"
+                      ) as unknown as Message)
+                    : message
+                );
               }
+            }
 
-              return mergeMessagesById(prev, [toolCallItem]);
-            });
-          }
-        } else if (eventType === "tool_output.created") {
-          const toolOutputEvent = event as {
-            tool_output_id?: string;
-            tool_call_id?: string;
-            output?: string;
-          };
-          if (toolOutputEvent.tool_output_id && toolOutputEvent.tool_call_id) {
-            const toolOutputItem: ToolOutputItem = {
-              id: toolOutputEvent.tool_output_id,
-              call_id: toolOutputEvent.tool_call_id,
-              type: "tool_output",
-              output: toolOutputEvent.output || "",
-              status: "completed"
-            };
-
-            setMessages((prev) => {
-              const existingToolOutput = prev.find(
-                (message) => message.id === toolOutputEvent.tool_output_id
-              );
-              const withOutput = mergeMessagesById(prev, [
-                existingToolOutput && isToolOutputItem(existingToolOutput)
-                  ? {
-                      ...existingToolOutput,
-                      ...toolOutputItem
-                    }
-                  : toolOutputItem
-              ]);
-
-              return updateMessageById(withOutput, toolOutputEvent.tool_call_id!, (message) =>
-                isToolCallItem(message)
-                  ? ({ ...message, status: "completed" } as unknown as Message)
-                  : message
-              );
-            });
-          }
-        } else if (
-          eventType === "response.reasoning_text.delta" &&
-          (event as { delta?: string }).delta
-        ) {
-          const reasoningEvent = event as ResponseReasoningTextDeltaEvent;
-          const nextText = appendBufferedText(
-            reasoningTextBuffers,
-            reasoningEvent.item_id,
-            reasoningEvent.content_index,
-            reasoningEvent.delta
-          );
-
-          setMessages((prev) =>
-            updateMessageById(prev, reasoningEvent.item_id, (message) =>
-              message.type === "reasoning"
-                ? upsertReasoningTextContent(
-                    message as ReasoningItem,
-                    reasoningEvent.content_index,
-                    nextText,
-                    "streaming"
-                  )
-                : message
-            )
-          );
-        } else if (eventType === "response.reasoning_text.done") {
-          const reasoningEvent = event as ResponseReasoningTextDoneEvent;
-          const nextText = setBufferedText(
-            reasoningTextBuffers,
-            reasoningEvent.item_id,
-            reasoningEvent.content_index,
-            reasoningEvent.text
-          );
-
-          setMessages((prev) =>
-            updateMessageById(prev, reasoningEvent.item_id, (message) =>
-              message.type === "reasoning"
-                ? upsertReasoningTextContent(
-                    message as ReasoningItem,
-                    reasoningEvent.content_index,
-                    nextText,
-                    "completed"
-                  )
-                : message
-            )
-          );
-        } else if (
-          eventType === "response.output_text.delta" &&
-          (event as { delta?: string }).delta
-        ) {
-          const textEvent = event as ResponseTextDeltaEvent;
-          const nextText = appendBufferedText(
-            messageTextBuffers,
-            textEvent.item_id,
-            textEvent.content_index,
-            textEvent.delta
-          );
-
-          setMessages((prev) =>
-            updateMessageById(prev, textEvent.item_id, (message) =>
-              message.type === "message"
-                ? (upsertAssistantTextContent(
-                    message as ExtendedMessage,
-                    textEvent.content_index,
-                    nextText,
-                    "streaming"
-                  ) as unknown as Message)
-                : message
-            )
-          );
-        } else if (eventType === "response.output_text.done") {
-          const textEvent = event as ResponseTextDoneEvent;
-          const nextText = setBufferedText(
-            messageTextBuffers,
-            textEvent.item_id,
-            textEvent.content_index,
-            textEvent.text
-          );
-
-          setMessages((prev) =>
-            updateMessageById(prev, textEvent.item_id, (message) =>
-              message.type === "message"
-                ? (upsertAssistantTextContent(
-                    message as ExtendedMessage,
-                    textEvent.content_index,
-                    nextText,
-                    "completed"
-                  ) as unknown as Message)
-                : message
-            )
-          );
-        } else if (eventType === "response.output_item.done") {
-          const doneEvent = event as ResponseOutputItemDoneEvent;
-          const item = normalizeConversationItem(doneEvent.item);
-
-          if (item) {
-            setMessages((prev) => mergeStreamingConversationItem(prev, item));
-            setLastSeenItemId(item.id);
-          }
-        } else if (eventType === "response.failed" || eventType === "error") {
-          console.error("Streaming error:", event);
-          setMessages((prev) => updateActiveItemStatuses(prev, "error"));
-          setError("Failed to generate response. Please try again.");
-        } else if (eventType === "response.cancelled") {
-          setMessages((prev) => updateActiveItemStatuses(prev, "incomplete"));
-          break;
+            return { ...snapshot, messages: nextMessages };
+          });
         }
-      }
-    },
-    [logStreamEvent]
-  );
-
-  // Send message handler - now accepts optional override text for voice input
-  const handleSendMessage = useCallback(
-    async (e?: React.FormEvent, overrideInput?: string) => {
-      e?.preventDefault();
-
-      // Use override input (from voice) or regular input
-      const textToSend = overrideInput || input;
-      const trimmedInput = textToSend.trim();
-      const hasContent = trimmedInput || draftImages.length > 0 || documentText;
-      if (!hasContent || isGenerating || isProcessingDocument || !openai) return;
-
-      // Clear any previous error
-      setError(null);
-
-      // Build the message content - always as an array
-      // Using the input types since we're building user input
-      const messageContent: (InputTextContent | InputImageContent)[] = [];
-
-      // Combine document text with input if both exist
-      let finalText = trimmedInput;
-      if (documentText) {
-        finalText = documentText + (trimmedInput ? `\n\n${trimmedInput}` : "");
-      }
-
-      // Add text part if exists
-      if (finalText) {
-        const textContent: InputTextContent = {
-          type: "input_text",
-          text: finalText
-        };
-        messageContent.push(textContent);
-      }
-
-      // Add image parts if we have images
-      for (const file of draftImages) {
-        try {
-          const dataUrl = await fileToDataURL(file);
-          const imageContent: InputImageContent = {
-            type: "input_image",
-            image_url: dataUrl,
-            detail: "auto",
-            file_id: null
-          };
-          messageContent.push(imageContent);
-        } catch (error) {
-          console.error("Failed to convert image:", error);
-        }
-      }
-
-      // Add user message immediately with a local UUID
-      const localMessageId = uuidv4();
-      const userMessage = {
-        id: localMessageId,
-        type: "message",
-        role: "user",
-        content: messageContent,
-        status: "completed"
-      } as unknown as Message;
-
-      // Use merge helper to add user message (prevents duplicates)
-      setMessages((prev) => mergeMessagesById(prev, [userMessage]));
-      // Set lastSeenItemId to our local message ID
-      // The backend should map this via internal_message_id
-      setLastSeenItemId(localMessageId);
-
-      // Store the original input and attachments in case we need to restore them
-      const originalInput = trimmedInput;
-      const originalImages = [...draftImages];
-      const originalDocumentText = documentText;
-      const originalDocumentName = documentName;
-
-      // Only clear input if not using override (voice already cleared it)
-      if (!overrideInput) {
-        setInput("");
-        clearAllAttachments();
-      }
-      setIsGenerating(true);
+      });
+      registerChatStreamDeltaCoalescer(runtimeStore, runToken, deltaCoalescer);
 
       try {
-        // Create conversation if we don't have one
-        let conversationId = conversation?.id;
-        if (!conversationId) {
-          const newConv = draftProjectId
-            ? await os.createConversation(
-                {},
-                {
-                  project_id: draftProjectId
+        for await (const event of stream) {
+          const eventType = (event as { type: string }).type;
+          streamEventCount += 1;
+          logStreamEvent(runtimeKey, runToken, streamStartedAt, streamEventCount, eventType, event);
+
+          if (
+            eventType === "response.reasoning_text.delta" &&
+            (event as { delta?: string }).delta
+          ) {
+            const reasoningEvent = event as ResponseReasoningTextDeltaEvent;
+            ownedItemIds.add(reasoningEvent.item_id);
+            deltaCoalescer.enqueue({
+              kind: "reasoning",
+              itemId: reasoningEvent.item_id,
+              contentIndex: reasoningEvent.content_index,
+              delta: reasoningEvent.delta
+            });
+            continue;
+          }
+
+          if (eventType === "response.output_text.delta" && (event as { delta?: string }).delta) {
+            const textEvent = event as ResponseTextDeltaEvent;
+            ownedItemIds.add(textEvent.item_id);
+            deltaCoalescer.enqueue({
+              kind: "message",
+              itemId: textEvent.item_id,
+              contentIndex: textEvent.content_index,
+              delta: textEvent.delta
+            });
+            continue;
+          }
+
+          // Preserve event ordering: lifecycle, tool, terminal, and exact-text
+          // events must observe every text delta that arrived before them.
+          deltaCoalescer.flush();
+
+          if (eventType === "response.created") {
+            unregisterChatOptimisticMessage(runtimeStore, runToken, optimisticMessageId);
+            const eventWithResponse = event as { response?: { id?: string } };
+            if (eventWithResponse.response?.id) {
+              runtimeStore.setCurrentResponseId(
+                runtimeKey,
+                runToken,
+                eventWithResponse.response.id
+              );
+            }
+          } else if (eventType === "response.output_item.added") {
+            const addedEvent = event as ResponseOutputItemAddedEvent;
+            const item = normalizeConversationItem(addedEvent.item);
+
+            if (item) {
+              ownedItemIds.add(item.id);
+              updateRunMessages((messages) => mergeStreamingConversationItem(messages, item));
+            }
+          } else if (eventType === "response.web_search_call.in_progress") {
+            const webSearchEvent = event as { item_id?: string };
+            if (webSearchEvent.item_id) {
+              ownedItemIds.add(webSearchEvent.item_id);
+              updateRunMessages((messages) =>
+                updateMessageById(messages, webSearchEvent.item_id!, (message) =>
+                  message.type === "web_search_call"
+                    ? ({ ...message, status: "in_progress" } as unknown as Message)
+                    : message
+                )
+              );
+            }
+          } else if (eventType === "response.web_search_call.searching") {
+            const webSearchEvent = event as { item_id?: string };
+            if (webSearchEvent.item_id) {
+              ownedItemIds.add(webSearchEvent.item_id);
+              updateRunMessages((messages) =>
+                updateMessageById(messages, webSearchEvent.item_id!, (message) =>
+                  message.type === "web_search_call"
+                    ? ({ ...message, status: "searching" } as unknown as Message)
+                    : message
+                )
+              );
+            }
+          } else if (eventType === "response.web_search_call.completed") {
+            const webSearchEvent = event as { item_id?: string };
+            if (webSearchEvent.item_id) {
+              ownedItemIds.add(webSearchEvent.item_id);
+              updateRunMessages((messages) =>
+                updateMessageById(messages, webSearchEvent.item_id!, (message) =>
+                  message.type === "web_search_call"
+                    ? ({ ...message, status: "completed" } as unknown as Message)
+                    : message
+                )
+              );
+            }
+          } else if (eventType === "tool_call.created") {
+            const toolCallEvent = event as {
+              tool_call_id?: string;
+              name?: string;
+              arguments?: { query?: string };
+            };
+            if (toolCallEvent.tool_call_id) {
+              ownedItemIds.add(toolCallEvent.tool_call_id);
+              const toolCallItem: ToolCallItem = {
+                id: toolCallEvent.tool_call_id,
+                call_id: toolCallEvent.tool_call_id,
+                type: "tool_call",
+                name: toolCallEvent.name || "function",
+                arguments: JSON.stringify(toolCallEvent.arguments || {}),
+                status: "in_progress"
+              };
+
+              updateRunMessages((messages) => {
+                const existingToolCall = messages.find(
+                  (message) => message.id === toolCallEvent.tool_call_id
+                );
+
+                if (existingToolCall && isToolCallItem(existingToolCall)) {
+                  return mergeMessagesById(messages, [
+                    {
+                      ...existingToolCall,
+                      ...toolCallItem,
+                      status: existingToolCall.status || toolCallItem.status
+                    }
+                  ]);
                 }
-              )
-            : await openai.conversations.create({
-                metadata: {}
+
+                return mergeMessagesById(messages, [toolCallItem]);
               });
+            }
+          } else if (eventType === "tool_output.created") {
+            const toolOutputEvent = event as {
+              tool_output_id?: string;
+              tool_call_id?: string;
+              output?: string;
+            };
+            if (toolOutputEvent.tool_output_id && toolOutputEvent.tool_call_id) {
+              ownedItemIds.add(toolOutputEvent.tool_output_id);
+              ownedItemIds.add(toolOutputEvent.tool_call_id);
+              const toolOutputItem: ToolOutputItem = {
+                id: toolOutputEvent.tool_output_id,
+                call_id: toolOutputEvent.tool_call_id,
+                type: "tool_output",
+                output: toolOutputEvent.output || "",
+                status: "completed"
+              };
+
+              updateRunMessages((messages) => {
+                const existingToolOutput = messages.find(
+                  (message) => message.id === toolOutputEvent.tool_output_id
+                );
+                const withOutput = mergeMessagesById(messages, [
+                  existingToolOutput && isToolOutputItem(existingToolOutput)
+                    ? {
+                        ...existingToolOutput,
+                        ...toolOutputItem
+                      }
+                    : toolOutputItem
+                ]);
+
+                return updateMessageById(withOutput, toolOutputEvent.tool_call_id!, (message) =>
+                  isToolCallItem(message)
+                    ? ({ ...message, status: "completed" } as unknown as Message)
+                    : message
+                );
+              });
+            }
+          } else if (eventType === "response.reasoning_text.done") {
+            const reasoningEvent = event as ResponseReasoningTextDoneEvent;
+            const nextText = setBufferedText(
+              reasoningTextBuffers,
+              reasoningEvent.item_id,
+              reasoningEvent.content_index,
+              reasoningEvent.text
+            );
+
+            ownedItemIds.add(reasoningEvent.item_id);
+            updateRunMessages((messages) =>
+              updateMessageById(messages, reasoningEvent.item_id, (message) =>
+                message.type === "reasoning"
+                  ? upsertReasoningTextContent(
+                      message as ReasoningItem,
+                      reasoningEvent.content_index,
+                      nextText,
+                      "completed"
+                    )
+                  : message
+              )
+            );
+          } else if (eventType === "response.output_text.done") {
+            const textEvent = event as ResponseTextDoneEvent;
+            const nextText = setBufferedText(
+              messageTextBuffers,
+              textEvent.item_id,
+              textEvent.content_index,
+              textEvent.text
+            );
+
+            ownedItemIds.add(textEvent.item_id);
+            updateRunMessages((messages) =>
+              updateMessageById(messages, textEvent.item_id, (message) =>
+                message.type === "message"
+                  ? (upsertAssistantTextContent(
+                      message as ExtendedMessage,
+                      textEvent.content_index,
+                      nextText,
+                      "completed"
+                    ) as unknown as Message)
+                  : message
+              )
+            );
+          } else if (eventType === "response.output_item.done") {
+            const doneEvent = event as ResponseOutputItemDoneEvent;
+            const item = normalizeConversationItem(doneEvent.item);
+
+            if (item) {
+              ownedItemIds.add(item.id);
+              runtimeStore.updateForRun(runtimeKey, runToken, (snapshot) => ({
+                ...snapshot,
+                messages: mergeStreamingConversationItem(snapshot.messages as Message[], item),
+                lastSeenItemId: item.id
+              }));
+            }
+          } else if (eventType === "response.completed") {
+            terminalState = "completed";
+          } else if (isTerminalChatStreamErrorEvent(eventType)) {
+            terminalState = "error";
+            console.error("Streaming error:", event);
+            runtimeStore.updateForRun(runtimeKey, runToken, (snapshot) => ({
+              ...snapshot,
+              messages: updateActiveItemStatuses(
+                snapshot.messages as Message[],
+                "error",
+                ownedItemIds
+              ),
+              error: "Failed to generate response. Please try again."
+            }));
+            break;
+          } else if (eventType === "response.cancelled") {
+            terminalState = "cancelled";
+            updateRunMessages((messages) =>
+              updateActiveItemStatuses(messages, "incomplete", ownedItemIds)
+            );
+            break;
+          }
+        }
+
+        if (
+          classifyChatStreamEof(terminalState, runtimeStore.isRunCurrent(runtimeKey, runToken)) ===
+          "truncated"
+        ) {
+          throw new Error("Response stream ended before completion");
+        }
+      } catch (error) {
+        // Commit the final partial frame before changing its status. UI cancel
+        // and account teardown clear run ownership before aborting, so their
+        // resulting iterator errors remain stale-fenced here.
+        deltaCoalescer.finish();
+        updateRunMessages((messages) =>
+          discardOwnedItemsOnError
+            ? removeOwnedChatStreamAttemptItems(messages, ownedItemIds)
+            : updateActiveItemStatuses(messages, "error", ownedItemIds)
+        );
+        throw error;
+      } finally {
+        // Natural EOF and thrown stream errors both commit the final partial
+        // batch while the run is still owned. A cancelled/replaced token fails
+        // the coalescer's current-run fence and is discarded instead.
+        deltaCoalescer.finish();
+        unregisterChatStreamDeltaCoalescer(runtimeStore, runToken, deltaCoalescer);
+      }
+    },
+    [logStreamEvent, runtimeStore]
+  );
+
+  // Every send captures its owning runtime key. Navigation only changes the
+  // projected runtime; it never changes where this request or its SSE events land.
+  const handleSendMessage = useCallback(
+    async (e?: React.FormEvent, overrideInput?: string, ownerRuntimeKey?: ChatRuntimeKey) => {
+      e?.preventDefault();
+      let runtimeKey = runtimeStore.resolveKey(ownerRuntimeKey ?? activeRuntimeKeyRef.current);
+      const startSnapshot = runtimeStore.get(runtimeKey);
+      if (!startSnapshot || !openai) return;
+
+      const originalComposer = startSnapshot.composer;
+      const textToSend = overrideInput ?? originalComposer.input;
+      const trimmedInput = textToSend.trim();
+      const originalImages = [...originalComposer.draftImages];
+      const originalDocumentText = originalComposer.documentText;
+      const originalDocumentName = originalComposer.documentName;
+      const hasContent =
+        trimmedInput.length > 0 || originalImages.length > 0 || originalDocumentText.length > 0;
+      if (!hasContent || startSnapshot.isGenerating || originalComposer.isProcessingDocument) {
+        return;
+      }
+
+      const requestModel = localState.model || DEFAULT_MODEL_ID;
+      const requestWebSearchEnabled = isWebSearchEnabled;
+      const billingStatusAtSend = billingStatus;
+      const existingConversationId =
+        startSnapshot.conversation?.id ?? conversationIdFromChatRuntimeKey(runtimeKey);
+      const isFollowUpConversation =
+        Boolean(existingConversationId) && startSnapshot.messages.length > 1;
+      const run = runtimeStore.beginRun(runtimeKey);
+      const localMessageId = uuidv4();
+      let conversationId = existingConversationId;
+      let composerRestored = false;
+      let adoptedExistingDestination = false;
+
+      const restoreOriginComposer = (message: string) => {
+        if (composerRestored) return true;
+
+        let createdUrls: string[] = [];
+        let displacedUrls: string[] = [];
+        const restored = runtimeStore.updateForRun(runtimeKey, run.token, (snapshot) => {
+          const adoptedDestinationRecovery = recoverFailedSendAfterDestinationAdoption(
+            adoptedExistingDestination,
+            snapshot.messages as Message[],
+            snapshot.composer,
+            localMessageId
+          );
+          if (adoptedDestinationRecovery) {
+            return {
+              ...snapshot,
+              messages: adoptedDestinationRecovery.messages,
+              composer: adoptedDestinationRecovery.composer,
+              error: message
+            };
+          }
+
+          const restoredUrlPlan = planRestoredImageUrls(
+            originalImages,
+            snapshot.composer.imageUrls,
+            (file) => URL.createObjectURL(file)
+          );
+          createdUrls = restoredUrlPlan.createdUrls;
+          displacedUrls = restoredUrlPlan.displacedUrls;
+
+          return {
+            ...snapshot,
+            messages: (snapshot.messages as Message[]).filter((item) => item.id !== localMessageId),
+            error: message,
+            composer: {
+              ...snapshot.composer,
+              input: textToSend,
+              draftImages: originalImages,
+              imageUrls: restoredUrlPlan.imageUrls,
+              documentText: originalDocumentText,
+              documentName: originalDocumentName,
+              isProcessingDocument: false,
+              attachmentError: null,
+              imagePasteGeneration: snapshot.composer.imagePasteGeneration + 1,
+              documentUploadGeneration: snapshot.composer.documentUploadGeneration + 1
+            }
+          };
+        });
+
+        if (!restored) {
+          for (const url of createdUrls) URL.revokeObjectURL(url);
+          return false;
+        }
+        for (const url of displacedUrls) URL.revokeObjectURL(url);
+        composerRestored = true;
+        return true;
+      };
+
+      const createResponseStream = async (
+        targetConversationId: string,
+        discardOwnedItemsOnError: boolean
+      ) => {
+        const stream = await openai.responses.create(
+          {
+            conversation: targetConversationId,
+            model: requestModel,
+            input: [{ role: "user", content: messageContent }],
+            metadata: { internal_message_id: localMessageId },
+            stream: true,
+            store: true,
+            ...(requestWebSearchEnabled && { tools: [{ type: "web_search" }] })
+          },
+          { signal: run.signal }
+        );
+
+        if (!runtimeStore.setAssistantStreaming(runtimeKey, run.token, true)) return;
+        try {
+          await processStreamingResponse(
+            stream,
+            runtimeKey,
+            run.token,
+            localMessageId,
+            discardOwnedItemsOnError
+          );
+        } finally {
+          runtimeStore.setAssistantStreaming(runtimeKey, run.token, false);
+        }
+      };
+
+      const scheduleBillingRefresh = () => {
+        const timeout = setTimeout(() => {
+          void queryClient.invalidateQueries({ queryKey: ["billingStatus"] });
+          billingRefreshTimeoutsRef.current.delete(timeout);
+        }, 3000);
+        billingRefreshTimeoutsRef.current.add(timeout);
+      };
+
+      const messageContent: (InputTextContent | InputImageContent)[] = [];
+      let finalText = trimmedInput;
+      if (originalDocumentText) {
+        finalText = originalDocumentText + (trimmedInput ? `\n\n${trimmedInput}` : "");
+      }
+      if (finalText) {
+        messageContent.push({
+          type: "input_text",
+          text: finalText
+        });
+      }
+
+      try {
+        for (const file of originalImages) {
+          try {
+            const dataUrl = await fileToDataURL(file);
+            messageContent.push({
+              type: "input_image",
+              image_url: dataUrl,
+              detail: "auto",
+              file_id: null
+            });
+          } catch (error) {
+            console.error("Failed to convert image:", error);
+          }
+        }
+        if (!runtimeStore.isRunCurrent(runtimeKey, run.token)) return;
+
+        const userMessage = {
+          id: localMessageId,
+          type: "message",
+          role: "user",
+          content: messageContent,
+          status: "completed"
+        } as unknown as Message;
+
+        const stagedImageUrls = new Set<string>();
+        const staged = runtimeStore.updateForRun(runtimeKey, run.token, (snapshot) => {
+          for (const url of snapshot.composer.imageUrls.values()) stagedImageUrls.add(url);
+          return {
+            ...snapshot,
+            messages: mergeMessagesById(snapshot.messages as Message[], [userMessage]),
+            lastSeenItemId: localMessageId,
+            composer: {
+              ...snapshot.composer,
+              input: "",
+              draftImages: [],
+              imageUrls: new Map(),
+              documentText: "",
+              documentName: "",
+              isProcessingDocument: false,
+              attachmentError: null,
+              imagePasteGeneration: snapshot.composer.imagePasteGeneration + 1,
+              documentUploadGeneration: snapshot.composer.documentUploadGeneration + 1
+            }
+          };
+        });
+        if (!staged) return;
+        registerChatOptimisticMessage(runtimeStore, run.token, localMessageId);
+        for (const url of stagedImageUrls) URL.revokeObjectURL(url);
+
+        if (!conversationId) {
+          const createParams: Parameters<typeof openai.conversations.create>[0] & {
+            project_id?: string;
+          } = {
+            metadata: {},
+            ...(originalComposer.draftProjectId && {
+              project_id: originalComposer.draftProjectId
+            })
+          };
+          const newConv = await openai.conversations.create(createParams, {
+            signal: run.signal
+          });
           conversationId = newConv.id;
-          setConversation(newConv as Conversation);
+          const sourceWasSelected = isRuntimeSelected(runtimeKey);
+          const destinationKey = createConversationChatKey(conversationId);
+          const destinationSnapshot = runtimeStore.get(destinationKey);
+          const rawRecordingOwnerKey = recordingOwnerKeyRef.current;
+          const canonicalRecordingOwnerKey = rawRecordingOwnerKey
+            ? runtimeStore.resolveKey(rawRecordingOwnerKey)
+            : null;
+          if (!canAdoptRecordingDestination(destinationKey, canonicalRecordingOwnerKey)) {
+            // Let pending microphone, recording, or transcription work finish on
+            // the idle destination. Adoption would make its eventual send fail.
+            restoreOriginComposer(
+              "This conversation is still processing a voice message. Your message was restored in its original draft."
+            );
+            return;
+          }
+          if (!canAdoptAttachmentDestination(destinationSnapshot)) {
+            // Let the destination's extraction callback finish on its original
+            // idle runtime. Adopting it into this run would fence that callback
+            // and permanently strand isProcessingDocument=true.
+            restoreOriginComposer(
+              "This conversation is still processing an attachment. Your message was restored in its original draft."
+            );
+            return;
+          }
+          const migration = runtimeStore.rekeyRunAdoptingIdleDestination(
+            runtimeKey,
+            destinationKey,
+            run.token,
+            (source, destination) => ({
+              ...source,
+              conversation: destination.conversation ?? source.conversation,
+              messages: mergeLoadedMessagesWithRuntime(
+                destination.messages as Message[],
+                source.messages
+              ),
+              composer: destination.composer,
+              error: source.error ?? destination.error,
+              lastSeenItemId: source.lastSeenItemId ?? destination.lastSeenItemId,
+              historyLoaded: source.historyLoaded || destination.historyLoaded
+            })
+          );
 
-          // Update URL with new conversation ID
-          const usp = new URLSearchParams(window.location.search);
-          usp.set("conversation_id", conversationId);
-          window.history.replaceState(null, "", `${window.location.pathname}?${usp.toString()}`);
+          if (migration.status === "source_stale") {
+            // Creation may already be visible to another tab or device. Without
+            // atomic server proof that C is empty and owned by this attempt,
+            // prefer a harmless empty orphan over deleting real chat history.
+            return;
+          }
 
-          // Update local state but flag that we just created it
-          setIsNewConversationJustCreated(true);
-          setChatId(conversationId);
+          if (migration.status === "destination_active") {
+            // Never replace or delete a destination that already owns a run.
+            // Browser history retains this source draft, so restoring here makes
+            // the original prompt and attachments recoverable with Back.
+            restoreOriginComposer(
+              "This conversation became active before your message was sent. Your message was restored in its original draft."
+            );
+            return;
+          }
 
-          // Trigger sidebar refresh to show the new conversation
+          runtimeKey = migration.key;
+          adoptedExistingDestination = migration.adoptedExistingDestination;
+          runtimeStore.updateForRun(runtimeKey, run.token, (snapshot) => ({
+            ...snapshot,
+            conversation: newConv as Conversation,
+            composer: { ...snapshot.composer, draftProjectId: null }
+          }));
+
+          const keepSelection = shouldProjectMigratedConversation(
+            isUnifiedChatMountedRef.current,
+            sourceWasSelected,
+            migration.destinationWasSelected
+          );
+          if (keepSelection) {
+            activeRuntimeKeyRef.current = runtimeKey;
+            setActiveRuntimeKey(runtimeKey);
+            setChatId(conversationId);
+            canonicalizeConversationHistoryEntry(conversationId);
+          }
           window.dispatchEvent(new Event("conversationcreated"));
         }
 
-        // Create abort controller for this request
-        const abortController = new AbortController();
-        abortControllerRef.current = abortController;
-
-        // Create streaming response - the API expects the content directly as we built it
-        const stream = await openai.responses.create(
-          {
-            conversation: conversationId,
-            model: localState.model || DEFAULT_MODEL_ID, // Use selected model or default
-            input: [{ role: "user", content: messageContent }],
-            metadata: { internal_message_id: localMessageId }, // Pass our local ID
-            stream: true,
-            store: true, // Store in conversation history
-            ...(isWebSearchEnabled && { tools: [{ type: "web_search" }] })
-          },
-          { signal: abortController.signal }
-        );
-
-        // Disable polling while streaming is active
-        assistantStreamingRef.current = true;
-
-        try {
-          // Process the streaming response
-          await processStreamingResponse(stream);
-        } finally {
-          // Re-enable polling after streaming completes
-          assistantStreamingRef.current = false;
-          setCurrentResponseId(undefined);
-
-          // Invalidate billing status after a delay to allow backend processing
-          billingRefreshTimeoutRef.current = setTimeout(() => {
-            queryClient.invalidateQueries({ queryKey: ["billingStatus"] });
-            billingRefreshTimeoutRef.current = null;
-          }, 3000);
-        }
+        await createResponseStream(conversationId, isFollowUpConversation);
+        scheduleBillingRefresh();
       } catch (error) {
         console.error("Failed to send message:", error);
-
-        // Handle usage limit errors with upsell dialogs
-        // The SDK throws errors with the message "Request failed with status 403: {json}" or "Request failed with status 413: {json}"
-        // We need to parse this to extract the actual error details
         let errorMessage = error instanceof Error ? error.message : "Something went wrong";
-
-        // Also check the cause property if it exists
         const causeMessage = (error as Error & { cause?: { message?: string } })?.cause?.message;
         if (causeMessage && causeMessage.includes("Request failed with status")) {
           errorMessage = causeMessage;
         }
 
-        // Check for 413 error (Message exceeds context limit)
-        let status413Error: { status: number; message: string } | null = null;
-        if (errorMessage.includes("Request failed with status 413:")) {
+        const parseStatusError = (status: number) => {
+          if (!errorMessage.includes(`Request failed with status ${status}:`)) return null;
           try {
-            // Extract the JSON part from the error message
-            const jsonMatch = errorMessage.match(/Request failed with status 413:\s*({.*})/);
-            if (jsonMatch && jsonMatch[1]) {
-              status413Error = JSON.parse(jsonMatch[1]);
-            }
-          } catch (parseError) {
-            console.error("Failed to parse 413 error:", parseError);
-          }
-        }
-
-        if (status413Error && status413Error.message === "Message exceeds context limit") {
-          // Remove the user message from history and restore input
-          setMessages((prev) => prev.filter((msg) => msg.id !== localMessageId));
-
-          // Restore the original input and attachments
-          if (!overrideInput) {
-            setInput(originalInput);
-            setDraftImages(originalImages);
-            // Re-create object URLs since originals were revoked by clearAllAttachments()
-            const restoredUrlMap = new Map<File, string>();
-            for (const file of originalImages) {
-              restoredUrlMap.set(file, URL.createObjectURL(file));
-            }
-            setImageUrls(restoredUrlMap);
-            setDocumentText(originalDocumentText);
-            setDocumentName(originalDocumentName);
-          }
-
-          // Show the context limit dialog
-          setContextLimitDialogOpen(true);
-          setError("Your message exceeds the context limit for this model.");
-          return; // Exit early, don't continue to other error handling
-        }
-
-        let status403Error: { status: number; message: string } | null = null;
-
-        // Check if this is a 403 error from the SDK
-        if (errorMessage.includes("Request failed with status 403:")) {
-          try {
-            // Extract the JSON part from the error message
-            const jsonMatch = errorMessage.match(/Request failed with status 403:\s*({.*})/);
-            if (jsonMatch && jsonMatch[1]) {
-              status403Error = JSON.parse(jsonMatch[1]);
-            }
-          } catch (parseError) {
-            console.error("Failed to parse 403 error:", parseError);
-          }
-        }
-
-        if (status403Error) {
-          // Remove the user message from history and restore input
-          setMessages((prev) => prev.filter((msg) => msg.id !== localMessageId));
-
-          // Restore the original input and attachments
-          if (!overrideInput) {
-            setInput(originalInput);
-            setDraftImages(originalImages);
-            // Re-create object URLs since originals were revoked by clearAllAttachments()
-            const restoredUrlMap = new Map<File, string>();
-            for (const file of originalImages) {
-              restoredUrlMap.set(file, URL.createObjectURL(file));
-            }
-            setImageUrls(restoredUrlMap);
-            setDocumentText(originalDocumentText);
-            setDocumentName(originalDocumentName);
-          }
-
-          if (status403Error.message === "Free tier token limit exceeded") {
-            // Token limit exceeded - conversation too long for free tier
-            setUpgradeFeature("tokens");
-            setUpgradeDialogOpen(true);
-            setError(
-              "This conversation is too long for the free tier. Upgrade to Pro for longer conversations."
+            const jsonMatch = errorMessage.match(
+              new RegExp(`Request failed with status ${status}:\\s*({.*})`)
             );
+            return jsonMatch?.[1]
+              ? (JSON.parse(jsonMatch[1]) as { status: number; message: string })
+              : null;
+          } catch (parseError) {
+            console.error(`Failed to parse ${status} error:`, parseError);
+            return null;
+          }
+        };
+
+        const status413Error = parseStatusError(413);
+        if (status413Error && status413Error.message === "Message exceeds context limit") {
+          restoreOriginComposer("Your message exceeds the context limit for this model.");
+          if (isRuntimeSelected(runtimeKey)) setContextLimitDialogOpen(true);
+          return;
+        }
+
+        const status403Error = parseStatusError(403);
+        if (status403Error) {
+          let displayError: string;
+          if (status403Error.message === "Free tier token limit exceeded") {
+            displayError =
+              "This conversation is too long for the free tier. Upgrade to Pro for longer conversations.";
+            if (isRuntimeSelected(runtimeKey)) {
+              setUpgradeFeature("tokens");
+              setUpgradeDialogOpen(true);
+            }
           } else if (status403Error.message === "Usage limit reached") {
-            // Usage limit reached - could be daily (free) or monthly (paid)
             const isFreeTier =
-              !billingStatus?.product_name || billingStatus.product_name.toLowerCase() === "free";
+              !billingStatusAtSend?.product_name ||
+              billingStatusAtSend.product_name.toLowerCase() === "free";
 
             if (isFreeTier) {
-              // Free tier hit daily limits
-              setUpgradeFeature("usage");
-              setUpgradeDialogOpen(true);
-              setError("You've reached your daily usage limit. Upgrade to Pro for more chats.");
+              displayError =
+                "You've reached your daily usage limit. Upgrade to Pro for more chats.";
             } else {
-              // Paid tier hit monthly limits - upsell to next tier
+              const isPro =
+                billingStatusAtSend.product_name?.toLowerCase().includes("pro") &&
+                !billingStatusAtSend.product_name?.toLowerCase().includes("max");
+              displayError = isPro
+                ? "You've reached your monthly Pro limit. Upgrade to Max for 10x more usage."
+                : "You've reached your monthly usage limit. Please wait for the next billing cycle.";
+            }
+            if (isRuntimeSelected(runtimeKey)) {
               setUpgradeFeature("usage");
               setUpgradeDialogOpen(true);
-              const isPro =
-                billingStatus.product_name?.toLowerCase().includes("pro") &&
-                !billingStatus.product_name?.toLowerCase().includes("max");
-              setError(
-                isPro
-                  ? "You've reached your monthly Pro limit. Upgrade to Max for 10x more usage."
-                  : "You've reached your monthly usage limit. Please wait for the next billing cycle."
-              );
             }
           } else {
-            setError(status403Error.message || "Access denied. Please check your subscription.");
+            displayError =
+              status403Error.message || "Access denied. Please check your subscription.";
           }
+          restoreOriginComposer(displayError);
         } else if (error instanceof Error && error.name !== "AbortError") {
-          // Retry logic for non-rate-limit errors on follow-up conversations
-          // Only retry if this is a follow-up (conversation already existed before this request)
-          const isFollowUpConversation = conversation?.id && messages.length > 1;
-
-          if (isFollowUpConversation && conversation?.id) {
+          if (isFollowUpConversation && conversationId) {
             try {
-              // Wait 1 second before retrying
               console.log("Waiting 1s before retry...");
               await new Promise((resolve) => setTimeout(resolve, 1000));
+              if (!runtimeStore.isRunCurrent(runtimeKey, run.token)) return;
 
               console.log("Retrying request once...");
-              // TODO: Consider calling os.getAttestation() here if needed for attestation refresh
-
-              // Create new abort controller for retry
-              const retryAbortController = new AbortController();
-              abortControllerRef.current = retryAbortController;
-
-              const retryStream = await openai.responses.create(
-                {
-                  conversation: conversation.id,
-                  model: localState.model || DEFAULT_MODEL_ID,
-                  input: [{ role: "user", content: messageContent }],
-                  metadata: { internal_message_id: localMessageId }, // Server prevents duplicate IDs
-                  stream: true,
-                  store: true,
-                  ...(isWebSearchEnabled && { tools: [{ type: "web_search" }] })
-                },
-                { signal: retryAbortController.signal }
-              );
-
-              // Disable polling while streaming is active
-              assistantStreamingRef.current = true;
-
-              try {
-                // Process the retry stream using the same helper function
-                await processStreamingResponse(retryStream);
-                console.log("Retry completed successfully");
-              } finally {
-                // Re-enable polling after streaming completes
-                assistantStreamingRef.current = false;
-              }
+              await createResponseStream(conversationId, false);
+              scheduleBillingRefresh();
+              console.log("Retry completed successfully");
               return;
             } catch (retryError) {
-              // Retry failed - check one last time if message actually went through
               console.error("Retry failed:", retryError);
+              if (!runtimeStore.isRunCurrent(runtimeKey, run.token)) return;
 
               try {
-                // Check the last 5 items to see if our message is there
-                const finalCheckResponse = await openai.conversations.items.list(conversation.id, {
+                const finalCheckResponse = await openai.conversations.items.list(conversationId, {
                   limit: 5,
                   order: "desc"
                 });
-
-                // Look for our message by ID - server uses our internal_message_id as the item's ID
                 const foundMessage = finalCheckResponse.data.find(
                   (item) => item.id === localMessageId
                 );
 
                 if (!foundMessage) {
-                  // Message definitely didn't go through - restore input and remove from UI
                   console.log("Message not found after retry - restoring input");
-
-                  // Remove the user message from the messages list
-                  setMessages((prev) => prev.filter((msg) => msg.id !== localMessageId));
-
-                  // Restore the original input and attachments
-                  if (!overrideInput) {
-                    setInput(originalInput);
-                    setDraftImages(originalImages);
-                    // Re-create object URLs since originals were revoked by clearAllAttachments()
-                    const restoredUrlMap = new Map<File, string>();
-                    for (const file of originalImages) {
-                      restoredUrlMap.set(file, URL.createObjectURL(file));
-                    }
-                    setImageUrls(restoredUrlMap);
-                    setDocumentText(originalDocumentText);
-                    setDocumentName(originalDocumentName);
-                  }
-
-                  setError("Failed to send message. Please try again.");
+                  restoreOriginComposer("Failed to send message. Please try again.");
                 } else {
-                  // Message actually went through! Just log it
                   console.log("Message found after retry failure - it actually went through");
                 }
               } catch (finalCheckError) {
-                // If we can't even check, assume message failed and restore input
                 console.error("Final check failed:", finalCheckError);
-
-                // Remove the user message from the messages list
-                setMessages((prev) => prev.filter((msg) => msg.id !== localMessageId));
-
-                // Restore the original input and attachments
-                if (!overrideInput) {
-                  setInput(originalInput);
-                  setDraftImages(originalImages);
-                  // Re-create object URLs since originals were revoked by clearAllAttachments()
-                  const restoredUrlMap = new Map<File, string>();
-                  for (const file of originalImages) {
-                    restoredUrlMap.set(file, URL.createObjectURL(file));
-                  }
-                  setImageUrls(restoredUrlMap);
-                  setDocumentText(originalDocumentText);
-                  setDocumentName(originalDocumentName);
-                }
-
-                setError("Failed to send message. Please try again.");
+                restoreOriginComposer("Failed to send message. Please try again.");
               }
             }
           } else {
-            // Not a follow-up conversation or other non-retryable error
-            setError(errorMessage + ". Please try again.");
+            const optimisticMessageId = getRegisteredChatOptimisticMessage(runtimeStore, run.token);
+            runtimeStore.updateForRun(runtimeKey, run.token, (snapshot) => ({
+              ...snapshot,
+              messages: markOptimisticMessageIncomplete(
+                snapshot.messages as Message[],
+                optimisticMessageId
+              ),
+              error: `${errorMessage}. Please try again.`
+            }));
           }
         }
       } finally {
-        setIsGenerating(false);
-        setCurrentResponseId(undefined);
-        abortControllerRef.current = null;
-        assistantStreamingRef.current = false;
+        unregisterChatOptimisticMessage(runtimeStore, run.token, localMessageId);
+        runtimeStore.finishRun(runtimeKey, run.token);
       }
     },
     [
-      input,
-      isGenerating,
-      isProcessingDocument,
-      openai,
-      os,
-      conversation,
-      draftProjectId,
+      billingStatus,
+      isRuntimeSelected,
+      isWebSearchEnabled,
       localState.model,
-      draftImages,
-      documentText,
-      clearAllAttachments,
+      openai,
       processStreamingResponse,
-      isWebSearchEnabled
+      queryClient,
+      runtimeStore
     ]
   );
 
@@ -3858,6 +4684,8 @@ export function UnifiedChat() {
   return (
     <div
       style={sidebarLayoutStyle}
+      data-runtime-key={runtimeStore.resolveKey(activeRuntimeKey)}
+      data-generating={isGenerating ? "true" : "false"}
       className={`grid h-dvh min-h-0 w-full grid-cols-1 overflow-hidden ${isSidebarOpen ? SIDEBAR_GRID_COLUMNS_CLASS : ""}`}
     >
       {/* Use the existing Sidebar component */}
@@ -4056,7 +4884,9 @@ export function UnifiedChat() {
                                 <button
                                   type="button"
                                   onClick={() => removeImage(i)}
-                                  className="absolute -right-1 -top-1 rounded-full border bg-background p-0.5 opacity-0 transition-opacity group-hover:opacity-100"
+                                  disabled={isGenerating}
+                                  aria-label={`Remove attachment ${i + 1}`}
+                                  className="absolute -right-1 -top-1 rounded-full border bg-background p-0.5 opacity-0 transition-opacity group-hover:opacity-100 disabled:pointer-events-none disabled:opacity-40"
                                 >
                                   <X className="h-3 w-3" />
                                 </button>
@@ -4072,7 +4902,9 @@ export function UnifiedChat() {
                             <button
                               type="button"
                               onClick={removeDocument}
-                              className="text-muted-foreground hover:text-foreground"
+                              disabled={isGenerating}
+                              aria-label="Remove document"
+                              className="text-muted-foreground hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
                             >
                               <X className="h-3 w-3" />
                             </button>
@@ -4111,7 +4943,7 @@ export function UnifiedChat() {
                         onKeyDown={handleKeyDown}
                         onPaste={handlePaste}
                         placeholder="Message Maple..."
-                        disabled={isGenerating || isRecording}
+                        disabled={isGenerating || isRecordingForActive}
                         className={`resize-none border-0 bg-transparent pl-4 pr-8 text-base leading-6 focus-visible:ring-0 focus-visible:ring-offset-0 placeholder:text-muted-foreground/60 ${
                           isFullscreen
                             ? "flex-1 min-h-0 pt-3 pb-2"
@@ -4172,10 +5004,14 @@ export function UnifiedChat() {
                                 variant="ghost"
                                 size="sm"
                                 className="h-8 w-8 p-0 text-[hsl(var(--maple-secondary-700))] hover:bg-[hsl(var(--maple-primary-container))] hover:text-[hsl(var(--maple-secondary-700))]"
-                                disabled={isProcessingDocument}
+                                disabled={isGenerating || isProcessingDocument}
                                 aria-busy={isProcessingDocument}
                                 aria-label={
-                                  isProcessingDocument ? "Processing document" : "Add attachment"
+                                  isProcessingDocument
+                                    ? "Processing document"
+                                    : isGenerating
+                                      ? "Attachments unavailable while generating"
+                                      : "Add attachment"
                                 }
                               >
                                 {isProcessingDocument ? (
@@ -4193,11 +5029,13 @@ export function UnifiedChat() {
                             </DropdownMenuTrigger>
                             <DropdownMenuContent align="start">
                               <DropdownMenuItem
+                                disabled={isGenerating}
                                 onClick={() => {
                                   if (!canUseImages) {
                                     setUpgradeFeature("image");
                                     setUpgradeDialogOpen(true);
                                   } else {
+                                    fileInputOwnerKeyRef.current = activeRuntimeKeyRef.current;
                                     fileInputRef.current?.click();
                                   }
                                 }}
@@ -4206,6 +5044,7 @@ export function UnifiedChat() {
                                 <span>Add Images</span>
                               </DropdownMenuItem>
                               <DropdownMenuItem
+                                disabled={isGenerating}
                                 onClick={() => {
                                   if (!isTauriEnv) {
                                     setDocumentPlatformDialogOpen(true);
@@ -4213,6 +5052,7 @@ export function UnifiedChat() {
                                     setUpgradeFeature("document");
                                     setUpgradeDialogOpen(true);
                                   } else {
+                                    documentInputOwnerKeyRef.current = activeRuntimeKeyRef.current;
                                     documentInputRef.current?.click();
                                   }
                                 }}
@@ -4239,6 +5079,7 @@ export function UnifiedChat() {
                             <Button
                               type="button"
                               onClick={handleCancelResponse}
+                              aria-label="Stop generating"
                               size="icon"
                               variant="destructive"
                               className="h-8 w-8 rounded-xl sm:h-9 sm:w-9"
@@ -4248,6 +5089,7 @@ export function UnifiedChat() {
                           ) : (
                             <button
                               type="submit"
+                              aria-label="Send message"
                               disabled={
                                 isProcessingDocument ||
                                 (!input.trim() && !draftImages.length && !documentText)
@@ -4260,7 +5102,7 @@ export function UnifiedChat() {
                         </div>
                       </div>
 
-                      {isRecording && (
+                      {isRecordingForActive && (
                         <RecordingOverlay
                           isRecording={isRecording}
                           isProcessing={isProcessingSend || isTranscribing}
@@ -4303,7 +5145,9 @@ export function UnifiedChat() {
                               <button
                                 type="button"
                                 onClick={() => removeImage(i)}
-                                className="absolute -right-1 -top-1 rounded-full border bg-background p-0.5 opacity-0 transition-opacity group-hover:opacity-100"
+                                disabled={isGenerating}
+                                aria-label={`Remove attachment ${i + 1}`}
+                                className="absolute -right-1 -top-1 rounded-full border bg-background p-0.5 opacity-0 transition-opacity group-hover:opacity-100 disabled:pointer-events-none disabled:opacity-40"
                               >
                                 <X className="h-2.5 w-2.5" />
                               </button>
@@ -4319,7 +5163,9 @@ export function UnifiedChat() {
                           <button
                             type="button"
                             onClick={removeDocument}
-                            className="text-muted-foreground hover:text-foreground"
+                            disabled={isGenerating}
+                            aria-label="Remove document"
+                            className="text-muted-foreground hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
                           >
                             <X className="h-2.5 w-2.5" />
                           </button>
@@ -4342,7 +5188,7 @@ export function UnifiedChat() {
                       onKeyDown={handleKeyDown}
                       onPaste={handlePaste}
                       placeholder="Message Maple..."
-                      disabled={isGenerating || isRecording}
+                      disabled={isGenerating || isRecordingForActive}
                       className={CHAT_COMPOSER_TEXTAREA_CLASS}
                       rows={1}
                       id="message"
@@ -4393,10 +5239,14 @@ export function UnifiedChat() {
                               variant="ghost"
                               size="sm"
                               className="h-8 w-8 p-0 text-[hsl(var(--maple-secondary-700))] hover:bg-[hsl(var(--maple-primary-container))] hover:text-[hsl(var(--maple-secondary-700))]"
-                              disabled={isProcessingDocument}
+                              disabled={isGenerating || isProcessingDocument}
                               aria-busy={isProcessingDocument}
                               aria-label={
-                                isProcessingDocument ? "Processing document" : "Add attachment"
+                                isProcessingDocument
+                                  ? "Processing document"
+                                  : isGenerating
+                                    ? "Attachments unavailable while generating"
+                                    : "Add attachment"
                               }
                             >
                               {isProcessingDocument ? (
@@ -4414,11 +5264,13 @@ export function UnifiedChat() {
                           </DropdownMenuTrigger>
                           <DropdownMenuContent align="start">
                             <DropdownMenuItem
+                              disabled={isGenerating}
                               onClick={() => {
                                 if (!canUseImages) {
                                   setUpgradeFeature("image");
                                   setUpgradeDialogOpen(true);
                                 } else {
+                                  fileInputOwnerKeyRef.current = activeRuntimeKeyRef.current;
                                   fileInputRef.current?.click();
                                 }
                               }}
@@ -4427,6 +5279,7 @@ export function UnifiedChat() {
                               <span>Add Images</span>
                             </DropdownMenuItem>
                             <DropdownMenuItem
+                              disabled={isGenerating}
                               onClick={() => {
                                 if (!isTauriEnv) {
                                   setDocumentPlatformDialogOpen(true);
@@ -4434,6 +5287,7 @@ export function UnifiedChat() {
                                   setUpgradeFeature("document");
                                   setUpgradeDialogOpen(true);
                                 } else {
+                                  documentInputOwnerKeyRef.current = activeRuntimeKeyRef.current;
                                   documentInputRef.current?.click();
                                 }
                               }}
@@ -4460,6 +5314,7 @@ export function UnifiedChat() {
                           <Button
                             type="button"
                             onClick={handleCancelResponse}
+                            aria-label="Stop generating"
                             size="icon"
                             variant="destructive"
                             className="h-8 w-8 rounded-xl"
@@ -4469,6 +5324,7 @@ export function UnifiedChat() {
                         ) : (
                           <button
                             type="submit"
+                            aria-label="Send message"
                             disabled={
                               isProcessingDocument ||
                               (!input.trim() && !draftImages.length && !documentText)
@@ -4481,7 +5337,7 @@ export function UnifiedChat() {
                       </div>
                     </div>
 
-                    {isRecording && (
+                    {isRecordingForActive && (
                       <RecordingOverlay
                         isRecording={isRecording}
                         isProcessing={isProcessingSend || isTranscribing}

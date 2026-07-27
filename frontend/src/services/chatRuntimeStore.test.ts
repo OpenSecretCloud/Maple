@@ -1,0 +1,784 @@
+import { describe, expect, test } from "bun:test";
+import {
+  ChatRuntimeStore,
+  createChatDraftKey,
+  createConversationChatKey,
+  type ChatRuntimeRunUpdater,
+  type ChatRuntimeSnapshot
+} from "./chatRuntimeStore";
+
+type Conversation = { id: string; title: string };
+type Message = { id: string; text: string; status: "streaming" | "completed" };
+type Composer = { input: string; attachmentIds: string[] };
+type Snapshot = ChatRuntimeSnapshot<Conversation, Message, Composer>;
+
+const A = createConversationChatKey("a");
+const B = createConversationChatKey("b");
+
+function createStore(
+  options: {
+    maxInactiveCompletedEntries?: number;
+    canEvict?: (snapshot: Snapshot) => boolean;
+    disposeEntry?: (snapshot: Snapshot, reason: "evicted" | "deleted" | "disposed") => void;
+  } = {}
+) {
+  return new ChatRuntimeStore<Conversation, Message, Composer>({
+    createComposer: () => ({ input: "", attachmentIds: [] }),
+    ...options
+  });
+}
+
+function streamingMessage(id: string, text: string): Message {
+  return { id, text, status: "streaming" };
+}
+
+describe("ChatRuntimeStore", () => {
+  test("keeps concurrent A and B runs isolated while A receives offscreen updates", () => {
+    const store = createStore();
+    store.select(A, {
+      conversation: { id: "a", title: "Chat A" },
+      messages: [{ id: "a-user", text: "Question A", status: "completed" }],
+      lastSeenItemId: "a-user",
+      historyLoaded: true
+    });
+
+    const runA = store.beginRun(A);
+    store.setCurrentResponseId(A, runA.token, "response-a");
+    store.setAssistantStreaming(A, runA.token, true);
+    expect(
+      store.updateForRun(A, runA.token, (snapshot) => ({
+        ...snapshot,
+        messages: [...snapshot.messages, streamingMessage("a-assistant", "one ")]
+      }))
+    ).toBe(true);
+
+    store.select(B, {
+      conversation: { id: "b", title: "Chat B" },
+      messages: [{ id: "b-user", text: "Question B", status: "completed" }],
+      historyLoaded: true
+    });
+    const runB = store.beginRun(B);
+    store.setCurrentResponseId(B, runB.token, "response-b");
+    store.setAssistantStreaming(B, runB.token, true);
+    store.updateForRun(B, runB.token, (snapshot) => ({
+      ...snapshot,
+      messages: [...snapshot.messages, streamingMessage("b-assistant", "answer B")]
+    }));
+
+    // A's HTTP iterator can continue dispatching while B is the selected chat.
+    store.updateForRun(A, runA.token, (snapshot) => ({
+      ...snapshot,
+      messages: snapshot.messages.map((message) =>
+        message.id === "a-assistant" ? { ...message, text: `${message.text}two` } : message
+      ),
+      lastSeenItemId: "a-assistant"
+    }));
+
+    expect(store.getActiveKey()).toBe(B);
+    expect(store.getActive()?.messages.at(-1)?.text).toBe("answer B");
+    expect(store.get(A)?.messages.at(-1)?.text).toBe("one two");
+    expect(store.get(A)?.isGenerating).toBe(true);
+    expect(store.get(B)?.isGenerating).toBe(true);
+    expect(runA.signal.aborted).toBe(false);
+    expect(runB.signal.aborted).toBe(false);
+
+    store.finishRun(B, runB.token, (snapshot) => ({
+      ...snapshot,
+      messages: snapshot.messages.map((message) => ({ ...message, status: "completed" }))
+    }));
+    store.select(A);
+
+    expect(store.getActive()?.messages.at(-1)?.text).toBe("one two");
+    expect(store.getActive()?.assistantStreaming).toBe(true);
+    expect(store.getActive()?.currentResponseId).toBe("response-a");
+    expect(store.get(B)?.isGenerating).toBe(false);
+  });
+
+  test("finishes A offscreen without changing selected running B", () => {
+    const store = createStore();
+    store.select(A, {
+      messages: [streamingMessage("a-assistant", "answer A")]
+    });
+    const runA = store.beginRun(A);
+    store.setCurrentResponseId(A, runA.token, "response-a");
+    store.setAssistantStreaming(A, runA.token, true);
+
+    store.select(B, {
+      messages: [streamingMessage("b-assistant", "answer B")]
+    });
+    const runB = store.beginRun(B);
+    store.setCurrentResponseId(B, runB.token, "response-b");
+    store.setAssistantStreaming(B, runB.token, true);
+    const selectedBSnapshot = store.get(B);
+
+    expect(
+      store.finishRun(A, runA.token, (snapshot) => ({
+        ...snapshot,
+        messages: snapshot.messages.map((message) => ({
+          ...message,
+          status: "completed"
+        }))
+      }))
+    ).toBe(true);
+
+    expect(store.getActiveKey()).toBe(B);
+    expect(store.get(B)).toBe(selectedBSnapshot);
+    expect(store.get(B)).toMatchObject({
+      isGenerating: true,
+      assistantStreaming: true,
+      currentResponseId: "response-b",
+      runToken: runB.token
+    });
+    expect(runB.signal.aborted).toBe(false);
+    expect(store.get(A)).toMatchObject({
+      isGenerating: false,
+      assistantStreaming: false,
+      currentResponseId: undefined,
+      runToken: null
+    });
+    expect(store.get(A)?.messages.at(-1)?.status).toBe("completed");
+  });
+
+  test("owns composer state independently for every chat", () => {
+    const store = createStore();
+    store.select(A);
+    store.update(A, (snapshot) => ({
+      ...snapshot,
+      composer: { input: "draft A", attachmentIds: ["a.png"] }
+    }));
+
+    store.select(B);
+    store.update(B, (snapshot) => ({
+      ...snapshot,
+      composer: { input: "draft B", attachmentIds: ["b.pdf"] }
+    }));
+    store.update(A, (snapshot) => ({
+      ...snapshot,
+      composer: { ...snapshot.composer, input: "updated A while offscreen" }
+    }));
+
+    expect(store.getActive()?.composer).toEqual({ input: "draft B", attachmentIds: ["b.pdf"] });
+    expect(store.get(A)?.composer).toEqual({
+      input: "updated A while offscreen",
+      attachmentIds: ["a.png"]
+    });
+
+    store.select(A);
+    expect(store.getActive()?.composer.input).toBe("updated A while offscreen");
+  });
+
+  test("rekeys a draft safely without stealing focus and keeps the old key as an alias", () => {
+    const store = createStore();
+    const draft = createChatDraftKey("pending-a");
+    const conversation = createConversationChatKey("created-a");
+    store.select(A);
+    store.ensure(draft, {
+      composer: { input: "draft prompt", attachmentIds: ["image"] },
+      messages: [streamingMessage("local-user", "draft prompt")]
+    });
+    const run = store.beginRun(draft);
+    store.setCurrentResponseId(draft, run.token, "created-response");
+
+    expect(store.rekey(draft, conversation, run.token)).toBe(conversation);
+    expect(store.getActiveKey()).toBe(A);
+    expect(store.resolveKey(draft)).toBe(conversation);
+    expect(store.get(draft)).toBe(store.get(conversation));
+    expect(store.get(conversation)?.composer.input).toBe("draft prompt");
+    expect(store.isRunCurrent(draft, run.token)).toBe(true);
+
+    expect(
+      store.updateForRun(draft, run.token, (snapshot) => ({
+        ...snapshot,
+        conversation: { id: "created-a", title: "Created" },
+        messages: [...snapshot.messages, streamingMessage("assistant", "still streaming")]
+      }))
+    ).toBe(true);
+    expect(store.get(conversation)?.messages.at(-1)?.text).toBe("still streaming");
+
+    store.select(draft);
+    expect(store.getActiveKey()).toBe(conversation);
+    const activeDraft = createChatDraftKey("active");
+    store.select(activeDraft);
+    const activeRun = store.beginRun(activeDraft);
+    const activeConversation = createConversationChatKey("active-created");
+    store.rekey(activeDraft, activeConversation, activeRun.token);
+    expect(store.getActiveKey()).toBe(activeConversation);
+  });
+
+  test("a stale run cannot rekey replacement state after cancellation", () => {
+    const store = createStore();
+    const draft = createChatDraftKey("stale-create");
+    const staleConversation = createConversationChatKey("stale-created");
+    const currentConversation = createConversationChatKey("current-created");
+    store.select(draft);
+    const staleRun = store.beginRun(draft);
+    store.cancelRun(draft, staleRun.token);
+    const replacement = store.beginRun(draft);
+
+    expect(store.rekey(draft, staleConversation, staleRun.token)).toBeNull();
+    expect(store.resolveKey(draft)).toBe(draft);
+    expect(store.getActiveKey()).toBe(draft);
+    expect(store.isRunCurrent(draft, replacement.token)).toBe(true);
+    expect(replacement.signal.aborted).toBe(false);
+
+    expect(store.rekey(draft, currentConversation, replacement.token)).toBe(currentConversation);
+    expect(store.getActiveKey()).toBe(currentConversation);
+  });
+
+  test("stale adoption leaves an independently discovered destination untouched", () => {
+    const store = createStore();
+    const draft = createChatDraftKey("stale-source");
+    const conversation = createConversationChatKey("independently-discovered");
+    store.select(draft, {
+      messages: [{ id: "source-user", text: "source prompt", status: "completed" }]
+    });
+    const sourceRun = store.beginRun(draft);
+    store.select(conversation, {
+      conversation: { id: "independently-discovered", title: "Discovered elsewhere" },
+      messages: [{ id: "remote-user", text: "remote prompt", status: "completed" }],
+      historyLoaded: true
+    });
+    const destinationBefore = store.get(conversation);
+    store.cancelRun(draft, sourceRun.token);
+
+    const result = store.rekeyRunAdoptingIdleDestination(
+      draft,
+      conversation,
+      sourceRun.token,
+      () => {
+        throw new Error("a stale source must not merge the destination");
+      }
+    );
+
+    expect(result).toEqual({ status: "source_stale" });
+    expect(store.get(conversation)).toBe(destinationBefore);
+    expect(store.resolveKey(draft)).toBe(draft);
+    expect(store.get(draft)?.messages[0]?.text).toBe("source prompt");
+    expect(sourceRun.signal.aborted).toBe(true);
+  });
+
+  test("atomically adopts an idle selected destination while the source run continues", () => {
+    const disposed: Array<{ key: string; reason: string }> = [];
+    const store = createStore({
+      disposeEntry: (snapshot, reason) => disposed.push({ key: snapshot.key, reason })
+    });
+    const draft = createChatDraftKey("server-create-race");
+    const conversation = createConversationChatKey("discovered-before-create-returned");
+    store.select(draft, {
+      messages: [{ id: "optimistic-user", text: "source prompt", status: "completed" }],
+      composer: { input: "", attachmentIds: [] }
+    });
+    const sourceRun = store.beginRun(draft);
+    store.setCurrentResponseId(draft, sourceRun.token, "source-response");
+
+    store.select(conversation, {
+      conversation: { id: "discovered-before-create-returned", title: "New Conversation" },
+      messages: [{ id: "server-history", text: "loaded first", status: "completed" }],
+      composer: { input: "selected destination draft", attachmentIds: ["destination.png"] },
+      historyLoaded: true
+    });
+    const observedDestinationSnapshots: Array<Snapshot | undefined> = [];
+    const unsubscribe = store.subscribeKey(conversation, () => {
+      observedDestinationSnapshots.push(store.get(conversation));
+    });
+
+    const result = store.rekeyRunAdoptingIdleDestination(
+      draft,
+      conversation,
+      sourceRun.token,
+      (source, destination) => ({
+        conversation: destination.conversation ?? source.conversation,
+        messages: [...destination.messages, ...source.messages],
+        composer: destination.composer,
+        currentResponseId: source.currentResponseId,
+        error: source.error,
+        lastSeenItemId: source.lastSeenItemId ?? destination.lastSeenItemId,
+        assistantStreaming: source.assistantStreaming,
+        historyLoaded: source.historyLoaded || destination.historyLoaded
+      })
+    );
+
+    expect(result).toEqual({
+      status: "migrated",
+      key: conversation,
+      adoptedExistingDestination: true,
+      destinationWasSelected: true
+    });
+    expect(observedDestinationSnapshots).toHaveLength(1);
+    expect(observedDestinationSnapshots[0]).toBeDefined();
+    expect(disposed).toEqual([]);
+    expect(store.getActiveKey()).toBe(conversation);
+    expect(store.resolveKey(draft)).toBe(conversation);
+    expect(store.isRunCurrent(conversation, sourceRun.token)).toBe(true);
+    expect(sourceRun.signal.aborted).toBe(false);
+    expect(store.get(conversation)).toMatchObject({
+      isGenerating: true,
+      currentResponseId: "source-response",
+      historyLoaded: true,
+      composer: {
+        input: "selected destination draft",
+        attachmentIds: ["destination.png"]
+      }
+    });
+    expect(store.get(conversation)?.messages.map((message) => message.id)).toEqual([
+      "server-history",
+      "optimistic-user"
+    ]);
+    unsubscribe();
+  });
+
+  test("fails closed when the destination owns a run and leaves both prompts recoverable", () => {
+    const store = createStore();
+    const draft = createChatDraftKey("source-with-prompt");
+    const conversation = createConversationChatKey("busy-destination");
+    store.select(draft, {
+      messages: [{ id: "source-user", text: "source prompt", status: "completed" }]
+    });
+    const sourceRun = store.beginRun(draft);
+    store.select(conversation, {
+      messages: [{ id: "destination-user", text: "destination prompt", status: "completed" }]
+    });
+    const destinationRun = store.beginRun(conversation);
+    const destinationBeforeCollision = store.get(conversation);
+
+    const result = store.rekeyRunAdoptingIdleDestination(
+      draft,
+      conversation,
+      sourceRun.token,
+      (source) => source
+    );
+
+    expect(result).toEqual({ status: "destination_active", key: conversation });
+    expect(store.resolveKey(draft)).toBe(draft);
+    expect(store.get(conversation)).toBe(destinationBeforeCollision);
+    expect(store.isRunCurrent(draft, sourceRun.token)).toBe(true);
+    expect(store.isRunCurrent(conversation, destinationRun.token)).toBe(true);
+    expect(sourceRun.signal.aborted).toBe(false);
+    expect(destinationRun.signal.aborted).toBe(false);
+
+    // The caller can restore the source prompt in its history-addressable draft
+    // without mutating the selected destination's run ownership.
+    store.updateForRun(draft, sourceRun.token, (snapshot) => ({
+      ...snapshot,
+      messages: [],
+      composer: { ...snapshot.composer, input: "source prompt" },
+      error: "Source prompt restored"
+    }));
+    store.finishRun(draft, sourceRun.token);
+    expect(store.get(conversation)).toMatchObject({
+      isGenerating: true,
+      runToken: destinationRun.token,
+      composer: { input: "" }
+    });
+    expect(store.get(draft)).toMatchObject({
+      isGenerating: false,
+      runToken: null,
+      composer: { input: "source prompt" },
+      error: "Source prompt restored",
+      messages: []
+    });
+  });
+
+  test("keeps a draft-key subscriber live through rekey and conversation-key updates", () => {
+    const store = createStore();
+    const draft = createChatDraftKey("subscribed-draft");
+    const conversation = createConversationChatKey("subscribed-conversation");
+    store.select(draft);
+    const run = store.beginRun(draft);
+    let notifications = 0;
+    const unsubscribe = store.subscribeKey(draft, () => {
+      notifications += 1;
+    });
+
+    expect(store.rekey(draft, conversation, run.token)).toBe(conversation);
+    expect(notifications).toBe(1);
+    expect(store.get(draft)).toBe(store.get(conversation));
+
+    expect(
+      store.updateForRun(conversation, run.token, (snapshot) => ({
+        ...snapshot,
+        messages: [...snapshot.messages, streamingMessage("assistant", "continued")]
+      }))
+    ).toBe(true);
+
+    expect(notifications).toBe(2);
+    expect(store.get(draft)).toBe(store.get(conversation));
+    expect(store.get(draft)?.messages.at(-1)?.text).toBe("continued");
+    unsubscribe();
+  });
+
+  test("cancels only the keyed run and returns its owned response ID and controller", () => {
+    const store = createStore();
+    store.select(A);
+    const runA = store.beginRun(A);
+    store.setCurrentResponseId(A, runA.token, "response-a");
+    store.setAssistantStreaming(A, runA.token, true);
+
+    store.select(B);
+    const runB = store.beginRun(B);
+    store.setCurrentResponseId(B, runB.token, "response-b");
+    store.setAssistantStreaming(B, runB.token, true);
+
+    const cancelled = store.cancelRun(A, runA.token);
+
+    expect(cancelled).toEqual({
+      key: A,
+      token: runA.token,
+      responseId: "response-a",
+      controller: runA.controller
+    });
+    expect(runA.signal.aborted).toBe(true);
+    expect(store.get(A)).toMatchObject({
+      isGenerating: false,
+      assistantStreaming: false,
+      currentResponseId: undefined,
+      runToken: null
+    });
+
+    expect(runB.signal.aborted).toBe(false);
+    expect(store.get(B)).toMatchObject({
+      isGenerating: true,
+      assistantStreaming: true,
+      currentResponseId: "response-b",
+      runToken: runB.token
+    });
+  });
+
+  test("stale run updates and completion cannot clear a replacement run", () => {
+    const store = createStore();
+    store.select(A);
+    const first = store.beginRun(A);
+    store.setCurrentResponseId(A, first.token, "old-response");
+    expect(store.finishRun(A, first.token)).toBe(true);
+
+    const replacement = store.beginRun(A);
+    store.setCurrentResponseId(A, replacement.token, "new-response");
+    store.setAssistantStreaming(A, replacement.token, true);
+
+    expect(
+      store.updateForRun(A, first.token, (snapshot) => ({
+        ...snapshot,
+        error: "stale delta"
+      }))
+    ).toBe(false);
+    expect(store.finishRun(A, first.token)).toBe(false);
+    expect(store.get(A)).toMatchObject({
+      isGenerating: true,
+      assistantStreaming: true,
+      currentResponseId: "new-response",
+      error: null,
+      runToken: replacement.token
+    });
+
+    expect(store.finishRun(A, replacement.token)).toBe(true);
+    expect(store.get(A)).toMatchObject({
+      isGenerating: false,
+      assistantStreaming: false,
+      currentResponseId: undefined,
+      runToken: null
+    });
+  });
+
+  test("a stale abort callback cannot cancel the replacement run", () => {
+    const store = createStore();
+    store.select(A);
+    const first = store.beginRun(A);
+    store.setCurrentResponseId(A, first.token, "old-response");
+    expect(store.finishRun(A, first.token)).toBe(true);
+    let synchronousAbortCancellation: ReturnType<typeof store.cancelRun> | undefined;
+    first.signal.addEventListener("abort", () => {
+      synchronousAbortCancellation = store.cancelRun(A, first.token);
+    });
+
+    const replacement = store.beginRun(A);
+    store.setCurrentResponseId(A, replacement.token, "new-response");
+    store.setAssistantStreaming(A, replacement.token, true);
+    first.controller.abort();
+
+    expect(first.signal.aborted).toBe(true);
+    expect(synchronousAbortCancellation).toBeNull();
+    expect(replacement.signal.aborted).toBe(false);
+    expect(store.isRunCurrent(A, replacement.token)).toBe(true);
+    expect(store.get(A)).toMatchObject({
+      isGenerating: true,
+      assistantStreaming: true,
+      currentResponseId: "new-response",
+      runToken: replacement.token
+    });
+  });
+
+  test("refuses to replace an active same-chat run", () => {
+    const store = createStore();
+    store.select(A);
+    const activeRun = store.beginRun(A);
+    store.setCurrentResponseId(A, activeRun.token, "active-response");
+
+    expect(() => store.beginRun(A)).toThrow("already has an active run");
+    expect(activeRun.signal.aborted).toBe(false);
+    expect(store.isRunCurrent(A, activeRun.token)).toBe(true);
+    expect(store.get(A)).toMatchObject({
+      isGenerating: true,
+      currentResponseId: "active-response",
+      runToken: activeRun.token
+    });
+  });
+
+  test("beginRun always returns ownership before fallible resource eviction", () => {
+    const store = createStore({
+      maxInactiveCompletedEntries: 0,
+      disposeEntry: () => {
+        throw new Error("resource disposal failed");
+      }
+    });
+    store.ensure(B);
+
+    const run = store.beginRun(A);
+
+    expect(store.isRunCurrent(A, run.token)).toBe(true);
+    expect(run.signal.aborted).toBe(false);
+    expect(store.get(A)).toMatchObject({
+      isGenerating: true,
+      runToken: run.token
+    });
+  });
+
+  test("updateForRun cannot expose an idle snapshot while its controller is active", () => {
+    const store = createStore();
+    store.select(A);
+    const run = store.beginRun(A);
+    const unsafeActiveSnapshot = store.get(A)!;
+    const unsafeUpdater = (() => ({
+      ...unsafeActiveSnapshot,
+      isGenerating: false
+    })) as unknown as ChatRuntimeRunUpdater<Conversation, Message, Composer>;
+
+    expect(store.updateForRun(A, run.token, unsafeUpdater)).toBe(true);
+
+    expect(store.isRunCurrent(A, run.token)).toBe(true);
+    expect(store.get(A)).toMatchObject({
+      isGenerating: true,
+      runToken: run.token
+    });
+    expect(() => store.beginRun(A)).toThrow("already has an active run");
+  });
+
+  test("tokenless updates cannot overwrite run-owned replacement fields", () => {
+    const store = createStore();
+    store.select(A);
+    const staleSnapshot = store.get(A)!;
+    const activeRun = store.beginRun(A);
+    store.setCurrentResponseId(A, activeRun.token, "active-response");
+    store.setAssistantStreaming(A, activeRun.token, true);
+
+    // A stale callback may still return a whole pre-run snapshot at runtime.
+    // Generic updates must accept its safe fields while retaining run ownership.
+    store.update(A, () => ({
+      ...staleSnapshot,
+      composer: { input: "safe composer update", attachmentIds: [] }
+    }));
+
+    expect(store.get(A)).toMatchObject({
+      composer: { input: "safe composer update", attachmentIds: [] },
+      isGenerating: true,
+      currentResponseId: "active-response",
+      assistantStreaming: true,
+      runToken: activeRun.token
+    });
+  });
+
+  test("publishes stable global and keyed snapshot revisions", () => {
+    const store = createStore();
+    store.ensure(A);
+    store.ensure(B);
+    const initialGlobalRevision = store.getSubscriberRevision();
+    const initialARevision = store.get(A)?.revision;
+    let globalNotifications = 0;
+    let aNotifications = 0;
+    let bNotifications = 0;
+    const unsubscribeGlobal = store.subscribe(() => {
+      globalNotifications += 1;
+    });
+    const unsubscribeA = store.subscribeKey(A, () => {
+      aNotifications += 1;
+    });
+    const unsubscribeB = store.subscribeKey(B, () => {
+      bNotifications += 1;
+    });
+
+    store.update(B, (snapshot) => ({ ...snapshot, historyLoaded: true }));
+    expect(aNotifications).toBe(0);
+    expect(bNotifications).toBe(1);
+    store.update(A, (snapshot) => ({ ...snapshot, historyLoaded: true }));
+
+    expect(store.getSubscriberRevision()).toBe(initialGlobalRevision + 2);
+    expect(store.get(A)?.revision).toBe((initialARevision ?? 0) + 1);
+    expect(globalNotifications).toBe(2);
+    expect(aNotifications).toBe(1);
+    expect(bNotifications).toBe(1);
+
+    unsubscribeGlobal();
+    unsubscribeA();
+    unsubscribeB();
+    store.update(A, (snapshot) => ({ ...snapshot, error: "after unsubscribe" }));
+    expect(globalNotifications).toBe(2);
+    expect(aNotifications).toBe(1);
+  });
+
+  test("evicts only least-recent inactive completed entries and disposes their resources", () => {
+    const disposed: Array<{ key: string; reason: string }> = [];
+    const store = createStore({
+      maxInactiveCompletedEntries: 1,
+      disposeEntry: (snapshot, reason) => disposed.push({ key: snapshot.key, reason })
+    });
+    const C = createConversationChatKey("c");
+    const D = createConversationChatKey("d");
+    store.select(A);
+    store.ensure(B);
+    store.ensure(C);
+
+    expect(store.get(B)).toBeUndefined();
+    expect(store.get(C)).toBeDefined();
+    expect(disposed).toEqual([{ key: B, reason: "evicted" }]);
+
+    const runD = store.beginRun(D);
+    expect(store.get(C)).toBeDefined();
+    expect(store.get(D)?.isGenerating).toBe(true);
+    store.finishRun(D, runD.token);
+
+    expect(store.get(C)).toBeUndefined();
+    expect(store.get(D)).toBeDefined();
+    expect(disposed).toContainEqual({ key: C, reason: "evicted" });
+
+    store.dispose();
+    expect(disposed).toContainEqual({ key: A, reason: "disposed" });
+    expect(disposed).toContainEqual({ key: D, reason: "disposed" });
+  });
+
+  test("retains an evicted draft conversation alias for Back but clears it on delete", () => {
+    const store = createStore({ maxInactiveCompletedEntries: 0 });
+    const draft = createChatDraftKey("offscreen-history");
+    const conversation = createConversationChatKey("offscreen-created");
+
+    store.select(draft);
+    const run = store.beginRun(draft);
+    expect(store.rekey(draft, conversation, run.token)).toBe(conversation);
+    store.finishRun(conversation, run.token);
+
+    store.select(A);
+    expect(store.get(conversation)).toBeUndefined();
+    expect(store.resolveKey(draft)).toBe(conversation);
+
+    const restored = store.select(draft);
+    expect(restored.key).toBe(conversation);
+    expect(store.getActiveKey()).toBe(conversation);
+
+    store.select(A);
+    expect(store.get(conversation)).toBeUndefined();
+    expect(store.delete(conversation)).toBe(true);
+    expect(store.resolveKey(draft)).toBe(draft);
+    expect(store.get(draft)).toBeUndefined();
+  });
+
+  test("dispose is terminal, clears subscriptions, and is safe when callbacks reenter", () => {
+    const disposedKeys: string[] = [];
+    const store = createStore({
+      disposeEntry: (snapshot) => {
+        disposedKeys.push(snapshot.key);
+        store.dispose();
+        expect(() => store.ensure(createConversationChatKey("late-callback"))).toThrow(
+          "has been disposed"
+        );
+      }
+    });
+    store.select(A);
+    store.ensure(B);
+    const run = store.beginRun(A);
+    let notifications = 0;
+    const unsubscribe = store.subscribe(() => {
+      notifications += 1;
+      store.dispose();
+      expect(() => store.clearSelection()).toThrow("has been disposed");
+    });
+
+    store.dispose();
+
+    expect(run.signal.aborted).toBe(true);
+    expect(disposedKeys).toEqual([A, B]);
+    expect(notifications).toBe(1);
+    expect(store.getActiveKey()).toBeNull();
+    expect(store.get(A)).toBeUndefined();
+    expect(() => store.select(A)).toThrow("has been disposed");
+    expect(store.updateForRun(A, run.token, (snapshot) => snapshot)).toBe(false);
+    expect(store.finishRun(A, run.token)).toBe(false);
+    expect(store.completeRun(A, run.token)).toBe(false);
+    expect(store.cancelRun(A, run.token)).toBeNull();
+    expect(store.rekey(A, createConversationChatKey("late-created"), run.token)).toBeNull();
+    expect(() => store.beginRun(A)).toThrow("has been disposed");
+    expect(() => store.subscribe(() => {})).toThrow("has been disposed");
+
+    unsubscribe();
+    store.dispose();
+    expect(disposedKeys).toEqual([A, B]);
+    expect(notifications).toBe(1);
+  });
+
+  test("dispose completes every abort, resource callback, and listener when some throw", () => {
+    const disposedKeys: string[] = [];
+    const store = createStore({
+      disposeEntry: (snapshot) => {
+        disposedKeys.push(snapshot.key);
+        if (snapshot.key === A) throw new Error("resource disposal failed");
+      }
+    });
+    store.select(A);
+    const runA = store.beginRun(A);
+    store.select(B);
+    const runB = store.beginRun(B);
+    let laterListenerCalls = 0;
+    store.subscribe(() => {
+      throw new Error("listener failed");
+    });
+    store.subscribe(() => {
+      laterListenerCalls += 1;
+    });
+
+    expect(() => store.dispose()).toThrow("resource disposal failed");
+
+    expect(runA.signal.aborted).toBe(true);
+    expect(runB.signal.aborted).toBe(true);
+    expect(disposedKeys).toEqual([A, B]);
+    expect(laterListenerCalls).toBe(1);
+    expect(store.get(A)).toBeUndefined();
+    expect(store.get(B)).toBeUndefined();
+    expect(() => store.ensure(A)).toThrow("has been disposed");
+  });
+
+  test("subscriber exceptions cannot strand beginRun or hide cancellation metadata", () => {
+    const store = createStore();
+    store.select(A);
+    let laterListenerCalls = 0;
+    store.subscribe(() => {
+      throw new Error("broken subscriber");
+    });
+    store.subscribe(() => {
+      laterListenerCalls += 1;
+    });
+
+    const run = store.beginRun(A);
+    expect(store.isRunCurrent(A, run.token)).toBe(true);
+    expect(run.signal.aborted).toBe(false);
+    expect(store.setCurrentResponseId(A, run.token, "response-a")).toBe(true);
+
+    const cancelled = store.cancelRun(A, run.token);
+
+    expect(cancelled).toEqual({
+      key: A,
+      token: run.token,
+      responseId: "response-a",
+      controller: run.controller
+    });
+    expect(run.signal.aborted).toBe(true);
+    expect(store.get(A)?.runToken).toBeNull();
+    expect(laterListenerCalls).toBe(3);
+  });
+});

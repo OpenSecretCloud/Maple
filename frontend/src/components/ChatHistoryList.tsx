@@ -41,6 +41,10 @@ import { ConversationProjectDialog } from "@/components/ConversationProjectDialo
 import { DeleteConversationProjectDialog } from "@/components/DeleteConversationProjectDialog";
 import { MoveChatsDialog } from "@/components/MoveChatsDialog";
 import { listAllConversationProjects, listAllConversations } from "@/utils/paginatedLists";
+import {
+  pushFreshChatHistoryEntry,
+  type NewChatNavigationDetail
+} from "@/services/chatRuntimeNavigation";
 
 const MAX_PROJECTS = 10;
 /** Lucide default; keep sidebar list icons visually consistent. */
@@ -874,8 +878,9 @@ export function ChatHistoryList({
       const params = new URLSearchParams(window.location.search);
       params.delete("conversation_id");
       params.delete("project_id");
-      window.history.replaceState({}, "", params.toString() ? `/?${params.toString()}` : "/");
-      window.dispatchEvent(new CustomEvent("newchat", { detail: { projectId } }));
+      const url = params.toString() ? `/?${params.toString()}` : "/";
+      const detail = pushFreshChatHistoryEntry(window.history, url, projectId);
+      window.dispatchEvent(new CustomEvent<NewChatNavigationDetail>("newchat", { detail }));
       setTimeout(() => document.getElementById("message")?.focus(), 0);
     },
     [router, setSelectedProjectId]
@@ -1066,6 +1071,9 @@ export function ChatHistoryList({
         onContextMenu={(event) => event.preventDefault()}
       >
         <div
+          data-testid="conversation-row"
+          data-conversation-id={conversation.id}
+          aria-current={isActive ? "page" : undefined}
           onClick={() => {
             if (isSelectionMode) {
               toggleSelection(conversation.id);
