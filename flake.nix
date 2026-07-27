@@ -682,6 +682,7 @@
               mobile-build.yml \
               release.yml \
               rust-tests.yml \
+              tauri-pr-change-detection.yml \
               web-build.yml \
               zapstore-publish.yml
             touch "$out"
