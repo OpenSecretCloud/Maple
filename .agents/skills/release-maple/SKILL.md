@@ -145,10 +145,11 @@ User-reported App Store Connect setup actions for v3.3.0:
 3. [x] The user attached the same current `master` build used for TestFlight. No exact build number has been recorded here.
 4. [x] The user saved the App Store version changes.
 5. [x] The user selected the action to add the version for review.
-6. [ ] Wait for App Store Connect to report that the resulting preparation or review state succeeded, and have the human record the exact status transition.
-7. [ ] After step 6 is confirmed, have the human submit v3.3.0 for App Review and record the resulting submission status.
+6. [x] App Store Connect accepted the preparation and review transitions required before submission. Exact intermediate status names were not recorded here.
+7. [x] The user submitted v3.3.0 for App Review.
+8. [x] Apple approved v3.3.0 on July 27, 2026. The exact build number and release-control outcome have not been recorded here.
 
-Steps 1-5 record user-performed setup actions only. They do not establish that App Store Connect accepted a status transition, that step 7 was submitted, or that Apple approved the release. A human must explicitly confirm each status transition, final submission, review outcome, and release state before it is recorded as complete.
+Steps 1-8 record user-reported actions and Apple's approval. They do not establish the exact build number, intermediate status names, release-control outcome, or public App Store availability. A human must explicitly confirm those details before they are recorded as complete.
 
 Remaining human checklist:
 
@@ -157,7 +158,15 @@ Remaining human checklist:
 - [ ] Confirm the approved build is available to the intended external testers and enable or publish the public TestFlight link when the user chooses to release it publicly.
 - [ ] For App Store submission, select the intended build and complete the version metadata, screenshots, privacy details, age rating, review information, export compliance, and any other required declarations.
 - [ ] Ask the user to choose the App Store release control, such as manual release, automatic release after approval, or a scheduled/phased release, before submission.
-- [ ] Submit for App Review only with explicit user authorization, then record the submitted build/version, review status, and chosen release control.
+- [x] Submit v3.3.0 for App Review and record Apple's approval. The exact build number and chosen release control remain unrecorded.
+- [ ] Confirm the approved v3.3.0 build's release-control outcome and public App Store availability.
+
+After Apple approves a Maple version, update the billing server's approved-version gate before treating Apple distribution as complete:
+
+1. In `OpenSecretCloud/maple-billing-server`, update `APPROVED_VERSION` in `src/routes/maple/products.rs` to the exact Apple-approved Maple version, including the `v` prefix. Do not approve a staged but unapproved version.
+2. Run the billing repository's pinned Nix validation with `nix develop -c just check`, then submit the isolated bump through a reviewed pull request.
+3. Merge and deploy the billing change only with explicit authorization. A merge deploys the development billing service automatically; production deployment remains a separate manual workflow.
+4. After production deployment, verify that `/v1/maple/products?version=vX.Y.Z` reports the products as available for the newly approved version, then record the billing commit, deployment, and verification result.
 
 ### Google Play
 
