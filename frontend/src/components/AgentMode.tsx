@@ -12,6 +12,7 @@ import { useOpenAI } from "@/ai/useOpenAi";
 import {
   AlertCircle,
   ArrowUp,
+  Blocks,
   Brain,
   Camera,
   Check,
@@ -20,17 +21,23 @@ import {
   ChevronRight,
   Circle,
   Expand,
+  FilePenLine,
+  FileSearch,
   FolderOpen,
+  Globe2,
   Loader2,
   Lock,
   MessageSquarePlus,
   MoreHorizontal,
   ShieldCheck,
   Shrink,
+  SquareTerminal,
   Trash,
+  Wrench,
   X,
   Zap
 } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   AlertDialog,
@@ -109,6 +116,11 @@ import {
 } from "@/services/agentMcpErrors";
 import { reconcileNewChatMcpServerNames } from "@/services/agentMcpServers";
 import { agentOperationFence } from "@/services/agentOperationFence";
+import {
+  agentToolKind,
+  agentToolKindLabel,
+  type AgentToolKind
+} from "@/services/agentToolPresentation";
 import {
   AgentThoughtLabelFinalRequestRegistry,
   AgentThoughtLabelProvisionalScheduler,
@@ -4061,23 +4073,47 @@ function ToolCallRow({ item }: { item: AgentTimelineItem }) {
   const status = item.status || "running";
   const failed = status === "failed" || status === "error";
   const active = isActiveAgentStatus(status);
+  const toolKind = agentToolKind(item.id, item.title);
+  const ToolKindIcon = AGENT_TOOL_KIND_ICONS[toolKind];
+  const toolKindLabel = agentToolKindLabel(toolKind);
   const hasDetails =
     Boolean(item.text?.trim()) || item.input !== undefined || item.output !== undefined;
   const statusIcon = active ? (
-    <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" />
+    <Loader2
+      aria-hidden="true"
+      className="h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground"
+    />
   ) : failed ? (
-    <X className="h-4 w-4 shrink-0 text-destructive" />
+    <X aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-destructive" />
   ) : (
-    <Check className="h-4 w-4 shrink-0 text-maple-success" />
+    <Check aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-maple-success" />
   );
 
   const summary = (
-    <div className="flex min-w-0 flex-1 items-center gap-2">
-      {statusIcon}
-      <span className="min-w-0 flex-1 truncate text-sm font-medium">{toolTitle(item)}</span>
-      <span className={cn("shrink-0 text-xs text-muted-foreground", failed && "text-destructive")}>
+    <div className="flex min-w-0 flex-1 items-center gap-1.5">
+      <span
+        role="img"
+        aria-label={toolKindLabel}
+        title={toolKindLabel}
+        className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-background/70 text-muted-foreground"
+      >
+        <ToolKindIcon aria-hidden="true" className="h-3.5 w-3.5" />
+      </span>
+      <span
+        className="min-w-0 flex-1 truncate text-[13px] font-medium leading-5"
+        title={toolTitle(item)}
+      >
+        {toolTitle(item)}
+      </span>
+      <span
+        className={cn(
+          "shrink-0 text-[11px] leading-5 text-muted-foreground",
+          failed && "text-destructive"
+        )}
+      >
         {formatStatus(status)}
       </span>
+      {statusIcon}
     </div>
   );
 
@@ -4085,7 +4121,7 @@ function ToolCallRow({ item }: { item: AgentTimelineItem }) {
     return (
       <div
         className={cn(
-          "flex items-center gap-2 rounded-2xl bg-muted/30 px-3 py-2 text-sm",
+          "flex min-h-8 items-center rounded-xl bg-muted/30 px-2 py-1 text-sm",
           failed && "bg-destructive/5"
         )}
       >
@@ -4098,15 +4134,18 @@ function ToolCallRow({ item }: { item: AgentTimelineItem }) {
     <details
       open={failed}
       className={cn(
-        "group rounded-3xl border border-muted/40 bg-muted/20 px-4 py-3 text-sm",
+        "group rounded-xl border border-muted/40 bg-muted/20 px-2 py-1 text-sm",
         failed && "border-destructive/35 bg-destructive/5"
       )}
     >
-      <summary className="flex cursor-pointer list-none items-center gap-2">
-        <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-90" />
+      <summary className="flex min-h-6 cursor-pointer list-none items-center gap-1">
+        <ChevronRight
+          aria-hidden="true"
+          className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform group-open:rotate-90"
+        />
         {summary}
       </summary>
-      <div className="mt-2 space-y-2 pl-6">
+      <div className="mt-1.5 space-y-2 border-t border-muted/40 pb-1 pl-7 pr-1 pt-2">
         {item.text ? <ToolDetail label="Summary" value={item.text} /> : null}
         {item.input !== undefined ? (
           <ToolDetail label="Input" value={formatUnknown(item.input)} />
@@ -4118,6 +4157,15 @@ function ToolCallRow({ item }: { item: AgentTimelineItem }) {
     </details>
   );
 }
+
+const AGENT_TOOL_KIND_ICONS: Record<AgentToolKind, LucideIcon> = {
+  shell: SquareTerminal,
+  "file-read": FileSearch,
+  "file-write": FilePenLine,
+  web: Globe2,
+  mcp: Blocks,
+  generic: Wrench
+};
 
 function PermissionRow({
   item,
