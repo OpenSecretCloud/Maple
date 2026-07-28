@@ -31,8 +31,6 @@ pub(crate) struct WebToolState {
     search_urls: Mutex<HashMap<String, VecDeque<String>>>,
 }
 
-pub(crate) type WebProvenanceSnapshot = Option<Vec<String>>;
-
 impl WebToolState {
     pub(crate) async fn record_search_urls<'a>(
         &self,
@@ -78,26 +76,6 @@ impl WebToolState {
 
     pub(crate) async fn clear_session(&self, session_id: &str) {
         self.search_urls.lock().await.remove(session_id);
-    }
-
-    pub(crate) async fn snapshot_session(&self, session_id: &str) -> WebProvenanceSnapshot {
-        self.search_urls
-            .lock()
-            .await
-            .get(session_id)
-            .map(|urls| urls.iter().cloned().collect())
-    }
-
-    pub(crate) async fn restore_session(&self, session_id: &str, snapshot: &WebProvenanceSnapshot) {
-        let mut sessions = self.search_urls.lock().await;
-        match snapshot {
-            Some(urls) => {
-                sessions.insert(session_id.to_string(), urls.iter().cloned().collect());
-            }
-            None => {
-                sessions.remove(session_id);
-            }
-        }
     }
 
     pub(crate) async fn clear_all(&self) {
