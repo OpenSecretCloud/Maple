@@ -22,6 +22,17 @@ async fn restart_for_update(app_handle: tauri::AppHandle) -> Result<(), String> 
 }
 
 #[cfg(desktop)]
+#[tauri::command]
+fn get_pending_update_failure() -> Result<Option<String>, String> {
+    let version = FAILED_UPDATE_VERSION
+        .lock()
+        .map_err(|e| format!("Failed to lock FAILED_UPDATE_VERSION mutex: {e}"))?
+        .clone();
+
+    Ok((!version.is_empty()).then_some(version))
+}
+
+#[cfg(desktop)]
 fn handle_desktop_run_event(app_handle: &tauri::AppHandle, event: tauri::RunEvent) {
     let tauri::RunEvent::ExitRequested { code, api, .. } = event else {
         return;
@@ -117,6 +128,7 @@ pub fn run() {
             proxy::test_proxy_port,
             pdf_extractor::extract_document_content,
             restart_for_update,
+            get_pending_update_failure,
             tts::tts_get_status,
             tts::tts_download_models,
             tts::tts_load_models,
@@ -180,10 +192,11 @@ pub fn run() {
                     tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                     log::info!("Performing automatic update check on startup");
 
-                    // This will check for updates, download if available, and install them
-                    // The update will be applied silently in the background
-                    // It will take effect the next time the application is started
-                    let _ = check_for_updates(app_handle.clone()).await;
+                    // This checks for updates, downloads the matching platform bundle,
+                    // and invokes its installer. The update takes effect after restart.
+                    if let Err(e) = check_for_updates(app_handle.clone(), false).await {
+                        log::error!("Automatic update check failed: {e}");
+                    }
 
                     // Set up hourly update checks
                     let hourly_app_handle = app_handle.clone();
@@ -197,7 +210,7 @@ pub fn run() {
                             log::info!("Performing scheduled hourly update check");
 
                             // Check for updates
-                            let _ = check_for_updates(hourly_app_handle.clone()).await;
+                            let _ = check_for_updates(hourly_app_handle.clone(), false).await;
                         }
                     });
                 });
@@ -269,23 +282,12 @@ pub fn run() {
                                 "Check for updates menu item clicked - clearing dismissal flags and triggering update check..."
                             );
 
-                            // Clear the dismissal flags to ensure the user always gets prompted
-                            // even if they previously dismissed an update
-                            UPDATE_DOWNLOADED.store(false, Ordering::SeqCst);
-                            {
-                                match CURRENT_VERSION.lock() {
-                                    Ok(mut version) => version.clear(),
-                                    Err(e) => log::error!("Failed to lock CURRENT_VERSION mutex when clearing: {e}")
-                                }
-                            }
-                            log::info!("Dismissal flags cleared - user will be prompted for any available updates");
-
                             // Clone the app handle to use in the async task
                             let app_handle_clone = app_handle_for_menu.clone();
 
                             // Spawn a new async task to check for updates (non-blocking)
                             tauri::async_runtime::spawn(async move {
-                                match check_for_updates(app_handle_clone).await {
+                                match check_for_updates(app_handle_clone, true).await {
                                     Ok(_) => log::info!("Update check completed successfully"),
                                     Err(e) => log::error!("Update check failed: {e}"),
                                 }
@@ -400,11 +402,32 @@ static AGENT_EXIT_CLEANUP_STARTED: AtomicBool = AtomicBool::new(false);
 static AGENT_EXIT_CLEANUP_COMPLETE: AtomicBool = AtomicBool::new(false);
 #[cfg(desktop)]
 static CURRENT_VERSION: Lazy<Mutex<String>> = Lazy::new(|| Mutex::new(String::new()));
+#[cfg(desktop)]
+static FAILED_UPDATE_VERSION: Lazy<Mutex<String>> = Lazy::new(|| Mutex::new(String::new()));
+#[cfg(desktop)]
+static UPDATE_CHECK_LOCK: Lazy<tokio::sync::Mutex<()>> = Lazy::new(|| tokio::sync::Mutex::new(()));
 
 /// Check for updates silently in the background
 #[cfg(desktop)]
-async fn check_for_updates(app_handle: tauri::AppHandle) -> Result<(), String> {
+async fn check_for_updates(app_handle: tauri::AppHandle, force_retry: bool) -> Result<(), String> {
     use tauri_plugin_updater::UpdaterExt;
+
+    let _check_guard = UPDATE_CHECK_LOCK.lock().await;
+
+    if force_retry {
+        UPDATE_DOWNLOADED.store(false, Ordering::SeqCst);
+        match CURRENT_VERSION.lock() {
+            Ok(mut version) => version.clear(),
+            Err(e) => log::error!("Failed to lock CURRENT_VERSION mutex when clearing: {e}"),
+        }
+        match FAILED_UPDATE_VERSION.lock() {
+            Ok(mut version) => version.clear(),
+            Err(e) => {
+                log::error!("Failed to lock FAILED_UPDATE_VERSION mutex when clearing: {e}")
+            }
+        }
+        log::info!("Update state cleared for user-requested retry");
+    }
 
     log::info!("Checking for updates...");
 
@@ -439,10 +462,28 @@ async fn check_for_updates(app_handle: tauri::AppHandle) -> Result<(), String> {
                 return Ok(());
             }
 
+            let failed_update_version = match FAILED_UPDATE_VERSION.lock() {
+                Ok(guard) => guard.clone(),
+                Err(e) => {
+                    log::error!("Failed to lock FAILED_UPDATE_VERSION mutex: {e}");
+                    String::new()
+                }
+            };
+
+            if failed_update_version == update.version {
+                log::info!(
+                    "Update to version {} already failed to install in this session, skipping automatic retry",
+                    update.version
+                );
+                return Ok(());
+            }
+
             log::info!("Update available, attempting to download and install");
 
             // Download the update
-            let progress_fn = |downloaded: usize, total: Option<u64>| {
+            let mut downloaded = 0_u64;
+            let progress_fn = move |chunk_length: usize, total: Option<u64>| {
+                downloaded = downloaded.saturating_add(chunk_length as u64);
                 if let Some(total) = total {
                     log::info!("Download progress: {downloaded}/{total} bytes");
                 } else {
@@ -451,12 +492,12 @@ async fn check_for_updates(app_handle: tauri::AppHandle) -> Result<(), String> {
             };
 
             let download_complete = || {
-                log::info!("Download complete!");
+                log::info!("Download stream received; verifying signature");
             };
 
             match update.download(progress_fn, download_complete).await {
                 Ok(bytes) => {
-                    log::info!("Update downloaded successfully");
+                    log::info!("Update downloaded and signature verified");
                     log::info!("Installing update to version {}", update.version);
 
                     // Try to install the update immediately
@@ -464,6 +505,13 @@ async fn check_for_updates(app_handle: tauri::AppHandle) -> Result<(), String> {
                         Ok(_) => {
                             // Log that the update is ready
                             log::info!("Update installed successfully. Will be applied on next application restart.");
+
+                            match FAILED_UPDATE_VERSION.lock() {
+                                Ok(mut version) => version.clear(),
+                                Err(e) => log::error!(
+                                    "Failed to lock FAILED_UPDATE_VERSION mutex when clearing: {e}"
+                                ),
+                            }
 
                             // Mark this version as downloaded to prevent redundant downloads/notifications
                             {
@@ -503,13 +551,37 @@ async fn check_for_updates(app_handle: tauri::AppHandle) -> Result<(), String> {
                                     update.version
                                 );
                             }
+
+                            Ok(())
                         }
                         Err(e) => {
-                            log::error!("Failed to install update: {e}");
+                            let error = format!("Failed to install update: {e}");
+                            log::error!("{error}");
+
+                            match FAILED_UPDATE_VERSION.lock() {
+                                Ok(mut version) => *version = update.version.clone(),
+                                Err(lock_error) => log::error!(
+                                    "Failed to lock FAILED_UPDATE_VERSION mutex when recording failure: {lock_error}"
+                                ),
+                            }
+
+                            #[derive(Clone, serde::Serialize)]
+                            struct UpdateFailedPayload {
+                                version: String,
+                            }
+
+                            if let Err(emit_error) = app_handle.emit(
+                                "update-failed",
+                                UpdateFailedPayload {
+                                    version: update.version.clone(),
+                                },
+                            ) {
+                                log::error!("Failed to emit update-failed event: {emit_error}");
+                            }
+
+                            Err(error)
                         }
                     }
-
-                    Ok(())
                 }
                 Err(e) => {
                     log::error!("Failed to download update: {e}");

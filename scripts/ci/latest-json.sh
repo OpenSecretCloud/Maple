@@ -47,21 +47,31 @@ find_one_artifact() {
 
 macos_bundle="$(find_one_artifact '*.app.tar.gz')"
 macos_sig="$(find_one_artifact '*.app.tar.gz.sig')"
-linux_bundle="$(find_one_artifact 'Maple_*.AppImage')"
-linux_sig="$(find_one_artifact 'Maple_*.AppImage.sig')"
+linux_appimage_bundle="$(find_one_artifact 'Maple_*_amd64.AppImage')"
+linux_appimage_sig="$(find_one_artifact 'Maple_*_amd64.AppImage.sig')"
+linux_deb_bundle="$(find_one_artifact 'Maple_*_amd64.deb')"
+linux_deb_sig="$(find_one_artifact 'Maple_*_amd64.deb.sig')"
+linux_rpm_bundle="$(find_one_artifact 'Maple-*.x86_64.rpm')"
+linux_rpm_sig="$(find_one_artifact 'Maple-*.x86_64.rpm.sig')"
 windows_bundle_basename="$(windows_release_setup_exe_basename_for_version "${release_tag#v}")"
 windows_bundle="$(find_one_artifact "${windows_bundle_basename}")"
 windows_sig="$(find_one_artifact "${windows_bundle_basename}.sig")"
 
 verify_tauri_updater_signature "${macos_bundle}" "${macos_sig}" "$(basename "${macos_bundle}")"
-verify_tauri_updater_signature "${linux_bundle}" "${linux_sig}" "$(basename "${linux_bundle}")"
+verify_tauri_updater_signature "${linux_appimage_bundle}" "${linux_appimage_sig}" "$(basename "${linux_appimage_bundle}")"
+verify_tauri_updater_signature "${linux_deb_bundle}" "${linux_deb_sig}" "$(basename "${linux_deb_bundle}")"
+verify_tauri_updater_signature "${linux_rpm_bundle}" "${linux_rpm_sig}" "$(basename "${linux_rpm_bundle}")"
 verify_tauri_updater_signature "${windows_bundle}" "${windows_sig}" "$(basename "${windows_bundle}")"
 
 macos_sig_content="$(cat "${macos_sig}")"
-linux_sig_content="$(cat "${linux_sig}")"
+linux_appimage_sig_content="$(cat "${linux_appimage_sig}")"
+linux_deb_sig_content="$(cat "${linux_deb_sig}")"
+linux_rpm_sig_content="$(cat "${linux_rpm_sig}")"
 windows_sig_content="$(cat "${windows_sig}")"
 macos_url="https://github.com/OpenSecretCloud/Maple/releases/download/${release_tag}/$(basename "${macos_bundle}")"
-linux_url="https://github.com/OpenSecretCloud/Maple/releases/download/${release_tag}/$(basename "${linux_bundle}")"
+linux_appimage_url="https://github.com/OpenSecretCloud/Maple/releases/download/${release_tag}/$(basename "${linux_appimage_bundle}")"
+linux_deb_url="https://github.com/OpenSecretCloud/Maple/releases/download/${release_tag}/$(basename "${linux_deb_bundle}")"
+linux_rpm_url="https://github.com/OpenSecretCloud/Maple/releases/download/${release_tag}/$(basename "${linux_rpm_bundle}")"
 windows_url="https://github.com/OpenSecretCloud/Maple/releases/download/${release_tag}/$(basename "${windows_bundle}")"
 
 tmp="$(mktemp)"
@@ -70,10 +80,14 @@ jq -S -n \
   --arg notes "See the release notes at https://github.com/OpenSecretCloud/Maple/releases/tag/${release_tag}" \
   --arg pub_date "${pub_date}" \
   --arg macos_sig "${macos_sig_content}" \
-  --arg linux_sig "${linux_sig_content}" \
+  --arg linux_appimage_sig "${linux_appimage_sig_content}" \
+  --arg linux_deb_sig "${linux_deb_sig_content}" \
+  --arg linux_rpm_sig "${linux_rpm_sig_content}" \
   --arg windows_sig "${windows_sig_content}" \
   --arg macos_url "${macos_url}" \
-  --arg linux_url "${linux_url}" \
+  --arg linux_appimage_url "${linux_appimage_url}" \
+  --arg linux_deb_url "${linux_deb_url}" \
+  --arg linux_rpm_url "${linux_rpm_url}" \
   --arg windows_url "${windows_url}" \
   '{
     notes: $notes,
@@ -87,8 +101,20 @@ jq -S -n \
         url: $macos_url
       },
       "linux-x86_64": {
-        signature: $linux_sig,
-        url: $linux_url
+        signature: $linux_appimage_sig,
+        url: $linux_appimage_url
+      },
+      "linux-x86_64-appimage": {
+        signature: $linux_appimage_sig,
+        url: $linux_appimage_url
+      },
+      "linux-x86_64-deb": {
+        signature: $linux_deb_sig,
+        url: $linux_deb_url
+      },
+      "linux-x86_64-rpm": {
+        signature: $linux_rpm_sig,
+        url: $linux_rpm_url
       },
       "windows-x86_64": {
         signature: $windows_sig,
@@ -108,11 +134,31 @@ jq -e '
   and (.platforms."darwin-x86_64".signature | type == "string" and length > 0)
   and (.platforms."linux-x86_64".url | startswith("https://"))
   and (.platforms."linux-x86_64".signature | type == "string" and length > 0)
+  and (.platforms."linux-x86_64-appimage".url | startswith("https://") and endswith(".AppImage"))
+  and (.platforms."linux-x86_64-appimage".signature | type == "string" and length > 0)
+  and (.platforms."linux-x86_64-deb".url | startswith("https://") and endswith(".deb"))
+  and (.platforms."linux-x86_64-deb".signature | type == "string" and length > 0)
+  and (.platforms."linux-x86_64-rpm".url | startswith("https://") and endswith(".rpm"))
+  and (.platforms."linux-x86_64-rpm".signature | type == "string" and length > 0)
+  and (.platforms."linux-x86_64" == .platforms."linux-x86_64-appimage")
   and (.platforms."windows-x86_64".url | startswith("https://"))
   and (.platforms."windows-x86_64".signature | type == "string" and length > 0)
 ' "${out}" >/dev/null
 
 repro_dir="${TAURI_DIR}/target/reproducibility"
 mkdir -p "${repro_dir}"
-write_sha256_manifest "${repro_dir}/latest-json-final.sha256" "${out}" "${macos_sig}" "${linux_sig}" "${windows_sig}"
-print_file_hashes "${out}" "${macos_sig}" "${linux_sig}" "${windows_sig}"
+write_sha256_manifest \
+  "${repro_dir}/latest-json-final.sha256" \
+  "${out}" \
+  "${macos_sig}" \
+  "${linux_appimage_sig}" \
+  "${linux_deb_sig}" \
+  "${linux_rpm_sig}" \
+  "${windows_sig}"
+print_file_hashes \
+  "${out}" \
+  "${macos_sig}" \
+  "${linux_appimage_sig}" \
+  "${linux_deb_sig}" \
+  "${linux_rpm_sig}" \
+  "${windows_sig}"
