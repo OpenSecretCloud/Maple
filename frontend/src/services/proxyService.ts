@@ -216,7 +216,11 @@ export class ProxyService {
     // A signed-out cold launch intentionally leaves released ownerless configs
     // intact. Reconcile them after login without assigning them to whichever
     // account happens to authenticate first.
-    if (!previousUserId && normalizedUserId) {
+    if (
+      !previousUserId &&
+      normalizedUserId &&
+      (previousGenerationWasReady || this.authRetryMode === "initialize")
+    ) {
       return this.queueInitialAuthentication(normalizedUserId, generation);
     }
 
@@ -349,10 +353,17 @@ export class ProxyService {
   }
 
   private markCurrentProxyConfigAsManual(): void {
-    this.clearAgentProxyOwner();
-    const registry = this.loadAgentProxyKeyRegistry();
-    if (registry.activeName) {
-      this.saveAgentProxyKeyRegistry(deactivateAgentProxyKeyRegistry(registry));
+    try {
+      this.clearAgentProxyOwner();
+      const registry = this.loadAgentProxyKeyRegistry();
+      if (registry.activeName) {
+        this.saveAgentProxyKeyRegistry(deactivateAgentProxyKeyRegistry(registry));
+      }
+    } catch (error) {
+      // The native owner field is authoritative. Legacy WebView metadata must
+      // not turn a successful durable start/save into a failure or credential
+      // scrub for existing users with unavailable local storage.
+      console.warn("Unable to clear legacy Agent proxy metadata:", error);
     }
   }
 
@@ -376,12 +387,16 @@ export class ProxyService {
       if (userId && deleteApiKey) {
         void this.revokeTrackedAgentProxyKeysBestEffort(userId, deleteApiKey).catch(() => {});
       }
+      return true;
     });
     await this.trackAuthenticationTransition(reset, generation, "reset");
   }
 
   private queueAuthenticationReset(generation: number): Promise<void> {
-    const reset = this.enqueueProxyOperation(async () => await this.resetProxyLocalState());
+    const reset = this.enqueueProxyOperation(async () => {
+      await this.resetProxyLocalState();
+      return true;
+    });
     return this.trackAuthenticationTransition(reset, generation, "reset");
   }
 
@@ -391,7 +406,7 @@ export class ProxyService {
         // Native startup handles released ownerless auto-start configs. Do not
         // read, rewrite, or scrub any config while the frontend is signed out.
         this.assertAuthenticationTransitionCurrent(null, generation);
-        return;
+        return true;
       }
 
       this.assertAuthenticationTransitionCurrent(userId, generation);
@@ -400,8 +415,10 @@ export class ProxyService {
         config = await this.loadProxyConfigForAuthentication();
       } catch {
         // A local read/keyring failure must not brick the entire authenticated
-        // UI or turn into a destructive default-config decision.
-        return;
+        // UI or turn into a destructive default-config decision. Resolve this
+        // UI transition without marking proxy operations ready; their next
+        // authenticated call retries ownership reconciliation first.
+        return false;
       }
       this.assertAuthenticationTransitionCurrent(userId, generation);
 
@@ -411,7 +428,7 @@ export class ProxyService {
         // never fall back to initializing the foreign config.
         this.authRetryMode = "reset";
         await this.resetProxyLocalState();
-        return;
+        return true;
       }
 
       if (config.auto_start && config.api_key.trim()) {
@@ -428,6 +445,7 @@ export class ProxyService {
           console.error("Failed to auto-start the authenticated proxy:", error);
         }
       }
+      return true;
     });
     return this.trackAuthenticationTransition(initialization, generation, "initialize");
   }
@@ -439,14 +457,16 @@ export class ProxyService {
   }
 
   private trackAuthenticationTransition(
-    transition: Promise<void>,
+    transition: Promise<boolean>,
     generation: number,
     retryMode: "initialize" | "reset"
   ): Promise<void> {
     this.authRetryMode = retryMode;
     const tracked = transition.then(
-      () => {
-        if (this.authGeneration === generation) this.authReadyGeneration = generation;
+      (proxyOperationsReady) => {
+        if (proxyOperationsReady && this.authGeneration === generation) {
+          this.authReadyGeneration = generation;
+        }
         if (this.authTransitionGeneration === generation) this.authTransitionGeneration = -1;
       },
       (error) => {

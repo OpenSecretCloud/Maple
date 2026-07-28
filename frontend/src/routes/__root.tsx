@@ -93,8 +93,10 @@ function Root() {
     }
   }, [isSettingsRoute, keepAuthenticatedHomeMounted]);
 
-  // TODO... put something here, but showing nothing looks nicer than "Loading..."
-  if (auth.loading || proxyReadyUserId !== userId) {
+  // Never strand a user on a blank signed-out screen while a redundant cleanup
+  // retry is in progress. A newly authenticated account still waits for the
+  // previous account's proxy state to be scrubbed.
+  if (auth.loading || (userId !== null && proxyReadyUserId !== userId)) {
     return <></>;
   }
 

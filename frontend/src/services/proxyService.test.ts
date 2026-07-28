@@ -328,6 +328,40 @@ describe("manual proxy authentication lifecycle", () => {
     expect(legacyConfig.owner_user_id).toBeUndefined();
   });
 
+  it("preserves a released ownerless config when auth restores before signed-out setup settles", async () => {
+    const commands: string[] = [];
+    const releasedConfig: ProxyConfig = {
+      ...desiredConfig,
+      api_key: "released-secret",
+      auto_start: true
+    };
+    const service = new ProxyService(
+      async <T>(command: string, args?: Record<string, unknown>) => {
+        commands.push(command);
+        if (command === "load_proxy_config") return releasedConfig as T;
+        if (command === "get_proxy_status") {
+          return { running: false, config: releasedConfig } as T;
+        }
+        if (command === "start_proxy") {
+          return { running: true, config: args?.config as ProxyConfig } as T;
+        }
+        throw new Error(`Unexpected proxy command: ${command}`);
+      },
+      () => true
+    );
+
+    const signedOutSetup = service.transitionAuthenticatedUser(null);
+    const restoredAuthSetup = service.transitionAuthenticatedUser("user-a");
+
+    await expect(signedOutSetup).rejects.toThrow(
+      "The authenticated Maple account changed before the local proxy finished starting"
+    );
+    await restoredAuthSetup;
+    expect(commands).toEqual(["load_proxy_config", "get_proxy_status", "start_proxy"]);
+    expect(commands).not.toContain("stop_and_reset_proxy");
+    expect(releasedConfig.owner_user_id).toBeUndefined();
+  });
+
   it("does not duplicate native startup for an already-running ownerless config", async () => {
     const commands: string[] = [];
     const legacyConfig: ProxyConfig = {
@@ -420,7 +454,36 @@ describe("manual proxy authentication lifecycle", () => {
     expect(commands).toEqual(["load_proxy_config", "stop_and_reset_proxy", "stop_and_reset_proxy"]);
   });
 
-  it("fails open on a config read error without resetting or blocking the UI", async () => {
+  it("finishes a failed signed-out reset before activating the next account", async () => {
+    const commands: string[] = [];
+    let resetAttempts = 0;
+    const releasedConfig: ProxyConfig = {
+      ...desiredConfig,
+      api_key: "user-a-secret"
+    };
+    const service = new ProxyService(
+      async <T>(command: string) => {
+        commands.push(command);
+        if (command === "load_proxy_config") return releasedConfig as T;
+        if (command === "stop_and_reset_proxy") {
+          resetAttempts += 1;
+          if (resetAttempts === 1) throw new Error("keyring unavailable");
+          return { running: false, config: { ...desiredConfig, api_key: "", enabled: false } } as T;
+        }
+        throw new Error(`Unexpected proxy command: ${command}`);
+      },
+      () => true
+    );
+
+    await service.transitionAuthenticatedUser("user-a");
+    await expect(service.transitionAuthenticatedUser(null)).rejects.toThrow("keyring unavailable");
+    await expect(service.transitionAuthenticatedUser("user-b")).resolves.toBeUndefined();
+
+    expect(commands).toEqual(["load_proxy_config", "stop_and_reset_proxy", "stop_and_reset_proxy"]);
+    expect(commands).not.toContain("start_proxy");
+  });
+
+  it("fails open for the UI on a config read error but keeps proxy operations fenced", async () => {
     const commands: string[] = [];
     const service = new ProxyService(
       async (command: string) => {
@@ -432,9 +495,54 @@ describe("manual proxy authentication lifecycle", () => {
     );
 
     await expect(service.transitionAuthenticatedUser("user-a")).resolves.toBeUndefined();
-    await expect(service.awaitAuthenticatedUser("user-a")).resolves.toBeUndefined();
-    expect(commands).toEqual(["load_proxy_config"]);
+    await expect(service.awaitAuthenticatedUser("user-a")).rejects.toThrow(
+      "The authenticated Maple account changed before the local proxy finished starting"
+    );
+    expect(commands).toEqual(["load_proxy_config", "load_proxy_config"]);
     expect(commands).not.toContain("stop_and_reset_proxy");
+  });
+
+  it("reconciles a foreign config after a transient ownership read failure", async () => {
+    const commands: string[] = [];
+    let loadAttempts = 0;
+    let nativeConfig: ProxyConfig = {
+      ...desiredConfig,
+      api_key: "user-b-secret",
+      owner_user_id: "user-b"
+    };
+    const service = new ProxyService(
+      async <T>(command: string) => {
+        commands.push(command);
+        if (command === "load_proxy_config") {
+          loadAttempts += 1;
+          if (loadAttempts === 1) throw new Error("transient keyring failure");
+          return nativeConfig as T;
+        }
+        if (command === "stop_and_reset_proxy") {
+          nativeConfig = { ...desiredConfig, api_key: "", enabled: false };
+          return { running: false, config: nativeConfig } as T;
+        }
+        if (command === "get_proxy_status") {
+          return { running: false, config: nativeConfig } as T;
+        }
+        throw new Error(`Unexpected proxy command: ${command}`);
+      },
+      () => true
+    );
+
+    await expect(service.transitionAuthenticatedUser("user-a")).resolves.toBeUndefined();
+    const state = await service.loadManualProxyState("user-a");
+
+    expect(state.config.api_key).toBe("");
+    expect(state.config.owner_user_id).toBeUndefined();
+    expect(commands).toEqual([
+      "load_proxy_config",
+      "load_proxy_config",
+      "stop_and_reset_proxy",
+      "load_proxy_config",
+      "get_proxy_status"
+    ]);
+    expect(commands).not.toContain("start_proxy");
   });
 
   it("stamps ownership only on an explicit authenticated manual start", async () => {
@@ -458,6 +566,44 @@ describe("manual proxy authentication lifecycle", () => {
 
     expect(status.config.owner_user_id).toBe("user-a");
     expect(commands).toEqual(["load_proxy_config", "start_proxy"]);
+  });
+
+  it("keeps a successful durable start when legacy WebView metadata is unavailable", async () => {
+    const commands: string[] = [];
+    const unavailableStorage = new MemoryStorage();
+    unavailableStorage.removeItem = () => {
+      throw new Error("local storage unavailable");
+    };
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      value: unavailableStorage
+    });
+
+    try {
+      const service = new ProxyService(
+        async <T>(command: string, args?: Record<string, unknown>) => {
+          commands.push(command);
+          if (command === "load_proxy_config") return inactiveUserAConfig as T;
+          if (command === "start_proxy") {
+            return { running: true, config: args?.config as ProxyConfig } as T;
+          }
+          throw new Error(`Unexpected proxy command: ${command}`);
+        },
+        () => true
+      );
+
+      await service.transitionAuthenticatedUser("user-a");
+      await expect(service.startManualProxy("user-a", desiredConfig)).resolves.toMatchObject({
+        running: true
+      });
+      expect(commands).toEqual(["load_proxy_config", "start_proxy"]);
+      expect(commands).not.toContain("stop_and_reset_proxy");
+    } finally {
+      Object.defineProperty(globalThis, "localStorage", {
+        configurable: true,
+        value: testStorage
+      });
+    }
   });
 
   it("retains a newly-created key for retry when refresh fails", async () => {
