@@ -45,6 +45,21 @@ describe("manualProxyConfigsMatch", () => {
       )
     ).toBe(false);
   });
+
+  it("treats an omitted CORS setting as the secure disabled default", () => {
+    expect(
+      manualProxyConfigsMatch(
+        { ...desiredConfig, enable_cors: undefined },
+        { ...desiredConfig, enable_cors: false }
+      )
+    ).toBe(true);
+    expect(
+      manualProxyConfigsMatch(
+        { ...desiredConfig, enable_cors: undefined },
+        { ...desiredConfig, enable_cors: true }
+      )
+    ).toBe(false);
+  });
 });
 
 describe("Agent proxy key registry", () => {

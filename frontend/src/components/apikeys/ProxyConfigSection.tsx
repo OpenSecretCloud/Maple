@@ -50,7 +50,7 @@ export function ProxyConfigSection({
     port: 8080,
     api_key: "",
     enabled: false,
-    enable_cors: true,
+    enable_cors: false,
     auto_start: false
   });
   const [isLoading, setIsLoading] = useState(false);
@@ -304,9 +304,9 @@ export function ProxyConfigSection({
           <Alert role="note">
             <ShieldCheck className="h-4 w-4" />
             <AlertDescription>
-              Local processes can use Maple&apos;s saved proxy credential without supplying their
-              own key. Keep the proxy on loopback, run only trusted clients, and remember that proxy
-              usage counts toward your Maple account.
+              {config.enable_cors
+                ? "Browser inference never uses Maple's saved proxy credential. Every inference client must supply its own valid Maple API key."
+                : "Browser-origin requests are rejected. Local processes can use Maple's saved proxy credential without supplying their own key. Keep the proxy on loopback and run only trusted clients."}
             </AlertDescription>
           </Alert>
 
@@ -314,8 +314,8 @@ export function ProxyConfigSection({
             <Alert role="note" className="border-maple-warning/40 bg-maple-warning/10">
               <AlertCircle className="h-4 w-4 text-maple-warning" />
               <AlertDescription>
-                CORS is enabled, so browser pages may be able to reach this proxy while it is
-                running. Turn CORS off unless a browser client specifically requires it.
+                CORS is enabled for all browser origins. Each inference request must include its own
+                valid Maple API key; the credential saved by Maple Desktop is not used.
               </AlertDescription>
             </Alert>
           )}
@@ -378,13 +378,14 @@ export function ProxyConfigSection({
                     id="enable-cors-description"
                     className="mt-1 text-xs leading-relaxed text-muted-foreground"
                   >
-                    Desktop clients such as OpenCode do not need CORS. Turn this off unless a
-                    browser app specifically requires it.
+                    Allows browser apps at any origin to call and read from the proxy. Every
+                    inference request must include its own valid Maple API key. Desktop clients such
+                    as OpenCode do not need CORS.
                   </p>
                 </div>
                 <Switch
                   id="enable-cors"
-                  checked={config.enable_cors ?? true}
+                  checked={config.enable_cors ?? false}
                   onCheckedChange={(checked) => handleConfigChange("enable_cors", checked)}
                   disabled={isRunning}
                   aria-describedby="enable-cors-description"
