@@ -264,6 +264,8 @@ pub struct AgentCreateSessionRequest {
     pub project_root: Option<String>,
     pub title: Option<String>,
     pub model: Option<String>,
+    #[serde(default)]
+    pub context_limit: Option<usize>,
     pub mode: Option<String>,
     pub mcp_server_names: Option<Vec<String>>,
 }
@@ -274,6 +276,8 @@ pub struct AgentSendMessageRequest {
     pub session_id: String,
     pub text: String,
     pub model: Option<String>,
+    #[serde(default)]
+    pub context_limit: Option<usize>,
     pub mode: Option<String>,
     #[serde(default)]
     pub vision_capable: bool,
@@ -1211,6 +1215,7 @@ pub async fn agent_create_session(
         project_root: None,
         title: None,
         model: None,
+        context_limit: None,
         mode: None,
         mcp_server_names: None,
     });
@@ -1284,6 +1289,7 @@ pub async fn agent_create_session(
                 web_tool_state: &web_tool_state,
                 session: &session,
                 model: &model,
+                context_limit: request.context_limit,
                 mode: &mode,
                 primary_model_supports_vision: false,
             },
@@ -2004,6 +2010,7 @@ pub async fn agent_send_message(
                 web_tool_state: &web_tool_state,
                 session: &session,
                 model: &model,
+                context_limit: request.context_limit,
                 mode: &effective_mode,
                 primary_model_supports_vision: request.vision_capable,
             },
@@ -3285,23 +3292,48 @@ struct SessionAgentConfiguration<'a> {
     web_tool_state: &'a Arc<WebToolState>,
     session: &'a Session,
     model: &'a str,
+    context_limit: Option<usize>,
     mode: &'a str,
     primary_model_supports_vision: bool,
+}
+
+fn maple_model_config(
+    model: &str,
+    context_limit: Option<usize>,
+) -> Result<goose_providers::model::ModelConfig, String> {
+    let mut model_config =
+        goose::model_config::model_config_from_user_config(MAPLE_PROVIDER_NAME, model)
+            .map_err(|e| format!("Failed to configure Goose model {model}: {e}"))?;
+    // Maple's authoritative catalog value is per session. Explicitly clear any
+    // process-global Goose context override when metadata is unavailable.
+    model_config.context_limit = context_limit.filter(|limit| *limit > 0);
+    Ok(model_config)
 }
 
 async fn install_maple_provider<T>(
     agent: &Arc<Agent>,
     transport: &Arc<T>,
-    session_id: &str,
+    session: &Session,
     model: &str,
+    context_limit: Option<usize>,
 ) -> Result<(), String>
 where
     T: provider::MapleInferenceTransport + 'static,
 {
-    let model_config =
-        goose::model_config::model_config_from_user_config(MAPLE_PROVIDER_NAME, model)
-            .map_err(|e| format!("Failed to configure Goose model {model}: {e}"))?;
-    install_maple_provider_config(agent, transport, session_id, model_config).await
+    // A session snapshot that came from the authoritative catalog remains the
+    // best same-model value when a later UI/catalog version omits metadata.
+    // Do not preserve it across a model change, where it may describe a
+    // different provider window.
+    let context_limit = context_limit.filter(|limit| *limit > 0).or_else(|| {
+        session
+            .model_config
+            .as_ref()
+            .filter(|config| config.model_name == model)
+            .and_then(|config| config.context_limit)
+            .filter(|limit| *limit > 0)
+    });
+    let model_config = maple_model_config(model, context_limit)?;
+    install_maple_provider_config(agent, transport, &session.id, model_config).await
 }
 
 async fn install_maple_provider_config<T>(
@@ -3366,6 +3398,7 @@ async fn configure_session_agent(
         web_tool_state,
         session,
         model,
+        context_limit,
         mode,
         primary_model_supports_vision,
     } = configuration;
@@ -3385,7 +3418,7 @@ async fn configure_session_agent(
         session,
     )?;
     let mcp_errors = mcp_connection_errors(manager_result.extension_results, &session_mcp_keys);
-    install_maple_provider(&agent, maple_api_session, &session.id, model).await?;
+    install_maple_provider(&agent, maple_api_session, session, model, context_limit).await?;
     agent
         .update_goose_mode(GOOSE_PERMISSION_ROUTING_MODE, &session.id)
         .await
@@ -5675,6 +5708,146 @@ mod tests {
         let _ = fs::remove_dir_all(test_root);
     }
 
+    #[tokio::test]
+    async fn maple_context_limits_are_isolated_and_persisted_per_session() {
+        let test_root = recent_roots_test_dir("per-session-context-limits");
+        let session_manager = Arc::new(SessionManager::new(test_root.join("sessions")));
+        let permission_manager = Arc::new(PermissionManager::new(test_root.join("permissions")));
+        let agent_manager = Arc::new(
+            AgentManager::new(
+                GooseAgentConfig::new(
+                    Arc::clone(&session_manager),
+                    permission_manager,
+                    None,
+                    GooseMode::SmartApprove,
+                    true,
+                    GoosePlatform::GooseDesktop,
+                ),
+                Some(2),
+            )
+            .await
+            .unwrap(),
+        );
+        let transport = Arc::new(InertMapleTransport);
+        agent_manager
+            .set_default_provider(Arc::new(MapleProvider::new(Arc::clone(&transport))))
+            .await;
+
+        let glm_session = session_manager
+            .create_session(
+                test_root.clone(),
+                "GLM task".to_string(),
+                SessionType::User,
+                GooseMode::SmartApprove,
+            )
+            .await
+            .unwrap();
+        let kimi_session = session_manager
+            .create_session(
+                test_root.clone(),
+                "Kimi task".to_string(),
+                SessionType::User,
+                GooseMode::SmartApprove,
+            )
+            .await
+            .unwrap();
+
+        let glm_agent = get_or_create_session_agent(
+            &agent_manager,
+            &transport,
+            &glm_session,
+            RuntimeContext::default(),
+        )
+        .await
+        .unwrap();
+        install_maple_provider(
+            &glm_agent.agent,
+            &transport,
+            &glm_session,
+            "glm-5-2",
+            Some(384_000),
+        )
+        .await
+        .unwrap();
+        drop(glm_agent);
+
+        let kimi_agent = get_or_create_session_agent(
+            &agent_manager,
+            &transport,
+            &kimi_session,
+            RuntimeContext::default(),
+        )
+        .await
+        .unwrap();
+        install_maple_provider(
+            &kimi_agent.agent,
+            &transport,
+            &kimi_session,
+            "auto:powerful",
+            Some(256_000),
+        )
+        .await
+        .unwrap();
+        drop(kimi_agent);
+
+        let persisted_glm = session_manager
+            .get_session(&glm_session.id, false)
+            .await
+            .unwrap();
+        let persisted_kimi = session_manager
+            .get_session(&kimi_session.id, false)
+            .await
+            .unwrap();
+        assert_eq!(
+            persisted_glm
+                .model_config
+                .as_ref()
+                .map(|config| (config.model_name.as_str(), config.context_limit)),
+            Some(("glm-5-2", Some(384_000)))
+        );
+        assert_eq!(
+            persisted_kimi
+                .model_config
+                .as_ref()
+                .map(|config| (config.model_name.as_str(), config.context_limit)),
+            Some(("auto:powerful", Some(256_000)))
+        );
+
+        let glm_agent = get_or_create_session_agent(
+            &agent_manager,
+            &transport,
+            &persisted_glm,
+            RuntimeContext::default(),
+        )
+        .await
+        .unwrap();
+        install_maple_provider(
+            &glm_agent.agent,
+            &transport,
+            &persisted_glm,
+            "glm-5-2",
+            None,
+        )
+        .await
+        .unwrap();
+        drop(glm_agent);
+        let persisted_glm = session_manager
+            .get_session(&glm_session.id, false)
+            .await
+            .unwrap();
+        assert_eq!(
+            persisted_glm
+                .model_config
+                .as_ref()
+                .and_then(|config| config.context_limit),
+            Some(384_000)
+        );
+
+        drop(agent_manager);
+        drop(session_manager);
+        let _ = fs::remove_dir_all(test_root);
+    }
+
     #[test]
     fn project_skills_trust_persists_both_decisions_and_is_one_time() {
         let test_root = recent_roots_test_dir("skills-trust");
@@ -6699,16 +6872,53 @@ mod tests {
         }))
         .unwrap();
         assert!(!without_capability.vision_capable);
+        assert_eq!(without_capability.context_limit, None);
 
         let with_capability: AgentSendMessageRequest = serde_json::from_value(json!({
             "sessionId": "session-1",
             "text": "Inspect the image",
             "model": "future-vision-model",
             "mode": "smart_approve",
+            "contextLimit": 384000,
             "visionCapable": true
         }))
         .unwrap();
         assert!(with_capability.vision_capable);
+        assert_eq!(with_capability.context_limit, Some(384_000));
+
+        let create_request: AgentCreateSessionRequest = serde_json::from_value(json!({
+            "projectRoot": "/tmp/project",
+            "model": "kimi-k2-6",
+            "contextLimit": 256000
+        }))
+        .unwrap();
+        assert_eq!(create_request.context_limit, Some(256_000));
+    }
+
+    #[test]
+    fn maple_model_config_uses_only_valid_per_session_context_limits() {
+        assert_eq!(
+            maple_model_config("glm-5-2", Some(384_000))
+                .unwrap()
+                .context_limit,
+            Some(384_000)
+        );
+        assert_eq!(
+            maple_model_config("auto:powerful", Some(256_000))
+                .unwrap()
+                .context_limit,
+            Some(256_000)
+        );
+        assert_eq!(
+            maple_model_config("glm-5-2", None).unwrap().context_limit,
+            None
+        );
+        assert_eq!(
+            maple_model_config("glm-5-2", Some(0))
+                .unwrap()
+                .context_limit,
+            None
+        );
     }
 
     #[test]

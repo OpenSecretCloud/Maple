@@ -131,6 +131,8 @@ import {
   DEFAULT_AGENT_MODEL,
   PRIMARY_AGENT_MODEL_IDS,
   reconcileAgentModel,
+  reconcileAgentModelForCatalog,
+  resolveAgentModelContextLimit,
   resolveAgentModelVisionCapability
 } from "@/services/agentModels";
 import { SIDEBAR_GRID_COLUMNS_CLASS, getSidebarLayoutStyle } from "@/constants/layout";
@@ -276,7 +278,9 @@ function buildFallbackModelAliases(models: OpenSecretModel[]): OpenSecretModelAl
 
 export function AgentMode({ userId }: { userId: string }) {
   const openai = useOpenAI();
-  const { availableModels, modelAliases } = useLocalState();
+  const os = useOpenSecret();
+  const { availableModels, setAvailableModels, modelAliases, setModelAliases, setHasWhisperModel } =
+    useLocalState();
   const { agentSessionSelection } = usePersistentHomeNavigation();
   const isMobile = useIsMobile();
   const isLandscapeMobile = useIsLandscapeMobile();
@@ -319,6 +323,7 @@ export function AgentMode({ userId }: { userId: string }) {
   const [isAuthTransitionReady, setIsAuthTransitionReady] = useState(false);
   const [isInitializing, setIsInitializing] = useState(true);
   const [isStarting, setIsStarting] = useState(false);
+  const [isAgentModelCatalogLoading, setIsAgentModelCatalogLoading] = useState(true);
   const [isPermissionModeUpdating, setIsPermissionModeUpdating] = useState(false);
   const [isProjectRootRegistrationPending, setIsProjectRootRegistrationPending] = useState(false);
   const [projectSkillsTrustPrompt, setProjectSkillsTrustPrompt] =
@@ -365,11 +370,27 @@ export function AgentMode({ userId }: { userId: string }) {
   const thoughtLabelFinalRequestRegistryRef = useRef(new AgentThoughtLabelFinalRequestRegistry());
   const thoughtPhaseSeededRunIdsRef = useRef(new Set<string>());
   const openaiRef = useRef(openai);
+  const openSecretRef = useRef(os);
+  const currentAgentModelRef = useRef(model);
+  const agentModelStateSettersRef = useRef({
+    setAvailableModels,
+    setModelAliases,
+    setHasWhisperModel
+  });
+  const authoritativeModelCatalogRef = useRef<OpenSecretModelCatalog | null>(null);
+  const selectableAgentModelsRef = useRef<OpenSecretModel[] | null>(null);
   const userIdRef = useRef(userId);
   const thoughtLabelProvisionalSchedulerRef = useRef<AgentThoughtLabelProvisionalScheduler | null>(
     null
   );
   openaiRef.current = openai;
+  openSecretRef.current = os;
+  currentAgentModelRef.current = model;
+  agentModelStateSettersRef.current = {
+    setAvailableModels,
+    setModelAliases,
+    setHasWhisperModel
+  };
   userIdRef.current = userId;
 
   if (!thoughtLabelProvisionalSchedulerRef.current) {
@@ -644,6 +665,7 @@ export function AgentMode({ userId }: { userId: string }) {
     isProjectOrderSaving ||
     isProjectRootRegistrationPending ||
     isProjectRemovalPending ||
+    isAgentModelCatalogLoading ||
     isProjectSkillsTrustLoading ||
     isProjectSkillsTrustSaving ||
     projectSkillsTrustPrompt !== null;
@@ -1171,9 +1193,14 @@ export function AgentMode({ userId }: { userId: string }) {
           ],
           removedRoots
         );
-        const nextModel = status.model || config.defaultModel || DEFAULT_MODEL;
+        const configuredModel = status.model || config.defaultModel || DEFAULT_MODEL;
+        const selectableModels = selectableAgentModelsRef.current;
+        const nextModel = selectableModels
+          ? reconcileAgentModel(configuredModel, selectableModels)
+          : configuredModel;
         const nextMode = normalizeAgentPermissionMode(status.mode);
         setProjectRoot(root);
+        currentAgentModelRef.current = nextModel;
         setModel(nextModel);
         applyAuthoritativeMode(nextMode);
 
@@ -1311,8 +1338,108 @@ export function AgentMode({ userId }: { userId: string }) {
   const selectModel = useCallback((value: string) => {
     if (isAgentModelLockedRef.current) return;
     interactionGenerationRef.current += 1;
+    currentAgentModelRef.current = value;
     setModel(value);
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    authoritativeModelCatalogRef.current = null;
+    selectableAgentModelsRef.current = null;
+    setIsAgentModelCatalogLoading(true);
+
+    void (async () => {
+      try {
+        const modelClient = openSecretRef.current as unknown as ModelCatalogClient;
+        const {
+          setAvailableModels: updateAvailableModels,
+          setModelAliases: updateModelAliases,
+          setHasWhisperModel: updateHasWhisperModel
+        } = agentModelStateSettersRef.current;
+
+        if (modelClient.fetchModelCatalog) {
+          try {
+            const catalog = await modelClient.fetchModelCatalog();
+            if (cancelled) return;
+            const selectableModels = catalog.data.filter(isSelectableChatModel);
+            const hasCatalogWhisperModel = catalog.data.some(
+              (catalogModel) => catalogModel.id === "whisper-large-v3"
+            );
+            authoritativeModelCatalogRef.current = catalog;
+            selectableAgentModelsRef.current = selectableModels;
+            updateAvailableModels(selectableModels);
+            updateModelAliases(catalog.aliases);
+            updateHasWhisperModel(
+              catalog.audio?.transcription?.available ?? hasCatalogWhisperModel
+            );
+            const currentModel = currentAgentModelRef.current;
+            const reconciledModel = reconcileAgentModelForCatalog(
+              currentModel,
+              selectableModels,
+              isAgentModelLockedRef.current
+            );
+            if (reconciledModel !== currentModel) {
+              // Catalog reconciliation is not a user interaction and must not
+              // invalidate concurrent account/session initialization.
+              currentAgentModelRef.current = reconciledModel;
+              setModel(reconciledModel);
+            }
+            return;
+          } catch (fetchCatalogError) {
+            if (import.meta.env.DEV) {
+              console.warn(
+                "Failed to fetch model catalog, falling back to fetchModels:",
+                fetchCatalogError
+              );
+            }
+          }
+        }
+
+        if (modelClient.fetchModels) {
+          const models = await modelClient.fetchModels();
+          if (cancelled) return;
+          const availableGenerateModels = models.filter((availableModel) => {
+            const tasks = availableModel.tasks || [];
+            if (tasks.length > 0) return tasks.includes("generate");
+            const id = availableModel.id.toLowerCase();
+            return !id.includes("whisper") && !id.includes("embed");
+          });
+          updateHasWhisperModel(
+            models.some((availableModel) => availableModel.id === "whisper-large-v3")
+          );
+          selectableAgentModelsRef.current = availableGenerateModels;
+          updateAvailableModels(availableGenerateModels);
+          updateModelAliases(buildFallbackModelAliases(availableGenerateModels));
+          const currentModel = currentAgentModelRef.current;
+          const reconciledModel = reconcileAgentModelForCatalog(
+            currentModel,
+            availableGenerateModels,
+            isAgentModelLockedRef.current
+          );
+          if (reconciledModel !== currentModel) {
+            currentAgentModelRef.current = reconciledModel;
+            setModel(reconciledModel);
+          }
+        }
+      } catch (fetchError) {
+        if (import.meta.env.DEV) {
+          console.warn("Failed to fetch model metadata:", fetchError);
+        }
+      } finally {
+        if (!cancelled) setIsAgentModelCatalogLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [userId]);
+
+  const contextLimitForModel = useCallback(
+    (modelId: string) =>
+      resolveAgentModelContextLimit(modelId, authoritativeModelCatalogRef.current),
+    []
+  );
 
   const selectMode = useCallback(
     (value: AgentPermissionMode) => {
@@ -1448,6 +1575,7 @@ export function AgentMode({ userId }: { userId: string }) {
           projectRoot,
           title: "New task",
           model: model || DEFAULT_MODEL,
+          contextLimit: contextLimitForModel(model || DEFAULT_MODEL),
           mode: selectedModeRef.current,
           mcpServerNames: selectedNewChatMcpServerNames
         });
@@ -1485,6 +1613,7 @@ export function AgentMode({ userId }: { userId: string }) {
     [
       applyAuthoritativeMode,
       agentSessionSelection,
+      contextLimitForModel,
       model,
       projectRoot,
       replaceSessionTimeline,
@@ -1512,6 +1641,7 @@ export function AgentMode({ userId }: { userId: string }) {
           projectRoot,
           title: "New task",
           model: model || DEFAULT_MODEL,
+          contextLimit: contextLimitForModel(model || DEFAULT_MODEL),
           mode: selectedModeRef.current,
           mcpServerNames: selectedNewChatMcpServerNames
         });
@@ -1554,6 +1684,7 @@ export function AgentMode({ userId }: { userId: string }) {
     applyAuthoritativeMode,
     agentSessionSelection,
     beginSessionSelection,
+    contextLimitForModel,
     finishSessionSelection,
     model,
     projectRoot,
@@ -1607,7 +1738,13 @@ export function AgentMode({ userId }: { userId: string }) {
         setActiveSessionId(detail.session.id);
         agentSessionSelection.remember(userId, detail.session.id);
         setProjectRoot(detail.session.projectRoot);
+        isAgentModelLockedRef.current =
+          detail.session.messageCount > 0 ||
+          hasAgentUserMessage(detail.timeline) ||
+          Boolean(activeRunsBySessionRef.current[detail.session.id]) ||
+          pendingSendTokensRef.current.has(detail.session.id);
         if (detail.session.model) {
+          currentAgentModelRef.current = detail.session.model;
           setModel(detail.session.model);
         }
         applyAuthoritativeMode(normalizeAgentPermissionMode(detail.session.mode));
@@ -1736,6 +1873,7 @@ export function AgentMode({ userId }: { userId: string }) {
           sessionId,
           text,
           model: model || DEFAULT_MODEL,
+          contextLimit: contextLimitForModel(model || DEFAULT_MODEL),
           mode: selectedModeRef.current,
           visionCapable: resolveAgentModelVisionCapability(
             model || DEFAULT_MODEL,
@@ -1788,6 +1926,7 @@ export function AgentMode({ userId }: { userId: string }) {
     activeRunsBySession,
     availableModels,
     clearPendingSend,
+    contextLimitForModel,
     ensureRuntimeAndSession,
     input,
     isAgentSendLocked,
@@ -3482,25 +3621,10 @@ function AgentModelSelector({
   model: string;
   onModelChange: (value: string) => void;
 }) {
-  const {
-    availableModels,
-    setAvailableModels,
-    modelAliases,
-    setModelAliases,
-    billingStatus,
-    setHasWhisperModel
-  } = useLocalState();
-  const os = useOpenSecret();
-  const isFetching = useRef(false);
-  const hasFetched = useRef(false);
-  const currentModelRef = useRef(model);
+  const { availableModels, modelAliases, billingStatus } = useLocalState();
   const [upgradeDialogOpen, setUpgradeDialogOpen] = useState(false);
   const [selectedModelName, setSelectedModelName] = useState("");
   const [showAdvanced, setShowAdvanced] = useState(false);
-
-  useEffect(() => {
-    currentModelRef.current = model;
-  }, [model]);
 
   const modelById = useMemo(() => {
     return new Map(availableModels.map((availableModel) => [availableModel.id, availableModel]));
@@ -3509,80 +3633,6 @@ function AgentModelSelector({
   const aliasById = useMemo(() => {
     return new Map(modelAliases.map((alias) => [alias.id, alias]));
   }, [modelAliases]);
-
-  const reconcileSelectedConcreteModel = useCallback(
-    (models: OpenSecretModel[]) => {
-      const currentModel = currentModelRef.current;
-      const reconciledModel = reconcileAgentModel(currentModel, models);
-      if (reconciledModel !== currentModel) {
-        onModelChange(reconciledModel);
-      }
-    },
-    [onModelChange]
-  );
-
-  const fetchCatalog = useCallback(async () => {
-    if (hasFetched.current || isFetching.current) return;
-
-    // LocalState may hold only normal chat's last selected model plus placeholder
-    // aliases, so it is not proof that Agent Mode has a complete catalog.
-    isFetching.current = true;
-
-    try {
-      const modelClient = os as unknown as ModelCatalogClient;
-
-      if (modelClient.fetchModelCatalog) {
-        try {
-          const catalog = await modelClient.fetchModelCatalog();
-          const selectableModels = catalog.data.filter(isSelectableChatModel);
-          const hasCatalogWhisperModel = catalog.data.some(
-            (catalogModel) => catalogModel.id === "whisper-large-v3"
-          );
-          hasFetched.current = true;
-          setAvailableModels(selectableModels);
-          setModelAliases(catalog.aliases);
-          setHasWhisperModel(catalog.audio?.transcription?.available ?? hasCatalogWhisperModel);
-          reconcileSelectedConcreteModel(selectableModels);
-
-          return;
-        } catch (fetchCatalogError) {
-          if (import.meta.env.DEV) {
-            console.warn(
-              "Failed to fetch model catalog, falling back to fetchModels:",
-              fetchCatalogError
-            );
-          }
-        }
-      }
-
-      if (modelClient.fetchModels) {
-        const models = await modelClient.fetchModels();
-        const availableGenerateModels = models.filter((availableModel) => {
-          const tasks = availableModel.tasks || [];
-          if (tasks.length > 0) return tasks.includes("generate");
-          const id = availableModel.id.toLowerCase();
-          return !id.includes("whisper") && !id.includes("embed");
-        });
-        hasFetched.current = true;
-        setHasWhisperModel(
-          models.some((availableModel) => availableModel.id === "whisper-large-v3")
-        );
-        setAvailableModels(availableGenerateModels);
-        setModelAliases(buildFallbackModelAliases(availableGenerateModels));
-        reconcileSelectedConcreteModel(availableGenerateModels);
-      }
-    } catch (fetchError) {
-      if (import.meta.env.DEV) {
-        console.warn("Failed to fetch model metadata:", fetchError);
-      }
-    } finally {
-      isFetching.current = false;
-    }
-  }, [os, reconcileSelectedConcreteModel, setAvailableModels, setHasWhisperModel, setModelAliases]);
-
-  useEffect(() => {
-    void fetchCatalog();
-  }, [fetchCatalog]);
 
   const getAlias = useCallback(
     (modelId: string): OpenSecretModelAlias | undefined => {
@@ -3790,7 +3840,6 @@ function AgentModelSelector({
               <DropdownMenuItem
                 onSelect={(event) => {
                   event.preventDefault();
-                  void fetchCatalog();
                   setShowAdvanced(true);
                 }}
                 className="flex cursor-pointer items-center gap-2 px-3 py-1.5"
