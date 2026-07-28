@@ -18,6 +18,20 @@ type AgentModelAliasReference = {
   };
 };
 
+type AgentModelContextReference = {
+  id: string;
+  context_window?: unknown;
+  max_context_tokens?: unknown;
+};
+
+type AgentModelContextCatalogReference = {
+  data: AgentModelContextReference[];
+  aliases: Array<{
+    id: string;
+    target_model?: string;
+  }>;
+};
+
 export function fallbackAgentModel(models: AgentModelReference[]): string {
   return models.some((model) => model.id === DEFAULT_AGENT_MODEL)
     ? DEFAULT_AGENT_MODEL
@@ -31,6 +45,14 @@ export function reconcileAgentModel(currentModel: string, models: AgentModelRefe
   }
   if (models.some((model) => model.id === currentModel)) return currentModel;
   return fallbackAgentModel(models);
+}
+
+export function reconcileAgentModelForCatalog(
+  currentModel: string,
+  models: AgentModelReference[],
+  isModelLocked: boolean
+): string {
+  return isModelLocked ? currentModel : reconcileAgentModel(currentModel, models);
 }
 
 export function resolveAgentModelVisionCapability(
@@ -47,4 +69,41 @@ export function resolveAgentModelVisionCapability(
   }
 
   return models.find((candidate) => candidate.id === modelId)?.capabilities?.vision ?? false;
+}
+
+function isValidContextLimit(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+}
+
+function contextLimitFromModel(model: AgentModelContextReference | undefined): number | undefined {
+  if (!model) return undefined;
+
+  const contextWindow = model.context_window;
+  const maxContextTokens = model.max_context_tokens;
+  const hasContextWindow = contextWindow !== undefined;
+  const hasMaxContextTokens = maxContextTokens !== undefined;
+
+  if (!hasContextWindow && !hasMaxContextTokens) return undefined;
+  if (hasContextWindow && !isValidContextLimit(contextWindow)) return undefined;
+  if (hasMaxContextTokens && !isValidContextLimit(maxContextTokens)) return undefined;
+  if (hasContextWindow && hasMaxContextTokens && contextWindow !== maxContextTokens) {
+    return undefined;
+  }
+
+  return isValidContextLimit(contextWindow)
+    ? contextWindow
+    : isValidContextLimit(maxContextTokens)
+      ? maxContextTokens
+      : undefined;
+}
+
+export function resolveAgentModelContextLimit(
+  modelId: string,
+  catalog: AgentModelContextCatalogReference | null
+): number | undefined {
+  if (!catalog) return undefined;
+
+  const alias = catalog.aliases.find((candidate) => candidate.id === modelId);
+  const concreteModelId = alias?.target_model || modelId;
+  return contextLimitFromModel(catalog.data.find((candidate) => candidate.id === concreteModelId));
 }

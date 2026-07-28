@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   AgentRuntimeService,
   type AgentRuntimeBridge,
+  type AgentCreateSessionRequest,
   type AgentSendMessageRequest
 } from "./agentRuntimeService";
 
@@ -42,12 +43,28 @@ describe("AgentRuntimeService", () => {
     const request: AgentSendMessageRequest = {
       sessionId: "session-1",
       text: "hello",
+      contextLimit: 384_000,
       visionCapable: false
     };
 
     await service.sendMessage("user-a", request);
 
     expect(bridge.events).toEqual(["fence:user-a", "sync:user-a", "invoke:agent_send_message"]);
+    expect(bridge.lastArgs).toEqual({ userId: "user-a", request });
+  });
+
+  test("session creation forwards the selected model context limit", async () => {
+    const bridge = new RecordingBridge();
+    const service = new AgentRuntimeService(bridge);
+    const request: AgentCreateSessionRequest = {
+      projectRoot: "/tmp/project",
+      model: "kimi-k2-6",
+      contextLimit: 256_000
+    };
+
+    await service.createSession("user-a", request);
+
+    expect(bridge.events).toEqual(["fence:user-a", "sync:user-a", "invoke:agent_create_session"]);
     expect(bridge.lastArgs).toEqual({ userId: "user-a", request });
   });
 });

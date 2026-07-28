@@ -5,6 +5,8 @@ import {
   PRIMARY_AGENT_MODEL_IDS,
   fallbackAgentModel,
   reconcileAgentModel,
+  reconcileAgentModelForCatalog,
+  resolveAgentModelContextLimit,
   resolveAgentModelVisionCapability
 } from "./agentModels";
 
@@ -30,6 +32,11 @@ describe("Agent Mode model defaults", () => {
   test("replaces a missing concrete model with the best available default", () => {
     expect(reconcileAgentModel("retired-model", models)).toBe(DEFAULT_AGENT_MODEL);
     expect(reconcileAgentModel(DEFAULT_AGENT_MODEL, [{ id: "kimi-k2-6" }])).toBe(QUICK_MODEL_ALIAS);
+  });
+
+  test("catalog refresh preserves a started task's locked model", () => {
+    expect(reconcileAgentModelForCatalog("retired-model", models, true)).toBe("retired-model");
+    expect(reconcileAgentModelForCatalog("retired-model", models, false)).toBe(DEFAULT_AGENT_MODEL);
   });
 });
 
@@ -71,5 +78,85 @@ describe("resolveAgentModelVisionCapability", () => {
   test("fails closed when the model capability is unknown", () => {
     expect(resolveAgentModelVisionCapability("unknown", catalog, [])).toBe(false);
     expect(resolveAgentModelVisionCapability(QUICK_MODEL_ALIAS, catalog, [])).toBe(false);
+  });
+});
+
+describe("resolveAgentModelContextLimit", () => {
+  const catalog = {
+    data: [
+      { id: "glm-5-2", context_window: 384_000, max_context_tokens: 384_000 },
+      { id: "kimi-k2-6", context_window: 256_000, max_context_tokens: 256_000 },
+      { id: "gemma4-31b", context_window: 256_000, max_context_tokens: 256_000 }
+    ],
+    aliases: [
+      { id: QUICK_MODEL_ALIAS, target_model: "glm-5-2" },
+      { id: POWERFUL_MODEL_ALIAS, target_model: "kimi-k2-6" }
+    ]
+  };
+
+  test("uses exact concrete-model context windows", () => {
+    expect(resolveAgentModelContextLimit("glm-5-2", catalog)).toBe(384_000);
+    expect(resolveAgentModelContextLimit("kimi-k2-6", catalog)).toBe(256_000);
+    expect(resolveAgentModelContextLimit("gemma4-31b", catalog)).toBe(256_000);
+  });
+
+  test("resolves aliases through their current concrete target", () => {
+    expect(resolveAgentModelContextLimit(POWERFUL_MODEL_ALIAS, catalog)).toBe(256_000);
+    expect(
+      resolveAgentModelContextLimit(POWERFUL_MODEL_ALIAS, {
+        ...catalog,
+        aliases: [{ id: POWERFUL_MODEL_ALIAS, target_model: "glm-5-2" }]
+      })
+    ).toBe(384_000);
+  });
+
+  test("accepts either compatible field when the other is absent", () => {
+    expect(
+      resolveAgentModelContextLimit("context-window-only", {
+        data: [{ id: "context-window-only", context_window: 384_000 }],
+        aliases: []
+      })
+    ).toBe(384_000);
+    expect(
+      resolveAgentModelContextLimit("max-context-only", {
+        data: [{ id: "max-context-only", max_context_tokens: 256_000 }],
+        aliases: []
+      })
+    ).toBe(256_000);
+  });
+
+  test("fails closed for unavailable or inconsistent metadata", () => {
+    expect(resolveAgentModelContextLimit("glm-5-2", null)).toBeUndefined();
+    expect(resolveAgentModelContextLimit("missing", catalog)).toBeUndefined();
+    expect(
+      resolveAgentModelContextLimit(POWERFUL_MODEL_ALIAS, {
+        data: catalog.data,
+        aliases: [{ id: POWERFUL_MODEL_ALIAS, target_model: "missing" }]
+      })
+    ).toBeUndefined();
+    expect(
+      resolveAgentModelContextLimit("mismatch", {
+        data: [{ id: "mismatch", context_window: 384_000, max_context_tokens: 256_000 }],
+        aliases: []
+      })
+    ).toBeUndefined();
+  });
+
+  test.each([
+    0,
+    -1,
+    1.5,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    Number.MAX_SAFE_INTEGER + 1,
+    "384000",
+    null
+  ])("rejects invalid context metadata %p", (contextWindow) => {
+    expect(
+      resolveAgentModelContextLimit("invalid", {
+        data: [{ id: "invalid", context_window: contextWindow }],
+        aliases: []
+      })
+    ).toBeUndefined();
   });
 });

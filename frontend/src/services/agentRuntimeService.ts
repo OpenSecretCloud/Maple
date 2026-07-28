@@ -90,6 +90,7 @@ export interface AgentCreateSessionRequest {
   projectRoot?: string | null;
   title?: string | null;
   model?: string | null;
+  contextLimit?: number | null;
   mode?: string | null;
   mcpServerNames?: string[] | null;
 }
@@ -128,6 +129,7 @@ export interface AgentSendMessageRequest {
   sessionId: string;
   text: string;
   model?: string | null;
+  contextLimit?: number | null;
   mode?: string | null;
   visionCapable: boolean;
 }
