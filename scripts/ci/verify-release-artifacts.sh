@@ -737,7 +737,7 @@ verify_web() {
 
 verify_latest_json() {
   local final_manifest latest_json
-  local platform url signature basename artifact sig_file sig_content
+  local platform url signature basename artifact sig_file sig_content expected_pattern
 
   final_manifest="$(proof_file_required latest-json-final.sha256)"
   verify_file_manifest "${final_manifest}"
@@ -747,12 +747,44 @@ verify_latest_json() {
     (.version | type == "string" and length > 0)
     and (.pub_date | type == "string" and length > 0)
     and (.platforms | type == "object")
+    and (.platforms."linux-x86_64" == .platforms."linux-x86_64-appimage")
   ' "${latest_json}" >/dev/null
 
-  for platform in darwin-aarch64 darwin-x86_64 linux-x86_64 windows-x86_64; do
+  for platform in \
+    darwin-aarch64 \
+    darwin-x86_64 \
+    linux-x86_64 \
+    linux-x86_64-appimage \
+    linux-x86_64-deb \
+    linux-x86_64-rpm \
+    windows-x86_64; do
     url="$(jq -er --arg platform "${platform}" '.platforms[$platform].url' "${latest_json}")"
     signature="$(jq -er --arg platform "${platform}" '.platforms[$platform].signature' "${latest_json}")"
     basename="$(basename "${url}")"
+
+    case "${platform}" in
+      darwin-*)
+        expected_pattern='*.app.tar.gz'
+        ;;
+      linux-x86_64 | linux-x86_64-appimage)
+        expected_pattern='Maple_*_amd64.AppImage'
+        ;;
+      linux-x86_64-deb)
+        expected_pattern='Maple_*_amd64.deb'
+        ;;
+      linux-x86_64-rpm)
+        expected_pattern='Maple-*.x86_64.rpm'
+        ;;
+      windows-x86_64)
+        expected_pattern='Maple_*_x64-setup.exe'
+        ;;
+    esac
+
+    if [[ "${basename}" != ${expected_pattern} ]]; then
+      echo "latest.json URL for ${platform} does not select ${expected_pattern}: ${basename}" >&2
+      return 1
+    fi
+
     artifact="$(artifact_for_label "${basename}")"
     sig_file="$(artifact_for_label "${basename}.sig")"
     sig_content="$(cat "${sig_file}")"
