@@ -81,6 +81,7 @@ import { isLinux, isTauri } from "@/utils/platform";
 import { ConversationProjectPicker } from "@/components/ConversationProjectPicker";
 import {
   CHAT_HISTORY_TOP_MARGIN_PX,
+  CHAT_HISTORY_WHEEL_GESTURE_QUIET_MS,
   ChatHistoryPaginationGate,
   chatHistoryCursorProgressed,
   requiredChatHistoryBottomCompensation,
@@ -3180,13 +3181,16 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
         return;
       }
 
-      gate.beginGesture();
+      gate.beginWheelGesture(event.timeStamp);
       maybeLoadOlderMessages();
 
       if (wheelGestureEndTimeoutRef.current) {
         clearTimeout(wheelGestureEndTimeoutRef.current);
       }
-      wheelGestureEndTimeoutRef.current = setTimeout(finishWheelGesture, 180);
+      wheelGestureEndTimeoutRef.current = setTimeout(
+        finishWheelGesture,
+        CHAT_HISTORY_WHEEL_GESTURE_QUIET_MS
+      );
     };
 
     const handleHistoryTouchStart = (event: TouchEvent) => {

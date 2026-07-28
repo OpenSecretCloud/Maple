@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+  CHAT_HISTORY_WHEEL_GESTURE_QUIET_MS,
   ChatHistoryPaginationGate,
   chatHistoryCursorProgressed,
   requiredChatHistoryBottomCompensation,
@@ -80,6 +81,49 @@ describe("ChatHistoryPaginationGate", () => {
 
     expect(gate.tryStartLoad(visibleBoundary)).toBe(false);
     expect(gate.tryStartLoad(visibleBoundary)).toBe(false);
+  });
+
+  test("uses wheel event timestamps when a busy render delays the quiet timer", () => {
+    const gate = new ChatHistoryPaginationGate();
+
+    gate.beginWheelGesture(1_000);
+    expect(gate.tryStartLoad(visibleBoundary)).toBe(true);
+    gate.finishLoad();
+
+    // Residual input inside the quiet period still belongs to the consumed gesture.
+    gate.beginWheelGesture(1_100);
+    expect(gate.tryStartLoad(visibleBoundary)).toBe(false);
+
+    // The timeout callback has not run, but the next event proves that the
+    // configured quiet period elapsed after the final residual input.
+    gate.beginWheelGesture(1_100 + CHAT_HISTORY_WHEEL_GESTURE_QUIET_MS);
+    expect(gate.tryStartLoad(visibleBoundary)).toBe(true);
+  });
+
+  test("loads later pages from fresh wheel bursts without waiting for timer callbacks", () => {
+    const gate = new ChatHistoryPaginationGate();
+    let loadCount = 0;
+    let eventTimestamp = 0;
+
+    gate.beginWheelGesture(eventTimestamp);
+    if (gate.tryStartLoad(visibleBoundary)) loadCount += 1;
+    gate.finishLoad();
+
+    for (let page = 2; page <= 4; page += 1) {
+      // Closely spaced momentum cannot rearm the consumed page.
+      eventTimestamp += 60;
+      gate.beginWheelGesture(eventTimestamp);
+      expect(gate.tryStartLoad(visibleBoundary)).toBe(false);
+
+      // A new burst after the same quiet period used by the fallback timer can.
+      eventTimestamp += CHAT_HISTORY_WHEEL_GESTURE_QUIET_MS;
+      gate.beginWheelGesture(eventTimestamp);
+      if (gate.tryStartLoad(visibleBoundary)) loadCount += 1;
+      expect(gate.tryStartLoad(visibleBoundary)).toBe(false);
+      gate.finishLoad();
+    }
+
+    expect(loadCount).toBe(4);
   });
 
   test("does not rearm when the consumed gesture crosses a restored boundary again", () => {
