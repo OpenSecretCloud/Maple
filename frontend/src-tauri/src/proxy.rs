@@ -14,7 +14,7 @@ use std::path::PathBuf;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Manager, State};
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
@@ -38,6 +38,8 @@ pub struct ProxyConfig {
     pub backend_url: Option<String>,
     #[serde(default)]
     pub auto_start: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_user_id: Option<String>,
 }
 
 fn default_cors() -> bool {
@@ -54,6 +56,7 @@ impl Default for ProxyConfig {
             enable_cors: false,
             backend_url: None,
             auto_start: false,
+            owner_user_id: None,
         }
     }
 }
@@ -389,6 +392,7 @@ pub async fn stop_and_reset_proxy(
     config.api_key.clear();
     config.enabled = false;
     config.auto_start = false;
+    config.owner_user_id = None;
     save_proxy_config(&app_handle, &config)
         .await
         .map_err(|error| format!("Failed to reset proxy config: {error}"))?;
@@ -640,6 +644,7 @@ mod tests {
             enable_cors: false,
             backend_url: Some("https://example.invalid".to_string()),
             auto_start: true,
+            owner_user_id: Some("legacy-user".to_string()),
         };
         tokio::fs::write(&legacy_path, serde_json::to_vec(&original).unwrap())
             .await
@@ -674,6 +679,7 @@ mod tests {
         assert!(scrubbed.api_key.is_empty());
         assert!(!scrubbed.enabled);
         assert!(!scrubbed.auto_start);
+        assert!(scrubbed.owner_user_id.is_none());
         assert_eq!(
             tokio::fs::metadata(&legacy_path)
                 .await
@@ -991,7 +997,10 @@ async fn scrub_legacy_proxy_config(
         }
     };
 
-    let already_scrubbed = config.api_key.is_empty() && !config.enabled && !config.auto_start;
+    let already_scrubbed = config.api_key.is_empty()
+        && !config.enabled
+        && !config.auto_start
+        && config.owner_user_id.is_none();
     let owner_only = tokio::fs::metadata(path).await?.permissions().mode() & 0o777 == 0o600;
     if already_scrubbed && owner_only {
         return Ok(());
@@ -1000,6 +1009,7 @@ async fn scrub_legacy_proxy_config(
     config.api_key.clear();
     config.enabled = false;
     config.auto_start = false;
+    config.owner_user_id = None;
 
     let counter = LEGACY_CONFIG_MIGRATION_COUNTER.fetch_add(1, Ordering::Relaxed);
     let temp_name = format!(".proxy_config.scrub-{}-{counter}.tmp", std::process::id());
@@ -1090,40 +1100,4 @@ pub async fn load_saved_proxy_config(app_handle: &AppHandle) -> Result<ProxyConf
     }
 
     Ok(config)
-}
-
-// Initialize proxy on app startup if auto_start is enabled
-pub async fn init_proxy_on_startup_simple(app_handle: AppHandle) -> Result<()> {
-    let proxy_state: tauri::State<ProxyState> = app_handle.state();
-    let _lifecycle_guard = proxy_state.lifecycle.lock().await;
-
-    // Load saved config
-    let config = load_saved_proxy_config(&app_handle).await?;
-
-    // Check if auto-start is enabled and we have an API key
-    if config.auto_start && !config.api_key.is_empty() {
-        log::info!("Auto-starting proxy from saved config");
-
-        // Try to start the proxy
-        match start_proxy_inner(app_handle.clone(), &proxy_state, config.clone()).await {
-            Ok(_) => {
-                log::info!(
-                    "Proxy auto-started successfully on {}:{}",
-                    config.host,
-                    config.port
-                );
-                // Optionally emit an event to notify the frontend
-                let _ = app_handle.emit("proxy-autostarted", &config);
-            }
-            Err(e) => {
-                log::error!("Failed to auto-start proxy: {e}");
-                // Emit an event to notify the frontend of the failure
-                let _ = app_handle.emit("proxy-autostart-failed", e);
-            }
-        }
-    } else {
-        log::info!("Proxy auto-start is disabled or no API key configured");
-    }
-
-    Ok(())
 }

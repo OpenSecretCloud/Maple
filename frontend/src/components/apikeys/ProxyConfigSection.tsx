@@ -18,7 +18,12 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { DEFAULT_AGENT_MODEL } from "@/services/agentModels";
-import { proxyService, type ProxyConfig, type ProxyStatus } from "@/services/proxyService";
+import {
+  proxyService,
+  type ManualProxyKeyProvisioner,
+  type ProxyConfig,
+  type ProxyStatus
+} from "@/services/proxyService";
 import { getProxyBaseUrl, isCodingAgentModel } from "@/services/proxyModels";
 import type { OpenSecretModel } from "@/state/LocalStateContextDef";
 import { isTauriDesktop } from "@/utils/platform";
@@ -26,8 +31,11 @@ import { ProxyClientGuides } from "./ProxyClientGuides";
 import { ProxyModelList } from "./ProxyModelList";
 
 interface ProxyConfigSectionProps {
+  userId: string;
   apiKeys: Array<{ name: string; created_at: string }>;
-  onRequestNewApiKey: (name: string) => Promise<string>;
+  onCreateApiKey: (name: string) => Promise<string>;
+  onDeleteApiKey: (name: string) => Promise<void>;
+  onRefreshApiKeys: () => Promise<void>;
   models: OpenSecretModel[];
   isModelsLoading: boolean;
   isModelsError: boolean;
@@ -38,8 +46,11 @@ function isLoopbackHost(host: string): boolean {
 }
 
 export function ProxyConfigSection({
+  userId,
   apiKeys,
-  onRequestNewApiKey,
+  onCreateApiKey,
+  onDeleteApiKey,
+  onRefreshApiKeys,
   models,
   isModelsLoading,
   isModelsError
@@ -73,31 +84,26 @@ export function ProxyConfigSection({
     });
   }, [guideModels]);
 
-  const loadProxyState = async () => {
-    try {
-      const [savedConfig, status] = await Promise.all([
-        proxyService.loadProxyConfig(),
-        proxyService.getProxyStatus()
-      ]);
-
-      setConfig(savedConfig);
-      setProxyStatus(status);
-    } catch (error) {
-      console.error("Failed to load proxy state:", error);
-    }
-  };
-
   useEffect(() => {
     if (!isTauriDesktopPlatform) return;
-    void loadProxyState();
-  }, [isTauriDesktopPlatform]);
+    void (async () => {
+      try {
+        const { config: savedConfig, status } = await proxyService.loadManualProxyState(userId);
+        setConfig(savedConfig);
+        setProxyStatus(status);
+      } catch (error) {
+        console.error("Failed to load proxy state:", error);
+      }
+    })();
+  }, [isTauriDesktopPlatform, userId]);
 
   const handleStartProxy = async () => {
     setIsLoading(true);
     setMessage(null);
 
     try {
-      let apiKey = config.api_key;
+      const apiKey = config.api_key;
+      let keyProvisioner: ManualProxyKeyProvisioner | undefined;
       if (!apiKey) {
         const date = new Date().toISOString().split("T")[0].replace(/-/g, "");
         const keyName = `maple-desktop-${date}`;
@@ -109,17 +115,12 @@ export function ProxyConfigSection({
           });
           return;
         }
-
-        try {
-          apiKey = await onRequestNewApiKey(keyName);
-          setConfig((previous) => ({ ...previous, api_key: apiKey }));
-        } catch {
-          setMessage({
-            type: "error",
-            text: "Failed to create API key. Please create an API key manually first"
-          });
-          return;
-        }
+        keyProvisioner = {
+          name: keyName,
+          createApiKey: onCreateApiKey,
+          deleteApiKey: onDeleteApiKey,
+          refreshApiKeys: onRefreshApiKeys
+        };
       }
 
       const port = Number(config.port);
@@ -140,9 +141,9 @@ export function ProxyConfigSection({
         auto_start: config.auto_start
       };
 
-      const status = await proxyService.startManualProxy(updatedConfig);
+      const status = await proxyService.startManualProxy(userId, updatedConfig, keyProvisioner);
       setProxyStatus(status);
-      setConfig(updatedConfig);
+      setConfig(status.config);
       setMessage({
         type: "success",
         text: `Proxy is now running on ${config.host}:${config.port}`
@@ -178,7 +179,7 @@ export function ProxyConfigSection({
     const updatedConfig = { ...config, auto_start: checked };
     setConfig(updatedConfig);
     try {
-      await proxyService.saveManualProxySettings(updatedConfig);
+      await proxyService.saveManualProxySettings(userId, updatedConfig);
       setMessage({
         type: "success",
         text: checked ? "Auto-start enabled" : "Auto-start disabled"

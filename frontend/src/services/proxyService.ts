@@ -9,6 +9,7 @@ export interface ProxyConfig {
   enable_cors?: boolean;
   backend_url?: string;
   auto_start?: boolean;
+  owner_user_id?: string;
 }
 
 export interface ProxyStatus {
@@ -18,6 +19,21 @@ export interface ProxyStatus {
 }
 
 export type DeleteProxyApiKey = (name: string) => Promise<void>;
+export type CreateProxyApiKey = (name: string) => Promise<string>;
+
+export interface ManualProxyKeyProvisioner {
+  name: string;
+  createApiKey: CreateProxyApiKey;
+  deleteApiKey: DeleteProxyApiKey;
+  refreshApiKeys: () => Promise<void>;
+}
+
+export class ProxyAuthenticationChangedError extends Error {
+  constructor() {
+    super("The authenticated Maple account changed before the local proxy finished starting");
+    this.name = "ProxyAuthenticationChangedError";
+  }
+}
 
 export interface AgentProxyKeyRecord {
   userId: string;
@@ -31,6 +47,7 @@ export interface AgentProxyKeyRegistry {
 
 const AGENT_PROXY_OWNER_KEY = "maple-agent-proxy-owner-v1";
 const AGENT_PROXY_KEY_REGISTRY_KEY = "maple-agent-proxy-keys-v1";
+const PENDING_MANUAL_PROXY_KEYS_KEY = "maple-pending-manual-proxy-keys-v1";
 
 export function removeAgentProxyKeyRecord(
   registry: AgentProxyKeyRegistry,
@@ -56,12 +73,31 @@ export function manualProxyConfigsMatch(active: ProxyConfig, desired: ProxyConfi
     active.enabled === desired.enabled &&
     (active.enable_cors ?? false) === (desired.enable_cors ?? false) &&
     normalizeBackendUrl(active.backend_url) === normalizeBackendUrl(desired.backend_url) &&
-    (active.auto_start ?? false) === (desired.auto_start ?? false)
+    (active.auto_start ?? false) === (desired.auto_start ?? false) &&
+    (active.owner_user_id?.trim() || "") === (desired.owner_user_id?.trim() || "")
   );
 }
 
-class ProxyService {
+type ProxyCommandInvoker = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
+
+interface ProxyAuthenticationSnapshot {
+  userId: string;
+  generation: number;
+}
+
+export class ProxyService {
   private operationTail: Promise<void> = Promise.resolve();
+  private authenticationObserved = false;
+  private authenticatedUserId: string | null = null;
+  private authGeneration = 0;
+  private authReadyGeneration = -1;
+  private authTransitionGeneration = -1;
+  private authTransitionPromise: Promise<void> = Promise.resolve();
+
+  constructor(
+    private readonly invokeCommand: ProxyCommandInvoker = invoke,
+    private readonly desktopCheck: () => boolean = isTauriDesktop
+  ) {}
 
   private validatePort(port: number): void {
     if (!Number.isInteger(port) || port < 0 || port > 65535) {
@@ -72,7 +108,7 @@ class ProxyService {
   async startProxy(config: ProxyConfig): Promise<ProxyStatus> {
     try {
       this.validatePort(config.port);
-      return await invoke<ProxyStatus>("start_proxy", { config });
+      return await this.invokeCommand<ProxyStatus>("start_proxy", { config });
     } catch (error) {
       console.error("Failed to start proxy:", error);
       throw error;
@@ -81,7 +117,7 @@ class ProxyService {
 
   async stopProxy(): Promise<ProxyStatus> {
     try {
-      return await invoke<ProxyStatus>("stop_proxy");
+      return await this.invokeCommand<ProxyStatus>("stop_proxy");
     } catch (error) {
       console.error("Failed to stop proxy:", error);
       throw error;
@@ -90,7 +126,7 @@ class ProxyService {
 
   async getProxyStatus(): Promise<ProxyStatus> {
     try {
-      return await invoke<ProxyStatus>("get_proxy_status");
+      return await this.invokeCommand<ProxyStatus>("get_proxy_status");
     } catch (error) {
       console.error("Failed to get proxy status:", error);
       throw error;
@@ -99,7 +135,7 @@ class ProxyService {
 
   async loadProxyConfig(): Promise<ProxyConfig> {
     try {
-      return await invoke<ProxyConfig>("load_proxy_config");
+      return await this.invokeCommand<ProxyConfig>("load_proxy_config");
     } catch (error) {
       console.error("Failed to load proxy config:", error);
       // Return default config if loading fails
@@ -116,7 +152,7 @@ class ProxyService {
   async saveProxySettings(config: ProxyConfig): Promise<void> {
     try {
       this.validatePort(config.port);
-      await invoke("save_proxy_settings", { config });
+      await this.invokeCommand("save_proxy_settings", { config });
     } catch (error) {
       console.error("Failed to save proxy settings:", error);
       throw error;
@@ -126,37 +162,301 @@ class ProxyService {
   async testProxyPort(host: string, port: number): Promise<boolean> {
     try {
       this.validatePort(port);
-      return await invoke<boolean>("test_proxy_port", { host, port });
+      return await this.invokeCommand<boolean>("test_proxy_port", { host, port });
     } catch (error) {
       console.error("Failed to test proxy port:", error);
       throw error;
     }
   }
 
-  async startManualProxy(config: ProxyConfig): Promise<ProxyStatus> {
-    return await this.enqueueProxyOperation(async () => {
-      const status = await this.startProxy(config);
-      if (!status.running || !manualProxyConfigsMatch(status.config, config)) {
-        throw new Error(
-          "The local proxy changed while the manual setup was starting. Review the current settings and try again."
-        );
+  transitionAuthenticatedUser(nextUserId: string | null): Promise<void> {
+    const normalizedUserId = nextUserId?.trim() || null;
+    const previousUserId = this.authenticatedUserId;
+    const previousGenerationWasReady = this.authReadyGeneration === this.authGeneration;
+
+    if (this.authenticationObserved && previousUserId === normalizedUserId) {
+      if (previousGenerationWasReady) return Promise.resolve();
+      if (this.authTransitionGeneration === this.authGeneration) {
+        return this.authTransitionPromise;
       }
-      // Do not discard the previous Agent ownership association until the
-      // native mutation has actually succeeded.
-      this.markCurrentProxyConfigAsManual();
-      return status;
+      return this.queueAuthenticationReset(this.authGeneration);
+    }
+
+    // Change the generation synchronously. An operation currently awaiting an
+    // encrypted API request observes the transition before it can mutate the
+    // native proxy. Cleanup remains serialized with native proxy mutations.
+    const isFirstObservation = !this.authenticationObserved;
+    this.authenticationObserved = true;
+    this.authenticatedUserId = normalizedUserId;
+    this.authGeneration += 1;
+    const generation = this.authGeneration;
+
+    if (!this.desktopCheck()) {
+      this.authReadyGeneration = generation;
+      return Promise.resolve();
+    }
+
+    if (isFirstObservation) {
+      return this.queueInitialAuthentication(normalizedUserId, generation);
+    }
+
+    const requiresReset = Boolean(previousUserId) || !previousGenerationWasReady;
+
+    if (!requiresReset) {
+      this.authReadyGeneration = generation;
+      return Promise.resolve();
+    }
+    return this.queueAuthenticationReset(generation);
+  }
+
+  async awaitAuthenticatedUser(userId: string): Promise<void> {
+    const normalizedUserId = userId.trim();
+    if (!normalizedUserId || this.authenticatedUserId !== normalizedUserId) {
+      throw new ProxyAuthenticationChangedError();
+    }
+    await this.transitionAuthenticatedUser(normalizedUserId);
+    this.assertAuthenticationCurrent({
+      userId: normalizedUserId,
+      generation: this.authGeneration
     });
   }
 
-  async saveManualProxySettings(config: ProxyConfig): Promise<void> {
+  async loadManualProxyState(
+    userId: string
+  ): Promise<{ config: ProxyConfig; status: ProxyStatus }> {
+    await this.awaitAuthenticatedUser(userId);
+    const auth = this.captureAuthentication(userId);
+    return await this.enqueueProxyOperation(async () => {
+      this.assertAuthenticationCurrent(auth);
+      const [config, status] = await Promise.all([this.loadProxyConfig(), this.getProxyStatus()]);
+      this.assertAuthenticationCurrent(auth);
+      return { config, status };
+    });
+  }
+
+  async startManualProxy(
+    userId: string,
+    config: ProxyConfig,
+    keyProvisioner?: ManualProxyKeyProvisioner
+  ): Promise<ProxyStatus> {
+    await this.awaitAuthenticatedUser(userId);
+    const auth = this.captureAuthentication(userId);
+    let desiredConfig = config;
+    let createdKeyName: string | null = null;
+
+    try {
+      if (!desiredConfig.api_key.trim()) {
+        if (!keyProvisioner) {
+          throw new Error("Starting the local proxy requires an API key");
+        }
+
+        const apiKey = await keyProvisioner.createApiKey(keyProvisioner.name);
+        await this.rememberPendingManualProxyKey(auth, keyProvisioner.name, keyProvisioner);
+        createdKeyName = keyProvisioner.name;
+        this.assertAuthenticationCurrent(auth);
+        await keyProvisioner.refreshApiKeys();
+        this.assertAuthenticationCurrent(auth);
+        desiredConfig = { ...desiredConfig, api_key: apiKey };
+      }
+
+      desiredConfig = { ...desiredConfig, owner_user_id: auth.userId };
+
+      const status = await this.enqueueProxyOperation(async () => {
+        let proxyStarted = false;
+        try {
+          this.assertAuthenticationCurrent(auth);
+          const startedStatus = await this.startProxy(desiredConfig);
+          proxyStarted = true;
+          this.assertAuthenticationCurrent(auth);
+
+          if (
+            !startedStatus.running ||
+            !manualProxyConfigsMatch(startedStatus.config, desiredConfig)
+          ) {
+            throw new Error(
+              "The local proxy changed while the manual setup was starting. Review the current settings and try again."
+            );
+          }
+
+          // Do not discard the previous Agent ownership association until the
+          // native mutation has actually succeeded and the account fence still
+          // owns the result.
+          this.markCurrentProxyConfigAsManual();
+          if (createdKeyName) this.forgetPendingManualProxyKey(auth.userId, createdKeyName);
+          return startedStatus;
+        } catch (error) {
+          if (proxyStarted) await this.resetProxyLocalState();
+          throw error;
+        }
+      });
+      return status;
+    } catch (error) {
+      let cleanupError: unknown;
+      if (createdKeyName && keyProvisioner && this.authenticatedUserId === auth.userId) {
+        try {
+          await this.revokePendingManualProxyKey(
+            auth.userId,
+            createdKeyName,
+            keyProvisioner.deleteApiKey
+          );
+        } catch (revokeError) {
+          cleanupError = revokeError;
+        }
+      }
+
+      if (cleanupError) {
+        throw new Error(
+          `${errorMessage(error)}. Maple could not finish rolling back the new proxy setup: ${errorMessage(cleanupError)}`
+        );
+      }
+      throw error;
+    }
+  }
+
+  async saveManualProxySettings(userId: string, config: ProxyConfig): Promise<void> {
+    await this.awaitAuthenticatedUser(userId);
+    const auth = this.captureAuthentication(userId);
     await this.enqueueProxyOperation(async () => {
-      await this.saveProxySettings(config);
+      this.assertAuthenticationCurrent(auth);
+      await this.saveProxySettings({ ...config, owner_user_id: auth.userId });
+      this.assertAuthenticationCurrent(auth);
       this.markCurrentProxyConfigAsManual();
+    });
+  }
+
+  async cleanupPendingManualProxyKeys(
+    userId: string,
+    deleteApiKey: DeleteProxyApiKey
+  ): Promise<void> {
+    await this.awaitAuthenticatedUser(userId);
+    const auth = this.captureAuthentication(userId);
+    await this.enqueueProxyOperation(async () => {
+      this.assertAuthenticationCurrent(auth);
+      await this.revokePendingManualProxyKeysBestEffort(auth.userId, deleteApiKey);
+      this.assertAuthenticationCurrent(auth);
     });
   }
 
   async stopManualProxy(): Promise<ProxyStatus> {
     return await this.enqueueProxyOperation(async () => await this.stopProxy());
+  }
+
+  private captureAuthentication(userId: string): ProxyAuthenticationSnapshot {
+    const normalizedUserId = userId.trim();
+    if (
+      !normalizedUserId ||
+      this.authenticatedUserId !== normalizedUserId ||
+      this.authReadyGeneration !== this.authGeneration
+    ) {
+      throw new ProxyAuthenticationChangedError();
+    }
+    return { userId: normalizedUserId, generation: this.authGeneration };
+  }
+
+  private assertAuthenticationCurrent(auth: ProxyAuthenticationSnapshot): void {
+    if (
+      this.authenticatedUserId !== auth.userId ||
+      this.authGeneration !== auth.generation ||
+      this.authReadyGeneration !== auth.generation
+    ) {
+      throw new ProxyAuthenticationChangedError();
+    }
+  }
+
+  private async rememberPendingManualProxyKey(
+    auth: ProxyAuthenticationSnapshot,
+    name: string,
+    keyProvisioner: ManualProxyKeyProvisioner
+  ): Promise<void> {
+    try {
+      const records = this.loadPendingManualProxyKeys();
+      this.savePendingManualProxyKeys([
+        ...records.filter((record) => record.userId !== auth.userId || record.name !== name),
+        { userId: auth.userId, name }
+      ]);
+    } catch (trackingError) {
+      if (this.authenticatedUserId === auth.userId) {
+        try {
+          await keyProvisioner.deleteApiKey(name);
+        } catch (revokeError) {
+          throw new Error(
+            `Maple created a proxy key but could not track or revoke it. Tracking failed: ${errorMessage(trackingError)}. Revocation failed: ${errorMessage(revokeError)}`
+          );
+        }
+      }
+      throw trackingError;
+    }
+  }
+
+  private forgetPendingManualProxyKey(userId: string, name: string): void {
+    this.savePendingManualProxyKeys(
+      this.loadPendingManualProxyKeys().filter(
+        (record) => record.userId !== userId || record.name !== name
+      )
+    );
+  }
+
+  private async revokePendingManualProxyKey(
+    userId: string,
+    name: string,
+    deleteApiKey: DeleteProxyApiKey
+  ): Promise<void> {
+    try {
+      await deleteApiKey(name);
+    } catch (error) {
+      if (!isMissingApiKeyError(error)) throw error;
+    }
+    this.forgetPendingManualProxyKey(userId, name);
+  }
+
+  private async revokePendingManualProxyKeysBestEffort(
+    userId: string,
+    deleteApiKey: DeleteProxyApiKey
+  ): Promise<void> {
+    const records = this.loadPendingManualProxyKeys().filter((record) => record.userId === userId);
+    for (const record of records) {
+      try {
+        await this.revokePendingManualProxyKey(record.userId, record.name, deleteApiKey);
+      } catch {
+        // Preserve the exact record for a future cleanup retry.
+      }
+    }
+  }
+
+  private loadPendingManualProxyKeys(): AgentProxyKeyRecord[] {
+    if (typeof localStorage === "undefined") {
+      throw new Error("Local storage is unavailable for pending proxy key tracking");
+    }
+    const stored = localStorage.getItem(PENDING_MANUAL_PROXY_KEYS_KEY);
+    if (!stored) return [];
+
+    const parsed = JSON.parse(stored) as unknown;
+    if (!Array.isArray(parsed)) {
+      throw new Error("Pending proxy key tracking data is invalid");
+    }
+    return parsed.filter((record): record is AgentProxyKeyRecord =>
+      Boolean(
+        record &&
+        typeof record === "object" &&
+        "userId" in record &&
+        typeof record.userId === "string" &&
+        record.userId.trim() &&
+        "name" in record &&
+        typeof record.name === "string" &&
+        record.name.trim()
+      )
+    );
+  }
+
+  private savePendingManualProxyKeys(records: AgentProxyKeyRecord[]): void {
+    if (typeof localStorage === "undefined") {
+      throw new Error("Local storage is unavailable for pending proxy key tracking");
+    }
+    if (records.length === 0) {
+      localStorage.removeItem(PENDING_MANUAL_PROXY_KEYS_KEY);
+      return;
+    }
+    localStorage.setItem(PENDING_MANUAL_PROXY_KEYS_KEY, JSON.stringify(records));
   }
 
   private markCurrentProxyConfigAsManual(): void {
@@ -172,18 +472,82 @@ class ProxyService {
   // metadata when remote revocation fails and are retried by a later
   // authenticated cleanup for that account.
   async stopAndResetProxy(userId?: string | null, deleteApiKey?: DeleteProxyApiKey): Promise<void> {
-    if (!isTauriDesktop()) return;
+    if (!this.desktopCheck()) return;
+
+    if (userId && this.authenticatedUserId && this.authenticatedUserId !== userId) {
+      throw new ProxyAuthenticationChangedError();
+    }
+    // Invalidate immediately instead of waiting for the serialized reset.
+    // Keeping the current user allows a failed logout attempt to retry without
+    // requiring a synthetic auth transition.
+    this.authGeneration += 1;
+    const generation = this.authGeneration;
 
     await this.enqueueProxyOperation(async () => {
       await this.resetProxyLocalState();
+      if (this.authGeneration === generation) this.authReadyGeneration = generation;
       if (userId && deleteApiKey) {
         // Start the authenticated cleanup while the caller still owns its SDK
         // session, but do not await an unbounded encrypted fetch. Successful
         // deletions remove their exact records; failures/timeouts leave records
         // available for the account's next initialization retry.
         void this.revokeTrackedAgentProxyKeysBestEffort(userId, deleteApiKey).catch(() => {});
+        void this.revokePendingManualProxyKeysBestEffort(userId, deleteApiKey).catch(() => {});
       }
     });
+  }
+
+  private queueAuthenticationReset(generation: number): Promise<void> {
+    const reset = this.enqueueProxyOperation(async () => await this.resetProxyLocalState());
+    return this.trackAuthenticationTransition(reset, generation);
+  }
+
+  private queueInitialAuthentication(userId: string | null, generation: number): Promise<void> {
+    const initialization = this.enqueueProxyOperation(async () => {
+      if (!userId) {
+        await this.resetProxyLocalState();
+        return;
+      }
+
+      const config = await this.loadProxyConfig();
+      if (config.owner_user_id?.trim() !== userId) {
+        await this.resetProxyLocalState();
+        return;
+      }
+
+      if (config.auto_start && config.api_key.trim()) {
+        const status = await this.getProxyStatus();
+        if (!status.running) {
+          try {
+            await this.startProxy(config);
+          } catch (error) {
+            // Auto-start failure is visible in the proxy UI, but the config is
+            // account-owned and must not block unrelated authenticated work.
+            console.error("Failed to auto-start the authenticated proxy:", error);
+          }
+        }
+      }
+    });
+    return this.trackAuthenticationTransition(initialization, generation);
+  }
+
+  private trackAuthenticationTransition(
+    transition: Promise<void>,
+    generation: number
+  ): Promise<void> {
+    const tracked = transition.then(
+      () => {
+        if (this.authGeneration === generation) this.authReadyGeneration = generation;
+        if (this.authTransitionGeneration === generation) this.authTransitionGeneration = -1;
+      },
+      (error) => {
+        if (this.authTransitionGeneration === generation) this.authTransitionGeneration = -1;
+        throw error;
+      }
+    );
+    this.authTransitionGeneration = generation;
+    this.authTransitionPromise = tracked;
+    return tracked;
   }
 
   private async enqueueProxyOperation<T>(operation: () => Promise<T>): Promise<T> {
@@ -196,10 +560,10 @@ class ProxyService {
   }
 
   private async resetProxyLocalState(): Promise<void> {
-    if (!isTauriDesktop()) return;
+    if (!this.desktopCheck()) return;
 
     try {
-      await invoke<ProxyStatus>("stop_and_reset_proxy");
+      await this.invokeCommand<ProxyStatus>("stop_and_reset_proxy");
     } catch (error) {
       console.error("Failed to stop and reset proxy:", error);
       throw error;
@@ -311,6 +675,10 @@ function isMissingApiKeyError(error: unknown): boolean {
   }
   const message = error instanceof Error ? error.message : String(error);
   return /\b404\b|not found/i.test(message);
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 export const proxyService = new ProxyService();

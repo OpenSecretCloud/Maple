@@ -1,26 +1,42 @@
+import { useEffect } from "react";
 import { useOpenSecret } from "@opensecret/react";
 import { AlertCircle, Loader2 } from "lucide-react";
 import { ProxyConfigSection } from "@/components/apikeys/ProxyConfigSection";
+import { proxyService } from "@/services/proxyService";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { SettingsSection } from "../SettingsPage";
 import { useApiKeys } from "./useApiKeys";
 import { useProxyModels } from "./useProxyModels";
 
 export function LocalProxySettings() {
-  const { createApiKey } = useOpenSecret();
+  const { auth, createApiKey, deleteApiKey } = useOpenSecret();
   const { data: apiKeys, isLoading, error, refetch } = useApiKeys();
   const { data: models, isLoading: modelsLoading, isError: modelsError } = useProxyModels();
 
-  const handleRequestNewApiKey = async (name: string) => {
+  const handleCreateApiKey = async (name: string) => {
     try {
       const response = await createApiKey(name);
-      await refetch();
       return response.key;
     } catch (createFailure) {
       console.error("Failed to create API key for proxy:", createFailure);
       throw createFailure;
     }
   };
+
+  const handleRefreshApiKeys = async () => {
+    await refetch();
+  };
+
+  const userId = auth.user?.user.id;
+  useEffect(() => {
+    if (!userId) return;
+    void proxyService
+      .cleanupPendingManualProxyKeys(userId, deleteApiKey)
+      .then(async () => await refetch())
+      .catch((cleanupFailure) => {
+        console.error("Failed to retry pending manual proxy key cleanup:", cleanupFailure);
+      });
+  }, [deleteApiKey, refetch, userId]);
 
   if (isLoading) {
     return (
@@ -50,10 +66,16 @@ export function LocalProxySettings() {
     );
   }
 
+  if (!userId) return null;
+
   return (
     <ProxyConfigSection
+      key={userId}
+      userId={userId}
       apiKeys={apiKeys ?? []}
-      onRequestNewApiKey={handleRequestNewApiKey}
+      onCreateApiKey={handleCreateApiKey}
+      onDeleteApiKey={deleteApiKey}
+      onRefreshApiKeys={handleRefreshApiKeys}
       models={models ?? []}
       isModelsLoading={modelsLoading}
       isModelsError={modelsError}

@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useOpenSecret } from "@opensecret/react";
 import { OpenSecretContextType } from "@opensecret/react";
 import { createRootRouteWithContext, Outlet, useLocation } from "@tanstack/react-router";
@@ -10,6 +10,7 @@ import { ExternalUrlConfirmHandler } from "@/components/ExternalUrlConfirmHandle
 import { TeamSeatMismatchAlert } from "@/components/team/TeamSeatMismatchAlert";
 import { VerificationModal } from "@/components/VerificationModal";
 import { transitionAgentAuthUser } from "@/services/agentRuntimeService";
+import { proxyService } from "@/services/proxyService";
 import { getSafeInternalRedirect } from "@/utils/internalRedirect";
 
 interface RootRouterContext {
@@ -42,6 +43,7 @@ function Root() {
   const userId = auth.user?.user.id || null;
   const location = useLocation();
   const persistentHomeRef = useRef<HTMLDivElement>(null);
+  const [proxyReadyUserId, setProxyReadyUserId] = useState<string | null | undefined>();
 
   const isHomeRoute = location.pathname === "/";
   const isSettingsRoute =
@@ -49,10 +51,36 @@ function Root() {
   const keepAuthenticatedHomeMounted = !!auth.user && (isHomeRoute || isSettingsRoute);
 
   useLayoutEffect(() => {
-    // Queue cleanup before route-level passive effects initialize Agent Mode.
-    // A failed transition is surfaced by Agent Mode's matching wait gate.
+    if (auth.loading) return;
+    let cancelled = false;
+    let retryTimer: number | undefined;
+    setProxyReadyUserId(undefined);
+
+    // Update both account coordinators synchronously before route-level passive
+    // effects can initialize account-bound work. Proxy readiness gates the UI;
+    // a failed native scrub is retried without activating the next account.
+    const proxyTransition = proxyService.transitionAuthenticatedUser(userId);
     void transitionAgentAuthUser(userId).catch(() => {});
-  }, [userId]);
+
+    const waitForProxyTransition = async (transition: Promise<void>) => {
+      try {
+        await transition;
+        if (!cancelled) setProxyReadyUserId(userId);
+      } catch {
+        if (!cancelled) {
+          retryTimer = window.setTimeout(() => {
+            void waitForProxyTransition(proxyService.transitionAuthenticatedUser(userId));
+          }, 500);
+        }
+      }
+    };
+    void waitForProxyTransition(proxyTransition);
+
+    return () => {
+      cancelled = true;
+      if (retryTimer !== undefined) window.clearTimeout(retryTimer);
+    };
+  }, [auth.loading, userId]);
 
   useEffect(() => {
     const persistentHome = persistentHomeRef.current;
@@ -66,7 +94,7 @@ function Root() {
   }, [isSettingsRoute, keepAuthenticatedHomeMounted]);
 
   // TODO... put something here, but showing nothing looks nicer than "Loading..."
-  if (auth.loading) {
+  if (auth.loading || proxyReadyUserId !== userId) {
     return <></>;
   }
 

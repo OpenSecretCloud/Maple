@@ -2,6 +2,7 @@ import { isTauriDesktop } from "@/utils/platform";
 import { agentOperationFence, type AgentOperationBlock } from "@/services/agentOperationFence";
 import { AgentAuthLifecycleCoordinator } from "@/services/agentAuthLifecycle";
 import { mapleApiAuthService } from "@/services/mapleApiAuthService";
+import { proxyService } from "@/services/proxyService";
 
 export interface AgentConfig {
   defaultProjectRoot?: string | null;
@@ -392,23 +393,28 @@ const agentAuthLifecycle = new AgentAuthLifecycleCoordinator(
     const block = await stopAgentRuntimeForUser(userId);
     try {
       await mapleApiAuthService.clear(userId);
-      // Auth may already be gone, so remote revocation is not reliable here.
-      // Scrub the local credential immediately; the exact tracked backend-key
-      // record remains available for retry if this account signs in again.
-      const { proxyService } = await import("@/services/proxyService");
-      await proxyService.stopAndResetProxy();
     } finally {
       block.retainUntilNextSession();
     }
   },
   async (userId) => {
+    // A new Agent session cannot become active until the previous account's
+    // persisted manual proxy credential has been scrubbed successfully.
+    await proxyService.awaitAuthenticatedUser(userId);
     await mapleApiAuthService.activate(userId);
     agentOperationFence.activateUserSession(userId);
   }
 );
 
 export function transitionAgentAuthUser(userId?: string | null): Promise<void> {
-  return agentAuthLifecycle.transitionTo(userId || null);
+  const nextUserId = userId || null;
+  // Both coordinators update their account identity synchronously. The proxy
+  // transition invalidates delayed manual startup before its serialized local
+  // reset, while Agent Mode independently drains the previous runtime.
+  return Promise.all([
+    proxyService.transitionAuthenticatedUser(nextUserId),
+    agentAuthLifecycle.transitionTo(nextUserId)
+  ]).then(() => undefined);
 }
 
 export async function awaitAgentAuthUser(userId: string): Promise<void> {
