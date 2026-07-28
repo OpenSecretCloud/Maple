@@ -38,8 +38,6 @@ pub struct ProxyConfig {
     pub backend_url: Option<String>,
     #[serde(default)]
     pub auto_start: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub owner_user_id: Option<String>,
 }
 
 fn default_cors() -> bool {
@@ -56,7 +54,6 @@ impl Default for ProxyConfig {
             enable_cors: false,
             backend_url: None,
             auto_start: false,
-            owner_user_id: None,
         }
     }
 }
@@ -392,7 +389,6 @@ pub async fn stop_and_reset_proxy(
     config.api_key.clear();
     config.enabled = false;
     config.auto_start = false;
-    config.owner_user_id = None;
     save_proxy_config(&app_handle, &config)
         .await
         .map_err(|error| format!("Failed to reset proxy config: {error}"))?;
@@ -612,28 +608,6 @@ mod tests {
         assert!(state.handle.lock().await.is_none());
     }
 
-    #[test]
-    fn only_released_ownerless_configs_use_compatibility_auto_start() {
-        let released = ProxyConfig {
-            api_key: "released-secret".to_string(),
-            auto_start: true,
-            ..ProxyConfig::default()
-        };
-        assert!(should_auto_start_ownerless_proxy(&released));
-        assert!(!should_auto_start_ownerless_proxy(&ProxyConfig {
-            owner_user_id: Some("user-a".to_string()),
-            ..released.clone()
-        }));
-        assert!(!should_auto_start_ownerless_proxy(&ProxyConfig {
-            api_key: String::new(),
-            ..released.clone()
-        }));
-        assert!(!should_auto_start_ownerless_proxy(&ProxyConfig {
-            auto_start: false,
-            ..released
-        }));
-    }
-
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     fn config_migration_test_dir() -> PathBuf {
         let counter = LEGACY_CONFIG_MIGRATION_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -666,14 +640,10 @@ mod tests {
             enable_cors: false,
             backend_url: Some("https://example.invalid".to_string()),
             auto_start: true,
-            owner_user_id: None,
         };
-        let released_json = serde_json::to_vec(&original).unwrap();
-        assert!(serde_json::from_slice::<serde_json::Value>(&released_json)
-            .unwrap()
-            .get("owner_user_id")
-            .is_none());
-        tokio::fs::write(&legacy_path, released_json).await.unwrap();
+        tokio::fs::write(&legacy_path, serde_json::to_vec(&original).unwrap())
+            .await
+            .unwrap();
 
         migrate_legacy_proxy_config(&legacy_path, &target_path)
             .await
@@ -685,7 +655,6 @@ mod tests {
         assert_eq!(migrated.api_key, "legacy-key");
         assert!(migrated.enabled);
         assert!(migrated.auto_start);
-        assert!(migrated.owner_user_id.is_none());
         assert_eq!(
             tokio::fs::metadata(&target_path)
                 .await
@@ -705,7 +674,6 @@ mod tests {
         assert!(scrubbed.api_key.is_empty());
         assert!(!scrubbed.enabled);
         assert!(!scrubbed.auto_start);
-        assert!(scrubbed.owner_user_id.is_none());
         assert_eq!(
             tokio::fs::metadata(&legacy_path)
                 .await
@@ -1023,10 +991,7 @@ async fn scrub_legacy_proxy_config(
         }
     };
 
-    let already_scrubbed = config.api_key.is_empty()
-        && !config.enabled
-        && !config.auto_start
-        && config.owner_user_id.is_none();
+    let already_scrubbed = config.api_key.is_empty() && !config.enabled && !config.auto_start;
     let owner_only = tokio::fs::metadata(path).await?.permissions().mode() & 0o777 == 0o600;
     if already_scrubbed && owner_only {
         return Ok(());
@@ -1035,7 +1000,6 @@ async fn scrub_legacy_proxy_config(
     config.api_key.clear();
     config.enabled = false;
     config.auto_start = false;
-    config.owner_user_id = None;
 
     let counter = LEGACY_CONFIG_MIGRATION_COUNTER.fetch_add(1, Ordering::Relaxed);
     let temp_name = format!(".proxy_config.scrub-{}-{counter}.tmp", std::process::id());
@@ -1128,30 +1092,38 @@ pub async fn load_saved_proxy_config(app_handle: &AppHandle) -> Result<ProxyConf
     Ok(config)
 }
 
-// Released Maple configs have no account owner. Keep their existing startup
-// behavior until the user explicitly starts or saves the proxy while signed in;
-// that explicit mutation stamps an owner and enables the frontend account fence.
-pub async fn init_ownerless_proxy_on_startup(app_handle: AppHandle) -> Result<()> {
+// Initialize proxy on app startup if auto_start is enabled
+pub async fn init_proxy_on_startup_simple(app_handle: AppHandle) -> Result<()> {
     let proxy_state: tauri::State<ProxyState> = app_handle.state();
     let _lifecycle_guard = proxy_state.lifecycle.lock().await;
+
+    // Load saved config
     let config = load_saved_proxy_config(&app_handle).await?;
 
-    if should_auto_start_ownerless_proxy(&config) {
-        log::info!("Auto-starting an existing ownerless proxy config for compatibility");
+    // Check if auto-start is enabled and we have an API key
+    if config.auto_start && !config.api_key.is_empty() {
+        log::info!("Auto-starting proxy from saved config");
+
+        // Try to start the proxy
         match start_proxy_inner(app_handle.clone(), &proxy_state, config.clone()).await {
             Ok(_) => {
+                log::info!(
+                    "Proxy auto-started successfully on {}:{}",
+                    config.host,
+                    config.port
+                );
+                // Optionally emit an event to notify the frontend
                 let _ = app_handle.emit("proxy-autostarted", &config);
             }
-            Err(error) => {
-                log::error!("Failed to auto-start existing ownerless proxy config: {error}");
-                let _ = app_handle.emit("proxy-autostart-failed", error);
+            Err(e) => {
+                log::error!("Failed to auto-start proxy: {e}");
+                // Emit an event to notify the frontend of the failure
+                let _ = app_handle.emit("proxy-autostart-failed", e);
             }
         }
+    } else {
+        log::info!("Proxy auto-start is disabled or no API key configured");
     }
 
     Ok(())
-}
-
-fn should_auto_start_ownerless_proxy(config: &ProxyConfig) -> bool {
-    config.owner_user_id.is_none() && config.auto_start && !config.api_key.trim().is_empty()
 }

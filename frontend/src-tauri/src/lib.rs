@@ -137,17 +137,16 @@ pub fn run() {
             tts::tts_delete_models,
         ])
         .setup(|app| {
-            // Released proxy configs have no owner metadata. Preserve their
-            // existing auto-start behavior until an explicit authenticated
-            // start/save opts the config into account fencing.
+            // Initialize proxy auto-start
             {
                 let app_handle_proxy = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
+                    // Small delay to ensure app is fully initialized
                     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-                    if let Err(error) =
-                        proxy::init_ownerless_proxy_on_startup(app_handle_proxy).await
-                    {
-                        log::error!("Failed to initialize existing proxy config: {error}");
+
+                    // Create a new State wrapper for the async context
+                    if let Err(e) = proxy::init_proxy_on_startup_simple(app_handle_proxy).await {
+                        log::error!("Failed to initialize proxy: {e}");
                     }
                 });
             }

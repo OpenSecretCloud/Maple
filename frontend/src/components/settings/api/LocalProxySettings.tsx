@@ -11,9 +11,10 @@ export function LocalProxySettings() {
   const { data: apiKeys, isLoading, error, refetch } = useApiKeys();
   const { data: models, isLoading: modelsLoading, isError: modelsError } = useProxyModels();
 
-  const handleCreateApiKey = async (name: string) => {
+  const handleRequestNewApiKey = async (name: string) => {
     try {
       const response = await createApiKey(name);
+      await refetch();
       return response.key;
     } catch (createFailure) {
       console.error("Failed to create API key for proxy:", createFailure);
@@ -21,11 +22,6 @@ export function LocalProxySettings() {
     }
   };
 
-  const handleRefreshApiKeys = async () => {
-    await refetch();
-  };
-
-  const userId = auth.user?.user.id;
   if (isLoading) {
     return (
       <SettingsSection
@@ -54,6 +50,7 @@ export function LocalProxySettings() {
     );
   }
 
+  const userId = auth.user?.user.id;
   if (!userId) return null;
 
   return (
@@ -61,8 +58,7 @@ export function LocalProxySettings() {
       key={userId}
       userId={userId}
       apiKeys={apiKeys ?? []}
-      onCreateApiKey={handleCreateApiKey}
-      onRefreshApiKeys={handleRefreshApiKeys}
+      onRequestNewApiKey={handleRequestNewApiKey}
       models={models ?? []}
       isModelsLoading={modelsLoading}
       isModelsError={modelsError}

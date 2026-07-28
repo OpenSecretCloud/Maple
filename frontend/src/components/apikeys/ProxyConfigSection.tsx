@@ -19,6 +19,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { DEFAULT_AGENT_MODEL } from "@/services/agentModels";
 import {
+  ProxyApiKeyCreationError,
   proxyService,
   type ManualProxyKeyProvisioner,
   type ProxyConfig,
@@ -33,8 +34,7 @@ import { ProxyModelList } from "./ProxyModelList";
 interface ProxyConfigSectionProps {
   userId: string;
   apiKeys: Array<{ name: string; created_at: string }>;
-  onCreateApiKey: (name: string) => Promise<string>;
-  onRefreshApiKeys: () => Promise<void>;
+  onRequestNewApiKey: (name: string) => Promise<string>;
   models: OpenSecretModel[];
   isModelsLoading: boolean;
   isModelsError: boolean;
@@ -47,8 +47,7 @@ function isLoopbackHost(host: string): boolean {
 export function ProxyConfigSection({
   userId,
   apiKeys,
-  onCreateApiKey,
-  onRefreshApiKeys,
+  onRequestNewApiKey,
   models,
   isModelsLoading,
   isModelsError
@@ -82,18 +81,24 @@ export function ProxyConfigSection({
     });
   }, [guideModels]);
 
+  const loadProxyState = async () => {
+    try {
+      const [savedConfig, status] = await Promise.all([
+        proxyService.loadProxyConfig(),
+        proxyService.getProxyStatus()
+      ]);
+
+      setConfig(savedConfig);
+      setProxyStatus(status);
+    } catch (error) {
+      console.error("Failed to load proxy state:", error);
+    }
+  };
+
   useEffect(() => {
     if (!isTauriDesktopPlatform) return;
-    void (async () => {
-      try {
-        const { config: savedConfig, status } = await proxyService.loadManualProxyState(userId);
-        setConfig(savedConfig);
-        setProxyStatus(status);
-      } catch (error) {
-        console.error("Failed to load proxy state:", error);
-      }
-    })();
-  }, [isTauriDesktopPlatform, userId]);
+    void loadProxyState();
+  }, [isTauriDesktopPlatform]);
 
   const handleStartProxy = async () => {
     setIsLoading(true);
@@ -113,10 +118,10 @@ export function ProxyConfigSection({
           });
           return;
         }
+
         keyProvisioner = {
           name: keyName,
-          createApiKey: onCreateApiKey,
-          refreshApiKeys: onRefreshApiKeys,
+          createApiKey: onRequestNewApiKey,
           onApiKeyCreated: (createdApiKey) => {
             setConfig((previous) => ({ ...previous, api_key: createdApiKey }));
           }
@@ -149,7 +154,13 @@ export function ProxyConfigSection({
         text: `Proxy is now running on ${config.host}:${config.port}`
       });
     } catch (error) {
-      setMessage({ type: "error", text: `Failed to start proxy: ${error}` });
+      setMessage({
+        type: "error",
+        text:
+          error instanceof ProxyApiKeyCreationError
+            ? error.message
+            : `Failed to start proxy: ${error}`
+      });
     } finally {
       setIsLoading(false);
     }
@@ -179,7 +190,7 @@ export function ProxyConfigSection({
     const updatedConfig = { ...config, auto_start: checked };
     setConfig(updatedConfig);
     try {
-      await proxyService.saveManualProxySettings(userId, updatedConfig);
+      await proxyService.saveManualProxySettings(updatedConfig);
       setMessage({
         type: "success",
         text: checked ? "Auto-start enabled" : "Auto-start disabled"
