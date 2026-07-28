@@ -33,7 +33,7 @@ use shell_permission::{
     local_read_image_request_id, local_read_request_id, ShellPermissionClassifier,
     ShellPermissionOutcome, ShellPermissionRequest,
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -42,7 +42,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, State};
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::{broadcast, oneshot, watch, Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
 use web_permission::{
     web_search_request_id, OpenUrlPermissionRequest, WebPermissionClassifier, WebPermissionContext,
@@ -92,7 +92,23 @@ const MAX_MCP_CONNECTION_ERRORS: usize = 3;
 const MAX_MCP_SERVER_NAME_CHARS: usize = 64;
 const MAX_MCP_CONNECTION_ERROR_CHARS: usize = 200;
 const MCP_CONNECTION_ERROR_PREFIX: &str = "Some MCP servers could not connect:";
+const AGENT_EVENT_BROADCAST_CAPACITY: usize = 1_024;
+const MAX_AGENT_TOOL_ENV_KEYS: usize = 6;
+const MAX_AGENT_TOOL_ENV_KEY_BYTES: usize = 64;
+const MAX_AGENT_TOOL_ENV_VALUE_BYTES: usize = 16 * 1024;
+const MAX_AGENT_TOOL_ENV_TOTAL_BYTES: usize = 32 * 1024;
+const ALLOWED_AGENT_TOOL_ENV_KEYS: [&str; MAX_AGENT_TOOL_ENV_KEYS] = [
+    "BUZZ_RELAY_URL",
+    "BUZZ_PRIVATE_KEY",
+    "BUZZ_AUTH_TAG",
+    "BUZZ_API_TOKEN",
+    "BUZZ_ACP_DISPLAY_NAME",
+    "PATH",
+];
 static NEXT_RUN_ID: AtomicU64 = AtomicU64::new(1);
+
+pub(crate) type AgentToolEnvironment = BTreeMap<String, String>;
+pub(crate) type SharedAgentToolEnvironment = Arc<RwLock<AgentToolEnvironment>>;
 
 fn validate_session_model_lock(
     message_count: usize,
@@ -304,6 +320,18 @@ pub struct AgentRunResponse {
     pub run_id: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AgentRunTerminal {
+    Completed,
+    Cancelled,
+    Failed,
+}
+
+pub(crate) struct AgentRunHandle {
+    pub run_id: String,
+    pub terminal: watch::Receiver<Option<AgentRunTerminal>>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentSessionSummary {
@@ -381,6 +409,7 @@ struct AgentRuntime {
     session_manager: Arc<SessionManager>,
     maple_api_session: Arc<MapleApiSession>,
     active_runs: HashMap<String, ActiveAgentRun>,
+    session_tool_environments: HashMap<String, SharedAgentToolEnvironment>,
     permission_modes: SessionPermissionModes,
     web_tool_state: Arc<WebToolState>,
     project_root: PathBuf,
@@ -412,6 +441,7 @@ pub struct AgentRuntimeState {
     session_lifecycle: Arc<Mutex<()>>,
     pending_permissions: PendingPermissions,
     live_timelines: LiveTimelines,
+    event_sender: broadcast::Sender<AgentEventEnvelope>,
 }
 
 type LiveTimelines = Arc<Mutex<HashMap<String, LiveTimeline>>>;
@@ -450,6 +480,7 @@ impl LiveTimeline {
 
 impl AgentRuntimeState {
     pub fn new() -> Self {
+        let (event_sender, _) = broadcast::channel(AGENT_EVENT_BROADCAST_CAPACITY);
         Self {
             inner: Arc::new(Mutex::new(None)),
             runtime_lifecycle: Arc::new(Mutex::new(())),
@@ -457,8 +488,18 @@ impl AgentRuntimeState {
             session_lifecycle: Arc::new(Mutex::new(())),
             pending_permissions: Arc::new(Mutex::new(HashMap::new())),
             live_timelines: Arc::new(Mutex::new(HashMap::new())),
+            event_sender,
         }
     }
+}
+
+pub(crate) fn subscribe_agent_events(
+    app_handle: &AppHandle,
+) -> broadcast::Receiver<AgentEventEnvelope> {
+    app_handle
+        .state::<AgentRuntimeState>()
+        .event_sender
+        .subscribe()
 }
 
 fn ensure_runtime_account(runtime: &AgentRuntime, account_scope: &str) -> Result<(), String> {
@@ -722,6 +763,98 @@ pub async fn agent_start_runtime(
     start_runtime_for_user(app_handle, &state, &api_auth_state, user_id, request).await
 }
 
+pub(crate) async fn ensure_agent_runtime_for_user(
+    app_handle: &AppHandle,
+    user_id: String,
+    request: Option<AgentStartRequest>,
+) -> Result<AgentRuntimeStatus, String> {
+    agent_start_runtime(
+        app_handle.clone(),
+        app_handle.state::<AgentRuntimeState>(),
+        app_handle.state::<MapleApiAuthState>(),
+        user_id,
+        request,
+    )
+    .await
+}
+
+pub(crate) async fn set_agent_session_tool_environment(
+    app_handle: &AppHandle,
+    user_id: &str,
+    session_id: &str,
+    environment: HashMap<String, String>,
+) -> Result<SharedAgentToolEnvironment, String> {
+    let environment = normalize_agent_tool_environment(environment)?;
+    let session_id = session_id.trim().to_string();
+    if session_id.is_empty() {
+        return Err("Agent tool environment requires a task ID".to_string());
+    }
+
+    let state = app_handle.state::<AgentRuntimeState>();
+    let requested_scope = account_scope(user_id)?;
+    let generation = account_generation(&state, &requested_scope).await;
+    let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
+    ensure_account_generation(&state, &requested_scope, generation).await?;
+    let _session_lifecycle_guard = state.session_lifecycle.lock().await;
+    let session_manager = {
+        let runtime = state.inner.lock().await;
+        let current = runtime
+            .as_ref()
+            .ok_or_else(|| "Agent runtime is not running".to_string())?;
+        ensure_runtime_account(current, &requested_scope)?;
+        Arc::clone(&current.session_manager)
+    };
+    session_manager
+        .get_session(&session_id, false)
+        .await
+        .map_err(|error| format!("Failed to load Agent task: {error}"))?;
+
+    let shared_environment = {
+        let mut runtime = state.inner.lock().await;
+        let current = runtime
+            .as_mut()
+            .ok_or_else(|| "Agent runtime is not running".to_string())?;
+        ensure_runtime_account(current, &requested_scope)?;
+        Arc::clone(
+            current
+                .session_tool_environments
+                .entry(session_id)
+                .or_insert_with(|| Arc::new(RwLock::new(AgentToolEnvironment::new()))),
+        )
+    };
+    *shared_environment.write().await = environment;
+    Ok(shared_environment)
+}
+
+pub(crate) async fn clear_agent_session_tool_environment(
+    app_handle: &AppHandle,
+    user_id: &str,
+    session_id: &str,
+) -> Result<(), String> {
+    let session_id = session_id.trim();
+    if session_id.is_empty() {
+        return Ok(());
+    }
+
+    let state = app_handle.state::<AgentRuntimeState>();
+    let requested_scope = account_scope(user_id)?;
+    let generation = account_generation(&state, &requested_scope).await;
+    let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
+    ensure_account_generation(&state, &requested_scope, generation).await?;
+    let removed = {
+        let mut runtime = state.inner.lock().await;
+        let Some(current) = runtime.as_mut() else {
+            return Ok(());
+        };
+        ensure_runtime_account(current, &requested_scope)?;
+        current.session_tool_environments.remove(session_id)
+    };
+    if let Some(environment) = removed {
+        environment.write().await.clear();
+    }
+    Ok(())
+}
+
 async fn start_runtime_for_user(
     app_handle: AppHandle,
     state: &AgentRuntimeState,
@@ -808,6 +941,7 @@ async fn start_runtime_for_user(
         session_manager,
         maple_api_session,
         active_runs: HashMap::new(),
+        session_tool_environments: HashMap::new(),
         permission_modes: Arc::new(Mutex::new(HashMap::new())),
         web_tool_state: Arc::new(WebToolState::default()),
         project_root: project_root.clone(),
@@ -847,9 +981,11 @@ async fn start_runtime_for_user(
 
 #[tauri::command]
 pub async fn agent_stop_runtime(
+    app_handle: AppHandle,
     state: State<'_, AgentRuntimeState>,
     user_id: String,
 ) -> Result<AgentRuntimeStatus, String> {
+    crate::agent_acp::shutdown_agent_acp(&app_handle).await?;
     let account_scope = account_scope(&user_id)?;
     let generation = account_generation(&state, &account_scope).await;
     let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
@@ -866,6 +1002,7 @@ pub async fn agent_restart_runtime(
     user_id: String,
     request: Option<AgentStartRequest>,
 ) -> Result<AgentRuntimeStatus, String> {
+    crate::agent_acp::shutdown_agent_acp(&app_handle).await?;
     let account_scope = account_scope(&user_id)?;
     let generation = account_generation(&state, &account_scope).await;
     let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
@@ -880,6 +1017,7 @@ pub async fn agent_clear_user_data(
     state: State<'_, AgentRuntimeState>,
     user_id: String,
 ) -> Result<(), String> {
+    crate::agent_acp::shutdown_agent_acp(&app_handle).await?;
     let requested_scope = account_scope(&user_id)?;
     let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
     advance_account_generation(&state, &requested_scope).await;
@@ -911,6 +1049,7 @@ pub async fn agent_clear_user_data(
             ))
         }
     }
+    crate::agent_acp::clear_agent_acp_config(&app_handle, &user_id)?;
     Ok(())
 }
 
@@ -920,6 +1059,7 @@ pub async fn agent_clear_user_history(
     state: State<'_, AgentRuntimeState>,
     user_id: String,
 ) -> Result<(), String> {
+    crate::agent_acp::shutdown_agent_acp(&app_handle).await?;
     let requested_scope = account_scope(&user_id)?;
     let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
     advance_account_generation(&state, &requested_scope).await;
@@ -1276,6 +1416,17 @@ pub async fn agent_create_session(
         .lock()
         .await
         .insert(session.id.clone(), permission_mode);
+    let tool_environment = Arc::new(RwLock::new(AgentToolEnvironment::new()));
+    {
+        let mut runtime = state.inner.lock().await;
+        let current = runtime
+            .as_mut()
+            .ok_or_else(|| "Agent runtime is not running".to_string())?;
+        ensure_runtime_account(current, &account_scope)?;
+        current
+            .session_tool_environments
+            .insert(session.id.clone(), Arc::clone(&tool_environment));
+    }
     let setup_result: Result<Vec<AgentMcpConnectionError>, String> = async {
         let (agent, mut mcp_errors) = configure_session_agent(
             AgentSkillsScope {
@@ -1292,6 +1443,7 @@ pub async fn agent_create_session(
                 context_limit: request.context_limit,
                 mode: &mode,
                 primary_model_supports_vision: false,
+                tool_environment: &tool_environment,
             },
         )
         .await?;
@@ -1322,6 +1474,18 @@ pub async fn agent_create_session(
         Ok(mcp_errors) => mcp_errors,
         Err(error) => {
             permission_modes.lock().await.remove(&session.id);
+            let removed_tool_environment = {
+                let mut runtime = state.inner.lock().await;
+                if let Some(current) = runtime.as_mut() {
+                    ensure_runtime_account(current, &account_scope)?;
+                    current.session_tool_environments.remove(&session.id)
+                } else {
+                    None
+                }
+            };
+            if let Some(environment) = removed_tool_environment {
+                environment.write().await.clear();
+            }
             if let Err(cleanup_error) = session_manager.delete_session(&session.id).await {
                 log::warn!(
                     "Failed to remove Agent task {} after setup error: {cleanup_error}",
@@ -1663,6 +1827,18 @@ pub async fn agent_delete_session(
     if let Some(permission_modes) = permission_modes {
         permission_modes.lock().await.remove(&session_id);
     }
+    let removed_tool_environment = {
+        let mut runtime = state.inner.lock().await;
+        if let Some(current) = runtime.as_mut() {
+            ensure_runtime_account(current, &account_scope)?;
+            current.session_tool_environments.remove(&session_id)
+        } else {
+            None
+        }
+    };
+    if let Some(environment) = removed_tool_environment {
+        environment.write().await.clear();
+    }
 
     Ok(())
 }
@@ -1886,13 +2062,12 @@ fn is_goose_declined_tool_response(response: &goose::conversation::message::Tool
     })
 }
 
-#[tauri::command]
-pub async fn agent_send_message(
+async fn agent_send_message_inner(
     app_handle: AppHandle,
     state: State<'_, AgentRuntimeState>,
     user_id: String,
     request: AgentSendMessageRequest,
-) -> Result<AgentRunResponse, String> {
+) -> Result<AgentRunHandle, String> {
     let account_scope = account_scope(&user_id)?;
     let generation = account_generation(&state, &account_scope).await;
     let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
@@ -1914,20 +2089,28 @@ pub async fn agent_send_message(
         maple_api_session,
         permission_modes,
         web_tool_state,
+        tool_environment,
         model,
         mode,
     ) = {
-        let runtime = state.inner.lock().await;
+        let mut runtime = state.inner.lock().await;
         let current = runtime
-            .as_ref()
+            .as_mut()
             .ok_or_else(|| "Agent runtime is not running".to_string())?;
         ensure_runtime_account(current, &account_scope)?;
+        let tool_environment = Arc::clone(
+            current
+                .session_tool_environments
+                .entry(request.session_id.clone())
+                .or_insert_with(|| Arc::new(RwLock::new(AgentToolEnvironment::new()))),
+        );
         (
             Arc::clone(&current.agent_manager),
             Arc::clone(&current.session_manager),
             Arc::clone(&current.maple_api_session),
             Arc::clone(&current.permission_modes),
             Arc::clone(&current.web_tool_state),
+            tool_environment,
             request
                 .model
                 .clone()
@@ -2013,6 +2196,7 @@ pub async fn agent_send_message(
                 context_limit: request.context_limit,
                 mode: &effective_mode,
                 primary_model_supports_vision: request.vision_capable,
+                tool_environment: &tool_environment,
             },
         )
         .await?;
@@ -2061,6 +2245,7 @@ pub async fn agent_send_message(
     let cancelled_permission_ids = Arc::new(Mutex::new(HashSet::new()));
     let task_cancelled_permission_ids = Arc::clone(&cancelled_permission_ids);
     let (start_tx, start_rx) = oneshot::channel();
+    let (terminal_tx, terminal_rx) = watch::channel(None);
     let task = tauri::async_runtime::spawn(async move {
         let should_run = tokio::select! {
             biased;
@@ -2160,6 +2345,16 @@ pub async fn agent_send_message(
                 message: Some(status.to_string()),
             },
         );
+        // This retained per-run signal is authoritative for non-UI consumers.
+        // It is deliberately published after runFinished so a receiver that
+        // can still drain the broadcast stream observes all timeline chunks
+        // before settling, while a lagged receiver can never miss completion.
+        let terminal = match status {
+            "cancelled" => AgentRunTerminal::Cancelled,
+            "failed" => AgentRunTerminal::Failed,
+            _ => AgentRunTerminal::Completed,
+        };
+        let _ = terminal_tx.send(Some(terminal));
         // Remove the stored JoinHandle only after the final externally visible
         // side effect. Stop may otherwise miss this task and return while its
         // runFinished event is still pending.
@@ -2227,7 +2422,21 @@ pub async fn agent_send_message(
     // followed by this send path re-appending the cancelled prompt.
     drop(session_lifecycle_guard);
 
-    Ok(AgentRunResponse { run_id })
+    Ok(AgentRunHandle {
+        run_id,
+        terminal: terminal_rx,
+    })
+}
+
+#[tauri::command]
+pub async fn agent_send_message(
+    app_handle: AppHandle,
+    state: State<'_, AgentRuntimeState>,
+    user_id: String,
+    request: AgentSendMessageRequest,
+) -> Result<AgentRunResponse, String> {
+    let run = agent_send_message_inner(app_handle, state, user_id, request).await?;
+    Ok(AgentRunResponse { run_id: run.run_id })
 }
 
 #[tauri::command]
@@ -2529,6 +2738,62 @@ pub async fn agent_permission_respond(
         .await
         .remove(&(session_id, response.request_id));
     Ok(())
+}
+
+pub(crate) async fn create_agent_session_for_user(
+    app_handle: &AppHandle,
+    user_id: String,
+    request: Option<AgentCreateSessionRequest>,
+) -> Result<AgentSessionDetail, String> {
+    agent_create_session(
+        app_handle.clone(),
+        app_handle.state::<AgentRuntimeState>(),
+        user_id,
+        request,
+    )
+    .await
+}
+
+pub(crate) async fn delete_agent_session_for_user(
+    app_handle: &AppHandle,
+    user_id: String,
+    session_id: String,
+) -> Result<(), String> {
+    agent_delete_session(
+        app_handle.clone(),
+        app_handle.state::<AgentRuntimeState>(),
+        user_id,
+        session_id,
+    )
+    .await
+}
+
+pub(crate) async fn send_agent_message_for_user(
+    app_handle: &AppHandle,
+    user_id: String,
+    request: AgentSendMessageRequest,
+) -> Result<AgentRunHandle, String> {
+    agent_send_message_inner(
+        app_handle.clone(),
+        app_handle.state::<AgentRuntimeState>(),
+        user_id,
+        request,
+    )
+    .await
+}
+
+pub(crate) async fn cancel_agent_run_for_user(
+    app_handle: &AppHandle,
+    user_id: String,
+    run_id: String,
+) -> Result<(), String> {
+    agent_cancel_run(
+        app_handle.clone(),
+        app_handle.state::<AgentRuntimeState>(),
+        user_id,
+        run_id,
+    )
+    .await
 }
 
 struct AgentPromptRun {
@@ -3295,6 +3560,7 @@ struct SessionAgentConfiguration<'a> {
     context_limit: Option<usize>,
     mode: &'a str,
     primary_model_supports_vision: bool,
+    tool_environment: &'a SharedAgentToolEnvironment,
 }
 
 fn maple_model_config(
@@ -3401,6 +3667,7 @@ async fn configure_session_agent(
         context_limit,
         mode,
         primary_model_supports_vision,
+        tool_environment,
     } = configuration;
     let session_mcp_keys = session_mcp_extension_keys(session);
     let manager_result = get_or_create_session_agent(
@@ -3444,6 +3711,7 @@ async fn configure_session_agent(
         primary_model_supports_vision,
         web_transport,
         Arc::clone(web_tool_state),
+        tool_environment.clone(),
     )
     .map_err(|e| format!("Failed to create Maple developer tools: {e}"))?;
     agent
@@ -4414,6 +4682,8 @@ async fn update_live_permission_status(
 }
 
 fn emit_agent_event(app_handle: &AppHandle, event: AgentEventEnvelope) {
+    let state = app_handle.state::<AgentRuntimeState>();
+    let _ = state.event_sender.send(event.clone());
     if let Err(error) = app_handle.emit(AGENT_EVENT_NAME, event) {
         log::warn!("Failed to emit Agent Mode event: {error}");
     }
@@ -4513,6 +4783,52 @@ fn parse_user_permission_mode(mode: &str) -> Result<GooseMode, String> {
         "smart_approve" => Ok(GooseMode::SmartApprove),
         _ => Err(format!("Unsupported Agent permission mode: {mode}")),
     }
+}
+
+fn normalize_agent_tool_environment(
+    environment: HashMap<String, String>,
+) -> Result<AgentToolEnvironment, String> {
+    if environment.len() > MAX_AGENT_TOOL_ENV_KEYS {
+        return Err(format!(
+            "Agent tool environment supports at most {MAX_AGENT_TOOL_ENV_KEYS} variables"
+        ));
+    }
+
+    let mut total_bytes = 0usize;
+    let mut normalized = AgentToolEnvironment::new();
+    for (key, value) in environment {
+        if key.len() > MAX_AGENT_TOOL_ENV_KEY_BYTES {
+            return Err(format!(
+                "Agent tool environment variable names must be at most {MAX_AGENT_TOOL_ENV_KEY_BYTES} bytes"
+            ));
+        }
+        if !ALLOWED_AGENT_TOOL_ENV_KEYS.contains(&key.as_str()) {
+            return Err(format!(
+                "Agent tool environment variable {key} is not allowed"
+            ));
+        }
+        if value.contains('\0') {
+            return Err(format!(
+                "Agent tool environment variable {key} contains an invalid null byte"
+            ));
+        }
+        let value_bytes = value.len();
+        if value_bytes > MAX_AGENT_TOOL_ENV_VALUE_BYTES {
+            return Err(format!(
+                "Agent tool environment variable {key} exceeds the {MAX_AGENT_TOOL_ENV_VALUE_BYTES} byte limit"
+            ));
+        }
+        total_bytes = total_bytes
+            .checked_add(key.len() + value_bytes)
+            .ok_or_else(|| "Agent tool environment size overflowed".to_string())?;
+        if total_bytes > MAX_AGENT_TOOL_ENV_TOTAL_BYTES {
+            return Err(format!(
+                "Agent tool environment exceeds the {MAX_AGENT_TOOL_ENV_TOTAL_BYTES} byte total limit"
+            ));
+        }
+        normalized.insert(key, value);
+    }
+    Ok(normalized)
 }
 
 fn normalize_mcp_servers(mut servers: Vec<AgentMcpServer>) -> Result<Vec<AgentMcpServer>, String> {
@@ -5476,6 +5792,64 @@ mod tests {
         assert_eq!(config.default_model, DEFAULT_AGENT_MODEL);
         assert!(config.mcp_servers.is_empty());
         assert!(config.project_skills_trust.is_empty());
+    }
+
+    #[test]
+    fn agent_tool_environment_accepts_only_the_bounded_buzz_allowlist() {
+        let allowed = ALLOWED_AGENT_TOOL_ENV_KEYS
+            .iter()
+            .map(|key| ((*key).to_string(), format!("value-for-{key}")))
+            .collect::<HashMap<_, _>>();
+        let normalized = normalize_agent_tool_environment(allowed).unwrap();
+        assert_eq!(
+            normalized.keys().map(String::as_str).collect::<Vec<_>>(),
+            vec![
+                "BUZZ_ACP_DISPLAY_NAME",
+                "BUZZ_API_TOKEN",
+                "BUZZ_AUTH_TAG",
+                "BUZZ_PRIVATE_KEY",
+                "BUZZ_RELAY_URL",
+                "PATH",
+            ]
+        );
+
+        let unknown = HashMap::from([("HOME".to_string(), "/tmp/not-allowed".to_string())]);
+        assert!(normalize_agent_tool_environment(unknown)
+            .unwrap_err()
+            .contains("HOME is not allowed"));
+
+        let nul = HashMap::from([("BUZZ_AUTH_TAG".to_string(), "bad\0value".to_string())]);
+        assert!(normalize_agent_tool_environment(nul)
+            .unwrap_err()
+            .contains("null byte"));
+    }
+
+    #[test]
+    fn agent_tool_environment_enforces_value_and_total_size_limits() {
+        let oversized_value = HashMap::from([(
+            "BUZZ_PRIVATE_KEY".to_string(),
+            "x".repeat(MAX_AGENT_TOOL_ENV_VALUE_BYTES + 1),
+        )]);
+        assert!(normalize_agent_tool_environment(oversized_value)
+            .unwrap_err()
+            .contains("byte limit"));
+
+        let per_value = (MAX_AGENT_TOOL_ENV_TOTAL_BYTES / 3) + 1;
+        let oversized_total = HashMap::from([
+            ("BUZZ_PRIVATE_KEY".to_string(), "a".repeat(per_value)),
+            ("BUZZ_API_TOKEN".to_string(), "b".repeat(per_value)),
+            ("BUZZ_AUTH_TAG".to_string(), "c".repeat(per_value)),
+        ]);
+        assert!(normalize_agent_tool_environment(oversized_total)
+            .unwrap_err()
+            .contains("total limit"));
+
+        let too_many = (0..=MAX_AGENT_TOOL_ENV_KEYS)
+            .map(|index| (format!("KEY_{index}"), "value".to_string()))
+            .collect::<HashMap<_, _>>();
+        assert!(normalize_agent_tool_environment(too_many)
+            .unwrap_err()
+            .contains("at most"));
     }
 
     #[test]

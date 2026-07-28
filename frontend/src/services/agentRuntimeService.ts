@@ -159,11 +159,50 @@ export interface AgentRuntimeBridge {
   invoke<T>(command: string, args?: Record<string, unknown>): Promise<T>;
 }
 
+export interface AgentRuntimeStopBridge {
+  blockAndDrain(userId: string): Promise<AgentOperationBlock>;
+  stopAcp(userId: string): Promise<void>;
+  stopRuntime(userId: string): Promise<void>;
+}
+
+/**
+ * Owns the security-sensitive shutdown order shared by logout and account
+ * transitions. ACP must be gone before the runtime can stop and credentials
+ * can be cleared, because connected ACP clients can still submit Agent work.
+ */
+export class AgentRuntimeStopCoordinator {
+  constructor(private readonly bridge: AgentRuntimeStopBridge) {}
+
+  async stop(userId: string): Promise<AgentOperationBlock> {
+    const block = await this.bridge.blockAndDrain(userId);
+    try {
+      await this.bridge.stopAcp(userId);
+      await this.bridge.stopRuntime(userId);
+      return block;
+    } catch (error) {
+      block.release();
+      throw error;
+    }
+  }
+}
+
 const defaultAgentRuntimeBridge: AgentRuntimeBridge = {
   syncAuth: async (userId) => await mapleApiAuthService.sync(userId),
   runForUser: async (userId, operation) => await agentOperationFence.run(userId, operation),
   invoke: invokeAgent
 };
+
+const agentRuntimeStopCoordinator = new AgentRuntimeStopCoordinator({
+  blockAndDrain: async (userId) => await agentOperationFence.blockAndDrain(userId),
+  // The cleanup lease is already held, so this deliberately invokes the
+  // local command directly instead of re-entering MapleAcpService's fence.
+  stopAcp: async (userId) => {
+    await invokeAgent("agent_acp_stop", { userId });
+  },
+  stopRuntime: async (userId) => {
+    await invokeAgent<AgentRuntimeStatus>("agent_stop_runtime", { userId });
+  }
+});
 
 export class AgentRuntimeService {
   constructor(private readonly bridge: AgentRuntimeBridge = defaultAgentRuntimeBridge) {}
@@ -432,20 +471,13 @@ export async function stopAgentRuntimeForUser(
 ): Promise<AgentOperationBlock> {
   if (!isTauriDesktop()) return noOpOperationBlock();
   if (!userId) throw new Error("Cannot stop Agent Mode without an authenticated user");
-  const block = await agentOperationFence.blockAndDrain(userId);
-  try {
-    await invokeAgent<AgentRuntimeStatus>("agent_stop_runtime", { userId });
-    return block;
-  } catch (error) {
-    block.release();
-    throw error;
-  }
+  return await agentRuntimeStopCoordinator.stop(userId);
 }
 
 export async function clearAgentDataForUser(userId?: string | null): Promise<AgentOperationBlock> {
   if (!isTauriDesktop()) return noOpOperationBlock();
   if (!userId) throw new Error("Cannot clear Agent Mode data without an authenticated user");
-  const block = await agentOperationFence.blockAndDrain(userId);
+  const block = await agentRuntimeStopCoordinator.stop(userId);
   try {
     await invokeAgent("agent_clear_user_data", { userId });
     return block;
@@ -460,7 +492,7 @@ export async function clearAgentHistoryForUser(
 ): Promise<AgentOperationBlock> {
   if (!isTauriDesktop()) return noOpOperationBlock();
   if (!userId) throw new Error("Cannot clear Agent Mode history without an authenticated user");
-  const block = await agentOperationFence.blockAndDrain(userId);
+  const block = await agentRuntimeStopCoordinator.stop(userId);
   try {
     await invokeAgent("agent_clear_user_history", { userId });
     return block;

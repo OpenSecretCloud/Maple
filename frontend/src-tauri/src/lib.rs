@@ -4,6 +4,8 @@ use tauri_plugin_deep_link::DeepLinkExt;
 #[cfg(desktop)]
 mod agent;
 #[cfg(desktop)]
+mod agent_acp;
+#[cfg(desktop)]
 mod maple_api;
 mod onnxruntime;
 mod pdf_extractor;
@@ -17,6 +19,7 @@ mod tts;
 #[tauri::command]
 async fn restart_for_update(app_handle: tauri::AppHandle) -> Result<(), String> {
     log::info!("User requested restart for update");
+    agent_acp::shutdown_agent_acp(&app_handle).await?;
     agent::shutdown_agent_runtime(&app_handle).await?;
     app_handle.restart();
 }
@@ -52,6 +55,9 @@ fn handle_desktop_run_event(app_handle: &tauri::AppHandle, event: tauri::RunEven
 
     let app_handle = app_handle.clone();
     tauri::async_runtime::spawn(async move {
+        if let Err(error) = agent_acp::shutdown_agent_acp(&app_handle).await {
+            log::error!("Failed to stop ACP during app exit: {error}");
+        }
         if let Err(error) = agent::shutdown_agent_runtime(&app_handle).await {
             log::error!("Failed to stop Agent Mode during app exit: {error}");
         }
@@ -86,6 +92,7 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(agent::AgentRuntimeState::new())
+        .manage(agent_acp::AgentAcpState::new())
         .manage(maple_api::MapleApiAuthState::new())
         .manage(proxy::ProxyState::new())
         .manage(tts::TTSState::new())
@@ -116,6 +123,11 @@ pub fn run() {
             agent::agent_permission_respond,
             agent::agent_clear_user_history,
             agent::agent_clear_user_data,
+            agent_acp::agent_acp_load_config,
+            agent_acp::agent_acp_save_config,
+            agent_acp::agent_acp_start,
+            agent_acp::agent_acp_stop,
+            agent_acp::agent_acp_get_status,
             maple_api::maple_api_set_auth,
             maple_api::maple_api_get_auth,
             maple_api::maple_api_clear_auth,
@@ -384,6 +396,11 @@ pub fn run() {
     #[cfg(not(desktop))]
     app.run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(desktop)]
+pub fn run_acp_connector() -> Result<(), String> {
+    agent_acp::run_acp_connector()
 }
 
 // Create a global variable to track if an update is already prepared and notified

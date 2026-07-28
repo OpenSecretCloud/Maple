@@ -1,10 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import {
+  AgentRuntimeStopCoordinator,
   AgentRuntimeService,
   type AgentRuntimeBridge,
+  type AgentRuntimeStopBridge,
   type AgentCreateSessionRequest,
   type AgentSendMessageRequest
 } from "./agentRuntimeService";
+import type { AgentOperationBlock } from "./agentOperationFence";
 
 class RecordingBridge implements AgentRuntimeBridge {
   readonly events: string[] = [];
@@ -66,5 +69,47 @@ describe("AgentRuntimeService", () => {
 
     expect(bridge.events).toEqual(["fence:user-a", "sync:user-a", "invoke:agent_create_session"]);
     expect(bridge.lastArgs).toEqual({ userId: "user-a", request });
+  });
+});
+
+class RecordingStopBridge implements AgentRuntimeStopBridge {
+  readonly events: string[] = [];
+  readonly block: AgentOperationBlock = {
+    release: () => this.events.push("release"),
+    retainUntilNextSession: () => this.events.push("retain")
+  };
+  acpError: Error | null = null;
+
+  async blockAndDrain(userId: string): Promise<AgentOperationBlock> {
+    this.events.push(`block:${userId}`);
+    return this.block;
+  }
+
+  async stopAcp(userId: string): Promise<void> {
+    this.events.push(`stop-acp:${userId}`);
+    if (this.acpError) throw this.acpError;
+  }
+
+  async stopRuntime(userId: string): Promise<void> {
+    this.events.push(`stop-runtime:${userId}`);
+  }
+}
+
+describe("AgentRuntimeStopCoordinator", () => {
+  test("drains work and stops ACP before the Agent runtime", async () => {
+    const bridge = new RecordingStopBridge();
+    const coordinator = new AgentRuntimeStopCoordinator(bridge);
+
+    expect(await coordinator.stop("user-a")).toBe(bridge.block);
+    expect(bridge.events).toEqual(["block:user-a", "stop-acp:user-a", "stop-runtime:user-a"]);
+  });
+
+  test("an ACP stop failure prevents runtime shutdown and releases the cleanup lease", async () => {
+    const bridge = new RecordingStopBridge();
+    bridge.acpError = new Error("ACP still alive");
+    const coordinator = new AgentRuntimeStopCoordinator(bridge);
+
+    await expect(coordinator.stop("user-a")).rejects.toThrow("ACP still alive");
+    expect(bridge.events).toEqual(["block:user-a", "stop-acp:user-a", "release"]);
   });
 });
