@@ -34,7 +34,6 @@ interface ProxyConfigSectionProps {
   userId: string;
   apiKeys: Array<{ name: string; created_at: string }>;
   onCreateApiKey: (name: string) => Promise<string>;
-  onDeleteApiKey: (name: string) => Promise<void>;
   onRefreshApiKeys: () => Promise<void>;
   models: OpenSecretModel[];
   isModelsLoading: boolean;
@@ -49,7 +48,6 @@ export function ProxyConfigSection({
   userId,
   apiKeys,
   onCreateApiKey,
-  onDeleteApiKey,
   onRefreshApiKeys,
   models,
   isModelsLoading,
@@ -118,8 +116,10 @@ export function ProxyConfigSection({
         keyProvisioner = {
           name: keyName,
           createApiKey: onCreateApiKey,
-          deleteApiKey: onDeleteApiKey,
-          refreshApiKeys: onRefreshApiKeys
+          refreshApiKeys: onRefreshApiKeys,
+          onApiKeyCreated: (createdApiKey) => {
+            setConfig((previous) => ({ ...previous, api_key: createdApiKey }));
+          }
         };
       }
 

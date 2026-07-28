@@ -137,6 +137,21 @@ pub fn run() {
             tts::tts_delete_models,
         ])
         .setup(|app| {
+            // Released proxy configs have no owner metadata. Preserve their
+            // existing auto-start behavior until an explicit authenticated
+            // start/save opts the config into account fencing.
+            {
+                let app_handle_proxy = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                    if let Err(error) =
+                        proxy::init_ownerless_proxy_on_startup(app_handle_proxy).await
+                    {
+                        log::error!("Failed to initialize existing proxy config: {error}");
+                    }
+                });
+            }
+
             // Set up the deep link handler
             // Use a cloned handle with 'static lifetime
             let app_handle = app.handle().clone();

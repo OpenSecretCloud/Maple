@@ -1,15 +1,13 @@
-import { useEffect } from "react";
 import { useOpenSecret } from "@opensecret/react";
 import { AlertCircle, Loader2 } from "lucide-react";
 import { ProxyConfigSection } from "@/components/apikeys/ProxyConfigSection";
-import { proxyService } from "@/services/proxyService";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { SettingsSection } from "../SettingsPage";
 import { useApiKeys } from "./useApiKeys";
 import { useProxyModels } from "./useProxyModels";
 
 export function LocalProxySettings() {
-  const { auth, createApiKey, deleteApiKey } = useOpenSecret();
+  const { auth, createApiKey } = useOpenSecret();
   const { data: apiKeys, isLoading, error, refetch } = useApiKeys();
   const { data: models, isLoading: modelsLoading, isError: modelsError } = useProxyModels();
 
@@ -28,16 +26,6 @@ export function LocalProxySettings() {
   };
 
   const userId = auth.user?.user.id;
-  useEffect(() => {
-    if (!userId) return;
-    void proxyService
-      .cleanupPendingManualProxyKeys(userId, deleteApiKey)
-      .then(async () => await refetch())
-      .catch((cleanupFailure) => {
-        console.error("Failed to retry pending manual proxy key cleanup:", cleanupFailure);
-      });
-  }, [deleteApiKey, refetch, userId]);
-
   if (isLoading) {
     return (
       <SettingsSection
@@ -74,7 +62,6 @@ export function LocalProxySettings() {
       userId={userId}
       apiKeys={apiKeys ?? []}
       onCreateApiKey={handleCreateApiKey}
-      onDeleteApiKey={deleteApiKey}
       onRefreshApiKeys={handleRefreshApiKeys}
       models={models ?? []}
       isModelsLoading={modelsLoading}

@@ -14,7 +14,7 @@ use std::path::PathBuf;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
@@ -612,6 +612,28 @@ mod tests {
         assert!(state.handle.lock().await.is_none());
     }
 
+    #[test]
+    fn only_released_ownerless_configs_use_compatibility_auto_start() {
+        let released = ProxyConfig {
+            api_key: "released-secret".to_string(),
+            auto_start: true,
+            ..ProxyConfig::default()
+        };
+        assert!(should_auto_start_ownerless_proxy(&released));
+        assert!(!should_auto_start_ownerless_proxy(&ProxyConfig {
+            owner_user_id: Some("user-a".to_string()),
+            ..released.clone()
+        }));
+        assert!(!should_auto_start_ownerless_proxy(&ProxyConfig {
+            api_key: String::new(),
+            ..released.clone()
+        }));
+        assert!(!should_auto_start_ownerless_proxy(&ProxyConfig {
+            auto_start: false,
+            ..released
+        }));
+    }
+
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     fn config_migration_test_dir() -> PathBuf {
         let counter = LEGACY_CONFIG_MIGRATION_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -644,11 +666,14 @@ mod tests {
             enable_cors: false,
             backend_url: Some("https://example.invalid".to_string()),
             auto_start: true,
-            owner_user_id: Some("legacy-user".to_string()),
+            owner_user_id: None,
         };
-        tokio::fs::write(&legacy_path, serde_json::to_vec(&original).unwrap())
-            .await
-            .unwrap();
+        let released_json = serde_json::to_vec(&original).unwrap();
+        assert!(serde_json::from_slice::<serde_json::Value>(&released_json)
+            .unwrap()
+            .get("owner_user_id")
+            .is_none());
+        tokio::fs::write(&legacy_path, released_json).await.unwrap();
 
         migrate_legacy_proxy_config(&legacy_path, &target_path)
             .await
@@ -660,6 +685,7 @@ mod tests {
         assert_eq!(migrated.api_key, "legacy-key");
         assert!(migrated.enabled);
         assert!(migrated.auto_start);
+        assert!(migrated.owner_user_id.is_none());
         assert_eq!(
             tokio::fs::metadata(&target_path)
                 .await
@@ -1100,4 +1126,32 @@ pub async fn load_saved_proxy_config(app_handle: &AppHandle) -> Result<ProxyConf
     }
 
     Ok(config)
+}
+
+// Released Maple configs have no account owner. Keep their existing startup
+// behavior until the user explicitly starts or saves the proxy while signed in;
+// that explicit mutation stamps an owner and enables the frontend account fence.
+pub async fn init_ownerless_proxy_on_startup(app_handle: AppHandle) -> Result<()> {
+    let proxy_state: tauri::State<ProxyState> = app_handle.state();
+    let _lifecycle_guard = proxy_state.lifecycle.lock().await;
+    let config = load_saved_proxy_config(&app_handle).await?;
+
+    if should_auto_start_ownerless_proxy(&config) {
+        log::info!("Auto-starting an existing ownerless proxy config for compatibility");
+        match start_proxy_inner(app_handle.clone(), &proxy_state, config.clone()).await {
+            Ok(_) => {
+                let _ = app_handle.emit("proxy-autostarted", &config);
+            }
+            Err(error) => {
+                log::error!("Failed to auto-start existing ownerless proxy config: {error}");
+                let _ = app_handle.emit("proxy-autostart-failed", error);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn should_auto_start_ownerless_proxy(config: &ProxyConfig) -> bool {
+    config.owner_user_id.is_none() && config.auto_start && !config.api_key.trim().is_empty()
 }
