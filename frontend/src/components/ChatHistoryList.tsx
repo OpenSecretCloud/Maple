@@ -57,8 +57,8 @@ import {
 } from "@/services/chatRuntimeNavigation";
 import { useChatRuntimeStore } from "@/contexts/ChatRuntimeContext";
 import {
-  createAndRememberChatDraftKey,
-  resumeOrCreateChatDraftKey
+  resumeOrCreateChatDraftKey,
+  rootChatDraftKeyAfterProjectDeletion
 } from "@/services/chatDraftSelection";
 import { createConversationChatKey } from "@/services/chatRuntimeStore";
 import {
@@ -1009,7 +1009,7 @@ export function ChatHistoryList({
       const params = new URLSearchParams(window.location.search);
       params.delete("conversation_id");
       params.delete("project_id");
-      const draftRuntimeKey = createAndRememberChatDraftKey(runtimeStore, null);
+      const draftRuntimeKey = rootChatDraftKeyAfterProjectDeletion(runtimeStore);
       const chatEntry = createChatHistoryEntryForDraft(draftRuntimeKey);
       window.history.replaceState(
         chatEntry.historyState,

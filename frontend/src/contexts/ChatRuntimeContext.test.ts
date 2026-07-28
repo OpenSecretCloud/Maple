@@ -4,7 +4,8 @@ import {
   draftScopeForRuntimeSelection,
   moveRememberedChatDraftToScope,
   rememberChatDraftInScope,
-  resumeOrCreateChatDraftKey
+  resumeOrCreateChatDraftKey,
+  rootChatDraftKeyAfterProjectDeletion
 } from "../services/chatDraftSelection";
 import { createChatDraftKey, createConversationChatKey } from "../services/chatRuntimeStore";
 
@@ -296,6 +297,29 @@ describe("ChatRuntimeContext eviction policy", () => {
     );
     expect(resumeOrCreateChatDraftKey(store, null)).toBe(rootKey);
     expect(resumeOrCreateChatDraftKey(store, "project-b")).toBe(otherProjectKey);
+  });
+
+  test("landing after project deletion restores an unrelated retained root draft", () => {
+    const store = createChatRuntimeStore<Conversation, Message>();
+    const rootKey = createChatDraftKey("root-before-project-deletion");
+    const projectKey = createChatDraftKey("deleted-project-draft");
+    const unexpectedReplacementKey = createChatDraftKey("unexpected-root-replacement");
+    const rootComposer = createChatComposerState();
+    rootComposer.input = "keep this root draft";
+
+    store.ensure(rootKey, { composer: rootComposer });
+    store.rememberDraftKey(null, rootKey);
+    store.ensure(projectKey, { composer: createChatComposerState("project-a") });
+    store.rememberDraftKey("project-a", projectKey);
+    store.updateActivityGroup(projectKey, "project-a");
+
+    expect(store.deleteActivityGroup("project-a")).toEqual([projectKey]);
+    expect(rootChatDraftKeyAfterProjectDeletion(store, () => unexpectedReplacementKey)).toBe(
+      rootKey
+    );
+    expect(store.getRememberedDraftKey(null)).toBe(rootKey);
+    expect(store.get(rootKey)?.composer.input).toBe("keep this root draft");
+    expect(store.get(unexpectedReplacementKey)).toBeUndefined();
   });
 
   test("remembered drafts and resources stay isolated across separate store instances", () => {

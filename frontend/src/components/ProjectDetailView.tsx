@@ -50,8 +50,8 @@ import { SIDEBAR_GRID_COLUMNS_CLASS, SIDEBAR_LAYOUT_STYLE } from "@/constants/la
 import { usePersistentSidebarState } from "@/contexts/PersistentHomeNavigationContext";
 import { useChatRuntimeStore } from "@/contexts/ChatRuntimeContext";
 import {
-  createAndRememberChatDraftKey,
-  resumeOrCreateChatDraftKey
+  resumeOrCreateChatDraftKey,
+  rootChatDraftKeyAfterProjectDeletion
 } from "@/services/chatDraftSelection";
 import { createConversationChatKey } from "@/services/chatRuntimeStore";
 import {
@@ -389,7 +389,7 @@ export function ProjectDetailView({ projectId }: ProjectDetailViewProps) {
     runtimeStore.deleteActivityGroup(projectId);
     await invalidateConversationData();
     setSelectedProjectId(null);
-    const draftRuntimeKey = createAndRememberChatDraftKey(runtimeStore, null);
+    const draftRuntimeKey = rootChatDraftKeyAfterProjectDeletion(runtimeStore);
     const chatEntry = createChatHistoryEntryForDraft(draftRuntimeKey);
     window.history.replaceState(chatEntry.historyState, "", "/");
     window.dispatchEvent(

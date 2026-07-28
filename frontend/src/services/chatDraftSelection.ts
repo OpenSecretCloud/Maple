@@ -43,6 +43,13 @@ export function resumeOrCreateChatDraftKey<TConversation, TMessage>(
   return createAndRememberChatDraftKey(store, draftProjectId, createDraftKey);
 }
 
+export function rootChatDraftKeyAfterProjectDeletion<TConversation, TMessage>(
+  store: ChatRuntimeStore<TConversation, TMessage, ChatComposerState>,
+  createDraftKey: () => DraftChatRuntimeKey = createChatDraftKey
+): DraftChatRuntimeKey {
+  return resumeOrCreateChatDraftKey(store, null, createDraftKey);
+}
+
 export function draftScopeForRuntimeSelection<TConversation, TMessage>(
   store: ChatRuntimeStore<TConversation, TMessage, ChatComposerState>,
   key: ChatRuntimeKey,
