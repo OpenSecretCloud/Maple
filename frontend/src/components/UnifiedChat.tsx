@@ -83,6 +83,7 @@ import {
   CHAT_HISTORY_TOP_MARGIN_PX,
   ChatHistoryPaginationGate,
   chatHistoryCursorProgressed,
+  chatHistoryScrolledBackward,
   requiredChatHistoryBottomCompensation,
   restoredChatHistoryAnchorScrollTop,
   restoredChatHistoryScrollTop,
@@ -2318,6 +2319,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
 
     const previousScrollTop = container.scrollTop;
     container.scrollTop = restoredScrollTop;
+    previousPointerScrollTopRef.current = container.scrollTop;
     if (Math.abs(container.scrollTop - previousScrollTop) > 0.5) {
       // WKWebView emits `scrollend` for this programmatic anchor restore even
       // when trackpad momentum is still active. Ignore that one synthetic end;
@@ -3168,6 +3170,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
     };
 
     const handleHistoryWheel = (event: WheelEvent) => {
+      previousPointerScrollTopRef.current = container.scrollTop;
       if (event.deltaY >= 0) {
         if (event.deltaY > 0) {
           gate.endGesture();
@@ -3196,6 +3199,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
       }
       touchHistoryGestureActiveRef.current = true;
       previousTouchYRef.current = event.touches[0]?.clientY ?? null;
+      previousPointerScrollTopRef.current = container.scrollTop;
       gate.endGesture();
     };
 
@@ -3248,12 +3252,17 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
 
     const handleHistoryScroll = () => {
       const nextScrollTop = container.scrollTop;
+      const scrolledBackward = chatHistoryScrolledBackward(
+        previousPointerScrollTopRef.current,
+        nextScrollTop
+      );
 
-      if (
-        pointerHistoryGestureActiveRef.current &&
-        nextScrollTop < previousPointerScrollTopRef.current
-      ) {
-        gate.beginGesture();
+      if (scrolledBackward) {
+        if (pointerHistoryGestureActiveRef.current) {
+          gate.beginGesture();
+        }
+        // Wheel, touch, and keyboard input arm before native scrolling updates the
+        // geometry. Recheck afterward, but never create intent from scrolling alone.
         maybeLoadOlderMessages();
       } else if (
         (pointerHistoryGestureActiveRef.current ||
@@ -3305,6 +3314,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
       }
       if (!isBackwardHistoryKey(event)) return;
 
+      previousPointerScrollTopRef.current = container.scrollTop;
       gate.beginGesture();
       maybeLoadOlderMessages();
 

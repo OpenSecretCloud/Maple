@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import {
   ChatHistoryPaginationGate,
   chatHistoryCursorProgressed,
+  chatHistoryScrolledBackward,
   requiredChatHistoryBottomCompensation,
   restoredChatHistoryAnchorScrollTop,
   restoredChatHistoryScrollTop
@@ -192,6 +193,28 @@ describe("ChatHistoryPaginationGate", () => {
         topBoundaryVisible: true
       })
     ).toBe(false);
+  });
+});
+
+describe("chatHistoryScrolledBackward", () => {
+  test("rechecks the boundary after native upward scrolling applies", () => {
+    const gate = new ChatHistoryPaginationGate();
+
+    gate.beginGesture();
+    expect(
+      gate.tryStartLoad({
+        canLoad: true,
+        topBoundaryVisible: false
+      })
+    ).toBe(false);
+
+    expect(chatHistoryScrolledBackward(240, 80)).toBe(true);
+    expect(gate.tryStartLoad(visibleBoundary)).toBe(true);
+  });
+
+  test("does not recheck on stationary or forward scroll changes", () => {
+    expect(chatHistoryScrolledBackward(80, 80)).toBe(false);
+    expect(chatHistoryScrolledBackward(80, 240)).toBe(false);
   });
 });
 

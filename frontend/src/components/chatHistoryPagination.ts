@@ -38,6 +38,13 @@ export function chatHistoryCursorProgressed(
   return Boolean(nextOldestItemId && nextOldestItemId !== currentOldestItemId);
 }
 
+export function chatHistoryScrolledBackward(
+  previousScrollTop: number,
+  nextScrollTop: number
+): boolean {
+  return nextScrollTop < previousScrollTop;
+}
+
 export class ChatHistoryPaginationGate {
   private intentArmed = false;
   private gestureActive = false;
