@@ -49,7 +49,15 @@ import { listAllConversationProjects } from "@/utils/paginatedLists";
 import { SIDEBAR_GRID_COLUMNS_CLASS, SIDEBAR_LAYOUT_STYLE } from "@/constants/layout";
 import { usePersistentSidebarState } from "@/contexts/PersistentHomeNavigationContext";
 import { useChatRuntimeStore } from "@/contexts/ChatRuntimeContext";
+import {
+  resumeOrCreateChatDraftKey,
+  rootChatDraftKeyAfterProjectDeletion
+} from "@/services/chatDraftSelection";
 import { createConversationChatKey } from "@/services/chatRuntimeStore";
+import {
+  createChatHistoryEntryForDraft,
+  type NewChatNavigationDetail
+} from "@/services/chatRuntimeNavigation";
 
 const PROJECT_PAGE_SIZE = 20;
 const MAX_SELECTION = 20;
@@ -328,10 +336,20 @@ export function ProjectDetailView({ projectId }: ProjectDetailViewProps) {
     const params = new URLSearchParams(window.location.search);
     params.delete("project_id");
     params.delete("conversation_id");
-    window.history.replaceState(null, "", params.toString() ? `/?${params.toString()}` : "/");
-    window.dispatchEvent(new CustomEvent("newchat", { detail: { projectId } }));
+    const draftRuntimeKey = resumeOrCreateChatDraftKey(runtimeStore, projectId);
+    const chatEntry = createChatHistoryEntryForDraft(draftRuntimeKey);
+    window.history.replaceState(
+      chatEntry.historyState,
+      "",
+      params.toString() ? `/?${params.toString()}` : "/"
+    );
+    window.dispatchEvent(
+      new CustomEvent<NewChatNavigationDetail>("newchat", {
+        detail: { projectId, draftRuntimeKey: chatEntry.draftRuntimeKey }
+      })
+    );
     setTimeout(() => document.getElementById("message")?.focus(), 0);
-  }, [projectId, setSelectedProjectId]);
+  }, [projectId, runtimeStore, setSelectedProjectId]);
 
   const handleSelectConversation = useCallback(
     (conversation: Conversation) => {
@@ -371,8 +389,14 @@ export function ProjectDetailView({ projectId }: ProjectDetailViewProps) {
     runtimeStore.deleteActivityGroup(projectId);
     await invalidateConversationData();
     setSelectedProjectId(null);
-    window.history.replaceState({}, "", "/");
-    window.dispatchEvent(new CustomEvent("newchat", { detail: { projectId: null } }));
+    const draftRuntimeKey = rootChatDraftKeyAfterProjectDeletion(runtimeStore);
+    const chatEntry = createChatHistoryEntryForDraft(draftRuntimeKey);
+    window.history.replaceState(chatEntry.historyState, "", "/");
+    window.dispatchEvent(
+      new CustomEvent<NewChatNavigationDetail>("newchat", {
+        detail: { projectId: null, draftRuntimeKey: chatEntry.draftRuntimeKey }
+      })
+    );
     window.dispatchEvent(new Event("projectselected"));
   }, [invalidateConversationData, os, projectId, runtimeStore, setSelectedProjectId]);
 

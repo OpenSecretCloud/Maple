@@ -39,8 +39,10 @@ import { UpgradePromptDialog } from "@/components/UpgradePromptDialog";
 import { hasApiAccess } from "@/billing/billingAccess";
 import { WorkspaceModeSwitch, type WorkspaceMode } from "@/components/WorkspaceModeSwitch";
 import { usePersistentHomeNavigation } from "@/contexts/PersistentHomeNavigationContext";
+import { useChatRuntimeStore } from "@/contexts/ChatRuntimeContext";
+import { resumeOrCreateChatDraftKey } from "@/services/chatDraftSelection";
 import {
-  createFreshChatHistoryEntry,
+  createChatHistoryEntryForDraft,
   type NewChatNavigationDetail
 } from "@/services/chatRuntimeNavigation";
 
@@ -63,6 +65,7 @@ export function Sidebar({
   const location = useLocation();
   const { returnToHome } = usePersistentHomeNavigation();
   const os = useOpenSecret();
+  const runtimeStore = useChatRuntimeStore<unknown, unknown>();
   const userId = os.auth.user?.user.id;
   const {
     searchQuery,
@@ -116,11 +119,12 @@ export function Sidebar({
     });
 
     if (location.pathname === "/") {
-      const freshChat = createFreshChatHistoryEntry();
-      window.history.pushState(freshChat.historyState, "", "/");
+      const draftRuntimeKey = resumeOrCreateChatDraftKey(runtimeStore, null);
+      const chatEntry = createChatHistoryEntryForDraft(draftRuntimeKey);
+      window.history.pushState(chatEntry.historyState, "", "/");
       window.dispatchEvent(
         new CustomEvent<NewChatNavigationDetail>("newchat", {
-          detail: { projectId: null, draftRuntimeKey: freshChat.draftRuntimeKey }
+          detail: { projectId: null, draftRuntimeKey: chatEntry.draftRuntimeKey }
         })
       );
       setTimeout(() => document.getElementById("message")?.focus(), 0);

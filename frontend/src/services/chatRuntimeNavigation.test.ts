@@ -2,10 +2,12 @@ import { describe, expect, test } from "bun:test";
 import {
   canonicalConversationHistoryHref,
   conversationIdFromChatRuntimeKey,
+  createChatHistoryEntryForDraft,
   createFreshChatHistoryEntry,
   draftRuntimeKeyFromHistoryState,
   historyStateWithDraftRuntimeKey,
   pushFreshChatHistoryEntry,
+  pushChatHistoryEntryForDraft,
   runtimeKeyForChatLocation,
   shouldProjectMigratedConversation
 } from "./chatRuntimeNavigation";
@@ -89,6 +91,31 @@ describe("chat runtime history navigation", () => {
     expect(next.draftRuntimeKey).not.toBe(previous.draftRuntimeKey);
     expect(draftRuntimeKeyFromHistoryState(previous.historyState)).toBe(previous.draftRuntimeKey);
     expect(draftRuntimeKeyFromHistoryState(next.historyState)).toBe(next.draftRuntimeKey);
+  });
+
+  test("creates and pushes history entries for an existing retained draft key", () => {
+    const draftKey = createChatDraftKey("retained");
+    const entry = createChatHistoryEntryForDraft(draftKey);
+    const calls: Array<{ state: unknown; url: string | URL | null | undefined }> = [];
+    const history = {
+      pushState: (state: unknown, _unused: string, url?: string | URL | null) => {
+        calls.push({ state, url });
+      }
+    };
+
+    const detail = pushChatHistoryEntryForDraft(history, "/?keep=1", null, draftKey);
+
+    expect(entry).toEqual({
+      draftRuntimeKey: draftKey,
+      historyState: { mapleChatDraftRuntimeKey: draftKey }
+    });
+    expect(calls).toEqual([
+      {
+        state: { mapleChatDraftRuntimeKey: draftKey },
+        url: "/?keep=1"
+      }
+    ]);
+    expect(detail).toEqual({ projectId: null, draftRuntimeKey: draftKey });
   });
 
   test("pushes a fresh keyed project draft without replacing the streaming history entry", () => {

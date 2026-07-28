@@ -51,10 +51,15 @@ import { DeleteConversationProjectDialog } from "@/components/DeleteConversation
 import { MoveChatsDialog } from "@/components/MoveChatsDialog";
 import { listAllConversationProjects, listAllConversations } from "@/utils/paginatedLists";
 import {
-  pushFreshChatHistoryEntry,
+  createChatHistoryEntryForDraft,
+  pushChatHistoryEntryForDraft,
   type NewChatNavigationDetail
 } from "@/services/chatRuntimeNavigation";
 import { useChatRuntimeStore } from "@/contexts/ChatRuntimeContext";
+import {
+  resumeOrCreateChatDraftKey,
+  rootChatDraftKeyAfterProjectDeletion
+} from "@/services/chatDraftSelection";
 import { createConversationChatKey } from "@/services/chatRuntimeStore";
 import {
   INITIAL_CHAT_HISTORY_RETRY_COUNT,
@@ -150,6 +155,7 @@ export function ChatHistoryList({
   const [selectedProject, setSelectedProject] = useState<ConversationProjectListItem | null>(null);
   const [expandedProjectId, setExpandedProjectId] = useState<string | null>(selectedProjectId);
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const preventProjectMenuFocusRestoreRef = useRef(false);
 
   // Pagination states
   const [oldestConversationId, setOldestConversationId] = useState<string | undefined>();
@@ -941,7 +947,6 @@ export function ChatHistoryList({
       params.set("project_id", projectId);
 
       window.history.replaceState({}, "", params.toString() ? `/?${params.toString()}` : "/");
-      window.dispatchEvent(new CustomEvent("newchat", { detail: { projectId } }));
       window.dispatchEvent(new Event("projectselected"));
     },
     [router, setSelectedProjectId]
@@ -949,6 +954,7 @@ export function ChatHistoryList({
 
   const handleNewChatInProject = useCallback(
     async (projectId: string) => {
+      preventProjectMenuFocusRestoreRef.current = true;
       setSelectedProjectId(projectId);
 
       if (window.location.pathname !== "/") {
@@ -959,11 +965,12 @@ export function ChatHistoryList({
       params.delete("conversation_id");
       params.delete("project_id");
       const url = params.toString() ? `/?${params.toString()}` : "/";
-      const detail = pushFreshChatHistoryEntry(window.history, url, projectId);
+      const draftRuntimeKey = resumeOrCreateChatDraftKey(runtimeStore, projectId);
+      const detail = pushChatHistoryEntryForDraft(window.history, url, projectId, draftRuntimeKey);
       window.dispatchEvent(new CustomEvent<NewChatNavigationDetail>("newchat", { detail }));
       setTimeout(() => document.getElementById("message")?.focus(), 0);
     },
-    [router, setSelectedProjectId]
+    [router, runtimeStore, setSelectedProjectId]
   );
 
   const handleCreateProject = useCallback(
@@ -1002,8 +1009,18 @@ export function ChatHistoryList({
       const params = new URLSearchParams(window.location.search);
       params.delete("conversation_id");
       params.delete("project_id");
-      window.history.replaceState({}, "", params.toString() ? `/?${params.toString()}` : "/");
-      window.dispatchEvent(new CustomEvent("newchat", { detail: { projectId: null } }));
+      const draftRuntimeKey = rootChatDraftKeyAfterProjectDeletion(runtimeStore);
+      const chatEntry = createChatHistoryEntryForDraft(draftRuntimeKey);
+      window.history.replaceState(
+        chatEntry.historyState,
+        "",
+        params.toString() ? `/?${params.toString()}` : "/"
+      );
+      window.dispatchEvent(
+        new CustomEvent<NewChatNavigationDetail>("newchat", {
+          detail: { projectId: null, draftRuntimeKey: chatEntry.draftRuntimeKey }
+        })
+      );
       window.dispatchEvent(new Event("projectselected"));
     };
 
@@ -1454,7 +1471,13 @@ export function ChatHistoryList({
                             <MoreHorizontal className="h-4 w-4" strokeWidth={ICON_STROKE} />
                           </button>
                         </DropdownMenuTrigger>
-                        <DropdownMenuContent>
+                        <DropdownMenuContent
+                          onCloseAutoFocus={(event) => {
+                            if (!preventProjectMenuFocusRestoreRef.current) return;
+                            preventProjectMenuFocusRestoreRef.current = false;
+                            event.preventDefault();
+                          }}
+                        >
                           <DropdownMenuItem onClick={() => void handleNewChatInProject(project.id)}>
                             <SquarePen className="mr-2 h-4 w-4" strokeWidth={ICON_STROKE} />
                             New Chat in Project
