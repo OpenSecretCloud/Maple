@@ -292,8 +292,8 @@ export function ProxyClientGuides({
         <div className="flex gap-2 text-xs leading-relaxed text-muted-foreground">
           <TerminalSquare className="mt-0.5 h-4 w-4 shrink-0" />
           <p>
-            A 401 usually means an invalid or stale key; a 400 usually means an old model ID. A 5xx
-            can be a temporary model-provider outage even when this setup is correct.
+            A 401 usually means a missing, invalid, or stale key; a 400 usually means an old model
+            ID. A 5xx can be a temporary model-provider outage even when this setup is correct.
           </p>
         </div>
       </Card>

@@ -54,7 +54,7 @@ export function manualProxyConfigsMatch(active: ProxyConfig, desired: ProxyConfi
     active.port === desired.port &&
     active.api_key.trim() === desired.api_key.trim() &&
     active.enabled === desired.enabled &&
-    (active.enable_cors ?? true) === (desired.enable_cors ?? true) &&
+    (active.enable_cors ?? false) === (desired.enable_cors ?? false) &&
     normalizeBackendUrl(active.backend_url) === normalizeBackendUrl(desired.backend_url) &&
     (active.auto_start ?? false) === (desired.auto_start ?? false)
   );
@@ -107,7 +107,8 @@ class ProxyService {
         host: "127.0.0.1",
         port: 8080,
         api_key: "",
-        enabled: false
+        enabled: false,
+        enable_cors: false
       };
     }
   }

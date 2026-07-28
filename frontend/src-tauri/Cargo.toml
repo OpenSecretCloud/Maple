@@ -40,6 +40,7 @@ maple-proxy = "0.2.0"
 tauri-plugin-fs = "2.5.1"
 anyhow = "1.0"
 axum = "0.8"
+tower-http = { version = "0.6", features = ["cors"] }
 pdf_oxide = { version = "=0.3.74", git = "https://github.com/OpenSecretCloud/pdf_oxide.git", rev = "f24b43ba997dd91ce60839640a8ce3ac92a87a5d", features = ["ocr-ort", "rendering"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 base64 = "0.22"

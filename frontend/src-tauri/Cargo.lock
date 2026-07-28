@@ -4636,6 +4636,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-util",
+ "tower-http 0.6.8",
  "unicode-normalization",
  "webpki-roots",
  "windows 0.62.2",

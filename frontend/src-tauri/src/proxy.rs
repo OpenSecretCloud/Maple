@@ -1,4 +1,11 @@
 use anyhow::{anyhow, Result};
+use axum::{
+    body::Body,
+    http::{header::ORIGIN, Method, Request, StatusCode},
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
+    Router,
+};
 use maple_proxy::{create_app, Config};
 use serde::{Deserialize, Serialize};
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -12,6 +19,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
+use tower_http::cors::{AllowHeaders, Any, CorsLayer};
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 const MAPLE_APP_IDENTIFIER: &str = "cloud.opensecret.maple";
@@ -33,7 +41,7 @@ pub struct ProxyConfig {
 }
 
 fn default_cors() -> bool {
-    true
+    false
 }
 
 impl Default for ProxyConfig {
@@ -43,7 +51,7 @@ impl Default for ProxyConfig {
             port: 8080,
             api_key: String::new(),
             enabled: false,
-            enable_cors: true,
+            enable_cors: false,
             backend_url: None,
             auto_start: false,
         }
@@ -177,10 +185,11 @@ async fn start_proxy_inner(
     config: ProxyConfig,
 ) -> Result<ProxyStatus, String> {
     log::info!(
-        "Starting proxy on {}:{} (cors={}, auto_start={})",
+        "Starting proxy on {}:{} (cors={}, saved_credential_fallback={}, auto_start={})",
         config.host,
         config.port,
         config.enable_cors,
+        !config.enable_cors,
         config.auto_start
     );
 
@@ -197,11 +206,7 @@ async fn start_proxy_inner(
         .clone()
         .unwrap_or_else(|| "https://enclave.trymaple.ai".to_string());
 
-    // Create maple-proxy config
-    let proxy_config = Config::new(config.host.clone(), config.port, backend_url)
-        .with_api_key(config.api_key.clone())
-        .with_debug(false)
-        .with_cors(config.enable_cors);
+    let proxy_config = build_proxy_server_config(&config, backend_url);
 
     // Try to bind to the address first to check if port is available
     let addr = proxy_config
@@ -229,7 +234,7 @@ async fn start_proxy_inner(
     // maple-proxy owns the OpenAI-compatible transport, including the shared
     // 50 MiB request limit needed by Goose's image tool. Provider responses are
     // passed through unchanged.
-    let app = create_app(proxy_config);
+    let app = apply_proxy_access_policy(proxy_config, config.enable_cors);
 
     // Spawn the proxy server
     let handle = tokio::spawn(async move {
@@ -251,6 +256,54 @@ async fn start_proxy_inner(
         config,
         error: None,
     })
+}
+
+fn build_proxy_server_config(config: &ProxyConfig, backend_url: String) -> Config {
+    let proxy_config = Config::new(config.host.clone(), config.port, backend_url)
+        .with_debug(false)
+        // Maple owns the browser boundary below so it can both list the
+        // non-wildcard Authorization header and reject browser origins when
+        // CORS is disabled. Do not install maple-proxy's permissive layer.
+        .with_cors(false);
+
+    // CORS deliberately allows every browser origin for compatibility. Never
+    // combine that reachability with Maple's saved credential: browser-enabled
+    // clients must provide their own Authorization header on every request.
+    if config.enable_cors {
+        proxy_config
+    } else {
+        proxy_config.with_api_key(config.api_key.clone())
+    }
+}
+
+fn apply_proxy_access_policy(proxy_config: Config, enable_cors: bool) -> Router {
+    let app = create_app(proxy_config);
+
+    if enable_cors {
+        app.layer(
+            CorsLayer::new()
+                .allow_origin(Any)
+                .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+                // Authorization is not covered by `*` under Fetch. Mirroring
+                // the preflight list supports it plus SDK-specific headers
+                // without trusting a request that lacks a valid bearer key.
+                .allow_headers(AllowHeaders::mirror_request()),
+        )
+    } else {
+        app.layer(middleware::from_fn(reject_browser_request))
+    }
+}
+
+async fn reject_browser_request(request: Request<Body>, next: Next) -> Response {
+    // Disabling CORS alone only hides responses. A no-cors browser POST can
+    // still reach loopback and spend the saved credential, so fail closed on
+    // forbidden browser headers before maple-proxy sees the body. Fetch omits
+    // Origin on some no-cors GET/HEAD requests but still sends Sec-Fetch-Site.
+    if request.headers().contains_key(ORIGIN) || request.headers().contains_key("sec-fetch-site") {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+
+    next.run(request).await
 }
 
 #[tauri::command]
@@ -379,6 +432,152 @@ pub async fn test_proxy_port(host: String, port: u16) -> Result<bool, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::http::header::CONTENT_TYPE;
+
+    #[test]
+    fn new_and_legacy_unspecified_configs_disable_cors() {
+        assert!(!ProxyConfig::default().enable_cors);
+
+        let config: ProxyConfig = serde_json::from_value(serde_json::json!({
+            "host": "127.0.0.1",
+            "port": 8080,
+            "api_key": "saved-key",
+            "enabled": false
+        }))
+        .unwrap();
+
+        assert!(!config.enable_cors);
+    }
+
+    #[test]
+    fn explicit_cors_keeps_browser_access_but_removes_saved_credential_fallback() {
+        let config = ProxyConfig {
+            api_key: "saved-key".to_string(),
+            enable_cors: true,
+            ..ProxyConfig::default()
+        };
+
+        let server_config =
+            build_proxy_server_config(&config, "https://example.invalid".to_string());
+
+        assert!(!server_config.enable_cors);
+        assert!(server_config.default_api_key.is_none());
+    }
+
+    #[test]
+    fn cors_disabled_keeps_saved_credential_fallback_for_local_clients() {
+        let config = ProxyConfig {
+            api_key: "saved-key".to_string(),
+            ..ProxyConfig::default()
+        };
+
+        let server_config =
+            build_proxy_server_config(&config, "https://example.invalid".to_string());
+
+        assert!(!server_config.enable_cors);
+        assert_eq!(server_config.default_api_key.as_deref(), Some("saved-key"));
+    }
+
+    async fn serve_test_app(app: Router) -> (String, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (format!("http://{addr}"), server)
+    }
+
+    #[tokio::test]
+    async fn cors_disabled_rejects_preflight_free_browser_posts_before_using_saved_key() {
+        let config = ProxyConfig {
+            api_key: "saved-key".to_string(),
+            ..ProxyConfig::default()
+        };
+        let server_config =
+            build_proxy_server_config(&config, "https://example.invalid".to_string());
+        let app = apply_proxy_access_policy(server_config, config.enable_cors);
+        let (base_url, server) = serve_test_app(app).await;
+
+        let response = reqwest::Client::new()
+            .post(format!("{base_url}/v1/chat/completions"))
+            .header(ORIGIN, "https://attacker.example")
+            .header(CONTENT_TYPE, "text/plain")
+            .body(r#"{"model":"test","messages":[]}"#)
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn cors_disabled_rejects_originless_browser_gets_using_fetch_metadata() {
+        let config = ProxyConfig {
+            api_key: "saved-key".to_string(),
+            ..ProxyConfig::default()
+        };
+        let server_config =
+            build_proxy_server_config(&config, "https://example.invalid".to_string());
+        let app = apply_proxy_access_policy(server_config, config.enable_cors);
+        let (base_url, server) = serve_test_app(app).await;
+
+        let response = reqwest::Client::new()
+            .get(format!("{base_url}/v1/models"))
+            .header("sec-fetch-site", "cross-site")
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn cors_enabled_preflight_explicitly_allows_bearer_authentication() {
+        let config = ProxyConfig {
+            api_key: "saved-key".to_string(),
+            enable_cors: true,
+            ..ProxyConfig::default()
+        };
+        let server_config =
+            build_proxy_server_config(&config, "https://example.invalid".to_string());
+        let app = apply_proxy_access_policy(server_config, config.enable_cors);
+        let (base_url, server) = serve_test_app(app).await;
+
+        let response = reqwest::Client::new()
+            .request(
+                reqwest::Method::OPTIONS,
+                format!("{base_url}/v1/chat/completions"),
+            )
+            .header(ORIGIN, "https://browser.example")
+            .header("access-control-request-method", "POST")
+            .header(
+                "access-control-request-headers",
+                "authorization,content-type,x-stainless-retry-count,x-stainless-lang",
+            )
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get("access-control-allow-origin")
+                .unwrap(),
+            "*"
+        );
+        let allowed_headers = response
+            .headers()
+            .get("access-control-allow-headers")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(allowed_headers.contains("authorization"));
+        assert!(allowed_headers.contains("content-type"));
+        assert!(allowed_headers.contains("x-stainless-retry-count"));
+        assert!(allowed_headers.contains("x-stainless-lang"));
+        server.abort();
+    }
 
     #[tokio::test]
     async fn stop_waits_for_aborted_server_task() {
