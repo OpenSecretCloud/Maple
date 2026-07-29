@@ -1,4 +1,4 @@
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 use tauri_plugin_deep_link::DeepLinkExt;
 
 #[cfg(desktop)]
@@ -7,6 +7,8 @@ mod agent;
 mod legacy_tts_cleanup;
 #[cfg(desktop)]
 mod agent_acp;
+#[cfg(desktop)]
+mod agent_tauri;
 #[cfg(desktop)]
 mod maple_api;
 mod onnxruntime;
@@ -90,7 +92,6 @@ pub fn run() {
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
-        .manage(agent::AgentRuntimeState::new())
         .manage(agent_acp::AgentAcpState::new())
         .manage(maple_api::MapleApiAuthState::new())
         .manage(proxy::ProxyState::new())
@@ -142,6 +143,11 @@ pub fn run() {
         ])
         .setup(|app| {
             legacy_tts_cleanup::schedule(app.handle());
+
+            let service = agent_tauri::build_service(app.handle())?;
+            if !app.manage(service) {
+                return Err("Maple Agent service was already initialized".into());
+            }
 
             // Initialize proxy auto-start
             {

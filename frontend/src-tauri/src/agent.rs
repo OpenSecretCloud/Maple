@@ -41,7 +41,7 @@ use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Manager, State};
 use tokio::sync::{broadcast, oneshot, watch, Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
 use web_permission::{
@@ -56,7 +56,7 @@ const DEFAULT_GOOSE_MODE: &str = "smart_approve";
 // Keep Goose on its ActionRequired path so Maple can apply the currently selected
 // policy at every tool boundary, including when the user changes it mid-run.
 const GOOSE_PERMISSION_ROUTING_MODE: GooseMode = GooseMode::SmartApprove;
-const AGENT_EVENT_NAME: &str = "agent-event";
+pub(crate) const AGENT_EVENT_NAME: &str = "agent-event";
 const MAPLE_DEVELOPER_TOOLS: [&str; 7] = [
     "read",
     "shell",
@@ -396,7 +396,7 @@ struct ActiveAgentRun {
     token: CancellationToken,
     session_id: String,
     cancelled_permission_ids: CancelledPermissionIds,
-    task_handle: tauri::async_runtime::JoinHandle<()>,
+    task_handle: tokio::task::JoinHandle<()>,
 }
 
 type PendingPermissionKey = (String, String);
@@ -434,15 +434,67 @@ impl AgentRuntime {
     }
 }
 
-pub struct AgentRuntimeState {
+#[derive(Clone)]
+pub(crate) struct AgentPathLayout {
+    config_root: PathBuf,
+    local_data_root: PathBuf,
+}
+
+impl AgentPathLayout {
+    pub(crate) fn from_app_roots(app_config_root: PathBuf, app_local_data_root: PathBuf) -> Self {
+        Self {
+            config_root: app_config_root.join("agent"),
+            local_data_root: app_local_data_root.join("agent"),
+        }
+    }
+}
+
+pub(crate) trait AgentEventSink: Send + Sync + 'static {
+    fn emit(&self, event: &AgentEventEnvelope);
+}
+
+#[derive(Clone)]
+struct AgentEventDispatcher {
+    sender: broadcast::Sender<AgentEventEnvelope>,
+    sink: Arc<dyn AgentEventSink>,
+}
+
+impl AgentEventDispatcher {
+    fn new(sink: Arc<dyn AgentEventSink>) -> Self {
+        let (sender, _) = broadcast::channel(AGENT_EVENT_BROADCAST_CAPACITY);
+        Self { sender, sink }
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct MapleAgentHostResources {
+    paths: AgentPathLayout,
+    events: AgentEventDispatcher,
+}
+
+impl MapleAgentHostResources {
+    pub(crate) fn new(paths: AgentPathLayout, event_sink: Arc<dyn AgentEventSink>) -> Self {
+        Self {
+            paths,
+            events: AgentEventDispatcher::new(event_sink),
+        }
+    }
+}
+
+pub struct MapleAgentService {
+    host: MapleAgentHostResources,
     inner: Arc<Mutex<Option<AgentRuntime>>>,
     runtime_lifecycle: Arc<Mutex<()>>,
     account_generations: Arc<Mutex<HashMap<String, u64>>>,
     session_lifecycle: Arc<Mutex<()>>,
     pending_permissions: PendingPermissions,
     live_timelines: LiveTimelines,
-    event_sender: broadcast::Sender<AgentEventEnvelope>,
 }
+
+// Temporary internal compatibility name while the Tauri command surface is
+// peeled away from the service implementation. New non-Tauri callers use the
+// concrete MapleAgentService name directly.
+type AgentRuntimeState = MapleAgentService;
 
 type LiveTimelines = Arc<Mutex<HashMap<String, LiveTimeline>>>;
 
@@ -478,17 +530,16 @@ impl LiveTimeline {
     }
 }
 
-impl AgentRuntimeState {
-    pub fn new() -> Self {
-        let (event_sender, _) = broadcast::channel(AGENT_EVENT_BROADCAST_CAPACITY);
+impl MapleAgentService {
+    pub(crate) fn new(host: MapleAgentHostResources) -> Self {
         Self {
+            host,
             inner: Arc::new(Mutex::new(None)),
             runtime_lifecycle: Arc::new(Mutex::new(())),
             account_generations: Arc::new(Mutex::new(HashMap::new())),
             session_lifecycle: Arc::new(Mutex::new(())),
             pending_permissions: Arc::new(Mutex::new(HashMap::new())),
             live_timelines: Arc::new(Mutex::new(HashMap::new())),
-            event_sender,
         }
     }
 }
@@ -498,7 +549,9 @@ pub(crate) fn subscribe_agent_events(
 ) -> broadcast::Receiver<AgentEventEnvelope> {
     app_handle
         .state::<AgentRuntimeState>()
-        .event_sender
+        .host
+        .events
+        .sender
         .subscribe()
 }
 
@@ -709,7 +762,7 @@ async fn stop_runtime_inner(
 }
 
 async fn join_agent_tasks(
-    mut task_handles: Vec<tauri::async_runtime::JoinHandle<()>>,
+    mut task_handles: Vec<tokio::task::JoinHandle<()>>,
     graceful_timeout: std::time::Duration,
 ) {
     let graceful = futures_util::future::join_all(task_handles.iter_mut());
@@ -877,7 +930,7 @@ async fn start_runtime_for_user(
         .await
         .map_err(|error| format!("Failed to validate Maple API authentication: {error}"))?;
 
-    let mut agent_config = load_agent_config_inner(&app_handle, &user_id)
+    let mut agent_config = load_agent_config_inner(&state.host.paths, &user_id)
         .map_err(|error| format!("Failed to load Agent config: {error}"))?;
     let request = request.unwrap_or(AgentStartRequest {
         project_root: None,
@@ -895,7 +948,7 @@ async fn start_runtime_for_user(
         .unwrap_or_else(|| DEFAULT_GOOSE_MODE.to_string());
     parse_user_permission_mode(&mode)?;
 
-    let config_dir = agent_config_dir(&app_handle, &user_id).map_err(|e| e.to_string())?;
+    let config_dir = agent_config_dir(&state.host.paths, &user_id).map_err(|e| e.to_string())?;
     let goose_path_root = config_dir.join("goose");
     fs::create_dir_all(goose_path_root.join("data"))
         .map_err(|e| format!("Failed to create Goose data dir: {e}"))?;
@@ -907,7 +960,7 @@ async fn start_runtime_for_user(
     reset_maple_owned_permission_file(&goose_path_root.join("config").join("permission.yaml"))?;
 
     configure_embedded_goose(
-        &agent_root_dir(&app_handle)
+        &agent_root_dir(&state.host.paths)
             .map_err(|e| e.to_string())?
             .join("goose-runtime"),
         &model,
@@ -961,10 +1014,10 @@ async fn start_runtime_for_user(
     // here would incorrectly move that visible project to the top of the manual order.
     agent_config.default_project_root = Some(path_string(&project_root));
     agent_config.default_model = model;
-    let _ = save_agent_config_inner(&app_handle, &user_id, &agent_config);
+    let _ = save_agent_config_inner(&state.host.paths, &user_id, &agent_config);
 
     emit_agent_event(
-        &app_handle,
+        &state.host.events,
         AgentEventEnvelope {
             event_type: "runtimeStatus".to_string(),
             session_id: None,
@@ -1032,14 +1085,14 @@ pub async fn agent_clear_user_data(
     }
 
     let account_dir =
-        account_config_dir_path(&app_handle, &user_id).map_err(|error| error.to_string())?;
+        account_config_dir_path(&state.host.paths, &user_id).map_err(|error| error.to_string())?;
     match fs::remove_dir_all(account_dir) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(format!("Failed to clear Agent Mode data: {error}")),
     }
-    let local_account_dir =
-        account_local_data_dir_path(&app_handle, &user_id).map_err(|error| error.to_string())?;
+    let local_account_dir = account_local_data_dir_path(&state.host.paths, &user_id)
+        .map_err(|error| error.to_string())?;
     match fs::remove_dir_all(local_account_dir) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -1074,7 +1127,7 @@ pub async fn agent_clear_user_history(
     }
 
     let account_dir =
-        account_config_dir_path(&app_handle, &user_id).map_err(|error| error.to_string())?;
+        account_config_dir_path(&state.host.paths, &user_id).map_err(|error| error.to_string())?;
     clear_agent_history(&account_dir)
         .map_err(|error| format!("Failed to clear Agent Mode history: {error}"))
 }
@@ -1089,7 +1142,7 @@ pub async fn agent_load_config(
     let generation = account_generation(&state, &account_scope).await;
     let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
     ensure_account_generation(&state, &account_scope, generation).await?;
-    load_agent_config_inner(&app_handle, &user_id).map_err(|e| e.to_string())
+    load_agent_config_inner(&state.host.paths, &user_id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1105,10 +1158,11 @@ pub async fn agent_save_config(
     ensure_account_generation(&state, &account_scope, generation).await?;
     // MCP definitions have a dedicated mutation command. Preserve them here so
     // a delayed project/model preference save cannot overwrite newer servers.
-    let mut next = load_agent_config_inner(&app_handle, &user_id).map_err(|e| e.to_string())?;
+    let mut next =
+        load_agent_config_inner(&state.host.paths, &user_id).map_err(|e| e.to_string())?;
     next.default_project_root = config.default_project_root;
     next.default_model = config.default_model;
-    save_agent_config_inner(&app_handle, &user_id, &next).map_err(|e| e.to_string())
+    save_agent_config_inner(&state.host.paths, &user_id, &next).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1121,7 +1175,7 @@ pub async fn agent_list_mcp_servers(
     let generation = account_generation(&state, &account_scope).await;
     let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
     ensure_account_generation(&state, &account_scope, generation).await?;
-    let config = load_agent_config_inner(&app_handle, &user_id).map_err(|e| e.to_string())?;
+    let config = load_agent_config_inner(&state.host.paths, &user_id).map_err(|e| e.to_string())?;
     normalize_mcp_servers(config.mcp_servers)
 }
 
@@ -1137,9 +1191,10 @@ pub async fn agent_save_mcp_servers(
     let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
     ensure_account_generation(&state, &account_scope, generation).await?;
     let servers = normalize_mcp_servers(servers)?;
-    let mut config = load_agent_config_inner(&app_handle, &user_id).map_err(|e| e.to_string())?;
+    let mut config =
+        load_agent_config_inner(&state.host.paths, &user_id).map_err(|e| e.to_string())?;
     config.mcp_servers = servers.clone();
-    save_agent_config_inner(&app_handle, &user_id, &config).map_err(|e| e.to_string())?;
+    save_agent_config_inner(&state.host.paths, &user_id, &config).map_err(|e| e.to_string())?;
 
     Ok(servers)
 }
@@ -1154,7 +1209,7 @@ pub async fn agent_list_recent_project_roots(
     let generation = account_generation(&state, &account_scope).await;
     let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
     ensure_account_generation(&state, &account_scope, generation).await?;
-    load_recent_project_roots_inner(&app_handle, &user_id).map_err(|e| e.to_string())
+    load_recent_project_roots_inner(&state.host.paths, &user_id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1170,16 +1225,16 @@ pub async fn agent_save_recent_project_root(
     ensure_account_generation(&state, &account_scope, generation).await?;
     let project_root = normalize_project_root(Path::new(&path))?;
     let mut config =
-        load_agent_config_inner(&app_handle, &user_id).map_err(|error| error.to_string())?;
+        load_agent_config_inner(&state.host.paths, &user_id).map_err(|error| error.to_string())?;
     let canonical_path = path_string(&project_root);
     let restoring = config
         .removed_project_roots
         .iter()
         .any(|removed| removed == &canonical_path);
     let roots = if restoring {
-        restore_explicit_project_root_inner(&app_handle, &user_id, &project_root)
+        restore_explicit_project_root_inner(&state.host.paths, &user_id, &project_root)
     } else {
-        register_explicit_project_root_inner(&app_handle, &user_id, &project_root)
+        register_explicit_project_root_inner(&state.host.paths, &user_id, &project_root)
     }
     .map_err(|error| error.to_string())?;
 
@@ -1187,12 +1242,17 @@ pub async fn agent_save_recent_project_root(
         .removed_project_roots
         .retain(|removed| removed != &canonical_path);
     config.default_project_root = Some(canonical_path.clone());
-    save_agent_config_inner(&app_handle, &user_id, &config).map_err(|error| error.to_string())?;
+    save_agent_config_inner(&state.host.paths, &user_id, &config)
+        .map_err(|error| error.to_string())?;
     // Clear the device-local tombstone last. If registration or ordinary
     // config persistence fails, the project remains hidden.
     if restoring {
-        save_removed_project_roots_inner(&app_handle, &user_id, &config.removed_project_roots)
-            .map_err(|error| error.to_string())?;
+        save_removed_project_roots_inner(
+            &state.host.paths,
+            &user_id,
+            &config.removed_project_roots,
+        )
+        .map_err(|error| error.to_string())?;
     }
 
     Ok(AgentProjectRootRegistration {
@@ -1244,7 +1304,7 @@ pub async fn agent_remove_project_root(
                 )
             }
             None => (
-                account_session_manager(&app_handle, &user_id)?,
+                account_session_manager(&state.host.paths, &user_id)?,
                 HashSet::new(),
             ),
         }
@@ -1262,13 +1322,13 @@ pub async fn agent_remove_project_root(
     }
 
     let mut config =
-        load_agent_config_inner(&app_handle, &user_id).map_err(|error| error.to_string())?;
+        load_agent_config_inner(&state.host.paths, &user_id).map_err(|error| error.to_string())?;
     apply_project_root_removal(&mut config, &path, fallback_path.as_deref())?;
     // The tombstone is the only persistent removal state. Saving the fallback
     // into roaming config would let this device's removal alter another
     // device. Runtime/UI use the fallback immediately; startup filters the
     // stale hidden default before selecting any project.
-    save_removed_project_roots_inner(&app_handle, &user_id, &config.removed_project_roots)
+    save_removed_project_roots_inner(&state.host.paths, &user_id, &config.removed_project_roots)
         .map_err(|error| error.to_string())?;
 
     let mut runtime = state.inner.lock().await;
@@ -1303,7 +1363,7 @@ pub async fn agent_get_project_skills_trust(
         });
     }
     let project_root = normalize_project_root(requested)?;
-    let config = load_agent_config_inner(&app_handle, &user_id).map_err(|e| e.to_string())?;
+    let config = load_agent_config_inner(&state.host.paths, &user_id).map_err(|e| e.to_string())?;
     Ok(project_skills_trust_status(&config, &project_root, true))
 }
 
@@ -1320,9 +1380,10 @@ pub async fn agent_set_project_skills_trust(
     let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
     ensure_account_generation(&state, &account_scope, generation).await?;
     let project_root = normalize_project_root(Path::new(&path))?;
-    let mut config = load_agent_config_inner(&app_handle, &user_id).map_err(|e| e.to_string())?;
+    let mut config =
+        load_agent_config_inner(&state.host.paths, &user_id).map_err(|e| e.to_string())?;
     apply_project_skills_trust(&mut config, &project_root, trusted)?;
-    save_agent_config_inner(&app_handle, &user_id, &config).map_err(|e| e.to_string())?;
+    save_agent_config_inner(&state.host.paths, &user_id, &config).map_err(|e| e.to_string())?;
     Ok(project_skills_trust_status(&config, &project_root, true))
 }
 
@@ -1337,7 +1398,7 @@ pub async fn agent_save_project_root_order(
     let generation = account_generation(&state, &account_scope).await;
     let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
     ensure_account_generation(&state, &account_scope, generation).await?;
-    save_project_root_order_inner(&app_handle, &user_id, paths).map_err(|e| e.to_string())
+    save_project_root_order_inner(&state.host.paths, &user_id, paths).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1387,7 +1448,7 @@ pub async fn agent_create_session(
     };
 
     let config =
-        load_agent_config_inner(&app_handle, &user_id).map_err(|error| error.to_string())?;
+        load_agent_config_inner(&state.host.paths, &user_id).map_err(|error| error.to_string())?;
     let root = match request.project_root.as_deref() {
         Some(path) if !path.trim().is_empty() => normalize_project_root(Path::new(path))?,
         _ => runtime_project_root,
@@ -1430,7 +1491,7 @@ pub async fn agent_create_session(
     let setup_result: Result<Vec<AgentMcpConnectionError>, String> = async {
         let (agent, mut mcp_errors) = configure_session_agent(
             AgentSkillsScope {
-                app_handle: &app_handle,
+                paths: &state.host.paths,
                 user_id: &user_id,
             },
             &agent_manager,
@@ -1451,7 +1512,7 @@ pub async fn agent_create_session(
             // Resolve every fallible part of restoring Maple's transient Skills client before
             // Goose persists the MCP mutation. Reattachment after this point is infallible.
             let skills_client =
-                prepare_transient_skills_client(&app_handle, &user_id, &agent, &session)?;
+                prepare_transient_skills_client(&state.host.paths, &user_id, &agent, &session)?;
             detach_transient_skills_client(&agent).await;
             let extension_result = agent
                 .add_extensions_bulk(selected_extensions, &session.id)
@@ -1510,7 +1571,7 @@ pub async fn agent_create_session(
         mcp_errors,
     };
     emit_agent_event(
-        &app_handle,
+        &state.host.events,
         AgentEventEnvelope {
             event_type: "sessionCreated".to_string(),
             session_id: Some(summary.id.clone()),
@@ -1542,7 +1603,7 @@ pub async fn agent_list_sessions(
                 ensure_runtime_account(current, &account_scope)?;
                 Arc::clone(&current.session_manager)
             }
-            None => account_session_manager(&app_handle, &user_id)?,
+            None => account_session_manager(&state.host.paths, &user_id)?,
         };
         let filter_root = project_root
             .as_deref()
@@ -1588,7 +1649,7 @@ pub async fn agent_load_session(
                 ensure_runtime_account(current, &account_scope)?;
                 Arc::clone(&current.session_manager)
             }
-            None => account_session_manager(&app_handle, &user_id)?,
+            None => account_session_manager(&state.host.paths, &user_id)?,
         }
     };
     let session = session_manager
@@ -1628,7 +1689,7 @@ pub async fn agent_list_session_mcp_servers(
                 ensure_runtime_account(current, &account_scope)?;
                 Arc::clone(&current.session_manager)
             }
-            None => account_session_manager(&app_handle, &user_id)?,
+            None => account_session_manager(&state.host.paths, &user_id)?,
         }
     };
     let session = session_manager
@@ -1636,7 +1697,7 @@ pub async fn agent_list_session_mcp_servers(
         .await
         .map_err(|error| format!("Failed to load Agent task: {error}"))?;
     let configured = normalize_mcp_servers(
-        load_agent_config_inner(&app_handle, &user_id)
+        load_agent_config_inner(&state.host.paths, &user_id)
             .map_err(|error| format!("Failed to load MCP servers: {error}"))?
             .mcp_servers,
     )?;
@@ -1680,7 +1741,7 @@ pub async fn agent_set_session_mcp_server_enabled(
         )
     };
     let configured = normalize_mcp_servers(
-        load_agent_config_inner(&app_handle, &user_id)
+        load_agent_config_inner(&state.host.paths, &user_id)
             .map_err(|error| format!("Failed to load MCP servers: {error}"))?
             .mcp_servers,
     )?;
@@ -1707,7 +1768,8 @@ pub async fn agent_set_session_mcp_server_enabled(
     let agent = manager_result.agent;
     // Preflight Skills restoration before detaching the working client or changing persisted MCP
     // state. Reattaching this prepared client after the mutation cannot fail.
-    let skills_client = prepare_transient_skills_client(&app_handle, &user_id, &agent, &session)?;
+    let skills_client =
+        prepare_transient_skills_client(&state.host.paths, &user_id, &agent, &session)?;
     detach_transient_skills_client(&agent).await;
     let active = agent.get_extension_configs().await;
     let active_config = active
@@ -1802,7 +1864,7 @@ pub async fn agent_delete_session(
             }
             None => (
                 None,
-                account_session_manager(&app_handle, &user_id)?,
+                account_session_manager(&state.host.paths, &user_id)?,
                 None,
                 None,
             ),
@@ -2169,7 +2231,7 @@ async fn agent_send_message_inner(
                 .await
                 .map_err(|e| format!("Failed to load named Agent task: {e}"))?;
             emit_agent_event(
-                &app_handle,
+                &state.host.events,
                 AgentEventEnvelope {
                     event_type: "sessionUpdated".to_string(),
                     session_id: Some(session.id.clone()),
@@ -2183,7 +2245,7 @@ async fn agent_send_message_inner(
         }
         let (agent, mcp_errors) = configure_session_agent(
             AgentSkillsScope {
-                app_handle: &app_handle,
+                paths: &state.host.paths,
                 user_id: &user_id,
             },
             &agent_manager,
@@ -2217,7 +2279,7 @@ async fn agent_send_message_inner(
     };
     if !mcp_errors.is_empty() {
         emit_agent_event(
-            &app_handle,
+            &state.host.events,
             AgentEventEnvelope {
                 event_type: "error".to_string(),
                 session_id: None,
@@ -2230,7 +2292,7 @@ async fn agent_send_message_inner(
         );
     }
 
-    let app_handle_for_task = app_handle.clone();
+    let task_events = state.host.events.clone();
     let state_inner = Arc::clone(&state.inner);
     let session_lifecycle = Arc::clone(&state.session_lifecycle);
     let pending_permissions = Arc::clone(&state.pending_permissions);
@@ -2246,7 +2308,7 @@ async fn agent_send_message_inner(
     let task_cancelled_permission_ids = Arc::clone(&cancelled_permission_ids);
     let (start_tx, start_rx) = oneshot::channel();
     let (terminal_tx, terminal_rx) = watch::channel(None);
-    let task = tauri::async_runtime::spawn(async move {
+    let task = tokio::spawn(async move {
         let should_run = tokio::select! {
             biased;
             _ = task_cancel_token.cancelled() => false,
@@ -2256,7 +2318,7 @@ async fn agent_send_message_inner(
             provider::with_run_cancellation(
                 task_cancel_token.clone(),
                 run_agent_prompt(AgentPromptRun {
-                    app_handle: app_handle_for_task.clone(),
+                    events: task_events.clone(),
                     agent,
                     session_manager: Arc::clone(&task_session_manager),
                     live_timelines: live_timelines.clone(),
@@ -2321,7 +2383,7 @@ async fn agent_send_message_inner(
                 apply_failed_prompt_outcome(&mut timelines, &session_id, item.clone());
             }
             emit_agent_event(
-                &app_handle_for_task,
+                &task_events,
                 AgentEventEnvelope {
                     event_type: "error".to_string(),
                     session_id: Some(session_id.clone()),
@@ -2334,7 +2396,7 @@ async fn agent_send_message_inner(
             );
         }
         emit_agent_event(
-            &app_handle_for_task,
+            &task_events,
             AgentEventEnvelope {
                 event_type: "runFinished".to_string(),
                 session_id: Some(session_id),
@@ -2396,7 +2458,7 @@ async fn agent_send_message_inner(
         return Err(error);
     }
     emit_agent_event(
-        &app_handle,
+        &state.host.events,
         AgentEventEnvelope {
             event_type: "runStarted".to_string(),
             session_id: Some(request.session_id.clone()),
@@ -2409,7 +2471,7 @@ async fn agent_send_message_inner(
     );
 
     record_and_emit_timeline_item(
-        &app_handle,
+        &state.host.events,
         &state.live_timelines,
         &request.session_id,
         &run_id,
@@ -2491,7 +2553,7 @@ pub async fn agent_cancel_run(
         )
         .await
         {
-            emit_timeline_item(&app_handle, &session_id, &run_id, item);
+            emit_timeline_item(&state.host.events, &session_id, &run_id, item);
         }
     }
     Ok(())
@@ -2630,7 +2692,7 @@ pub async fn agent_set_permission_mode(
             .await
             {
                 emit_agent_event(
-                    &app_handle,
+                    &state.host.events,
                     AgentEventEnvelope {
                         event_type: "timelineItem".to_string(),
                         session_id: Some(session_id.clone()),
@@ -2650,7 +2712,7 @@ pub async fn agent_set_permission_mode(
     // that is no longer authoritative.
     match session_manager.get_session(&session_id, false).await {
         Ok(session) => emit_agent_event(
-            &app_handle,
+            &state.host.events,
             AgentEventEnvelope {
                 event_type: "sessionUpdated".to_string(),
                 session_id: Some(session_id),
@@ -2720,7 +2782,7 @@ pub async fn agent_permission_respond(
     .await
     {
         emit_agent_event(
-            &app_handle,
+            &state.host.events,
             AgentEventEnvelope {
                 event_type: "timelineItem".to_string(),
                 session_id: Some(session_id.clone()),
@@ -2797,7 +2859,7 @@ pub(crate) async fn cancel_agent_run_for_user(
 }
 
 struct AgentPromptRun {
-    app_handle: AppHandle,
+    events: AgentEventDispatcher,
     agent: Arc<Agent>,
     session_manager: Arc<SessionManager>,
     live_timelines: LiveTimelines,
@@ -3128,7 +3190,7 @@ async fn automatically_handle_permissions(
 
 async fn run_agent_prompt(run: AgentPromptRun) -> Result<AgentPromptOutcome, String> {
     let AgentPromptRun {
-        app_handle,
+        events,
         agent,
         session_manager,
         live_timelines,
@@ -3159,7 +3221,7 @@ async fn run_agent_prompt(run: AgentPromptRun) -> Result<AgentPromptOutcome, Str
         .map_err(|e| format!("Failed to load updated Agent task: {e}"))?;
     let working_dir = updated_session.working_dir.clone();
     emit_agent_event(
-        &app_handle,
+        &events,
         AgentEventEnvelope {
             event_type: "sessionUpdated".to_string(),
             session_id: Some(session_id.clone()),
@@ -3276,7 +3338,7 @@ async fn run_agent_prompt(run: AgentPromptRun) -> Result<AgentPromptOutcome, Str
                 }
                 for item in items {
                     record_and_emit_timeline_item(
-                        &app_handle,
+                        &events,
                         &live_timelines,
                         &session_id,
                         &run_id,
@@ -3302,7 +3364,7 @@ async fn run_agent_prompt(run: AgentPromptRun) -> Result<AgentPromptOutcome, Str
                 )
                 .await;
                 emit_agent_event(
-                    &app_handle,
+                    &events,
                     AgentEventEnvelope {
                         event_type: "historyReplaced".to_string(),
                         session_id: Some(session_id.clone()),
@@ -3445,8 +3507,8 @@ fn pending_permission_request_id(item: &AgentTimelineItem) -> Option<String> {
     None
 }
 
-fn project_skills_are_trusted(app_handle: &AppHandle, user_id: &str, project_root: &Path) -> bool {
-    match load_agent_config_inner(app_handle, user_id) {
+fn project_skills_are_trusted(paths: &AgentPathLayout, user_id: &str, project_root: &Path) -> bool {
+    match load_agent_config_inner(paths, user_id) {
         Ok(config) => {
             project_skills_trust_status(&config, project_root, true).decision == Some(true)
         }
@@ -3467,11 +3529,11 @@ fn project_skills_root_is_available(project_root: &Path) -> bool {
 }
 
 fn skills_discovery_working_dir(
-    app_handle: &AppHandle,
+    paths: &AgentPathLayout,
     user_id: &str,
     session: &Session,
 ) -> Result<PathBuf, String> {
-    if project_skills_are_trusted(app_handle, user_id, &session.working_dir) {
+    if project_skills_are_trusted(paths, user_id, &session.working_dir) {
         if project_skills_root_is_available(&session.working_dir) {
             return Ok(session.working_dir.clone());
         }
@@ -3481,7 +3543,7 @@ fn skills_discovery_working_dir(
         );
     }
 
-    let root = agent_config_dir(app_handle, user_id)
+    let root = agent_config_dir(paths, user_id)
         .map_err(|error| format!("Failed to locate Maple skills data: {error}"))?
         .join("untrusted-project-skills");
     fs::create_dir_all(&root)
@@ -3526,12 +3588,12 @@ fn skills_client_for_working_dir(
 }
 
 fn prepare_transient_skills_client(
-    app_handle: &AppHandle,
+    paths: &AgentPathLayout,
     user_id: &str,
     agent: &Arc<Agent>,
     session: &Session,
 ) -> Result<SkillsClient, String> {
-    let working_dir = skills_discovery_working_dir(app_handle, user_id, session)?;
+    let working_dir = skills_discovery_working_dir(paths, user_id, session)?;
     skills_client_for_working_dir(agent, session, working_dir)
 }
 
@@ -3549,7 +3611,7 @@ async fn attach_prepared_skills_client(agent: &Arc<Agent>, skills_client: Skills
 }
 
 struct AgentSkillsScope<'a> {
-    app_handle: &'a AppHandle,
+    paths: &'a AgentPathLayout,
     user_id: &'a str,
 }
 
@@ -3678,12 +3740,8 @@ async fn configure_session_agent(
     )
     .await?;
     let agent = manager_result.agent;
-    let skills_client = prepare_transient_skills_client(
-        skills_scope.app_handle,
-        skills_scope.user_id,
-        &agent,
-        session,
-    )?;
+    let skills_client =
+        prepare_transient_skills_client(skills_scope.paths, skills_scope.user_id, &agent, session)?;
     let mcp_errors = mcp_connection_errors(manager_result.extension_results, &session_mcp_keys);
     install_maple_provider(&agent, maple_api_session, session, model, context_limit).await?;
     agent
@@ -4497,13 +4555,13 @@ fn sort_sessions_newest_first(sessions: &mut [AgentSessionSummary]) {
 }
 
 fn emit_timeline_item(
-    app_handle: &AppHandle,
+    events: &AgentEventDispatcher,
     session_id: &str,
     run_id: &str,
     item: AgentTimelineItem,
 ) {
     emit_agent_event(
-        app_handle,
+        events,
         AgentEventEnvelope {
             event_type: "timelineItem".to_string(),
             session_id: Some(session_id.to_string()),
@@ -4517,14 +4575,14 @@ fn emit_timeline_item(
 }
 
 async fn record_and_emit_timeline_item(
-    app_handle: &AppHandle,
+    events: &AgentEventDispatcher,
     live_timelines: &LiveTimelines,
     session_id: &str,
     run_id: &str,
     item: AgentTimelineItem,
 ) {
     record_timeline_item(live_timelines, session_id, item.clone()).await;
-    emit_timeline_item(app_handle, session_id, run_id, item);
+    emit_timeline_item(events, session_id, run_id, item);
 }
 
 async fn record_timeline_item(
@@ -4681,12 +4739,9 @@ async fn update_live_permission_status(
     Some(item.clone())
 }
 
-fn emit_agent_event(app_handle: &AppHandle, event: AgentEventEnvelope) {
-    let state = app_handle.state::<AgentRuntimeState>();
-    let _ = state.event_sender.send(event.clone());
-    if let Err(error) = app_handle.emit(AGENT_EVENT_NAME, event) {
-        log::warn!("Failed to emit Agent Mode event: {error}");
-    }
+fn emit_agent_event(events: &AgentEventDispatcher, event: AgentEventEnvelope) {
+    let _ = events.sender.send(event.clone());
+    events.sink.emit(&event);
 }
 
 fn configure_embedded_goose(goose_path_root: &Path, model: &str, mode: &str) -> Result<(), String> {
@@ -5210,49 +5265,41 @@ fn normalize_project_root(path: &Path) -> Result<PathBuf, String> {
     Ok(canonical)
 }
 
-fn agent_root_dir(app_handle: &AppHandle) -> Result<PathBuf, anyhow::Error> {
-    let base = app_handle
-        .path()
-        .app_config_dir()
-        .map_err(|error| anyhow::anyhow!("Failed to resolve app config dir: {error}"))?;
-    let path = base.join("agent");
+fn agent_root_dir(paths: &AgentPathLayout) -> Result<PathBuf, anyhow::Error> {
+    let path = paths.config_root.clone();
     fs::create_dir_all(&path)?;
     set_owner_only_dir_permissions(&path);
     Ok(path)
 }
 
 fn account_config_dir_path(
-    app_handle: &AppHandle,
+    paths: &AgentPathLayout,
     user_id: &str,
 ) -> Result<PathBuf, anyhow::Error> {
     let scope = account_scope(user_id).map_err(anyhow::Error::msg)?;
-    Ok(agent_root_dir(app_handle)?.join("accounts").join(scope))
+    Ok(agent_root_dir(paths)?.join("accounts").join(scope))
 }
 
 fn account_local_data_dir_path(
-    app_handle: &AppHandle,
+    paths: &AgentPathLayout,
     user_id: &str,
 ) -> Result<PathBuf, anyhow::Error> {
     let scope = account_scope(user_id).map_err(anyhow::Error::msg)?;
-    let base = app_handle
-        .path()
-        .app_local_data_dir()
-        .map_err(|error| anyhow::anyhow!("Failed to resolve app local data dir: {error}"))?;
-    Ok(base.join("agent").join("accounts").join(scope))
+    Ok(paths.local_data_root.join("accounts").join(scope))
 }
 
-fn agent_config_dir(app_handle: &AppHandle, user_id: &str) -> Result<PathBuf, anyhow::Error> {
-    let path = account_config_dir_path(app_handle, user_id)?;
+fn agent_config_dir(paths: &AgentPathLayout, user_id: &str) -> Result<PathBuf, anyhow::Error> {
+    let path = account_config_dir_path(paths, user_id)?;
     fs::create_dir_all(&path)?;
     set_owner_only_dir_permissions(&path);
     Ok(path)
 }
 
 fn account_session_manager(
-    app_handle: &AppHandle,
+    paths: &AgentPathLayout,
     user_id: &str,
 ) -> Result<Arc<SessionManager>, String> {
-    let account_dir = agent_config_dir(app_handle, user_id).map_err(|error| error.to_string())?;
+    let account_dir = agent_config_dir(paths, user_id).map_err(|error| error.to_string())?;
     session_manager_for_account_dir(&account_dir)
 }
 
@@ -5281,12 +5328,12 @@ fn remove_agent_history_path(path: &Path) -> Result<(), anyhow::Error> {
     result.map_err(Into::into)
 }
 fn load_agent_config_inner(
-    app_handle: &AppHandle,
+    paths: &AgentPathLayout,
     user_id: &str,
 ) -> Result<AgentConfig, anyhow::Error> {
-    let path = agent_config_dir(app_handle, user_id)?.join("config.json");
+    let path = agent_config_dir(paths, user_id)?.join("config.json");
     let removed_project_roots_path =
-        account_local_data_dir_path(app_handle, user_id)?.join("removed_project_roots.json");
+        account_local_data_dir_path(paths, user_id)?.join("removed_project_roots.json");
     load_agent_config_files(&path, &removed_project_roots_path)
 }
 
@@ -5328,11 +5375,11 @@ fn migrate_agent_config(config: &mut AgentConfig) -> bool {
 }
 
 fn save_agent_config_inner(
-    app_handle: &AppHandle,
+    paths: &AgentPathLayout,
     user_id: &str,
     config: &AgentConfig,
 ) -> Result<(), anyhow::Error> {
-    let path = agent_config_dir(app_handle, user_id)?.join("config.json");
+    let path = agent_config_dir(paths, user_id)?.join("config.json");
     save_agent_config_file(&path, config)
 }
 
@@ -5356,11 +5403,11 @@ fn load_removed_project_roots_file(path: &Path) -> Result<Vec<String>, anyhow::E
 }
 
 fn save_removed_project_roots_inner(
-    app_handle: &AppHandle,
+    paths: &AgentPathLayout,
     user_id: &str,
     roots: &[String],
 ) -> Result<(), anyhow::Error> {
-    let path = account_local_data_dir_path(app_handle, user_id)?.join("removed_project_roots.json");
+    let path = account_local_data_dir_path(paths, user_id)?.join("removed_project_roots.json");
     write_device_local_json_file(&path, roots)
 }
 
@@ -5406,10 +5453,10 @@ fn apply_project_skills_trust(
 }
 
 fn load_recent_project_roots_inner(
-    app_handle: &AppHandle,
+    paths: &AgentPathLayout,
     user_id: &str,
 ) -> Result<Vec<RecentProjectRoot>, anyhow::Error> {
-    let path = agent_config_dir(app_handle, user_id)?.join("recent_roots.json");
+    let path = agent_config_dir(paths, user_id)?.join("recent_roots.json");
     load_recent_project_roots_file(&path)
 }
 
@@ -5494,11 +5541,11 @@ fn register_explicit_project_root_file(
 }
 
 fn register_explicit_project_root_inner(
-    app_handle: &AppHandle,
+    paths: &AgentPathLayout,
     user_id: &str,
     project_root: &Path,
 ) -> Result<Vec<RecentProjectRoot>, anyhow::Error> {
-    let file_path = agent_config_dir(app_handle, user_id)?.join("recent_roots.json");
+    let file_path = agent_config_dir(paths, user_id)?.join("recent_roots.json");
     register_explicit_project_root_file(&file_path, project_root, unix_ms())
 }
 
@@ -5531,11 +5578,11 @@ fn restore_explicit_project_root_file(
 }
 
 fn restore_explicit_project_root_inner(
-    app_handle: &AppHandle,
+    paths: &AgentPathLayout,
     user_id: &str,
     project_root: &Path,
 ) -> Result<Vec<RecentProjectRoot>, anyhow::Error> {
-    let file_path = agent_config_dir(app_handle, user_id)?.join("recent_roots.json");
+    let file_path = agent_config_dir(paths, user_id)?.join("recent_roots.json");
     restore_explicit_project_root_file(&file_path, project_root, unix_ms())
 }
 
@@ -5591,12 +5638,12 @@ fn save_project_root_order_file(
 }
 
 fn save_project_root_order_inner(
-    app_handle: &AppHandle,
+    layout: &AgentPathLayout,
     user_id: &str,
     mut paths: Vec<String>,
 ) -> Result<Vec<RecentProjectRoot>, anyhow::Error> {
-    let file_path = agent_config_dir(app_handle, user_id)?.join("recent_roots.json");
-    let removed = load_agent_config_inner(app_handle, user_id)?
+    let file_path = agent_config_dir(layout, user_id)?.join("recent_roots.json");
+    let removed = load_agent_config_inner(layout, user_id)?
         .removed_project_roots
         .into_iter()
         .collect::<HashSet<_>>();
@@ -5740,6 +5787,12 @@ fn path_string(path: &Path) -> String {
 mod tests {
     use super::*;
     use rmcp::model::{AnnotateAble, RawTextContent, Role as McpRole};
+
+    struct NoopAgentEventSink;
+
+    impl AgentEventSink for NoopAgentEventSink {
+        fn emit(&self, _event: &AgentEventEnvelope) {}
+    }
 
     struct InertMapleTransport;
 
@@ -8942,7 +8995,7 @@ mod tests {
     #[tokio::test]
     async fn detects_active_run_for_session() {
         let mut active_runs = HashMap::new();
-        let task_handle = tauri::async_runtime::spawn(async {});
+        let task_handle = tokio::spawn(async {});
         active_runs.insert(
             "run-1".to_string(),
             ActiveAgentRun {
@@ -9135,7 +9188,13 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_operations_captured_before_account_clear() {
-        let state = AgentRuntimeState::new();
+        let state = MapleAgentService::new(MapleAgentHostResources::new(
+            AgentPathLayout::from_app_roots(
+                PathBuf::from("unused-config-root"),
+                PathBuf::from("unused-local-root"),
+            ),
+            Arc::new(NoopAgentEventSink),
+        ));
         let scope = account_scope("user-to-clear").unwrap();
         let stale_generation = account_generation(&state, &scope).await;
 
@@ -9171,7 +9230,7 @@ mod tests {
         let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let (started_tx, started_rx) = oneshot::channel();
         let task_dropped = Arc::clone(&dropped);
-        let task = tauri::async_runtime::spawn(async move {
+        let task = tokio::spawn(async move {
             let _drop_flag = DropFlag(task_dropped);
             let _ = started_tx.send(());
             futures_util::future::pending::<()>().await;
