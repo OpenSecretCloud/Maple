@@ -4,6 +4,7 @@ import { useOpenSecret } from "@opensecret/react";
 import {
   ArrowLeft,
   BookOpen,
+  Cable,
   CreditCard,
   Database,
   KeyRound,
@@ -36,7 +37,7 @@ import {
 import { resetWorkspaceModePreference } from "@/services/workspaceModePreference";
 import { useLocalState } from "@/state/useLocalState";
 import type { TeamStatus } from "@/types/team";
-import { isIOS } from "@/utils/platform";
+import { isIOS, isLinux, isMacOS, isTauriDesktop } from "@/utils/platform";
 import { getTeamSeatMismatch } from "@/utils/teamSeats";
 import { cn } from "@/utils/utils";
 import packageJson from "../../../package.json";
@@ -50,6 +51,7 @@ type SettingsNavItem = {
     | "/settings/billing"
     | "/settings/team"
     | "/settings/api"
+    | "/settings/agent-connections"
     | "/settings/history"
     | "/settings/about";
   icon: ComponentType<{ className?: string }>;
@@ -233,6 +235,7 @@ function SettingsLayoutContent() {
   });
 
   const isIOSPlatform = isIOS();
+  const supportsAgentConnections = isTauriDesktop() && (isMacOS() || isLinux());
   const { data: products, isError: productsError } = useQuery({
     queryKey: ["products-version-check", isIOSPlatform],
     queryFn: () => getBillingService().getProducts(`v${packageJson.version}`),
@@ -278,9 +281,20 @@ function SettingsLayoutContent() {
     },
     {
       label: "Developer",
-      items: showApiManagement
-        ? [{ label: "API & credits", to: "/settings/api", icon: KeyRound }]
-        : []
+      items: [
+        ...(showApiManagement
+          ? [{ label: "API & credits", to: "/settings/api" as const, icon: KeyRound }]
+          : []),
+        ...(supportsAgentConnections
+          ? [
+              {
+                label: "Agent connections",
+                to: "/settings/agent-connections" as const,
+                icon: Cable
+              }
+            ]
+          : [])
+      ]
     },
     {
       label: "Data",

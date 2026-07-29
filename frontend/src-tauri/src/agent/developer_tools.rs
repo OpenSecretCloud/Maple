@@ -28,7 +28,7 @@ use rmcp::model::{
 };
 use rmcp::object;
 use serde::{de::Error as SerdeDeError, Deserialize, Deserializer};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -39,7 +39,7 @@ use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt};
 #[cfg(not(windows))]
 use tokio::sync::OnceCell;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
 #[cfg(windows)]
 use windows::Win32::System::Threading::CREATE_NO_WINDOW;
@@ -51,6 +51,13 @@ const MAX_READ_BYTES: usize = 50 * 1024;
 const MAX_EDIT_BYTES: usize = 20 * 1024 * 1024;
 const MAX_IMAGE_BYTES: usize = 20 * 1024 * 1024;
 const MAX_SHELL_OUTPUT_BYTES: usize = 50_000;
+const SESSION_SECRET_ENV_KEYS: [&str; 5] = [
+    "BUZZ_RELAY_URL",
+    "BUZZ_PRIVATE_KEY",
+    "BUZZ_AUTH_TAG",
+    "BUZZ_API_TOKEN",
+    "BUZZ_ACP_DISPLAY_NAME",
+];
 const SHELL_OUTPUT_DRAIN_TIMEOUT: Duration = Duration::from_millis(500);
 const SHELL_PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const IMAGE_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30);
@@ -132,6 +139,7 @@ pub(crate) struct MapleDeveloperClient {
     goose: DeveloperClient,
     web_transport: Arc<dyn MapleWebTransport>,
     web_state: Arc<WebToolState>,
+    tool_environment: Arc<RwLock<BTreeMap<String, String>>>,
     contextual_image_context: Option<PlatformExtensionContext>,
     #[cfg(not(windows))]
     login_path_probe: ShellTool,
@@ -145,6 +153,7 @@ impl MapleDeveloperClient {
         primary_model_supports_vision: bool,
         web_transport: Arc<dyn MapleWebTransport>,
         web_state: Arc<WebToolState>,
+        tool_environment: Arc<RwLock<BTreeMap<String, String>>>,
     ) -> anyhow::Result<Self> {
         let info = InitializeResult::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("developer", "1.0.0").with_title("Developer"))
@@ -160,6 +169,7 @@ impl MapleDeveloperClient {
             goose: DeveloperClient::new(context)?,
             web_transport,
             web_state,
+            tool_environment,
             contextual_image_context,
             #[cfg(not(windows))]
             login_path_probe: ShellTool::new(true)?,
@@ -478,11 +488,13 @@ impl McpClientTrait for MapleDeveloperClient {
                 let login_path = self.login_path().await;
                 #[cfg(windows)]
                 let login_path: Option<String> = None;
+                let tool_environment = self.tool_environment.read().await.clone();
                 return Ok(run_bounded_shell(
                     params,
                     working_dir,
                     login_path.as_deref(),
                     Some(&ctx.session_id),
+                    &tool_environment,
                     cancel_token,
                 )
                 .await);
@@ -816,6 +828,7 @@ async fn run_bounded_shell(
     working_dir: Option<&Path>,
     login_path: Option<&str>,
     session_id: Option<&str>,
+    tool_environment: &BTreeMap<String, String>,
     cancel_token: CancellationToken,
 ) -> CallToolResult {
     if params.command.trim().is_empty() {
@@ -829,6 +842,7 @@ async fn run_bounded_shell(
         working_dir,
         login_path,
         session_id,
+        tool_environment,
         cancel_token,
     )
     .await
@@ -853,10 +867,24 @@ async fn execute_bounded_shell(
     working_dir: Option<&Path>,
     login_path: Option<&str>,
     session_id: Option<&str>,
+    tool_environment: &BTreeMap<String, String>,
     cancel_token: CancellationToken,
 ) -> Result<BoundedShellExecution, String> {
-    let mut command =
-        build_bounded_shell_command(command_line, working_dir, login_path, session_id);
+    let credential_bearing = contains_session_secret(tool_environment);
+    #[cfg(not(windows))]
+    if Path::new("/.flatpak-info").exists() && credential_bearing {
+        return Err(
+            "Credential-bearing Buzz ACP shell sessions are not supported inside Flatpak"
+                .to_string(),
+        );
+    }
+    let mut command = build_bounded_shell_command(
+        command_line,
+        working_dir,
+        login_path,
+        session_id,
+        tool_environment,
+    );
     command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -964,7 +992,7 @@ async fn execute_bounded_shell(
     // the cap. Keep the wrapped process-tree handle alive and kill it even if
     // the parent wait already completed. A quiet background job that merely
     // holds the pipes open follows Pi/Goose semantics and is left running.
-    if capture.exceeded_limit {
+    if capture.exceeded_limit || credential_bearing {
         let _ = terminate_shell_process(child.as_mut()).await;
     }
     if let Some(error) = wait_error {
@@ -977,6 +1005,12 @@ async fn execute_bounded_shell(
         timed_out,
         cancelled,
     })
+}
+
+fn contains_session_secret(tool_environment: &BTreeMap<String, String>) -> bool {
+    SESSION_SECRET_ENV_KEYS
+        .iter()
+        .any(|key| tool_environment.contains_key(*key))
 }
 
 async fn wait_for_shell_parent(child: &mut dyn ChildWrapper) -> std::io::Result<ExitStatus> {
@@ -1069,6 +1103,7 @@ fn build_bounded_shell_command(
     working_dir: Option<&Path>,
     login_path: Option<&str>,
     session_id: Option<&str>,
+    tool_environment: &BTreeMap<String, String>,
 ) -> tokio::process::Command {
     #[cfg(windows)]
     let mut command = {
@@ -1096,6 +1131,7 @@ fn build_bounded_shell_command(
         if let Some(path) = login_path {
             command.env("PATH", path);
         }
+        apply_tool_environment(&mut command, tool_environment);
         command
     };
 
@@ -1117,6 +1153,7 @@ fn build_bounded_shell_command(
                 command.arg(format!("--env=PATH={path}"));
             }
             apply_flatpak_session_environment(&mut command, session_id);
+            apply_flatpak_tool_environment(&mut command, tool_environment);
             command.arg(shell).args(["-c", command_line]);
             command
         } else {
@@ -1129,6 +1166,7 @@ fn build_bounded_shell_command(
                 command.env("PATH", path);
             }
             apply_session_environment(&mut command, session_id);
+            apply_tool_environment(&mut command, tool_environment);
             command
         }
     };
@@ -1149,6 +1187,16 @@ fn apply_session_environment(command: &mut tokio::process::Command, session_id: 
     }
 }
 
+fn apply_tool_environment(
+    command: &mut tokio::process::Command,
+    tool_environment: &BTreeMap<String, String>,
+) {
+    for key in SESSION_SECRET_ENV_KEYS {
+        command.env_remove(key);
+    }
+    command.envs(tool_environment);
+}
+
 #[cfg(not(windows))]
 fn apply_flatpak_session_environment(
     command: &mut tokio::process::Command,
@@ -1158,6 +1206,19 @@ fn apply_flatpak_session_environment(
         command.arg(format!("--env=AGENT_SESSION_ID={session_id}"));
     } else {
         command.arg("--unset-env=AGENT_SESSION_ID");
+    }
+}
+
+#[cfg(not(windows))]
+fn apply_flatpak_tool_environment(
+    command: &mut tokio::process::Command,
+    tool_environment: &BTreeMap<String, String>,
+) {
+    for key in SESSION_SECRET_ENV_KEYS {
+        command.arg(format!("--unset-env={key}"));
+    }
+    for (key, value) in tool_environment {
+        command.arg(format!("--env={key}={value}"));
     }
 }
 
@@ -2253,11 +2314,20 @@ mod tests {
     }
 
     fn test_client(data_dir: PathBuf, primary_model_supports_vision: bool) -> MapleDeveloperClient {
+        test_client_with_environment(data_dir, primary_model_supports_vision, BTreeMap::new())
+    }
+
+    fn test_client_with_environment(
+        data_dir: PathBuf,
+        primary_model_supports_vision: bool,
+        tool_environment: BTreeMap<String, String>,
+    ) -> MapleDeveloperClient {
         MapleDeveloperClient::new(
             test_context(data_dir),
             primary_model_supports_vision,
             Arc::new(TestWebTransport),
             Arc::new(WebToolState::default()),
+            Arc::new(RwLock::new(tool_environment)),
         )
         .unwrap()
     }
@@ -2386,6 +2456,7 @@ mod tests {
             true,
             Arc::new(TestWebTransport),
             Arc::new(WebToolState::default()),
+            Arc::new(RwLock::new(BTreeMap::new())),
         )
         .unwrap();
         let config = goose::agents::ExtensionConfig::Builtin {
@@ -2914,6 +2985,7 @@ mod tests {
                 None,
                 std::env::var("PATH").ok().as_deref(),
                 None,
+                &BTreeMap::new(),
                 CancellationToken::new(),
             ),
         )
@@ -2958,6 +3030,61 @@ mod tests {
         assert_eq!(cleared_value, Some(None));
     }
 
+    #[test]
+    fn shell_tool_environment_is_applied_only_to_the_child_command() {
+        let process_value = std::env::var_os("BUZZ_ACP_DISPLAY_NAME");
+        let environment = BTreeMap::from([
+            (
+                "BUZZ_ACP_DISPLAY_NAME".to_string(),
+                "maple-test-agent".to_string(),
+            ),
+            ("BUZZ_AUTH_TAG".to_string(), "test-auth-tag".to_string()),
+        ]);
+        let mut command = tokio::process::Command::new("unused");
+        apply_tool_environment(&mut command, &environment);
+
+        let command_environment = command
+            .as_std()
+            .get_envs()
+            .filter_map(|(key, value)| {
+                Some((key.to_str()?.to_string(), value?.to_str()?.to_string()))
+            })
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(command_environment, environment);
+        assert_eq!(std::env::var_os("BUZZ_ACP_DISPLAY_NAME"), process_value);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn flatpak_shell_forwards_each_tool_environment_value_as_one_argument() {
+        let environment = BTreeMap::from([
+            (
+                "BUZZ_ACP_DISPLAY_NAME".to_string(),
+                "Maple Agent".to_string(),
+            ),
+            ("BUZZ_PRIVATE_KEY".to_string(), "key=value".to_string()),
+        ]);
+        let mut command = tokio::process::Command::new("flatpak-spawn");
+        apply_flatpak_tool_environment(&mut command, &environment);
+        let arguments = command
+            .as_std()
+            .get_args()
+            .map(|value| value.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            arguments,
+            vec![
+                "--unset-env=BUZZ_RELAY_URL",
+                "--unset-env=BUZZ_PRIVATE_KEY",
+                "--unset-env=BUZZ_AUTH_TAG",
+                "--unset-env=BUZZ_API_TOKEN",
+                "--unset-env=BUZZ_ACP_DISPLAY_NAME",
+                "--env=BUZZ_ACP_DISPLAY_NAME=Maple Agent",
+                "--env=BUZZ_PRIVATE_KEY=key=value",
+            ]
+        );
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn shell_tool_forwards_the_current_agent_session_id() {
@@ -2984,6 +3111,91 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn shell_tool_environments_are_isolated_between_maple_sessions() {
+        let temp = TestDir::new();
+        let first = test_client_with_environment(
+            temp.path().join("first-sessions"),
+            true,
+            BTreeMap::from([(
+                "BUZZ_ACP_DISPLAY_NAME".to_string(),
+                "first-maple-agent".to_string(),
+            )]),
+        );
+        let second = test_client_with_environment(
+            temp.path().join("second-sessions"),
+            true,
+            BTreeMap::from([(
+                "BUZZ_ACP_DISPLAY_NAME".to_string(),
+                "second-maple-agent".to_string(),
+            )]),
+        );
+
+        for (client, session_id, expected) in [
+            (&first, "maple-first", "first-maple-agent"),
+            (&second, "maple-second", "second-maple-agent"),
+        ] {
+            let result = client
+                .call_tool(
+                    &ToolCallContext::new(session_id.to_string(), None, None),
+                    "shell",
+                    Some(object!({
+                        "command": "printf %s \"$BUZZ_ACP_DISPLAY_NAME\"",
+                        "timeout_secs": 2
+                    })),
+                    CancellationToken::new(),
+                )
+                .await
+                .unwrap();
+            let output: ShellOutput =
+                serde_json::from_value(result.structured_content.clone().unwrap()).unwrap();
+            assert_eq!(result.is_error, Some(false));
+            assert_eq!(output.stdout, expected);
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn shell_tool_environment_clear_is_observed_by_an_existing_client() {
+        let temp = TestDir::new();
+        let tool_environment = Arc::new(RwLock::new(BTreeMap::from([(
+            "BUZZ_AUTH_TAG".to_string(),
+            "maple-session-auth-tag".to_string(),
+        )])));
+        let client = MapleDeveloperClient::new(
+            test_context(temp.path().join("sessions")),
+            true,
+            Arc::new(TestWebTransport),
+            Arc::new(WebToolState::default()),
+            Arc::clone(&tool_environment),
+        )
+        .unwrap();
+        let context = ToolCallContext::new("maple-clear-test".to_string(), None, None);
+        let call_shell = || {
+            client.call_tool(
+                &context,
+                "shell",
+                Some(object!({
+                    "command": "printf %s \"${BUZZ_AUTH_TAG-}\"",
+                    "timeout_secs": 2
+                })),
+                CancellationToken::new(),
+            )
+        };
+
+        let result = call_shell().await.unwrap();
+        let output: ShellOutput =
+            serde_json::from_value(result.structured_content.clone().unwrap()).unwrap();
+        assert_eq!(output.stdout, "maple-session-auth-tag");
+
+        tool_environment.write().await.clear();
+        let result = call_shell().await.unwrap();
+        let output: ShellOutput =
+            serde_json::from_value(result.structured_content.clone().unwrap()).unwrap();
+        assert_eq!(output.stdout, "");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn shell_returns_without_killing_a_successful_background_job() {
         let temp = TestDir::new();
         let sentinel = temp.path().join("background-completed");
@@ -2999,6 +3211,7 @@ mod tests {
                 None,
                 std::env::var("PATH").ok().as_deref(),
                 None,
+                &BTreeMap::new(),
                 CancellationToken::new(),
             ),
         )
@@ -3012,6 +3225,45 @@ mod tests {
 
         tokio::time::sleep(Duration::from_secs(1)).await;
         assert_eq!(fs::read_to_string(&sentinel).unwrap(), "survived");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn shell_kills_background_descendants_with_non_private_key_session_secrets() {
+        let temp = TestDir::new();
+        let sentinel = temp.path().join("credential-descendant-survived");
+        let command = format!("(sleep 1; printf survived > '{}') &", sentinel.display());
+        let environment = BTreeMap::from([(
+            "BUZZ_AUTH_TAG".to_string(),
+            "maple-session-auth-tag".to_string(),
+        )]);
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(3),
+            run_bounded_shell(
+                ShellParams {
+                    command,
+                    timeout_secs: Some(2),
+                },
+                None,
+                std::env::var("PATH").ok().as_deref(),
+                None,
+                &environment,
+                CancellationToken::new(),
+            ),
+        )
+        .await
+        .expect("a credential-bearing background tree must be terminated");
+        let output: ShellOutput =
+            serde_json::from_value(result.structured_content.clone().unwrap()).unwrap();
+        assert_eq!(result.is_error, Some(false));
+        assert!(output.output_truncated);
+
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        assert!(
+            !sentinel.exists(),
+            "a background descendant retained a non-private-key session secret"
+        );
     }
 
     #[cfg(unix)]
@@ -3034,6 +3286,7 @@ mod tests {
                 None,
                 std::env::var("PATH").ok().as_deref(),
                 None,
+                &BTreeMap::new(),
                 CancellationToken::new(),
             ),
         )
@@ -3069,6 +3322,7 @@ mod tests {
             None,
             std::env::var("PATH").ok().as_deref(),
             None,
+            &BTreeMap::new(),
             CancellationToken::new(),
         )
         .await;
@@ -3107,6 +3361,7 @@ mod tests {
             None,
             std::env::var("PATH").ok().as_deref(),
             None,
+            &BTreeMap::new(),
             cancel_token,
         )
         .await;
@@ -3132,6 +3387,7 @@ mod tests {
             None,
             std::env::var("PATH").ok().as_deref(),
             None,
+            &BTreeMap::new(),
             CancellationToken::new(),
         )
         .await;
