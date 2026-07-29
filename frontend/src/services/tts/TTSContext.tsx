@@ -26,12 +26,15 @@ import {
 } from "./ttsPreferences";
 import { calculateTTSLoudnessAdjustment } from "./ttsLoudness";
 import { isPaidTTSAccessError, synthesizeTTSChunk } from "./ttsSynthesis";
+import { calculateTTSTaperCorrection, type TTSTaperCorrection } from "./ttsTaperCorrection";
+import { scheduleTTSTaperCorrection } from "./ttsTaperPlayback";
 import { chunkTextForTTS } from "./ttsText";
 
 interface DecodedTTSChunk {
   audioBuffer: AudioBuffer;
   chunkIndex: number;
   playbackGain: number;
+  taperCorrection: TTSTaperCorrection;
 }
 
 interface AudioSessionLike {
@@ -280,13 +283,25 @@ export function TTSProvider({ children }: { children: ReactNode }) {
           }
 
           const loudnessAdjustment = calculateTTSLoudnessAdjustment(audioBuffer);
+          const taperCorrection = calculateTTSTaperCorrection(audioBuffer, loudnessAdjustment.gain);
+          const taperSummary =
+            taperCorrection.appliedCorrectionDb > 0
+              ? `, taper=+${taperCorrection.appliedCorrectionDb.toFixed(1)} dB` +
+                `${taperCorrection.peakLimited ? " (peak-limited)" : ""}`
+              : "";
           console.debug(
             `[TTS] Prepared chunk ${chunkIndex + 1}/${chunks.length}: ` +
               `active=${loudnessAdjustment.activeRmsDbfs?.toFixed(1) ?? "silent"} dBFS, ` +
               `peak=${loudnessAdjustment.peakDbfs?.toFixed(1) ?? "silent"} dBFS, ` +
-              `gain=${loudnessAdjustment.gainDb >= 0 ? "+" : ""}${loudnessAdjustment.gainDb.toFixed(1)} dB`
+              `gain=${loudnessAdjustment.gainDb >= 0 ? "+" : ""}${loudnessAdjustment.gainDb.toFixed(1)} dB` +
+              taperSummary
           );
-          return { audioBuffer, chunkIndex, playbackGain: loudnessAdjustment.gain };
+          return {
+            audioBuffer,
+            chunkIndex,
+            playbackGain: loudnessAdjustment.gain,
+            taperCorrection
+          };
         };
 
         let scheduledEndTime = audioContext.currentTime;
@@ -295,16 +310,24 @@ export function TTSProvider({ children }: { children: ReactNode }) {
 
         const scheduleDecodedChunk = (decoded: DecodedTTSChunk) => {
           const source = audioContext.createBufferSource();
-          const gainNode = audioContext.createGain();
+          const normalizationGainNode = audioContext.createGain();
+          const taperGainNode =
+            decoded.taperCorrection.appliedCorrectionDb > 0 ? audioContext.createGain() : null;
           source.buffer = decoded.audioBuffer;
-          gainNode.gain.value = decoded.playbackGain;
-          source.connect(gainNode);
-          gainNode.connect(audioContext.destination);
+          normalizationGainNode.gain.value = decoded.playbackGain;
+          source.connect(normalizationGainNode);
+          if (taperGainNode) {
+            normalizationGainNode.connect(taperGainNode);
+            taperGainNode.connect(audioContext.destination);
+          } else {
+            normalizationGainNode.connect(audioContext.destination);
+          }
           scheduledSourceNodesRef.current.add(source);
 
           const playbackEnded = new Promise<void>((resolve) => {
             source.onended = () => {
-              gainNode.disconnect();
+              normalizationGainNode.disconnect();
+              taperGainNode?.disconnect();
               scheduledSourceNodesRef.current.delete(source);
               if (isActiveRequest()) {
                 console.debug(`[TTS] Finished chunk ${decoded.chunkIndex + 1}/${chunks.length}`);
@@ -316,9 +339,18 @@ export function TTSProvider({ children }: { children: ReactNode }) {
           const startAt = Math.max(scheduledEndTime, audioContext.currentTime);
           scheduledEndTime = startAt + decoded.audioBuffer.duration;
           try {
+            if (taperGainNode) {
+              scheduleTTSTaperCorrection(
+                taperGainNode.gain,
+                decoded.taperCorrection,
+                startAt,
+                decoded.audioBuffer.duration
+              );
+            }
             source.start(startAt);
           } catch (sourceError) {
-            gainNode.disconnect();
+            normalizationGainNode.disconnect();
+            taperGainNode?.disconnect();
             scheduledSourceNodesRef.current.delete(source);
             throw sourceError;
           }
