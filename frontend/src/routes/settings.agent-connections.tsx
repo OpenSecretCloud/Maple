@@ -1,13 +1,13 @@
 import { createFileRoute, Navigate } from "@tanstack/react-router";
 import { AgentConnectionsSettings } from "@/components/settings/AgentConnectionsSettings";
-import { isLinux, isMacOS, isTauriDesktop } from "@/utils/platform";
+import { isAgentConnectionsAvailable } from "@/services/agentConnectionsAvailability";
 
 export const Route = createFileRoute("/settings/agent-connections")({
   component: AgentConnectionsRoute
 });
 
 function AgentConnectionsRoute() {
-  if (!isTauriDesktop() || (!isMacOS() && !isLinux())) {
+  if (!isAgentConnectionsAvailable()) {
     return <Navigate to="/settings/account" replace />;
   }
 

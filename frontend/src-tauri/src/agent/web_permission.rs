@@ -499,7 +499,7 @@ mod tests {
             request_params.get("chat_template_kwargs"),
             Some(&serde_json::json!({ "enable_thinking": false }))
         );
-        assert!(request_params.get("thinking_effort").is_none());
+        assert!(!request_params.contains_key("thinking_effort"));
     }
 
     #[tokio::test]

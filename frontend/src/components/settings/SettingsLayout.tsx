@@ -34,10 +34,11 @@ import {
   restoreMapleApiAuthForUser,
   stopAgentRuntimeForUser
 } from "@/services/agentRuntimeService";
+import { isAgentConnectionsAvailable } from "@/services/agentConnectionsAvailability";
 import { resetWorkspaceModePreference } from "@/services/workspaceModePreference";
 import { useLocalState } from "@/state/useLocalState";
 import type { TeamStatus } from "@/types/team";
-import { isIOS, isLinux, isMacOS, isTauriDesktop } from "@/utils/platform";
+import { isIOS } from "@/utils/platform";
 import { getTeamSeatMismatch } from "@/utils/teamSeats";
 import { cn } from "@/utils/utils";
 import packageJson from "../../../package.json";
@@ -235,7 +236,7 @@ function SettingsLayoutContent() {
   });
 
   const isIOSPlatform = isIOS();
-  const supportsAgentConnections = isTauriDesktop() && (isMacOS() || isLinux());
+  const supportsAgentConnections = isAgentConnectionsAvailable();
   const { data: products, isError: productsError } = useQuery({
     queryKey: ["products-version-check", isIOSPlatform],
     queryFn: () => getBillingService().getProducts(`v${packageJson.version}`),

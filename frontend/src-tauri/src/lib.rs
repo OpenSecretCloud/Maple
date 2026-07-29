@@ -3,12 +3,14 @@ use tauri_plugin_deep_link::DeepLinkExt;
 
 #[cfg(desktop)]
 mod agent;
-#[cfg(any(desktop, target_os = "ios"))]
-mod legacy_tts_cleanup;
 #[cfg(desktop)]
 mod agent_acp;
 #[cfg(desktop)]
+mod agent_host;
+#[cfg(desktop)]
 mod agent_tauri;
+#[cfg(any(desktop, target_os = "ios"))]
+mod legacy_tts_cleanup;
 #[cfg(desktop)]
 mod maple_api;
 mod onnxruntime;
@@ -20,8 +22,8 @@ mod proxy;
 #[tauri::command]
 async fn restart_for_update(app_handle: tauri::AppHandle) -> Result<(), String> {
     log::info!("User requested restart for update");
-    agent_acp::shutdown_agent_acp(&app_handle).await?;
-    agent::shutdown_agent_runtime(&app_handle).await?;
+    let lifecycle = app_handle.state::<agent_host::AgentHostLifecycle>();
+    lifecycle.shutdown_for_update(&app_handle).await?;
     app_handle.restart();
 }
 
@@ -56,11 +58,9 @@ fn handle_desktop_run_event(app_handle: &tauri::AppHandle, event: tauri::RunEven
 
     let app_handle = app_handle.clone();
     tauri::async_runtime::spawn(async move {
-        if let Err(error) = agent_acp::shutdown_agent_acp(&app_handle).await {
-            log::error!("Failed to stop ACP during app exit: {error}");
-        }
-        if let Err(error) = agent::shutdown_agent_runtime(&app_handle).await {
-            log::error!("Failed to stop Agent Mode during app exit: {error}");
+        let lifecycle = app_handle.state::<agent_host::AgentHostLifecycle>();
+        if let Err(error) = lifecycle.shutdown_for_exit(&app_handle).await {
+            log::error!("Failed to stop Agent services during app exit: {error}");
         }
         AGENT_EXIT_CLEANUP_COMPLETE.store(true, Ordering::SeqCst);
         app_handle.exit(code.unwrap_or_default());
@@ -93,35 +93,36 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(agent_acp::AgentAcpState::new())
+        .manage(agent_host::AgentHostLifecycle::new())
         .manage(maple_api::MapleApiAuthState::new())
         .manage(proxy::ProxyState::new())
         .invoke_handler(tauri::generate_handler![
-            agent::agent_get_runtime_status,
-            agent::agent_start_runtime,
-            agent::agent_stop_runtime,
-            agent::agent_restart_runtime,
-            agent::agent_load_config,
-            agent::agent_save_config,
-            agent::agent_list_mcp_servers,
-            agent::agent_save_mcp_servers,
-            agent::agent_list_recent_project_roots,
-            agent::agent_save_recent_project_root,
-            agent::agent_remove_project_root,
-            agent::agent_get_project_skills_trust,
-            agent::agent_set_project_skills_trust,
-            agent::agent_save_project_root_order,
-            agent::agent_create_session,
-            agent::agent_list_sessions,
-            agent::agent_load_session,
-            agent::agent_list_session_mcp_servers,
-            agent::agent_set_session_mcp_server_enabled,
-            agent::agent_delete_session,
-            agent::agent_send_message,
-            agent::agent_cancel_run,
-            agent::agent_set_permission_mode,
-            agent::agent_permission_respond,
-            agent::agent_clear_user_history,
-            agent::agent_clear_user_data,
+            agent_tauri::agent_get_runtime_status,
+            agent_tauri::agent_start_runtime,
+            agent_tauri::agent_stop_runtime,
+            agent_tauri::agent_restart_runtime,
+            agent_tauri::agent_load_config,
+            agent_tauri::agent_save_config,
+            agent_tauri::agent_list_mcp_servers,
+            agent_tauri::agent_save_mcp_servers,
+            agent_tauri::agent_list_recent_project_roots,
+            agent_tauri::agent_save_recent_project_root,
+            agent_tauri::agent_remove_project_root,
+            agent_tauri::agent_get_project_skills_trust,
+            agent_tauri::agent_set_project_skills_trust,
+            agent_tauri::agent_save_project_root_order,
+            agent_tauri::agent_create_session,
+            agent_tauri::agent_list_sessions,
+            agent_tauri::agent_load_session,
+            agent_tauri::agent_list_session_mcp_servers,
+            agent_tauri::agent_set_session_mcp_server_enabled,
+            agent_tauri::agent_delete_session,
+            agent_tauri::agent_send_message,
+            agent_tauri::agent_cancel_run,
+            agent_tauri::agent_set_permission_mode,
+            agent_tauri::agent_permission_respond,
+            agent_tauri::agent_clear_user_history,
+            agent_tauri::agent_clear_user_data,
             agent_acp::agent_acp_load_config,
             agent_acp::agent_acp_save_config,
             agent_acp::agent_acp_start,
@@ -144,7 +145,7 @@ pub fn run() {
         .setup(|app| {
             legacy_tts_cleanup::schedule(app.handle());
 
-            let service = agent_tauri::build_service(app.handle())?;
+            let service = agent_host::build_service(app.handle())?;
             if !app.manage(service) {
                 return Err("Maple Agent service was already initialized".into());
             }

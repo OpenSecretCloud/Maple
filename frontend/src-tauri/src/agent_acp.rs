@@ -1,29 +1,31 @@
 use crate::agent::{
-    cancel_agent_run_for_user, clear_agent_session_tool_environment, create_agent_session_for_user,
-    delete_agent_session_for_user, ensure_agent_runtime_for_user, send_agent_message_for_user,
-    set_agent_session_tool_environment, subscribe_agent_events, AgentCreateSessionRequest,
-    AgentEventEnvelope, AgentRunTerminal, AgentSendMessageRequest, SharedAgentToolEnvironment,
+    AgentCreateSessionRequest, AgentHostEventPolicy, AgentRunEvent, AgentRunTerminal,
+    AgentRuntimeHandle, AgentSendMessageRequest, AgentTimelineItem, AgentToolContextLease,
+    AgentToolContextSpec, MapleAgentService, AGENT_TOOL_CONTEXT_INACTIVE_ERROR,
 };
+use crate::agent_host::AgentHostLifecycle;
+use crate::maple_api::{account_scope, MapleApiAuthState};
 use agent_client_protocol::schema::v1::{
     AgentCapabilities, CancelNotification, ContentBlock, ContentChunk, Implementation,
     InitializeRequest, InitializeResponse, McpServer, NewSessionRequest, NewSessionResponse,
-    PromptCapabilities, PromptRequest, PromptResponse, SessionNotification, SessionUpdate,
-    StopReason, TextContent,
+    PromptCapabilities, PromptRequest, PromptResponse, SessionId, SessionNotification,
+    SessionUpdate, StopReason, TextContent,
 };
 use agent_client_protocol::util::MatchDispatchFrom;
 use agent_client_protocol::{
-    Agent as AcpAgent, ByteStreams, Client, ConnectionTo, Dispatch, HandleDispatchFrom, Handled,
-    JsonRpcNotification, Responder,
+    Agent as AcpAgent, Client, ConnectionTo, Dispatch, HandleDispatchFrom, Handled,
+    JsonRpcNotification, Lines, Responder,
 };
+use futures_util::StreamExt as _;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tauri::{AppHandle, Manager};
-use tokio::sync::{Mutex, RwLock, Semaphore};
-use tokio_util::compat::{TokioAsyncReadCompatExt as _, TokioAsyncWriteCompatExt as _};
+use tokio::sync::{Mutex, OwnedSemaphorePermit, RwLock, Semaphore};
+use tokio_util::codec::{FramedRead, LinesCodec};
 use tokio_util::sync::CancellationToken;
 
 #[cfg(target_os = "linux")]
@@ -37,7 +39,11 @@ const ACP_PROTOCOL_VERSION: u16 = 1;
 const MAX_ACP_CONNECTIONS: usize = 8;
 const MAX_ACP_ERROR_CHARS: usize = 500;
 const MAX_ACP_FRAME_BYTES: usize = 10 * 1024 * 1024;
+const MAX_ACP_OUTBOUND_EVENTS_IN_FLIGHT: usize = 256;
+const MAX_ACP_OUTBOUND_BYTES_IN_FLIGHT: usize = 4 * 1024 * 1024;
+const ACP_OUTBOUND_FRAME_OVERHEAD_BYTES: usize = 256;
 const ACP_CONNECTION_CLEANUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+const ACP_SYNTHETIC_STOP_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 const BRIDGE_HELLO_METHOD: &str = "_maple/bridge/hello";
 const ALLOWED_BRIDGE_ENV: [&str; 6] = [
     "BUZZ_RELAY_URL",
@@ -46,6 +52,13 @@ const ALLOWED_BRIDGE_ENV: [&str; 6] = [
     "BUZZ_API_TOKEN",
     "BUZZ_ACP_DISPLAY_NAME",
     "PATH",
+];
+const SENSITIVE_BRIDGE_ENV: [&str; 5] = [
+    "BUZZ_RELAY_URL",
+    "BUZZ_PRIVATE_KEY",
+    "BUZZ_AUTH_TAG",
+    "BUZZ_API_TOKEN",
+    "BUZZ_ACP_DISPLAY_NAME",
 ];
 
 #[cfg(unix)]
@@ -99,6 +112,47 @@ impl<R: tokio::io::AsyncRead + Unpin> tokio::io::AsyncRead for BoundedLineReader
     }
 }
 
+fn is_session_update_line(line: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(line)
+        .ok()
+        .and_then(|message| {
+            message
+                .get("method")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        })
+        .as_deref()
+        == Some("session/update")
+}
+
+#[cfg(unix)]
+fn tracked_outgoing_lines<W>(
+    writer: W,
+    outbound: Arc<AcpOutboundTracker>,
+) -> impl futures_util::Sink<String, Error = std::io::Error> + Send
+where
+    W: tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    futures_util::sink::unfold(
+        (writer, outbound),
+        |(mut writer, outbound), line: String| async move {
+            use tokio::io::AsyncWriteExt as _;
+
+            let session_update = is_session_update_line(&line);
+            writer.write_all(line.as_bytes()).await?;
+            writer.write_all(b"\n").await?;
+            writer.flush().await?;
+            if session_update {
+                // Credits return only after the real local socket accepted the
+                // complete notification. A peer that stops reading therefore
+                // backpressures Maple instead of growing ACP's internal queues.
+                outbound.acknowledge_session_update();
+            }
+            Ok((writer, outbound))
+        },
+    )
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentAcpPermissionMode {
@@ -111,6 +165,18 @@ impl AgentAcpPermissionMode {
         match self {
             Self::ReadOnly => "smart_approve",
             Self::AllowAll => "auto",
+        }
+    }
+
+    fn host_event_policy(&self) -> AgentHostEventPolicy {
+        match self {
+            // Maple Desktop remains the one authoritative permission broker for
+            // the guarded policy, so its task and permission events must remain
+            // visible there.
+            Self::ReadOnly => AgentHostEventPolicy::Publish,
+            // Unattended ACP runs do not need to contaminate Desktop's live event
+            // stream; their persisted task remains loadable on refresh.
+            Self::AllowAll => AgentHostEventPolicy::Suppress,
         }
     }
 }
@@ -181,7 +247,7 @@ struct AgentAcpStats {
 }
 
 struct RunningAgentAcp {
-    user_id: String,
+    account_scope: String,
     endpoint: PathBuf,
     config: Arc<RwLock<AgentAcpConfig>>,
     stats: Arc<AgentAcpStats>,
@@ -190,14 +256,12 @@ struct RunningAgentAcp {
 }
 
 pub struct AgentAcpState {
-    lifecycle: Mutex<()>,
     running: Mutex<Option<RunningAgentAcp>>,
 }
 
 impl AgentAcpState {
     pub fn new() -> Self {
         Self {
-            lifecycle: Mutex::new(()),
             running: Mutex::new(None),
         }
     }
@@ -210,34 +274,139 @@ struct BridgeHelloNotification {
 }
 
 struct AcpConnectionContext {
-    app_handle: AppHandle,
-    user_id: String,
+    agent: AgentRuntimeHandle,
     config: Arc<RwLock<AgentAcpConfig>>,
     stats: Arc<AgentAcpStats>,
     bridge_environment: Mutex<HashMap<String, String>>,
-    sessions: Mutex<HashMap<String, Option<SharedAgentToolEnvironment>>>,
+    sessions: Mutex<HashMap<String, AgentToolContextLease>>,
     prompt_states: Mutex<HashMap<String, AcpPromptState>>,
     background_tasks: Mutex<tokio::task::JoinSet<()>>,
     finalization: Mutex<()>,
+    lifetime: CancellationToken,
     closed: AtomicBool,
     has_credentials: AtomicBool,
+    outbound: Arc<AcpOutboundTracker>,
 }
 
 enum AcpPromptState {
-    Starting { cancel_requested: bool },
-    Running { run_id: String },
+    Starting {
+        cancellation: CancellationToken,
+    },
+    Running {
+        run_id: String,
+        cancellation: CancellationToken,
+    },
+}
+
+struct AcpOutboundTracker {
+    event_slots: Arc<Semaphore>,
+    byte_slots: Arc<Semaphore>,
+    pending: std::sync::Mutex<VecDeque<AcpOutboundReservation>>,
+}
+
+struct AcpOutboundReservation {
+    _event: OwnedSemaphorePermit,
+    _bytes: OwnedSemaphorePermit,
+}
+
+#[derive(Debug)]
+enum AcpOutboundSendError {
+    UpdateTooLarge,
+    Cancelled,
+    Transport(agent_client_protocol::Error),
+}
+
+impl AcpOutboundTracker {
+    fn new() -> Arc<Self> {
+        Self::with_limits(
+            MAX_ACP_OUTBOUND_EVENTS_IN_FLIGHT,
+            MAX_ACP_OUTBOUND_BYTES_IN_FLIGHT,
+        )
+    }
+
+    fn with_limits(event_limit: usize, byte_limit: usize) -> Arc<Self> {
+        Arc::new(Self {
+            event_slots: Arc::new(Semaphore::new(event_limit)),
+            byte_slots: Arc::new(Semaphore::new(byte_limit)),
+            pending: std::sync::Mutex::new(VecDeque::new()),
+        })
+    }
+
+    async fn reserve(
+        &self,
+        encoded_bytes: usize,
+        cancellation: &CancellationToken,
+    ) -> Result<AcpOutboundReservation, AcpOutboundSendError> {
+        let charged_bytes = encoded_bytes.saturating_add(ACP_OUTBOUND_FRAME_OVERHEAD_BYTES);
+        let Ok(charged_bytes) = u32::try_from(charged_bytes) else {
+            return Err(AcpOutboundSendError::UpdateTooLarge);
+        };
+        if charged_bytes as usize > MAX_ACP_OUTBOUND_BYTES_IN_FLIGHT {
+            return Err(AcpOutboundSendError::UpdateTooLarge);
+        }
+
+        let event = tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => return Err(AcpOutboundSendError::Cancelled),
+            permit = Arc::clone(&self.event_slots).acquire_owned() => {
+                permit.map_err(|_| AcpOutboundSendError::Cancelled)?
+            }
+        };
+        let bytes = tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => return Err(AcpOutboundSendError::Cancelled),
+            permit = Arc::clone(&self.byte_slots).acquire_many_owned(charged_bytes) => {
+                permit.map_err(|_| AcpOutboundSendError::Cancelled)?
+            }
+        };
+        Ok(AcpOutboundReservation {
+            _event: event,
+            _bytes: bytes,
+        })
+    }
+
+    fn enqueue(
+        &self,
+        cx: &ConnectionTo<Client>,
+        notification: SessionNotification,
+        reservation: AcpOutboundReservation,
+    ) -> Result<(), AcpOutboundSendError> {
+        // Serialize reservation order with the protocol enqueue. The socket
+        // writer can then release one exact FIFO credit for each written
+        // session/update line, even when several ACP sessions stream together.
+        let mut pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        pending.push_back(reservation);
+        if let Err(error) = cx.send_notification(notification) {
+            pending.pop_back();
+            return Err(AcpOutboundSendError::Transport(error));
+        }
+        Ok(())
+    }
+
+    fn acknowledge_session_update(&self) {
+        let reservation = self
+            .pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .pop_front();
+        if reservation.is_none() {
+            log::warn!("Maple ACP wrote an untracked session/update notification");
+        }
+        drop(reservation);
+    }
 }
 
 impl AcpConnectionContext {
     fn new(
-        app_handle: AppHandle,
-        user_id: String,
+        agent: AgentRuntimeHandle,
         config: Arc<RwLock<AgentAcpConfig>>,
         stats: Arc<AgentAcpStats>,
     ) -> Arc<Self> {
         Arc::new(Self {
-            app_handle,
-            user_id,
+            agent,
             config,
             stats,
             bridge_environment: Mutex::new(HashMap::new()),
@@ -245,8 +414,10 @@ impl AcpConnectionContext {
             prompt_states: Mutex::new(HashMap::new()),
             background_tasks: Mutex::new(tokio::task::JoinSet::new()),
             finalization: Mutex::new(()),
+            lifetime: CancellationToken::new(),
             closed: AtomicBool::new(false),
             has_credentials: AtomicBool::new(false),
+            outbound: AcpOutboundTracker::new(),
         })
     }
 
@@ -278,72 +449,51 @@ impl AcpConnectionContext {
                 .data("ACP session cwd must be an absolute path"));
         }
         let config = self.config.read().await.clone();
-        ensure_allowed_project_root(&request.cwd, &config.allowed_project_roots)
+        let project_root = ensure_allowed_project_root(&request.cwd, &config.allowed_project_roots)
             .map_err(|error| agent_client_protocol::Error::invalid_params().data(error))?;
 
         let mut environment = self.bridge_environment.lock().await.clone();
         merge_mcp_environment(&mut environment, &request.mcp_servers)?;
+        let tool_context = bridge_tool_context_spec(&environment).map_err(internal_acp_error)?;
         let mode = config.permission_mode.maple_mode().to_string();
-        let detail = create_agent_session_for_user(
-            &self.app_handle,
-            self.user_id.clone(),
-            Some(AgentCreateSessionRequest {
-                project_root: Some(request.cwd.to_string_lossy().into_owned()),
-                title: Some("Buzz ACP".to_string()),
-                model: None,
-                context_limit: None,
-                mode: Some(mode),
-                mcp_server_names: None,
-            }),
-        )
-        .await
-        .map_err(internal_acp_error)?;
-        let session_id = detail.session.id;
-        if self
-            .sessions
-            .lock()
+        let created = self
+            .agent
+            .create_session_with_tool_context(
+                Some(AgentCreateSessionRequest {
+                    project_root: Some(project_root.to_string_lossy().into_owned()),
+                    title: Some("Buzz ACP".to_string()),
+                    model: None,
+                    context_limit: None,
+                    mode: Some(mode),
+                    mcp_server_names: None,
+                }),
+                Some(tool_context),
+                config.permission_mode.host_event_policy(),
+            )
             .await
-            .insert(session_id.clone(), None)
-            .is_none()
-        {
-            self.stats.active_sessions.fetch_add(1, Ordering::SeqCst);
-        }
-        if self.closed.load(Ordering::SeqCst) {
-            self.discard_uncommitted_session(&session_id).await;
-            return Err(agent_client_protocol::Error::internal_error()
-                .data("The Maple ACP connection closed while creating the session"));
-        }
-        let tool_environment = match set_agent_session_tool_environment(
-            &self.app_handle,
-            &self.user_id,
-            &session_id,
-            environment.clone(),
-        )
-        .await
-        {
-            Ok(tool_environment) => tool_environment,
-            Err(error) => {
-                self.discard_uncommitted_session(&session_id).await;
-                return Err(internal_acp_error(error));
-            }
-        };
+            .map_err(internal_acp_error)?;
+        let session_id = created.detail.session.id;
+        let lease = created
+            .tool_context_lease
+            .expect("an explicit Agent tool context must return a lease");
         let finalization = self.finalization.lock().await;
         if self.closed.load(Ordering::SeqCst) {
-            tool_environment.write().await.clear();
             drop(finalization);
-            self.discard_uncommitted_session(&session_id).await;
+            self.discard_uncommitted_session(&session_id, lease).await;
             return Err(agent_client_protocol::Error::internal_error()
                 .data("The Maple ACP connection closed while configuring the session"));
         }
-        let environment_slot = self.sessions.lock().await.get_mut(&session_id).map(|slot| {
-            *slot = Some(tool_environment);
-        });
-        if environment_slot.is_none() {
+        let mut sessions = self.sessions.lock().await;
+        if sessions.contains_key(&session_id) {
+            drop(sessions);
             drop(finalization);
-            self.discard_uncommitted_session(&session_id).await;
+            self.discard_uncommitted_session(&session_id, lease).await;
             return Err(agent_client_protocol::Error::internal_error()
-                .data("The Maple ACP connection lost its new session"));
+                .data("The Maple ACP connection duplicated a new session"));
         }
+        sessions.insert(session_id.clone(), lease);
+        drop(sessions);
+        self.stats.active_sessions.fetch_add(1, Ordering::SeqCst);
         if has_buzz_credentials(&environment) && !self.has_credentials.swap(true, Ordering::SeqCst)
         {
             self.stats
@@ -354,24 +504,26 @@ impl AcpConnectionContext {
         Ok(NewSessionResponse::new(session_id))
     }
 
-    async fn discard_uncommitted_session(&self, session_id: &str) {
-        let _ =
-            clear_agent_session_tool_environment(&self.app_handle, &self.user_id, session_id).await;
-        let _ = delete_agent_session_for_user(
-            &self.app_handle,
-            self.user_id.clone(),
-            session_id.to_string(),
-        )
-        .await;
-        if self.sessions.lock().await.remove(session_id).is_some() {
+    async fn discard_uncommitted_session(&self, session_id: &str, lease: AgentToolContextLease) {
+        lease.release().await;
+        let _ = self
+            .agent
+            .discard_session_during_cleanup(session_id.to_string())
+            .await;
+    }
+
+    async fn retire_session(&self, session_id: &str) {
+        let lease = self.sessions.lock().await.remove(session_id);
+        if let Some(lease) = lease {
             self.stats.active_sessions.fetch_sub(1, Ordering::SeqCst);
+            lease.release().await;
         }
     }
 
     async fn begin_prompt(
         &self,
         request: &PromptRequest,
-    ) -> Result<String, agent_client_protocol::Error> {
+    ) -> Result<(String, CancellationToken), agent_client_protocol::Error> {
         if self.closed.load(Ordering::SeqCst) {
             return Err(agent_client_protocol::Error::internal_error()
                 .data("The Maple ACP connection is closing"));
@@ -389,173 +541,332 @@ impl AcpConnectionContext {
             return Err(agent_client_protocol::Error::invalid_request()
                 .data("This ACP session already has an active prompt"));
         }
+        let cancellation = self.lifetime.child_token();
         states.insert(
             session_id,
             AcpPromptState::Starting {
-                cancel_requested: false,
+                cancellation: cancellation.clone(),
             },
         );
-        Ok(prompt)
+        Ok((prompt, cancellation))
+    }
+
+    async fn send_session_update(
+        &self,
+        cx: &ConnectionTo<Client>,
+        notification: SessionNotification,
+        cancellation: &CancellationToken,
+    ) -> Result<(), AcpOutboundSendError> {
+        let encoded_bytes = serde_json::to_vec(&notification)
+            .map_err(|error| {
+                AcpOutboundSendError::Transport(
+                    agent_client_protocol::Error::internal_error()
+                        .data(format!("Failed to encode Maple ACP update: {error}")),
+                )
+            })?
+            .len();
+        let reservation = self.outbound.reserve(encoded_bytes, cancellation).await?;
+        self.outbound.enqueue(cx, notification, reservation)
+    }
+
+    async fn send_final_agent_message(
+        &self,
+        cx: &ConnectionTo<Client>,
+        session_id: SessionId,
+        message: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<(), AcpOutboundSendError> {
+        self.send_session_update(
+            cx,
+            SessionNotification::new(
+                session_id,
+                SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::Text(
+                    TextContent::new(message.to_string()),
+                ))),
+            ),
+            cancellation,
+        )
+        .await
     }
 
     async fn prompt(
-        &self,
+        self: &Arc<Self>,
         cx: &ConnectionTo<Client>,
         request: PromptRequest,
         prompt: String,
+        prompt_lifetime: CancellationToken,
     ) -> Result<PromptResponse, agent_client_protocol::Error> {
         let session_id = request.session_id.0.to_string();
         let config = self.config.read().await.clone();
-        let mut events = subscribe_agent_events(&self.app_handle);
-        let run = match send_agent_message_for_user(
-            &self.app_handle,
-            self.user_id.clone(),
-            AgentSendMessageRequest {
-                session_id: session_id.clone(),
-                text: prompt,
-                model: None,
-                context_limit: None,
-                mode: Some(config.permission_mode.maple_mode().to_string()),
-                vision_capable: false,
-            },
-        )
-        .await
+        let tool_context_access = match self.sessions.lock().await.get(&session_id) {
+            Some(lease) => lease.access(),
+            None => {
+                self.prompt_states.lock().await.remove(&session_id);
+                return Err(agent_client_protocol::Error::resource_not_found(Some(
+                    session_id.clone(),
+                ))
+                .data("ACP session is no longer owned by this connection"));
+            }
+        };
+        let run = match self
+            .agent
+            .send_message_with_tool_context(
+                AgentSendMessageRequest {
+                    session_id: session_id.clone(),
+                    text: prompt,
+                    model: None,
+                    context_limit: None,
+                    mode: Some(config.permission_mode.maple_mode().to_string()),
+                    vision_capable: false,
+                },
+                tool_context_access,
+                prompt_lifetime.clone(),
+                config.permission_mode.host_event_policy(),
+            )
+            .await
         {
             Ok(run) => run,
+            Err(error) if error == AGENT_TOOL_CONTEXT_INACTIVE_ERROR => {
+                self.prompt_states.lock().await.remove(&session_id);
+                self.retire_session(&session_id).await;
+                return Err(agent_client_protocol::Error::resource_not_found(Some(
+                    session_id.clone(),
+                ))
+                .data("The Maple Agent task was removed outside this ACP connection"));
+            }
             Err(error) => {
                 self.prompt_states.lock().await.remove(&session_id);
                 return Err(internal_acp_error(error));
             }
         };
         let run_id = run.run_id;
+        let mut events = run.events;
         let mut terminal = run.terminal;
-        let cancel_requested = {
+        let event_overflowed = run.event_overflowed;
+        let prompt_registered = {
             let mut states = self.prompt_states.lock().await;
             match states.get_mut(&session_id) {
                 Some(state @ AcpPromptState::Starting { .. }) => {
-                    let requested = match state {
-                        AcpPromptState::Starting { cancel_requested } => *cancel_requested,
-                        AcpPromptState::Running { .. } => unreachable!(),
-                    };
                     *state = AcpPromptState::Running {
                         run_id: run_id.clone(),
+                        cancellation: prompt_lifetime.clone(),
                     };
-                    Some(requested)
+                    true
                 }
-                _ => None,
+                _ => false,
             }
         };
-        let Some(cancel_requested) = cancel_requested else {
-            let _ =
-                cancel_agent_run_for_user(&self.app_handle, self.user_id.clone(), run_id.clone())
-                    .await;
+        if !prompt_registered {
+            let _ = self.agent.cancel_run(run_id.clone()).await;
             return Err(agent_client_protocol::Error::internal_error()
                 .data("The Maple ACP connection closed while starting the prompt"));
-        };
+        }
         self.stats.active_runs.fetch_add(1, Ordering::SeqCst);
-        if cancel_requested {
+        if prompt_lifetime.is_cancelled() {
             // A cancellation failure does not make the active Maple run
             // disappear. Keep listening so its lifecycle remains tracked.
-            let _ =
-                cancel_agent_run_for_user(&self.app_handle, self.user_id.clone(), run_id.clone())
-                    .await;
+            let _ = self.agent.cancel_run(run_id.clone()).await;
         }
 
-        let mut observed_terminal = None;
-        let mut event_stream_lagged = false;
+        let mut cancel_after_result = false;
         let result = loop {
-            tokio::select! {
-                event = events.recv() => match event {
-                    Ok(event)
-                        if event.session_id.as_deref() == Some(session_id.as_str())
-                            && event.run_id.as_deref() == Some(run_id.as_str()) =>
-                    {
-                        if event.event_type == "timelineItem" {
-                            if let Some(update) = timeline_update(&event) {
-                                if let Err(error) = cx.send_notification(SessionNotification::new(
+            if event_overflowed.load(Ordering::Acquire) {
+                cancel_after_result = true;
+                let _ = self.agent.cancel_run(run_id.clone()).await;
+                match self
+                    .send_final_agent_message(
+                        cx,
+                        request.session_id.clone(),
+                        "Maple stopped this turn because its bounded ACP event stream overflowed.",
+                        &self.lifetime,
+                    )
+                    .await
+                {
+                    Ok(()) | Err(AcpOutboundSendError::UpdateTooLarge) => {
+                        break Ok(PromptResponse::new(StopReason::EndTurn));
+                    }
+                    Err(AcpOutboundSendError::Cancelled) => {
+                        break Ok(PromptResponse::new(StopReason::Cancelled));
+                    }
+                    Err(AcpOutboundSendError::Transport(error)) => break Err(error),
+                }
+            }
+            let event = events.recv().await;
+            if event_overflowed.load(Ordering::Acquire) {
+                cancel_after_result = true;
+                let _ = self.agent.cancel_run(run_id.clone()).await;
+                match self
+                    .send_final_agent_message(
+                        cx,
+                        request.session_id.clone(),
+                        "Maple stopped this turn because its bounded ACP event stream overflowed.",
+                        &self.lifetime,
+                    )
+                    .await
+                {
+                    Ok(()) | Err(AcpOutboundSendError::UpdateTooLarge) => {
+                        break Ok(PromptResponse::new(StopReason::EndTurn));
+                    }
+                    Err(AcpOutboundSendError::Cancelled) => {
+                        break Ok(PromptResponse::new(StopReason::Cancelled));
+                    }
+                    Err(AcpOutboundSendError::Transport(error)) => break Err(error),
+                }
+            }
+            match event {
+                Some(AgentRunEvent::TimelineItem(item)) => {
+                    if let Some(update) = timeline_update(&item) {
+                        match self
+                            .send_session_update(
+                                cx,
+                                SessionNotification::new(request.session_id.clone(), update),
+                                &prompt_lifetime,
+                            )
+                            .await
+                        {
+                            Ok(()) => {}
+                            Err(AcpOutboundSendError::UpdateTooLarge) => {
+                                cancel_after_result = true;
+                                let _ = self.agent.cancel_run(run_id.clone()).await;
+                                match self.send_final_agent_message(
+                                    cx,
                                     request.session_id.clone(),
-                                    update,
-                                )) {
-                                    break Err(error);
+                                    "Maple stopped this turn because one ACP update exceeded the 4 MiB transport limit.",
+                                    &self.lifetime,
+                                )
+                                .await
+                                {
+                                    Ok(()) | Err(AcpOutboundSendError::UpdateTooLarge) => {
+                                        break Ok(PromptResponse::new(StopReason::EndTurn));
+                                    }
+                                    Err(AcpOutboundSendError::Cancelled) => {
+                                        break Ok(PromptResponse::new(StopReason::Cancelled));
+                                    }
+                                    Err(AcpOutboundSendError::Transport(error)) => break Err(error),
                                 }
                             }
-                        } else if event.event_type == "error" {
-                            if let Some(message) = event_error_text(&event) {
-                                if let Err(error) = cx.send_notification(SessionNotification::new(
+                            Err(AcpOutboundSendError::Cancelled) => {
+                                cancel_after_result = true;
+                                break Ok(PromptResponse::new(StopReason::Cancelled));
+                            }
+                            Err(AcpOutboundSendError::Transport(error)) => break Err(error),
+                        }
+                    }
+                }
+                Some(AgentRunEvent::Error(item)) => {
+                    if let Some(message) = event_error_text(&item) {
+                        match self
+                            .send_session_update(
+                                cx,
+                                SessionNotification::new(
                                     request.session_id.clone(),
                                     SessionUpdate::AgentMessageChunk(ContentChunk::new(
                                         ContentBlock::Text(TextContent::new(message)),
                                     )),
-                                )) {
-                                    break Err(error);
+                                ),
+                                &prompt_lifetime,
+                            )
+                            .await
+                        {
+                            Ok(()) => {}
+                            Err(AcpOutboundSendError::UpdateTooLarge) => {
+                                cancel_after_result = true;
+                                let _ = self.agent.cancel_run(run_id.clone()).await;
+                                match self.send_final_agent_message(
+                                    cx,
+                                    request.session_id.clone(),
+                                    "Maple stopped this turn because one ACP update exceeded the 4 MiB transport limit.",
+                                    &self.lifetime,
+                                )
+                                .await
+                                {
+                                    Ok(()) | Err(AcpOutboundSendError::UpdateTooLarge) => {
+                                        break Ok(PromptResponse::new(StopReason::EndTurn));
+                                    }
+                                    Err(AcpOutboundSendError::Cancelled) => {
+                                        break Ok(PromptResponse::new(StopReason::Cancelled));
+                                    }
+                                    Err(AcpOutboundSendError::Transport(error)) => break Err(error),
                                 }
                             }
-                        } else if event.event_type == "runFinished" {
-                            let terminal = match event.message.as_deref() {
-                                Some("cancelled") => AgentRunTerminal::Cancelled,
-                                Some("failed") => AgentRunTerminal::Failed,
-                                _ => AgentRunTerminal::Completed,
-                            };
-                            break prompt_result_from_terminal(terminal);
-                        }
-                    }
-                    Ok(_) => {}
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                        // Once any frames were lost, the retained per-run signal
-                        // becomes authoritative. It cannot be overwritten by
-                        // unrelated Maple UI traffic.
-                        event_stream_lagged = true;
-                        if let Some(terminal) = observed_terminal {
-                            break prompt_result_from_terminal(terminal);
-                        }
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                        if let Some(terminal) = observed_terminal.or_else(|| *terminal.borrow()) {
-                            break prompt_result_from_terminal(terminal);
-                        }
-                        break Err(agent_client_protocol::Error::internal_error()
-                            .data("Maple Agent event stream closed"));
-                    }
-                },
-                changed = terminal.changed(), if observed_terminal.is_none() => {
-                    match changed {
-                        Ok(()) => {
-                            observed_terminal = *terminal.borrow_and_update();
-                            if event_stream_lagged {
-                                if let Some(terminal) = observed_terminal {
-                                    break prompt_result_from_terminal(terminal);
-                                }
+                            Err(AcpOutboundSendError::Cancelled) => {
+                                cancel_after_result = true;
+                                break Ok(PromptResponse::new(StopReason::Cancelled));
                             }
-                            // In the ordinary path runFinished was broadcast
-                            // before this signal. Keep draining the ordered event
-                            // stream so Buzz receives every available text chunk.
-                        }
-                        Err(_) => {
-                            if let Some(terminal) = *terminal.borrow() {
-                                observed_terminal = Some(terminal);
-                                if event_stream_lagged {
-                                    break prompt_result_from_terminal(terminal);
-                                }
-                            } else {
-                                break Err(agent_client_protocol::Error::internal_error()
-                                    .data("Maple Agent run ended without a terminal result"));
-                            }
+                            Err(AcpOutboundSendError::Transport(error)) => break Err(error),
                         }
                     }
                 }
+                Some(AgentRunEvent::Finished(terminal)) => {
+                    break prompt_result_from_terminal(terminal);
+                }
+                Some(
+                    AgentRunEvent::SessionUpdated(_)
+                    | AgentRunEvent::Started
+                    | AgentRunEvent::SetupWarning(_)
+                    | AgentRunEvent::HistoryReplaced,
+                ) => {}
+                None => {
+                    let current_terminal = *terminal.borrow();
+                    let fallback = match current_terminal {
+                        Some(terminal) => Some(terminal),
+                        None => match terminal.changed().await {
+                            Ok(()) => *terminal.borrow_and_update(),
+                            Err(_) => *terminal.borrow(),
+                        },
+                    };
+                    if let Some(terminal) = fallback {
+                        break prompt_result_from_terminal(terminal);
+                    }
+                    break Err(agent_client_protocol::Error::internal_error()
+                        .data("Maple Agent run ended without a terminal result"));
+                }
             }
         };
-        if result.is_err() {
-            // If the ACP client disappears while Maple is still producing a
-            // turn, stop the underlying run before removing it from this
-            // connection's cleanup map. A completed/failed run simply makes
-            // this best-effort cancellation a no-op.
-            let _ = cancel_agent_run_for_user(&self.app_handle, self.user_id.clone(), run_id).await;
+        let mut deferred_prompt_cleanup = false;
+        if cancel_after_result {
+            // Synthetic stream stops settle only after the underlying run has
+            // drained, or retain a same-session fence while it finishes in the
+            // background. A completed run makes this cancellation a no-op.
+            let _ = self.agent.cancel_run(run_id.clone()).await;
+            if tokio::time::timeout(
+                ACP_SYNTHETIC_STOP_DRAIN_TIMEOUT,
+                wait_for_retained_terminal(&mut terminal),
+            )
+            .await
+            .is_err()
+            {
+                // Do not let Buzz start a replacement turn against the same
+                // Goose session while cancellation is still draining. The ACP
+                // response remains bounded, while this retained state and task
+                // own the terminal barrier asynchronously.
+                deferred_prompt_cleanup = true;
+                let context = Arc::clone(self);
+                let draining_session_id = session_id.clone();
+                let mut tasks = self.background_tasks.lock().await;
+                tasks.spawn(async move {
+                    wait_for_retained_terminal(&mut terminal).await;
+                    if matches!(
+                        context
+                            .prompt_states
+                            .lock()
+                            .await
+                            .remove(&draining_session_id),
+                        Some(AcpPromptState::Running { .. })
+                    ) {
+                        context.stats.active_runs.fetch_sub(1, Ordering::SeqCst);
+                    }
+                });
+            }
+        } else if result.is_err() {
+            let _ = self.agent.cancel_run(run_id).await;
         }
-        if matches!(
-            self.prompt_states.lock().await.remove(&session_id),
-            Some(AcpPromptState::Running { .. })
-        ) {
+        if !deferred_prompt_cleanup
+            && matches!(
+                self.prompt_states.lock().await.remove(&session_id),
+                Some(AcpPromptState::Running { .. })
+            )
+        {
             self.stats.active_runs.fetch_sub(1, Ordering::SeqCst);
         }
         result
@@ -566,19 +877,27 @@ impl AcpConnectionContext {
         notification: CancelNotification,
     ) -> Result<(), agent_client_protocol::Error> {
         let session_id = notification.session_id.0.to_string();
-        let run_id = {
-            let mut states = self.prompt_states.lock().await;
-            match states.get_mut(&session_id) {
-                Some(AcpPromptState::Starting { cancel_requested }) => {
-                    *cancel_requested = true;
-                    None
+        let (cancellation, run_id) = {
+            let states = self.prompt_states.lock().await;
+            match states.get(&session_id) {
+                Some(AcpPromptState::Starting { cancellation }) => {
+                    (Some(cancellation.clone()), None)
                 }
-                Some(AcpPromptState::Running { run_id }) => Some(run_id.clone()),
-                None => None,
+                Some(AcpPromptState::Running {
+                    run_id,
+                    cancellation,
+                }) => (Some(cancellation.clone()), Some(run_id.clone())),
+                None => (None, None),
             }
         };
+        if let Some(cancellation) = cancellation {
+            // This token reaches core setup before a run ID exists and fences
+            // the worker start once core setup completes.
+            cancellation.cancel();
+        }
         if let Some(run_id) = run_id {
-            cancel_agent_run_for_user(&self.app_handle, self.user_id.clone(), run_id)
+            self.agent
+                .cancel_run(run_id)
                 .await
                 .map_err(internal_acp_error)?;
         }
@@ -586,12 +905,14 @@ impl AcpConnectionContext {
     }
 
     async fn cleanup(&self) {
+        let deadline = tokio::time::Instant::now() + ACP_CONNECTION_CLEANUP_TIMEOUT;
         {
             // Linearize closure with the last new-session credential commit.
             // A task that reaches finalization after this point observes closed
             // and rolls its newly persisted session back instead of committing.
             let _finalization = self.finalization.lock().await;
             self.closed.store(true, Ordering::SeqCst);
+            self.lifetime.cancel();
             self.bridge_environment.lock().await.clear();
             if self.has_credentials.swap(false, Ordering::SeqCst) {
                 self.stats
@@ -600,24 +921,43 @@ impl AcpConnectionContext {
             }
         }
         let prompt_states = std::mem::take(&mut *self.prompt_states.lock().await);
+        let mut running_ids = Vec::new();
         for state in prompt_states.into_values() {
-            if let AcpPromptState::Running { run_id } = state {
-                let _ =
-                    cancel_agent_run_for_user(&self.app_handle, self.user_id.clone(), run_id).await;
-                self.stats.active_runs.fetch_sub(1, Ordering::SeqCst);
+            match state {
+                AcpPromptState::Starting { cancellation } => cancellation.cancel(),
+                AcpPromptState::Running {
+                    run_id,
+                    cancellation,
+                } => {
+                    cancellation.cancel();
+                    running_ids.push(run_id);
+                    self.stats.active_runs.fetch_sub(1, Ordering::SeqCst);
+                }
             }
         }
         let sessions = std::mem::take(&mut *self.sessions.lock().await);
-        for environment in sessions.values().flatten() {
-            // Clear the exact Arc installed in Maple's developer client. This
-            // revokes Buzz secrets without waiting behind runtime setup locks.
-            environment.write().await.clear();
+        let session_count = sessions.len();
+        // Revoke every capability synchronously before awaiting registry cleanup.
+        // No queued or detached task can launch another credential-bearing tool
+        // after this barrier returns.
+        for lease in sessions.values() {
+            lease.revoke();
         }
         self.stats
             .active_sessions
-            .fetch_sub(sessions.len(), Ordering::SeqCst);
+            .fetch_sub(session_count, Ordering::SeqCst);
         let mut tasks = self.background_tasks.lock().await;
-        let deadline = tokio::time::Instant::now() + ACP_CONNECTION_CLEANUP_TIMEOUT;
+        for run_id in running_ids {
+            let agent = self.agent.clone();
+            tasks.spawn(async move {
+                let _ = agent.cancel_run(run_id).await;
+            });
+        }
+        for lease in sessions.into_values() {
+            tasks.spawn(async move {
+                lease.release().await;
+            });
+        }
         loop {
             match tokio::time::timeout_at(deadline, tasks.join_next()).await {
                 Ok(Some(_)) => {}
@@ -707,7 +1047,13 @@ impl HandleDispatchFrom<Client> for MapleAcpHandler {
                     let context = Arc::clone(&context);
                     let cx = cx.clone();
                     |request: PromptRequest, responder: Responder<PromptResponse>| async move {
-                        let prompt = context.begin_prompt(&request).await?;
+                        let (prompt, prompt_lifetime) = match context.begin_prompt(&request).await {
+                            Ok(prepared) => prepared,
+                            Err(error) => {
+                                responder.respond_with_error(error)?;
+                                return Ok(());
+                            }
+                        };
                         let prompt_cx = cx.clone();
                         let prompt_context = Arc::clone(&context);
                         let mut tasks = context.background_tasks.lock().await;
@@ -724,7 +1070,9 @@ impl HandleDispatchFrom<Client> for MapleAcpHandler {
                         }
                         tasks.spawn(async move {
                             let _ = responder.respond_with_result(
-                                prompt_context.prompt(&prompt_cx, request, prompt).await,
+                                prompt_context
+                                    .prompt(&prompt_cx, request, prompt, prompt_lifetime)
+                                    .await,
                             );
                         });
                         Ok(())
@@ -773,27 +1121,36 @@ pub async fn agent_acp_load_config(
 #[tauri::command]
 pub async fn agent_acp_save_config(
     app_handle: AppHandle,
+    lifecycle: tauri::State<'_, AgentHostLifecycle>,
     user_id: String,
     config: AgentAcpConfig,
 ) -> Result<AgentAcpConfig, String> {
+    let _guard = lifecycle.lock().await;
+    app_handle
+        .state::<MapleAgentService>()
+        .ensure_accepting_new_work()?;
     let config = normalize_config(config)?;
+    let requested_scope = account_scope(&user_id)?;
     let state = app_handle.state::<AgentAcpState>();
     let running = state.running.lock().await;
     if let Some(running) = running.as_ref() {
-        if running.user_id == user_id {
+        if running.account_scope == requested_scope {
             let current = running.config.read().await.clone();
-            if current.permission_mode != config.permission_mode
-                && running.stats.running.load(Ordering::SeqCst)
+            if running.stats.running.load(Ordering::SeqCst)
+                && (current.permission_mode != config.permission_mode
+                    || current.allowed_project_roots != config.allowed_project_roots
+                    || current.max_connections != config.max_connections)
             {
                 return Err(
-                    "Stop the ACP service before changing the permission policy".to_string()
+                    "Stop the ACP service before changing its permission, project-root, or connection policy"
+                        .to_string(),
                 );
             }
         }
     }
     save_config(&app_handle, &user_id, &config)?;
     if let Some(running) = running.as_ref() {
-        if running.user_id == user_id {
+        if running.account_scope == requested_scope {
             *running.config.write().await = config.clone();
         }
     }
@@ -803,18 +1160,25 @@ pub async fn agent_acp_save_config(
 #[tauri::command]
 pub async fn agent_acp_start(
     app_handle: AppHandle,
+    lifecycle: tauri::State<'_, AgentHostLifecycle>,
     user_id: String,
 ) -> Result<AgentAcpStatus, String> {
-    start_service(&app_handle, &user_id).await?;
+    let _guard = lifecycle.lock().await;
+    app_handle
+        .state::<MapleAgentService>()
+        .ensure_accepting_new_work()?;
+    start_service_locked(&app_handle, &user_id).await?;
     status(&app_handle, &user_id).await
 }
 
 #[tauri::command]
 pub async fn agent_acp_stop(
     app_handle: AppHandle,
+    lifecycle: tauri::State<'_, AgentHostLifecycle>,
     user_id: String,
 ) -> Result<AgentAcpStatus, String> {
-    stop_service(&app_handle, Some(&user_id), true).await?;
+    let _guard = lifecycle.lock().await;
+    stop_service_locked(&app_handle, Some(&user_id), true).await?;
     status(&app_handle, &user_id).await
 }
 
@@ -826,22 +1190,23 @@ pub async fn agent_acp_get_status(
     status(&app_handle, &user_id).await
 }
 
-pub async fn shutdown_agent_acp(app_handle: &AppHandle) -> Result<(), String> {
-    stop_service(app_handle, None, false).await
+pub(crate) async fn shutdown_agent_acp_locked(
+    app_handle: &AppHandle,
+    requested_user: Option<&str>,
+) -> Result<(), String> {
+    stop_service_locked(app_handle, requested_user, false).await
 }
 
 #[cfg(unix)]
-async fn start_service(app_handle: &AppHandle, user_id: &str) -> Result<(), String> {
-    if user_id.trim().is_empty() {
-        return Err("Cannot start ACP without an authenticated Maple user".to_string());
-    }
+async fn start_service_locked(app_handle: &AppHandle, user_id: &str) -> Result<(), String> {
+    let requested_scope = account_scope(user_id)
+        .map_err(|_| "Cannot start ACP without an authenticated Maple user".to_string())?;
     let state = app_handle.state::<AgentAcpState>();
-    let _guard = state.lifecycle.lock().await;
     let stale = {
         let mut slot = state.running.lock().await;
         match slot.as_ref() {
             Some(running) if running.stats.running.load(Ordering::SeqCst) => {
-                if running.user_id == user_id {
+                if running.account_scope == requested_scope {
                     return Ok(());
                 }
                 return Err("ACP is already running for another Maple account".to_string());
@@ -855,7 +1220,15 @@ async fn start_service(app_handle: &AppHandle, user_id: &str) -> Result<(), Stri
         let _ = stale.task.await;
         remove_socket_if_present(&stale.endpoint)?;
     }
-    ensure_agent_runtime_for_user(app_handle, user_id.to_string(), None).await?;
+    let agent = app_handle
+        .state::<MapleAgentService>()
+        .handle_for_user(user_id)
+        .await?;
+    let maple_api_session = app_handle
+        .state::<MapleApiAuthState>()
+        .session_for(user_id)
+        .await?;
+    agent.start(maple_api_session, None).await?;
     let mut config = normalize_config(load_config(app_handle, user_id)?)?;
     config.enabled = true;
 
@@ -869,14 +1242,13 @@ async fn start_service(app_handle: &AppHandle, user_id: &str) -> Result<(), Stri
     let task = tauri::async_runtime::spawn(run_listener(
         listener,
         endpoint.clone(),
-        app_handle.clone(),
-        user_id.to_string(),
+        agent,
         Arc::clone(&config),
         Arc::clone(&stats),
         cancellation.clone(),
     ));
     *state.running.lock().await = Some(RunningAgentAcp {
-        user_id: user_id.to_string(),
+        account_scope: requested_scope,
         endpoint,
         config,
         stats,
@@ -887,21 +1259,21 @@ async fn start_service(app_handle: &AppHandle, user_id: &str) -> Result<(), Stri
 }
 
 #[cfg(not(unix))]
-async fn start_service(_app_handle: &AppHandle, _user_id: &str) -> Result<(), String> {
+async fn start_service_locked(_app_handle: &AppHandle, _user_id: &str) -> Result<(), String> {
     Err("Maple ACP local IPC is not yet supported on this platform".to_string())
 }
 
-async fn stop_service(
+async fn stop_service_locked(
     app_handle: &AppHandle,
     requested_user: Option<&str>,
     persist_disabled: bool,
 ) -> Result<(), String> {
     let state = app_handle.state::<AgentAcpState>();
-    let _guard = state.lifecycle.lock().await;
+    let requested_scope = requested_user.map(account_scope).transpose()?;
     let running = {
         let mut slot = state.running.lock().await;
-        if let (Some(requested), Some(running)) = (requested_user, slot.as_ref()) {
-            if running.user_id != requested {
+        if let (Some(requested), Some(running)) = (requested_scope.as_deref(), slot.as_ref()) {
+            if running.account_scope != requested {
                 return Err("ACP belongs to another Maple account".to_string());
             }
         }
@@ -923,17 +1295,18 @@ async fn stop_service(
     if persist_disabled {
         let mut config = running.config.read().await.clone();
         config.enabled = false;
-        save_config(app_handle, &running.user_id, &config)?;
+        save_config_for_scope(app_handle, &running.account_scope, &config)?;
     }
     Ok(())
 }
 
 async fn status(app_handle: &AppHandle, user_id: &str) -> Result<AgentAcpStatus, String> {
     let state = app_handle.state::<AgentAcpState>();
+    let requested_scope = account_scope(user_id)?;
     let running = state.running.lock().await;
     let harness = harness()?;
     if let Some(running) = running.as_ref() {
-        if running.user_id != user_id {
+        if running.account_scope != requested_scope {
             return Err("ACP belongs to another Maple account".to_string());
         }
         let config = running.config.read().await.clone();
@@ -975,8 +1348,7 @@ async fn status(app_handle: &AppHandle, user_id: &str) -> Result<AgentAcpStatus,
 async fn run_listener(
     listener: UnixListener,
     endpoint: PathBuf,
-    app_handle: AppHandle,
-    user_id: String,
+    agent: AgentRuntimeHandle,
     config: Arc<RwLock<AgentAcpConfig>>,
     stats: Arc<AgentAcpStats>,
     cancellation: CancellationToken,
@@ -997,8 +1369,7 @@ async fn run_listener(
                         drop(stream);
                         continue;
                     };
-                    let app_handle = app_handle.clone();
-                    let user_id = user_id.clone();
+                    let agent = agent.clone();
                     let config = Arc::clone(&config);
                     let stats = Arc::clone(&stats);
                     let connection_cancel = cancellation.clone();
@@ -1006,21 +1377,33 @@ async fn run_listener(
                         let _permit = permit;
                         stats.connected_clients.fetch_add(1, Ordering::SeqCst);
                         let context = AcpConnectionContext::new(
-                            app_handle,
-                            user_id,
+                            agent,
                             config,
                             Arc::clone(&stats),
                         );
                         let (read, write) = stream.into_split();
                         let peer_eof = CancellationToken::new();
                         let read = BoundedLineReader::new(read, peer_eof.clone());
+                        let incoming = FramedRead::new(
+                            read,
+                            LinesCodec::new_with_max_length(MAX_ACP_FRAME_BYTES),
+                        )
+                        .map(|result| {
+                            result.map_err(|error| {
+                                std::io::Error::new(std::io::ErrorKind::InvalidData, error)
+                            })
+                        });
+                        let outgoing = tracked_outgoing_lines(
+                            write,
+                            Arc::clone(&context.outbound),
+                        );
                         let serving = AcpAgent
                             .builder()
                             .name("maple-acp")
                             .with_handler(MapleAcpHandler {
                                 context: Arc::clone(&context),
                             })
-                            .connect_to(ByteStreams::new(write.compat_write(), read.compat()));
+                            .connect_to(Lines::new(outgoing, incoming));
                         tokio::select! {
                             result = serving => {
                                 if let Err(error) = result {
@@ -1140,22 +1523,36 @@ fn harness() -> Result<AgentAcpHarness, String> {
 }
 
 fn config_path(app_handle: &AppHandle, user_id: &str) -> Result<PathBuf, String> {
-    if user_id.trim().is_empty() {
-        return Err("Maple ACP configuration requires an authenticated user".to_string());
-    }
-    let digest = Sha256::digest(user_id.as_bytes());
-    let scope = digest[..16]
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
+    let scope = account_scope(user_id)
+        .map_err(|_| "Maple ACP configuration requires an authenticated user".to_string())?;
+    config_path_for_scope(app_handle, &scope)
+}
+
+fn config_path_for_scope(app_handle: &AppHandle, scope: &str) -> Result<PathBuf, String> {
+    Ok(acp_accounts_root(app_handle)?
+        .join(scope)
+        .join("config.json"))
+}
+
+fn acp_accounts_root(app_handle: &AppHandle) -> Result<PathBuf, String> {
     let root = app_handle
         .path()
         .app_local_data_dir()
         .map_err(|error| format!("Failed to resolve Maple local data: {error}"))?;
-    Ok(root
-        .join("acp")
-        .join("accounts")
-        .join(scope)
+    Ok(root.join("acp").join("accounts"))
+}
+
+fn legacy_config_path(app_handle: &AppHandle, user_id: &str) -> Result<PathBuf, String> {
+    if user_id.trim().is_empty() {
+        return Err("Maple ACP configuration requires an authenticated user".to_string());
+    }
+    let digest = Sha256::digest(user_id.as_bytes());
+    let legacy_scope = digest[..16]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    Ok(acp_accounts_root(app_handle)?
+        .join(legacy_scope)
         .join("config.json"))
 }
 
@@ -1165,7 +1562,29 @@ fn load_config(app_handle: &AppHandle, user_id: &str) -> Result<AgentAcpConfig, 
         Ok(bytes) => serde_json::from_slice(&bytes)
             .map_err(|error| format!("Failed to parse Maple ACP configuration: {error}"))
             .and_then(normalize_config),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(AgentAcpConfig::default()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let legacy_path = legacy_config_path(app_handle, user_id)?;
+            match std::fs::read(legacy_path) {
+                Ok(bytes) => {
+                    let config = serde_json::from_slice(&bytes)
+                        .map_err(|error| {
+                            format!("Failed to parse Maple ACP configuration: {error}")
+                        })
+                        .and_then(normalize_config)?;
+                    // Keep the POC file intact so switching back to the original
+                    // branch remains harmless, while future saves use Maple's
+                    // canonical full account scope.
+                    if let Err(error) = save_config(app_handle, user_id, &config) {
+                        log::warn!("Failed to migrate Maple ACP configuration: {error}");
+                    }
+                    Ok(config)
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    Ok(AgentAcpConfig::default())
+                }
+                Err(error) => Err(format!("Failed to read Maple ACP configuration: {error}")),
+            }
+        }
         Err(error) => Err(format!("Failed to read Maple ACP configuration: {error}")),
     }
 }
@@ -1175,7 +1594,17 @@ fn save_config(
     user_id: &str,
     config: &AgentAcpConfig,
 ) -> Result<(), String> {
-    let path = config_path(app_handle, user_id)?;
+    let scope = account_scope(user_id)
+        .map_err(|_| "Maple ACP configuration requires an authenticated user".to_string())?;
+    save_config_for_scope(app_handle, &scope, config)
+}
+
+fn save_config_for_scope(
+    app_handle: &AppHandle,
+    account_scope: &str,
+    config: &AgentAcpConfig,
+) -> Result<(), String> {
+    let path = config_path_for_scope(app_handle, account_scope)?;
     let parent = path
         .parent()
         .ok_or_else(|| "Invalid Maple ACP configuration path".to_string())?;
@@ -1195,15 +1624,23 @@ fn save_config(
 }
 
 pub(crate) fn clear_agent_acp_config(app_handle: &AppHandle, user_id: &str) -> Result<(), String> {
-    let path = config_path(app_handle, user_id)?;
-    let account_dir = path
-        .parent()
-        .ok_or_else(|| "Invalid Maple ACP configuration path".to_string())?;
-    match std::fs::remove_dir_all(account_dir) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(format!("Failed to clear Maple ACP configuration: {error}")),
+    let paths = [
+        config_path(app_handle, user_id)?,
+        legacy_config_path(app_handle, user_id)?,
+    ];
+    for path in paths {
+        let account_dir = path
+            .parent()
+            .ok_or_else(|| "Invalid Maple ACP configuration path".to_string())?;
+        match std::fs::remove_dir_all(account_dir) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!("Failed to clear Maple ACP configuration: {error}"));
+            }
+        }
     }
+    Ok(())
 }
 
 fn normalize_config(mut config: AgentAcpConfig) -> Result<AgentAcpConfig, String> {
@@ -1227,17 +1664,17 @@ fn normalize_config(mut config: AgentAcpConfig) -> Result<AgentAcpConfig, String
     Ok(config)
 }
 
-fn ensure_allowed_project_root(cwd: &Path, allowed_roots: &[String]) -> Result<(), String> {
-    if allowed_roots.is_empty() {
-        return Ok(());
-    }
+fn ensure_allowed_project_root(cwd: &Path, allowed_roots: &[String]) -> Result<PathBuf, String> {
     let cwd = cwd
         .canonicalize()
         .map_err(|error| format!("Failed to resolve ACP session cwd: {error}"))?;
+    if allowed_roots.is_empty() {
+        return Ok(cwd);
+    }
     for root in allowed_roots {
         if let Ok(root) = Path::new(root).canonicalize() {
             if cwd.starts_with(root) {
-                return Ok(());
+                return Ok(cwd);
             }
         }
     }
@@ -1311,6 +1748,34 @@ fn filter_bridge_environment(environment: HashMap<String, String>) -> HashMap<St
         .collect()
 }
 
+pub(crate) fn default_tool_context_spec() -> Result<AgentToolContextSpec, String> {
+    AgentToolContextSpec::try_new(
+        BTreeMap::new(),
+        SENSITIVE_BRIDGE_ENV
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+        false,
+    )
+}
+
+fn bridge_tool_context_spec(
+    environment: &HashMap<String, String>,
+) -> Result<AgentToolContextSpec, String> {
+    let values = environment
+        .iter()
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let scrub_from_parent = SENSITIVE_BRIDGE_ENV
+        .into_iter()
+        .map(str::to_string)
+        .collect::<BTreeSet<_>>();
+    let ephemeral = SENSITIVE_BRIDGE_ENV
+        .iter()
+        .any(|key| environment.contains_key(*key));
+    AgentToolContextSpec::try_new(values, scrub_from_parent, ephemeral)
+}
+
 fn has_buzz_credentials(environment: &HashMap<String, String>) -> bool {
     environment
         .get("BUZZ_RELAY_URL")
@@ -1336,8 +1801,7 @@ fn prompt_text(blocks: &[ContentBlock]) -> Result<String, agent_client_protocol:
     Ok(text)
 }
 
-fn timeline_update(event: &AgentEventEnvelope) -> Option<SessionUpdate> {
-    let item = event.item.as_ref()?;
+fn timeline_update(item: &AgentTimelineItem) -> Option<SessionUpdate> {
     let text = item.text.as_deref()?.to_string();
     match item.item_type.as_str() {
         "message" if item.role.as_deref() == Some("assistant") => {
@@ -1352,12 +1816,21 @@ fn timeline_update(event: &AgentEventEnvelope) -> Option<SessionUpdate> {
     }
 }
 
-fn event_error_text(event: &AgentEventEnvelope) -> Option<String> {
-    event
-        .message
-        .clone()
-        .or_else(|| event.item.as_ref().and_then(|item| item.text.clone()))
-        .map(|message| bounded_error(&message))
+fn event_error_text(item: &AgentTimelineItem) -> Option<String> {
+    item.text.clone().map(|message| bounded_error(&message))
+}
+
+async fn wait_for_retained_terminal(
+    terminal: &mut tokio::sync::watch::Receiver<Option<AgentRunTerminal>>,
+) {
+    loop {
+        if terminal.borrow().is_some() {
+            return;
+        }
+        if terminal.changed().await.is_err() {
+            return;
+        }
+    }
 }
 
 fn prompt_result_from_terminal(
@@ -1366,9 +1839,12 @@ fn prompt_result_from_terminal(
     match terminal {
         AgentRunTerminal::Completed => Ok(PromptResponse::new(StopReason::EndTurn)),
         AgentRunTerminal::Cancelled => Ok(PromptResponse::new(StopReason::Cancelled)),
-        AgentRunTerminal::Failed => {
-            Err(agent_client_protocol::Error::internal_error().data("Maple Agent prompt failed"))
-        }
+        // A failed terminal is emitted only after a run was admitted. Goose may
+        // already have persisted output or executed tools, and Buzz treats a
+        // JSON-RPC AgentError as pre-mutation/retryable. The preceding error
+        // update carries the failure text; settle the turn successfully here so
+        // non-idempotent work is never replayed automatically.
+        AgentRunTerminal::Failed => Ok(PromptResponse::new(StopReason::EndTurn)),
     }
 }
 
@@ -1504,6 +1980,75 @@ mod tests {
     }
 
     #[test]
+    fn permission_policy_selects_the_authoritative_event_broker() {
+        assert_eq!(
+            AgentAcpPermissionMode::ReadOnly.host_event_policy(),
+            AgentHostEventPolicy::Publish
+        );
+        assert_eq!(
+            AgentAcpPermissionMode::AllowAll.host_event_policy(),
+            AgentHostEventPolicy::Suppress
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn outbound_tracker_releases_credit_only_after_a_socket_write_acknowledgement() {
+        use futures_util::SinkExt as _;
+        use tokio::io::AsyncReadExt as _;
+
+        let tracker = AcpOutboundTracker::with_limits(1, 1024);
+        let cancellation = CancellationToken::new();
+        let first = tracker.reserve(1, &cancellation).await.unwrap();
+        tracker
+            .pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push_back(first);
+
+        let waiting_tracker = Arc::clone(&tracker);
+        let waiting_cancellation = cancellation.clone();
+        let waiting =
+            tokio::spawn(async move { waiting_tracker.reserve(1, &waiting_cancellation).await });
+        tokio::task::yield_now().await;
+        assert!(!waiting.is_finished());
+
+        let line = r#"{"jsonrpc":"2.0","method":"session/update","params":{}}"#;
+        let (writer, mut reader) = tokio::io::duplex(1024);
+        let mut sink = Box::pin(tracked_outgoing_lines(writer, Arc::clone(&tracker)));
+        sink.send(line.to_string()).await.unwrap();
+        let mut written = vec![0_u8; line.len() + 1];
+        reader.read_exact(&mut written).await.unwrap();
+        assert_eq!(written, format!("{line}\n").into_bytes());
+
+        let second = waiting.await.unwrap().unwrap();
+        drop(second);
+    }
+
+    #[test]
+    fn outbound_credit_acknowledges_only_session_updates() {
+        assert!(is_session_update_line(
+            r#"{"jsonrpc":"2.0","method":"session/update","params":{}}"#
+        ));
+        assert!(!is_session_update_line(
+            r#"{"jsonrpc":"2.0","id":1,"result":{}}"#
+        ));
+    }
+
+    #[test]
+    fn allowed_project_root_returns_the_canonical_admitted_path() {
+        let root = tempfile::tempdir().unwrap();
+        let project = root.path().join("project");
+        std::fs::create_dir(&project).unwrap();
+
+        let admitted =
+            ensure_allowed_project_root(&project, &[root.path().to_string_lossy().into_owned()])
+                .unwrap();
+
+        assert_eq!(admitted, project.canonicalize().unwrap());
+    }
+
+    #[test]
     fn bridge_environment_is_strictly_allowlisted() {
         let filtered = filter_bridge_environment(HashMap::from([
             (
@@ -1542,6 +2087,10 @@ mod tests {
             "cancelled"
         );
 
-        assert!(prompt_result_from_terminal(AgentRunTerminal::Failed).is_err());
+        let failed = prompt_result_from_terminal(AgentRunTerminal::Failed).unwrap();
+        assert_eq!(
+            serde_json::to_value(failed).unwrap()["stopReason"],
+            "end_turn"
+        );
     }
 }
