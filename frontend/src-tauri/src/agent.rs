@@ -8974,6 +8974,165 @@ mod tests {
         assert!(ensure_account_scope(&first, &second).is_err());
     }
 
+    #[test]
+    fn legacy_agent_event_envelopes_serialize_stably() {
+        let status = AgentRuntimeStatus {
+            running: true,
+            project_root: Some("/tmp/project".to_string()),
+            model: Some("maple-model".to_string()),
+            mode: Some("smart_approve".to_string()),
+            active_runs: HashMap::from([("session-1".to_string(), "run-1".to_string())]),
+        };
+        let session = AgentSessionSummary {
+            id: "session-1".to_string(),
+            title: "Task".to_string(),
+            project_root: "/tmp/project".to_string(),
+            created_ms: 1,
+            updated_ms: 2,
+            message_count: 3,
+            model: Some("maple-model".to_string()),
+            mode: "smart_approve".to_string(),
+        };
+        let item = AgentTimelineItem {
+            id: "message-1".to_string(),
+            item_type: "message".to_string(),
+            role: Some("assistant".to_string()),
+            title: None,
+            text: Some("hello".to_string()),
+            status: None,
+            input: None,
+            output: None,
+            created_ms: 4,
+            merge: "append".to_string(),
+        };
+        let envelope = |event_type: &str| AgentEventEnvelope {
+            event_type: event_type.to_string(),
+            session_id: None,
+            run_id: None,
+            item: None,
+            status: None,
+            session: None,
+            message: None,
+        };
+
+        let mut runtime_status = envelope("runtimeStatus");
+        runtime_status.status = Some(status);
+        let mut session_created = envelope("sessionCreated");
+        session_created.session_id = Some("session-1".to_string());
+        session_created.session = Some(session.clone());
+        let mut session_updated = envelope("sessionUpdated");
+        session_updated.session_id = Some("session-1".to_string());
+        session_updated.run_id = Some("run-1".to_string());
+        session_updated.session = Some(session);
+        let mut run_started = envelope("runStarted");
+        run_started.session_id = Some("session-1".to_string());
+        run_started.run_id = Some("run-1".to_string());
+        let mut timeline_item = envelope("timelineItem");
+        timeline_item.session_id = Some("session-1".to_string());
+        timeline_item.run_id = Some("run-1".to_string());
+        timeline_item.item = Some(item.clone());
+        let mut error = envelope("error");
+        error.session_id = Some("session-1".to_string());
+        error.run_id = Some("run-1".to_string());
+        error.item = Some(item);
+        let mut history_replaced = envelope("historyReplaced");
+        history_replaced.session_id = Some("session-1".to_string());
+        history_replaced.run_id = Some("run-1".to_string());
+        let mut run_finished = envelope("runFinished");
+        run_finished.session_id = Some("session-1".to_string());
+        run_finished.run_id = Some("run-1".to_string());
+        run_finished.message = Some("completed".to_string());
+
+        assert_eq!(
+            serde_json::to_value([
+                runtime_status,
+                session_created,
+                session_updated,
+                run_started,
+                timeline_item,
+                error,
+                history_replaced,
+                run_finished,
+            ])
+            .unwrap(),
+            json!([
+                {
+                    "eventType": "runtimeStatus",
+                    "status": {
+                        "running": true,
+                        "projectRoot": "/tmp/project",
+                        "model": "maple-model",
+                        "mode": "smart_approve",
+                        "activeRuns": { "session-1": "run-1" }
+                    }
+                },
+                {
+                    "eventType": "sessionCreated",
+                    "sessionId": "session-1",
+                    "session": {
+                        "id": "session-1",
+                        "title": "Task",
+                        "projectRoot": "/tmp/project",
+                        "createdMs": 1,
+                        "updatedMs": 2,
+                        "messageCount": 3,
+                        "model": "maple-model",
+                        "mode": "smart_approve"
+                    }
+                },
+                {
+                    "eventType": "sessionUpdated",
+                    "sessionId": "session-1",
+                    "runId": "run-1",
+                    "session": {
+                        "id": "session-1",
+                        "title": "Task",
+                        "projectRoot": "/tmp/project",
+                        "createdMs": 1,
+                        "updatedMs": 2,
+                        "messageCount": 3,
+                        "model": "maple-model",
+                        "mode": "smart_approve"
+                    }
+                },
+                { "eventType": "runStarted", "sessionId": "session-1", "runId": "run-1" },
+                {
+                    "eventType": "timelineItem",
+                    "sessionId": "session-1",
+                    "runId": "run-1",
+                    "item": {
+                        "id": "message-1",
+                        "itemType": "message",
+                        "role": "assistant",
+                        "text": "hello",
+                        "createdMs": 4,
+                        "merge": "append"
+                    }
+                },
+                {
+                    "eventType": "error",
+                    "sessionId": "session-1",
+                    "runId": "run-1",
+                    "item": {
+                        "id": "message-1",
+                        "itemType": "message",
+                        "role": "assistant",
+                        "text": "hello",
+                        "createdMs": 4,
+                        "merge": "append"
+                    }
+                },
+                { "eventType": "historyReplaced", "sessionId": "session-1", "runId": "run-1" },
+                {
+                    "eventType": "runFinished",
+                    "sessionId": "session-1",
+                    "runId": "run-1",
+                    "message": "completed"
+                }
+            ])
+        );
+    }
+
     #[tokio::test]
     async fn rejects_operations_captured_before_account_clear() {
         let state = AgentRuntimeState::new();
