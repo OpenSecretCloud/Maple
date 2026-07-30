@@ -62,6 +62,7 @@ import {
 import { ChatCopyButton } from "@/components/chat/ChatCopyButton";
 import { ModelSelector } from "@/components/ModelSelector";
 import { useLocalState } from "@/state/useLocalState";
+import { isKnownFreePlan } from "@/billing/billingAccess";
 import { useOpenSecret } from "@opensecret/react";
 import { UpgradePromptDialog } from "@/components/UpgradePromptDialog";
 import { DocumentPlatformDialog } from "@/components/DocumentPlatformDialog";
@@ -1579,7 +1580,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
   const isLinuxEnv = isLinux();
   const isLinuxTauriEnv = isTauriEnv && isLinuxEnv;
   const queryClient = useQueryClient();
-  const { playbackError, clearPlaybackError } = useTTS();
+  const { playbackError, clearPlaybackError, upgradeRequired, clearUpgradeRequired } = useTTS();
   const runtimeStore = useChatRuntimeStore<Conversation, Message>();
   const runtimeInstanceId = useId();
   const visibleChatOwner = useRef<object>({}).current;
@@ -1790,10 +1791,34 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
   );
   const [upgradeDialogOpen, setUpgradeDialogOpen] = useState(false);
   const [upgradeFeature, setUpgradeFeature] = useState<
-    "image" | "document" | "voice" | "usage" | "tokens"
+    "image" | "document" | "voice" | "tts" | "usage" | "tokens"
   >("image");
   const [documentPlatformDialogOpen, setDocumentPlatformDialogOpen] = useState(false);
   const [contextLimitDialogOpen, setContextLimitDialogOpen] = useState(false);
+  const ttsAccessDeniedFeature =
+    localState.billingStatus === null || isKnownFreePlan(localState.billingStatus)
+      ? "tts"
+      : "usage";
+
+  useEffect(() => {
+    if (!isVisible) {
+      if (upgradeRequired) clearUpgradeRequired();
+      if (upgradeDialogOpen && upgradeFeature === "tts") setUpgradeDialogOpen(false);
+      return;
+    }
+    if (!upgradeRequired) return;
+
+    setUpgradeFeature(ttsAccessDeniedFeature);
+    setUpgradeDialogOpen(true);
+    clearUpgradeRequired();
+  }, [
+    clearUpgradeRequired,
+    isVisible,
+    ttsAccessDeniedFeature,
+    upgradeDialogOpen,
+    upgradeFeature,
+    upgradeRequired
+  ]);
 
   // Audio recording states
   const [isRecording, setIsRecording] = useState(false);
@@ -5459,22 +5484,12 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
           </div>
         )}
 
-        {/* Upgrade dialog for attachments and usage limits */}
+        {/* Upgrade dialog for paid features and usage limits */}
         <UpgradePromptDialog
           open={upgradeDialogOpen}
           onOpenChange={setUpgradeDialogOpen}
           onStartNewChat={handleNewChatFromUpgrade}
-          feature={
-            upgradeFeature === "document"
-              ? "document"
-              : upgradeFeature === "voice"
-                ? "voice"
-                : upgradeFeature === "usage"
-                  ? "usage"
-                  : upgradeFeature === "tokens"
-                    ? "tokens"
-                    : "image"
-          }
+          feature={upgradeFeature}
         />
 
         {/* Document platform dialog for web users */}

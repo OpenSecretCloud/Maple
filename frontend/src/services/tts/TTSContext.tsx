@@ -10,6 +10,8 @@ import {
   type ReactNode
 } from "react";
 import { isIOS } from "@/utils/platform";
+import { useLocalState } from "@/state/useLocalState";
+import { isKnownFreePlan } from "@/billing/billingAccess";
 import {
   INITIAL_TTS_PLAYBACK_STATE,
   prepareAndScheduleTTSChunks,
@@ -52,6 +54,7 @@ type WindowWithWebkitAudioContext = Window &
 
 interface TTSContextValue {
   playbackError: string | null;
+  upgradeRequired: boolean;
   playbackSpeed: number;
   hasCustomPlaybackSpeed: boolean;
   voice: VoxtralTTSVoice;
@@ -64,6 +67,7 @@ interface TTSContextValue {
   speak: (text: string, messageId: string) => Promise<void>;
   stop: () => void;
   clearPlaybackError: () => void;
+  clearUpgradeRequired: () => void;
 }
 
 const TTSContext = createContext<TTSContextValue | null>(null);
@@ -88,12 +92,15 @@ function errorMessage(error: unknown, fallback: string): string {
 
 export function TTSProvider({ children }: { children: ReactNode }) {
   const { aiCustomFetch, apiUrl } = useOpenSecret();
+  const { billingStatus } = useLocalState();
+  const shouldShowTTSUpgrade = isKnownFreePlan(billingStatus);
 
   const [{ isPreparing, isPlaying, currentPlayingId }, dispatchPlayback] = useReducer(
     reduceTTSPlaybackState,
     INITIAL_TTS_PLAYBACK_STATE
   );
   const [playbackError, setPlaybackError] = useState<string | null>(null);
+  const [upgradeRequired, setUpgradeRequired] = useState(false);
   const [playbackSpeed, setPlaybackSpeedState] = useState(getStoredTTSPlaybackSpeed);
   const [voice, setVoiceState] = useState(getStoredTTSVoice);
 
@@ -183,6 +190,12 @@ export function TTSProvider({ children }: { children: ReactNode }) {
     async (text: string, messageId: string) => {
       stop();
       setPlaybackError(null);
+      setUpgradeRequired(false);
+
+      if (shouldShowTTSUpgrade) {
+        setUpgradeRequired(true);
+        return;
+      }
 
       const chunks = chunkTextForTTS(text);
       if (chunks.length === 0) {
@@ -402,19 +415,31 @@ export function TTSProvider({ children }: { children: ReactNode }) {
         }
 
         console.error("TTS playback failed:", playbackFailure);
-        setPlaybackError(
-          isPaidTTSAccessError(playbackFailure)
-            ? "Text-to-speech is available on paid Maple plans."
-            : errorMessage(playbackFailure, "Text-to-speech playback failed")
-        );
+        if (isPaidTTSAccessError(playbackFailure)) {
+          setUpgradeRequired(true);
+        } else {
+          setPlaybackError(errorMessage(playbackFailure, "Text-to-speech playback failed"));
+        }
         stop();
       }
     },
-    [aiCustomFetch, apiUrl, cleanupPlaybackResources, playbackSpeed, stop, voice]
+    [
+      aiCustomFetch,
+      apiUrl,
+      cleanupPlaybackResources,
+      playbackSpeed,
+      shouldShowTTSUpgrade,
+      stop,
+      voice
+    ]
   );
 
   const clearPlaybackError = useCallback(() => {
     setPlaybackError(null);
+  }, []);
+
+  const clearUpgradeRequired = useCallback(() => {
+    setUpgradeRequired(false);
   }, []);
 
   useEffect(() => {
@@ -432,6 +457,7 @@ export function TTSProvider({ children }: { children: ReactNode }) {
     <TTSContext.Provider
       value={{
         playbackError,
+        upgradeRequired,
         playbackSpeed,
         hasCustomPlaybackSpeed: playbackSpeed !== DEFAULT_TTS_PLAYBACK_SPEED,
         voice,
@@ -443,7 +469,8 @@ export function TTSProvider({ children }: { children: ReactNode }) {
         setVoice,
         speak,
         stop,
-        clearPlaybackError
+        clearPlaybackError,
+        clearUpgradeRequired
       }}
     >
       {children}

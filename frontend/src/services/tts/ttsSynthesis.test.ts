@@ -192,6 +192,9 @@ describe("isPaidTTSAccessError", () => {
     expect(isPaidTTSAccessError(new TTSSynthesisHttpError(403))).toBe(true);
     expect(isPaidTTSAccessError({ response: { status: 402 } })).toBe(true);
     expect(isPaidTTSAccessError(new Error("Forbidden"))).toBe(true);
+    expect(
+      isPaidTTSAccessError(new Error("Request failed with status 403: Usage limit reached"))
+    ).toBe(true);
     expect(isPaidTTSAccessError(new Error("Network failed"))).toBe(false);
   });
 });
