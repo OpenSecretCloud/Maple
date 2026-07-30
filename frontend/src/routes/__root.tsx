@@ -7,6 +7,7 @@ import {
   PersistentHomeNavigationProvider
 } from "@/components/AuthenticatedHomeContent";
 import { ExternalUrlConfirmHandler } from "@/components/ExternalUrlConfirmHandler";
+import { RootRuntimeLayout } from "@/components/RootRuntimeLayout";
 import { TeamSeatMismatchAlert } from "@/components/team/TeamSeatMismatchAlert";
 import { VerificationModal } from "@/components/VerificationModal";
 import { transitionAgentAuthUser } from "@/services/agentRuntimeService";
@@ -72,26 +73,39 @@ function Root() {
 
   return (
     <PersistentHomeNavigationProvider>
-      {keepAuthenticatedHomeMounted && (
-        <div
-          ref={persistentHomeRef}
-          aria-hidden={isSettingsRoute || undefined}
-          className={isSettingsRoute ? "pointer-events-none fixed inset-0 invisible" : "contents"}
-        >
-          <AuthenticatedHomeContent homeLocationHref={isHomeRoute ? location.href : null} />
-        </div>
-      )}
-
-      <div
-        className={
-          isSettingsRoute ? "fixed inset-0 z-50 overflow-hidden bg-background" : "contents"
+      <RootRuntimeLayout
+        userId={userId}
+        pathname={location.pathname}
+        authenticatedHome={
+          keepAuthenticatedHomeMounted ? (
+            <div
+              ref={persistentHomeRef}
+              aria-hidden={isSettingsRoute || undefined}
+              className={
+                isSettingsRoute ? "pointer-events-none fixed inset-0 invisible" : "contents"
+              }
+            >
+              <AuthenticatedHomeContent homeLocationHref={isHomeRoute ? location.href : null} />
+            </div>
+          ) : null
         }
-      >
-        <Outlet />
-      </div>
-      {(isHomeRoute || isSettingsRoute) && <VerificationModal />}
-      {!isSettingsRoute && <TeamSeatMismatchAlert />}
-      <ExternalUrlConfirmHandler />
+        routeContent={
+          <div
+            className={
+              isSettingsRoute ? "fixed inset-0 z-50 overflow-hidden bg-background" : "contents"
+            }
+          >
+            <Outlet />
+          </div>
+        }
+        accountScopedUi={
+          <>
+            {(isHomeRoute || isSettingsRoute) && <VerificationModal />}
+            {!isSettingsRoute && <TeamSeatMismatchAlert />}
+            <ExternalUrlConfirmHandler />
+          </>
+        }
+      />
     </PersistentHomeNavigationProvider>
   );
 }

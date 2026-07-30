@@ -1,0 +1,174 @@
+import { describe, expect, mock, test } from "bun:test";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { useChatRuntimeStore } from "@/contexts/ChatRuntimeContext";
+import { RootRuntimeLayout } from "./RootRuntimeLayout";
+
+function OAuthCallbackProbe({ processCallback }: { processCallback: () => void }) {
+  useEffect(() => {
+    processCallback();
+  }, [processCallback]);
+
+  return null;
+}
+
+function SuccessfulOAuthTransition({
+  processCallback,
+  accountScopedUi
+}: {
+  processCallback: () => void;
+  accountScopedUi: ReactNode;
+}) {
+  const [userId, setUserId] = useState<string | null>(null);
+  const completeCallback = useCallback(() => {
+    processCallback();
+    setUserId("authenticated-user");
+  }, [processCallback]);
+
+  return (
+    <RootRuntimeLayout
+      userId={userId}
+      pathname="/auth/github/callback"
+      authenticatedHome={null}
+      routeContent={<OAuthCallbackProbe processCallback={completeCallback} />}
+      accountScopedUi={accountScopedUi}
+    />
+  );
+}
+
+function LifecycleProbe({ onMount, onUnmount }: { onMount: () => void; onUnmount: () => void }) {
+  useEffect(() => {
+    onMount();
+    return onUnmount;
+  }, [onMount, onUnmount]);
+
+  return null;
+}
+
+function ChatStoreProbe({ onStore }: { onStore: (store: unknown) => void }) {
+  const store = useChatRuntimeStore<unknown, unknown>();
+
+  useEffect(() => {
+    onStore(store);
+  }, [onStore, store]);
+
+  return null;
+}
+
+describe("RootRuntimeLayout", () => {
+  test("keeps only the OAuth callback route mounted when success authenticates a user", () => {
+    const processCallback = mock(() => {});
+    const globalMounted = mock(() => {});
+    const globalUnmounted = mock(() => {});
+    let renderer: ReactTestRenderer;
+
+    act(() => {
+      renderer = create(
+        <SuccessfulOAuthTransition
+          processCallback={processCallback}
+          accountScopedUi={<LifecycleProbe onMount={globalMounted} onUnmount={globalUnmounted} />}
+        />
+      );
+    });
+
+    expect(processCallback).toHaveBeenCalledTimes(1);
+    expect(globalMounted).toHaveBeenCalledTimes(2);
+    expect(globalUnmounted).toHaveBeenCalledTimes(1);
+
+    act(() => renderer.unmount());
+  });
+
+  test("remounts ordinary routes and account-scoped UI while resetting chat between users", () => {
+    const stores: unknown[] = [];
+    const recordStore = mock((store: unknown) => stores.push(store));
+    const routeMounted = mock(() => {});
+    const routeUnmounted = mock(() => {});
+    const globalMounted = mock(() => {});
+    const globalUnmounted = mock(() => {});
+    const chat = <ChatStoreProbe onStore={recordStore} />;
+    const route = <LifecycleProbe onMount={routeMounted} onUnmount={routeUnmounted} />;
+    const accountScopedUi = <LifecycleProbe onMount={globalMounted} onUnmount={globalUnmounted} />;
+    let renderer: ReactTestRenderer;
+
+    act(() => {
+      renderer = create(
+        <RootRuntimeLayout
+          userId="user-a"
+          pathname="/settings/account"
+          authenticatedHome={chat}
+          routeContent={route}
+          accountScopedUi={accountScopedUi}
+        />
+      );
+    });
+
+    act(() => {
+      renderer.update(
+        <RootRuntimeLayout
+          userId="user-b"
+          pathname="/settings/account"
+          authenticatedHome={chat}
+          routeContent={route}
+          accountScopedUi={accountScopedUi}
+        />
+      );
+    });
+
+    expect(recordStore).toHaveBeenCalledTimes(2);
+    expect(stores[1]).not.toBe(stores[0]);
+    expect(routeMounted).toHaveBeenCalledTimes(2);
+    expect(routeUnmounted).toHaveBeenCalledTimes(1);
+    expect(globalMounted).toHaveBeenCalledTimes(2);
+    expect(globalUnmounted).toHaveBeenCalledTimes(1);
+
+    act(() => renderer.unmount());
+  });
+
+  test("retains the same-account chat store while authenticated home is temporarily hidden", () => {
+    const stores: unknown[] = [];
+    const recordStore = mock((store: unknown) => stores.push(store));
+    const chat = <ChatStoreProbe onStore={recordStore} />;
+    let renderer: ReactTestRenderer;
+
+    act(() => {
+      renderer = create(
+        <RootRuntimeLayout
+          userId="user-a"
+          pathname="/"
+          authenticatedHome={chat}
+          routeContent={<div />}
+          accountScopedUi={null}
+        />
+      );
+    });
+
+    act(() => {
+      renderer.update(
+        <RootRuntimeLayout
+          userId="user-a"
+          pathname="/settings/account"
+          authenticatedHome={null}
+          routeContent={<div />}
+          accountScopedUi={null}
+        />
+      );
+    });
+
+    act(() => {
+      renderer.update(
+        <RootRuntimeLayout
+          userId="user-a"
+          pathname="/"
+          authenticatedHome={chat}
+          routeContent={<div />}
+          accountScopedUi={null}
+        />
+      );
+    });
+
+    expect(recordStore).toHaveBeenCalledTimes(2);
+    expect(stores[1]).toBe(stores[0]);
+
+    act(() => renderer.unmount());
+  });
+});
