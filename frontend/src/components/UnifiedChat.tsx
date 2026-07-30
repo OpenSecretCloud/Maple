@@ -77,7 +77,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger
 } from "@/components/ui/dropdown-menu";
-import { isLinux, isTauri } from "@/utils/platform";
+import { isLinux, isMacOS, isTauri } from "@/utils/platform";
 import { ConversationProjectPicker } from "@/components/ConversationProjectPicker";
 import {
   CHAT_HISTORY_TOP_MARGIN_PX,
@@ -86,7 +86,8 @@ import {
   requiredChatHistoryBottomCompensation,
   restoredChatHistoryAnchorScrollTop,
   restoredChatHistoryScrollTop,
-  type ChatHistoryScrollSnapshot
+  type ChatHistoryScrollSnapshot,
+  usesFirstCancelableWheelGestureStart
 } from "@/components/chatHistoryPagination";
 import {
   ChatProjectionScrollCoordinator,
@@ -1870,10 +1871,16 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
   const projectionScrollCoordinatorRef = useRef(
     new ChatProjectionScrollCoordinator<ChatRuntimeKey>()
   );
-  const historyPaginationGateRef = useRef(new ChatHistoryPaginationGate());
+  const historyPaginationLifecycle = useMemo(
+    () => ({ runtimeKey: renderedRuntimeKey, gate: new ChatHistoryPaginationGate() }),
+    [renderedRuntimeKey]
+  );
+  const historyPaginationGate = historyPaginationLifecycle.gate;
   const pendingHistoryScrollRestoreRef = useRef<ChatHistoryScrollSnapshot | null>(null);
   const pendingHistoryScrollRestoreKeyRef = useRef<ChatRuntimeKey | null>(null);
   const wheelGestureEndTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const macOSWheelGestureStartPendingRef = useRef(false);
+  const macOSPreviousWheelCancelableRef = useRef<boolean | null>(null);
   const touchGestureEndTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const keyIntentTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const previousTouchYRef = useRef<number | null>(null);
@@ -1983,10 +1990,11 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
     clearHistoryBottomCompensation();
   }, [renderedRuntimeKey, clearHistoryBottomCompensation]);
 
-  useEffect(() => {
-    historyPaginationGateRef.current.resetIntent();
+  useLayoutEffect(() => {
     pendingHistoryScrollRestoreRef.current = null;
     pendingHistoryScrollRestoreKeyRef.current = null;
+    macOSWheelGestureStartPendingRef.current = false;
+    macOSPreviousWheelCancelableRef.current = null;
     previousTouchYRef.current = null;
     touchHistoryGestureActiveRef.current = false;
     pointerHistoryGestureActiveRef.current = false;
@@ -2006,6 +2014,8 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
     }
 
     return () => {
+      macOSWheelGestureStartPendingRef.current = false;
+      macOSPreviousWheelCancelableRef.current = null;
       suppressedHistoryScrollEndsRef.current = 0;
       if (wheelGestureEndTimeoutRef.current) {
         clearTimeout(wheelGestureEndTimeoutRef.current);
@@ -2265,6 +2275,13 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
 
     if (!isVisible) {
       coordinator.deactivate();
+      historyPaginationGate.resetIntent();
+      macOSWheelGestureStartPendingRef.current = false;
+      macOSPreviousWheelCancelableRef.current = null;
+      if (wheelGestureEndTimeoutRef.current) {
+        clearTimeout(wheelGestureEndTimeoutRef.current);
+        wheelGestureEndTimeoutRef.current = null;
+      }
       return;
     }
 
@@ -2272,7 +2289,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
 
     if (projectionChanged) {
       clearHistoryBottomCompensation();
-      historyPaginationGateRef.current.resetIntent();
+      historyPaginationGate.resetIntent();
       pendingHistoryScrollRestoreRef.current = null;
       pendingHistoryScrollRestoreKeyRef.current = null;
       isUserScrollingRef.current = false;
@@ -2332,7 +2349,8 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
     messages,
     renderedRuntimeKey,
     resolveScrollProjectionKey,
-    runtimeStore
+    runtimeStore,
+    historyPaginationGate
   ]);
 
   // Auto-scroll when user sends a message
@@ -2691,14 +2709,14 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
 
   // Load older messages for pagination
   const loadOlderMessages = useCallback(async () => {
-    const runtimeKey = activeRuntimeKeyRef.current;
+    const { gate: paginationGate, runtimeKey } = historyPaginationLifecycle;
     const snapshot = runtimeStore.get(runtimeKey);
     const conversationId =
       snapshot?.conversation?.id ??
       conversationIdFromChatRuntimeKey(runtimeStore.resolveKey(runtimeKey));
     const requestOldestItemId = snapshot?.composer.pagination.oldestItemId;
     if (!conversationId || !openai || !requestOldestItemId) {
-      historyPaginationGateRef.current.finishLoad();
+      paginationGate.finishLoad();
       return;
     }
 
@@ -2706,6 +2724,8 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
       ...composer,
       pagination: { ...composer.pagination, isLoadingOlderMessages: true }
     }));
+
+    let pageProgressed = false;
 
     try {
       // Fetch next 20 older items using the oldest item ID we have
@@ -2786,8 +2806,9 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
             }
           }
         }));
+        pageProgressed = true;
       } else {
-        updateComposerForKey(runtimeKey, (composer) => ({
+        pageProgressed = updateComposerForKey(runtimeKey, (composer) => ({
           ...composer,
           pagination: {
             ...composer.pagination,
@@ -2799,7 +2820,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
     } catch (error) {
       console.error("Failed to load older messages:", error);
     } finally {
-      historyPaginationGateRef.current.finishLoad();
+      paginationGate.finishLoad({ preserveQueuedLoad: pageProgressed });
       const current = runtimeStore.get(runtimeKey);
       if (current) {
         updateComposerForKey(runtimeKey, (composer) => ({
@@ -2808,7 +2829,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
         }));
       }
     }
-  }, [isRuntimeSelected, openai, runtimeStore, updateComposerForKey]);
+  }, [historyPaginationLifecycle, isRuntimeSelected, openai, runtimeStore, updateComposerForKey]);
 
   // Polling mechanism for conversation updates
   const pollForNewItems = useCallback(
@@ -3020,9 +3041,10 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
 
   const maybeLoadOlderMessages = useCallback(() => {
     const canLoad = Boolean(hasMoreOlderMessages && conversation?.id && openai && oldestItemId);
-    const shouldLoad = historyPaginationGateRef.current.tryStartLoad({
+    const shouldLoad = historyPaginationGate.tryStartLoad({
       canLoad,
-      topBoundaryVisible: isHistoryTopBoundaryNear()
+      topBoundaryVisible: isHistoryTopBoundaryNear(),
+      requestInFlight: isLoadingOlderMessages
     });
 
     if (shouldLoad) {
@@ -3031,7 +3053,31 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
   }, [
     conversation?.id,
     hasMoreOlderMessages,
+    historyPaginationGate,
     isHistoryTopBoundaryNear,
+    isLoadingOlderMessages,
+    loadOlderMessages,
+    oldestItemId,
+    openai
+  ]);
+
+  // A second physical wheel gesture can reach the old boundary while the
+  // previous page is still in flight. Once that page has committed and its
+  // visible anchor has been restored, honor the one bounded request already
+  // made at that boundary. This effect runs after the restoration layout
+  // effect above, so consecutive prepends never share an uncommitted anchor.
+  useLayoutEffect(() => {
+    if (isLoadingOlderMessages) return;
+
+    const canLoad = Boolean(hasMoreOlderMessages && conversation?.id && openai && oldestItemId);
+    if (historyPaginationGate.tryStartQueuedLoad({ canLoad })) {
+      void loadOlderMessages();
+    }
+  }, [
+    conversation?.id,
+    hasMoreOlderMessages,
+    historyPaginationGate,
+    isLoadingOlderMessages,
     loadOlderMessages,
     oldestItemId,
     openai
@@ -3039,13 +3085,21 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
 
   // Only direct backward-navigation input can arm history pagination. Intersection,
   // resize, initial positioning, and card expansion merely update boundary visibility.
-  useEffect(() => {
+  useLayoutEffect(() => {
     const container = chatContainerRef.current;
-    if (!container) return;
+    if (!container || !isVisible) return;
 
-    const gate = historyPaginationGateRef.current;
+    const gate = historyPaginationGate;
+    const usesMacOSWheelGestureStart = usesFirstCancelableWheelGestureStart({
+      isTauriEnvironment: isTauriEnv,
+      isMacOSPlatform: isMacOS(),
+      browserPlatform: navigator.platform
+    });
+    const delaysWheelGestureEndAfterScrollEnd = isTauriEnv && isMacOS();
 
     const finishWheelGesture = () => {
+      macOSWheelGestureStartPendingRef.current = false;
+      macOSPreviousWheelCancelableRef.current = null;
       gate.endGesture();
       wheelGestureEndTimeoutRef.current = null;
     };
@@ -3075,11 +3129,18 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
 
       if (wheelGestureEndTimeoutRef.current) {
         clearTimeout(wheelGestureEndTimeoutRef.current);
-        // WKWebView can also emit `scrollend` between the direct and momentum
-        // phases, or while an anchor restoration is settling. Give the wheel
-        // stream one short quiet period; any residual event cancels this release
-        // before it can re-arm pagination.
-        wheelGestureEndTimeoutRef.current = setTimeout(finishWheelGesture, 80);
+        if (delaysWheelGestureEndAfterScrollEnd) {
+          // WKWebView can also emit `scrollend` between the direct and momentum
+          // phases, or while an anchor restoration is settling. Give only that
+          // WebView path one short quiet period; any residual event cancels this
+          // release before it can re-arm pagination.
+          wheelGestureEndTimeoutRef.current = setTimeout(finishWheelGesture, 80);
+        } else {
+          // Browsers such as Chrome expose `scrollend` as the completed wheel or
+          // trackpad boundary. End immediately so a rapid follow-up gesture can
+          // arm (or queue) the next page before its first wheel event is lost.
+          finishWheelGesture();
+        }
         return;
       }
       if (keyIntentTimeoutRef.current) {
@@ -3097,8 +3158,36 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
     };
 
     const handleHistoryWheel = (event: WheelEvent) => {
+      // Chrome represents trackpad pinch-to-zoom as Ctrl+wheel. It is not
+      // backward-navigation intent and must not arm or queue history loading.
+      if (event.ctrlKey) return;
+
+      const startsMacOSWheelGesture =
+        usesMacOSWheelGestureStart &&
+        event.cancelable &&
+        macOSPreviousWheelCancelableRef.current !== true;
+      if (usesMacOSWheelGestureStart) {
+        macOSPreviousWheelCancelableRef.current = event.cancelable;
+      }
+
+      if (usesMacOSWheelGestureStart && event.deltaY === 0) {
+        // A trackpad may expose its zero-delta MayBegin event as the first
+        // cancelable event. Carry that start marker to the first directional
+        // event without treating a finger touch as backward-navigation intent.
+        if (startsMacOSWheelGesture) {
+          macOSWheelGestureStartPendingRef.current = true;
+        }
+        if (wheelGestureEndTimeoutRef.current) {
+          clearTimeout(wheelGestureEndTimeoutRef.current);
+        }
+        wheelGestureEndTimeoutRef.current = setTimeout(finishWheelGesture, 180);
+        return;
+      }
+
       if (event.deltaY >= 0) {
         if (event.deltaY > 0) {
+          macOSWheelGestureStartPendingRef.current = false;
+          macOSPreviousWheelCancelableRef.current = null;
           gate.endGesture();
           clearHistoryBottomCompensation();
           if (wheelGestureEndTimeoutRef.current) {
@@ -3109,8 +3198,21 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
         return;
       }
 
-      gate.beginGesture();
-      maybeLoadOlderMessages();
+      if (usesMacOSWheelGestureStart) {
+        const isNewWheelGesture =
+          startsMacOSWheelGesture || macOSWheelGestureStartPendingRef.current;
+        macOSWheelGestureStartPendingRef.current = false;
+        gate.beginWheelGesture(isNewWheelGesture);
+      } else {
+        gate.beginGesture();
+      }
+      // The non-passive macOS boundary probe must stay synchronous, but avoid
+      // forcing sentinel geometry while the user is still far from history's
+      // top. The observer will preserve the armed intent if one large wheel
+      // event crosses directly into this margin.
+      if (container.scrollTop <= CHAT_HISTORY_TOP_MARGIN_PX) {
+        maybeLoadOlderMessages();
+      }
 
       if (wheelGestureEndTimeoutRef.current) {
         clearTimeout(wheelGestureEndTimeoutRef.current);
@@ -3256,7 +3358,13 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
       gate.endGesture();
     };
 
-    container.addEventListener("wheel", handleHistoryWheel, { passive: true });
+    // WKWebView and Chrome on macOS expose the first-event cancelability
+    // boundary only when the listener is non-passive. We never prevent the
+    // event, so native scrolling is unchanged. Other platforms retain the
+    // existing passive listener.
+    container.addEventListener("wheel", handleHistoryWheel, {
+      passive: !usesMacOSWheelGestureStart
+    });
     container.addEventListener("touchstart", handleHistoryTouchStart, { passive: true });
     container.addEventListener("touchmove", handleHistoryTouchMove, { passive: true });
     container.addEventListener("touchend", handleHistoryTouchEnd, { passive: true });
@@ -3283,7 +3391,13 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
       window.removeEventListener("keydown", handleHistoryKeyDown);
       window.removeEventListener("keyup", handleHistoryKeyUp);
     };
-  }, [clearHistoryBottomCompensation, maybeLoadOlderMessages]);
+  }, [
+    clearHistoryBottomCompensation,
+    historyPaginationGate,
+    isTauriEnv,
+    isVisible,
+    maybeLoadOlderMessages
+  ]);
 
   // Observe a persistent list-top sentinel rather than the first rendered turn. A long
   // assistant turn can overlap the viewport even when its actual top is far above it.
