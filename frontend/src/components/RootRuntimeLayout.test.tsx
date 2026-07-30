@@ -124,6 +124,42 @@ describe("RootRuntimeLayout", () => {
     act(() => renderer.unmount());
   });
 
+  test("shares the same-account chat store when moving from home to an ordinary route", () => {
+    const homeStores: unknown[] = [];
+    const routeStores: unknown[] = [];
+    let renderer: ReactTestRenderer;
+
+    act(() => {
+      renderer = create(
+        <RootRuntimeLayout
+          userId="user-a"
+          pathname="/"
+          authenticatedHome={<ChatStoreProbe onStore={(store) => homeStores.push(store)} />}
+          routeContent={<div />}
+          accountScopedUi={null}
+        />
+      );
+    });
+
+    act(() => {
+      renderer.update(
+        <RootRuntimeLayout
+          userId="user-a"
+          pathname="/agent"
+          authenticatedHome={null}
+          routeContent={<ChatStoreProbe onStore={(store) => routeStores.push(store)} />}
+          accountScopedUi={null}
+        />
+      );
+    });
+
+    expect(homeStores).toHaveLength(1);
+    expect(routeStores).toHaveLength(1);
+    expect(routeStores[0]).toBe(homeStores[0]);
+
+    act(() => renderer.unmount());
+  });
+
   test("retains the same-account chat store while authenticated home is temporarily hidden", () => {
     const stores: unknown[] = [];
     const recordStore = mock((store: unknown) => stores.push(store));
