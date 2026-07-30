@@ -6,7 +6,7 @@ Maple pins [OpenSecretCloud's `pdf_oxide` maintenance commit](https://github.com
 
 ## One inference runtime
 
-PDF OCR and desktop/iOS TTS use one Rust binding (`ort = 2.0.0-rc.11`) and one Microsoft ONNX Runtime version (1.23.2). Maple does not ship tract.
+PDF OCR uses the Rust binding `ort = 2.0.0-rc.11` and Microsoft ONNX Runtime 1.23.2. Maple does not ship tract.
 
 The runtime is part of the application package; users do not download it when opening a PDF:
 
@@ -18,7 +18,7 @@ The runtime is part of the application package; users do not download it when op
 | Android | Microsoft's official Android AAR, with `libonnxruntime.so` staged for arm64-v8a, armeabi-v7a, x86, and x86_64. |
 | iOS | A deterministic device/simulator XCFramework built from the pinned Microsoft source commit and linked statically. |
 
-Maple owns loader policy through PDFOxide's loader-neutral `ocr-ort` feature. Dynamic targets initialize the exact packaged library before either OCR or TTS creates a session. iOS initializes the same Rust API against its static library. Cargo resolves exactly one `ort` version per target.
+Maple owns loader policy through PDFOxide's loader-neutral `ocr-ort` feature. Dynamic targets initialize the exact packaged library before OCR creates a session. iOS initializes the same Rust API against its static library. Cargo resolves exactly one `ort` version per target.
 
 The application constructs and reuses one OCR engine. Native-only PDFs bypass model setup. OCR-routed pages are rendered once in full, bounded to a 2,000 by 2,000-pixel box, so tiled scans, inline images, and vector content do not depend on selecting one embedded image. Mixed pages retain native text and append OCR spans not already represented in the native layer. OCR remains optional enrichment for native-readable hybrid pages: if OCR is unavailable, Maple keeps the native text.
 

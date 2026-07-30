@@ -17,7 +17,8 @@ import {
   Gauge,
   MessageCircle,
   Coins,
-  Bot
+  Bot,
+  AudioLines
 } from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
 import { useLocalState } from "@/state/useLocalState";
@@ -26,7 +27,7 @@ import { hasApiAccess } from "@/billing/billingAccess";
 interface UpgradePromptDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  feature: "image" | "voice" | "model" | "document" | "usage" | "tokens" | "agent";
+  feature: "image" | "voice" | "tts" | "model" | "document" | "usage" | "tokens" | "agent";
   modelName?: string;
   onStartNewChat?: () => void;
 }
@@ -105,6 +106,19 @@ export function UpgradePromptDialog({
           "Private transcription with Whisper Large v3",
           "Support for multiple languages",
           "No audio data is stored or used for training"
+        ]
+      };
+    } else if (feature === "tts") {
+      return {
+        icon: <AudioLines className="h-8 w-8" />,
+        title: "Text-to-Speech",
+        description: "Listen to Maple's responses with private, natural-sounding speech",
+        requiredPlan: "Pro",
+        benefits: [
+          "Text stays private with end-to-end encryption",
+          "Listen to assistant responses on web, mobile, and desktop",
+          "Choose from multiple voices and accents",
+          "Adjust speech speed in Preferences"
         ]
       };
     } else if (feature === "document") {
@@ -217,9 +231,11 @@ export function UpgradePromptDialog({
         <div className="space-y-4 py-4">
           <div className="space-y-2">
             <p className="text-sm font-medium text-muted-foreground">
-              {info.requiredPlan === "Max" && isMax
-                ? "You're on the Max plan"
-                : `Available with ${info.requiredPlan} plan${info.requiredPlan !== "Max" ? " and above" : ""}`}
+              {feature === "tts"
+                ? "Available on paid Maple plans"
+                : info.requiredPlan === "Max" && isMax
+                  ? "You're on the Max plan"
+                  : `Available with ${info.requiredPlan} plan${info.requiredPlan !== "Max" ? " and above" : ""}`}
             </p>
             <ul className="space-y-2">
               {info.benefits.map((benefit, i) => (

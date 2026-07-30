@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { BillingStatus } from "./billingApi";
-import { hasApiAccess } from "./billingAccess";
+import { hasApiAccess, isKnownFreePlan } from "./billingAccess";
 
 function billingStatus(productName: string): BillingStatus {
   return {
@@ -30,5 +30,15 @@ describe("hasApiAccess", () => {
 
   test.each(["Free", "Starter"])("does not allow the %s plan", (productName) => {
     expect(hasApiAccess(billingStatus(productName))).toBe(false);
+  });
+});
+
+describe("isKnownFreePlan", () => {
+  test("identifies a loaded free plan without treating unknown billing as free", () => {
+    expect(isKnownFreePlan(billingStatus("Free"))).toBe(true);
+    expect(isKnownFreePlan(billingStatus(""))).toBe(false);
+    expect(isKnownFreePlan(billingStatus("Starter"))).toBe(false);
+    expect(isKnownFreePlan(billingStatus("Pro"))).toBe(false);
+    expect(isKnownFreePlan(null)).toBe(false);
   });
 });

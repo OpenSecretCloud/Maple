@@ -62,12 +62,12 @@ import {
 import { ChatCopyButton } from "@/components/chat/ChatCopyButton";
 import { ModelSelector } from "@/components/ModelSelector";
 import { useLocalState } from "@/state/useLocalState";
+import { isKnownFreePlan } from "@/billing/billingAccess";
 import { useOpenSecret } from "@opensecret/react";
 import { UpgradePromptDialog } from "@/components/UpgradePromptDialog";
 import { DocumentPlatformDialog } from "@/components/DocumentPlatformDialog";
 import { ContextLimitDialog } from "@/components/ContextLimitDialog";
 import { RecordingOverlay } from "@/components/RecordingOverlay";
-import { TTSDownloadDialog } from "@/components/TTSDownloadDialog";
 import { useTTS } from "@/services/tts/TTSContext";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { AlertCircle } from "lucide-react";
@@ -842,112 +842,33 @@ function convertItemsToMessages(items: Array<unknown>): Message[] {
 }
 
 // TTS play button component
-function TTSButton({
-  text,
-  messageId,
-  onNeedsSetup,
-  onManage
-}: {
-  text: string;
-  messageId: string;
-  onNeedsSetup: () => void;
-  onManage: () => void;
-}) {
-  const { status, isPreparing, isPlaying, currentPlayingId, speak, stop, isTauriEnv } = useTTS();
+function TTSButton({ text, messageId }: { text: string; messageId: string }) {
+  const { isPreparing, isPlaying, currentPlayingId, speak, stop } = useTTS();
   const isThisPreparing = isPreparing && currentPlayingId === messageId;
   const isThisPlaying = isPlaying && currentPlayingId === messageId;
-  const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const longPressTriggered = useRef(false);
-
-  // Cleanup timer on unmount
-  useEffect(() => {
-    return () => {
-      if (longPressTimer.current) {
-        clearTimeout(longPressTimer.current);
-      }
-    };
-  }, []);
-
-  // Don't render the button at all if not in Tauri environment
-  if (!isTauriEnv) {
-    return null;
-  }
 
   const handleClick = async () => {
-    if (longPressTriggered.current) {
-      longPressTriggered.current = false;
+    if (isThisPlaying || isThisPreparing) {
+      stop();
       return;
     }
-
-    if (status === "not_downloaded" || status === "error") {
-      onNeedsSetup();
-      return;
-    }
-
-    if (status === "ready") {
-      if (isThisPlaying || isThisPreparing) {
+    if (!isPreparing) {
+      if (isPlaying) {
         stop();
-      } else if (!isPreparing) {
-        if (isPlaying) {
-          stop();
-        }
-        await speak(text, messageId);
       }
+      await speak(text, messageId);
     }
   };
 
-  const handlePointerDown = () => {
-    longPressTriggered.current = false;
-    if (longPressTimer.current) {
-      clearTimeout(longPressTimer.current);
-    }
-    longPressTimer.current = setTimeout(() => {
-      longPressTimer.current = null;
-      longPressTriggered.current = true;
-      onManage();
-    }, 500);
-  };
-
-  const handlePointerUp = () => {
-    if (longPressTimer.current) {
-      clearTimeout(longPressTimer.current);
-      longPressTimer.current = null;
-    }
-  };
-
-  const handleKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>) => {
-    if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
-      event.preventDefault();
-      handlePointerUp();
-      onManage();
-    }
-  };
-
-  const isDisabled =
-    status === "checking" ||
-    status === "downloading" ||
-    status === "loading" ||
-    status === "deleting" ||
-    (isPreparing && !isThisPreparing);
-  const showSpinner = isThisPreparing || isDisabled;
+  const isDisabled = isPreparing && !isThisPreparing;
 
   const ariaLabel = isThisPreparing
     ? "Stop preparing speech"
     : isThisPlaying
       ? "Stop speaking"
-      : status === "checking"
-        ? "Checking text-to-speech status"
-        : status === "downloading"
-          ? "Downloading text-to-speech models"
-          : status === "loading"
-            ? "Loading text-to-speech models"
-            : status === "deleting"
-              ? "Deleting text-to-speech models"
-              : isPreparing
-                ? "Text-to-speech is preparing another message"
-                : status === "not_downloaded" || status === "error"
-                  ? "Set up text-to-speech"
-                  : "Read aloud";
+      : isPreparing
+        ? "Text-to-speech is preparing another message"
+        : "Read aloud";
 
   return (
     <Button
@@ -955,17 +876,11 @@ function TTSButton({
       size="sm"
       className="h-7 w-7 p-0 text-muted-foreground hover:text-foreground"
       onClick={handleClick}
-      onPointerDown={handlePointerDown}
-      onPointerUp={handlePointerUp}
-      onPointerLeave={handlePointerUp}
-      onPointerCancel={handlePointerUp}
-      onKeyDown={handleKeyDown}
       disabled={isDisabled}
       aria-label={ariaLabel}
-      aria-busy={showSpinner}
-      aria-keyshortcuts="Shift+F10"
+      aria-busy={isThisPreparing}
     >
-      {showSpinner ? (
+      {isThisPreparing ? (
         <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
       ) : isThisPlaying ? (
         <Square className="h-3.5 w-3.5" aria-hidden="true" />
@@ -1313,15 +1228,11 @@ const MessageList = memo(
   ({
     messages,
     isGenerating,
-    chatId,
-    onTTSSetupOpen,
-    onTTSManage
+    chatId
   }: {
     messages: Message[];
     isGenerating: boolean;
     chatId?: string;
-    onTTSSetupOpen: () => void;
-    onTTSManage: () => void;
   }) => {
     const toolCallsByCallId = useMemo(() => {
       const toolCalls = new Map<string, ToolCallItem>();
@@ -1635,12 +1546,7 @@ const MessageList = memo(
                   textContent ? (
                     <>
                       <ChatCopyButton text={textContent} />
-                      <TTSButton
-                        text={textContent}
-                        messageId={group.id}
-                        onNeedsSetup={onTTSSetupOpen}
-                        onManage={onTTSManage}
-                      />
+                      <TTSButton text={textContent} messageId={group.id} />
                     </>
                   ) : undefined
                 }
@@ -1674,7 +1580,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
   const isLinuxEnv = isLinux();
   const isLinuxTauriEnv = isTauriEnv && isLinuxEnv;
   const queryClient = useQueryClient();
-  const { playbackError, clearPlaybackError } = useTTS();
+  const { playbackError, clearPlaybackError, upgradeRequired, clearUpgradeRequired } = useTTS();
   const runtimeStore = useChatRuntimeStore<Conversation, Message>();
   const runtimeInstanceId = useId();
   const visibleChatOwner = useRef<object>({}).current;
@@ -1885,11 +1791,34 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
   );
   const [upgradeDialogOpen, setUpgradeDialogOpen] = useState(false);
   const [upgradeFeature, setUpgradeFeature] = useState<
-    "image" | "document" | "voice" | "usage" | "tokens"
+    "image" | "document" | "voice" | "tts" | "usage" | "tokens"
   >("image");
   const [documentPlatformDialogOpen, setDocumentPlatformDialogOpen] = useState(false);
   const [contextLimitDialogOpen, setContextLimitDialogOpen] = useState(false);
-  const [ttsSetupDialogOpen, setTtsSetupDialogOpen] = useState(false);
+  const ttsAccessDeniedFeature =
+    localState.billingStatus === null || isKnownFreePlan(localState.billingStatus)
+      ? "tts"
+      : "usage";
+
+  useEffect(() => {
+    if (!isVisible) {
+      if (upgradeRequired) clearUpgradeRequired();
+      if (upgradeDialogOpen && upgradeFeature === "tts") setUpgradeDialogOpen(false);
+      return;
+    }
+    if (!upgradeRequired) return;
+
+    setUpgradeFeature(ttsAccessDeniedFeature);
+    setUpgradeDialogOpen(true);
+    clearUpgradeRequired();
+  }, [
+    clearUpgradeRequired,
+    isVisible,
+    ttsAccessDeniedFeature,
+    upgradeDialogOpen,
+    upgradeFeature,
+    upgradeRequired
+  ]);
 
   // Audio recording states
   const [isRecording, setIsRecording] = useState(false);
@@ -5028,13 +4957,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
 
               {/* Message list with modern ChatGPT/Claude style */}
               <div className="space-y-1">
-                <MessageList
-                  messages={messages}
-                  isGenerating={isGenerating}
-                  chatId={chatId}
-                  onTTSSetupOpen={() => setTtsSetupDialogOpen(true)}
-                  onTTSManage={() => setTtsSetupDialogOpen(true)}
-                />
+                <MessageList messages={messages} isGenerating={isGenerating} chatId={chatId} />
               </div>
 
               <div ref={messagesEndRef} />
@@ -5561,22 +5484,12 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
           </div>
         )}
 
-        {/* Upgrade dialog for attachments and usage limits */}
+        {/* Upgrade dialog for paid features and usage limits */}
         <UpgradePromptDialog
           open={upgradeDialogOpen}
           onOpenChange={setUpgradeDialogOpen}
           onStartNewChat={handleNewChatFromUpgrade}
-          feature={
-            upgradeFeature === "document"
-              ? "document"
-              : upgradeFeature === "voice"
-                ? "voice"
-                : upgradeFeature === "usage"
-                  ? "usage"
-                  : upgradeFeature === "tokens"
-                    ? "tokens"
-                    : "image"
-          }
+          feature={upgradeFeature}
         />
 
         {/* Document platform dialog for web users */}
@@ -5593,9 +5506,6 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
           currentModel={localState.model}
           hasDocument={!!documentName}
         />
-
-        {/* TTS setup dialog */}
-        <TTSDownloadDialog open={ttsSetupDialogOpen} onOpenChange={setTtsSetupDialogOpen} />
 
         {/* Hidden file inputs - must be outside conditional rendering to work in both views */}
         <input
