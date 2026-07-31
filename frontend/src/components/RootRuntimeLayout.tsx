@@ -21,10 +21,11 @@ function getRouteScopeKey(pathname: string, accountScopeKey: string): string {
 }
 
 /**
- * Keeps account-scoped chat state around the persistent authenticated home only.
- * The OAuth callback route alone survives the signed-out-to-user transition so its
- * one-shot effect cannot replay. Every other route and global account-scoped UI
- * retains the previous account-keyed remount behavior.
+ * Keeps account-scoped chat state around the persistent authenticated home and
+ * ordinary routed content. The OAuth callback route alone stays outside that
+ * provider so it survives the signed-out-to-user transition and its one-shot
+ * effect cannot replay. Global account-scoped UI retains its previous remount
+ * behavior.
  */
 export function RootRuntimeLayout({
   userId,
@@ -35,11 +36,16 @@ export function RootRuntimeLayout({
 }: RootRuntimeLayoutProps) {
   const accountScopeKey = getAccountScopeKey(userId);
   const routeScopeKey = getRouteScopeKey(pathname, accountScopeKey);
+  const isOAuthCallback = OAUTH_CALLBACK_PATH.test(pathname);
+  const keyedRouteContent = <Fragment key={routeScopeKey}>{routeContent}</Fragment>;
 
   return (
     <>
-      <ChatRuntimeProvider key={`chat:${accountScopeKey}`}>{authenticatedHome}</ChatRuntimeProvider>
-      <Fragment key={routeScopeKey}>{routeContent}</Fragment>
+      <ChatRuntimeProvider key={`chat:${accountScopeKey}`}>
+        {authenticatedHome}
+        {!isOAuthCallback ? keyedRouteContent : null}
+      </ChatRuntimeProvider>
+      {isOAuthCallback ? keyedRouteContent : null}
       <Fragment key={`global:${accountScopeKey}`}>{accountScopedUi}</Fragment>
     </>
   );
