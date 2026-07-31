@@ -3092,7 +3092,6 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
     const gate = historyPaginationGate;
     const usesMacOSWheelGestureStart = usesFirstCancelableWheelGestureStart({
       isTauriEnvironment: isTauriEnv,
-      isMacOSPlatform: isMacOS(),
       browserPlatform: navigator.platform
     });
     const delaysWheelGestureEndAfterScrollEnd = isTauriEnv && isMacOS();
@@ -3358,10 +3357,10 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
       gate.endGesture();
     };
 
-    // WKWebView and Chrome on macOS expose the first-event cancelability
-    // boundary only when the listener is non-passive. We never prevent the
-    // event, so native scrolling is unchanged. Other platforms retain the
-    // existing passive listener.
+    // Chrome on macOS exposes the first-event cancelability boundary only when
+    // the listener is non-passive. We never prevent the event, so native
+    // scrolling is unchanged. Tauri and other platforms retain the passive
+    // listener because WKWebView does not provide the same stable boundary.
     container.addEventListener("wheel", handleHistoryWheel, {
       passive: !usesMacOSWheelGestureStart
     });

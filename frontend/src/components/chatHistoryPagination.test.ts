@@ -15,35 +15,25 @@ const visibleBoundary = {
 };
 
 describe("usesFirstCancelableWheelGestureStart", () => {
-  test("uses the cancelability boundary in macOS Tauri and macOS web browsers", () => {
-    expect(
-      usesFirstCancelableWheelGestureStart({
-        isTauriEnvironment: true,
-        isMacOSPlatform: true,
-        browserPlatform: ""
-      })
-    ).toBe(true);
+  test("uses the cancelability boundary in macOS web browsers", () => {
     expect(
       usesFirstCancelableWheelGestureStart({
         isTauriEnvironment: false,
-        isMacOSPlatform: false,
         browserPlatform: "MacIntel"
       })
     ).toBe(true);
   });
 
-  test("keeps non-macOS Tauri and browser wheel listeners on the passive path", () => {
+  test("keeps Tauri and non-macOS browser wheel listeners on the passive path", () => {
     expect(
       usesFirstCancelableWheelGestureStart({
         isTauriEnvironment: true,
-        isMacOSPlatform: false,
         browserPlatform: "MacIntel"
       })
     ).toBe(false);
     expect(
       usesFirstCancelableWheelGestureStart({
         isTauriEnvironment: false,
-        isMacOSPlatform: false,
         browserPlatform: "Win32"
       })
     ).toBe(false);
@@ -239,6 +229,28 @@ describe("ChatHistoryPaginationGate", () => {
     gate.finishLoad({ preserveQueuedLoad: true });
 
     expect(gate.tryStartQueuedLoad({ canLoad: true })).toBe(true);
+    expect(gate.tryStartQueuedLoad({ canLoad: true })).toBe(false);
+  });
+
+  test("clears unconsumed intent when an in-flight page progresses", () => {
+    const gate = new ChatHistoryPaginationGate();
+
+    gate.beginWheelGesture(true);
+    expect(gate.tryStartLoad(visibleBoundary)).toBe(true);
+
+    // A later gesture has started, but has not actually reached the boundary,
+    // so it must not become an observer-driven request after the prepend.
+    gate.beginWheelGesture(true);
+    expect(
+      gate.tryStartLoad({
+        canLoad: true,
+        topBoundaryVisible: false
+      })
+    ).toBe(false);
+
+    gate.finishLoad({ preserveQueuedLoad: true });
+
+    expect(gate.tryStartLoad(visibleBoundary)).toBe(false);
     expect(gate.tryStartQueuedLoad({ canLoad: true })).toBe(false);
   });
 

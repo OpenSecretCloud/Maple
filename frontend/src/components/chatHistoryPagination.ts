@@ -40,14 +40,15 @@ export function chatHistoryCursorProgressed(
 
 export function usesFirstCancelableWheelGestureStart({
   isTauriEnvironment,
-  isMacOSPlatform,
   browserPlatform
 }: {
   isTauriEnvironment: boolean;
-  isMacOSPlatform: boolean;
   browserPlatform: string;
 }): boolean {
-  return isTauriEnvironment ? isMacOSPlatform : browserPlatform.startsWith("Mac");
+  // `WheelEvent.cancelable` marks Chrome's first event reliably enough for the
+  // rapid follow-up gesture workaround, but WKWebView can make later events
+  // cancelable again while momentum or an anchor restoration is settling.
+  return !isTauriEnvironment && browserPlatform.startsWith("Mac");
 }
 
 export class ChatHistoryPaginationGate {
@@ -66,11 +67,11 @@ export class ChatHistoryPaginationGate {
   beginWheelGesture(isNewGesture: boolean): void {
     if (!isNewGesture) return;
 
-    // macOS WKWebView and Chrome make the first wheel event in a hardware
-    // gesture cancelable and later direct/momentum events non-cancelable when
-    // that first event is not prevented. A new first event is therefore
-    // stronger evidence than an arbitrary quiet-period timer and may replace
-    // a still active, already-consumed gesture.
+    // Chrome makes the first wheel event in a hardware gesture cancelable and
+    // later direct/momentum events non-cancelable when that first event is not
+    // prevented. A new first event is therefore stronger evidence than an
+    // arbitrary quiet-period timer and may replace a still active,
+    // already-consumed gesture.
     this.gestureActive = true;
     this.intentArmed = true;
   }
@@ -121,8 +122,11 @@ export class ChatHistoryPaginationGate {
     this.loadInFlight = false;
     if (!preserveQueuedLoad) {
       this.queuedLoad = false;
-      this.intentArmed = false;
     }
+    // Only a gesture that actually reached the boundary is represented by the
+    // queue. Never let merely armed intent survive a request and become an
+    // observer-driven follow-up after the prepend changes layout.
+    this.intentArmed = false;
   }
 
   tryStartQueuedLoad({ canLoad }: { canLoad: boolean }): boolean {
