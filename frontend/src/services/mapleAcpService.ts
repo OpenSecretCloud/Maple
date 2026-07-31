@@ -219,7 +219,11 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 }
 
 function normalizePermissionMode(value: unknown): MapleAcpPermissionMode {
-  return value === "allow_all" ? "allow_all" : "read_only";
+  // `allow_all` was an exploratory Maple-owned bypass. Preserve the wire type
+  // while older native builds exist, but migrate every UI policy to caller-owned
+  // ACP approval routing.
+  void value;
+  return "read_only";
 }
 
 function safeCount(value: unknown, fallback = 0): number {

@@ -90,6 +90,13 @@ pub(crate) fn project_agent_event(event: &AgentServiceEvent) -> AgentEventEnvelo
                     envelope.event_type = "timelineItem".to_string();
                     envelope.item = Some(item.clone());
                 }
+                AgentRunEvent::PermissionRequested { item, .. } => {
+                    // Keep the Desktop wire contract unchanged while the shared
+                    // service exposes a typed permission request to non-Tauri
+                    // callers through the run-local event stream.
+                    envelope.event_type = "timelineItem".to_string();
+                    envelope.item = Some(item.clone());
+                }
                 AgentRunEvent::SetupWarning(message) => {
                     envelope.event_type = "error".to_string();
                     // Preserve the existing Desktop contract. Setup warnings
@@ -667,5 +674,42 @@ mod tests {
         assert_eq!(warning.session_id, None);
         assert_eq!(warning.run_id.as_deref(), Some("run-1"));
         assert_eq!(warning.message.as_deref(), Some("setup warning"));
+    }
+
+    #[test]
+    fn typed_permission_requests_keep_the_existing_desktop_timeline_shape() {
+        let item = AgentTimelineItem {
+            id: "permission-request-1".to_string(),
+            item_type: "permission".to_string(),
+            role: Some("system".to_string()),
+            title: Some("Run shell command".to_string()),
+            text: Some("Run this command?".to_string()),
+            status: Some("pending".to_string()),
+            input: Some(json!({ "command": "git status --short" })),
+            output: None,
+            created_ms: 4,
+            merge: "replace".to_string(),
+        };
+        let projected = project_agent_event(&AgentServiceEvent::Run {
+            session_id: "session-1".to_string(),
+            run_id: "run-1".to_string(),
+            event: AgentRunEvent::PermissionRequested {
+                request: crate::agent::AgentPermissionRequest {
+                    request_id: "request-1".to_string(),
+                    tool_name: "shell".to_string(),
+                    arguments: serde_json::Map::from_iter([(
+                        "command".to_string(),
+                        json!("git status --short"),
+                    )]),
+                    prompt: Some("Run this command?".to_string()),
+                },
+                item: item.clone(),
+            },
+        });
+
+        assert_eq!(projected.event_type, "timelineItem");
+        assert_eq!(projected.session_id.as_deref(), Some("session-1"));
+        assert_eq!(projected.run_id.as_deref(), Some("run-1"));
+        assert_eq!(projected.item, Some(item));
     }
 }

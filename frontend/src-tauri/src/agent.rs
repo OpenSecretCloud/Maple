@@ -300,6 +300,45 @@ pub struct AgentPermissionResponse {
     pub decision: String,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct AgentPermissionRequest {
+    pub request_id: String,
+    pub tool_name: String,
+    pub arguments: serde_json::Map<String, Value>,
+    pub prompt: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AgentPermissionDecision {
+    AllowOnce,
+    DenyOnce,
+    Cancel,
+}
+
+impl AgentPermissionDecision {
+    fn status(self) -> &'static str {
+        match self {
+            Self::AllowOnce => "allow_once",
+            Self::DenyOnce => "deny_once",
+            Self::Cancel => "cancelled",
+        }
+    }
+
+    fn goose_permission(self) -> Permission {
+        match self {
+            Self::AllowOnce => Permission::AllowOnce,
+            Self::DenyOnce => Permission::DenyOnce,
+            Self::Cancel => Permission::Cancel,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AgentPermissionRouting {
+    Desktop,
+    CallingSurface,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentPermissionModeRequest {
@@ -325,6 +364,31 @@ pub(crate) struct AgentRunHandle {
     pub events: mpsc::Receiver<AgentRunEvent>,
     pub terminal: watch::Receiver<Option<AgentRunTerminal>>,
     pub event_overflowed: Arc<AtomicBool>,
+    pub permission_responder: Option<AgentRunPermissionResponder>,
+}
+
+#[derive(Clone)]
+pub(crate) struct AgentRunPermissionResponder {
+    agent: AgentRuntimeHandle,
+    session_id: Arc<str>,
+    run_id: Arc<str>,
+}
+
+impl AgentRunPermissionResponder {
+    pub(crate) async fn respond(
+        &self,
+        request_id: String,
+        decision: AgentPermissionDecision,
+    ) -> Result<(), String> {
+        self.agent
+            .permission_respond_for_run(
+                self.session_id.as_ref(),
+                self.run_id.as_ref(),
+                request_id,
+                decision,
+            )
+            .await
+    }
 }
 
 pub(crate) struct CreatedAgentSession {
@@ -334,9 +398,9 @@ pub(crate) struct CreatedAgentSession {
 
 /// Controls whether a surface's events are also projected into Maple Desktop.
 ///
-/// This is deliberately independent of tool-context ownership. An external
-/// surface may still need Maple Desktop to act as its permission broker, while
-/// an unattended surface can keep its transient run stream isolated.
+/// This is deliberately independent of tool-context ownership. A calling
+/// surface can keep its transient run stream isolated while persisted history
+/// remains available when Maple Desktop later loads the task.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AgentHostEventPolicy {
     Publish,
@@ -406,6 +470,10 @@ pub(crate) enum AgentRunEvent {
     SessionUpdated(AgentSessionSummary),
     Started,
     TimelineItem(AgentTimelineItem),
+    PermissionRequested {
+        request: AgentPermissionRequest,
+        item: AgentTimelineItem,
+    },
     SetupWarning(String),
     HistoryReplaced,
     Error(AgentTimelineItem),
@@ -476,6 +544,8 @@ pub struct AgentTimelineItem {
 }
 
 struct ActiveAgentRun {
+    agent: Arc<Agent>,
+    permission_routing: AgentPermissionRouting,
     token: CancellationToken,
     tool_context: SharedAgentToolContext,
     session_id: String,
@@ -485,7 +555,19 @@ struct ActiveAgentRun {
 }
 
 type PendingPermissionKey = (String, String);
-type PendingPermissions = Arc<Mutex<HashMap<PendingPermissionKey, ()>>>;
+#[derive(Debug, Clone, PartialEq)]
+struct PendingAgentPermission {
+    run_id: String,
+    routing: AgentPermissionRouting,
+    request: AgentPermissionRequest,
+}
+type PendingPermissions = Arc<Mutex<HashMap<PendingPermissionKey, PendingAgentPermission>>>;
+type IssuedPermissionIds = Arc<Mutex<HashSet<String>>>;
+
+enum AgentPermissionResponseScope {
+    Desktop,
+    CallingSurface { run_id: String },
+}
 type CancelledPermissionIds = Arc<Mutex<HashSet<String>>>;
 type SessionPermissionModes = Arc<Mutex<HashMap<String, GooseMode>>>;
 
@@ -936,69 +1018,117 @@ fn should_name_session_from_prompt(session: &Session) -> bool {
         && session.name == DEFAULT_AGENT_SESSION_TITLE
 }
 
-async fn pending_permissions_for_sessions(
+async fn take_pending_permissions_for_runs(
     pending_permissions: &PendingPermissions,
-    session_ids: &[String],
-) -> Vec<(String, String)> {
-    let pending = pending_permissions.lock().await;
-    pending
+    run_ids: &[String],
+) -> Vec<(PendingPermissionKey, PendingAgentPermission)> {
+    let mut pending = pending_permissions.lock().await;
+    let keys = pending
         .keys()
-        .filter(|(session_id, _)| session_ids.contains(session_id))
-        .map(|(session_id, request_id)| (request_id.clone(), session_id.clone()))
+        .filter(|key| {
+            pending
+                .get(*key)
+                .is_some_and(|request| run_ids.contains(&request.run_id))
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    keys.into_iter()
+        .filter_map(|key| pending.remove(&key).map(|request| (key, request)))
         .collect()
 }
 
-async fn cancel_pending_permissions_for_sessions(
-    agent_manager: &Arc<AgentManager>,
+async fn cancel_pending_permissions_for_runs(
     pending_permissions: &PendingPermissions,
-    session_ids: &[String],
-) -> Vec<(String, String)> {
+    run_ids: &[String],
+    agents_by_run: &HashMap<String, Arc<Agent>>,
+) -> Vec<(PendingPermissionKey, PendingAgentPermission)> {
     let mut cancelled = Vec::new();
-    for (request_id, session_id) in
-        pending_permissions_for_sessions(pending_permissions, session_ids).await
+    for ((session_id, request_id), request) in
+        take_pending_permissions_for_runs(pending_permissions, run_ids).await
     {
-        match agent_manager.get_or_create_agent(session_id.clone()).await {
-            Ok(agent) => {
-                agent
-                    .handle_confirmation(
-                        request_id.clone(),
-                        PermissionConfirmation {
-                            principal_type: PrincipalType::Tool,
-                            permission: Permission::Cancel,
-                        },
-                    )
-                    .await;
-                let mut pending = pending_permissions.lock().await;
-                pending.remove(&(session_id.clone(), request_id.clone()));
-                cancelled.push((request_id, session_id));
-            }
-            Err(error) => {
-                log::warn!(
-                    "Failed to cancel pending Agent Mode permission for session {session_id}: {error}"
-                );
-            }
+        if let Some(agent) = agents_by_run.get(&request.run_id) {
+            agent
+                .handle_confirmation(
+                    request_id.clone(),
+                    PermissionConfirmation {
+                        principal_type: PrincipalType::Tool,
+                        permission: Permission::Cancel,
+                    },
+                )
+                .await;
+        } else {
+            log::warn!(
+                "Failed to resolve the running Agent for pending permission {request_id} in {session_id}"
+            );
         }
+        cancelled.push(((session_id, request_id), request));
     }
     cancelled
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PendingPermissionRegistration {
+    Registered,
+    Existing,
+    Rejected,
+}
+
 async fn register_pending_permission(
     pending_permissions: &PendingPermissions,
-    request_id: &str,
+    issued_permission_ids: &IssuedPermissionIds,
     session_id: &str,
+    run_id: &str,
+    routing: AgentPermissionRouting,
+    request: AgentPermissionRequest,
     cancel_token: &CancellationToken,
-) -> bool {
+) -> PendingPermissionRegistration {
     if cancel_token.is_cancelled() {
-        return false;
+        return PendingPermissionRegistration::Rejected;
+    }
+    let key = (session_id.to_string(), request.request_id.clone());
+    let pending_request = PendingAgentPermission {
+        run_id: run_id.to_string(),
+        routing,
+        request,
+    };
+    {
+        let mut pending = pending_permissions.lock().await;
+        match pending.get(&key) {
+            Some(existing) if existing == &pending_request => {
+                return PendingPermissionRegistration::Existing;
+            }
+            Some(_) => {
+                // Reusing a Goose request ID with different ownership or payload
+                // invalidates the old capability. Leaving it resolvable would let
+                // a stale caller approve a different operation under the reused ID.
+                pending.remove(&key);
+                return PendingPermissionRegistration::Rejected;
+            }
+            None => {}
+        }
+    }
+    {
+        let mut issued = issued_permission_ids.lock().await;
+        if !issued.insert(key.1.clone()) {
+            pending_permissions.lock().await.remove(&key);
+            return PendingPermissionRegistration::Rejected;
+        }
     }
     let mut pending = pending_permissions.lock().await;
-    let key = (session_id.to_string(), request_id.to_string());
-    pending.insert(key.clone(), ());
+    match pending.entry(key.clone()) {
+        std::collections::hash_map::Entry::Occupied(existing) => {
+            existing.remove();
+            return PendingPermissionRegistration::Rejected;
+        }
+        std::collections::hash_map::Entry::Vacant(entry) => {
+            entry.insert(pending_request);
+        }
+    }
     if cancel_token.is_cancelled() {
         pending.remove(&key);
-        false
+        PendingPermissionRegistration::Rejected
     } else {
-        true
+        PendingPermissionRegistration::Registered
     }
 }
 
@@ -1012,7 +1142,7 @@ async fn stop_runtime_inner(
     requested_scope: Option<&str>,
 ) -> Result<(), String> {
     let session_lifecycle_guard = state.session_lifecycle.lock().await;
-    let (agent_manager, active_runs, web_tool_state, tool_contexts) = {
+    let (active_runs, web_tool_state, tool_contexts) = {
         let mut runtime = state.inner.lock().await;
         let Some(current) = runtime.as_mut() else {
             return Ok(());
@@ -1021,7 +1151,6 @@ async fn stop_runtime_inner(
             ensure_runtime_account(current, account_scope)?;
         }
         (
-            Arc::clone(&current.agent_manager),
             std::mem::take(&mut current.active_runs),
             Arc::clone(&current.web_tool_state),
             std::mem::take(&mut current.session_tool_contexts),
@@ -1032,18 +1161,14 @@ async fn stop_runtime_inner(
         installed.context.revoke();
     }
 
-    let session_ids = active_runs
-        .values()
-        .map(|run| run.session_id.clone())
-        .collect::<Vec<_>>();
-    let cancelled_permission_ids_by_session = active_runs
-        .values()
-        .map(|run| {
-            (
-                run.session_id.clone(),
-                Arc::clone(&run.cancelled_permission_ids),
-            )
-        })
+    let run_ids = active_runs.keys().cloned().collect::<Vec<_>>();
+    let agents_by_run = active_runs
+        .iter()
+        .map(|(run_id, run)| (run_id.clone(), Arc::clone(&run.agent)))
+        .collect::<HashMap<_, _>>();
+    let cancelled_permission_ids_by_run = active_runs
+        .iter()
+        .map(|(run_id, run)| (run_id.clone(), Arc::clone(&run.cancelled_permission_ids)))
         .collect::<HashMap<_, _>>();
     let mut task_handles = Vec::with_capacity(active_runs.len());
     for (_, active_run) in active_runs {
@@ -1052,14 +1177,11 @@ async fn stop_runtime_inner(
         active_run.tool_context.cancel_run(&active_run.token);
         task_handles.push(active_run.task_handle);
     }
-    let cancelled_permissions = cancel_pending_permissions_for_sessions(
-        &agent_manager,
-        &state.pending_permissions,
-        &session_ids,
-    )
-    .await;
-    for (request_id, session_id) in cancelled_permissions {
-        if let Some(cancelled_permission_ids) = cancelled_permission_ids_by_session.get(&session_id)
+    let cancelled_permissions =
+        cancel_pending_permissions_for_runs(&state.pending_permissions, &run_ids, &agents_by_run)
+            .await;
+    for ((_, request_id), pending) in cancelled_permissions {
+        if let Some(cancelled_permission_ids) = cancelled_permission_ids_by_run.get(&pending.run_id)
         {
             cancelled_permission_ids.lock().await.insert(request_id);
         }
@@ -2328,8 +2450,14 @@ impl AgentRuntimeHandle {
         &self,
         request: AgentSendMessageRequest,
     ) -> Result<AgentRunHandle, String> {
-        self.send_message_inner(request, None, None, AgentHostEventPolicy::Publish)
-            .await
+        self.send_message_inner(
+            request,
+            None,
+            None,
+            AgentHostEventPolicy::Publish,
+            AgentPermissionRouting::Desktop,
+        )
+        .await
     }
 
     pub(crate) async fn send_message_with_tool_context(
@@ -2339,8 +2467,14 @@ impl AgentRuntimeHandle {
         surface_lifetime: CancellationToken,
         host_events: AgentHostEventPolicy,
     ) -> Result<AgentRunHandle, String> {
-        self.send_message_inner(request, Some(access), Some(surface_lifetime), host_events)
-            .await
+        self.send_message_inner(
+            request,
+            Some(access),
+            Some(surface_lifetime),
+            host_events,
+            AgentPermissionRouting::CallingSurface,
+        )
+        .await
     }
 
     async fn send_message_inner(
@@ -2349,6 +2483,7 @@ impl AgentRuntimeHandle {
         tool_context_access: Option<AgentToolContextAccess>,
         surface_lifetime: Option<CancellationToken>,
         host_events: AgentHostEventPolicy,
+        permission_routing: AgentPermissionRouting,
     ) -> Result<AgentRunHandle, String> {
         let state = &self.service;
         let user_id = self.user_id.as_ref();
@@ -2561,7 +2696,7 @@ impl AgentRuntimeHandle {
         let task_events = run_events.clone();
         let state_inner = Arc::clone(&state.inner);
         let session_lifecycle = Arc::clone(&state.session_lifecycle);
-        let pending_permissions = Arc::clone(&state.pending_permissions);
+        let task_pending_permissions = Arc::clone(&state.pending_permissions);
         let session_id = request.session_id.clone();
         let task_run_id = run_id.clone();
         let task_agent_manager = Arc::clone(&agent_manager);
@@ -2570,8 +2705,11 @@ impl AgentRuntimeHandle {
         let task_web_tool_state = Arc::clone(&web_tool_state);
         let task_user_message = user_message.clone();
         let task_cancel_token = cancel_token.clone();
+        let task_agent = Arc::clone(&agent);
+        let active_agent = Arc::clone(&agent);
         let cancelled_permission_ids = Arc::new(Mutex::new(HashSet::new()));
         let task_cancelled_permission_ids = Arc::clone(&cancelled_permission_ids);
+        let task_issued_permission_ids = Arc::new(Mutex::new(HashSet::new()));
         let (start_tx, start_rx) = oneshot::channel();
         let (terminal_tx, terminal_rx) = watch::channel(None);
         let task = tokio::spawn(async move {
@@ -2585,7 +2723,7 @@ impl AgentRuntimeHandle {
                     task_cancel_token.clone(),
                     run_agent_prompt(AgentPromptRun {
                         events: task_events.clone(),
-                        agent,
+                        agent: Arc::clone(&task_agent),
                         session_manager: Arc::clone(&task_session_manager),
                         live_timelines: live_timelines.clone(),
                         session_id: session_id.clone(),
@@ -2594,8 +2732,11 @@ impl AgentRuntimeHandle {
                         web_tool_state: Arc::clone(&task_web_tool_state),
                         web_permission_context,
                         cancel_token: task_cancel_token.clone(),
-                        pending_permissions,
+                        pending_permissions: Arc::clone(&task_pending_permissions),
+                        issued_permission_ids: task_issued_permission_ids,
                         cancelled_permission_ids: Arc::clone(&task_cancelled_permission_ids),
+                        run_id: task_run_id.clone(),
+                        permission_routing,
                     }),
                 )
                 .await
@@ -2611,6 +2752,31 @@ impl AgentRuntimeHandle {
             // agent_cancel_run. Whichever side acquires it first owns the terminal
             // result, so Stop cannot succeed against an already-settled run.
             let run_was_cancelled = !should_run || task_cancel_token.is_cancelled();
+            let terminal_permissions = cancel_pending_permissions_for_runs(
+                &task_pending_permissions,
+                std::slice::from_ref(&task_run_id),
+                &HashMap::from([(task_run_id.clone(), Arc::clone(&task_agent))]),
+            )
+            .await;
+            if !terminal_permissions.is_empty() {
+                task_cancelled_permission_ids.lock().await.extend(
+                    terminal_permissions
+                        .iter()
+                        .map(|((_, request_id), _)| request_id.clone()),
+                );
+                for ((permission_session_id, request_id), _) in terminal_permissions {
+                    if let Some(item) = update_live_permission_status(
+                        &live_timelines,
+                        &permission_session_id,
+                        &request_id,
+                        "cancelled",
+                    )
+                    .await
+                    {
+                        task_events.publish(AgentRunEvent::TimelineItem(item)).await;
+                    }
+                }
+            }
             let cancelled_permission_ids = task_cancelled_permission_ids.lock().await.clone();
             let result = if run_was_cancelled {
                 finalize_cancelled_agent_turn(
@@ -2680,6 +2846,8 @@ impl AgentRuntimeHandle {
                         current.active_runs.insert(
                             run_id.clone(),
                             ActiveAgentRun {
+                                agent: active_agent,
+                                permission_routing,
                                 token: cancel_token.clone(),
                                 tool_context: tool_context.clone(),
                                 session_id: request.session_id.clone(),
@@ -2717,11 +2885,20 @@ impl AgentRuntimeHandle {
         // followed by this send path re-appending the cancelled prompt.
         drop(session_lifecycle_guard);
 
+        let permission_responder =
+            matches!(permission_routing, AgentPermissionRouting::CallingSurface).then(|| {
+                AgentRunPermissionResponder {
+                    agent: self.clone(),
+                    session_id: Arc::from(request.session_id.as_str()),
+                    run_id: Arc::from(run_id.as_str()),
+                }
+            });
         Ok(AgentRunHandle {
             run_id,
             events: run_events_rx,
             terminal: terminal_rx,
             event_overflowed: run_events.overflow_flag(),
+            permission_responder,
         })
     }
 
@@ -2734,14 +2911,7 @@ impl AgentRuntimeHandle {
         // terminal event. If the worker settled first, its active-run entry will
         // already be gone by the time this command inspects it.
         let _session_lifecycle_guard = state.session_lifecycle.lock().await;
-        let (
-            agent_manager,
-            session_id,
-            cancel_token,
-            tool_context,
-            run_events,
-            cancelled_permission_ids,
-        ) = {
+        let (agent, cancel_token, tool_context, run_events, cancelled_permission_ids) = {
             let runtime = state.inner.lock().await;
             let Some(current) = runtime.as_ref() else {
                 return Ok(());
@@ -2751,8 +2921,7 @@ impl AgentRuntimeHandle {
                 return Ok(());
             };
             (
-                Arc::clone(&current.agent_manager),
-                active_run.session_id.clone(),
+                Arc::clone(&active_run.agent),
                 active_run.token.clone(),
                 active_run.tool_context.clone(),
                 active_run.events.clone(),
@@ -2760,18 +2929,18 @@ impl AgentRuntimeHandle {
             )
         };
         tool_context.cancel_run(&cancel_token);
-        let cancelled_permissions = cancel_pending_permissions_for_sessions(
-            &agent_manager,
+        let cancelled_permissions = cancel_pending_permissions_for_runs(
             &state.pending_permissions,
-            std::slice::from_ref(&session_id),
+            std::slice::from_ref(&run_id),
+            &HashMap::from([(run_id.clone(), agent)]),
         )
         .await;
         cancelled_permission_ids.lock().await.extend(
             cancelled_permissions
                 .iter()
-                .map(|(request_id, _)| request_id.clone()),
+                .map(|((_, request_id), _)| request_id.clone()),
         );
-        for (request_id, session_id) in cancelled_permissions {
+        for ((session_id, request_id), _) in cancelled_permissions {
             if let Some(item) = update_live_permission_status(
                 &state.live_timelines,
                 &session_id,
@@ -2801,17 +2970,35 @@ impl AgentRuntimeHandle {
             return Err("Agent permission mode update requires a task ID".to_string());
         }
         let goose_mode = parse_user_permission_mode(&request.mode)?;
-        let (agent_manager, session_manager, maple_api_session, permission_modes) = {
+        let (agent_manager, session_manager, maple_api_session, permission_modes, active_agent) = {
             let runtime = state.inner.lock().await;
             let current = runtime
                 .as_ref()
                 .ok_or_else(|| "Agent runtime is not running".to_string())?;
             ensure_runtime_account(current, account_scope)?;
+            if current.active_runs.values().any(|run| {
+                run.session_id == session_id
+                    && run.permission_routing == AgentPermissionRouting::CallingSurface
+            }) || current
+                .session_tool_contexts
+                .get(&session_id)
+                .is_some_and(|installed| installed.owner == AgentToolContextOwner::Leased)
+            {
+                return Err("This Agent task is controlled by another Agent surface".to_string());
+            }
             (
                 Arc::clone(&current.agent_manager),
                 Arc::clone(&current.session_manager),
                 Arc::clone(&current.maple_api_session),
                 Arc::clone(&current.permission_modes),
+                current
+                    .active_runs
+                    .values()
+                    .find(|run| {
+                        run.session_id == session_id
+                            && run.permission_routing == AgentPermissionRouting::Desktop
+                    })
+                    .map(|run| Arc::clone(&run.agent)),
             )
         };
 
@@ -2832,15 +3019,22 @@ impl AgentRuntimeHandle {
                 .get_session(&session_id, false)
                 .await
                 .map_err(|error| format!("Failed to load Agent task: {error}"))?;
-            let agent = get_or_create_session_agent(
-                &agent_manager,
-                &maple_api_session,
-                &session,
-                RuntimeContext::default(),
-            )
-            .await
-            .map_err(|error| format!("Failed to resolve Goose agent for mode update: {error}"))?
-            .agent;
+            let agent = match active_agent {
+                Some(agent) => agent,
+                None => {
+                    get_or_create_session_agent(
+                        &agent_manager,
+                        &maple_api_session,
+                        &session,
+                        RuntimeContext::default(),
+                    )
+                    .await
+                    .map_err(|error| {
+                        format!("Failed to resolve Goose agent for mode update: {error}")
+                    })?
+                    .agent
+                }
+            };
             agent
                 .update_goose_mode(GOOSE_PERMISSION_ROUTING_MODE, &session_id)
                 .await
@@ -2897,9 +3091,12 @@ impl AgentRuntimeHandle {
             let request_ids = {
                 let mut pending = state.pending_permissions.lock().await;
                 let request_ids = pending
-                    .keys()
-                    .filter(|(pending_session_id, _)| pending_session_id == &session_id)
-                    .map(|(_, request_id)| request_id.clone())
+                    .iter()
+                    .filter(|((pending_session_id, _), request)| {
+                        pending_session_id == &session_id
+                            && request.routing == AgentPermissionRouting::Desktop
+                    })
+                    .map(|((_, request_id), _)| request_id.clone())
                     .collect::<Vec<_>>();
                 for request_id in &request_ids {
                     pending.remove(&(session_id.clone(), request_id.clone()));
@@ -2951,65 +3148,154 @@ impl AgentRuntimeHandle {
         &self,
         response: AgentPermissionResponse,
     ) -> Result<(), String> {
+        let decision = permission_decision_from_str(&response.decision)?;
+        let display_status = response.decision.clone();
+        self.resolve_permission(
+            response.session_id,
+            response.request_id,
+            decision,
+            AgentPermissionResponseScope::Desktop,
+            Some(display_status),
+        )
+        .await
+    }
+
+    async fn permission_respond_for_run(
+        &self,
+        session_id: &str,
+        run_id: &str,
+        request_id: String,
+        decision: AgentPermissionDecision,
+    ) -> Result<(), String> {
+        self.resolve_permission(
+            session_id.to_string(),
+            request_id,
+            decision,
+            AgentPermissionResponseScope::CallingSurface {
+                run_id: run_id.to_string(),
+            },
+            None,
+        )
+        .await
+    }
+
+    async fn resolve_permission(
+        &self,
+        session_id: String,
+        request_id: String,
+        decision: AgentPermissionDecision,
+        scope: AgentPermissionResponseScope,
+        display_status: Option<String>,
+    ) -> Result<(), String> {
         let state = &self.service;
         let account_scope = self.account_scope.as_ref();
         let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
         self.verify_generation().await?;
         self.ensure_accepting_new_work()?;
-        let (agent_manager, session_id) = {
+        let _session_lifecycle_guard = state.session_lifecycle.lock().await;
+        let session_id = session_id.trim().to_string();
+        if session_id.is_empty() {
+            return Err("Agent permission response requires a task ID".to_string());
+        }
+        if request_id.trim().is_empty() {
+            return Err("Agent permission response requires a request ID".to_string());
+        }
+        let (agent, run_id, expected_routing, run_events, cancelled_permission_ids) = {
             let runtime = state.inner.lock().await;
             let current = runtime
                 .as_ref()
                 .ok_or_else(|| "Agent runtime is not running".to_string())?;
             ensure_runtime_account(current, account_scope)?;
-            let session_id = response.session_id.trim().to_string();
-            if session_id.is_empty() {
-                return Err("Agent permission response requires a task ID".to_string());
+            let (run_id, expected_routing, active_run) = match &scope {
+                AgentPermissionResponseScope::Desktop => {
+                    let (run_id, active_run) = current
+                        .active_runs
+                        .iter()
+                        .find(|(_, run)| run.session_id == session_id)
+                        .ok_or_else(|| {
+                            format!(
+                                "No running Agent task found for permission request {request_id}"
+                            )
+                        })?;
+                    (run_id.clone(), AgentPermissionRouting::Desktop, active_run)
+                }
+                AgentPermissionResponseScope::CallingSurface { run_id } => {
+                    let active_run = current.active_runs.get(run_id).ok_or_else(|| {
+                        format!("No running Agent task found for permission request {request_id}")
+                    })?;
+                    if active_run.session_id != session_id {
+                        return Err("Agent permission responder does not own this task".to_string());
+                    }
+                    (
+                        run_id.clone(),
+                        AgentPermissionRouting::CallingSurface,
+                        active_run,
+                    )
+                }
+            };
+            if active_run.token.is_cancelled() {
+                return Err("Agent permission request is already cancelled".to_string());
             }
-            let key = (session_id.clone(), response.request_id.clone());
-            if !state.pending_permissions.lock().await.contains_key(&key) {
-                return Err(format!(
-                    "No pending Agent Mode permission request found for {} in task {}",
-                    response.request_id, session_id
-                ));
-            }
-            (Arc::clone(&current.agent_manager), session_id)
+            (
+                Arc::clone(&active_run.agent),
+                run_id,
+                expected_routing,
+                active_run.events.clone(),
+                Arc::clone(&active_run.cancelled_permission_ids),
+            )
         };
-        let agent = agent_manager
-            .get_or_create_agent(session_id.clone())
-            .await
-            .map_err(|e| format!("Failed to resolve Goose agent for permission response: {e}"))?;
+        let key = (session_id.clone(), request_id.clone());
+        {
+            let mut pending = state.pending_permissions.lock().await;
+            let Some(request) = pending.get(&key) else {
+                return Err(format!(
+                    "No pending Agent Mode permission request found for {request_id} in task {session_id}"
+                ));
+            };
+            if request.run_id != run_id || request.routing != expected_routing {
+                return Err("Agent permission responder does not own this request".to_string());
+            }
+            pending.remove(&key);
+        }
+        if decision == AgentPermissionDecision::Cancel {
+            cancelled_permission_ids
+                .lock()
+                .await
+                .insert(request_id.clone());
+        }
         agent
             .handle_confirmation(
-                response.request_id.clone(),
+                request_id.clone(),
                 PermissionConfirmation {
                     principal_type: PrincipalType::Tool,
-                    permission: permission_from_decision(&response.decision)?,
+                    permission: decision.goose_permission(),
                 },
             )
             .await;
         if let Some(item) = update_live_permission_status(
             &state.live_timelines,
             &session_id,
-            &response.request_id,
-            &response.decision,
+            &request_id,
+            display_status
+                .as_deref()
+                .unwrap_or_else(|| decision.status()),
         )
         .await
         {
-            emit_agent_event(
-                &state.host.events,
-                AgentServiceEvent::TimelineItem {
-                    session_id: session_id.clone(),
-                    run_id: None,
-                    item,
-                },
-            );
+            match scope {
+                AgentPermissionResponseScope::Desktop => emit_agent_event(
+                    &state.host.events,
+                    AgentServiceEvent::TimelineItem {
+                        session_id,
+                        run_id: None,
+                        item,
+                    },
+                ),
+                AgentPermissionResponseScope::CallingSurface { .. } => {
+                    run_events.publish(AgentRunEvent::TimelineItem(item)).await;
+                }
+            }
         }
-        state
-            .pending_permissions
-            .lock()
-            .await
-            .remove(&(session_id, response.request_id));
         Ok(())
     }
 }
@@ -3026,7 +3312,10 @@ struct AgentPromptRun {
     web_permission_context: WebPermissionContext,
     cancel_token: CancellationToken,
     pending_permissions: PendingPermissions,
+    issued_permission_ids: IssuedPermissionIds,
     cancelled_permission_ids: CancelledPermissionIds,
+    run_id: String,
+    permission_routing: AgentPermissionRouting,
 }
 
 #[derive(Default)]
@@ -3343,6 +3632,60 @@ async fn automatically_handle_permissions(
     handled
 }
 
+struct ExtractedToolPermissionRequests {
+    requests: HashMap<String, AgentPermissionRequest>,
+    conflicting_ids: HashSet<String>,
+}
+
+fn tool_permission_requests(message: &Message) -> ExtractedToolPermissionRequests {
+    let mut requests = HashMap::new();
+    let mut conflicting_ids = HashSet::new();
+    for content in &message.content {
+        let MessageContent::ActionRequired(action) = content else {
+            continue;
+        };
+        let ActionRequiredData::ToolConfirmation {
+            id,
+            tool_name,
+            arguments,
+            prompt,
+        } = &action.data
+        else {
+            continue;
+        };
+        if id.trim().is_empty() {
+            conflicting_ids.insert(id.clone());
+            continue;
+        }
+        let request = AgentPermissionRequest {
+            request_id: id.clone(),
+            tool_name: tool_name.clone(),
+            arguments: arguments.clone(),
+            prompt: prompt.clone(),
+        };
+        if conflicting_ids.contains(id) {
+            continue;
+        }
+        match requests.get(id) {
+            Some(_) => {
+                // A request ID is a one-shot capability. Even byte-for-byte
+                // duplicate entries in the same Goose message are ambiguous:
+                // registering one and suppressing the other can accidentally
+                // suppress the only caller-visible prompt. Fail closed instead.
+                requests.remove(id);
+                conflicting_ids.insert(id.clone());
+            }
+            None => {
+                requests.insert(id.clone(), request);
+            }
+        }
+    }
+    ExtractedToolPermissionRequests {
+        requests,
+        conflicting_ids,
+    }
+}
+
 async fn run_agent_prompt(run: AgentPromptRun) -> Result<AgentPromptOutcome, String> {
     let AgentPromptRun {
         events,
@@ -3356,7 +3699,10 @@ async fn run_agent_prompt(run: AgentPromptRun) -> Result<AgentPromptOutcome, Str
         web_permission_context,
         cancel_token,
         pending_permissions,
+        issued_permission_ids,
         cancelled_permission_ids,
+        run_id,
+        permission_routing,
     } = run;
     let mut terminal_message = None;
     let session_config = SessionConfig {
@@ -3383,6 +3729,23 @@ async fn run_agent_prompt(run: AgentPromptRun) -> Result<AgentPromptOutcome, Str
     while let Some(event) = stream.next().await {
         match event {
             Ok(AgentEvent::Message(message)) => {
+                let extracted_permissions = tool_permission_requests(&message);
+                if !extracted_permissions.conflicting_ids.is_empty() {
+                    for request_id in &extracted_permissions.conflicting_ids {
+                        deliver_tool_permission(&agent, request_id.clone(), Permission::Cancel)
+                            .await;
+                    }
+                    return Err(format!(
+                        "Goose emitted an empty or conflicting permission request ID: {}",
+                        extracted_permissions
+                            .conflicting_ids
+                            .iter()
+                            .cloned()
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ));
+                }
+                let permission_requests = extracted_permissions.requests;
                 let automatically_handled = automatically_handle_permissions(
                     &agent,
                     &session_id,
@@ -3408,53 +3771,69 @@ async fn run_agent_prompt(run: AgentPromptRun) -> Result<AgentPromptOutcome, Str
                         .is_none_or(|request_id| !automatically_handled.contains(&request_id))
                 });
                 let mut newly_auto_handled = HashSet::new();
+                let mut duplicate_permissions = HashSet::new();
                 for item in &mut items {
                     if let Some(request_id) = pending_permission_request_id(item) {
-                        if !register_pending_permission(
-                            &pending_permissions,
-                            &request_id,
-                            &session_id,
-                            &cancel_token,
-                        )
-                        .await
-                        {
+                        let Some(request) = permission_requests.get(&request_id).cloned() else {
                             cancelled_permission_ids
                                 .lock()
                                 .await
                                 .insert(request_id.clone());
-                            agent
-                                .handle_confirmation(
-                                    request_id,
-                                    PermissionConfirmation {
-                                        principal_type: PrincipalType::Tool,
-                                        permission: Permission::Cancel,
-                                    },
-                                )
-                                .await;
+                            deliver_tool_permission(&agent, request_id, Permission::Cancel).await;
                             item.status = Some("cancelled".to_string());
-                        } else if claim_pending_permission_if_auto(
-                            &agent,
-                            &session_id,
-                            &permission_modes,
+                            continue;
+                        };
+                        match register_pending_permission(
                             &pending_permissions,
-                            &request_id,
+                            &issued_permission_ids,
+                            &session_id,
+                            &run_id,
+                            permission_routing,
+                            request,
                             &cancel_token,
                         )
                         .await
                         {
-                            if cancel_token.is_cancelled() {
+                            PendingPermissionRegistration::Rejected => {
                                 cancelled_permission_ids
                                     .lock()
                                     .await
                                     .insert(request_id.clone());
+                                deliver_tool_permission(&agent, request_id, Permission::Cancel)
+                                    .await;
+                                item.status = Some("cancelled".to_string());
                             }
-                            newly_auto_handled.insert(request_id);
+                            PendingPermissionRegistration::Existing => {
+                                duplicate_permissions.insert(request_id);
+                            }
+                            PendingPermissionRegistration::Registered => {
+                                if claim_pending_permission_if_auto(
+                                    &agent,
+                                    &session_id,
+                                    &permission_modes,
+                                    &pending_permissions,
+                                    &request_id,
+                                    &cancel_token,
+                                )
+                                .await
+                                {
+                                    if cancel_token.is_cancelled() {
+                                        cancelled_permission_ids
+                                            .lock()
+                                            .await
+                                            .insert(request_id.clone());
+                                    }
+                                    newly_auto_handled.insert(request_id);
+                                }
+                            }
                         }
                     }
                 }
                 items.retain(|item| {
-                    pending_permission_request_id(item)
-                        .is_none_or(|request_id| !newly_auto_handled.contains(&request_id))
+                    pending_permission_request_id(item).is_none_or(|request_id| {
+                        !newly_auto_handled.contains(&request_id)
+                            && !duplicate_permissions.contains(&request_id)
+                    })
                 });
                 // Publish a permission card while holding the same claim lock
                 // used by an Allow-all transition. If that transition already
@@ -3484,6 +3863,18 @@ async fn run_agent_prompt(run: AgentPromptRun) -> Result<AgentPromptOutcome, Str
                     ));
                 }
                 for item in items {
+                    if let Some(request_id) = pending_permission_request_id(&item) {
+                        if let Some(request) = permission_requests.get(&request_id) {
+                            record_timeline_item(&live_timelines, &session_id, item.clone()).await;
+                            events
+                                .publish(AgentRunEvent::PermissionRequested {
+                                    request: request.clone(),
+                                    item,
+                                })
+                                .await;
+                            continue;
+                        }
+                    }
                     record_and_emit_timeline_item(&events, &live_timelines, &session_id, item)
                         .await;
                 }
@@ -4652,16 +5043,21 @@ fn tool_response_title(id: &str) -> Option<String> {
     })
 }
 
-fn permission_from_decision(decision: &str) -> Result<Permission, String> {
+fn permission_decision_from_str(decision: &str) -> Result<AgentPermissionDecision, String> {
     match decision {
-        "allow_once" | "allow" => Ok(Permission::AllowOnce),
-        "deny_once" | "deny" => Ok(Permission::DenyOnce),
-        "cancel" => Ok(Permission::Cancel),
+        "allow_once" | "allow" => Ok(AgentPermissionDecision::AllowOnce),
+        "deny_once" | "deny" => Ok(AgentPermissionDecision::DenyOnce),
+        "cancel" | "cancelled" => Ok(AgentPermissionDecision::Cancel),
         "always_allow" | "always_deny" => {
             Err("Persistent tool permissions are not supported by Maple Agent Mode".to_string())
         }
         other => Err(format!("Unknown permission decision: {other}")),
     }
+}
+
+#[cfg(test)]
+fn permission_from_decision(decision: &str) -> Result<Permission, String> {
+    permission_decision_from_str(decision).map(AgentPermissionDecision::goose_permission)
 }
 
 fn session_summary(session: &Session) -> AgentSessionSummary {
@@ -5907,6 +6303,30 @@ mod tests {
 
     fn recent_root_paths(roots: &[RecentProjectRoot]) -> Vec<String> {
         roots.iter().map(|root| root.path.clone()).collect()
+    }
+
+    fn test_permission_request(request_id: &str) -> AgentPermissionRequest {
+        AgentPermissionRequest {
+            request_id: request_id.to_string(),
+            tool_name: "shell".to_string(),
+            arguments: serde_json::Map::from_iter([(
+                "command".to_string(),
+                Value::String("git status --short".to_string()),
+            )]),
+            prompt: Some("Run this command?".to_string()),
+        }
+    }
+
+    fn test_pending_permission(
+        run_id: &str,
+        routing: AgentPermissionRouting,
+        request_id: &str,
+    ) -> PendingAgentPermission {
+        PendingAgentPermission {
+            run_id: run_id.to_string(),
+            routing,
+            request: test_permission_request(request_id),
+        }
     }
 
     #[test]
@@ -8738,8 +9158,22 @@ mod tests {
             (survivor.id.clone(), LiveTimeline::Streaming(Vec::new())),
         ])));
         let pending_permissions = Arc::new(Mutex::new(HashMap::from([
-            ((target.id.clone(), "target-request".to_string()), ()),
-            ((survivor.id.clone(), "survivor-request".to_string()), ()),
+            (
+                (target.id.clone(), "target-request".to_string()),
+                test_pending_permission(
+                    "target-run",
+                    AgentPermissionRouting::Desktop,
+                    "target-request",
+                ),
+            ),
+            (
+                (survivor.id.clone(), "survivor-request".to_string()),
+                test_pending_permission(
+                    "survivor-run",
+                    AgentPermissionRouting::Desktop,
+                    "survivor-request",
+                ),
+            ),
         ])));
         let web_tool_state = WebToolState::default();
         let provenance_cancel = CancellationToken::new();
@@ -9009,32 +9443,6 @@ mod tests {
             .contains_key(&first_turn_session.id));
 
         let _ = fs::remove_dir_all(test_root);
-    }
-
-    #[tokio::test]
-    async fn detects_active_run_for_session() {
-        let mut active_runs = HashMap::new();
-        let task_handle = tokio::spawn(async {});
-        let (events, _receiver) = AgentRunEventPublisher::new(
-            AgentEventDispatcher::new(Arc::new(NoopAgentEventSink)),
-            "session-1".to_string(),
-            "run-1".to_string(),
-            AgentHostEventPolicy::Publish,
-        );
-        active_runs.insert(
-            "run-1".to_string(),
-            ActiveAgentRun {
-                token: CancellationToken::new(),
-                tool_context: SharedAgentToolContext::new(AgentToolContextSpec::default()),
-                session_id: "session-1".to_string(),
-                events,
-                cancelled_permission_ids: Arc::new(Mutex::new(HashSet::new())),
-                task_handle,
-            },
-        );
-
-        assert!(has_active_session_run(&active_runs, "session-1"));
-        assert!(!has_active_session_run(&active_runs, "session-2"));
     }
 
     #[tokio::test]
@@ -9378,32 +9786,223 @@ mod tests {
         assert!(!title.contains("  "));
     }
 
+    #[test]
+    fn permission_extraction_rejects_empty_and_conflicting_ids() {
+        let status_arguments = serde_json::Map::from_iter([(
+            "command".to_string(),
+            Value::String("git status --short".to_string()),
+        )]);
+        let push_arguments = serde_json::Map::from_iter([(
+            "command".to_string(),
+            Value::String("git push".to_string()),
+        )]);
+        let message = Message::assistant()
+            .with_content(MessageContent::action_required(
+                "request-1",
+                "shell".to_string(),
+                status_arguments,
+                None,
+            ))
+            .with_content(MessageContent::action_required(
+                "request-1",
+                "shell".to_string(),
+                push_arguments,
+                None,
+            ))
+            .with_content(MessageContent::action_required(
+                "",
+                "shell".to_string(),
+                serde_json::Map::new(),
+                None,
+            ));
+
+        let extracted = tool_permission_requests(&message);
+
+        assert!(extracted.requests.is_empty());
+        assert_eq!(
+            extracted.conflicting_ids,
+            HashSet::from(["request-1".to_string(), String::new()])
+        );
+    }
+
+    #[test]
+    fn permission_extraction_rejects_identical_duplicate_ids() {
+        let arguments = serde_json::Map::from_iter([(
+            "command".to_string(),
+            Value::String("git status --short".to_string()),
+        )]);
+        let message = Message::assistant()
+            .with_content(MessageContent::action_required(
+                "request-1",
+                "shell".to_string(),
+                arguments.clone(),
+                None,
+            ))
+            .with_content(MessageContent::action_required(
+                "request-1",
+                "shell".to_string(),
+                arguments,
+                None,
+            ));
+
+        let extracted = tool_permission_requests(&message);
+
+        assert!(extracted.requests.is_empty());
+        assert_eq!(
+            extracted.conflicting_ids,
+            HashSet::from(["request-1".to_string()])
+        );
+    }
+
     #[tokio::test]
     async fn cancelled_permission_is_not_registered() {
         let pending = Arc::new(Mutex::new(HashMap::new()));
+        let issued = Arc::new(Mutex::new(HashSet::new()));
         let cancel_token = CancellationToken::new();
         cancel_token.cancel();
 
-        assert!(
-            !register_pending_permission(&pending, "request-1", "session-1", &cancel_token).await
+        assert_eq!(
+            register_pending_permission(
+                &pending,
+                &issued,
+                "session-1",
+                "run-1",
+                AgentPermissionRouting::Desktop,
+                test_permission_request("request-1"),
+                &cancel_token,
+            )
+            .await,
+            PendingPermissionRegistration::Rejected
         );
         assert!(pending.lock().await.is_empty());
     }
 
     #[tokio::test]
-    async fn pending_permission_ids_are_scoped_by_session() {
+    async fn pending_permissions_are_taken_only_for_the_exact_run() {
         let pending = Arc::new(Mutex::new(HashMap::from([
-            (("session-1".to_string(), "shared-request".to_string()), ()),
-            (("session-2".to_string(), "shared-request".to_string()), ()),
+            (
+                ("session-1".to_string(), "request-1".to_string()),
+                test_pending_permission("run-1", AgentPermissionRouting::Desktop, "request-1"),
+            ),
+            (
+                ("session-1".to_string(), "request-2".to_string()),
+                test_pending_permission(
+                    "run-2",
+                    AgentPermissionRouting::CallingSurface,
+                    "request-2",
+                ),
+            ),
         ])));
 
-        let selected = pending_permissions_for_sessions(&pending, &["session-1".to_string()]).await;
+        let selected = take_pending_permissions_for_runs(&pending, &["run-1".to_string()]).await;
 
+        assert_eq!(selected.len(), 1);
         assert_eq!(
-            selected,
-            vec![("shared-request".to_string(), "session-1".to_string())]
+            selected[0].0,
+            ("session-1".to_string(), "request-1".to_string())
         );
-        assert_eq!(pending.lock().await.len(), 2);
+        assert_eq!(selected[0].1.run_id, "run-1");
+        let remaining = pending.lock().await;
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining.values().next().unwrap().run_id, "run-2");
+    }
+
+    #[tokio::test]
+    async fn conflicting_permission_registration_invalidates_the_stale_capability() {
+        let pending = Arc::new(Mutex::new(HashMap::new()));
+        let issued = Arc::new(Mutex::new(HashSet::new()));
+        let cancel_token = CancellationToken::new();
+        let original = test_permission_request("request-1");
+        assert_eq!(
+            register_pending_permission(
+                &pending,
+                &issued,
+                "session-1",
+                "run-1",
+                AgentPermissionRouting::CallingSurface,
+                original.clone(),
+                &cancel_token,
+            )
+            .await,
+            PendingPermissionRegistration::Registered
+        );
+        assert_eq!(
+            register_pending_permission(
+                &pending,
+                &issued,
+                "session-1",
+                "run-1",
+                AgentPermissionRouting::CallingSurface,
+                original,
+                &cancel_token,
+            )
+            .await,
+            PendingPermissionRegistration::Existing
+        );
+
+        let mut conflicting = test_permission_request("request-1");
+        conflicting
+            .arguments
+            .insert("command".to_string(), Value::String("git push".to_string()));
+        assert_eq!(
+            register_pending_permission(
+                &pending,
+                &issued,
+                "session-1",
+                "run-1",
+                AgentPermissionRouting::CallingSurface,
+                conflicting,
+                &cancel_token,
+            )
+            .await,
+            PendingPermissionRegistration::Rejected
+        );
+        assert!(pending.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn resolved_permission_ids_cannot_be_reissued_within_a_run() {
+        let pending = Arc::new(Mutex::new(HashMap::new()));
+        let issued = Arc::new(Mutex::new(HashSet::new()));
+        let cancel_token = CancellationToken::new();
+        assert_eq!(
+            register_pending_permission(
+                &pending,
+                &issued,
+                "session-1",
+                "run-1",
+                AgentPermissionRouting::Desktop,
+                test_permission_request("request-1"),
+                &cancel_token,
+            )
+            .await,
+            PendingPermissionRegistration::Registered
+        );
+        assert_eq!(
+            take_pending_permissions_for_runs(&pending, &["run-1".to_string()])
+                .await
+                .len(),
+            1
+        );
+
+        let mut reused = test_permission_request("request-1");
+        reused
+            .arguments
+            .insert("command".to_string(), Value::String("git push".to_string()));
+        assert_eq!(
+            register_pending_permission(
+                &pending,
+                &issued,
+                "session-1",
+                "run-1",
+                AgentPermissionRouting::Desktop,
+                reused,
+                &cancel_token,
+            )
+            .await,
+            PendingPermissionRegistration::Rejected
+        );
+        assert!(pending.lock().await.is_empty());
     }
 
     #[test]

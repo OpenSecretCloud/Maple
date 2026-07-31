@@ -36,7 +36,7 @@ The packaged executable has two entry paths:
 - Normal invocation launches Maple Desktop.
 - `maple acp` connects standard input/output to the already-running desktop process.
 
-Buzz owns the subprocess and supplies its relay context there. Maple Desktop owns authentication, the account-scoped provider, Goose managers, tasks, tools, permission policy, runs, and UI events. The connector sends no inference request itself and does not initialize a second agent runtime.
+Buzz owns the subprocess and supplies its relay context there. Maple Desktop owns authentication, the account-scoped provider, Goose managers, tasks, tools, automatic permission classification, runs, and UI events. The surface that starts a run owns any unresolved interactive permission decision: Tauri for a Desktop run and the connected ACP client for an ACP run. The connector sends no inference request itself and does not initialize a second agent runtime.
 
 The executable path is part of the socket name. This keeps an installed Maple build and independent development builds from accidentally sharing an ACP endpoint.
 
@@ -67,7 +67,7 @@ A provider factory alone is insufficient. Maple also needs to preserve:
 - account-scoped session storage and lifecycle fencing;
 - model locking and session restoration behavior;
 - `MapleDeveloperClient`, Maple web tools, and trust-filtered skills;
-- Maple-local permission classification and approval UI;
+- Maple-local permission classification and surface-scoped approval routing;
 - run cancellation, retained terminal state, and desktop timeline events; and
 - ephemeral per-session tool context supplied by the external harness.
 
@@ -99,8 +99,8 @@ Goose already implements many of these semantics, but at Maple's pinned revision
 | `session/fork`                             | No              | Medium                            | Goose's underlying `SessionManager` already has copy primitives, and its ACP implementation shows copy, optional truncation, and activation. Maple needs an account-scoped wrapper, root/policy validation, fresh transient context, activation, and rollback for partial failures. ACP fork is still unstable, so enabling it also accepts an unstable wire commitment; no Goose fork is otherwise required.                                                                                                                                               |
 | Session mode                               | No              | Medium                            | Maple already changes per-session permission mode. ACP support needs advertised mode state, a handler, update projection, and an explicit rule about whether a client may select unattended approval. This is principally a Maple trust-policy decision.                                                                                                                                                                                                                                                                                                    |
 | Model selection and other config           | No              | Medium–High                       | A Maple model option is feasible before the first prompt using Maple's authenticated catalog. Maple intentionally locks a task's model once it has history, so arbitrary mid-session switching should be rejected or treated as a product change. The native ACP path also needs authoritative vision/context metadata. Goose's config builder cannot be reused because it assumes Goose's global provider inventory rather than Maple's caller-owned `MapleProvider`; provider switching should remain out of scope.                                       |
-| ACP permission requests                    | No              | High                              | Technically supportable, but it changes the trust boundary. Maple already exposes pending one-shot decisions and can feed a response back to Goose. It would need exactly one authoritative broker per session—Maple UI, ACP client, or a deliberately designed hybrid—plus timeout, disconnect, cancellation, and double-response handling. The tested Buzz build automatically chooses `allow_once` for forwarded requests, so delegation would materially weaken the current local-approval boundary. Goose's mapping is not an injectable broker.       |
-| Basic structured tool calls and results    | No              | Low–Medium                        | Maple's timeline already carries stable IDs, title, input, output, status, and errors, which is enough for ordinary ACP `ToolCall` and `ToolCallUpdate` cards. This is mostly projection work. Buzz also treats the initial `tool_call` notification as activity, so projecting tool-call start would reset its idle watchdog during a long otherwise-silent tool, improving liveness as well as UI visibility.                                                                                                                                             |
+| ACP permission requests                    | Yes             | Implemented                       | Maple automatically resolves operations covered by its own policy, then emits a typed, run-scoped request for anything unresolved. ACP offers only `allow_once` and `reject_once`; cancellation, disconnect, transport failure, an unknown option, duplicate response, or reused request ID fails closed. The ACP caller is the sole interactive broker for that run, and Maple Desktop receives no actionable live card. Buzz currently chooses `allow_once` automatically. Maple has no separate non-overridable dangerous-deny policy yet. |
+| Basic structured tool calls and results    | Partial         | Low–Medium                        | A permission request includes a pending ACP `ToolCallUpdate` with stable ID, title, kind, prompt, and raw input. General tool starts, progress, outputs, and results are not yet projected. Maple's timeline already carries most ordinary card fields, so this is mainly projection work, but lifecycle correlation and bounded rich output still need wire tests.                                                                                                                                                                                           |
 | Rich tool/resource/location/MCP projection | No              | Medium–High                       | Rich image/resource content, file locations, progressive MCP notifications, and faithful replay need data below Maple's deliberately summarized UI timeline. A public transport-neutral Goose `AcpEventProjector` would avoid maintaining this nuanced mapping twice.                                                                                                                                                                                                                                                                                       |
 | Terminal and diff parity                   | No              | Medium–High; architectural choice | Goose's terminal handles and diff updates are not projection alone: its ACP filesystem layer replaces/delegates developer operations through ACP-client filesystem and terminal RPCs. Maple currently executes its own local tools. Maple would need either to synthesize bounded metadata from those results or delegate execution to the client, which would change its tool and permission architecture; an event projector by itself is insufficient.                                                                                                   |
 | Usage and context updates                  | No              | Medium                            | Supportable. Goose emits and persists usage, but Maple currently discards ephemeral usage notifications before its public event stream. Maple must retain a protocol-neutral usage event or query post-turn totals, pair usage with the persisted context limit, and define cumulative semantics. ACP cost is optional and should remain absent until it matches Maple billing semantics. Buzz can display standard usage for observability, but its durable turn-accounting path currently consumes a Goose-private cumulative-usage notification instead. |
@@ -116,7 +116,7 @@ This is parity for the tested Maple task path, not parity with Goose's complete 
 
 Two ACP v1 baseline caveats are worth making explicit: agents must accept `ResourceLink` prompt blocks and stdio MCP definitions. The preview handles neither generically. The tested Buzz custom-harness path uses text prompts and does not depend on arbitrary MCP definitions; Maple also contains one exact Buzz compatibility adaptation. Image, audio, and embedded-resource capabilities are correctly advertised as unavailable.
 
-None of the `No` rows blocks the tested Buzz harness. That Buzz build does not call list/load/resume/fork/close, tolerates absent model/config options by using the agent default, and falls back from native steering to cancel-and-merge. Initial `tool_call` notifications would improve Buzz Desktop visibility and reset its idle watchdog during long tools. Standard usage would improve observability, while durable turn metrics currently rely on a Goose-private notification. Its signed channel reply remains a separate tool/CLI path.
+None of the `No` rows blocks the tested Buzz harness. That Buzz build does not call list/load/resume/fork/close, tolerates absent model/config options by using the agent default, and falls back from native steering to cancel-and-merge. General tool lifecycle notifications would improve Buzz Desktop visibility and reset its idle watchdog during long tools. Standard usage would improve observability, while durable turn metrics currently rely on a Goose-private notification. Its signed channel reply remains a separate tool/CLI path.
 
 ## Maple-owned runtime service
 
@@ -126,6 +126,7 @@ The refactor exposes a transport-neutral Maple service around the existing embed
 - create and delete a Maple task;
 - send and cancel a run;
 - consume an isolated, bounded event stream for one exact run;
+- receive typed permission requests and resolve them through an opaque responder bound to that exact account, task, and run;
 - observe a retained terminal result when a run stream closes normally; and
 - install and revoke per-session tool environments.
 
@@ -157,7 +158,7 @@ This preview gate uses only the local `VITE_FORCE_FEATURE_FLAGS` override; the r
 The macOS/Linux desktop settings page is intentionally manual. It can:
 
 - start and stop the local service;
-- select the policy applied to newly created ACP sessions;
+- show that unresolved approvals belong to the connected ACP client;
 - show connected client, session, and active-run counts;
 - copy the exact packaged executable path and `acp` argument;
 - copy a Buzz custom-harness definition;
@@ -166,14 +167,25 @@ The macOS/Linux desktop settings page is intentionally manual. It can:
 
 Maple stops ACP before logout, local Agent-data clearing, Agent-runtime stop or restart, application update restart, and application exit. A saved `enabled` value does not auto-start ACP on the next launch; the user must explicitly start it again.
 
-Permission-mode, allowed-root, and maximum-connection changes require Stop, then change and save, then Start. This prevents a new session from racing a policy update and retaining the previous policy.
+Allowed-root and maximum-connection changes require Stop, then change and save, then Start. This prevents a new session from racing a policy update and retaining the previous policy.
 
 ## Permissions are policy, not confinement
 
-The persisted protocol-facing values currently have these meanings:
+`read_only` is the retained serialized name for caller-mediated `smart_approve`; it is not a literal read-only sandbox. Maple automatically approves operations covered by its own classifier and sends every unresolved tool decision to the ACP client. That client may prompt, reject, or approve automatically. Buzz currently selects `allow_once`, so guarded writes can still run unattended.
 
-- `read_only` means **require local approvals**. Maple maps it to its `smart_approve` path. A write-capable action can still occur after the user approves it in Maple Desktop.
-- `allow_all` is unattended operation. The agent may run commands, modify files, and perform external actions without a second local confirmation.
+The exploratory `allow_all` value previously bypassed the caller through Maple's Auto mode. Current configuration normalization migrates it to `read_only`, and both variants resolve to caller-mediated policy in the native adapter. This preserves old files without retaining a second Maple-owned approval path.
+
+```mermaid
+flowchart LR
+    Tool["Goose tool request"] --> Policy["Maple automatic policy"]
+    Policy -->|"covered locally"| Goose["Exact running Goose Agent"]
+    Policy -->|"unresolved ACP run"| Request["Run-scoped ACP permission request"]
+    Request --> Caller["Connected ACP client"]
+    Caller -->|"allow_once or reject_once"| Responder["Opaque exact-run responder"]
+    Responder --> Goose
+    Caller -->|"cancel, disconnect, invalid response"| Deny["Fail closed and cancel"]
+    Deny --> Goose
+```
 
 Neither mode is an operating-system sandbox.
 
@@ -191,7 +203,7 @@ Maple and Buzz credentials follow different paths:
 - Filtered values remain in the ACP connection's in-memory context and are copied into per-session tool context. Session installation revalidates the six-key allowlist and enforces the 16-KiB-per-value and 32-KiB-total bounds.
 - The context is revoked during session and connection cleanup. Credential-bearing shells terminate their Unix process group or Windows Job Object immediately after each command to limit descendant retention. Forced async-task shutdown uses the same containment handle.
 
-This design keeps Buzz credentials out of saved harness JSON, Maple configuration, argv, and Maple's process-global environment. It does **not** make the credentials invisible to the trusted agent or commands it runs. The shell needs the signing identity to publish a durable Buzz reply, and a command with that environment can inspect or transmit it. `allow_all` should therefore be enabled only for trusted clients, prompts, projects, and toolchains.
+This design keeps Buzz credentials out of saved harness JSON, Maple configuration, argv, and Maple's process-global environment. It does **not** make the credentials invisible to the trusted agent or commands it runs. The shell needs the signing identity to publish a durable Buzz reply, and a command with that environment can inspect or transmit it. Because Buzz currently auto-selects `allow_once`, use this integration only with trusted clients, prompts, projects, and toolchains.
 
 Unix process groups are not a complete sandbox: a command can deliberately call `setsid` or otherwise move a descendant into another process group before cleanup. Windows Job Objects provide stronger descendant containment. A hard Maple process crash or `SIGKILL` also bypasses Maple's in-process cleanup on both platforms, so a surviving descendant may retain an already copied credential. A portable hard credential boundary would require keeping the Buzz signing key out of arbitrary shell environments and exposing only a revocable Maple-owned broker or dedicated tool; that is outside this preview.
 
@@ -219,7 +231,7 @@ The exploratory validation used:
 - a packaged arm64 macOS Maple development app;
 - ACP v1;
 - Buzz owner-only channel admission and parallelism `1`; and
-- Maple's unattended `allow_all` policy.
+- Maple's then-current unattended `allow_all` policy (historical; current builds migrate this value to caller-mediated approval).
 
 Two Buzz GUI tasks completed:
 
@@ -233,14 +245,14 @@ The second run took roughly two to three minutes and ended with zero active runs
 - macOS is the only platform validated end to end.
 - Windows, mobile, and web are unsupported; non-Flatpak Linux remains unvalidated.
 - Service activation is manual after every Maple launch.
-- The local-approval mode publishes the ACP task and permission cards to Maple Desktop, which remains the authoritative approval broker. An unattended Buzz task can therefore wait for approval in Maple.
+- ACP runs keep transient events isolated from Maple Desktop. Unresolved permissions are sent only to the connected ACP caller, and Buzz currently auto-selects `allow_once`.
 - Each ACP run has an isolated bounded event queue. If any event is dropped, Maple emits an explicit terminal error message and cancels the underlying run. It settles the already-admitted ACP turn without a JSON-RPC error because Buzz treats post-start agent errors as retryable and could otherwise repeat non-idempotent work; missed chunks are not reconstructed.
-- Maple applies connection-wide backpressure to streamed `session/update` notifications: at most 256 updates and roughly 4 MiB may be in flight, and credit returns only after the complete line is written to the real local socket. A stalled client therefore blocks the adapter and eventually trips the core run's bounded event queue instead of growing the ACP dependency's internal notification queues. A single update larger than the byte limit is rejected and cancels that run. Ordinary JSON-RPC responses still bypass this Maple tracker and use `agent-client-protocol` 1.0.1's internally unbounded outgoing path, so a general release would still need an upstream bounded transport API or a request-admission limit; the validated same-user Buzz configuration uses parallelism `1`.
+- Maple applies connection-wide admission to streamed `session/update` notifications and outbound permission requests: at most 256 admitted events and roughly 4 MiB may be in flight. Notification credit returns after the complete line is written to the real local socket; permission-request credit remains held until the caller responds or the connection closes, including after local turn cancellation. A stalled client therefore backpressures the adapter instead of accumulating permission frames or orphaned SDK correlations. A single oversized update or request is rejected and cancels that run. Ordinary JSON-RPC responses still use `agent-client-protocol` 1.0.1's internal outgoing path.
 - An idle same-user socket can occupy the default one-connection limit; there is no initialization or idle timeout yet.
 - Disconnecting keeps the Maple task, but ACP cannot reload it. Repeated connections can accumulate `Buzz ACP` tasks.
-- Permission, root, and maximum-connection policy changes are rejected while the listener is running.
+- Root and maximum-connection policy changes are rejected while the listener is running.
 - The UI polls service status instead of subscribing to lifecycle events.
-- There is no checked-in wire-level, socket-lifecycle, reconnect, permission, or Buzz GUI integration fixture yet.
+- Permission mapping and ownership have focused unit coverage, but there is no checked-in full wire-level, socket-lifecycle, reconnect, or Buzz GUI integration fixture yet.
 - The adapter intentionally omits much of Goose's ACP event and capability surface.
 
 ## Maintenance recommendation
@@ -264,7 +276,7 @@ Before broadening the local adapter, the preferred path is to pursue reusable Go
 1. construct ACP around existing `AgentManager`, `SessionManager`, and `PermissionManager` handles;
 2. use an injectable provider resolver for new, restored, and reconfigured sessions;
 3. add host session-admission, activation, prompt-preparation, and cleanup hooks;
-4. make permission routing pluggable between the host UI, ACP client, or a hybrid policy;
+4. accept an invocation-scoped permission responder so the host can bind each run to exactly one calling surface;
 5. let a host preserve its installed developer/tool clients;
 6. support transient ACP-provided session context with explicit cleanup;
 7. extract the Goose-event-to-ACP projection for use without runtime ownership; and

@@ -484,8 +484,8 @@ export function AgentConnectionsSettings() {
       </SettingsSection>
 
       <SettingsSection
-        title="Agent policy"
-        description="Choose the tool policy Maple applies to new ACP sessions."
+        title="ACP approvals"
+        description="The connected ACP client handles unresolved tool approvals."
       >
         <div className="space-y-4">
           <div className="grid gap-2">
@@ -506,8 +506,7 @@ export function AgentConnectionsSettings() {
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="read_only">Require local approvals</SelectItem>
-                <SelectItem value="allow_all">Allow all (unattended Buzz)</SelectItem>
+                <SelectItem value="read_only">ACP client decides</SelectItem>
               </SelectContent>
             </Select>
             <p className="text-xs leading-relaxed text-muted-foreground">
@@ -515,11 +514,9 @@ export function AgentConnectionsSettings() {
                 ? isConfigLoading
                   ? "Loading your saved agent policy."
                   : "Your saved policy is unavailable. Refresh before changing or starting ACP."
-                : permissionMode === "read_only"
-                  ? running
-                    ? "Stop the ACP service before changing its policy. Write-capable tools require approval in Maple Desktop."
-                    : "Write-capable tools require approval in Maple Desktop. This mode is not suitable for unattended Buzz operation."
-                  : "Required for unattended Buzz operation. Connected clients may run commands and modify files without local approval prompts."}
+                : running
+                  ? "Stop the ACP service before changing its policy. Maple sends guarded requests to the connected client, which may prompt, deny, or approve automatically."
+                  : "Maple sends guarded requests to the connected client. Buzz currently selects Allow once automatically, so trusted prompts can run unattended."}
             </p>
           </div>
 
@@ -531,17 +528,6 @@ export function AgentConnectionsSettings() {
               operating-system sandbox.
             </AlertDescription>
           </Alert>
-
-          {permissionMode === "allow_all" && displayedConfig !== null && (
-            <Alert className="border-maple-warning/40 bg-maple-warning/10">
-              <AlertCircle className="h-4 w-4 text-maple-warning" />
-              <AlertDescription>
-                Allow all is intended only for clients and projects you trust. Buzz can ask Maple to
-                run local commands and make external changes without local approval while this
-                service is active.
-              </AlertDescription>
-            </Alert>
-          )}
 
           <div className="flex justify-end">
             <Button

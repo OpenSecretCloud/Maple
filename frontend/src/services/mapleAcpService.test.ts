@@ -136,6 +136,22 @@ describe("Maple ACP response normalization", () => {
     });
   });
 
+  test("migrates the former Maple-owned allow-all bypass to caller-owned approvals", () => {
+    expect(
+      normalizeMapleAcpConfig({
+        enabled: true,
+        permissionMode: "allow_all",
+        allowedProjectRoots: [],
+        maxConnections: 1
+      })
+    ).toEqual({
+      enabled: true,
+      permissionMode: "read_only",
+      allowedProjectRoots: [],
+      maxConnections: 1
+    });
+  });
+
   test("accepts the native status and tolerates optional future fields", () => {
     expect(
       normalizeMapleAcpStatus({

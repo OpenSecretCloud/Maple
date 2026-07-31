@@ -1,5 +1,6 @@
 use crate::agent::{
-    AgentCreateSessionRequest, AgentHostEventPolicy, AgentRunEvent, AgentRunTerminal,
+    AgentCreateSessionRequest, AgentHostEventPolicy, AgentPermissionDecision,
+    AgentPermissionRequest, AgentRunEvent, AgentRunPermissionResponder, AgentRunTerminal,
     AgentRuntimeHandle, AgentSendMessageRequest, AgentTimelineItem, AgentToolContextLease,
     AgentToolContextSpec, MapleAgentService, AGENT_TOOL_CONTEXT_INACTIVE_ERROR,
 };
@@ -8,8 +9,9 @@ use crate::maple_api::{account_scope, MapleApiAuthState};
 use agent_client_protocol::schema::v1::{
     AgentCapabilities, CancelNotification, ContentBlock, ContentChunk, Implementation,
     InitializeRequest, InitializeResponse, McpServer, NewSessionRequest, NewSessionResponse,
-    PromptCapabilities, PromptRequest, PromptResponse, SessionId, SessionNotification,
-    SessionUpdate, StopReason, TextContent,
+    PermissionOption, PermissionOptionKind, PromptCapabilities, PromptRequest, PromptResponse,
+    RequestPermissionOutcome, RequestPermissionRequest, SessionId, SessionNotification,
+    SessionUpdate, StopReason, TextContent, ToolCall, ToolCallContent, ToolCallStatus, ToolKind,
 };
 use agent_client_protocol::util::MatchDispatchFrom;
 use agent_client_protocol::{
@@ -162,22 +164,10 @@ pub enum AgentAcpPermissionMode {
 
 impl AgentAcpPermissionMode {
     fn maple_mode(&self) -> &'static str {
-        match self {
-            Self::ReadOnly => "smart_approve",
-            Self::AllowAll => "auto",
-        }
-    }
-
-    fn host_event_policy(&self) -> AgentHostEventPolicy {
-        match self {
-            // Maple Desktop remains the one authoritative permission broker for
-            // the guarded policy, so its task and permission events must remain
-            // visible there.
-            Self::ReadOnly => AgentHostEventPolicy::Publish,
-            // Unattended ACP runs do not need to contaminate Desktop's live event
-            // stream; their persisted task remains loadable on refresh.
-            Self::AllowAll => AgentHostEventPolicy::Suppress,
-        }
+        // ACP callers own every unresolved interactive decision. Keep the old
+        // allow_all variant readable for configuration compatibility, but do
+        // not let it bypass the caller through Maple's Auto policy.
+        "smart_approve"
     }
 }
 
@@ -314,6 +304,12 @@ enum AcpOutboundSendError {
     UpdateTooLarge,
     Cancelled,
     Transport(agent_client_protocol::Error),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AcpPermissionResolution {
+    Continue,
+    Cancelled,
 }
 
 impl AcpOutboundTracker {
@@ -468,7 +464,10 @@ impl AcpConnectionContext {
                     mcp_server_names: None,
                 }),
                 Some(tool_context),
-                config.permission_mode.host_event_policy(),
+                // The ACP caller is the only interactive surface for this task.
+                // Persisted history remains loadable in Maple Desktop, but live
+                // permission cards must never create a second approval broker.
+                AgentHostEventPolicy::Suppress,
             )
             .await
             .map_err(internal_acp_error)?;
@@ -589,6 +588,81 @@ impl AcpConnectionContext {
         .await
     }
 
+    async fn request_permission_from_caller(
+        &self,
+        cx: &ConnectionTo<Client>,
+        session_id: SessionId,
+        request: AgentPermissionRequest,
+        item: &AgentTimelineItem,
+        responder: &AgentRunPermissionResponder,
+        cancellation: &CancellationToken,
+    ) -> Result<AcpPermissionResolution, AcpOutboundSendError> {
+        let tool_call = acp_permission_tool_call(&request, item);
+        let permission_request =
+            RequestPermissionRequest::new(session_id, tool_call.into(), acp_permission_options());
+        let encoded_bytes = serde_json::to_vec(&permission_request)
+            .map_err(|error| {
+                AcpOutboundSendError::Transport(internal_acp_error(format!(
+                    "Failed to encode Maple ACP permission request: {error}"
+                )))
+            })?
+            .len();
+        // Permission requests use the same global event/byte budget as streamed
+        // notifications. Hold the reservation until the caller responds so a
+        // slow client cannot accumulate unbounded JSON-RPC request frames.
+        let reservation = self.outbound.reserve(encoded_bytes, cancellation).await?;
+        if cancellation.is_cancelled() {
+            cancel_maple_permission(responder, &request.request_id).await;
+            return Ok(AcpPermissionResolution::Cancelled);
+        }
+        let sent_request = cx.send_request(permission_request);
+        let mut response_future = Box::pin(sent_request.block_task());
+        let response = tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => None,
+            response = &mut response_future => Some(response),
+        };
+        let Some(response) = response else {
+            // ACP v1 has no stable request-cancellation primitive. Stop Maple
+            // immediately, but keep consuming the already-sent JSON-RPC request
+            // and retain its outbound credits until the client replies or the
+            // connection closes. Otherwise a cancel-and-never-reply client can
+            // accumulate unbounded SDK correlation entries outside our limit.
+            cancel_maple_permission(responder, &request.request_id).await;
+            retain_cancelled_permission_request(response_future, reservation);
+            return Ok(AcpPermissionResolution::Cancelled);
+        };
+        drop(reservation);
+
+        let (decision, resolution) = match response {
+            Ok(response) => match acp_permission_decision(&response.outcome) {
+                Ok(AgentPermissionDecision::Cancel) => (
+                    AgentPermissionDecision::Cancel,
+                    AcpPermissionResolution::Cancelled,
+                ),
+                Ok(decision) => (decision, AcpPermissionResolution::Continue),
+                Err(error) => {
+                    cancel_maple_permission(responder, &request.request_id).await;
+                    return Err(AcpOutboundSendError::Transport(internal_acp_error(error)));
+                }
+            },
+            Err(error) => {
+                cancel_maple_permission(responder, &request.request_id).await;
+                return Err(AcpOutboundSendError::Transport(error));
+            }
+        };
+
+        if let Err(error) = responder.respond(request.request_id, decision).await {
+            if cancellation.is_cancelled() {
+                return Ok(AcpPermissionResolution::Cancelled);
+            }
+            return Err(AcpOutboundSendError::Transport(internal_acp_error(
+                format!("Failed to resolve Maple permission request: {error}"),
+            )));
+        }
+        Ok(resolution)
+    }
+
     async fn prompt(
         self: &Arc<Self>,
         cx: &ConnectionTo<Client>,
@@ -621,7 +695,7 @@ impl AcpConnectionContext {
                 },
                 tool_context_access,
                 prompt_lifetime.clone(),
-                config.permission_mode.host_event_policy(),
+                AgentHostEventPolicy::Suppress,
             )
             .await
         {
@@ -643,6 +717,12 @@ impl AcpConnectionContext {
         let mut events = run.events;
         let mut terminal = run.terminal;
         let event_overflowed = run.event_overflowed;
+        let Some(permission_responder) = run.permission_responder else {
+            let _ = self.agent.cancel_run(run_id).await;
+            self.prompt_states.lock().await.remove(&session_id);
+            return Err(agent_client_protocol::Error::internal_error()
+                .data("Maple did not create an ACP permission responder for this run"));
+        };
         let prompt_registered = {
             let mut states = self.prompt_states.lock().await;
             match states.get_mut(&session_id) {
@@ -751,6 +831,54 @@ impl AcpConnectionContext {
                             }
                             Err(AcpOutboundSendError::Transport(error)) => break Err(error),
                         }
+                    }
+                }
+                Some(AgentRunEvent::PermissionRequested {
+                    request: permission,
+                    item,
+                }) => {
+                    match self
+                        .request_permission_from_caller(
+                            cx,
+                            request.session_id.clone(),
+                            permission,
+                            &item,
+                            &permission_responder,
+                            &prompt_lifetime,
+                        )
+                        .await
+                    {
+                        Ok(AcpPermissionResolution::Continue) => {}
+                        Ok(AcpPermissionResolution::Cancelled) => {
+                            cancel_after_result = true;
+                            break Ok(PromptResponse::new(StopReason::Cancelled));
+                        }
+                        Err(AcpOutboundSendError::UpdateTooLarge) => {
+                            cancel_after_result = true;
+                            let _ = self.agent.cancel_run(run_id.clone()).await;
+                            match self
+                                .send_final_agent_message(
+                                    cx,
+                                    request.session_id.clone(),
+                                    "Maple stopped this turn because one ACP permission request exceeded the 4 MiB transport limit.",
+                                    &self.lifetime,
+                                )
+                                .await
+                            {
+                                Ok(()) | Err(AcpOutboundSendError::UpdateTooLarge) => {
+                                    break Ok(PromptResponse::new(StopReason::EndTurn));
+                                }
+                                Err(AcpOutboundSendError::Cancelled) => {
+                                    break Ok(PromptResponse::new(StopReason::Cancelled));
+                                }
+                                Err(AcpOutboundSendError::Transport(error)) => break Err(error),
+                            }
+                        }
+                        Err(AcpOutboundSendError::Cancelled) => {
+                            cancel_after_result = true;
+                            break Ok(PromptResponse::new(StopReason::Cancelled));
+                        }
+                        Err(AcpOutboundSendError::Transport(error)) => break Err(error),
                     }
                 }
                 Some(AgentRunEvent::Error(item)) => {
@@ -1644,6 +1772,9 @@ pub(crate) fn clear_agent_acp_config(app_handle: &AppHandle, user_id: &str) -> R
 }
 
 fn normalize_config(mut config: AgentAcpConfig) -> Result<AgentAcpConfig, String> {
+    // `allow_all` was the exploratory Desktop-owned bypass. Caller-owned ACP
+    // supersedes it; old files migrate to the guarded policy on their next load.
+    config.permission_mode = AgentAcpPermissionMode::ReadOnly;
     config.max_connections = config.max_connections.clamp(1, MAX_ACP_CONNECTIONS);
     let mut roots = Vec::new();
     for root in config.allowed_project_roots {
@@ -1799,6 +1930,91 @@ fn prompt_text(blocks: &[ContentBlock]) -> Result<String, agent_client_protocol:
             .data("Maple ACP requires at least one text prompt block"));
     }
     Ok(text)
+}
+
+fn acp_permission_tool_call(
+    request: &AgentPermissionRequest,
+    item: &AgentTimelineItem,
+) -> ToolCall {
+    let title = item
+        .title
+        .clone()
+        .unwrap_or_else(|| format!("Approve {}", request.tool_name));
+    let mut tool_call = ToolCall::new(request.request_id.clone(), title)
+        .kind(acp_tool_kind(&request.tool_name))
+        .status(ToolCallStatus::Pending)
+        .raw_input(serde_json::Value::Object(request.arguments.clone()));
+    if let Some(prompt) = request.prompt.as_ref().filter(|prompt| !prompt.is_empty()) {
+        tool_call = tool_call.content(vec![ToolCallContent::from(ContentBlock::Text(
+            TextContent::new(prompt.clone()),
+        ))]);
+    }
+    tool_call
+}
+
+fn acp_tool_kind(tool_name: &str) -> ToolKind {
+    match tool_name.rsplit("__").next().unwrap_or(tool_name) {
+        "shell" | "computer" => ToolKind::Execute,
+        "text_editor" => ToolKind::Edit,
+        "search" | "web_search" => ToolKind::Search,
+        "open_url" => ToolKind::Fetch,
+        _ => ToolKind::Other,
+    }
+}
+
+fn acp_permission_options() -> Vec<PermissionOption> {
+    vec![
+        PermissionOption::new("allow_once", "Allow once", PermissionOptionKind::AllowOnce),
+        PermissionOption::new(
+            "reject_once",
+            "Reject once",
+            PermissionOptionKind::RejectOnce,
+        ),
+    ]
+}
+
+fn acp_permission_decision(
+    outcome: &RequestPermissionOutcome,
+) -> Result<AgentPermissionDecision, String> {
+    match outcome {
+        RequestPermissionOutcome::Cancelled => Ok(AgentPermissionDecision::Cancel),
+        RequestPermissionOutcome::Selected(selected)
+            if selected.option_id.0.as_ref() == "allow_once" =>
+        {
+            Ok(AgentPermissionDecision::AllowOnce)
+        }
+        RequestPermissionOutcome::Selected(selected)
+            if selected.option_id.0.as_ref() == "reject_once" =>
+        {
+            Ok(AgentPermissionDecision::DenyOnce)
+        }
+        RequestPermissionOutcome::Selected(_) => {
+            Err("ACP client selected an unknown Maple permission option".to_string())
+        }
+        _ => Err("ACP client returned an unsupported Maple permission outcome".to_string()),
+    }
+}
+
+async fn cancel_maple_permission(responder: &AgentRunPermissionResponder, request_id: &str) {
+    if let Err(error) = responder
+        .respond(request_id.to_string(), AgentPermissionDecision::Cancel)
+        .await
+    {
+        log::debug!(
+            "Maple ACP permission request {request_id} was already resolved while failing closed: {error}"
+        );
+    }
+}
+
+fn retain_cancelled_permission_request<F, T>(response: F, reservation: AcpOutboundReservation)
+where
+    F: std::future::Future<Output = T> + Send + 'static,
+    T: Send + 'static,
+{
+    tokio::spawn(async move {
+        let _reservation = reservation;
+        let _ = response.await;
+    });
 }
 
 fn timeline_update(item: &AgentTimelineItem) -> Option<SessionUpdate> {
@@ -1970,9 +2186,10 @@ async fn run_acp_connector_async() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agent_client_protocol::schema::v1::SelectedPermissionOutcome;
 
     #[test]
-    fn default_config_is_disabled_and_read_only() {
+    fn default_config_is_disabled_and_caller_mediated() {
         let config = AgentAcpConfig::default();
         assert!(!config.enabled);
         assert_eq!(config.permission_mode, AgentAcpPermissionMode::ReadOnly);
@@ -1980,15 +2197,89 @@ mod tests {
     }
 
     #[test]
-    fn permission_policy_selects_the_authoritative_event_broker() {
+    fn legacy_allow_all_cannot_bypass_the_acp_caller() {
         assert_eq!(
-            AgentAcpPermissionMode::ReadOnly.host_event_policy(),
-            AgentHostEventPolicy::Publish
+            AgentAcpPermissionMode::ReadOnly.maple_mode(),
+            "smart_approve"
         );
         assert_eq!(
-            AgentAcpPermissionMode::AllowAll.host_event_policy(),
-            AgentHostEventPolicy::Suppress
+            AgentAcpPermissionMode::AllowAll.maple_mode(),
+            "smart_approve"
         );
+        let migrated = normalize_config(AgentAcpConfig {
+            permission_mode: AgentAcpPermissionMode::AllowAll,
+            ..AgentAcpConfig::default()
+        })
+        .unwrap();
+        assert_eq!(migrated.permission_mode, AgentAcpPermissionMode::ReadOnly);
+    }
+
+    #[test]
+    fn permission_request_exposes_only_one_shot_caller_choices() {
+        let request = AgentPermissionRequest {
+            request_id: "request-1".to_string(),
+            tool_name: "developer__shell".to_string(),
+            arguments: serde_json::Map::from_iter([(
+                "command".to_string(),
+                serde_json::json!("git push"),
+            )]),
+            prompt: Some("Push this branch?".to_string()),
+        };
+        let item = AgentTimelineItem {
+            id: "permission-request-1".to_string(),
+            item_type: "permission".to_string(),
+            role: Some("system".to_string()),
+            title: Some("Push branch".to_string()),
+            text: request.prompt.clone(),
+            status: Some("pending".to_string()),
+            input: Some(serde_json::Value::Object(request.arguments.clone())),
+            output: None,
+            created_ms: 1,
+            merge: "replace".to_string(),
+        };
+        let permission = RequestPermissionRequest::new(
+            "session-1",
+            acp_permission_tool_call(&request, &item).into(),
+            acp_permission_options(),
+        );
+        let encoded = serde_json::to_value(permission).unwrap();
+
+        assert_eq!(encoded["toolCall"]["toolCallId"], "request-1");
+        assert_eq!(encoded["toolCall"]["title"], "Push branch");
+        assert_eq!(encoded["toolCall"]["kind"], "execute");
+        assert_eq!(encoded["toolCall"]["status"], "pending");
+        assert_eq!(encoded["toolCall"]["rawInput"]["command"], "git push");
+        assert_eq!(
+            encoded["options"],
+            serde_json::json!([
+                { "optionId": "allow_once", "name": "Allow once", "kind": "allow_once" },
+                { "optionId": "reject_once", "name": "Reject once", "kind": "reject_once" }
+            ])
+        );
+    }
+
+    #[test]
+    fn permission_outcomes_map_fail_closed() {
+        assert_eq!(
+            acp_permission_decision(&RequestPermissionOutcome::Selected(
+                SelectedPermissionOutcome::new("allow_once")
+            )),
+            Ok(AgentPermissionDecision::AllowOnce)
+        );
+        assert_eq!(
+            acp_permission_decision(&RequestPermissionOutcome::Selected(
+                SelectedPermissionOutcome::new("reject_once")
+            )),
+            Ok(AgentPermissionDecision::DenyOnce)
+        );
+        assert_eq!(
+            acp_permission_decision(&RequestPermissionOutcome::Cancelled),
+            Ok(AgentPermissionDecision::Cancel)
+        );
+        assert!(acp_permission_decision(&RequestPermissionOutcome::Selected(
+            SelectedPermissionOutcome::new("allow_always")
+        ))
+        .is_err());
     }
 
     #[cfg(unix)]
@@ -2022,6 +2313,37 @@ mod tests {
         assert_eq!(written, format!("{line}\n").into_bytes());
 
         let second = waiting.await.unwrap().unwrap();
+        drop(second);
+    }
+
+    #[tokio::test]
+    async fn cancelled_permission_retains_credit_until_the_orphan_request_settles() {
+        let tracker = AcpOutboundTracker::with_limits(1, 1024);
+        let cancellation = CancellationToken::new();
+        let first = tracker.reserve(1, &cancellation).await.unwrap();
+        let (settled_tx, settled_rx) = tokio::sync::oneshot::channel::<()>();
+        retain_cancelled_permission_request(
+            async move {
+                let _ = settled_rx.await;
+            },
+            first,
+        );
+
+        assert!(tokio::time::timeout(
+            std::time::Duration::from_millis(10),
+            tracker.reserve(1, &cancellation),
+        )
+        .await
+        .is_err());
+
+        settled_tx.send(()).unwrap();
+        let second = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            tracker.reserve(1, &cancellation),
+        )
+        .await
+        .unwrap()
+        .unwrap();
         drop(second);
     }
 
