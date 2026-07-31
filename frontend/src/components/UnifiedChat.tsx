@@ -83,6 +83,7 @@ import {
   CHAT_HISTORY_TOP_MARGIN_PX,
   ChatHistoryPaginationGate,
   chatHistoryCursorProgressed,
+  preferredChatHistoryScrollSnapshot,
   requiredChatHistoryBottomCompensation,
   restoredChatHistoryAnchorScrollTop,
   restoredChatHistoryScrollTop,
@@ -2123,6 +2124,35 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
     [runtimeStore]
   );
 
+  const captureHistoryScrollSnapshot = useCallback(
+    (runtimeKey: ChatRuntimeKey): ChatHistoryScrollSnapshot | null => {
+      if (!isRuntimeSelected(runtimeKey)) return null;
+
+      const container = chatContainerRef.current;
+      if (!container) return null;
+
+      const containerRect = container.getBoundingClientRect();
+      const firstVisibleAnchor = Array.from(
+        container.querySelectorAll<HTMLElement>("[data-history-anchor-ids]")
+      ).find((candidate) => {
+        const candidateRect = candidate.getBoundingClientRect();
+        return candidateRect.bottom > containerRect.top && candidateRect.top < containerRect.bottom;
+      });
+      const anchorId = firstVisibleAnchor?.dataset.historyAnchorIds?.split(" ").find(Boolean);
+      const anchorOffset = firstVisibleAnchor
+        ? firstVisibleAnchor.getBoundingClientRect().top - containerRect.top
+        : undefined;
+
+      return {
+        scrollTop: container.scrollTop,
+        scrollHeight: container.scrollHeight,
+        anchorId,
+        anchorOffset
+      };
+    },
+    [isRuntimeSelected]
+  );
+
   const runForProjectedRuntime = useCallback(
     (lease: ChatProjectionScrollLease<ChatRuntimeKey> | null, action: () => void) => {
       if (
@@ -2720,6 +2750,16 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
       return;
     }
 
+    // Preserve the last stable viewport before the request yields. A fast
+    // upward gesture can elastically move every message out of WKWebView's
+    // viewport while the network request is pending, leaving nothing reliable
+    // to anchor when the response arrives.
+    const projectionLease = projectionScrollCoordinatorRef.current.captureLease(
+      runtimeKey,
+      resolveScrollProjectionKey
+    );
+    const requestStartScrollSnapshot = captureHistoryScrollSnapshot(runtimeKey);
+
     updateComposerForKey(runtimeKey, (composer) => ({
       ...composer,
       pagination: { ...composer.pagination, isLoadingOlderMessages: true }
@@ -2764,29 +2804,22 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
       }
 
       if (olderMessagesInChronologicalOrder.length > 0) {
-        const container = isRuntimeSelected(runtimeKey) ? chatContainerRef.current : null;
-        if (container) {
-          const containerRect = container.getBoundingClientRect();
-          const firstVisibleAnchor = Array.from(
-            container.querySelectorAll<HTMLElement>("[data-history-anchor-ids]")
-          ).find((candidate) => {
-            const candidateRect = candidate.getBoundingClientRect();
-            return (
-              candidateRect.bottom > containerRect.top && candidateRect.top < containerRect.bottom
-            );
+        const stillOwnsStartingProjection = Boolean(
+          projectionLease &&
+          projectionScrollCoordinatorRef.current.ownsLease(
+            projectionLease,
+            resolveScrollProjectionKey
+          )
+        );
+        if (stillOwnsStartingProjection) {
+          const scrollSnapshot = preferredChatHistoryScrollSnapshot({
+            requestStartSnapshot: requestStartScrollSnapshot,
+            commitSnapshot: captureHistoryScrollSnapshot(runtimeKey)
           });
-          const anchorId = firstVisibleAnchor?.dataset.historyAnchorIds?.split(" ").find(Boolean);
-          const anchorOffset = firstVisibleAnchor
-            ? firstVisibleAnchor.getBoundingClientRect().top - containerRect.top
-            : undefined;
-
-          pendingHistoryScrollRestoreRef.current = {
-            scrollTop: container.scrollTop,
-            scrollHeight: container.scrollHeight,
-            anchorId,
-            anchorOffset
-          };
-          pendingHistoryScrollRestoreKeyRef.current = runtimeKey;
+          if (scrollSnapshot) {
+            pendingHistoryScrollRestoreRef.current = scrollSnapshot;
+            pendingHistoryScrollRestoreKeyRef.current = runtimeKey;
+          }
         }
 
         // Prepend older messages while keeping IDs unique. Restore the pending scroll
@@ -2829,7 +2862,14 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
         }));
       }
     }
-  }, [historyPaginationLifecycle, isRuntimeSelected, openai, runtimeStore, updateComposerForKey]);
+  }, [
+    captureHistoryScrollSnapshot,
+    historyPaginationLifecycle,
+    openai,
+    resolveScrollProjectionKey,
+    runtimeStore,
+    updateComposerForKey
+  ]);
 
   // Polling mechanism for conversation updates
   const pollForNewItems = useCallback(
@@ -5046,7 +5086,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
         <div
           ref={chatContainerRef}
           data-testid="chat-scroll-container"
-          className="flex-1 min-h-0 overflow-y-auto overscroll-y-contain flex flex-col relative"
+          className="flex-1 min-h-0 overflow-y-auto overscroll-y-none flex flex-col relative"
         >
           {isLoadingOlderMessages && (
             <div className="pointer-events-none absolute inset-x-0 top-0 z-10 flex items-center justify-center py-4">

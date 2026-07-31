@@ -7,6 +7,37 @@ export type ChatHistoryScrollSnapshot = {
   anchorOffset?: number;
 };
 
+export function normalizedChatHistoryScrollSnapshot(
+  snapshot: ChatHistoryScrollSnapshot
+): ChatHistoryScrollSnapshot {
+  const elasticTopOffset = Math.min(0, snapshot.scrollTop);
+
+  return {
+    ...snapshot,
+    scrollTop: Math.max(0, snapshot.scrollTop),
+    ...(snapshot.anchorOffset === undefined
+      ? {}
+      : { anchorOffset: snapshot.anchorOffset + elasticTopOffset })
+  };
+}
+
+export function preferredChatHistoryScrollSnapshot({
+  requestStartSnapshot,
+  commitSnapshot
+}: {
+  requestStartSnapshot: ChatHistoryScrollSnapshot | null;
+  commitSnapshot: ChatHistoryScrollSnapshot | null;
+}): ChatHistoryScrollSnapshot | null {
+  const commitHasVisibleAnchor = Boolean(
+    commitSnapshot && commitSnapshot.anchorId && commitSnapshot.anchorOffset !== undefined
+  );
+  const preferredSnapshot = commitHasVisibleAnchor
+    ? commitSnapshot
+    : (requestStartSnapshot ?? commitSnapshot);
+
+  return preferredSnapshot ? normalizedChatHistoryScrollSnapshot(preferredSnapshot) : null;
+}
+
 export function restoredChatHistoryScrollTop(
   snapshot: ChatHistoryScrollSnapshot,
   nextScrollHeight: number

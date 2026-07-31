@@ -3,6 +3,8 @@ import { describe, expect, test } from "bun:test";
 import {
   ChatHistoryPaginationGate,
   chatHistoryCursorProgressed,
+  normalizedChatHistoryScrollSnapshot,
+  preferredChatHistoryScrollSnapshot,
   requiredChatHistoryBottomCompensation,
   restoredChatHistoryAnchorScrollTop,
   restoredChatHistoryScrollTop,
@@ -492,6 +494,90 @@ describe("restoredChatHistoryScrollTop", () => {
         620
       )
     ).toBe(0);
+  });
+});
+
+describe("preferredChatHistoryScrollSnapshot", () => {
+  const requestStartSnapshot = {
+    scrollTop: 24,
+    scrollHeight: 800,
+    anchorId: "stable-anchor",
+    anchorOffset: 18
+  };
+
+  test("keeps current user movement when the response-time anchor is stable", () => {
+    const commitSnapshot = {
+      scrollTop: 4,
+      scrollHeight: 800,
+      anchorId: "later-anchor",
+      anchorOffset: 6
+    };
+
+    expect(preferredChatHistoryScrollSnapshot({ requestStartSnapshot, commitSnapshot })).toEqual(
+      commitSnapshot
+    );
+  });
+
+  test("falls back to the request-start anchor when elastic overscroll blanks the viewport", () => {
+    expect(
+      preferredChatHistoryScrollSnapshot({
+        requestStartSnapshot,
+        commitSnapshot: {
+          scrollTop: -72,
+          scrollHeight: 800
+        }
+      })
+    ).toEqual(requestStartSnapshot);
+  });
+
+  test("normalizes a response-time anchor that remains visible during elastic overscroll", () => {
+    expect(
+      preferredChatHistoryScrollSnapshot({
+        requestStartSnapshot,
+        commitSnapshot: {
+          scrollTop: -30,
+          scrollHeight: 800,
+          anchorId: "later-anchor",
+          anchorOffset: 42
+        }
+      })
+    ).toEqual({
+      scrollTop: 0,
+      scrollHeight: 800,
+      anchorId: "later-anchor",
+      anchorOffset: 12
+    });
+  });
+
+  test("normalizes an elastic request-start anchor to its stable offset", () => {
+    expect(
+      normalizedChatHistoryScrollSnapshot({
+        scrollTop: -30,
+        scrollHeight: 800,
+        anchorId: "stable-anchor",
+        anchorOffset: 42
+      })
+    ).toEqual({
+      scrollTop: 0,
+      scrollHeight: 800,
+      anchorId: "stable-anchor",
+      anchorOffset: 12
+    });
+  });
+
+  test("uses a normalized response-time fallback when no request-start snapshot exists", () => {
+    expect(
+      preferredChatHistoryScrollSnapshot({
+        requestStartSnapshot: null,
+        commitSnapshot: {
+          scrollTop: -20,
+          scrollHeight: 800
+        }
+      })
+    ).toEqual({
+      scrollTop: 0,
+      scrollHeight: 800
+    });
   });
 });
 
