@@ -3,6 +3,8 @@ import { describe, expect, test } from "bun:test";
 import {
   ChatHistoryPaginationGate,
   chatHistoryCursorProgressed,
+  normalizedChatHistoryScrollSnapshot,
+  preferredChatHistoryScrollSnapshot,
   requiredChatHistoryBottomCompensation,
   restoredChatHistoryAnchorScrollTop,
   restoredChatHistoryScrollTop,
@@ -15,35 +17,25 @@ const visibleBoundary = {
 };
 
 describe("usesFirstCancelableWheelGestureStart", () => {
-  test("uses the cancelability boundary in macOS Tauri and macOS web browsers", () => {
-    expect(
-      usesFirstCancelableWheelGestureStart({
-        isTauriEnvironment: true,
-        isMacOSPlatform: true,
-        browserPlatform: ""
-      })
-    ).toBe(true);
+  test("uses the cancelability boundary in macOS web browsers", () => {
     expect(
       usesFirstCancelableWheelGestureStart({
         isTauriEnvironment: false,
-        isMacOSPlatform: false,
         browserPlatform: "MacIntel"
       })
     ).toBe(true);
   });
 
-  test("keeps non-macOS Tauri and browser wheel listeners on the passive path", () => {
+  test("keeps Tauri and non-macOS browser wheel listeners on the passive path", () => {
     expect(
       usesFirstCancelableWheelGestureStart({
         isTauriEnvironment: true,
-        isMacOSPlatform: false,
         browserPlatform: "MacIntel"
       })
     ).toBe(false);
     expect(
       usesFirstCancelableWheelGestureStart({
         isTauriEnvironment: false,
-        isMacOSPlatform: false,
         browserPlatform: "Win32"
       })
     ).toBe(false);
@@ -239,6 +231,28 @@ describe("ChatHistoryPaginationGate", () => {
     gate.finishLoad({ preserveQueuedLoad: true });
 
     expect(gate.tryStartQueuedLoad({ canLoad: true })).toBe(true);
+    expect(gate.tryStartQueuedLoad({ canLoad: true })).toBe(false);
+  });
+
+  test("clears unconsumed intent when an in-flight page progresses", () => {
+    const gate = new ChatHistoryPaginationGate();
+
+    gate.beginWheelGesture(true);
+    expect(gate.tryStartLoad(visibleBoundary)).toBe(true);
+
+    // A later gesture has started, but has not actually reached the boundary,
+    // so it must not become an observer-driven request after the prepend.
+    gate.beginWheelGesture(true);
+    expect(
+      gate.tryStartLoad({
+        canLoad: true,
+        topBoundaryVisible: false
+      })
+    ).toBe(false);
+
+    gate.finishLoad({ preserveQueuedLoad: true });
+
+    expect(gate.tryStartLoad(visibleBoundary)).toBe(false);
     expect(gate.tryStartQueuedLoad({ canLoad: true })).toBe(false);
   });
 
@@ -480,6 +494,90 @@ describe("restoredChatHistoryScrollTop", () => {
         620
       )
     ).toBe(0);
+  });
+});
+
+describe("preferredChatHistoryScrollSnapshot", () => {
+  const requestStartSnapshot = {
+    scrollTop: 24,
+    scrollHeight: 800,
+    anchorId: "stable-anchor",
+    anchorOffset: 18
+  };
+
+  test("keeps current user movement when the response-time anchor is stable", () => {
+    const commitSnapshot = {
+      scrollTop: 4,
+      scrollHeight: 800,
+      anchorId: "later-anchor",
+      anchorOffset: 6
+    };
+
+    expect(preferredChatHistoryScrollSnapshot({ requestStartSnapshot, commitSnapshot })).toEqual(
+      commitSnapshot
+    );
+  });
+
+  test("falls back to the request-start anchor when elastic overscroll blanks the viewport", () => {
+    expect(
+      preferredChatHistoryScrollSnapshot({
+        requestStartSnapshot,
+        commitSnapshot: {
+          scrollTop: -72,
+          scrollHeight: 800
+        }
+      })
+    ).toEqual(requestStartSnapshot);
+  });
+
+  test("normalizes a response-time anchor that remains visible during elastic overscroll", () => {
+    expect(
+      preferredChatHistoryScrollSnapshot({
+        requestStartSnapshot,
+        commitSnapshot: {
+          scrollTop: -30,
+          scrollHeight: 800,
+          anchorId: "later-anchor",
+          anchorOffset: 42
+        }
+      })
+    ).toEqual({
+      scrollTop: 0,
+      scrollHeight: 800,
+      anchorId: "later-anchor",
+      anchorOffset: 12
+    });
+  });
+
+  test("normalizes an elastic request-start anchor to its stable offset", () => {
+    expect(
+      normalizedChatHistoryScrollSnapshot({
+        scrollTop: -30,
+        scrollHeight: 800,
+        anchorId: "stable-anchor",
+        anchorOffset: 42
+      })
+    ).toEqual({
+      scrollTop: 0,
+      scrollHeight: 800,
+      anchorId: "stable-anchor",
+      anchorOffset: 12
+    });
+  });
+
+  test("uses a normalized response-time fallback when no request-start snapshot exists", () => {
+    expect(
+      preferredChatHistoryScrollSnapshot({
+        requestStartSnapshot: null,
+        commitSnapshot: {
+          scrollTop: -20,
+          scrollHeight: 800
+        }
+      })
+    ).toEqual({
+      scrollTop: 0,
+      scrollHeight: 800
+    });
   });
 });
 
