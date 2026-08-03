@@ -4,6 +4,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useMemo,
   useReducer,
   useRef,
   useState,
@@ -453,29 +454,43 @@ export function TTSProvider({ children }: { children: ReactNode }) {
     };
   }, [cleanupPlaybackResources]);
 
-  return (
-    <TTSContext.Provider
-      value={{
-        playbackError,
-        upgradeRequired,
-        playbackSpeed,
-        hasCustomPlaybackSpeed: playbackSpeed !== DEFAULT_TTS_PLAYBACK_SPEED,
-        voice,
-        isPreparing,
-        isPlaying,
-        currentPlayingId,
-        setPlaybackSpeed,
-        resetPlaybackSpeed,
-        setVoice,
-        speak,
-        stop,
-        clearPlaybackError,
-        clearUpgradeRequired
-      }}
-    >
-      {children}
-    </TTSContext.Provider>
+  const contextValue = useMemo<TTSContextValue>(
+    () => ({
+      playbackError,
+      upgradeRequired,
+      playbackSpeed,
+      hasCustomPlaybackSpeed: playbackSpeed !== DEFAULT_TTS_PLAYBACK_SPEED,
+      voice,
+      isPreparing,
+      isPlaying,
+      currentPlayingId,
+      setPlaybackSpeed,
+      resetPlaybackSpeed,
+      setVoice,
+      speak,
+      stop,
+      clearPlaybackError,
+      clearUpgradeRequired
+    }),
+    [
+      clearPlaybackError,
+      clearUpgradeRequired,
+      currentPlayingId,
+      isPlaying,
+      isPreparing,
+      playbackError,
+      playbackSpeed,
+      resetPlaybackSpeed,
+      setPlaybackSpeed,
+      setVoice,
+      speak,
+      stop,
+      upgradeRequired,
+      voice
+    ]
   );
+
+  return <TTSContext.Provider value={contextValue}>{children}</TTSContext.Provider>;
 }
 
 export function useTTS() {

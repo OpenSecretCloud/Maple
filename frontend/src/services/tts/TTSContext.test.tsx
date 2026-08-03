@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
+import { createRef, forwardRef, useImperativeHandle } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import type { BillingStatus } from "@/billing/billingApi";
 
@@ -35,10 +36,11 @@ mock.module("@/state/useLocalState", () => ({
 const { TTSProvider, useTTS } = await import("./TTSContext");
 type TTSContextSnapshot = ReturnType<typeof useTTS>;
 
-function TTSProbe({ onRender }: { onRender: (value: TTSContextSnapshot) => void }) {
-  onRender(useTTS());
+const TTSProbe = forwardRef<TTSContextSnapshot>(function TTSProbe(_, ref) {
+  const context = useTTS();
+  useImperativeHandle(ref, () => context, [context]);
   return null;
-}
+});
 
 describe("TTSProvider access handling", () => {
   let renderer: ReactTestRenderer | null = null;
@@ -52,7 +54,7 @@ describe("TTSProvider access handling", () => {
   });
 
   test("turns a known free-plan request into a consumable upgrade signal", async () => {
-    const renderedContext: { current?: TTSContextSnapshot } = {};
+    const renderedContext = createRef<TTSContextSnapshot>();
     const currentContext = () => {
       if (!renderedContext.current) throw new Error("TTS context did not render");
       return renderedContext.current;
@@ -61,7 +63,7 @@ describe("TTSProvider access handling", () => {
     act(() => {
       renderer = create(
         <TTSProvider>
-          <TTSProbe onRender={(value) => (renderedContext.current = value)} />
+          <TTSProbe ref={renderedContext} />
         </TTSProvider>
       );
     });

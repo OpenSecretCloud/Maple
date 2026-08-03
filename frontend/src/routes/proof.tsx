@@ -285,6 +285,7 @@ function CopyButton({ text, label }: { text: string; label: string }) {
 
   return (
     <button
+      type="button"
       onClick={handleCopy}
       className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm transition-all duration-200
         bg-[hsl(var(--muted))] hover:bg-[hsl(var(--muted))]/80 text-foreground"
@@ -327,6 +328,7 @@ function AgentModal() {
     <Dialog>
       <DialogTrigger asChild>
         <button
+          type="button"
           className="inline-flex items-center justify-center gap-2 px-8 py-4 rounded-lg text-xl font-light transition-all duration-300
             dark:bg-[hsl(var(--background))] dark:border dark:border-[hsl(var(--blue))]/20 dark:text-[hsl(var(--foreground))] dark:hover:border-[hsl(var(--blue))]/80
             bg-[hsl(var(--marketing-card))]

@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useCallback } from "react";
+import React, { createContext, useContext, useState, useCallback, useMemo } from "react";
 import { GlobalNotification, type Notification } from "@/components/GlobalNotification";
 
 interface NotificationContextType {
@@ -24,8 +24,13 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
     setNotification(null);
   }, []);
 
+  const contextValue = useMemo(
+    () => ({ showNotification, clearNotification }),
+    [clearNotification, showNotification]
+  );
+
   return (
-    <NotificationContext.Provider value={{ showNotification, clearNotification }}>
+    <NotificationContext.Provider value={contextValue}>
       {children}
       <GlobalNotification notification={notification} onDismiss={clearNotification} />
     </NotificationContext.Provider>

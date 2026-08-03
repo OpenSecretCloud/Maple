@@ -8,14 +8,16 @@ import { useSettingsNavigationLock } from "@/contexts/SettingsNavigationLockCont
 import { SettingsSection } from "../SettingsPage";
 import { useApiKeys } from "./useApiKeys";
 
+const API_KEY_DATE_FORMATTER = new Intl.DateTimeFormat("en-US", {
+  month: "short",
+  day: "numeric",
+  year: "numeric",
+  hour: "2-digit",
+  minute: "2-digit"
+});
+
 function formatDate(dateString: string) {
-  return new Intl.DateTimeFormat("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit"
-  }).format(new Date(dateString));
+  return API_KEY_DATE_FORMATTER.format(new Date(dateString));
 }
 
 export function ApiKeysSettings() {

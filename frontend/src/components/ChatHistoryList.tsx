@@ -1277,6 +1277,8 @@ export function ChatHistoryList({
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
                     <button
+                      type="button"
+                      aria-label={`Open chat menu for ${title}`}
                       className={SIDEBAR_ELLIPSIS_BTN}
                       onClick={(event) => {
                         event.preventDefault();
@@ -1462,6 +1464,8 @@ export function ChatHistoryList({
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
                           <button
+                            type="button"
+                            aria-label={`Open project menu for ${project.name}`}
                             className={SIDEBAR_ELLIPSIS_BTN}
                             onClick={(event) => {
                               event.preventDefault();

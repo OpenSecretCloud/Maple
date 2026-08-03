@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
@@ -11,6 +11,7 @@ interface BillingDebuggerProps {
 }
 
 export function BillingDebugger({ currentStatus, onOverride }: BillingDebuggerProps) {
+  const fieldIdPrefix = useId();
   const [isOpen, setIsOpen] = useState(false);
   const [debugStatus, setDebugStatus] = useState<BillingStatus>({
     product_name: currentStatus?.product_name || "Free",
@@ -57,8 +58,11 @@ export function BillingDebugger({ currentStatus, onOverride }: BillingDebuggerPr
 
       <div className="space-y-2">
         <div>
-          <label className="block text-sm">Product Name</label>
+          <label htmlFor={`${fieldIdPrefix}-product-name`} className="block text-sm">
+            Product Name
+          </label>
           <Input
+            id={`${fieldIdPrefix}-product-name`}
             value={debugStatus.product_name}
             onChange={(e) => setDebugStatus((prev) => ({ ...prev, product_name: e.target.value }))}
             className="w-full bg-transparent border-yellow-500/30"
@@ -66,8 +70,11 @@ export function BillingDebugger({ currentStatus, onOverride }: BillingDebuggerPr
         </div>
 
         <div>
-          <label className="block text-sm">Messages Remaining</label>
+          <label htmlFor={`${fieldIdPrefix}-messages-remaining`} className="block text-sm">
+            Messages Remaining
+          </label>
           <Input
+            id={`${fieldIdPrefix}-messages-remaining`}
             type="number"
             value={debugStatus.chats_remaining ?? ""}
             onChange={(e) =>
@@ -98,8 +105,11 @@ export function BillingDebugger({ currentStatus, onOverride }: BillingDebuggerPr
         </div>
 
         <div>
-          <label className="block text-sm">Total Credits</label>
+          <label htmlFor={`${fieldIdPrefix}-total-credits`} className="block text-sm">
+            Total Credits
+          </label>
           <Input
+            id={`${fieldIdPrefix}-total-credits`}
             type="number"
             value={debugStatus.total_tokens ?? ""}
             onChange={(e) =>
@@ -113,8 +123,11 @@ export function BillingDebugger({ currentStatus, onOverride }: BillingDebuggerPr
         </div>
 
         <div>
-          <label className="block text-sm">Used Credits</label>
+          <label htmlFor={`${fieldIdPrefix}-used-credits`} className="block text-sm">
+            Used Credits
+          </label>
           <Input
+            id={`${fieldIdPrefix}-used-credits`}
             type="number"
             value={debugStatus.used_tokens ?? ""}
             onChange={(e) =>
@@ -128,8 +141,11 @@ export function BillingDebugger({ currentStatus, onOverride }: BillingDebuggerPr
         </div>
 
         <div>
-          <label className="block text-sm">Usage Reset Date (UTC)</label>
+          <label htmlFor={`${fieldIdPrefix}-usage-reset-date`} className="block text-sm">
+            Usage Reset Date (UTC)
+          </label>
           <Input
+            id={`${fieldIdPrefix}-usage-reset-date`}
             type="datetime-local"
             value={
               debugStatus.usage_reset_date

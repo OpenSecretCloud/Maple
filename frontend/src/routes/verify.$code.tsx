@@ -19,13 +19,18 @@ function VerifyEmail() {
   const { verifyEmail, refetchUser } = useOpenSecret();
 
   useEffect(() => {
+    let cancelled = false;
+    let redirectTimer: ReturnType<typeof setTimeout> | undefined;
+
     async function verify() {
       try {
         await verifyEmail(code);
+        if (cancelled) return;
 
         // Do both refetch and navigation after a delay
-        setTimeout(async () => {
+        redirectTimer = setTimeout(async () => {
           await refetchUser();
+          if (cancelled) return;
 
           // Check for a pending redirect (e.g. team invite page)
           const pendingRedirect = sessionStorage.getItem("post_auth_redirect");
@@ -35,16 +40,23 @@ function VerifyEmail() {
           }
         }, 2000);
       } catch (err) {
+        if (cancelled) return;
         if (err instanceof Error) {
           setError(err.message);
         } else {
           setError("An unknown error occurred");
         }
       } finally {
-        setIsVerifying(false);
+        if (!cancelled) setIsVerifying(false);
       }
     }
-    verify();
+
+    void verify();
+
+    return () => {
+      cancelled = true;
+      if (redirectTimer !== undefined) clearTimeout(redirectTimer);
+    };
   }, [code, navigate, verifyEmail, refetchUser, router]);
 
   if (isVerifying) {

@@ -33,10 +33,6 @@ export function agentThinkingPhaseId(assistantTurnId: string, phaseIndex: number
   return `${assistantTurnId}:thought-${phaseIndex}`;
 }
 
-export function agentThinkingPhaseTurnId(phaseId: string): string {
-  return phaseId.replace(/:thought-\d+$/u, "");
-}
-
 export function agentThoughtPhasesForLatestTurn(
   sessionId: string,
   items: AgentTimelineItem[]

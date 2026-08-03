@@ -644,12 +644,12 @@ function PricingPage() {
                 alert("Failed to open browser. Please try again.");
               } else {
                 // Fallback to window.open on desktop
-                window.open(portalUrl, "_blank");
+                window.open(portalUrl, "_blank", "noopener");
               }
             });
         } else {
           // Default browser opening for web platforms
-          window.open(portalUrl, "_blank");
+          window.open(portalUrl, "_blank", "noopener");
         }
         return;
       }
@@ -1109,6 +1109,7 @@ function PricingPage() {
         <div className="mx-auto mt-8 flex w-full max-w-7xl flex-col items-center gap-6 px-4 sm:px-6 lg:px-8">
           {!isIOSPlatform && (
             <button
+              type="button"
               onClick={() => navigate({ to: "/redeem" })}
               className="text-sm font-medium text-[#747474] underline underline-offset-4 decoration-neutral-900/20 transition-colors hover:text-[hsl(var(--maple-primary-strong))] hover:decoration-[hsl(var(--maple-primary-strong))] dark:text-muted-foreground dark:decoration-white/20 dark:hover:text-[hsl(var(--maple-primary))] dark:hover:decoration-[hsl(var(--maple-primary))]"
             >
