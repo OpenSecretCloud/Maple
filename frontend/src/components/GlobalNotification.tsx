@@ -106,6 +106,7 @@ export function GlobalNotification({ notification, onDismiss }: GlobalNotificati
 
           {!hasActions && (
             <button
+              type="button"
               onClick={handleDismiss}
               className="flex-shrink-0 rounded-sm opacity-70 hover:opacity-100 transition-opacity"
             >
@@ -119,6 +120,7 @@ export function GlobalNotification({ notification, onDismiss }: GlobalNotificati
           <div className="flex justify-end gap-2">
             {notification.actions!.map((action, index) => (
               <button
+                type="button"
                 key={index}
                 onClick={() => {
                   action.onClick();

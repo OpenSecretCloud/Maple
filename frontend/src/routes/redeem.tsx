@@ -435,6 +435,7 @@ function RedeemPage() {
                 <p className="text-center text-sm text-[hsl(var(--marketing-text-muted))]">
                   Already have a free account,{" "}
                   <button
+                    type="button"
                     onClick={() =>
                       navigate({
                         to: "/login",

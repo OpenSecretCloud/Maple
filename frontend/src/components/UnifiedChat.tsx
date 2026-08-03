@@ -1101,6 +1101,7 @@ function ToolCallRenderer({
             <Markdown content={isExpanded ? combinedOutput : preview} />
             {hasMore && (
               <button
+                type="button"
                 onClick={() => setIsExpanded(!isExpanded)}
                 className="ml-2 text-xs text-primary hover:text-primary/80 font-medium"
               >
@@ -1206,6 +1207,7 @@ function ToolCallRenderer({
           <Markdown content={isExpanded ? output : preview} />
           {hasMore && (
             <button
+              type="button"
               onClick={() => setIsExpanded(!isExpanded)}
               className="ml-2 text-xs text-primary hover:text-primary/80 font-medium"
             >
@@ -1224,6 +1226,29 @@ function ToolCallRenderer({
 type MessageGroup =
   | { type: "user"; message: ExtendedMessage; id: string }
   | { type: "assistant"; items: Message[]; id: string };
+
+function getUserMessageText(message: ExtendedMessage): string {
+  return (
+    message.content
+      ?.filter((part) => "text" in part && part.text)
+      .map((part) => ("text" in part ? part.text : ""))
+      .join("\n") || ""
+  );
+}
+
+function getAssistantGroupText(items: Message[]): string {
+  return items
+    .filter((item) => item.type === "message")
+    .flatMap((item) => {
+      const message = item as unknown as ExtendedMessage;
+      return (
+        message.content
+          ?.filter((part) => "text" in part && part.text)
+          .map((part) => ("text" in part ? part.text : "")) || []
+      );
+    })
+    .join("");
+}
 
 // Memoized message list component to prevent re-renders on input changes
 const MessageList = memo(
@@ -1416,7 +1441,7 @@ const MessageList = memo(
                         <div key={partIdx}>
                           <img
                             src={part.image_url}
-                            alt={`Image ${partIdx + 1}`}
+                            alt={`Attachment ${partIdx + 1}`}
                             className="max-w-full rounded-2xl"
                             style={{ maxHeight: "400px", objectFit: "contain" }}
                           />
@@ -1447,31 +1472,6 @@ const MessageList = memo(
       }
 
       return renderedItems;
-    };
-
-    // Get text content from a user message for the copy button
-    const getUserMessageText = (message: ExtendedMessage) => {
-      return (
-        message.content
-          ?.filter((p) => "text" in p && p.text)
-          .map((p) => ("text" in p ? p.text : ""))
-          .join("\n") || ""
-      );
-    };
-
-    // Get all text content from an assistant group for the copy button
-    const getAssistantGroupText = (items: Message[]) => {
-      return items
-        .filter((item) => item.type === "message")
-        .flatMap((item) => {
-          const message = item as unknown as ExtendedMessage;
-          return (
-            message.content
-              ?.filter((p) => "text" in p && p.text)
-              .map((p) => ("text" in p ? p.text : "")) || []
-          );
-        })
-        .join("");
     };
 
     const shouldShowInitialAssistantLoader =
@@ -1511,7 +1511,7 @@ const MessageList = memo(
                       <div key={partIdx}>
                         <img
                           src={part.image_url}
-                          alt={`Image ${partIdx + 1}`}
+                          alt={`Attachment ${partIdx + 1}`}
                           className="max-w-full rounded-2xl"
                           style={{ maxHeight: "400px", objectFit: "contain" }}
                         />
@@ -1616,7 +1616,6 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
     composer: createChatComposerState(selectedProjectId ?? null)
   });
   const activeRuntimeKeyRef = useRef(renderedRuntimeKey);
-  activeRuntimeKeyRef.current = runtimeStore.resolveKey(renderedRuntimeKey);
 
   const subscribeToActiveRuntime = useCallback(
     (listener: () => void) => runtimeStore.subscribeKey(renderedRuntimeKey, listener),
@@ -1632,6 +1631,10 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
     getActiveRuntimeSnapshot,
     getActiveRuntimeSnapshot
   );
+
+  useLayoutEffect(() => {
+    activeRuntimeKeyRef.current = activeRuntime.key;
+  }, [activeRuntime.key]);
 
   useLayoutEffect(() => {
     if (!isVisible) return;
@@ -2421,13 +2424,15 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
 
   // Auto-scroll when assistant starts streaming (but not while streaming)
   useEffect(() => {
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
     if (hasStreamingMessage && !prevStreamingRef.current && !isUserScrolling) {
       // Just started streaming - scroll slightly to show the loading indicator
       const projectionLease = projectionScrollCoordinatorRef.current.captureLease(
         renderedRuntimeKey,
         resolveScrollProjectionKey
       );
-      setTimeout(() => {
+      timeoutId = setTimeout(() => {
         runForProjectedRuntime(projectionLease, () => {
           const container = chatContainerRef.current;
           if (!container) return;
@@ -2446,6 +2451,10 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
     }
 
     prevStreamingRef.current = hasStreamingMessage;
+
+    return () => {
+      if (timeoutId !== undefined) clearTimeout(timeoutId);
+    };
   }, [
     hasStreamingMessage,
     isUserScrolling,

@@ -3,37 +3,38 @@ import { cn } from "@/utils/utils";
 import { Button } from "./ui/button";
 import { useOpenSecret } from "@opensecret/react";
 import { Menu, X } from "lucide-react";
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
+
+function NavLink({
+  to,
+  children,
+  onClick
+}: {
+  to: string;
+  children: ReactNode;
+  onClick?: () => void;
+}) {
+  const matchRoute = useMatchRoute();
+  const isActive = matchRoute({ to });
+
+  return (
+    <Link
+      to={to}
+      onClick={onClick}
+      className={cn(
+        "transition-colors font-light tracking-tight text-lg",
+        isActive ? "text-[#E2E2E2]" : "text-[#E2E2E2]/70 hover:text-[#E2E2E2]"
+      )}
+    >
+      {children}
+    </Link>
+  );
+}
 
 export function TopNav() {
   const os = useOpenSecret();
   const navigate = useNavigate();
-  const matchRoute = useMatchRoute();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-
-  const NavLink = ({
-    to,
-    children,
-    onClick
-  }: {
-    to: string;
-    children: React.ReactNode;
-    onClick?: () => void;
-  }) => {
-    const isActive = matchRoute({ to });
-    return (
-      <Link
-        to={to}
-        onClick={onClick}
-        className={cn(
-          "transition-colors font-light tracking-tight text-lg",
-          isActive ? "text-[#E2E2E2]" : "text-[#E2E2E2]/70 hover:text-[#E2E2E2]"
-        )}
-      >
-        {children}
-      </Link>
-    );
-  };
 
   return (
     <div className="fixed top-0 left-0 right-0 z-50 px-4 sm:px-6 lg:px-8">
@@ -90,7 +91,13 @@ export function TopNav() {
               )}
 
               {/* Mobile Menu Button */}
-              <button className="sm:hidden" onClick={() => setMobileMenuOpen(!mobileMenuOpen)}>
+              <button
+                type="button"
+                className="sm:hidden"
+                aria-label={mobileMenuOpen ? "Close navigation menu" : "Open navigation menu"}
+                aria-expanded={mobileMenuOpen}
+                onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+              >
                 {mobileMenuOpen ? (
                   <X className="h-6 w-6 text-[#E2E2E2]" />
                 ) : (

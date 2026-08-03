@@ -380,6 +380,7 @@ export function Sidebar({
             </button>
             {!isAgentMode && (
               <button
+                type="button"
                 className="flex w-full items-center justify-start gap-2 py-1.5 pr-1 pl-0 text-sm text-foreground hover:text-foreground/70 transition-colors"
                 onClick={toggleSearch}
                 aria-label={isSearchVisible ? "Hide search" : "Search chat history"}
@@ -444,6 +445,7 @@ export function Sidebar({
             />
             {searchQuery && (
               <button
+                type="button"
                 onClick={clearSearch}
                 className="absolute right-6 top-2.5 text-muted-foreground hover:text-foreground"
                 aria-label="Clear search"
@@ -495,6 +497,7 @@ export function Sidebar({
 export function SidebarToggle({ onToggle }: { onToggle: () => void }) {
   return (
     <button
+      type="button"
       className="h-9 w-9 flex items-center justify-center text-foreground hover:text-foreground/70 transition-colors"
       onClick={onToggle}
       aria-label="Open sidebar"

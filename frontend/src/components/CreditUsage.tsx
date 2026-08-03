@@ -1,6 +1,12 @@
 import { useLocalState } from "@/state/useLocalState";
 import { formatResetDate } from "@/utils/dateFormat";
 
+const CREDIT_NUMBER_FORMATTER = new Intl.NumberFormat("en-US");
+
+function formatCredits(credits: number): string {
+  return CREDIT_NUMBER_FORMATTER.format(credits);
+}
+
 function toPlanNameLabel(rawPlanName: string | undefined): string {
   if (!rawPlanName?.trim()) return "Loading...";
   const cleaned = (rawPlanName ?? "Pro").trim();
@@ -89,8 +95,6 @@ export function CreditUsage() {
   const shouldShowUsageMeter = hasUsageData;
 
   const hasApiCredits = apiBalance !== undefined && apiBalance > 0;
-
-  const formatCredits = (credits: number) => new Intl.NumberFormat("en-US").format(credits);
 
   const planLabel = toPlanNameLabel(productName);
   const resetFullLabel = shouldShowUsageMeter

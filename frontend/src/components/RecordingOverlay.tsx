@@ -12,6 +12,12 @@ interface RecordingOverlayProps {
   className?: string;
 }
 
+function formatTime(seconds: number): string {
+  const mins = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  return `${mins}:${secs.toString().padStart(2, "0")}`;
+}
+
 export function RecordingOverlay({
   isRecording,
   isProcessing = false,
@@ -43,12 +49,6 @@ export function RecordingOverlay({
       };
     }
   }, [isRecording, isProcessing]);
-
-  const formatTime = (seconds: number) => {
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return `${mins}:${secs.toString().padStart(2, "0")}`;
-  };
 
   // Generate stable bar configurations once when component mounts
   const waveformBars = useMemo(() => {

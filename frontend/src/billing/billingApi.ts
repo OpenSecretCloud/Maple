@@ -119,6 +119,12 @@ export async function fetchProducts(version?: string): Promise<BillingProduct[]>
         "Content-Type": "application/json"
       }
     });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Failed to fetch billing products: ${errorText}`);
+    }
+
     return response.json() as Promise<BillingProduct[]>;
   } catch (error) {
     console.error("Error fetching billing products:", error);
@@ -224,7 +230,7 @@ export async function createCheckoutSession(
           );
         } else {
           // Fallback to window.open on desktop (less disruptive than navigating away)
-          window.open(checkout_url, "_blank");
+          window.open(checkout_url, "_blank", "noopener");
         }
       });
 
@@ -295,7 +301,7 @@ export async function createZapriteCheckoutSession(
           );
         } else {
           // Fallback to window.open on desktop (less disruptive than navigating away)
-          window.open(checkout_url, "_blank");
+          window.open(checkout_url, "_blank", "noopener");
         }
       });
 

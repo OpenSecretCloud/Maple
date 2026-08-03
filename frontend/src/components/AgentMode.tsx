@@ -395,15 +395,18 @@ export function AgentMode({ userId }: { userId: string }) {
   const thoughtLabelProvisionalSchedulerRef = useRef<AgentThoughtLabelProvisionalScheduler | null>(
     null
   );
-  openaiRef.current = openai;
-  openSecretRef.current = os;
-  currentAgentModelRef.current = model;
-  agentModelStateSettersRef.current = {
-    setAvailableModels,
-    setModelAliases,
-    setHasWhisperModel
-  };
-  userIdRef.current = userId;
+
+  useLayoutEffect(() => {
+    openaiRef.current = openai;
+    openSecretRef.current = os;
+    currentAgentModelRef.current = model;
+    agentModelStateSettersRef.current = {
+      setAvailableModels,
+      setModelAliases,
+      setHasWhisperModel
+    };
+    userIdRef.current = userId;
+  }, [model, openai, os, setAvailableModels, setHasWhisperModel, setModelAliases, userId]);
 
   if (!thoughtLabelProvisionalSchedulerRef.current) {
     thoughtLabelProvisionalSchedulerRef.current = new AgentThoughtLabelProvisionalScheduler({
@@ -650,7 +653,9 @@ export function AgentMode({ userId }: { userId: string }) {
     [removedProjectRoots, sessions]
   );
   const visibleProjectRootsRef = useRef<RecentProjectRoot[]>([]);
-  visibleProjectRootsRef.current = visibleProjectRoots;
+  useLayoutEffect(() => {
+    visibleProjectRootsRef.current = visibleProjectRoots;
+  }, [visibleProjectRoots]);
   const activeRootLabel = useMemo(() => {
     if (!projectRoot) return "Select folder";
     return (
@@ -685,7 +690,9 @@ export function AgentMode({ userId }: { userId: string }) {
     hasAgentUserMessage(timelineItems) ||
     sessions.some((session) => session.id === activeSessionId && session.messageCount > 0);
   const isAgentModelLocked = hasStartedAgentSession || Boolean(activeRunId) || isSubmitting;
-  isAgentModelLockedRef.current = isAgentModelLocked;
+  useLayoutEffect(() => {
+    isAgentModelLockedRef.current = isAgentModelLocked;
+  }, [isAgentModelLocked]);
   const isAgentModelSelectionDisabled = areAgentSettingsLocked || isAgentModelLocked;
   const isAgentSendLocked = areAgentSettingsLocked;
   const isSending = Boolean(activeRunId) || isSubmitting;

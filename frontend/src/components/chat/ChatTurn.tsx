@@ -11,7 +11,7 @@ type ChatTurnProps = {
   historyAnchorIds?: string;
 };
 
-export function MapleChatAvatar() {
+function MapleChatAvatar() {
   return (
     <img
       src="/m-avatar.svg"

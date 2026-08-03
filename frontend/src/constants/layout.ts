@@ -21,6 +21,5 @@ export function getSidebarLayoutStyle({ offsetContent = true } = {}) {
 export const SIDEBAR_GRID_COLUMNS_CLASS = "md:grid-cols-[var(--sidebar-grid-template)]";
 export const SIDEBAR_WIDTH_CLASS = "w-[var(--sidebar-width)]";
 export const SIDEBAR_MAX_WIDTH_CLASS = "max-w-[var(--sidebar-width)]";
-export const SIDEBAR_ACCOUNT_MENU_WIDTH_CLASS = "w-[calc(var(--sidebar-width)_-_2rem)]";
 export const SIDEBAR_AWARE_FIXED_CENTER_CLASS =
   "md:left-[calc(50%_+_var(--sidebar-content-center-offset))]";

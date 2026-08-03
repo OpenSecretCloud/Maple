@@ -14,6 +14,7 @@ export function SimplifiedFooter() {
             height="30"
             frameBorder="0"
             scrolling="no"
+            sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"
             style={{ colorScheme: "normal", marginLeft: "58px" }}
             title="BetterStack Status"
             className="mb-3"

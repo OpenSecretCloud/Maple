@@ -27,6 +27,12 @@ const CREDIT_PACKAGES: CreditPackage[] = [
   { credits: 500000, price: 500, label: "500,000 credits" }
 ];
 
+const CREDIT_NUMBER_FORMATTER = new Intl.NumberFormat("en-US");
+
+function formatCredits(credits: number): string {
+  return CREDIT_NUMBER_FORMATTER.format(credits);
+}
+
 interface ApiCreditsSectionProps {
   showSuccessMessage?: boolean;
 }
@@ -67,10 +73,6 @@ export function ApiCreditsSection({ showSuccessMessage = false }: ApiCreditsSect
     },
     enabled: !!auth.user && !auth.loading
   });
-
-  const formatCredits = (credits: number) => {
-    return new Intl.NumberFormat("en-US").format(credits);
-  };
 
   const handlePurchase = async (method: "stripe" | "zaprite") => {
     // Clear any previous errors
@@ -133,7 +135,7 @@ export function ApiCreditsSection({ showSuccessMessage = false }: ApiCreditsSect
               if (isMobile()) {
                 throw new Error("Failed to open payment page in external browser.");
               } else {
-                window.open(response.checkout_url, "_blank");
+                window.open(response.checkout_url, "_blank", "noopener");
               }
             }
           );
@@ -157,7 +159,7 @@ export function ApiCreditsSection({ showSuccessMessage = false }: ApiCreditsSect
               if (isMobile()) {
                 throw new Error("Failed to open payment page in external browser.");
               } else {
-                window.open(response.checkout_url, "_blank");
+                window.open(response.checkout_url, "_blank", "noopener");
               }
             }
           );
@@ -235,6 +237,7 @@ export function ApiCreditsSection({ showSuccessMessage = false }: ApiCreditsSect
         <div className="grid grid-cols-2 gap-2 mb-4">
           {CREDIT_PACKAGES.map((pkg) => (
             <button
+              type="button"
               key={pkg.credits}
               onClick={() => {
                 setSelectedPackage(pkg);
@@ -256,6 +259,7 @@ export function ApiCreditsSection({ showSuccessMessage = false }: ApiCreditsSect
         {/* Custom Amount Button */}
         <div className="mb-4">
           <button
+            type="button"
             onClick={() => {
               setShowCustomAmount(!showCustomAmount);
               if (!showCustomAmount) {

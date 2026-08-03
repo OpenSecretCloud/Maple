@@ -92,6 +92,7 @@ export function InfoContent() {
         <VerificationStatus />
         <a
           href="https://blog.trymaple.ai"
+          aria-label="Learn more on the Maple blog"
           className="text-center hover:underline font-medium text-sm"
           target="_blank"
           rel="noopener noreferrer"

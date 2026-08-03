@@ -18,6 +18,33 @@ interface PromoDialogProps {
   discount: DiscountResponse & { active: true };
 }
 
+const PROMO_BENEFITS = [
+  {
+    icon: <Cpu className="h-4 w-4" />,
+    text: "Powerful AI models including Gemma 4 31B, GLM 5.2, and Kimi K2.6"
+  },
+  {
+    icon: <Image className="h-4 w-4" />,
+    text: "Image upload and vision analysis"
+  },
+  {
+    icon: <FileText className="h-4 w-4" />,
+    text: "Document processing (PDF, TXT, MD)"
+  },
+  {
+    icon: <Mic className="h-4 w-4" />,
+    text: "Voice recording with Whisper transcription"
+  },
+  {
+    icon: <Globe className="h-4 w-4" />,
+    text: "Live web search powered by Brave"
+  },
+  {
+    icon: <Zap className="h-4 w-4" />,
+    text: "No daily limits - generous monthly usage"
+  }
+];
+
 export function PromoDialog({ open, onOpenChange, discount }: PromoDialogProps) {
   const navigate = useNavigate();
 
@@ -25,33 +52,6 @@ export function PromoDialog({ open, onOpenChange, discount }: PromoDialogProps) 
     onOpenChange(false);
     navigate({ to: "/pricing" });
   };
-
-  const benefits = [
-    {
-      icon: <Cpu className="h-4 w-4" />,
-      text: "Powerful AI models including Gemma 4 31B, GLM 5.2, and Kimi K2.6"
-    },
-    {
-      icon: <Image className="h-4 w-4" />,
-      text: "Image upload and vision analysis"
-    },
-    {
-      icon: <FileText className="h-4 w-4" />,
-      text: "Document processing (PDF, TXT, MD)"
-    },
-    {
-      icon: <Mic className="h-4 w-4" />,
-      text: "Voice recording with Whisper transcription"
-    },
-    {
-      icon: <Globe className="h-4 w-4" />,
-      text: "Live web search powered by Brave"
-    },
-    {
-      icon: <Zap className="h-4 w-4" />,
-      text: "No daily limits - generous monthly usage"
-    }
-  ];
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -89,8 +89,8 @@ export function PromoDialog({ open, onOpenChange, discount }: PromoDialogProps) 
           <div className="space-y-3">
             <p className="text-sm font-medium text-muted-foreground">Upgrade to Pro and unlock:</p>
             <ul className="grid gap-2.5">
-              {benefits.map((benefit, i) => (
-                <li key={i} className="flex items-center gap-3 text-sm">
+              {PROMO_BENEFITS.map((benefit) => (
+                <li key={benefit.text} className="flex items-center gap-3 text-sm">
                   <div className="shrink-0 rounded-lg bg-maple-success/10 p-1.5 text-maple-success">
                     {benefit.icon}
                   </div>

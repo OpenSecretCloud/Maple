@@ -110,7 +110,6 @@ export function useClickOutside(
   }, [ref, callback]);
 }
 
-export const LLAMA_MODEL_ID = "llama3-3-70b";
 export const QUICK_MODEL_ALIAS = "auto:quick";
 export const POWERFUL_MODEL_ALIAS = "auto:powerful";
 
