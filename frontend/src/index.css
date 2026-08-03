@@ -51,6 +51,8 @@
   /* Light mode by default — Neutral scale from Figma */
   :root {
     --app-font-family: "Manrope", sans-serif;
+    --chat-font-family: var(--app-font-family);
+    --chat-font-size: 15px;
 
     /* Base colors — Neutral 50 / Neutral 800 (body text) */
     --background: 0 0% 98%; /* #FAFAFA - Neutral 50 */

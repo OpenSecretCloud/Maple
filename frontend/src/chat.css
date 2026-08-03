@@ -1294,3 +1294,81 @@
 .markdown-body .hljs-strong {
   font-weight: 700;
 }
+
+/*
+ * Conversation typography is intentionally scoped to shared chat turns. The
+ * product chrome keeps Maple's normal 14px Manrope treatment while Unified
+ * Chat and Agent Mode consume the same device-local reading preference.
+ */
+.chat-typography {
+  --chat-font-size-sm: calc(var(--chat-font-size, 15px) - 1px);
+  --chat-font-size-xs: calc(var(--chat-font-size, 15px) - 3px);
+  --chat-font-size-tool-title: calc(var(--chat-font-size, 15px) - 2px);
+  --chat-font-size-tool-meta: max(10px, calc(var(--chat-font-size, 15px) - 4px));
+  --chat-font-size-kbd: max(10px, calc(var(--chat-font-size, 15px) - 4px));
+  --chat-line-height-sm: calc(var(--chat-font-size, 15px) + 5px);
+  --chat-line-height-xs: calc(var(--chat-font-size, 15px) + 1px);
+  --chat-line-height-kbd: max(10px, calc(var(--chat-font-size, 15px) - 5px));
+
+  font-family: var(--chat-font-family, var(--app-font-family));
+  font-size: var(--chat-font-size, 15px);
+}
+
+/* Markdown keeps its historical full message size, even inside smaller tool chrome. */
+.chat-typography .markdown-body {
+  font-size: var(--chat-font-size, 15px);
+}
+
+.chat-typography .markdown-body p,
+.chat-typography .markdown-body ul,
+.chat-typography .markdown-body ol,
+.chat-typography .markdown-body li,
+.chat-typography .markdown-body li > p,
+.chat-typography .markdown-body table th,
+.chat-typography .markdown-body table td {
+  font-size: var(--chat-font-size, 15px);
+}
+
+/* Preserve the existing transcript hierarchy while scaling every text tier. */
+.chat-typography :where(.text-sm) {
+  font-size: var(--chat-font-size-sm);
+  line-height: var(--chat-line-height-sm);
+}
+
+.chat-typography :where(.text-xs) {
+  font-size: var(--chat-font-size-xs);
+  line-height: var(--chat-line-height-xs);
+}
+
+.chat-typography :where(.text-\[13px\]) {
+  font-size: var(--chat-font-size-tool-title);
+  line-height: var(--chat-line-height-sm);
+}
+
+.chat-typography :where(.text-\[11px\]) {
+  font-size: var(--chat-font-size-tool-meta);
+  line-height: var(--chat-line-height-sm);
+}
+
+/* The assistant identity is product chrome, not transcript content. */
+.chat-typography .chat-product-label {
+  font-family: var(--app-font-family);
+  font-size: 14px;
+  line-height: 1;
+}
+
+.chat-typography .markdown-body .csv-data td,
+.chat-typography .markdown-body .csv-data th,
+.chat-typography .markdown-body .footnotes {
+  font-size: var(--chat-font-size-xs);
+}
+
+.chat-typography .markdown-body kbd {
+  font-size: var(--chat-font-size-kbd);
+  line-height: var(--chat-line-height-kbd);
+}
+
+/* Selected prose fonts should reach chat actions; code remains monospace. */
+.chat-typography :where(.font-sans) {
+  font-family: inherit;
+}
