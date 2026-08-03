@@ -28,7 +28,7 @@ describe("hasApiAccess", () => {
     expect(hasApiAccess(status)).toBe(false);
   });
 
-  test.each(["Free", "Starter"])("does not allow the %s plan", (productName) => {
+  test.each(["Free", "Unknown"])("does not allow the %s plan", (productName) => {
     expect(hasApiAccess(billingStatus(productName))).toBe(false);
   });
 });
@@ -37,7 +37,7 @@ describe("isKnownFreePlan", () => {
   test("identifies a loaded free plan without treating unknown billing as free", () => {
     expect(isKnownFreePlan(billingStatus("Free"))).toBe(true);
     expect(isKnownFreePlan(billingStatus(""))).toBe(false);
-    expect(isKnownFreePlan(billingStatus("Starter"))).toBe(false);
+    expect(isKnownFreePlan(billingStatus("Unknown"))).toBe(false);
     expect(isKnownFreePlan(billingStatus("Pro"))).toBe(false);
     expect(isKnownFreePlan(null)).toBe(false);
   });

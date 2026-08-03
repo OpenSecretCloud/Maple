@@ -3,7 +3,7 @@ import { BillingStatus } from "@/billing/billingApi";
 import type { Model } from "openai/resources/models.js";
 
 // Extended Model type for OpenSecret API which includes additional properties
-export type ModelAccessTier = "free" | "starter" | "pro";
+export type ModelAccessTier = "free" | "pro";
 
 export type ModelCapabilities = {
   chat?: boolean;

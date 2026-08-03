@@ -3530,11 +3530,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
       billingStatus.product_name?.toLowerCase().includes("max") ||
       billingStatus.product_name?.toLowerCase().includes("team"));
 
-  const hasStarterAccess =
-    billingStatus &&
-    (billingStatus.product_name?.toLowerCase().includes("starter") || hasProAccess);
-
-  const canUseImages = hasStarterAccess;
+  const canUseImages = hasProAccess;
   const canUseDocuments = hasProAccess;
   const canUseVoice = hasProAccess && localState.hasWhisperModel;
 

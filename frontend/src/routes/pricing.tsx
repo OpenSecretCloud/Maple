@@ -839,17 +839,7 @@ function PricingPage() {
         )}
 
         {(() => {
-          const filteredPlans = PRICING_PLANS.filter((plan) => {
-            // Always hide Starter plan unless user is currently on Starter
-            const isStarterPlan = plan.name.toLowerCase() === "starter";
-            const isUserOnStarter = freshBillingStatus?.product_name?.toLowerCase() === "starter";
-
-            if (isStarterPlan && !isUserOnStarter) {
-              return false;
-            }
-
-            return true;
-          });
+          const filteredPlans = PRICING_PLANS;
 
           const gridColumns = filteredPlans.length === 4 ? "lg:grid-cols-4" : "lg:grid-cols-3";
 

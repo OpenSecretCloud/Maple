@@ -15,9 +15,7 @@ export function BillingSettings() {
   const productName = billingStatus?.product_name ?? "";
   const normalizedProductName = productName.toLowerCase();
   const hasStripeAccount = !!billingStatus?.stripe_customer_id;
-  const isPaidPlan = ["starter", "pro", "max", "team"].some((plan) =>
-    normalizedProductName.includes(plan)
-  );
+  const isPaidPlan = ["pro", "max", "team"].some((plan) => normalizedProductName.includes(plan));
   const showManage = isPaidPlan && hasStripeAccount;
   const showUpgrade =
     !normalizedProductName.includes("max") && !normalizedProductName.includes("team");

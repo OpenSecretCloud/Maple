@@ -3695,21 +3695,7 @@ function AgentModelSelector({
       if (access === "free") return true;
 
       const planName = billingStatus?.product_name?.toLowerCase() || "";
-
-      if (access === "pro") {
-        return planName.includes("pro") || planName.includes("max") || planName.includes("team");
-      }
-
-      if (access === "starter") {
-        return (
-          planName.includes("starter") ||
-          planName.includes("pro") ||
-          planName.includes("max") ||
-          planName.includes("team")
-        );
-      }
-
-      return true;
+      return planName.includes("pro") || planName.includes("max") || planName.includes("team");
     },
     [billingStatus?.product_name, getAccess]
   );
@@ -3747,8 +3733,13 @@ function AgentModelSelector({
   };
 
   const getModelBadges = (modelId: string): string[] => {
-    const badges = modelById.get(modelId)?.badges || [];
-    return badges.filter((badge) => badge !== "Pro" && badge !== "Starter");
+    const selectedModel = modelById.get(modelId);
+    const badges = selectedModel?.badges || [];
+    return badges.filter(
+      (badge) =>
+        badge !== "Pro" &&
+        (selectedModel?.access === "free" || badge.toLowerCase() !== selectedModel?.access)
+    );
   };
 
   const getDisplayName = (modelId: string, showLock = false) => {

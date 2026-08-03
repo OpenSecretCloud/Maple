@@ -1470,7 +1470,7 @@ The refactor is essentially feature-complete except for scroll UX improvements!
    - ModelSelector component integrated in both input areas
    - Support for model switching mid-conversation
    - Auto-switching to vision models when images are added
-   - Billing tier restrictions (Pro/Starter/Team)
+   - Billing tier restrictions (Pro/Team)
    - Upgrade prompts for restricted models
 
 2. **Billing Integration** ✅
