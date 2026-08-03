@@ -35,7 +35,10 @@ export function ChatUserTurn({
     <div
       ref={containerRef}
       data-history-anchor-ids={historyAnchorIds}
-      className={cn("group/user flex flex-col items-end py-4 landscape-short:py-1.5", className)}
+      className={cn(
+        "chat-typography group/user flex flex-col items-end py-4 landscape-short:py-1.5",
+        className
+      )}
     >
       <div className="max-w-[min(100%,42rem)] rounded-2xl border border-border bg-muted px-4 py-3 backdrop-blur-lg dark:bg-card landscape-short:px-3 landscape-short:py-2">
         <div className="prose prose-sm max-w-none text-left dark:prose-invert">
@@ -56,18 +59,22 @@ export function ChatAssistantTurn({ children, actions, containerRef, className }
     <div
       ref={containerRef}
       className={cn(
-        "group px-0 py-4 md:p-4 landscape-short:px-2 landscape-short:py-1.5",
+        "chat-typography group px-0 py-4 md:p-4 landscape-short:px-2 landscape-short:py-1.5",
         className
       )}
     >
       <div className="mx-auto flex w-full max-w-4xl flex-col gap-2 md:flex-row md:items-start md:gap-3">
         <div className="flex h-8 shrink-0 items-center gap-2 px-0 md:h-auto md:flex-col md:items-start md:gap-3 landscape-short:h-6">
           <MapleChatAvatar />
-          <div className="text-sm font-semibold leading-none md:hidden">Maple</div>
+          <div className="chat-product-label text-sm font-semibold leading-none md:hidden">
+            Maple
+          </div>
         </div>
         <div className="flex min-w-0 w-full flex-1 flex-col overflow-hidden px-2 md:gap-2 md:px-0">
           <div className="hidden md:block">
-            <div className="text-left text-sm font-semibold leading-none">Maple</div>
+            <div className="chat-product-label text-left text-sm font-semibold leading-none">
+              Maple
+            </div>
           </div>
           <div className="space-y-2">
             {children}

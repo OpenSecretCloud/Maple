@@ -15,7 +15,14 @@ import {
   SelectValue
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { useChatTypography } from "@/contexts/ChatTypographyContext";
 import { useSettingsNavigationLock } from "@/contexts/SettingsNavigationLockContext";
+import {
+  CHAT_FONT_OPTIONS,
+  CHAT_FONT_SIZE_MAX,
+  CHAT_FONT_SIZE_MIN,
+  CHAT_FONT_SIZE_STEP
+} from "@/services/chatTypographyPreferences";
 import { useTTS } from "@/services/tts/TTSContext";
 import {
   isVoxtralTTSVoice,
@@ -34,6 +41,8 @@ function formatPlaybackSpeed(speed: number): string {
 
 export function PreferencesSettings() {
   const os = useOpenSecret();
+  const { fontFamily, fontSize, setFontFamily, setFontSize, resetTypography, hasCustomTypography } =
+    useChatTypography();
   const {
     playbackSpeed,
     hasCustomPlaybackSpeed,
@@ -42,6 +51,7 @@ export function PreferencesSettings() {
     resetPlaybackSpeed,
     setVoice
   } = useTTS();
+  const selectedFontOption = CHAT_FONT_OPTIONS.find((option) => option.value === fontFamily);
   const [prompt, setPrompt] = useState("");
   const [instructionId, setInstructionId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -158,6 +168,121 @@ export function PreferencesSettings() {
             </Button>
           </div>
         </form>
+      </SettingsSection>
+      <SettingsSection
+        title="Chat appearance"
+        description="Adjust the reading experience for conversations while keeping Maple's current look as the default."
+      >
+        <div className="space-y-6">
+          <div className="grid gap-2">
+            <Label htmlFor="settings-chat-font">Chat font</Label>
+            <Select
+              value={fontFamily}
+              onValueChange={(value) => {
+                const option = CHAT_FONT_OPTIONS.find((candidate) => candidate.value === value);
+                if (option) setFontFamily(option.value);
+              }}
+            >
+              <SelectTrigger
+                id="settings-chat-font"
+                style={{ fontFamily: selectedFontOption?.cssFontFamily }}
+              >
+                <SelectValue placeholder="Select a font" />
+              </SelectTrigger>
+              <SelectContent>
+                {CHAT_FONT_OPTIONS.map((option) => (
+                  <SelectItem
+                    key={option.value}
+                    value={option.value}
+                    style={{ fontFamily: option.cssFontFamily }}
+                  >
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {selectedFontOption && (
+              <p className="text-xs leading-relaxed text-muted-foreground">
+                {selectedFontOption.description}
+              </p>
+            )}
+          </div>
+
+          <div className="space-y-3">
+            <div className="flex items-center justify-between gap-3">
+              <Label htmlFor="settings-chat-font-size">Text size</Label>
+              <output
+                htmlFor="settings-chat-font-size"
+                className="text-sm tabular-nums text-muted-foreground"
+              >
+                {fontSize}px
+              </output>
+            </div>
+            <input
+              id="settings-chat-font-size"
+              type="range"
+              min={CHAT_FONT_SIZE_MIN}
+              max={CHAT_FONT_SIZE_MAX}
+              step={CHAT_FONT_SIZE_STEP}
+              value={fontSize}
+              onChange={(event) => setFontSize(Number(event.currentTarget.value))}
+              className="h-2 w-full cursor-pointer accent-primary"
+              aria-valuetext={`${fontSize} pixels`}
+            />
+            <div className="flex items-center justify-between text-xs text-muted-foreground">
+              <span>{CHAT_FONT_SIZE_MIN}px</span>
+              <span>{CHAT_FONT_SIZE_MAX}px</span>
+            </div>
+          </div>
+
+          <div
+            className="rounded-lg border border-border/70 bg-muted/30 p-4"
+            role="group"
+            aria-labelledby="settings-chat-preview-label"
+          >
+            <p
+              id="settings-chat-preview-label"
+              className="text-xs font-medium uppercase tracking-wide text-muted-foreground"
+            >
+              Live preview
+            </p>
+            <div className="chat-typography mt-3 space-y-3">
+              <div className="max-w-[88%] rounded-lg bg-background px-3 py-2 shadow-sm">
+                <p className="mb-1 text-[0.75em] font-semibold text-muted-foreground">Assistant</p>
+                <p className="leading-[1.65] tracking-[0.1px]">
+                  Clear, comfortable text makes longer conversations easier to follow.
+                </p>
+              </div>
+              <div className="ml-auto max-w-[88%] rounded-lg border border-border bg-muted px-3 py-2">
+                <p className="mb-1 text-[0.75em] font-semibold text-muted-foreground">You</p>
+                <p className="leading-[1.65] tracking-[0.1px]">This size feels just right.</p>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+            <div className="space-y-1">
+              <p className="text-xs leading-relaxed text-muted-foreground">
+                Applies to messages, reasoning, and tool activity in Chat and Agent Mode. Code stays
+                monospace for readability.
+              </p>
+              <p className="text-xs leading-relaxed text-muted-foreground">
+                Changes are saved automatically on this device.
+              </p>
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={resetTypography}
+              disabled={!hasCustomTypography}
+              className="shrink-0 gap-2"
+            >
+              <RotateCcw className="h-4 w-4" aria-hidden="true" />
+              Reset chat appearance
+            </Button>
+          </div>
+        </div>
       </SettingsSection>
       <SettingsSection
         title="Text-to-speech"

@@ -12,6 +12,7 @@ import { NotFoundFallback } from "./components/NotFoundFallback";
 import { BillingServiceProvider } from "./components/BillingServiceProvider";
 import { DeepLinkHandler } from "./components/DeepLinkHandler";
 import { NotificationProvider } from "./contexts/NotificationContext";
+import { ChatTypographyProvider } from "./contexts/ChatTypographyContext";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import { ProxyEventListener } from "./components/ProxyEventListener";
 import { UpdateEventListener } from "./components/UpdateEventListener";
@@ -103,14 +104,16 @@ export default function App() {
             <OpenAIProvider>
               <QueryClientProvider client={queryClient}>
                 <TooltipProvider>
-                  <TTSProvider>
-                    <BillingServiceProvider>
-                      <ProxyEventListener />
-                      <UpdateEventListener />
-                      <DeepLinkHandler />
-                      <InnerApp />
-                    </BillingServiceProvider>
-                  </TTSProvider>
+                  <ChatTypographyProvider>
+                    <TTSProvider>
+                      <BillingServiceProvider>
+                        <ProxyEventListener />
+                        <UpdateEventListener />
+                        <DeepLinkHandler />
+                        <InnerApp />
+                      </BillingServiceProvider>
+                    </TTSProvider>
+                  </ChatTypographyProvider>
                 </TooltipProvider>
               </QueryClientProvider>
             </OpenAIProvider>
