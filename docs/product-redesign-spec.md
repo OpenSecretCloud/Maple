@@ -1200,7 +1200,6 @@ Supported scenarios from the PR:
 | ------------- | -------------------------------------------- |
 | `Coming Soon` | `bg-muted text-muted-foreground`             |
 | `Pro`         | coral-to-tertiary soft gradient + coral text |
-| `Starter`     | `bg-maple-success/10 text-maple-success`     |
 | `New`         | `bg-maple-info/10 text-maple-info`           |
 | `Reasoning`   | `bg-maple-error/10 text-maple-error`         |
 | `Beta`        | `bg-maple-warning/10 text-maple-warning`     |

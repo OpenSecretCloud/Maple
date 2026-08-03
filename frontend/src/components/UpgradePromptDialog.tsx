@@ -85,11 +85,11 @@ export function UpgradePromptDialog({
         icon: <Image className="h-8 w-8" />,
         title: "Image Upload",
         description: "Upload and analyze images with AI-powered vision models",
-        requiredPlan: "Starter",
+        requiredPlan: "Pro",
         benefits: [
           "Images stay private with end-to-end encryption",
           "Upload JPEG, PNG, and WebP formats securely",
-          "Use Gemma 4 31B on Starter, plus Kimi K2.6 on Pro and above",
+          "Use Gemma 4 31B and Kimi K2.6 on Pro and above",
           "Analyze diagrams, screenshots, and photos privately",
           "Extract text from images without exposing data"
         ]

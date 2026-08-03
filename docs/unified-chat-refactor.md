@@ -216,7 +216,7 @@ The UnifiedChat component now includes these fully working features:
 - **Proper OpenAI format** - Uses `input_text`, `input_image`, `output_text` content types
 
 #### Billing & Access Control
-- **Tier-based features** - Starter (images), Pro/Team (documents)
+- **Tier-based features** - Pro/Team (images and documents)
 - **Upgrade prompts** - Contextual dialogs when accessing restricted features
 - **Model selector integration** - Shows available models based on user's plan
 

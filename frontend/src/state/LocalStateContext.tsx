@@ -218,10 +218,7 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
 
     const planName = status.product_name?.toLowerCase() || "";
     const isPaidPlan =
-      planName.includes("pro") ||
-      planName.includes("max") ||
-      planName.includes("team") ||
-      planName.includes("starter");
+      planName.includes("pro") || planName.includes("max") || planName.includes("team");
 
     const isProMaxOrTeam = isProMaxOrTeamPlan(planName);
 
@@ -279,7 +276,7 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
             setModelInternal(PAID_DEFAULT_MODEL_ID, true);
           }
         } else {
-          // User downgraded to free/starter — switch back to free model
+          // User downgraded to free — switch back to free model
           // and clear paid defaults so they get re-applied if they upgrade again
           setModelInternal(DEFAULT_MODEL_ID);
           localStorage.removeItem("paidDefaultsApplied");

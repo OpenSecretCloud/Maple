@@ -67,55 +67,6 @@ export const PRICING_PLANS: PricingPlan[] = [
     ctaText: "Start Free"
   },
   {
-    name: "Starter",
-    price: "$5.99",
-    description: "Get started with secure AI chat",
-    features: [
-      {
-        text: "All features from Free",
-        included: true,
-        icon: <Check className="w-4 h-4 text-maple-success" />
-      },
-      {
-        text: "Enough messages for casual use",
-        included: true,
-        icon: <Check className="w-4 h-4 text-maple-success" />
-      },
-      {
-        text: "AI Naming of Chats",
-        included: true,
-        icon: <Check className="w-4 h-4 text-maple-success" />
-      },
-      {
-        text: "Gemma 4 31B",
-        included: true,
-        icon: <Check className="w-4 h-4 text-maple-success" />
-      },
-      {
-        text: "Image Upload",
-        included: true,
-        icon: <Check className="w-4 h-4 text-maple-success" />
-      },
-      {
-        text: "Document Upload (PDF, TXT, MD)",
-        included: false,
-        icon: <X className="w-4 h-4 text-maple-error" />
-      },
-      {
-        text: "Voice Recording (Whisper)",
-        included: false,
-        icon: <X className="w-4 h-4 text-maple-error" />
-      },
-      {
-        text: "GLM 5.2 + Kimi K2.6",
-        included: false,
-        icon: <X className="w-4 h-4 text-maple-error" />
-      },
-      { text: "API Access", included: false, icon: <X className="w-4 h-4 text-maple-error" /> }
-    ],
-    ctaText: "Start Chatting"
-  },
-  {
     name: "Pro",
     price: "$20",
     description: "For power users who need more",

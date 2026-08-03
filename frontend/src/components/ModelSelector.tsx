@@ -238,21 +238,7 @@ export function ModelSelector({ hasImages = false }: { hasImages?: boolean }) {
       if (access === "free") return true;
 
       const planName = billingStatus?.product_name?.toLowerCase() || "";
-
-      if (access === "pro") {
-        return planName.includes("pro") || planName.includes("max") || planName.includes("team");
-      }
-
-      if (access === "starter") {
-        return (
-          planName.includes("starter") ||
-          planName.includes("pro") ||
-          planName.includes("max") ||
-          planName.includes("team")
-        );
-      }
-
-      return true;
+      return planName.includes("pro") || planName.includes("max") || planName.includes("team");
     },
     [billingStatus?.product_name, getAccess]
   );
@@ -328,8 +314,13 @@ export function ModelSelector({ hasImages = false }: { hasImages?: boolean }) {
 
   // Get dynamic badges for a model based on billing status
   const getModelBadges = (modelId: string): string[] => {
-    const badges = modelById.get(modelId)?.badges || [];
-    return badges.filter((badge) => badge !== "Pro" && badge !== "Starter");
+    const selectedModel = modelById.get(modelId);
+    const badges = selectedModel?.badges || [];
+    return badges.filter(
+      (badge) =>
+        badge !== "Pro" &&
+        (selectedModel?.access === "free" || badge.toLowerCase() !== selectedModel?.access)
+    );
   };
 
   const getDisplayName = (modelId: string, showLock = false) => {
@@ -349,8 +340,6 @@ export function ModelSelector({ hasImages = false }: { hasImages?: boolean }) {
           } else if (badge === "Pro") {
             badgeClass +=
               " bg-gradient-to-r from-[hsl(var(--maple-primary))]/10 to-[hsl(var(--maple-tertiary))]/10 text-[hsl(var(--maple-primary))]";
-          } else if (badge === "Starter") {
-            badgeClass += " bg-maple-success/10 text-maple-success";
           } else if (badge === "New") {
             badgeClass += " bg-maple-info/10 text-maple-info";
           } else if (badge === "Reasoning") {
