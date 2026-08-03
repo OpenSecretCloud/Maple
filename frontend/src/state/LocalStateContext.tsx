@@ -182,10 +182,6 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
   const cachedSelectedModel = getCachedSelectedModelMetadata(initialModel);
 
   const [localState, setLocalState] = useState({
-    userPrompt: "",
-    systemPrompt: null as string | null,
-    userImages: [] as File[],
-    sentViaVoice: false,
     model: initialModel,
     availableModels: cachedSelectedModel ? [cachedSelectedModel] : ([] as OpenSecretModel[]),
     modelAliases: DEFAULT_MODEL_ALIASES,
@@ -193,25 +189,8 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
     billingStatus: null as BillingStatus | null,
     searchQuery: "",
     isSearchVisible: false,
-    selectedProjectId: null as string | null,
-    draftMessages: new Map<string, string>()
+    selectedProjectId: null as string | null
   });
-
-  function setUserPrompt(prompt: string) {
-    setLocalState((prev) => ({ ...prev, userPrompt: prompt }));
-  }
-
-  function setSystemPrompt(prompt: string | null) {
-    setLocalState((prev) => ({ ...prev, systemPrompt: prompt }));
-  }
-
-  function setUserImages(images: File[]) {
-    setLocalState((prev) => ({ ...prev, userImages: images }));
-  }
-
-  function setSentViaVoice(sentViaVoice: boolean) {
-    setLocalState((prev) => ({ ...prev, sentViaVoice }));
-  }
 
   function setBillingStatus(status: BillingStatus) {
     setLocalState((prev) => ({ ...prev, billingStatus: status }));
@@ -300,32 +279,6 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
     setLocalState((prev) => ({ ...prev, selectedProjectId: projectId }));
   }, []);
 
-  function setDraftMessage(chatId: string, draft: string) {
-    if (!chatId?.trim()) {
-      console.error("Invalid chatId provided to setDraftMessage");
-      return;
-    }
-    setLocalState((prev) => ({
-      ...prev,
-      draftMessages: new Map(prev.draftMessages).set(chatId, draft)
-    }));
-  }
-
-  function clearDraftMessage(chatId: string) {
-    if (!chatId?.trim()) {
-      console.error("Invalid chatId provided to clearDraftMessage");
-      return;
-    }
-    setLocalState((prev) => {
-      const newDrafts = new Map(prev.draftMessages);
-      if (!newDrafts.has(chatId)) {
-        return prev; // No state update needed if draft doesn't exist
-      }
-      newDrafts.delete(chatId);
-      return { ...prev, draftMessages: newDrafts };
-    });
-  }
-
   // Internal model setter — updates state and localStorage but does NOT mark as
   // a user's explicit choice. Used by billing/system logic.
   function setModelInternal(modelId: string, persist = false) {
@@ -397,10 +350,6 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
         setModelAliases,
         hasWhisperModel: localState.hasWhisperModel,
         setHasWhisperModel,
-        userPrompt: localState.userPrompt,
-        systemPrompt: localState.systemPrompt,
-        userImages: localState.userImages,
-        sentViaVoice: localState.sentViaVoice,
         billingStatus: localState.billingStatus,
         searchQuery: localState.searchQuery,
         setSearchQuery,
@@ -408,14 +357,7 @@ export const LocalStateProvider = ({ children }: { children: React.ReactNode }) 
         setIsSearchVisible,
         selectedProjectId: localState.selectedProjectId,
         setSelectedProjectId,
-        setBillingStatus,
-        setUserPrompt,
-        setSystemPrompt,
-        setUserImages,
-        setSentViaVoice,
-        draftMessages: localState.draftMessages,
-        setDraftMessage,
-        clearDraftMessage
+        setBillingStatus
       }}
     >
       {children}

@@ -1251,9 +1251,6 @@ export function ChatHistoryList({
               ) : null}
               <div className="min-w-0 flex-1 overflow-hidden whitespace-nowrap">{title}</div>
             </div>
-            <div className="mt-0.5 hidden text-[10px] opacity-50">
-              {new Date(conversation.last_activity_at * 1000).toLocaleDateString()}
-            </div>
           </div>
         </button>
         {isSelectionMode ? (
