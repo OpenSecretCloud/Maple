@@ -1,5 +1,5 @@
 import { decryptMessage, encryptMessage } from "./encryption";
-import { getAttestation } from "./getAttestation";
+import { getAttestation, type Attestation } from "./getAttestation";
 import * as api from "./api";
 
 export interface CustomFetchOptions {
@@ -7,9 +7,83 @@ export interface CustomFetchOptions {
   apiUrl?: string; // Optional API URL for attestation (required when not using OpenSecretProvider)
 }
 
+interface ActiveAttestation {
+  sessionKey: Uint8Array;
+  sessionId: string;
+}
+
+/** @internal Exported for deterministic transport tests, not from the package entry point. */
+export interface CustomFetchDependencies {
+  decryptMessage: typeof decryptMessage;
+  encryptMessage: typeof encryptMessage;
+  fetch: typeof globalThis.fetch;
+  getAttestation: typeof getAttestation;
+  refreshToken: typeof api.refreshToken;
+}
+
+const defaultDependencies: CustomFetchDependencies = {
+  decryptMessage,
+  encryptMessage,
+  fetch: (...args) => globalThis.fetch(...args),
+  getAttestation,
+  refreshToken: api.refreshToken
+};
+
+function requireActiveAttestation(attestation: Attestation): ActiveAttestation {
+  if (!attestation.sessionKey || !attestation.sessionId) {
+    throw new Error("No session key or ID available");
+  }
+
+  return {
+    sessionKey: attestation.sessionKey,
+    sessionId: attestation.sessionId
+  };
+}
+
+async function discardResponse(response: Response): Promise<void> {
+  try {
+    await response.body?.cancel();
+  } catch {
+    // The response is being discarded for a bounded retry. Some runtimes may
+    // already have closed its body, which needs no further cleanup.
+  }
+}
+
 export function createCustomFetch(
   options?: CustomFetchOptions
 ): (input: string | URL | Request, init?: RequestInit) => Promise<Response> {
+  return createCustomFetchWithDependencies(options, defaultDependencies);
+}
+
+/** @internal Exported for deterministic transport tests, not from the package entry point. */
+export function createCustomFetchWithDependencies(
+  options: CustomFetchOptions | undefined,
+  dependencies: CustomFetchDependencies
+): (input: string | URL | Request, init?: RequestInit) => Promise<Response> {
+  let attestationRefresh: Promise<ActiveAttestation> | undefined;
+
+  const renewAttestation = async (failedSessionId: string): Promise<ActiveAttestation> => {
+    // A concurrent request or token refresh may already have replaced the
+    // failed session. Reuse it instead of starting another handshake.
+    const currentAttestation = requireActiveAttestation(
+      await dependencies.getAttestation(false, options?.apiUrl)
+    );
+    if (currentAttestation.sessionId !== failedSessionId) {
+      return currentAttestation;
+    }
+
+    if (!attestationRefresh) {
+      attestationRefresh = dependencies
+        .getAttestation(true, options?.apiUrl)
+        .then(requireActiveAttestation)
+        .finally(() => {
+          attestationRefresh = undefined;
+        });
+    }
+
+    return attestationRefresh;
+  };
+
   return async (requestUrl: string | URL | Request, init?: RequestInit): Promise<Response> => {
     const getAuthHeader = () => {
       // If an API key is provided, use it instead of JWT token
@@ -26,34 +100,74 @@ export function createCustomFetch(
     };
 
     try {
-      const headers = new Headers(init?.headers);
-      headers.set("Authorization", getAuthHeader());
+      // Keep this operation bound to the identity that initiated it. An
+      // unrelated account change during attestation must not send the
+      // already-prepared plaintext request under a different token.
+      let authHeader = getAuthHeader();
 
-      const { sessionKey, sessionId } = await getAttestation(false, options?.apiUrl);
-      if (!sessionKey || !sessionId) {
-        throw new Error("No session key or ID available");
+      const makeRequest = async (attestation: ActiveAttestation) => {
+        const headers = new Headers(init?.headers);
+        headers.set("Authorization", authHeader);
+        headers.set("x-session-id", attestation.sessionId);
+
+        const requestOptions: RequestInit = { ...init, headers };
+
+        // Encrypt the original plaintext again for every attempt. Reusing an
+        // old request body with a new session ID would make recovery fail.
+        if (init?.body) {
+          const encryptedBody = dependencies.encryptMessage(
+            attestation.sessionKey,
+            init.body as string
+          );
+          requestOptions.body = JSON.stringify({ encrypted: encryptedBody });
+          headers.set("Content-Type", "application/json");
+        }
+
+        return {
+          attestation,
+          response: await dependencies.fetch(requestUrl, requestOptions)
+        };
+      };
+
+      let attestation = requireActiveAttestation(
+        await dependencies.getAttestation(false, options?.apiUrl)
+      );
+      let refreshedToken = false;
+      let renewedAttestation = false;
+      let finalAttempt: Awaited<ReturnType<typeof makeRequest>>;
+
+      while (true) {
+        const attempt = await makeRequest(attestation);
+
+        if (attempt.response.status === 401 && !options?.apiKey && !refreshedToken) {
+          refreshedToken = true;
+          await discardResponse(attempt.response);
+          console.warn("Unauthorized, refreshing access token");
+          await dependencies.refreshToken();
+          authHeader = getAuthHeader();
+
+          // The encrypted refresh call may itself have replaced a stale
+          // attestation. Always rebuild the outer request from current state.
+          attestation = requireActiveAttestation(
+            await dependencies.getAttestation(false, options?.apiUrl)
+          );
+          continue;
+        }
+
+        if (attempt.response.status === 400 && !renewedAttestation) {
+          renewedAttestation = true;
+          await discardResponse(attempt.response);
+          console.warn("Bad Request, renewing attestation and retrying once");
+          attestation = await renewAttestation(attempt.attestation.sessionId);
+          continue;
+        }
+
+        finalAttempt = attempt;
+        break;
       }
-      headers.set("x-session-id", sessionId);
 
-      const requestOptions: RequestInit = { ...init, headers };
-
-      // Encrypt the request body if it exists
-      if (init?.body) {
-        const encryptedBody = encryptMessage(sessionKey, init.body as string);
-        requestOptions.body = JSON.stringify({ encrypted: encryptedBody });
-        headers.set("Content-Type", "application/json");
-      }
-
-      let response = await fetch(requestUrl, requestOptions);
-
-      if (response.status === 401 && !options?.apiKey) {
-        // Only attempt token refresh if we're using JWT auth (not API key)
-        console.warn("Unauthorized, refreshing access token");
-        await api.refreshToken();
-        headers.set("Authorization", getAuthHeader());
-        requestOptions.headers = headers;
-        response = await fetch(requestUrl, requestOptions);
-      }
+      const { response } = finalAttempt;
+      const { sessionKey } = finalAttempt.attestation;
 
       if (!response.ok) {
         const errorText = await response.text();
@@ -100,7 +214,7 @@ export function createCustomFetch(
                       controller.enqueue(`data: [DONE]\n\n`);
                     } else {
                       try {
-                        const decrypted = decryptMessage(sessionKey, data);
+                        const decrypted = dependencies.decryptMessage(sessionKey, data);
 
                         // Always enqueue the decrypted data
                         // Note: We don't add \n\n here because the empty line will be added separately
@@ -137,7 +251,7 @@ export function createCustomFetch(
 
         // Check if the response has an encrypted field
         if (responseData.encrypted) {
-          const decrypted = decryptMessage(sessionKey, responseData.encrypted);
+          const decrypted = dependencies.decryptMessage(sessionKey, responseData.encrypted);
 
           // Try to parse as JSON to check for TTS response format
           try {
