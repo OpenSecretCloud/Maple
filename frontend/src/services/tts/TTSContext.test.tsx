@@ -30,7 +30,7 @@ const freeBillingStatus: BillingStatus = {
 };
 
 mock.module("@/state/useLocalState", () => ({
-  useLocalState: () => ({ billingStatus: freeBillingStatus })
+  useBillingState: () => ({ billingStatus: freeBillingStatus })
 }));
 
 const { TTSProvider, useTTS } = await import("./TTSContext");

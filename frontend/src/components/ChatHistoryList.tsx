@@ -1,12 +1,4 @@
-import {
-  useState,
-  useMemo,
-  useCallback,
-  useEffect,
-  useRef,
-  useContext,
-  useSyncExternalStore
-} from "react";
+import { useState, useMemo, useCallback, useEffect, useRef, useSyncExternalStore } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   MoreHorizontal,
@@ -45,7 +37,7 @@ import {
   type ConversationProjectListItem
 } from "@opensecret/react";
 import { useRouter } from "@tanstack/react-router";
-import { LocalStateContext } from "@/state/LocalStateContext";
+import { useSelectedProjectState } from "@/state/useLocalState";
 import { ConversationProjectDialog } from "@/components/ConversationProjectDialog";
 import { DeleteConversationProjectDialog } from "@/components/DeleteConversationProjectDialog";
 import { MoveChatsDialog } from "@/components/MoveChatsDialog";
@@ -110,8 +102,7 @@ export function ChatHistoryList({
   const opensecret = useOpenSecret();
   const router = useRouter();
   const queryClient = useQueryClient();
-  const localState = useContext(LocalStateContext);
-  const { selectedProjectId, setSelectedProjectId } = localState;
+  const { selectedProjectId, setSelectedProjectId } = useSelectedProjectState();
   const userId = opensecret.auth.user?.user.id;
   const runtimeStore = useChatRuntimeStore<Conversation, unknown>();
   const activeRunKeys = useSyncExternalStore(

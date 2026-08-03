@@ -4,7 +4,6 @@ import {
   useEffect,
   useLayoutEffect,
   useCallback,
-  useSyncExternalStore,
   memo,
   useMemo,
   useId
@@ -43,6 +42,8 @@ import {
   maybeReadLinuxTauriClipboardImages
 } from "@/utils/imagePaste";
 import { truncateMarkdownPreservingLinks } from "@/utils/markdown";
+import { useLazyRef } from "@/utils/useLazyRef";
+import { useVisibleExternalStore } from "@/utils/useVisibleExternalStore";
 import {
   getDocumentProcessingErrorMessage,
   getSupportedDocumentType,
@@ -61,7 +62,7 @@ import {
 } from "@/components/chat/ChatTurn";
 import { ChatCopyButton } from "@/components/chat/ChatCopyButton";
 import { ModelSelector } from "@/components/ModelSelector";
-import { useLocalState } from "@/state/useLocalState";
+import { useBillingState, useModelState, useSelectedProjectState } from "@/state/useLocalState";
 import { isKnownFreePlan } from "@/billing/billingAccess";
 import { useOpenSecret } from "@opensecret/react";
 import { UpgradePromptDialog } from "@/components/UpgradePromptDialog";
@@ -1575,8 +1576,9 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
   const isLandscapeMobile = useIsLandscapeMobile();
   const isCompactLayout = isMobile || isLandscapeMobile;
   const openai = useOpenAI();
-  const localState = useLocalState();
-  const { selectedProjectId, setSelectedProjectId } = localState;
+  const { model, hasWhisperModel } = useModelState();
+  const { billingStatus } = useBillingState();
+  const { selectedProjectId, setSelectedProjectId } = useSelectedProjectState();
   const os = useOpenSecret();
   const isTauriEnv = isTauri();
   const isLinuxEnv = isLinux();
@@ -1626,7 +1628,8 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
     if (!snapshot) throw new Error(`Missing chat runtime for ${renderedRuntimeKey}`);
     return snapshot;
   }, [renderedRuntimeKey, runtimeStore]);
-  const activeRuntime = useSyncExternalStore(
+  const activeRuntime = useVisibleExternalStore(
+    isVisible,
     subscribeToActiveRuntime,
     getActiveRuntimeSnapshot,
     getActiveRuntimeSnapshot
@@ -1801,9 +1804,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
   const [documentPlatformDialogOpen, setDocumentPlatformDialogOpen] = useState(false);
   const [contextLimitDialogOpen, setContextLimitDialogOpen] = useState(false);
   const ttsAccessDeniedFeature =
-    localState.billingStatus === null || isKnownFreePlan(localState.billingStatus)
-      ? "tts"
-      : "usage";
+    billingStatus === null || isKnownFreePlan(billingStatus) ? "tts" : "usage";
 
   useEffect(() => {
     if (!isVisible) {
@@ -1872,8 +1873,8 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
   const [isUserScrolling, setIsUserScrolling] = useState(false);
   const isUserScrollingRef = useRef(false);
   const prevStreamingRef = useRef(false);
-  const projectionScrollCoordinatorRef = useRef(
-    new ChatProjectionScrollCoordinator<ChatRuntimeKey>()
+  const projectionScrollCoordinatorRef = useLazyRef(
+    () => new ChatProjectionScrollCoordinator<ChatRuntimeKey>()
   );
   const historyPaginationLifecycle = useMemo(
     () => ({ runtimeKey: renderedRuntimeKey, gate: new ChatHistoryPaginationGate() }),
@@ -1897,7 +1898,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
   );
   const recorderRef = useRef<RecordRTC | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
-  const billingRefreshTimeoutsRef = useRef(new Set<ReturnType<typeof setTimeout>>());
+  const billingRefreshTimeoutsRef = useLazyRef(() => new Set<ReturnType<typeof setTimeout>>());
   const fileInputRef = useRef<HTMLInputElement>(null);
   const documentInputRef = useRef<HTMLInputElement>(null);
   const fileInputOwnerKeyRef = useRef<ChatRuntimeKey | null>(null);
@@ -1912,7 +1913,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const historyTopSentinelRef = useRef<HTMLDivElement>(null);
   const historyBottomCompensationRef = useRef<HTMLDivElement>(null);
-  const activeConversationLoadRef = useRef(new Map<ChatRuntimeKey, number>());
+  const activeConversationLoadRef = useLazyRef(() => new Map<ChatRuntimeKey, number>());
 
   const stopRecordingForNavigation = useCallback(
     (destinationKey: ChatRuntimeKey) => {
@@ -2052,7 +2053,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
       for (const timeout of billingRefreshTimeouts) clearTimeout(timeout);
       billingRefreshTimeouts.clear();
     };
-  }, []);
+  }, [billingRefreshTimeoutsRef]);
 
   // Auto-focus textbox on desktop (not mobile/landscape-mobile to avoid keyboard popup interrupting reading)
   // Focus when: app launches, new chat, conversation loads, or assistant finishes streaming
@@ -2169,7 +2170,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
       action();
       return true;
     },
-    [isRuntimeSelected, resolveScrollProjectionKey]
+    [isRuntimeSelected, projectionScrollCoordinatorRef, resolveScrollProjectionKey]
   );
 
   const lastMessageId = messages.length > 0 ? messages[messages.length - 1].id : null;
@@ -2380,6 +2381,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
     isVisible,
     lastMessageId,
     messages,
+    projectionScrollCoordinatorRef,
     renderedRuntimeKey,
     resolveScrollProjectionKey,
     runtimeStore,
@@ -2416,6 +2418,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
     isUserScrolling,
     lastMessageId,
     messages,
+    projectionScrollCoordinatorRef,
     renderedRuntimeKey,
     resolveScrollProjectionKey,
     runForProjectedRuntime,
@@ -2458,6 +2461,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
   }, [
     hasStreamingMessage,
     isUserScrolling,
+    projectionScrollCoordinatorRef,
     renderedRuntimeKey,
     resolveScrollProjectionKey,
     runForProjectedRuntime
@@ -2480,6 +2484,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
     }
   }, [
     newPolledMessagesOwnerKey,
+    projectionScrollCoordinatorRef,
     resolveScrollProjectionKey,
     runForProjectedRuntime,
     scrollToBottom
@@ -2737,6 +2742,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
       }
     },
     [
+      activeConversationLoadRef,
       isRuntimeSelected,
       openai,
       runtimeStore,
@@ -2875,6 +2881,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
     captureHistoryScrollSnapshot,
     historyPaginationLifecycle,
     openai,
+    projectionScrollCoordinatorRef,
     resolveScrollProjectionKey,
     runtimeStore,
     updateComposerForKey
@@ -3532,7 +3539,6 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
   }, [runtimeStore, selectedProjectId]);
 
   // Check user's billing access
-  const billingStatus = localState.billingStatus;
   const hasProAccess =
     billingStatus &&
     (billingStatus.product_name?.toLowerCase().includes("pro") ||
@@ -3541,7 +3547,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
 
   const canUseImages = hasProAccess;
   const canUseDocuments = hasProAccess;
-  const canUseVoice = hasProAccess && localState.hasWhisperModel;
+  const canUseVoice = hasProAccess && hasWhisperModel;
 
   const setComposerErrorForKey = useCallback(
     (
@@ -4551,7 +4557,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
         return;
       }
 
-      const requestModel = localState.model || DEFAULT_MODEL_ID;
+      const requestModel = model || DEFAULT_MODEL_ID;
       const requestWebSearchEnabled = isWebSearchEnabled;
       const billingStatusAtSend = billingStatus;
       const existingConversationId =
@@ -4949,10 +4955,11 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
       }
     },
     [
+      billingRefreshTimeoutsRef,
       billingStatus,
       isRuntimeSelected,
       isWebSearchEnabled,
-      localState.model,
+      model,
       openai,
       processStreamingResponse,
       queryClient,
@@ -5661,7 +5668,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
         <ContextLimitDialog
           open={contextLimitDialogOpen}
           onOpenChange={setContextLimitDialogOpen}
-          currentModel={localState.model}
+          currentModel={model}
           hasDocument={!!documentName}
         />
 

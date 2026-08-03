@@ -16,7 +16,7 @@ import { useOpenSecret, type Conversation } from "@opensecret/react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Sidebar, SidebarToggle } from "@/components/Sidebar";
 import { useIsMobile, useIsLandscapeMobile } from "@/utils/utils";
-import { useLocalState } from "@/state/useLocalState";
+import { useSelectedProjectState } from "@/state/useLocalState";
 import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Label } from "@/components/ui/label";
@@ -159,7 +159,7 @@ export function ProjectDetailView({ projectId }: ProjectDetailViewProps) {
   const isMobile = useIsMobile();
   const isLandscapeMobile = useIsLandscapeMobile();
   const isCompactLayout = isMobile || isLandscapeMobile;
-  const { setSelectedProjectId } = useLocalState();
+  const { setSelectedProjectId } = useSelectedProjectState();
   const hasAuthUser = !!os.auth.user;
   const runtimeStore = useChatRuntimeStore<Conversation, unknown>();
 

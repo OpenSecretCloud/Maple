@@ -13,7 +13,7 @@ import { hasApiAccess } from "@/billing/billingAccess";
 import { getBillingService } from "@/billing/billingService";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import { useLocalState } from "@/state/useLocalState";
+import { useBillingState } from "@/state/useLocalState";
 import { isIOS, isTauriDesktop } from "@/utils/platform";
 import { cn } from "@/utils/utils";
 import { SettingsPage, SettingsSection } from "../SettingsPage";
@@ -63,7 +63,7 @@ function ApiSettingsLoading() {
 }
 
 export function ApiSettingsLayout() {
-  const { billingStatus, setBillingStatus } = useLocalState();
+  const { billingStatus, setBillingStatus } = useBillingState();
   const isIOSPlatform = isIOS();
   const isTauriDesktopPlatform = isTauriDesktop();
 

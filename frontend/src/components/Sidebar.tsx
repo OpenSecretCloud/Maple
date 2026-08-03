@@ -25,7 +25,11 @@ import { flushSync } from "react-dom";
 import { cn, useClickOutside, useIsMobile, useIsLandscapeMobile } from "@/utils/utils";
 import { MapleWordmark } from "@/components/MapleWordmark";
 import { Input } from "./ui/input";
-import { useLocalState } from "@/state/useLocalState";
+import {
+  useBillingState,
+  useSelectedProjectState,
+  useSidebarSearchState
+} from "@/state/useLocalState";
 import {
   SIDEBAR_LAYOUT_STYLE,
   SIDEBAR_MAX_WIDTH_CLASS,
@@ -67,14 +71,10 @@ export function Sidebar({
   const os = useOpenSecret();
   const runtimeStore = useChatRuntimeStore<unknown, unknown>();
   const userId = os.auth.user?.user.id;
-  const {
-    searchQuery,
-    setSearchQuery,
-    isSearchVisible,
-    setIsSearchVisible,
-    setSelectedProjectId,
-    billingStatus
-  } = useLocalState();
+  const { searchQuery, setSearchQuery, isSearchVisible, setIsSearchVisible } =
+    useSidebarSearchState();
+  const { setSelectedProjectId } = useSelectedProjectState();
+  const { billingStatus } = useBillingState();
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   // Multi-select state
@@ -335,7 +335,7 @@ export function Sidebar({
     >
       <div
         className={cn(
-          "flex h-full min-h-0 min-w-0 flex-col items-stretch overflow-x-hidden border-r border-border/20 bg-muted backdrop-blur-lg dark:bg-[hsl(var(--sidebar))]",
+          "flex h-full min-h-0 min-w-0 flex-col items-stretch overflow-x-hidden border-r border-border/20 bg-muted dark:bg-[hsl(var(--sidebar))]",
           SIDEBAR_WIDTH_CLASS,
           SIDEBAR_MAX_WIDTH_CLASS
         )}

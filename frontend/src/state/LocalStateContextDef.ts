@@ -61,7 +61,7 @@ export type OpenSecretModelCatalog = {
   };
 };
 
-export type LocalState = {
+export type ModelState = {
   model: string;
   availableModels: OpenSecretModel[];
   modelAliases: OpenSecretModelAlias[];
@@ -71,7 +71,14 @@ export type LocalState = {
   /** Whether the whisper transcription model is available */
   hasWhisperModel: boolean;
   setHasWhisperModel: (hasWhisper: boolean) => void;
+};
+
+export type BillingState = {
   billingStatus: BillingStatus | null;
+  setBillingStatus: (status: BillingStatus) => void;
+};
+
+export type SidebarSearchState = {
   /** Current search query for filtering chat history */
   searchQuery: string;
   /** Updates the current search query */
@@ -80,28 +87,18 @@ export type LocalState = {
   isSearchVisible: boolean;
   /** Controls the visibility of the search input */
   setIsSearchVisible: (visible: boolean) => void;
+};
+
+export type SelectedProjectState = {
   /** Currently selected conversation project for sidebar/composer context */
   selectedProjectId: string | null;
   /** Updates the selected conversation project context */
   setSelectedProjectId: (projectId: string | null) => void;
-  setBillingStatus: (status: BillingStatus) => void;
 };
 
-export const LocalStateContext = createContext<LocalState>({
-  model: "",
-  availableModels: [],
-  modelAliases: [],
-  setModel: () => void 0,
-  setAvailableModels: () => void 0,
-  setModelAliases: () => void 0,
-  hasWhisperModel: true,
-  setHasWhisperModel: () => void 0,
-  billingStatus: null,
-  searchQuery: "",
-  setSearchQuery: () => void 0,
-  isSearchVisible: false,
-  setIsSearchVisible: () => void 0,
-  selectedProjectId: null,
-  setSelectedProjectId: () => void 0,
-  setBillingStatus: () => void 0
-});
+export const ModelStateContext = createContext<ModelState | undefined>(undefined);
+export const BillingStateContext = createContext<BillingState | undefined>(undefined);
+export const SidebarSearchStateContext = createContext<SidebarSearchState | undefined>(undefined);
+export const SelectedProjectStateContext = createContext<SelectedProjectState | undefined>(
+  undefined
+);

@@ -1,4 +1,4 @@
-import { useLocalState } from "@/state/useLocalState";
+import { useBillingState } from "@/state/useLocalState";
 import { formatResetDate } from "@/utils/dateFormat";
 
 const CREDIT_NUMBER_FORMATTER = new Intl.NumberFormat("en-US");
@@ -81,7 +81,7 @@ function CreditUsageView(p: CreditUsageViewProps) {
 }
 
 export function CreditUsage() {
-  const { billingStatus } = useLocalState();
+  const { billingStatus } = useBillingState();
 
   const totalLive = billingStatus?.total_tokens;
   const usedLive = billingStatus?.used_tokens;

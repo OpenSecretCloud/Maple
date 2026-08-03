@@ -21,7 +21,7 @@ import {
   AudioLines
 } from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
-import { useLocalState } from "@/state/useLocalState";
+import { useBillingState } from "@/state/useLocalState";
 import { hasApiAccess } from "@/billing/billingAccess";
 
 interface UpgradePromptDialogProps {
@@ -40,7 +40,7 @@ export function UpgradePromptDialog({
   onStartNewChat
 }: UpgradePromptDialogProps) {
   const navigate = useNavigate();
-  const localState = useLocalState();
+  const { billingStatus } = useBillingState();
 
   const handleUpgrade = () => {
     onOpenChange(false);
@@ -67,11 +67,11 @@ export function UpgradePromptDialog({
   };
 
   // Determine user's current plan and next upgrade tier
-  const currentPlan = localState.billingStatus?.product_name?.toLowerCase() || "free";
-  const isFreeTier = !localState.billingStatus?.product_name || currentPlan === "free";
+  const currentPlan = billingStatus?.product_name?.toLowerCase() || "free";
+  const isFreeTier = !billingStatus?.product_name || currentPlan === "free";
   const isPro = currentPlan.includes("pro") && !currentPlan.includes("max");
   const isMax = currentPlan.includes("max");
-  const userHasApiAccess = hasApiAccess(localState.billingStatus);
+  const userHasApiAccess = hasApiAccess(billingStatus);
 
   const getNextPlan = () => {
     if (isFreeTier) return "Pro";
