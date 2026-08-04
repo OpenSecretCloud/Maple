@@ -71,10 +71,6 @@ export type LocalState = {
   /** Whether the whisper transcription model is available */
   hasWhisperModel: boolean;
   setHasWhisperModel: (hasWhisper: boolean) => void;
-  userPrompt: string;
-  systemPrompt: string | null;
-  userImages: File[];
-  sentViaVoice: boolean;
   billingStatus: BillingStatus | null;
   /** Current search query for filtering chat history */
   searchQuery: string;
@@ -89,16 +85,6 @@ export type LocalState = {
   /** Updates the selected conversation project context */
   setSelectedProjectId: (projectId: string | null) => void;
   setBillingStatus: (status: BillingStatus) => void;
-  setUserPrompt: (prompt: string) => void;
-  setSystemPrompt: (prompt: string | null) => void;
-  setUserImages: (images: File[]) => void;
-  setSentViaVoice: (sentViaVoice: boolean) => void;
-  /** Map of chat IDs to their draft messages */
-  draftMessages: Map<string, string>;
-  /** Sets a draft message for a specific chat */
-  setDraftMessage: (chatId: string, draft: string) => void;
-  /** Clears the draft message for a specific chat */
-  clearDraftMessage: (chatId: string) => void;
 };
 
 export const LocalStateContext = createContext<LocalState>({
@@ -110,10 +96,6 @@ export const LocalStateContext = createContext<LocalState>({
   setModelAliases: () => void 0,
   hasWhisperModel: true,
   setHasWhisperModel: () => void 0,
-  userPrompt: "",
-  systemPrompt: null,
-  userImages: [],
-  sentViaVoice: false,
   billingStatus: null,
   searchQuery: "",
   setSearchQuery: () => void 0,
@@ -121,12 +103,5 @@ export const LocalStateContext = createContext<LocalState>({
   setIsSearchVisible: () => void 0,
   selectedProjectId: null,
   setSelectedProjectId: () => void 0,
-  setBillingStatus: () => void 0,
-  setUserPrompt: () => void 0,
-  setSystemPrompt: () => void 0,
-  setUserImages: () => void 0,
-  setSentViaVoice: () => void 0,
-  draftMessages: new Map(),
-  setDraftMessage: () => void 0,
-  clearDraftMessage: () => void 0
+  setBillingStatus: () => void 0
 });

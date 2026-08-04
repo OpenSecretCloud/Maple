@@ -172,21 +172,6 @@ export async function waitForPlatform(): Promise<void> {
 }
 
 /**
- * Get comprehensive platform information
- *
- * @returns The platform information object (never null after initialization)
- * @throws Error if called before platform initialization
- */
-export function getPlatformInfo(): PlatformInfo {
-  if (!platformInfo) {
-    throw new Error(
-      "[Platform] Platform not initialized. Ensure waitForPlatform() is called in main.tsx before rendering."
-    );
-  }
-  return platformInfo;
-}
-
-/**
  * Check if the app is running in a Tauri environment
  *
  * @returns true if in Tauri, false otherwise

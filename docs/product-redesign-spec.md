@@ -154,10 +154,8 @@ Ignore these PR #465 areas when building the new product redesign PR.
 - `frontend/src/components/MarketingSiteHome.tsx`
 - `frontend/src/components/TopNav.tsx`
 - `frontend/src/components/Footer.tsx`
-- `frontend/src/components/SimplifiedFooter.tsx`
 - `frontend/src/components/ComparisonChart.tsx`
 - `frontend/src/components/VerticalLandingMock.tsx`
-- `frontend/src/components/Explainer.tsx`
 
 ### Marketing/helper/public routes
 
@@ -181,7 +179,6 @@ Ignore these PR #465 areas when building the new product redesign PR.
 ### Generated / debug / not to be hand-copied
 
 - `frontend/src/routeTree.gen.ts`
-- `frontend/src/components/BillingDebugger.tsx`
 
 ---
 
@@ -1659,7 +1656,6 @@ If Rust is untouched, Rust validators are not required.
 - all marketing/public routes and components
 - pricing config changes
 - `routeTree.gen.ts`
-- `BillingDebugger.tsx`
 - extra marketing-only asset work
 
 ---
