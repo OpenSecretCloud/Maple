@@ -6,20 +6,28 @@ on:
   pull_request:
     branches: [master]
 
+permissions:
+  contents: read
+
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
 
       - name: Setup Bun
-        uses: oven-sh/setup-bun@v1
+        uses: oven-sh/setup-bun@f4d14e03ff726c06358e5557344e1da148b56cf7 # v1.2.2
         with:
-          bun-version: latest
+          bun-version: 1.3.5
 
       - name: Install dependencies
-        run: bun install
+        run: bun install --frozen-lockfile --ignore-scripts
+
+      - name: Build library
+        run: bun run build
 
       - name: Run tests
         env:
@@ -34,3 +42,24 @@ jobs:
           VITE_TEST_DEVELOPER_NAME: ${{ secrets.VITE_TEST_DEVELOPER_NAME }}
           VITE_TEST_DEVELOPER_INVITE_CODE: ${{ secrets.VITE_TEST_DEVELOPER_INVITE_CODE }}
         run: bun test --timeout 30000
+
+  website:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@f4d14e03ff726c06358e5557344e1da148b56cf7 # v1.2.2
+        with:
+          bun-version: 1.3.5
+
+      - name: Install website dependencies
+        working-directory: website
+        run: bun install --frozen-lockfile --ignore-scripts
+
+      - name: Build website
+        working-directory: website
+        run: bun run build

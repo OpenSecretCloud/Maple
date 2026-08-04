@@ -3,6 +3,9 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    # Keep Bun aligned with package.json and CI without advancing the SDK's
+    # older Node/Rust/system package set. Update all three pins together.
+    bun-nixpkgs.url = "github:NixOS/nixpkgs/5912c1772a44e31bf1c63c0390b90501e5026886";
     flake-utils.url = "github:numtide/flake-utils";
     rust-overlay = {
       url = "github:oxalica/rust-overlay";
@@ -10,11 +13,13 @@
     };
   };
 
-  outputs = { self, nixpkgs, flake-utils, rust-overlay }:
+  outputs = { self, nixpkgs, bun-nixpkgs, flake-utils, rust-overlay }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         overlays = [ rust-overlay.overlays.default ];
         pkgs = import nixpkgs { inherit system overlays; };
+        bunPkgs = import bun-nixpkgs { inherit system; };
+        sdkBun = assert bunPkgs.bun.version == "1.3.5"; bunPkgs.bun;
         
         # Try to use rust-toolchain.toml if it exists, otherwise use stable
         rust = if builtins.pathExists ./rust-toolchain.toml
@@ -23,7 +28,7 @@
         
         commonInputs = with pkgs; [
           # TypeScript/JavaScript tooling
-          bun
+          sdkBun
           nodejs_20
           nodePackages.typescript
           nodePackages.typescript-language-server
