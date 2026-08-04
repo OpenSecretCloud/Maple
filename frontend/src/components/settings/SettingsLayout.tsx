@@ -34,7 +34,6 @@ import {
   restoreMapleApiAuthForUser,
   stopAgentRuntimeForUser
 } from "@/services/agentRuntimeService";
-import { isAgentConnectionsAvailable } from "@/services/agentConnectionsAvailability";
 import { resetWorkspaceModePreference } from "@/services/workspaceModePreference";
 import { useLocalState } from "@/state/useLocalState";
 import type { TeamStatus } from "@/types/team";
@@ -42,6 +41,10 @@ import { isIOS } from "@/utils/platform";
 import { getTeamSeatMismatch } from "@/utils/teamSeats";
 import { cn } from "@/utils/utils";
 import packageJson from "../../../package.json";
+import {
+  AgentConnectionsAvailabilityProvider,
+  useAgentConnectionsAvailability
+} from "./useAgentConnectionsAvailability";
 
 type SettingsNavItem = {
   label: string;
@@ -236,7 +239,8 @@ function SettingsLayoutContent() {
   });
 
   const isIOSPlatform = isIOS();
-  const supportsAgentConnections = isAgentConnectionsAvailable();
+  const agentConnectionsAvailability = useAgentConnectionsAvailability();
+  const supportsAgentConnections = agentConnectionsAvailability === "available";
   const { data: products, isError: productsError } = useQuery({
     queryKey: ["products-version-check", isIOSPlatform],
     queryFn: () => getBillingService().getProducts(`v${packageJson.version}`),
@@ -526,9 +530,13 @@ function SettingsLayoutContent() {
 }
 
 export function SettingsLayout() {
+  const os = useOpenSecret();
+
   return (
     <SettingsNavigationLockProvider>
-      <SettingsLayoutContent />
+      <AgentConnectionsAvailabilityProvider userId={os.auth.user?.user.id ?? null}>
+        <SettingsLayoutContent />
+      </AgentConnectionsAvailabilityProvider>
     </SettingsNavigationLockProvider>
   );
 }
