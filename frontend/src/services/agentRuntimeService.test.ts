@@ -1,10 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import {
+  AgentRuntimeStopCoordinator,
+  AgentRuntimePartialStopError,
   AgentRuntimeService,
   type AgentRuntimeBridge,
+  type AgentRuntimeStopBridge,
+  type AgentRuntimeLifecycleOutcome,
   type AgentCreateSessionRequest,
   type AgentSendMessageRequest
 } from "./agentRuntimeService";
+import type { AgentOperationBlock } from "./agentOperationFence";
 
 class RecordingBridge implements AgentRuntimeBridge {
   readonly events: string[] = [];
@@ -66,5 +71,70 @@ describe("AgentRuntimeService", () => {
 
     expect(bridge.events).toEqual(["fence:user-a", "sync:user-a", "invoke:agent_create_session"]);
     expect(bridge.lastArgs).toEqual({ userId: "user-a", request });
+  });
+});
+
+class RecordingStopBridge implements AgentRuntimeStopBridge {
+  readonly events: string[] = [];
+  readonly block: AgentOperationBlock = {
+    release: () => this.events.push("release"),
+    retainUntilNextSession: () => this.events.push("retain")
+  };
+  stopError: Error | null = null;
+  outcome: AgentRuntimeLifecycleOutcome = {
+    status: { running: false, activeRuns: {} },
+    acpShutdownError: null
+  };
+
+  async blockAndDrain(userId: string): Promise<AgentOperationBlock> {
+    this.events.push(`block:${userId}`);
+    return this.block;
+  }
+
+  async stopHost(userId: string): Promise<AgentRuntimeLifecycleOutcome> {
+    this.events.push(`stop-host:${userId}`);
+    if (this.stopError) throw this.stopError;
+    return this.outcome;
+  }
+}
+
+describe("AgentRuntimeStopCoordinator", () => {
+  test("drains work and delegates one composite stop to the native host", async () => {
+    const bridge = new RecordingStopBridge();
+    const coordinator = new AgentRuntimeStopCoordinator(bridge);
+
+    expect(await coordinator.stop("user-a")).toBe(bridge.block);
+    expect(bridge.events).toEqual(["block:user-a", "stop-host:user-a"]);
+  });
+
+  test("a native host failure releases the cleanup lease", async () => {
+    const bridge = new RecordingStopBridge();
+    bridge.stopError = new Error("runtime still alive");
+    const coordinator = new AgentRuntimeStopCoordinator(bridge);
+
+    await expect(coordinator.stop("user-a")).rejects.toThrow("runtime still alive");
+    expect(bridge.events).toEqual(["block:user-a", "stop-host:user-a", "release"]);
+  });
+
+  test("partial ACP cleanup releases the lease and preserves the stopped runtime status", async () => {
+    const bridge = new RecordingStopBridge();
+    bridge.outcome = {
+      status: { running: false, activeRuns: {} },
+      acpShutdownError: "ACP still alive"
+    };
+    const coordinator = new AgentRuntimeStopCoordinator(bridge);
+
+    try {
+      await coordinator.stop("user-a");
+      throw new Error("expected partial stop failure");
+    } catch (error) {
+      expect(error).toBeInstanceOf(AgentRuntimePartialStopError);
+      expect((error as AgentRuntimePartialStopError).outcome.status.running).toBe(false);
+      expect(error).toHaveProperty(
+        "message",
+        "Agent runtime stopped, but ACP cleanup failed: ACP still alive"
+      );
+    }
+    expect(bridge.events).toEqual(["block:user-a", "stop-host:user-a", "release"]);
   });
 });

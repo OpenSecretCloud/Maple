@@ -74,6 +74,11 @@ export interface AgentRuntimeStatus {
   activeRuns?: Record<string, string>;
 }
 
+export interface AgentRuntimeLifecycleOutcome {
+  status: AgentRuntimeStatus;
+  acpShutdownError: string | null;
+}
+
 export interface RecentProjectRoot {
   path: string;
   name: string;
@@ -159,11 +164,58 @@ export interface AgentRuntimeBridge {
   invoke<T>(command: string, args?: Record<string, unknown>): Promise<T>;
 }
 
+export interface AgentRuntimeStopBridge {
+  blockAndDrain(userId: string): Promise<AgentOperationBlock>;
+  stopHost(userId: string): Promise<AgentRuntimeLifecycleOutcome>;
+}
+
+/**
+ * Owns the security-sensitive host shutdown shared by logout and account
+ * transitions. Native code attempts ACP cleanup first and always attempts the
+ * core runtime stop; credential cleanup proceeds only when both succeeded.
+ */
+export class AgentRuntimeStopCoordinator {
+  constructor(private readonly bridge: AgentRuntimeStopBridge) {}
+
+  async stop(userId: string): Promise<AgentOperationBlock> {
+    const block = await this.bridge.blockAndDrain(userId);
+    try {
+      const outcome = await this.bridge.stopHost(userId);
+      if (outcome.acpShutdownError) {
+        throw new AgentRuntimePartialStopError(outcome);
+      }
+      return block;
+    } catch (error) {
+      block.release();
+      throw error;
+    }
+  }
+}
+
+export class AgentRuntimePartialStopError extends Error {
+  constructor(readonly outcome: AgentRuntimeLifecycleOutcome) {
+    super(
+      `Agent runtime stopped, but ACP cleanup failed: ${outcome.acpShutdownError || "unknown ACP error"}`
+    );
+    this.name = "AgentRuntimePartialStopError";
+  }
+}
+
 const defaultAgentRuntimeBridge: AgentRuntimeBridge = {
   syncAuth: async (userId) => await mapleApiAuthService.sync(userId),
   runForUser: async (userId, operation) => await agentOperationFence.run(userId, operation),
   invoke: invokeAgent
 };
+
+const agentRuntimeStopCoordinator = new AgentRuntimeStopCoordinator({
+  blockAndDrain: async (userId) => await agentOperationFence.blockAndDrain(userId),
+  // The cleanup lease is already held. Native code owns the single composite
+  // ACP-plus-runtime lifecycle gate; the manual ACP Stop command is reserved
+  // for the settings page because it also changes saved configuration.
+  stopHost: async (userId) => {
+    return await invokeAgent<AgentRuntimeLifecycleOutcome>("agent_stop_runtime", { userId });
+  }
+});
 
 export class AgentRuntimeService {
   constructor(private readonly bridge: AgentRuntimeBridge = defaultAgentRuntimeBridge) {}
@@ -179,8 +231,11 @@ export class AgentRuntimeService {
     });
   }
 
-  async restartRuntime(userId: string, request?: AgentStartRequest): Promise<AgentRuntimeStatus> {
-    return await this.invokeForUser<AgentRuntimeStatus>(userId, "agent_restart_runtime", {
+  async restartRuntime(
+    userId: string,
+    request?: AgentStartRequest
+  ): Promise<AgentRuntimeLifecycleOutcome> {
+    return await this.invokeForUser<AgentRuntimeLifecycleOutcome>(userId, "agent_restart_runtime", {
       userId,
       request: request ?? null
     });
@@ -432,20 +487,13 @@ export async function stopAgentRuntimeForUser(
 ): Promise<AgentOperationBlock> {
   if (!isTauriDesktop()) return noOpOperationBlock();
   if (!userId) throw new Error("Cannot stop Agent Mode without an authenticated user");
-  const block = await agentOperationFence.blockAndDrain(userId);
-  try {
-    await invokeAgent<AgentRuntimeStatus>("agent_stop_runtime", { userId });
-    return block;
-  } catch (error) {
-    block.release();
-    throw error;
-  }
+  return await agentRuntimeStopCoordinator.stop(userId);
 }
 
 export async function clearAgentDataForUser(userId?: string | null): Promise<AgentOperationBlock> {
   if (!isTauriDesktop()) return noOpOperationBlock();
   if (!userId) throw new Error("Cannot clear Agent Mode data without an authenticated user");
-  const block = await agentOperationFence.blockAndDrain(userId);
+  const block = await agentRuntimeStopCoordinator.stop(userId);
   try {
     await invokeAgent("agent_clear_user_data", { userId });
     return block;
@@ -460,7 +508,7 @@ export async function clearAgentHistoryForUser(
 ): Promise<AgentOperationBlock> {
   if (!isTauriDesktop()) return noOpOperationBlock();
   if (!userId) throw new Error("Cannot clear Agent Mode history without an authenticated user");
-  const block = await agentOperationFence.blockAndDrain(userId);
+  const block = await agentRuntimeStopCoordinator.stop(userId);
   try {
     await invokeAgent("agent_clear_user_history", { userId });
     return block;

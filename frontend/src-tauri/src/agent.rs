@@ -1,10 +1,11 @@
 mod developer_tools;
 pub(crate) mod provider;
 mod shell_permission;
+mod tool_context;
 mod web_permission;
 mod web_tools;
 
-use crate::maple_api::{account_scope, MapleApiAuthState, MapleApiSession};
+use crate::maple_api::{account_scope, MapleApiSession};
 use developer_tools::MapleDeveloperClient;
 use futures_util::StreamExt;
 use goose::agents::extension::Envs;
@@ -38,12 +39,13 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Emitter, Manager, State};
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::{mpsc, oneshot, watch, Mutex};
 use tokio_util::sync::CancellationToken;
+pub(crate) use tool_context::AgentToolContextSpec;
+use tool_context::SharedAgentToolContext;
 use web_permission::{
     web_search_request_id, OpenUrlPermissionRequest, WebPermissionClassifier, WebPermissionContext,
     WebPermissionOutcome,
@@ -56,7 +58,6 @@ const DEFAULT_GOOSE_MODE: &str = "smart_approve";
 // Keep Goose on its ActionRequired path so Maple can apply the currently selected
 // policy at every tool boundary, including when the user changes it mid-run.
 const GOOSE_PERMISSION_ROUTING_MODE: GooseMode = GooseMode::SmartApprove;
-const AGENT_EVENT_NAME: &str = "agent-event";
 const MAPLE_DEVELOPER_TOOLS: [&str; 7] = [
     "read",
     "shell",
@@ -92,7 +93,15 @@ const MAX_MCP_CONNECTION_ERRORS: usize = 3;
 const MAX_MCP_SERVER_NAME_CHARS: usize = 64;
 const MAX_MCP_CONNECTION_ERROR_CHARS: usize = 200;
 const MCP_CONNECTION_ERROR_PREFIX: &str = "Some MCP servers could not connect:";
+const AGENT_RUN_EVENT_CAPACITY: usize = 256;
+const AGENT_SERVICE_OPEN: u8 = 0;
+const AGENT_SERVICE_DRAINING: u8 = 1;
+const AGENT_SERVICE_DRAINING_ERROR: &str =
+    "Maple Agent services are draining and cannot accept new work";
+pub(crate) const AGENT_TOOL_CONTEXT_INACTIVE_ERROR: &str =
+    "Agent tool context access is no longer active";
 static NEXT_RUN_ID: AtomicU64 = AtomicU64::new(1);
+static NEXT_TOOL_CONTEXT_INSTALLATION_ID: AtomicU64 = AtomicU64::new(1);
 
 fn validate_session_model_lock(
     message_count: usize,
@@ -232,7 +241,7 @@ pub struct AgentStartRequest {
     pub mode: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentRuntimeStatus {
     pub running: bool,
@@ -291,6 +300,45 @@ pub struct AgentPermissionResponse {
     pub decision: String,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct AgentPermissionRequest {
+    pub request_id: String,
+    pub tool_name: String,
+    pub arguments: serde_json::Map<String, Value>,
+    pub prompt: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AgentPermissionDecision {
+    AllowOnce,
+    DenyOnce,
+    Cancel,
+}
+
+impl AgentPermissionDecision {
+    fn status(self) -> &'static str {
+        match self {
+            Self::AllowOnce => "allow_once",
+            Self::DenyOnce => "deny_once",
+            Self::Cancel => "cancelled",
+        }
+    }
+
+    fn goose_permission(self) -> Permission {
+        match self {
+            Self::AllowOnce => Permission::AllowOnce,
+            Self::DenyOnce => Permission::DenyOnce,
+            Self::Cancel => Permission::Cancel,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AgentPermissionRouting {
+    Desktop,
+    CallingSurface,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentPermissionModeRequest {
@@ -302,6 +350,181 @@ pub struct AgentPermissionModeRequest {
 #[serde(rename_all = "camelCase")]
 pub struct AgentRunResponse {
     pub run_id: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AgentRunTerminal {
+    Completed,
+    Cancelled,
+    Failed,
+}
+
+pub(crate) struct AgentRunHandle {
+    pub run_id: String,
+    pub events: mpsc::Receiver<AgentRunEvent>,
+    pub terminal: watch::Receiver<Option<AgentRunTerminal>>,
+    pub event_overflowed: Arc<AtomicBool>,
+    pub permission_responder: Option<AgentRunPermissionResponder>,
+    pub cancellation: Option<AgentRunCancellation>,
+}
+
+#[derive(Clone)]
+pub(crate) struct AgentRunPermissionResponder {
+    agent: AgentRuntimeHandle,
+    session_id: Arc<str>,
+    run_id: Arc<str>,
+}
+
+impl AgentRunPermissionResponder {
+    pub(crate) async fn respond(
+        &self,
+        request_id: String,
+        decision: AgentPermissionDecision,
+    ) -> Result<(), String> {
+        self.agent
+            .permission_respond_for_run(
+                self.session_id.as_ref(),
+                self.run_id.as_ref(),
+                request_id,
+                decision,
+            )
+            .await
+    }
+}
+
+/// Opaque cancellation capability for one run owned by a calling surface.
+///
+/// Unlike the Desktop command boundary, an adapter already has the exact run
+/// identity. Retaining that identity here prevents it from cancelling another
+/// surface's run through a caller-provided run ID.
+#[derive(Clone)]
+pub(crate) struct AgentRunCancellation {
+    agent: AgentRuntimeHandle,
+    session_id: Arc<str>,
+    run_id: Arc<str>,
+    routing: AgentPermissionRouting,
+}
+
+impl AgentRunCancellation {
+    pub(crate) async fn cancel(&self) -> Result<(), String> {
+        self.agent
+            .cancel_run_scoped(
+                self.run_id.as_ref(),
+                Some(self.session_id.as_ref()),
+                self.routing,
+            )
+            .await
+    }
+}
+
+pub(crate) struct CreatedAgentSession {
+    pub(crate) detail: AgentSessionDetail,
+    pub(crate) tool_context_lease: Option<AgentToolContextLease>,
+}
+
+/// Controls whether a surface's events are also projected into Maple Desktop.
+///
+/// This is deliberately independent of tool-context ownership. A calling
+/// surface can keep its transient run stream isolated while persisted history
+/// remains available when Maple Desktop later loads the task.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AgentHostEventPolicy {
+    Publish,
+    Suppress,
+}
+
+impl AgentHostEventPolicy {
+    fn publishes(self) -> bool {
+        matches!(self, Self::Publish)
+    }
+}
+
+pub(crate) struct AgentToolContextLease {
+    service: MapleAgentService,
+    access: AgentToolContextAccess,
+}
+
+#[derive(Clone)]
+pub(crate) struct AgentToolContextAccess {
+    account_scope: Arc<str>,
+    session_id: Arc<str>,
+    installation_id: u64,
+    context: SharedAgentToolContext,
+}
+
+impl AgentToolContextLease {
+    pub(crate) fn access(&self) -> AgentToolContextAccess {
+        self.access.clone()
+    }
+
+    pub(crate) fn revoke(&self) {
+        self.access.context.revoke();
+    }
+
+    pub(crate) async fn release(self) {
+        self.revoke();
+        let _session_lifecycle = self.service.session_lifecycle.lock().await;
+        let removed = {
+            let mut runtime = self.service.inner.lock().await;
+            let Some(current) = runtime.as_mut() else {
+                return;
+            };
+            if current.account_scope != self.access.account_scope.as_ref() {
+                return;
+            }
+            take_matching_tool_context(
+                &mut current.session_tool_contexts,
+                self.access.session_id.as_ref(),
+                self.access.installation_id,
+                &self.access.context,
+            )
+        };
+        if let Some(installed) = removed {
+            installed.context.revoke();
+        }
+    }
+}
+
+impl Drop for AgentToolContextLease {
+    fn drop(&mut self) {
+        self.access.context.revoke();
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum AgentRunEvent {
+    SessionUpdated(AgentSessionSummary),
+    Started,
+    TimelineItem(AgentTimelineItem),
+    PermissionRequested {
+        request: AgentPermissionRequest,
+        item: AgentTimelineItem,
+    },
+    SetupWarning(String),
+    HistoryReplaced,
+    Error(AgentTimelineItem),
+    Finished(AgentRunTerminal),
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum AgentServiceEvent {
+    RuntimeStatus(AgentRuntimeStatus),
+    SessionCreated(AgentSessionSummary),
+    SessionUpdated {
+        session_id: String,
+        run_id: Option<String>,
+        session: AgentSessionSummary,
+    },
+    TimelineItem {
+        session_id: String,
+        run_id: Option<String>,
+        item: AgentTimelineItem,
+    },
+    Run {
+        session_id: String,
+        run_id: String,
+        event: AgentRunEvent,
+    },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -346,33 +569,31 @@ pub struct AgentTimelineItem {
     pub merge: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentEventEnvelope {
-    pub event_type: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub session_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub run_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub item: Option<AgentTimelineItem>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub status: Option<AgentRuntimeStatus>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub session: Option<AgentSessionSummary>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub message: Option<String>,
-}
-
 struct ActiveAgentRun {
+    agent: Arc<Agent>,
+    permission_routing: AgentPermissionRouting,
     token: CancellationToken,
+    tool_context: SharedAgentToolContext,
     session_id: String,
+    events: AgentRunEventPublisher,
     cancelled_permission_ids: CancelledPermissionIds,
-    task_handle: tauri::async_runtime::JoinHandle<()>,
+    task_handle: tokio::task::JoinHandle<()>,
 }
 
 type PendingPermissionKey = (String, String);
-type PendingPermissions = Arc<Mutex<HashMap<PendingPermissionKey, ()>>>;
+#[derive(Debug, Clone, PartialEq)]
+struct PendingAgentPermission {
+    run_id: String,
+    routing: AgentPermissionRouting,
+    request: AgentPermissionRequest,
+}
+type PendingPermissions = Arc<Mutex<HashMap<PendingPermissionKey, PendingAgentPermission>>>;
+type IssuedPermissionIds = Arc<Mutex<HashSet<String>>>;
+
+enum AgentPermissionResponseScope {
+    Desktop,
+    CallingSurface { run_id: String },
+}
 type CancelledPermissionIds = Arc<Mutex<HashSet<String>>>;
 type SessionPermissionModes = Arc<Mutex<HashMap<String, GooseMode>>>;
 
@@ -381,6 +602,7 @@ struct AgentRuntime {
     session_manager: Arc<SessionManager>,
     maple_api_session: Arc<MapleApiSession>,
     active_runs: HashMap<String, ActiveAgentRun>,
+    session_tool_contexts: HashMap<String, InstalledAgentToolContext>,
     permission_modes: SessionPermissionModes,
     web_tool_state: Arc<WebToolState>,
     project_root: PathBuf,
@@ -389,32 +611,281 @@ struct AgentRuntime {
     account_scope: String,
 }
 
+struct InstalledAgentToolContext {
+    installation_id: u64,
+    context: SharedAgentToolContext,
+    owner: AgentToolContextOwner,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AgentToolContextOwner {
+    Maple,
+    Leased,
+}
+
+struct PendingAgentToolContextInstallation {
+    context: SharedAgentToolContext,
+    committed: bool,
+}
+
+impl PendingAgentToolContextInstallation {
+    fn new(context: SharedAgentToolContext) -> Self {
+        Self {
+            context,
+            committed: false,
+        }
+    }
+
+    fn commit(&mut self) {
+        self.committed = true;
+    }
+}
+
+impl Drop for PendingAgentToolContextInstallation {
+    fn drop(&mut self) {
+        if !self.committed {
+            self.context.revoke();
+        }
+    }
+}
+
+fn take_matching_tool_context(
+    contexts: &mut HashMap<String, InstalledAgentToolContext>,
+    session_id: &str,
+    installation_id: u64,
+    context: &SharedAgentToolContext,
+) -> Option<InstalledAgentToolContext> {
+    let matches = contexts.get(session_id).is_some_and(|installed| {
+        installed.installation_id == installation_id && installed.context.ptr_eq(context)
+    });
+    matches.then(|| {
+        contexts
+            .remove(session_id)
+            .expect("matching Agent tool context must still exist")
+    })
+}
+
+fn resolve_session_tool_context(
+    contexts: &mut HashMap<String, InstalledAgentToolContext>,
+    account_scope: &str,
+    session_id: &str,
+    access: Option<&AgentToolContextAccess>,
+    default_spec: &AgentToolContextSpec,
+) -> Result<SharedAgentToolContext, String> {
+    if let Some(access) = access {
+        if access.account_scope.as_ref() != account_scope
+            || access.session_id.as_ref() != session_id
+        {
+            return Err("Agent tool context access does not match this task".to_string());
+        }
+        let installed = contexts
+            .get(session_id)
+            .filter(|installed| {
+                installed.owner == AgentToolContextOwner::Leased
+                    && installed.installation_id == access.installation_id
+                    && installed.context.ptr_eq(&access.context)
+                    && !installed.context.is_revoked()
+            })
+            .ok_or_else(|| AGENT_TOOL_CONTEXT_INACTIVE_ERROR.to_string())?;
+        return Ok(installed.context.clone());
+    }
+
+    if contexts
+        .get(session_id)
+        .is_some_and(|installed| installed.context.is_revoked())
+    {
+        contexts.remove(session_id);
+    }
+    if let Some(installed) = contexts.get(session_id) {
+        if installed.owner == AgentToolContextOwner::Leased {
+            return Err("Agent task is controlled by another Agent surface".to_string());
+        }
+        return Ok(installed.context.clone());
+    }
+
+    let context = SharedAgentToolContext::new(default_spec.clone());
+    contexts.insert(
+        session_id.to_string(),
+        InstalledAgentToolContext {
+            installation_id: next_tool_context_installation_id(),
+            context: context.clone(),
+            owner: AgentToolContextOwner::Maple,
+        },
+    );
+    Ok(context)
+}
+
 impl AgentRuntime {
-    fn status(&self) -> AgentRuntimeStatus {
+    fn desktop_status(&self) -> AgentRuntimeStatus {
         AgentRuntimeStatus {
             running: true,
             project_root: Some(path_string(&self.project_root)),
             model: Some(self.model.clone()),
             mode: Some(self.mode.clone()),
-            active_runs: self
-                .active_runs
-                .iter()
-                .map(|(run_id, run)| (run.session_id.clone(), run_id.clone()))
-                .collect(),
+            // AgentRuntimeStatus is Maple Desktop's projection. Calling surfaces
+            // retain their own run handles and lifecycle signals instead of
+            // becoming actionable through the Tauri command boundary.
+            active_runs: active_run_status(self.active_runs.iter().map(|(run_id, run)| {
+                (
+                    run_id.as_str(),
+                    run.session_id.as_str(),
+                    run.permission_routing,
+                )
+            })),
         }
     }
 }
 
-pub struct AgentRuntimeState {
+fn active_run_status<'a>(
+    runs: impl IntoIterator<Item = (&'a str, &'a str, AgentPermissionRouting)>,
+) -> HashMap<String, String> {
+    runs.into_iter()
+        .filter(|(_, _, routing)| *routing == AgentPermissionRouting::Desktop)
+        .map(|(run_id, session_id, _)| (session_id.to_string(), run_id.to_string()))
+        .collect()
+}
+
+#[derive(Clone)]
+pub(crate) struct AgentPathLayout {
+    config_root: PathBuf,
+    local_data_root: PathBuf,
+}
+
+impl AgentPathLayout {
+    pub(crate) fn from_app_roots(app_config_root: PathBuf, app_local_data_root: PathBuf) -> Self {
+        Self {
+            config_root: app_config_root.join("agent"),
+            local_data_root: app_local_data_root.join("agent"),
+        }
+    }
+}
+
+pub(crate) trait AgentEventSink: Send + Sync + 'static {
+    fn emit(&self, event: &AgentServiceEvent);
+}
+
+#[derive(Clone)]
+struct AgentEventDispatcher {
+    sink: Arc<dyn AgentEventSink>,
+}
+
+impl AgentEventDispatcher {
+    fn new(sink: Arc<dyn AgentEventSink>) -> Self {
+        Self { sink }
+    }
+}
+
+#[derive(Clone)]
+struct AgentRunEventPublisher {
+    dispatcher: AgentEventDispatcher,
+    session_id: Arc<str>,
+    run_id: Arc<str>,
+    sender: mpsc::Sender<AgentRunEvent>,
+    order: Arc<Mutex<()>>,
+    host_events: AgentHostEventPolicy,
+    overflowed: Arc<AtomicBool>,
+}
+
+impl AgentRunEventPublisher {
+    fn new(
+        dispatcher: AgentEventDispatcher,
+        session_id: String,
+        run_id: String,
+        host_events: AgentHostEventPolicy,
+    ) -> (Self, mpsc::Receiver<AgentRunEvent>) {
+        let (sender, receiver) = mpsc::channel(AGENT_RUN_EVENT_CAPACITY);
+        (
+            Self {
+                dispatcher,
+                session_id: Arc::from(session_id),
+                run_id: Arc::from(run_id),
+                sender,
+                order: Arc::new(Mutex::new(())),
+                host_events,
+                overflowed: Arc::new(AtomicBool::new(false)),
+            },
+            receiver,
+        )
+    }
+
+    fn overflow_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.overflowed)
+    }
+
+    async fn publish(&self, event: AgentRunEvent) {
+        let _order = self.order.lock().await;
+        if self.host_events.publishes() {
+            emit_agent_event(
+                &self.dispatcher,
+                AgentServiceEvent::Run {
+                    session_id: self.session_id.to_string(),
+                    run_id: self.run_id.to_string(),
+                    event: event.clone(),
+                },
+            );
+        }
+        // Desktop deliberately drops this receiver after obtaining the run ID.
+        // ACP retains it as an isolated, bounded stream for the run. A slow
+        // protocol consumer must never backpressure Goose or lifecycle cleanup.
+        // Queue saturation is retained as an explicit error signal so no ACP
+        // caller can mistake a truncated stream for a complete response.
+        match self.sender.try_send(event) {
+            Ok(()) | Err(mpsc::error::TrySendError::Closed(_)) => {}
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                self.overflowed.store(true, Ordering::Release);
+            }
+        }
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct MapleAgentHostResources {
+    paths: AgentPathLayout,
+    events: AgentEventDispatcher,
+    default_tool_context: AgentToolContextSpec,
+}
+
+impl MapleAgentHostResources {
+    pub(crate) fn new(
+        paths: AgentPathLayout,
+        event_sink: Arc<dyn AgentEventSink>,
+        default_tool_context: AgentToolContextSpec,
+    ) -> Self {
+        Self {
+            paths,
+            events: AgentEventDispatcher::new(event_sink),
+            default_tool_context,
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct MapleAgentService {
+    host: MapleAgentHostResources,
     inner: Arc<Mutex<Option<AgentRuntime>>>,
     runtime_lifecycle: Arc<Mutex<()>>,
     account_generations: Arc<Mutex<HashMap<String, u64>>>,
     session_lifecycle: Arc<Mutex<()>>,
     pending_permissions: PendingPermissions,
     live_timelines: LiveTimelines,
+    admission: Arc<AtomicU8>,
 }
 
-type LiveTimelines = Arc<Mutex<HashMap<String, LiveTimeline>>>;
+#[derive(Clone)]
+pub(crate) struct AgentRuntimeHandle {
+    service: MapleAgentService,
+    user_id: Arc<str>,
+    account_scope: Arc<str>,
+    generation: u64,
+}
+
+type LiveTimelines = Arc<Mutex<HashMap<String, LiveTimelineEntry>>>;
+
+#[derive(Clone, Debug, PartialEq)]
+struct LiveTimelineEntry {
+    routing: AgentPermissionRouting,
+    timeline: LiveTimeline,
+}
 
 #[derive(Clone, Debug, PartialEq)]
 enum LiveTimeline {
@@ -448,16 +919,68 @@ impl LiveTimeline {
     }
 }
 
-impl AgentRuntimeState {
-    pub fn new() -> Self {
+impl MapleAgentService {
+    pub(crate) fn new(host: MapleAgentHostResources) -> Self {
         Self {
+            host,
             inner: Arc::new(Mutex::new(None)),
             runtime_lifecycle: Arc::new(Mutex::new(())),
             account_generations: Arc::new(Mutex::new(HashMap::new())),
             session_lifecycle: Arc::new(Mutex::new(())),
             pending_permissions: Arc::new(Mutex::new(HashMap::new())),
             live_timelines: Arc::new(Mutex::new(HashMap::new())),
+            admission: Arc::new(AtomicU8::new(AGENT_SERVICE_OPEN)),
         }
+    }
+
+    /// Bind subsequent operations to one Maple account and one data generation.
+    ///
+    /// Desktop commands create a fresh handle at their boundary. Long-lived
+    /// adapters such as ACP retain a handle, which makes account clearing an
+    /// explicit revocation point instead of silently rebinding the adapter.
+    pub(crate) async fn handle_for_user(
+        &self,
+        user_id: &str,
+    ) -> Result<AgentRuntimeHandle, String> {
+        let account_scope = account_scope(user_id)?;
+        let generation = account_generation(self, &account_scope).await;
+        Ok(AgentRuntimeHandle {
+            service: self.clone(),
+            user_id: Arc::from(user_id),
+            account_scope: Arc::from(account_scope),
+            generation,
+        })
+    }
+
+    /// Stop admitting mutations before host teardown begins. Existing work and
+    /// cleanup operations remain able to drain through their dedicated paths.
+    pub(crate) fn begin_draining(&self) {
+        self.admission
+            .store(AGENT_SERVICE_DRAINING, Ordering::Release);
+    }
+
+    /// Reopen admission only when a requested update restart was abandoned and
+    /// the current Maple process will continue serving the user.
+    pub(crate) fn reopen_after_failed_shutdown(&self) {
+        self.admission.store(AGENT_SERVICE_OPEN, Ordering::Release);
+    }
+
+    pub(crate) fn ensure_accepting_new_work(&self) -> Result<(), String> {
+        if self.admission.load(Ordering::Acquire) == AGENT_SERVICE_OPEN {
+            Ok(())
+        } else {
+            Err(AGENT_SERVICE_DRAINING_ERROR.to_string())
+        }
+    }
+}
+
+impl AgentRuntimeHandle {
+    pub(crate) async fn verify_generation(&self) -> Result<(), String> {
+        ensure_account_generation(&self.service, &self.account_scope, self.generation).await
+    }
+
+    pub(crate) fn ensure_accepting_new_work(&self) -> Result<(), String> {
+        self.service.ensure_accepting_new_work()
     }
 }
 
@@ -473,7 +996,7 @@ fn ensure_account_scope(current_scope: &str, requested_scope: &str) -> Result<()
     }
 }
 
-async fn account_generation(state: &AgentRuntimeState, account_scope: &str) -> u64 {
+async fn account_generation(state: &MapleAgentService, account_scope: &str) -> u64 {
     *state
         .account_generations
         .lock()
@@ -483,7 +1006,7 @@ async fn account_generation(state: &AgentRuntimeState, account_scope: &str) -> u
 }
 
 async fn ensure_account_generation(
-    state: &AgentRuntimeState,
+    state: &MapleAgentService,
     account_scope: &str,
     expected: u64,
 ) -> Result<(), String> {
@@ -494,7 +1017,7 @@ async fn ensure_account_generation(
     }
 }
 
-async fn advance_account_generation(state: &AgentRuntimeState, account_scope: &str) -> u64 {
+async fn advance_account_generation(state: &MapleAgentService, account_scope: &str) -> u64 {
     let mut generations = state.account_generations.lock().await;
     let generation = generations.entry(account_scope.to_string()).or_default();
     *generation = generation
@@ -510,6 +1033,14 @@ fn next_run_id() -> String {
         })
         .expect("Agent Mode exhausted its run ID sequence");
     format!("run_{}_{sequence}", unix_ms())
+}
+
+fn next_tool_context_installation_id() -> u64 {
+    NEXT_TOOL_CONTEXT_INSTALLATION_ID
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+            value.checked_add(1)
+        })
+        .expect("Agent Mode exhausted its tool context installation IDs")
 }
 
 fn session_title_from_prompt(prompt: &str) -> String {
@@ -533,83 +1064,131 @@ fn should_name_session_from_prompt(session: &Session) -> bool {
         && session.name == DEFAULT_AGENT_SESSION_TITLE
 }
 
-async fn pending_permissions_for_sessions(
+async fn take_pending_permissions_for_runs(
     pending_permissions: &PendingPermissions,
-    session_ids: &[String],
-) -> Vec<(String, String)> {
-    let pending = pending_permissions.lock().await;
-    pending
+    run_ids: &[String],
+) -> Vec<(PendingPermissionKey, PendingAgentPermission)> {
+    let mut pending = pending_permissions.lock().await;
+    let keys = pending
         .keys()
-        .filter(|(session_id, _)| session_ids.contains(session_id))
-        .map(|(session_id, request_id)| (request_id.clone(), session_id.clone()))
+        .filter(|key| {
+            pending
+                .get(*key)
+                .is_some_and(|request| run_ids.contains(&request.run_id))
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    keys.into_iter()
+        .filter_map(|key| pending.remove(&key).map(|request| (key, request)))
         .collect()
 }
 
-async fn cancel_pending_permissions_for_sessions(
-    agent_manager: &Arc<AgentManager>,
+async fn cancel_pending_permissions_for_runs(
     pending_permissions: &PendingPermissions,
-    session_ids: &[String],
-) -> Vec<(String, String)> {
+    run_ids: &[String],
+    agents_by_run: &HashMap<String, Arc<Agent>>,
+) -> Vec<(PendingPermissionKey, PendingAgentPermission)> {
     let mut cancelled = Vec::new();
-    for (request_id, session_id) in
-        pending_permissions_for_sessions(pending_permissions, session_ids).await
+    for ((session_id, request_id), request) in
+        take_pending_permissions_for_runs(pending_permissions, run_ids).await
     {
-        match agent_manager.get_or_create_agent(session_id.clone()).await {
-            Ok(agent) => {
-                agent
-                    .handle_confirmation(
-                        request_id.clone(),
-                        PermissionConfirmation {
-                            principal_type: PrincipalType::Tool,
-                            permission: Permission::Cancel,
-                        },
-                    )
-                    .await;
-                let mut pending = pending_permissions.lock().await;
-                pending.remove(&(session_id.clone(), request_id.clone()));
-                cancelled.push((request_id, session_id));
-            }
-            Err(error) => {
-                log::warn!(
-                    "Failed to cancel pending Agent Mode permission for session {session_id}: {error}"
-                );
-            }
+        if let Some(agent) = agents_by_run.get(&request.run_id) {
+            agent
+                .handle_confirmation(
+                    request_id.clone(),
+                    PermissionConfirmation {
+                        principal_type: PrincipalType::Tool,
+                        permission: Permission::Cancel,
+                    },
+                )
+                .await;
+        } else {
+            log::warn!(
+                "Failed to resolve the running Agent for pending permission {request_id} in {session_id}"
+            );
         }
+        cancelled.push(((session_id, request_id), request));
     }
     cancelled
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PendingPermissionRegistration {
+    Registered,
+    Existing,
+    Rejected,
+}
+
 async fn register_pending_permission(
     pending_permissions: &PendingPermissions,
-    request_id: &str,
+    issued_permission_ids: &IssuedPermissionIds,
     session_id: &str,
+    run_id: &str,
+    routing: AgentPermissionRouting,
+    request: AgentPermissionRequest,
     cancel_token: &CancellationToken,
-) -> bool {
+) -> PendingPermissionRegistration {
     if cancel_token.is_cancelled() {
-        return false;
+        return PendingPermissionRegistration::Rejected;
+    }
+    let key = (session_id.to_string(), request.request_id.clone());
+    let pending_request = PendingAgentPermission {
+        run_id: run_id.to_string(),
+        routing,
+        request,
+    };
+    {
+        let mut pending = pending_permissions.lock().await;
+        match pending.get(&key) {
+            Some(existing) if existing == &pending_request => {
+                return PendingPermissionRegistration::Existing;
+            }
+            Some(_) => {
+                // Reusing a Goose request ID with different ownership or payload
+                // invalidates the old capability. Leaving it resolvable would let
+                // a stale caller approve a different operation under the reused ID.
+                pending.remove(&key);
+                return PendingPermissionRegistration::Rejected;
+            }
+            None => {}
+        }
+    }
+    {
+        let mut issued = issued_permission_ids.lock().await;
+        if !issued.insert(key.1.clone()) {
+            pending_permissions.lock().await.remove(&key);
+            return PendingPermissionRegistration::Rejected;
+        }
     }
     let mut pending = pending_permissions.lock().await;
-    let key = (session_id.to_string(), request_id.to_string());
-    pending.insert(key.clone(), ());
+    match pending.entry(key.clone()) {
+        std::collections::hash_map::Entry::Occupied(existing) => {
+            existing.remove();
+            return PendingPermissionRegistration::Rejected;
+        }
+        std::collections::hash_map::Entry::Vacant(entry) => {
+            entry.insert(pending_request);
+        }
+    }
     if cancel_token.is_cancelled() {
         pending.remove(&key);
-        false
+        PendingPermissionRegistration::Rejected
     } else {
-        true
+        PendingPermissionRegistration::Registered
     }
 }
 
-async fn stop_runtime_for_user(state: &AgentRuntimeState, user_id: &str) -> Result<(), String> {
+async fn stop_runtime_for_user(state: &MapleAgentService, user_id: &str) -> Result<(), String> {
     let account_scope = account_scope(user_id)?;
     stop_runtime_inner(state, Some(&account_scope)).await
 }
 
 async fn stop_runtime_inner(
-    state: &AgentRuntimeState,
+    state: &MapleAgentService,
     requested_scope: Option<&str>,
 ) -> Result<(), String> {
     let session_lifecycle_guard = state.session_lifecycle.lock().await;
-    let (agent_manager, active_runs, web_tool_state) = {
+    let (active_runs, web_tool_state, tool_contexts) = {
         let mut runtime = state.inner.lock().await;
         let Some(current) = runtime.as_mut() else {
             return Ok(());
@@ -618,40 +1197,37 @@ async fn stop_runtime_inner(
             ensure_runtime_account(current, account_scope)?;
         }
         (
-            Arc::clone(&current.agent_manager),
             std::mem::take(&mut current.active_runs),
             Arc::clone(&current.web_tool_state),
+            std::mem::take(&mut current.session_tool_contexts),
         )
     };
 
-    let session_ids = active_runs
-        .values()
-        .map(|run| run.session_id.clone())
-        .collect::<Vec<_>>();
-    let cancelled_permission_ids_by_session = active_runs
-        .values()
-        .map(|run| {
-            (
-                run.session_id.clone(),
-                Arc::clone(&run.cancelled_permission_ids),
-            )
-        })
+    for installed in tool_contexts.into_values() {
+        installed.context.revoke();
+    }
+
+    let run_ids = active_runs.keys().cloned().collect::<Vec<_>>();
+    let agents_by_run = active_runs
+        .iter()
+        .map(|(run_id, run)| (run_id.clone(), Arc::clone(&run.agent)))
+        .collect::<HashMap<_, _>>();
+    let cancelled_permission_ids_by_run = active_runs
+        .iter()
+        .map(|(run_id, run)| (run_id.clone(), Arc::clone(&run.cancelled_permission_ids)))
         .collect::<HashMap<_, _>>();
     let mut task_handles = Vec::with_capacity(active_runs.len());
     for (_, active_run) in active_runs {
         // Cancel first so an ActionRequired event racing this snapshot will
         // take the immediate-cancel path in register_pending_permission.
-        active_run.token.cancel();
+        active_run.tool_context.cancel_run(&active_run.token);
         task_handles.push(active_run.task_handle);
     }
-    let cancelled_permissions = cancel_pending_permissions_for_sessions(
-        &agent_manager,
-        &state.pending_permissions,
-        &session_ids,
-    )
-    .await;
-    for (request_id, session_id) in cancelled_permissions {
-        if let Some(cancelled_permission_ids) = cancelled_permission_ids_by_session.get(&session_id)
+    let cancelled_permissions =
+        cancel_pending_permissions_for_runs(&state.pending_permissions, &run_ids, &agents_by_run)
+            .await;
+    for ((_, request_id), pending) in cancelled_permissions {
+        if let Some(cancelled_permission_ids) = cancelled_permission_ids_by_run.get(&pending.run_id)
         {
             cancelled_permission_ids.lock().await.insert(request_id);
         }
@@ -668,7 +1244,7 @@ async fn stop_runtime_inner(
 }
 
 async fn join_agent_tasks(
-    mut task_handles: Vec<tauri::async_runtime::JoinHandle<()>>,
+    mut task_handles: Vec<tokio::task::JoinHandle<()>>,
     graceful_timeout: std::time::Duration,
 ) {
     let graceful = futures_util::future::join_all(task_handles.iter_mut());
@@ -686,65 +1262,61 @@ async fn join_agent_tasks(
     }
 }
 
-pub async fn shutdown_agent_runtime(app_handle: &AppHandle) -> Result<(), String> {
-    let state = app_handle.state::<AgentRuntimeState>();
-    let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
-    stop_runtime_inner(&state, None).await
-}
-
-#[tauri::command]
-pub async fn agent_get_runtime_status(
-    state: State<'_, AgentRuntimeState>,
-    user_id: String,
-) -> Result<AgentRuntimeStatus, String> {
-    let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
-    let account_scope = account_scope(&user_id)?;
-    let runtime = state.inner.lock().await;
-    if let Some(current) = runtime.as_ref() {
-        ensure_runtime_account(current, &account_scope)?;
-        return Ok(current.status());
+impl MapleAgentService {
+    pub(crate) async fn shutdown_all(&self) -> Result<(), String> {
+        let _runtime_lifecycle_guard = self.runtime_lifecycle.lock().await;
+        stop_runtime_inner(self, None).await
     }
-    Ok(stopped_status())
 }
 
-#[tauri::command]
-pub async fn agent_start_runtime(
-    app_handle: AppHandle,
-    state: State<'_, AgentRuntimeState>,
-    api_auth_state: State<'_, MapleApiAuthState>,
-    user_id: String,
-    request: Option<AgentStartRequest>,
-) -> Result<AgentRuntimeStatus, String> {
-    let account_scope = account_scope(&user_id)?;
-    let generation = account_generation(&state, &account_scope).await;
-    let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
-    ensure_account_generation(&state, &account_scope, generation).await?;
-    start_runtime_for_user(app_handle, &state, &api_auth_state, user_id, request).await
+impl AgentRuntimeHandle {
+    pub(crate) async fn status(&self) -> Result<AgentRuntimeStatus, String> {
+        let _runtime_lifecycle_guard = self.service.runtime_lifecycle.lock().await;
+        self.verify_generation().await?;
+        let runtime = self.service.inner.lock().await;
+        if let Some(current) = runtime.as_ref() {
+            ensure_runtime_account(current, &self.account_scope)?;
+            return Ok(current.desktop_status());
+        }
+        Ok(stopped_status())
+    }
+
+    pub(crate) async fn start(
+        &self,
+        maple_api_session: Arc<MapleApiSession>,
+        request: Option<AgentStartRequest>,
+    ) -> Result<AgentRuntimeStatus, String> {
+        let _runtime_lifecycle_guard = self.service.runtime_lifecycle.lock().await;
+        self.verify_generation().await?;
+        self.ensure_accepting_new_work()?;
+        start_runtime_for_user(&self.service, maple_api_session, &self.user_id, request).await
+    }
 }
 
 async fn start_runtime_for_user(
-    app_handle: AppHandle,
-    state: &AgentRuntimeState,
-    api_auth_state: &MapleApiAuthState,
-    user_id: String,
+    state: &MapleAgentService,
+    maple_api_session: Arc<MapleApiSession>,
+    user_id: &str,
     request: Option<AgentStartRequest>,
 ) -> Result<AgentRuntimeStatus, String> {
-    let account_scope = account_scope(&user_id)?;
+    let account_scope = account_scope(user_id)?;
     {
         let runtime = state.inner.lock().await;
         if let Some(current) = runtime.as_ref() {
             ensure_runtime_account(current, &account_scope)?;
-            return Ok(current.status());
+            return Ok(current.desktop_status());
         }
     }
 
-    let maple_api_session = api_auth_state.session_for(&user_id).await?;
+    ensure_account_scope(maple_api_session.account_scope(), &account_scope).map_err(|_| {
+        "Maple API authentication belongs to a different signed-in account".to_string()
+    })?;
     maple_api_session
         .validate_user()
         .await
         .map_err(|error| format!("Failed to validate Maple API authentication: {error}"))?;
 
-    let mut agent_config = load_agent_config_inner(&app_handle, &user_id)
+    let mut agent_config = load_agent_config_inner(&state.host.paths, user_id)
         .map_err(|error| format!("Failed to load Agent config: {error}"))?;
     let request = request.unwrap_or(AgentStartRequest {
         project_root: None,
@@ -762,7 +1334,7 @@ async fn start_runtime_for_user(
         .unwrap_or_else(|| DEFAULT_GOOSE_MODE.to_string());
     parse_user_permission_mode(&mode)?;
 
-    let config_dir = agent_config_dir(&app_handle, &user_id).map_err(|e| e.to_string())?;
+    let config_dir = agent_config_dir(&state.host.paths, user_id).map_err(|e| e.to_string())?;
     let goose_path_root = config_dir.join("goose");
     fs::create_dir_all(goose_path_root.join("data"))
         .map_err(|e| format!("Failed to create Goose data dir: {e}"))?;
@@ -774,7 +1346,7 @@ async fn start_runtime_for_user(
     reset_maple_owned_permission_file(&goose_path_root.join("config").join("permission.yaml"))?;
 
     configure_embedded_goose(
-        &agent_root_dir(&app_handle)
+        &agent_root_dir(&state.host.paths)
             .map_err(|e| e.to_string())?
             .join("goose-runtime"),
         &model,
@@ -808,6 +1380,7 @@ async fn start_runtime_for_user(
         session_manager,
         maple_api_session,
         active_runs: HashMap::new(),
+        session_tool_contexts: HashMap::new(),
         permission_modes: Arc::new(Mutex::new(HashMap::new())),
         web_tool_state: Arc::new(WebToolState::default()),
         project_root: project_root.clone(),
@@ -815,7 +1388,7 @@ async fn start_runtime_for_user(
         mode: mode.clone(),
         account_scope,
     };
-    let status = runtime.status();
+    let status = runtime.desktop_status();
 
     {
         let mut guard = state.inner.lock().await;
@@ -827,844 +1400,905 @@ async fn start_runtime_for_user(
     // here would incorrectly move that visible project to the top of the manual order.
     agent_config.default_project_root = Some(path_string(&project_root));
     agent_config.default_model = model;
-    let _ = save_agent_config_inner(&app_handle, &user_id, &agent_config);
+    let _ = save_agent_config_inner(&state.host.paths, user_id, &agent_config);
 
     emit_agent_event(
-        &app_handle,
-        AgentEventEnvelope {
-            event_type: "runtimeStatus".to_string(),
-            session_id: None,
-            run_id: None,
-            item: None,
-            status: Some(status.clone()),
-            session: None,
-            message: None,
-        },
+        &state.host.events,
+        AgentServiceEvent::RuntimeStatus(status.clone()),
     );
 
     Ok(status)
 }
 
-#[tauri::command]
-pub async fn agent_stop_runtime(
-    state: State<'_, AgentRuntimeState>,
-    user_id: String,
-) -> Result<AgentRuntimeStatus, String> {
-    let account_scope = account_scope(&user_id)?;
-    let generation = account_generation(&state, &account_scope).await;
-    let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
-    ensure_account_generation(&state, &account_scope, generation).await?;
-    stop_runtime_for_user(&state, &user_id).await?;
-    Ok(stopped_status())
-}
-
-#[tauri::command]
-pub async fn agent_restart_runtime(
-    app_handle: AppHandle,
-    state: State<'_, AgentRuntimeState>,
-    api_auth_state: State<'_, MapleApiAuthState>,
-    user_id: String,
-    request: Option<AgentStartRequest>,
-) -> Result<AgentRuntimeStatus, String> {
-    let account_scope = account_scope(&user_id)?;
-    let generation = account_generation(&state, &account_scope).await;
-    let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
-    ensure_account_generation(&state, &account_scope, generation).await?;
-    stop_runtime_for_user(&state, &user_id).await?;
-    start_runtime_for_user(app_handle, &state, &api_auth_state, user_id, request).await
-}
-
-#[tauri::command]
-pub async fn agent_clear_user_data(
-    app_handle: AppHandle,
-    state: State<'_, AgentRuntimeState>,
-    user_id: String,
-) -> Result<(), String> {
-    let requested_scope = account_scope(&user_id)?;
-    let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
-    advance_account_generation(&state, &requested_scope).await;
-    let is_running_account = {
-        let runtime = state.inner.lock().await;
-        runtime
-            .as_ref()
-            .is_some_and(|current| current.account_scope == requested_scope)
-    };
-    if is_running_account {
-        stop_runtime_for_user(&state, &user_id).await?;
+impl AgentRuntimeHandle {
+    pub(crate) async fn stop(&self) -> Result<AgentRuntimeStatus, String> {
+        let state = &self.service;
+        let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
+        self.verify_generation().await?;
+        stop_runtime_for_user(state, &self.user_id).await?;
+        Ok(stopped_status())
     }
 
-    let account_dir =
-        account_config_dir_path(&app_handle, &user_id).map_err(|error| error.to_string())?;
-    match fs::remove_dir_all(account_dir) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(format!("Failed to clear Agent Mode data: {error}")),
-    }
-    let local_account_dir =
-        account_local_data_dir_path(&app_handle, &user_id).map_err(|error| error.to_string())?;
-    match fs::remove_dir_all(local_account_dir) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => {
-            return Err(format!(
-                "Failed to clear device-local Agent Mode data: {error}"
-            ))
-        }
-    }
-    Ok(())
-}
-
-#[tauri::command]
-pub async fn agent_clear_user_history(
-    app_handle: AppHandle,
-    state: State<'_, AgentRuntimeState>,
-    user_id: String,
-) -> Result<(), String> {
-    let requested_scope = account_scope(&user_id)?;
-    let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
-    advance_account_generation(&state, &requested_scope).await;
-    let is_running_account = {
-        let runtime = state.inner.lock().await;
-        runtime
-            .as_ref()
-            .is_some_and(|current| current.account_scope == requested_scope)
-    };
-    if is_running_account {
-        stop_runtime_for_user(&state, &user_id).await?;
+    pub(crate) async fn restart(
+        &self,
+        maple_api_session: Arc<MapleApiSession>,
+        request: Option<AgentStartRequest>,
+    ) -> Result<AgentRuntimeStatus, String> {
+        let state = &self.service;
+        let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
+        self.verify_generation().await?;
+        self.ensure_accepting_new_work()?;
+        stop_runtime_for_user(state, &self.user_id).await?;
+        start_runtime_for_user(state, maple_api_session, &self.user_id, request).await
     }
 
-    let account_dir =
-        account_config_dir_path(&app_handle, &user_id).map_err(|error| error.to_string())?;
-    clear_agent_history(&account_dir)
-        .map_err(|error| format!("Failed to clear Agent Mode history: {error}"))
-}
-
-#[tauri::command]
-pub async fn agent_load_config(
-    app_handle: AppHandle,
-    state: State<'_, AgentRuntimeState>,
-    user_id: String,
-) -> Result<AgentConfig, String> {
-    let account_scope = account_scope(&user_id)?;
-    let generation = account_generation(&state, &account_scope).await;
-    let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
-    ensure_account_generation(&state, &account_scope, generation).await?;
-    load_agent_config_inner(&app_handle, &user_id).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub async fn agent_save_config(
-    app_handle: AppHandle,
-    state: State<'_, AgentRuntimeState>,
-    user_id: String,
-    config: AgentConfig,
-) -> Result<(), String> {
-    let account_scope = account_scope(&user_id)?;
-    let generation = account_generation(&state, &account_scope).await;
-    let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
-    ensure_account_generation(&state, &account_scope, generation).await?;
-    // MCP definitions have a dedicated mutation command. Preserve them here so
-    // a delayed project/model preference save cannot overwrite newer servers.
-    let mut next = load_agent_config_inner(&app_handle, &user_id).map_err(|e| e.to_string())?;
-    next.default_project_root = config.default_project_root;
-    next.default_model = config.default_model;
-    save_agent_config_inner(&app_handle, &user_id, &next).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub async fn agent_list_mcp_servers(
-    app_handle: AppHandle,
-    state: State<'_, AgentRuntimeState>,
-    user_id: String,
-) -> Result<Vec<AgentMcpServer>, String> {
-    let account_scope = account_scope(&user_id)?;
-    let generation = account_generation(&state, &account_scope).await;
-    let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
-    ensure_account_generation(&state, &account_scope, generation).await?;
-    let config = load_agent_config_inner(&app_handle, &user_id).map_err(|e| e.to_string())?;
-    normalize_mcp_servers(config.mcp_servers)
-}
-
-#[tauri::command]
-pub async fn agent_save_mcp_servers(
-    app_handle: AppHandle,
-    state: State<'_, AgentRuntimeState>,
-    user_id: String,
-    servers: Vec<AgentMcpServer>,
-) -> Result<Vec<AgentMcpServer>, String> {
-    let account_scope = account_scope(&user_id)?;
-    let generation = account_generation(&state, &account_scope).await;
-    let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
-    ensure_account_generation(&state, &account_scope, generation).await?;
-    let servers = normalize_mcp_servers(servers)?;
-    let mut config = load_agent_config_inner(&app_handle, &user_id).map_err(|e| e.to_string())?;
-    config.mcp_servers = servers.clone();
-    save_agent_config_inner(&app_handle, &user_id, &config).map_err(|e| e.to_string())?;
-
-    Ok(servers)
-}
-
-#[tauri::command]
-pub async fn agent_list_recent_project_roots(
-    app_handle: AppHandle,
-    state: State<'_, AgentRuntimeState>,
-    user_id: String,
-) -> Result<Vec<RecentProjectRoot>, String> {
-    let account_scope = account_scope(&user_id)?;
-    let generation = account_generation(&state, &account_scope).await;
-    let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
-    ensure_account_generation(&state, &account_scope, generation).await?;
-    load_recent_project_roots_inner(&app_handle, &user_id).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub async fn agent_save_recent_project_root(
-    app_handle: AppHandle,
-    state: State<'_, AgentRuntimeState>,
-    user_id: String,
-    path: String,
-) -> Result<AgentProjectRootRegistration, String> {
-    let account_scope = account_scope(&user_id)?;
-    let generation = account_generation(&state, &account_scope).await;
-    let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
-    ensure_account_generation(&state, &account_scope, generation).await?;
-    let project_root = normalize_project_root(Path::new(&path))?;
-    let mut config =
-        load_agent_config_inner(&app_handle, &user_id).map_err(|error| error.to_string())?;
-    let canonical_path = path_string(&project_root);
-    let restoring = config
-        .removed_project_roots
-        .iter()
-        .any(|removed| removed == &canonical_path);
-    let roots = if restoring {
-        restore_explicit_project_root_inner(&app_handle, &user_id, &project_root)
-    } else {
-        register_explicit_project_root_inner(&app_handle, &user_id, &project_root)
-    }
-    .map_err(|error| error.to_string())?;
-
-    config
-        .removed_project_roots
-        .retain(|removed| removed != &canonical_path);
-    config.default_project_root = Some(canonical_path.clone());
-    save_agent_config_inner(&app_handle, &user_id, &config).map_err(|error| error.to_string())?;
-    // Clear the device-local tombstone last. If registration or ordinary
-    // config persistence fails, the project remains hidden.
-    if restoring {
-        save_removed_project_roots_inner(&app_handle, &user_id, &config.removed_project_roots)
-            .map_err(|error| error.to_string())?;
-    }
-
-    Ok(AgentProjectRootRegistration {
-        project_root: canonical_path,
-        roots,
-        config,
-    })
-}
-
-#[tauri::command]
-pub async fn agent_remove_project_root(
-    app_handle: AppHandle,
-    state: State<'_, AgentRuntimeState>,
-    user_id: String,
-    path: String,
-    fallback_path: Option<String>,
-) -> Result<AgentConfig, String> {
-    let account_scope = account_scope(&user_id)?;
-    let generation = account_generation(&state, &account_scope).await;
-    let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
-    ensure_account_generation(&state, &account_scope, generation).await?;
-    let _session_lifecycle_guard = state.session_lifecycle.lock().await;
-
-    let path = path.trim().to_string();
-    if !structurally_valid_project_root(&path) {
-        return Err("Project path must be an absolute folder path".to_string());
-    }
-    let fallback_path = fallback_path
-        .map(|fallback| fallback.trim().to_string())
-        .filter(|fallback| !fallback.is_empty());
-    if let Some(fallback) = fallback_path.as_deref() {
-        if fallback == path || !structurally_valid_project_root(fallback) {
-            return Err("Project fallback must be a different absolute folder path".to_string());
-        }
-    }
-
-    let (session_manager, active_session_ids) = {
-        let runtime = state.inner.lock().await;
-        match runtime.as_ref() {
-            Some(current) => {
-                ensure_runtime_account(current, &account_scope)?;
-                (
-                    Arc::clone(&current.session_manager),
-                    current
-                        .active_runs
-                        .values()
-                        .map(|run| run.session_id.clone())
-                        .collect::<HashSet<_>>(),
-                )
-            }
-            None => (
-                account_session_manager(&app_handle, &user_id)?,
-                HashSet::new(),
-            ),
-        }
-    };
-    let sessions = session_manager
-        .list_all_sessions()
-        .await
-        .map_err(|error| format!("Failed to inspect Agent tasks: {error}"))?;
-    let session_roots = sessions
-        .iter()
-        .map(|session| (session.id.clone(), path_string(&session.working_dir)))
-        .collect::<HashMap<_, _>>();
-    if project_has_active_session_run(&session_roots, &active_session_ids, &path) {
-        return Err("Stop the running agent before removing this project".to_string());
-    }
-
-    let mut config =
-        load_agent_config_inner(&app_handle, &user_id).map_err(|error| error.to_string())?;
-    apply_project_root_removal(&mut config, &path, fallback_path.as_deref())?;
-    // The tombstone is the only persistent removal state. Saving the fallback
-    // into roaming config would let this device's removal alter another
-    // device. Runtime/UI use the fallback immediately; startup filters the
-    // stale hidden default before selecting any project.
-    save_removed_project_roots_inner(&app_handle, &user_id, &config.removed_project_roots)
-        .map_err(|error| error.to_string())?;
-
-    let mut runtime = state.inner.lock().await;
-    if let Some(current) = runtime.as_mut() {
-        update_runtime_project_root_after_removal(
-            &mut current.project_root,
-            &path,
-            fallback_path.as_deref(),
-        );
-    }
-
-    Ok(config)
-}
-
-#[tauri::command]
-pub async fn agent_get_project_skills_trust(
-    app_handle: AppHandle,
-    state: State<'_, AgentRuntimeState>,
-    user_id: String,
-    path: String,
-) -> Result<AgentProjectSkillsTrustStatus, String> {
-    let account_scope = account_scope(&user_id)?;
-    let generation = account_generation(&state, &account_scope).await;
-    let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
-    ensure_account_generation(&state, &account_scope, generation).await?;
-    let requested = Path::new(path.trim());
-    if !requested.is_dir() {
-        return Ok(AgentProjectSkillsTrustStatus {
-            path: path_string(requested),
-            decision: None,
-            available: false,
-        });
-    }
-    let project_root = normalize_project_root(requested)?;
-    let config = load_agent_config_inner(&app_handle, &user_id).map_err(|e| e.to_string())?;
-    Ok(project_skills_trust_status(&config, &project_root, true))
-}
-
-#[tauri::command]
-pub async fn agent_set_project_skills_trust(
-    app_handle: AppHandle,
-    state: State<'_, AgentRuntimeState>,
-    user_id: String,
-    path: String,
-    trusted: bool,
-) -> Result<AgentProjectSkillsTrustStatus, String> {
-    let account_scope = account_scope(&user_id)?;
-    let generation = account_generation(&state, &account_scope).await;
-    let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
-    ensure_account_generation(&state, &account_scope, generation).await?;
-    let project_root = normalize_project_root(Path::new(&path))?;
-    let mut config = load_agent_config_inner(&app_handle, &user_id).map_err(|e| e.to_string())?;
-    apply_project_skills_trust(&mut config, &project_root, trusted)?;
-    save_agent_config_inner(&app_handle, &user_id, &config).map_err(|e| e.to_string())?;
-    Ok(project_skills_trust_status(&config, &project_root, true))
-}
-
-#[tauri::command]
-pub async fn agent_save_project_root_order(
-    app_handle: AppHandle,
-    state: State<'_, AgentRuntimeState>,
-    user_id: String,
-    paths: Vec<String>,
-) -> Result<Vec<RecentProjectRoot>, String> {
-    let account_scope = account_scope(&user_id)?;
-    let generation = account_generation(&state, &account_scope).await;
-    let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
-    ensure_account_generation(&state, &account_scope, generation).await?;
-    save_project_root_order_inner(&app_handle, &user_id, paths).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub async fn agent_create_session(
-    app_handle: AppHandle,
-    state: State<'_, AgentRuntimeState>,
-    user_id: String,
-    request: Option<AgentCreateSessionRequest>,
-) -> Result<AgentSessionDetail, String> {
-    let account_scope = account_scope(&user_id)?;
-    let generation = account_generation(&state, &account_scope).await;
-    let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
-    ensure_account_generation(&state, &account_scope, generation).await?;
-    let request = request.unwrap_or(AgentCreateSessionRequest {
-        project_root: None,
-        title: None,
-        model: None,
-        context_limit: None,
-        mode: None,
-        mcp_server_names: None,
-    });
-    let (
-        agent_manager,
-        session_manager,
-        maple_api_session,
-        permission_modes,
-        web_tool_state,
-        runtime_project_root,
-        runtime_model,
-        runtime_mode,
-    ) = {
-        let runtime = state.inner.lock().await;
-        let current = runtime
-            .as_ref()
-            .ok_or_else(|| "Agent runtime is not running".to_string())?;
-        ensure_runtime_account(current, &account_scope)?;
-        (
-            Arc::clone(&current.agent_manager),
-            Arc::clone(&current.session_manager),
-            Arc::clone(&current.maple_api_session),
-            Arc::clone(&current.permission_modes),
-            Arc::clone(&current.web_tool_state),
-            current.project_root.clone(),
-            current.model.clone(),
-            current.mode.clone(),
-        )
-    };
-
-    let config =
-        load_agent_config_inner(&app_handle, &user_id).map_err(|error| error.to_string())?;
-    let root = match request.project_root.as_deref() {
-        Some(path) if !path.trim().is_empty() => normalize_project_root(Path::new(path))?,
-        _ => runtime_project_root,
-    };
-    ensure_session_project_root_is_visible(&root, &config.removed_project_roots)?;
-    let title = request
-        .title
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| DEFAULT_AGENT_SESSION_TITLE.to_string());
-    let mode = request.mode.unwrap_or(runtime_mode);
-    let permission_mode = parse_user_permission_mode(&mode)?;
-    let model = request.model.unwrap_or(runtime_model);
-    let configured_mcp = normalize_mcp_servers(config.mcp_servers)?;
-    let selected_mcp = select_mcp_servers(&configured_mcp, request.mcp_server_names.as_deref())?;
-    let selected_extensions = selected_mcp
-        .iter()
-        .map(mcp_server_to_extension)
-        .collect::<Result<Vec<_>, _>>()?;
-    let selected_extension_keys = mcp_extension_keys(&selected_extensions);
-    let session = session_manager
-        .create_session(root.clone(), title, SessionType::User, permission_mode)
-        .await
-        .map_err(|e| format!("Failed to create Agent task: {e}"))?;
-
-    permission_modes
-        .lock()
-        .await
-        .insert(session.id.clone(), permission_mode);
-    let setup_result: Result<Vec<AgentMcpConnectionError>, String> = async {
-        let (agent, mut mcp_errors) = configure_session_agent(
-            AgentSkillsScope {
-                app_handle: &app_handle,
-                user_id: &user_id,
-            },
-            &agent_manager,
-            &session_manager,
-            &maple_api_session,
-            SessionAgentConfiguration {
-                web_tool_state: &web_tool_state,
-                session: &session,
-                model: &model,
-                context_limit: request.context_limit,
-                mode: &mode,
-                primary_model_supports_vision: false,
-            },
-        )
-        .await?;
-        if !selected_extensions.is_empty() {
-            // Resolve every fallible part of restoring Maple's transient Skills client before
-            // Goose persists the MCP mutation. Reattachment after this point is infallible.
-            let skills_client =
-                prepare_transient_skills_client(&app_handle, &user_id, &agent, &session)?;
-            detach_transient_skills_client(&agent).await;
-            let extension_result = agent
-                .add_extensions_bulk(selected_extensions, &session.id)
-                .await;
-            attach_prepared_skills_client(&agent, skills_client).await;
-            match extension_result {
-                Ok(results) => {
-                    mcp_errors.extend(mcp_connection_errors(results, &selected_extension_keys))
-                }
-                Err(error) => mcp_errors.push(AgentMcpConnectionError {
-                    name: "MCP servers".to_string(),
-                    error: error.to_string(),
-                }),
-            }
-        }
-        Ok(mcp_errors)
-    }
-    .await;
-    let mcp_errors = match setup_result {
-        Ok(mcp_errors) => mcp_errors,
-        Err(error) => {
-            permission_modes.lock().await.remove(&session.id);
-            if let Err(cleanup_error) = session_manager.delete_session(&session.id).await {
-                log::warn!(
-                    "Failed to remove Agent task {} after setup error: {cleanup_error}",
-                    session.id
-                );
-            }
-            if let Err(cleanup_error) = agent_manager.remove_session_if_loaded(&session.id).await {
-                log::warn!(
-                    "Failed to unload Agent task {} after setup error: {cleanup_error}",
-                    session.id
-                );
-            }
-            return Err(error);
-        }
-    };
-    let summary = session_summary(&session);
-    // Session creation must not mutate project order. Only explicit folder-add and reorder
-    // commands may change the persisted project list.
-    let detail = AgentSessionDetail {
-        session: summary.clone(),
-        timeline: Vec::new(),
-        mcp_errors,
-    };
-    emit_agent_event(
-        &app_handle,
-        AgentEventEnvelope {
-            event_type: "sessionCreated".to_string(),
-            session_id: Some(summary.id.clone()),
-            run_id: None,
-            item: None,
-            status: None,
-            session: Some(summary),
-            message: None,
-        },
-    );
-    Ok(detail)
-}
-
-#[tauri::command]
-pub async fn agent_list_sessions(
-    app_handle: AppHandle,
-    state: State<'_, AgentRuntimeState>,
-    user_id: String,
-    project_root: Option<String>,
-) -> Result<Vec<AgentSessionSummary>, String> {
-    let account_scope = account_scope(&user_id)?;
-    let generation = account_generation(&state, &account_scope).await;
-    let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
-    ensure_account_generation(&state, &account_scope, generation).await?;
-    let (session_manager, filter_root) = {
-        let runtime = state.inner.lock().await;
-        let session_manager = match runtime.as_ref() {
-            Some(current) => {
-                ensure_runtime_account(current, &account_scope)?;
-                Arc::clone(&current.session_manager)
-            }
-            None => account_session_manager(&app_handle, &user_id)?,
+    pub(crate) async fn clear_data(&self) -> Result<(), String> {
+        let state = &self.service;
+        let requested_scope = self.account_scope.as_ref();
+        let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
+        self.verify_generation().await?;
+        self.ensure_accepting_new_work()?;
+        advance_account_generation(state, requested_scope).await;
+        let is_running_account = {
+            let runtime = state.inner.lock().await;
+            runtime
+                .as_ref()
+                .is_some_and(|current| current.account_scope == requested_scope)
         };
-        let filter_root = project_root
-            .as_deref()
-            .filter(|value| !value.trim().is_empty())
-            .map(|path| normalize_project_root(Path::new(path)))
-            .transpose()?;
-        (session_manager, filter_root)
-    };
-
-    let mut sessions = session_manager
-        .list_all_sessions()
-        .await
-        .map_err(|e| format!("Failed to list Agent tasks: {e}"))?
-        .into_iter()
-        .filter(|session| {
-            if let Some(root) = filter_root.as_ref() {
-                session.working_dir == *root
-            } else {
-                true
-            }
-        })
-        .map(|session| session_summary(&session))
-        .collect::<Vec<_>>();
-    sort_sessions_newest_first(&mut sessions);
-    Ok(sessions)
-}
-
-#[tauri::command]
-pub async fn agent_load_session(
-    app_handle: AppHandle,
-    state: State<'_, AgentRuntimeState>,
-    user_id: String,
-    session_id: String,
-) -> Result<AgentSessionDetail, String> {
-    let account_scope = account_scope(&user_id)?;
-    let generation = account_generation(&state, &account_scope).await;
-    let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
-    ensure_account_generation(&state, &account_scope, generation).await?;
-    let session_manager = {
-        let runtime = state.inner.lock().await;
-        match runtime.as_ref() {
-            Some(current) => {
-                ensure_runtime_account(current, &account_scope)?;
-                Arc::clone(&current.session_manager)
-            }
-            None => account_session_manager(&app_handle, &user_id)?,
+        if is_running_account {
+            stop_runtime_for_user(state, &self.user_id).await?;
         }
-    };
-    let session = session_manager
-        .get_session(&session_id, true)
-        .await
-        .map_err(|e| format!("Failed to load Agent task: {e}"))?;
-    let conversation = session
-        .conversation
-        .as_ref()
-        .ok_or_else(|| "Agent task history was not loaded".to_string())?;
-    let timeline = conversation_to_timeline_items(conversation);
-    let timeline =
-        overlay_live_timeline(&state.live_timelines, &session_id, conversation, timeline).await;
 
-    Ok(AgentSessionDetail {
-        session: session_summary(&session),
-        timeline,
-        mcp_errors: Vec::new(),
-    })
-}
-
-#[tauri::command]
-pub async fn agent_list_session_mcp_servers(
-    app_handle: AppHandle,
-    state: State<'_, AgentRuntimeState>,
-    user_id: String,
-    session_id: String,
-) -> Result<Vec<AgentSessionMcpServer>, String> {
-    let account_scope = account_scope(&user_id)?;
-    let generation = account_generation(&state, &account_scope).await;
-    let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
-    ensure_account_generation(&state, &account_scope, generation).await?;
-    let session_manager = {
-        let runtime = state.inner.lock().await;
-        match runtime.as_ref() {
-            Some(current) => {
-                ensure_runtime_account(current, &account_scope)?;
-                Arc::clone(&current.session_manager)
-            }
-            None => account_session_manager(&app_handle, &user_id)?,
+        let account_dir = account_config_dir_path(&state.host.paths, &self.user_id)
+            .map_err(|error| error.to_string())?;
+        match fs::remove_dir_all(account_dir) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("Failed to clear Agent Mode data: {error}")),
         }
-    };
-    let session = session_manager
-        .get_session(session_id.trim(), false)
-        .await
-        .map_err(|error| format!("Failed to load Agent task: {error}"))?;
-    let configured = normalize_mcp_servers(
-        load_agent_config_inner(&app_handle, &user_id)
-            .map_err(|error| format!("Failed to load MCP servers: {error}"))?
-            .mcp_servers,
-    )?;
-    Ok(session_mcp_servers(&configured, &session))
-}
-
-#[tauri::command]
-pub async fn agent_set_session_mcp_server_enabled(
-    app_handle: AppHandle,
-    state: State<'_, AgentRuntimeState>,
-    user_id: String,
-    request: AgentSetSessionMcpServerRequest,
-) -> Result<Vec<AgentSessionMcpServer>, String> {
-    let account_scope = account_scope(&user_id)?;
-    let generation = account_generation(&state, &account_scope).await;
-    let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
-    ensure_account_generation(&state, &account_scope, generation).await?;
-    let _session_lifecycle_guard = state.session_lifecycle.lock().await;
-    let session_id = request.session_id.trim().to_string();
-    let requested_key = goose::config::extensions::name_to_key(request.name.trim());
-    if session_id.is_empty() {
-        return Err("Agent task ID cannot be empty".to_string());
-    }
-    if requested_key.is_empty() || maple_reserved_extension_key(&requested_key) {
-        return Err("That MCP server cannot be changed".to_string());
-    }
-
-    let (agent_manager, session_manager, maple_api_session) = {
-        let runtime = state.inner.lock().await;
-        let current = runtime
-            .as_ref()
-            .ok_or_else(|| "Agent runtime is not running".to_string())?;
-        ensure_runtime_account(current, &account_scope)?;
-        if has_active_session_run(&current.active_runs, &session_id) {
-            return Err("Stop the running agent before changing MCP servers".to_string());
-        }
-        (
-            Arc::clone(&current.agent_manager),
-            Arc::clone(&current.session_manager),
-            Arc::clone(&current.maple_api_session),
-        )
-    };
-    let configured = normalize_mcp_servers(
-        load_agent_config_inner(&app_handle, &user_id)
-            .map_err(|error| format!("Failed to load MCP servers: {error}"))?
-            .mcp_servers,
-    )?;
-    let session = session_manager
-        .get_session(&session_id, false)
-        .await
-        .map_err(|error| format!("Failed to load Agent task: {error}"))?;
-    let session_mcp_keys = session_mcp_extension_keys(&session);
-    let manager_result = get_or_create_session_agent(
-        &agent_manager,
-        &maple_api_session,
-        &session,
-        RuntimeContext::default(),
-    )
-    .await
-    .map_err(|error| format!("Failed to load Goose agent: {error}"))?;
-    for error in mcp_connection_errors(manager_result.extension_results, &session_mcp_keys) {
-        log::warn!(
-            "Failed to restore MCP server {}: {}",
-            error.name,
-            error.error
-        );
-    }
-    let agent = manager_result.agent;
-    // Preflight Skills restoration before detaching the working client or changing persisted MCP
-    // state. Reattaching this prepared client after the mutation cannot fail.
-    let skills_client = prepare_transient_skills_client(&app_handle, &user_id, &agent, &session)?;
-    detach_transient_skills_client(&agent).await;
-    let active = agent.get_extension_configs().await;
-    let active_config = active
-        .iter()
-        .find(|config| mcp_transport_label(config).is_some() && config.key() == requested_key);
-
-    let mutation_result: Result<(), String> = async {
-        if request.enabled {
-            if active_config.is_none() {
-                let server = configured
-                    .iter()
-                    .find(|server| {
-                        goose::config::extensions::name_to_key(&server.name) == requested_key
-                    })
-                    .ok_or_else(|| {
-                        format!(
-                            "MCP server '{}' is no longer configured and cannot be enabled",
-                            request.name.trim()
-                        )
-                    })?;
-                let extension = mcp_server_to_extension(server)?;
-                agent
-                    .add_extension(extension, &session_id)
-                    .await
-                    .map_err(|error| {
-                        format!("Failed to connect MCP server '{}': {error}", server.name)
-                    })?;
+        let local_account_dir = account_local_data_dir_path(&state.host.paths, &self.user_id)
+            .map_err(|error| error.to_string())?;
+        match fs::remove_dir_all(local_account_dir) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "Failed to clear device-local Agent Mode data: {error}"
+                ))
             }
-        } else if let Some(config) = active_config {
-            agent
-                .remove_extension(&config.name(), &session_id)
-                .await
-                .map_err(|error| {
-                    format!(
-                        "Failed to disconnect MCP server '{}': {error}",
-                        request.name.trim()
-                    )
-                })?;
-        } else {
-            // A failed cold restore may already have removed the server from the
-            // live manager. Persist that authoritative state so the UI still gets
-            // a successful, durable disable operation.
-            agent
-                .persist_extension_state(&session_id)
-                .await
-                .map_err(|error| format!("Failed to save task MCP settings: {error}"))?;
         }
         Ok(())
     }
-    .await;
-    attach_prepared_skills_client(&agent, skills_client).await;
-    mutation_result?;
 
-    let refreshed = session_manager
-        .get_session(&session_id, false)
-        .await
-        .map_err(|error| format!("Failed to reload Agent task: {error}"))?;
-    Ok(session_mcp_servers(&configured, &refreshed))
+    pub(crate) async fn clear_history(&self) -> Result<(), String> {
+        let state = &self.service;
+        let requested_scope = self.account_scope.as_ref();
+        let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
+        self.verify_generation().await?;
+        self.ensure_accepting_new_work()?;
+        advance_account_generation(state, requested_scope).await;
+        let is_running_account = {
+            let runtime = state.inner.lock().await;
+            runtime
+                .as_ref()
+                .is_some_and(|current| current.account_scope == requested_scope)
+        };
+        if is_running_account {
+            stop_runtime_for_user(state, &self.user_id).await?;
+        }
+
+        let account_dir = account_config_dir_path(&state.host.paths, &self.user_id)
+            .map_err(|error| error.to_string())?;
+        clear_agent_history(&account_dir)
+            .map_err(|error| format!("Failed to clear Agent Mode history: {error}"))
+    }
 }
 
-#[tauri::command]
-pub async fn agent_delete_session(
-    app_handle: AppHandle,
-    state: State<'_, AgentRuntimeState>,
-    user_id: String,
-    session_id: String,
-) -> Result<(), String> {
-    let account_scope = account_scope(&user_id)?;
-    let generation = account_generation(&state, &account_scope).await;
-    let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
-    ensure_account_generation(&state, &account_scope, generation).await?;
-    let session_id = session_id.trim().to_string();
-    if session_id.is_empty() {
-        return Err("Agent task ID cannot be empty".to_string());
+impl AgentRuntimeHandle {
+    pub(crate) async fn load_config(&self) -> Result<AgentConfig, String> {
+        let state = &self.service;
+        let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
+        self.verify_generation().await?;
+        load_agent_config_inner(&state.host.paths, &self.user_id).map_err(|e| e.to_string())
     }
 
-    let _session_lifecycle_guard = state.session_lifecycle.lock().await;
-    let (agent_manager, session_manager, permission_modes, web_tool_state) = {
-        let runtime = state.inner.lock().await;
-        match runtime.as_ref() {
-            Some(current) => {
-                ensure_runtime_account(current, &account_scope)?;
-                if has_active_session_run(&current.active_runs, &session_id) {
-                    return Err("Stop the running agent before deleting this task".to_string());
-                }
-                (
-                    Some(Arc::clone(&current.agent_manager)),
-                    Arc::clone(&current.session_manager),
-                    Some(Arc::clone(&current.permission_modes)),
-                    Some(Arc::clone(&current.web_tool_state)),
-                )
-            }
-            None => (
-                None,
-                account_session_manager(&app_handle, &user_id)?,
-                None,
-                None,
-            ),
-        }
-    };
+    pub(crate) async fn save_config(&self, config: AgentConfig) -> Result<(), String> {
+        let state = &self.service;
+        let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
+        self.verify_generation().await?;
+        self.ensure_accepting_new_work()?;
+        // MCP definitions have a dedicated mutation command. Preserve them here so
+        // a delayed project/model preference save cannot overwrite newer servers.
+        let mut next =
+            load_agent_config_inner(&state.host.paths, &self.user_id).map_err(|e| e.to_string())?;
+        next.default_project_root = config.default_project_root;
+        next.default_model = config.default_model;
+        save_agent_config_inner(&state.host.paths, &self.user_id, &next).map_err(|e| e.to_string())
+    }
 
-    delete_persisted_agent_session(
-        session_manager.as_ref(),
-        &state.pending_permissions,
-        &state.live_timelines,
-        web_tool_state.as_deref(),
-        &session_id,
-    )
-    .await?;
-    if let Some(agent_manager) = agent_manager {
-        if let Err(error) = agent_manager.remove_session_if_loaded(&session_id).await {
-            log::warn!(
-                "Deleted Goose session {session_id}, but failed to unload its agent: {error}"
+    pub(crate) async fn list_mcp_servers(&self) -> Result<Vec<AgentMcpServer>, String> {
+        let state = &self.service;
+        let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
+        self.verify_generation().await?;
+        let config =
+            load_agent_config_inner(&state.host.paths, &self.user_id).map_err(|e| e.to_string())?;
+        normalize_mcp_servers(config.mcp_servers)
+    }
+
+    pub(crate) async fn save_mcp_servers(
+        &self,
+        servers: Vec<AgentMcpServer>,
+    ) -> Result<Vec<AgentMcpServer>, String> {
+        let state = &self.service;
+        let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
+        self.verify_generation().await?;
+        self.ensure_accepting_new_work()?;
+        let servers = normalize_mcp_servers(servers)?;
+        let mut config =
+            load_agent_config_inner(&state.host.paths, &self.user_id).map_err(|e| e.to_string())?;
+        config.mcp_servers = servers.clone();
+        save_agent_config_inner(&state.host.paths, &self.user_id, &config)
+            .map_err(|e| e.to_string())?;
+
+        Ok(servers)
+    }
+
+    pub(crate) async fn list_recent_project_roots(&self) -> Result<Vec<RecentProjectRoot>, String> {
+        let state = &self.service;
+        let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
+        self.verify_generation().await?;
+        load_recent_project_roots_inner(&state.host.paths, &self.user_id).map_err(|e| e.to_string())
+    }
+
+    pub(crate) async fn save_recent_project_root(
+        &self,
+        path: String,
+    ) -> Result<AgentProjectRootRegistration, String> {
+        let state = &self.service;
+        let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
+        self.verify_generation().await?;
+        self.ensure_accepting_new_work()?;
+        let project_root = normalize_project_root(Path::new(&path))?;
+        let mut config = load_agent_config_inner(&state.host.paths, &self.user_id)
+            .map_err(|error| error.to_string())?;
+        let canonical_path = path_string(&project_root);
+        let restoring = config
+            .removed_project_roots
+            .iter()
+            .any(|removed| removed == &canonical_path);
+        let roots = if restoring {
+            restore_explicit_project_root_inner(&state.host.paths, &self.user_id, &project_root)
+        } else {
+            register_explicit_project_root_inner(&state.host.paths, &self.user_id, &project_root)
+        }
+        .map_err(|error| error.to_string())?;
+
+        config
+            .removed_project_roots
+            .retain(|removed| removed != &canonical_path);
+        config.default_project_root = Some(canonical_path.clone());
+        save_agent_config_inner(&state.host.paths, &self.user_id, &config)
+            .map_err(|error| error.to_string())?;
+        // Clear the device-local tombstone last. If registration or ordinary
+        // config persistence fails, the project remains hidden.
+        if restoring {
+            save_removed_project_roots_inner(
+                &state.host.paths,
+                &self.user_id,
+                &config.removed_project_roots,
+            )
+            .map_err(|error| error.to_string())?;
+        }
+
+        Ok(AgentProjectRootRegistration {
+            project_root: canonical_path,
+            roots,
+            config,
+        })
+    }
+
+    pub(crate) async fn remove_project_root(
+        &self,
+        path: String,
+        fallback_path: Option<String>,
+    ) -> Result<AgentConfig, String> {
+        let state = &self.service;
+        let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
+        self.verify_generation().await?;
+        self.ensure_accepting_new_work()?;
+        let _session_lifecycle_guard = state.session_lifecycle.lock().await;
+
+        let path = path.trim().to_string();
+        if !structurally_valid_project_root(&path) {
+            return Err("Project path must be an absolute folder path".to_string());
+        }
+        let fallback_path = fallback_path
+            .map(|fallback| fallback.trim().to_string())
+            .filter(|fallback| !fallback.is_empty());
+        if let Some(fallback) = fallback_path.as_deref() {
+            if fallback == path || !structurally_valid_project_root(fallback) {
+                return Err("Project fallback must be a different absolute folder path".to_string());
+            }
+        }
+
+        let (session_manager, active_session_ids) = {
+            let runtime = state.inner.lock().await;
+            match runtime.as_ref() {
+                Some(current) => {
+                    ensure_runtime_account(current, &self.account_scope)?;
+                    (
+                        Arc::clone(&current.session_manager),
+                        current
+                            .active_runs
+                            .values()
+                            .map(|run| run.session_id.clone())
+                            .collect::<HashSet<_>>(),
+                    )
+                }
+                None => (
+                    account_session_manager(&state.host.paths, &self.user_id)?,
+                    HashSet::new(),
+                ),
+            }
+        };
+        let sessions = session_manager
+            .list_all_sessions()
+            .await
+            .map_err(|error| format!("Failed to inspect Agent tasks: {error}"))?;
+        let session_roots = sessions
+            .iter()
+            .map(|session| (session.id.clone(), path_string(&session.working_dir)))
+            .collect::<HashMap<_, _>>();
+        if project_has_active_session_run(&session_roots, &active_session_ids, &path) {
+            return Err("Stop the running agent before removing this project".to_string());
+        }
+
+        let mut config = load_agent_config_inner(&state.host.paths, &self.user_id)
+            .map_err(|error| error.to_string())?;
+        apply_project_root_removal(&mut config, &path, fallback_path.as_deref())?;
+        // The tombstone is the only persistent removal state. Saving the fallback
+        // into roaming config would let this device's removal alter another
+        // device. Runtime/UI use the fallback immediately; startup filters the
+        // stale hidden default before selecting any project.
+        save_removed_project_roots_inner(
+            &state.host.paths,
+            &self.user_id,
+            &config.removed_project_roots,
+        )
+        .map_err(|error| error.to_string())?;
+
+        let mut runtime = state.inner.lock().await;
+        if let Some(current) = runtime.as_mut() {
+            update_runtime_project_root_after_removal(
+                &mut current.project_root,
+                &path,
+                fallback_path.as_deref(),
             );
         }
-    }
-    if let Some(permission_modes) = permission_modes {
-        permission_modes.lock().await.remove(&session_id);
+
+        Ok(config)
     }
 
-    Ok(())
+    pub(crate) async fn get_project_skills_trust(
+        &self,
+        path: String,
+    ) -> Result<AgentProjectSkillsTrustStatus, String> {
+        let state = &self.service;
+        let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
+        self.verify_generation().await?;
+        let requested = Path::new(path.trim());
+        if !requested.is_dir() {
+            return Ok(AgentProjectSkillsTrustStatus {
+                path: path_string(requested),
+                decision: None,
+                available: false,
+            });
+        }
+        let project_root = normalize_project_root(requested)?;
+        let config =
+            load_agent_config_inner(&state.host.paths, &self.user_id).map_err(|e| e.to_string())?;
+        Ok(project_skills_trust_status(&config, &project_root, true))
+    }
+
+    pub(crate) async fn set_project_skills_trust(
+        &self,
+        path: String,
+        trusted: bool,
+    ) -> Result<AgentProjectSkillsTrustStatus, String> {
+        let state = &self.service;
+        let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
+        self.verify_generation().await?;
+        self.ensure_accepting_new_work()?;
+        let project_root = normalize_project_root(Path::new(&path))?;
+        let mut config =
+            load_agent_config_inner(&state.host.paths, &self.user_id).map_err(|e| e.to_string())?;
+        apply_project_skills_trust(&mut config, &project_root, trusted)?;
+        save_agent_config_inner(&state.host.paths, &self.user_id, &config)
+            .map_err(|e| e.to_string())?;
+        Ok(project_skills_trust_status(&config, &project_root, true))
+    }
+
+    pub(crate) async fn save_project_root_order(
+        &self,
+        paths: Vec<String>,
+    ) -> Result<Vec<RecentProjectRoot>, String> {
+        let state = &self.service;
+        let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
+        self.verify_generation().await?;
+        self.ensure_accepting_new_work()?;
+        save_project_root_order_inner(&state.host.paths, &self.user_id, paths)
+            .map_err(|e| e.to_string())
+    }
+}
+
+impl AgentRuntimeHandle {
+    pub(crate) async fn create_session(
+        &self,
+        request: Option<AgentCreateSessionRequest>,
+    ) -> Result<AgentSessionDetail, String> {
+        Ok(self
+            .create_session_with_tool_context(request, None, AgentHostEventPolicy::Publish)
+            .await?
+            .detail)
+    }
+
+    pub(crate) async fn create_session_with_tool_context(
+        &self,
+        request: Option<AgentCreateSessionRequest>,
+        tool_context: Option<AgentToolContextSpec>,
+        host_events: AgentHostEventPolicy,
+    ) -> Result<CreatedAgentSession, String> {
+        let state = &self.service;
+        let user_id = self.user_id.as_ref();
+        let account_scope = self.account_scope.as_ref();
+        let has_external_tool_context = tool_context.is_some();
+        let tool_context = SharedAgentToolContext::new(
+            tool_context.unwrap_or_else(|| state.host.default_tool_context.clone()),
+        );
+        let mut tool_context_installation =
+            PendingAgentToolContextInstallation::new(tool_context.clone());
+        let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
+        self.verify_generation().await?;
+        self.ensure_accepting_new_work()?;
+        let request = request.unwrap_or(AgentCreateSessionRequest {
+            project_root: None,
+            title: None,
+            model: None,
+            context_limit: None,
+            mode: None,
+            mcp_server_names: None,
+        });
+        let (
+            agent_manager,
+            session_manager,
+            maple_api_session,
+            permission_modes,
+            web_tool_state,
+            runtime_project_root,
+            runtime_model,
+            runtime_mode,
+        ) = {
+            let runtime = state.inner.lock().await;
+            let current = runtime
+                .as_ref()
+                .ok_or_else(|| "Agent runtime is not running".to_string())?;
+            ensure_runtime_account(current, account_scope)?;
+            (
+                Arc::clone(&current.agent_manager),
+                Arc::clone(&current.session_manager),
+                Arc::clone(&current.maple_api_session),
+                Arc::clone(&current.permission_modes),
+                Arc::clone(&current.web_tool_state),
+                current.project_root.clone(),
+                current.model.clone(),
+                current.mode.clone(),
+            )
+        };
+
+        let config = load_agent_config_inner(&state.host.paths, user_id)
+            .map_err(|error| error.to_string())?;
+        let root = match request.project_root.as_deref() {
+            Some(path) if !path.trim().is_empty() => normalize_project_root(Path::new(path))?,
+            _ => runtime_project_root,
+        };
+        ensure_session_project_root_is_visible(&root, &config.removed_project_roots)?;
+        let title = request
+            .title
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| DEFAULT_AGENT_SESSION_TITLE.to_string());
+        let mode = request.mode.unwrap_or(runtime_mode);
+        let permission_mode = parse_user_permission_mode(&mode)?;
+        let model = request.model.unwrap_or(runtime_model);
+        let configured_mcp = normalize_mcp_servers(config.mcp_servers)?;
+        let selected_mcp =
+            select_mcp_servers(&configured_mcp, request.mcp_server_names.as_deref())?;
+        let selected_extensions = selected_mcp
+            .iter()
+            .map(mcp_server_to_extension)
+            .collect::<Result<Vec<_>, _>>()?;
+        let selected_extension_keys = mcp_extension_keys(&selected_extensions);
+        let session = session_manager
+            .create_session(root.clone(), title, SessionType::User, permission_mode)
+            .await
+            .map_err(|e| format!("Failed to create Agent task: {e}"))?;
+
+        let installation_id = next_tool_context_installation_id();
+        let setup_result: Result<Vec<AgentMcpConnectionError>, String> = async {
+            let (agent, mut mcp_errors) = configure_session_agent(
+                AgentSkillsScope {
+                    paths: &state.host.paths,
+                    user_id,
+                },
+                &agent_manager,
+                &session_manager,
+                &maple_api_session,
+                SessionAgentConfiguration {
+                    web_tool_state: &web_tool_state,
+                    session: &session,
+                    model: &model,
+                    context_limit: request.context_limit,
+                    mode: &mode,
+                    primary_model_supports_vision: false,
+                    tool_context: &tool_context,
+                },
+            )
+            .await?;
+            if !selected_extensions.is_empty() {
+                // Resolve every fallible part of restoring Maple's transient Skills client before
+                // Goose persists the MCP mutation. Reattachment after this point is infallible.
+                let skills_client =
+                    prepare_transient_skills_client(&state.host.paths, user_id, &agent, &session)?;
+                detach_transient_skills_client(&agent).await;
+                let extension_result = agent
+                    .add_extensions_bulk(selected_extensions, &session.id)
+                    .await;
+                attach_prepared_skills_client(&agent, skills_client).await;
+                match extension_result {
+                    Ok(results) => {
+                        mcp_errors.extend(mcp_connection_errors(results, &selected_extension_keys))
+                    }
+                    Err(error) => mcp_errors.push(AgentMcpConnectionError {
+                        name: "MCP servers".to_string(),
+                        error: error.to_string(),
+                    }),
+                }
+            }
+            Ok(mcp_errors)
+        }
+        .await;
+        let mcp_errors = match setup_result {
+            Ok(mcp_errors) => mcp_errors,
+            Err(error) => {
+                if let Err(cleanup_error) = session_manager.delete_session(&session.id).await {
+                    log::warn!(
+                        "Failed to remove Agent task {} after setup error: {cleanup_error}",
+                        session.id
+                    );
+                }
+                if let Err(cleanup_error) =
+                    agent_manager.remove_session_if_loaded(&session.id).await
+                {
+                    log::warn!(
+                        "Failed to unload Agent task {} after setup error: {cleanup_error}",
+                        session.id
+                    );
+                }
+                return Err(error);
+            }
+        };
+        let summary = session_summary(&session);
+        // Session creation must not mutate project order. Only explicit folder-add and reorder
+        // commands may change the persisted project list.
+        let detail = AgentSessionDetail {
+            session: summary.clone(),
+            timeline: Vec::new(),
+            mcp_errors,
+        };
+        let tool_context_lease = has_external_tool_context.then(|| AgentToolContextLease {
+            service: state.clone(),
+            access: AgentToolContextAccess {
+                account_scope: Arc::clone(&self.account_scope),
+                session_id: Arc::from(detail.session.id.as_str()),
+                installation_id,
+                context: tool_context.clone(),
+            },
+        });
+
+        // Publish the configured context only after every fallible setup await.
+        // Once inserted, the lease is committed and returned without yielding,
+        // so cancellation cannot strand a secret-bearing registry entry.
+        {
+            let mut runtime = state.inner.lock().await;
+            let current = runtime
+                .as_mut()
+                .ok_or_else(|| "Agent runtime is not running".to_string())?;
+            ensure_runtime_account(current, account_scope)?;
+            let mut modes = permission_modes.lock().await;
+            if let Some(replaced) = current.session_tool_contexts.insert(
+                session.id.clone(),
+                InstalledAgentToolContext {
+                    installation_id,
+                    context: tool_context,
+                    owner: if has_external_tool_context {
+                        AgentToolContextOwner::Leased
+                    } else {
+                        AgentToolContextOwner::Maple
+                    },
+                },
+            ) {
+                replaced.context.revoke();
+            }
+            modes.insert(session.id.clone(), permission_mode);
+        }
+        tool_context_installation.commit();
+        if host_events.publishes() {
+            emit_agent_event(
+                &state.host.events,
+                AgentServiceEvent::SessionCreated(summary),
+            );
+        }
+        Ok(CreatedAgentSession {
+            detail,
+            tool_context_lease,
+        })
+    }
+
+    pub(crate) async fn list_sessions(
+        &self,
+        project_root: Option<String>,
+    ) -> Result<Vec<AgentSessionSummary>, String> {
+        let state = &self.service;
+        let user_id = self.user_id.as_ref();
+        let account_scope = self.account_scope.as_ref();
+        let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
+        self.verify_generation().await?;
+        let (session_manager, filter_root) = {
+            let runtime = state.inner.lock().await;
+            let session_manager = match runtime.as_ref() {
+                Some(current) => {
+                    ensure_runtime_account(current, account_scope)?;
+                    Arc::clone(&current.session_manager)
+                }
+                None => account_session_manager(&state.host.paths, user_id)?,
+            };
+            let filter_root = project_root
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+                .map(|path| normalize_project_root(Path::new(path)))
+                .transpose()?;
+            (session_manager, filter_root)
+        };
+
+        let mut sessions = session_manager
+            .list_all_sessions()
+            .await
+            .map_err(|e| format!("Failed to list Agent tasks: {e}"))?
+            .into_iter()
+            .filter(|session| {
+                if let Some(root) = filter_root.as_ref() {
+                    session.working_dir == *root
+                } else {
+                    true
+                }
+            })
+            .map(|session| session_summary(&session))
+            .collect::<Vec<_>>();
+        sort_sessions_newest_first(&mut sessions);
+        Ok(sessions)
+    }
+
+    pub(crate) async fn load_session(
+        &self,
+        session_id: String,
+    ) -> Result<AgentSessionDetail, String> {
+        let state = &self.service;
+        let user_id = self.user_id.as_ref();
+        let account_scope = self.account_scope.as_ref();
+        let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
+        self.verify_generation().await?;
+        let session_manager = {
+            let runtime = state.inner.lock().await;
+            match runtime.as_ref() {
+                Some(current) => {
+                    ensure_runtime_account(current, account_scope)?;
+                    Arc::clone(&current.session_manager)
+                }
+                None => account_session_manager(&state.host.paths, user_id)?,
+            }
+        };
+        let session = session_manager
+            .get_session(&session_id, true)
+            .await
+            .map_err(|e| format!("Failed to load Agent task: {e}"))?;
+        let conversation = session
+            .conversation
+            .as_ref()
+            .ok_or_else(|| "Agent task history was not loaded".to_string())?;
+        let timeline = conversation_to_timeline_items(conversation);
+        let mut timeline = overlay_live_timeline(
+            &state.live_timelines,
+            &session_id,
+            AgentPermissionRouting::Desktop,
+            conversation,
+            timeline,
+        )
+        .await;
+        // Goose can persist an action-required row before Maple has registered
+        // its responder. Reconcile the final Desktop projection against the
+        // actual surface owner so another caller's request can never acquire
+        // actionable Desktop buttons during that gap or from stale history.
+        let calling_surface_active = {
+            let runtime = state.inner.lock().await;
+            runtime.as_ref().is_some_and(|current| {
+                current.account_scope == account_scope
+                    && current.active_runs.values().any(|run| {
+                        run.session_id == session_id
+                            && run.permission_routing == AgentPermissionRouting::CallingSurface
+                    })
+            })
+        };
+        let pending_routes = state
+            .pending_permissions
+            .lock()
+            .await
+            .iter()
+            .filter(|((pending_session_id, _), _)| pending_session_id == &session_id)
+            .map(|((_, request_id), pending)| (request_id.clone(), pending.routing))
+            .collect::<HashMap<_, _>>();
+        reconcile_desktop_permission_items(&mut timeline, &pending_routes, calling_surface_active);
+
+        Ok(AgentSessionDetail {
+            session: session_summary(&session),
+            timeline,
+            mcp_errors: Vec::new(),
+        })
+    }
+
+    pub(crate) async fn list_session_mcp_servers(
+        &self,
+        session_id: String,
+    ) -> Result<Vec<AgentSessionMcpServer>, String> {
+        let state = &self.service;
+        let user_id = self.user_id.as_ref();
+        let account_scope = self.account_scope.as_ref();
+        let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
+        self.verify_generation().await?;
+        let session_manager = {
+            let runtime = state.inner.lock().await;
+            match runtime.as_ref() {
+                Some(current) => {
+                    ensure_runtime_account(current, account_scope)?;
+                    Arc::clone(&current.session_manager)
+                }
+                None => account_session_manager(&state.host.paths, user_id)?,
+            }
+        };
+        let session = session_manager
+            .get_session(session_id.trim(), false)
+            .await
+            .map_err(|error| format!("Failed to load Agent task: {error}"))?;
+        let configured = normalize_mcp_servers(
+            load_agent_config_inner(&state.host.paths, user_id)
+                .map_err(|error| format!("Failed to load MCP servers: {error}"))?
+                .mcp_servers,
+        )?;
+        Ok(session_mcp_servers(&configured, &session))
+    }
+
+    pub(crate) async fn set_session_mcp_server_enabled(
+        &self,
+        request: AgentSetSessionMcpServerRequest,
+    ) -> Result<Vec<AgentSessionMcpServer>, String> {
+        let state = &self.service;
+        let user_id = self.user_id.as_ref();
+        let account_scope = self.account_scope.as_ref();
+        let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
+        self.verify_generation().await?;
+        self.ensure_accepting_new_work()?;
+        let _session_lifecycle_guard = state.session_lifecycle.lock().await;
+        let session_id = request.session_id.trim().to_string();
+        let requested_key = goose::config::extensions::name_to_key(request.name.trim());
+        if session_id.is_empty() {
+            return Err("Agent task ID cannot be empty".to_string());
+        }
+        if requested_key.is_empty() || maple_reserved_extension_key(&requested_key) {
+            return Err("That MCP server cannot be changed".to_string());
+        }
+
+        let (agent_manager, session_manager, maple_api_session) = {
+            let runtime = state.inner.lock().await;
+            let current = runtime
+                .as_ref()
+                .ok_or_else(|| "Agent runtime is not running".to_string())?;
+            ensure_runtime_account(current, account_scope)?;
+            if has_active_session_run(&current.active_runs, &session_id) {
+                return Err("Stop the running agent before changing MCP servers".to_string());
+            }
+            (
+                Arc::clone(&current.agent_manager),
+                Arc::clone(&current.session_manager),
+                Arc::clone(&current.maple_api_session),
+            )
+        };
+        let configured = normalize_mcp_servers(
+            load_agent_config_inner(&state.host.paths, user_id)
+                .map_err(|error| format!("Failed to load MCP servers: {error}"))?
+                .mcp_servers,
+        )?;
+        let session = session_manager
+            .get_session(&session_id, false)
+            .await
+            .map_err(|error| format!("Failed to load Agent task: {error}"))?;
+        let session_mcp_keys = session_mcp_extension_keys(&session);
+        let manager_result = get_or_create_session_agent(
+            &agent_manager,
+            &maple_api_session,
+            &session,
+            RuntimeContext::default(),
+        )
+        .await
+        .map_err(|error| format!("Failed to load Goose agent: {error}"))?;
+        for error in mcp_connection_errors(manager_result.extension_results, &session_mcp_keys) {
+            log::warn!(
+                "Failed to restore MCP server {}: {}",
+                error.name,
+                error.error
+            );
+        }
+        let agent = manager_result.agent;
+        // Preflight Skills restoration before detaching the working client or changing persisted MCP
+        // state. Reattaching this prepared client after the mutation cannot fail.
+        let skills_client =
+            prepare_transient_skills_client(&state.host.paths, user_id, &agent, &session)?;
+        detach_transient_skills_client(&agent).await;
+        let active = agent.get_extension_configs().await;
+        let active_config = active
+            .iter()
+            .find(|config| mcp_transport_label(config).is_some() && config.key() == requested_key);
+
+        let mutation_result: Result<(), String> = async {
+            if request.enabled {
+                if active_config.is_none() {
+                    let server = configured
+                        .iter()
+                        .find(|server| {
+                            goose::config::extensions::name_to_key(&server.name) == requested_key
+                        })
+                        .ok_or_else(|| {
+                            format!(
+                                "MCP server '{}' is no longer configured and cannot be enabled",
+                                request.name.trim()
+                            )
+                        })?;
+                    let extension = mcp_server_to_extension(server)?;
+                    agent
+                        .add_extension(extension, &session_id)
+                        .await
+                        .map_err(|error| {
+                            format!("Failed to connect MCP server '{}': {error}", server.name)
+                        })?;
+                }
+            } else if let Some(config) = active_config {
+                agent
+                    .remove_extension(&config.name(), &session_id)
+                    .await
+                    .map_err(|error| {
+                        format!(
+                            "Failed to disconnect MCP server '{}': {error}",
+                            request.name.trim()
+                        )
+                    })?;
+            } else {
+                // A failed cold restore may already have removed the server from the
+                // live manager. Persist that authoritative state so the UI still gets
+                // a successful, durable disable operation.
+                agent
+                    .persist_extension_state(&session_id)
+                    .await
+                    .map_err(|error| format!("Failed to save task MCP settings: {error}"))?;
+            }
+            Ok(())
+        }
+        .await;
+        attach_prepared_skills_client(&agent, skills_client).await;
+        mutation_result?;
+
+        let refreshed = session_manager
+            .get_session(&session_id, false)
+            .await
+            .map_err(|error| format!("Failed to reload Agent task: {error}"))?;
+        Ok(session_mcp_servers(&configured, &refreshed))
+    }
+
+    pub(crate) async fn delete_session(&self, session_id: String) -> Result<(), String> {
+        self.delete_session_inner(session_id, true).await
+    }
+
+    /// Remove a session that an adapter failed to publish. This cleanup path is
+    /// intentionally available while the service is draining.
+    pub(crate) async fn discard_session_during_cleanup(
+        &self,
+        session_id: String,
+    ) -> Result<(), String> {
+        self.delete_session_inner(session_id, false).await
+    }
+
+    async fn delete_session_inner(
+        &self,
+        session_id: String,
+        require_admission: bool,
+    ) -> Result<(), String> {
+        let state = &self.service;
+        let user_id = self.user_id.as_ref();
+        let account_scope = self.account_scope.as_ref();
+        let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
+        self.verify_generation().await?;
+        if require_admission {
+            self.ensure_accepting_new_work()?;
+        }
+        let session_id = session_id.trim().to_string();
+        if session_id.is_empty() {
+            return Err("Agent task ID cannot be empty".to_string());
+        }
+
+        let _session_lifecycle_guard = state.session_lifecycle.lock().await;
+        let (agent_manager, session_manager, permission_modes, web_tool_state) = {
+            let runtime = state.inner.lock().await;
+            match runtime.as_ref() {
+                Some(current) => {
+                    ensure_runtime_account(current, account_scope)?;
+                    if has_active_session_run(&current.active_runs, &session_id) {
+                        return Err("Stop the running agent before deleting this task".to_string());
+                    }
+                    (
+                        Some(Arc::clone(&current.agent_manager)),
+                        Arc::clone(&current.session_manager),
+                        Some(Arc::clone(&current.permission_modes)),
+                        Some(Arc::clone(&current.web_tool_state)),
+                    )
+                }
+                None => (
+                    None,
+                    account_session_manager(&state.host.paths, user_id)?,
+                    None,
+                    None,
+                ),
+            }
+        };
+
+        delete_persisted_agent_session(
+            session_manager.as_ref(),
+            &state.pending_permissions,
+            &state.live_timelines,
+            web_tool_state.as_deref(),
+            &session_id,
+        )
+        .await?;
+        if let Some(agent_manager) = agent_manager {
+            if let Err(error) = agent_manager.remove_session_if_loaded(&session_id).await {
+                log::warn!(
+                    "Deleted Goose session {session_id}, but failed to unload its agent: {error}"
+                );
+            }
+        }
+        if let Some(permission_modes) = permission_modes {
+            permission_modes.lock().await.remove(&session_id);
+        }
+        let removed_tool_context = {
+            let mut runtime = state.inner.lock().await;
+            if let Some(current) = runtime.as_mut() {
+                ensure_runtime_account(current, account_scope)?;
+                current.session_tool_contexts.remove(&session_id)
+            } else {
+                None
+            }
+        };
+        if let Some(installed) = removed_tool_context {
+            installed.context.revoke();
+        }
+
+        Ok(())
+    }
 }
 
 async fn delete_persisted_agent_session(
@@ -1700,6 +2334,7 @@ async fn finalize_cancelled_agent_turn(
     live_timelines: &LiveTimelines,
     web_tool_state: &WebToolState,
     session_id: &str,
+    routing: AgentPermissionRouting,
     user_message: &Message,
     cancelled_permission_ids: &HashSet<String>,
 ) -> Result<(), String> {
@@ -1740,7 +2375,10 @@ async fn finalize_cancelled_agent_turn(
 
     // Goose's persisted conversation is the committed cancellation boundary.
     // Drop Maple's speculative event suffix so reloads project only that history.
-    live_timelines.lock().await.remove(session_id);
+    {
+        let mut timelines = live_timelines.lock().await;
+        remove_live_timeline_for_routing(&mut timelines, session_id, routing);
+    }
     // Search provenance is an in-memory Maple permission convenience, not
     // Goose history. Reset it rather than letting a discarded search result
     // authorize a later open_url call. A cold session already starts empty.
@@ -1886,665 +2524,933 @@ fn is_goose_declined_tool_response(response: &goose::conversation::message::Tool
     })
 }
 
-#[tauri::command]
-pub async fn agent_send_message(
-    app_handle: AppHandle,
-    state: State<'_, AgentRuntimeState>,
-    user_id: String,
-    request: AgentSendMessageRequest,
-) -> Result<AgentRunResponse, String> {
-    let account_scope = account_scope(&user_id)?;
-    let generation = account_generation(&state, &account_scope).await;
-    let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
-    ensure_account_generation(&state, &account_scope, generation).await?;
-    let text = request.text.trim().to_string();
-    if text.is_empty() {
-        return Err("Prompt cannot be empty".to_string());
-    }
-
-    let session_lifecycle_guard = state.session_lifecycle.lock().await;
-    let run_id = next_run_id();
-    let cancel_token = CancellationToken::new();
-    let prompt_title = session_title_from_prompt(&text);
-    let web_permission_context = WebPermissionContext::from_user_prompt(&text);
-    let user_message = Message::user().with_text(text).with_generated_id();
-    let (
-        agent_manager,
-        session_manager,
-        maple_api_session,
-        permission_modes,
-        web_tool_state,
-        model,
-        mode,
-    ) = {
-        let runtime = state.inner.lock().await;
-        let current = runtime
-            .as_ref()
-            .ok_or_else(|| "Agent runtime is not running".to_string())?;
-        ensure_runtime_account(current, &account_scope)?;
-        (
-            Arc::clone(&current.agent_manager),
-            Arc::clone(&current.session_manager),
-            Arc::clone(&current.maple_api_session),
-            Arc::clone(&current.permission_modes),
-            Arc::clone(&current.web_tool_state),
-            request
-                .model
-                .clone()
-                .unwrap_or_else(|| current.model.clone()),
-            request.mode.clone().unwrap_or_else(|| current.mode.clone()),
+impl AgentRuntimeHandle {
+    pub(crate) async fn send_message(
+        &self,
+        request: AgentSendMessageRequest,
+    ) -> Result<AgentRunHandle, String> {
+        self.send_message_inner(
+            request,
+            None,
+            None,
+            AgentHostEventPolicy::Publish,
+            AgentPermissionRouting::Desktop,
         )
-    };
-    let requested_permission_mode = parse_user_permission_mode(&mode)?;
-
-    let user_item = message_to_timeline_items(&user_message, false)
-        .into_iter()
-        .next()
-        .ok_or_else(|| "Failed to create user timeline item".to_string())?;
-    let live_timelines = Arc::clone(&state.live_timelines);
-
-    // Claim the session before changing its title, provider, mode, or
-    // extensions. A duplicate send must not mutate an Agent that is already
-    // serving another run.
-    agent_manager
-        .try_register_cancel_token(&request.session_id, cancel_token.clone())
         .await
-        .map_err(|e| format!("Agent task is already running: {e}"))?;
-
-    // A rejected or delayed send must not be able to change a live policy that
-    // the mode command already made authoritative. Seed only sessions that do
-    // not yet have runtime policy state, after Goose grants this run its claim.
-    let (permission_mode, seeded_permission_mode) = {
-        let mut modes = permission_modes.lock().await;
-        select_session_permission_mode(&mut modes, &request.session_id, requested_permission_mode)
-    };
-    let effective_mode = permission_mode.to_string();
-
-    let setup_result: Result<(Arc<Agent>, Vec<AgentMcpConnectionError>), String> = async {
-        let mut session = session_manager
-            .get_session(&request.session_id, true)
-            .await
-            .map_err(|e| format!("Failed to load Agent task: {e}"))?;
-        validate_session_model_lock(
-            session.message_count,
-            session
-                .model_config
-                .as_ref()
-                .map(|model| model.model_name.as_str()),
-            &model,
-        )?;
-        let should_name_from_prompt = should_name_session_from_prompt(&session);
-        if should_name_from_prompt {
-            session_manager
-                .update(&session.id)
-                .system_generated_name(prompt_title)
-                .apply()
-                .await
-                .map_err(|e| format!("Failed to name Agent task: {e}"))?;
-            session = session_manager
-                .get_session(&session.id, false)
-                .await
-                .map_err(|e| format!("Failed to load named Agent task: {e}"))?;
-            emit_agent_event(
-                &app_handle,
-                AgentEventEnvelope {
-                    event_type: "sessionUpdated".to_string(),
-                    session_id: Some(session.id.clone()),
-                    run_id: Some(run_id.clone()),
-                    item: None,
-                    status: None,
-                    session: Some(session_summary(&session)),
-                    message: None,
-                },
-            );
-        }
-        let (agent, mcp_errors) = configure_session_agent(
-            AgentSkillsScope {
-                app_handle: &app_handle,
-                user_id: &user_id,
-            },
-            &agent_manager,
-            &session_manager,
-            &maple_api_session,
-            SessionAgentConfiguration {
-                web_tool_state: &web_tool_state,
-                session: &session,
-                model: &model,
-                context_limit: request.context_limit,
-                mode: &effective_mode,
-                primary_model_supports_vision: request.vision_capable,
-            },
-        )
-        .await?;
-        Ok((agent, mcp_errors))
     }
-    .await;
-    let (agent, mcp_errors) = match setup_result {
-        Ok(setup) => setup,
-        Err(error) => {
+
+    pub(crate) async fn send_message_with_tool_context(
+        &self,
+        request: AgentSendMessageRequest,
+        access: AgentToolContextAccess,
+        surface_lifetime: CancellationToken,
+        host_events: AgentHostEventPolicy,
+    ) -> Result<AgentRunHandle, String> {
+        self.send_message_inner(
+            request,
+            Some(access),
+            Some(surface_lifetime),
+            host_events,
+            AgentPermissionRouting::CallingSurface,
+        )
+        .await
+    }
+
+    async fn send_message_inner(
+        &self,
+        request: AgentSendMessageRequest,
+        tool_context_access: Option<AgentToolContextAccess>,
+        surface_lifetime: Option<CancellationToken>,
+        host_events: AgentHostEventPolicy,
+        permission_routing: AgentPermissionRouting,
+    ) -> Result<AgentRunHandle, String> {
+        let state = &self.service;
+        let user_id = self.user_id.as_ref();
+        let account_scope = self.account_scope.as_ref();
+        let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
+        self.verify_generation().await?;
+        self.ensure_accepting_new_work()?;
+        let text = request.text.trim().to_string();
+        if text.is_empty() {
+            return Err("Prompt cannot be empty".to_string());
+        }
+
+        let session_lifecycle_guard = state.session_lifecycle.lock().await;
+        let run_id = next_run_id();
+        let (run_events, run_events_rx) = AgentRunEventPublisher::new(
+            state.host.events.clone(),
+            request.session_id.clone(),
+            run_id.clone(),
+            host_events,
+        );
+        let cancel_token = surface_lifetime
+            .as_ref()
+            .map(CancellationToken::child_token)
+            .unwrap_or_default();
+        if cancel_token.is_cancelled() {
+            return Err("Agent surface closed before the run could start".to_string());
+        }
+        let prompt_title = session_title_from_prompt(&text);
+        let web_permission_context = WebPermissionContext::from_user_prompt(&text);
+        let user_message = Message::user().with_text(text).with_generated_id();
+        let (
+            agent_manager,
+            session_manager,
+            maple_api_session,
+            permission_modes,
+            web_tool_state,
+            model,
+            mode,
+        ) = {
+            let runtime = state.inner.lock().await;
+            let current = runtime
+                .as_ref()
+                .ok_or_else(|| "Agent runtime is not running".to_string())?;
+            ensure_runtime_account(current, account_scope)?;
+            (
+                Arc::clone(&current.agent_manager),
+                Arc::clone(&current.session_manager),
+                Arc::clone(&current.maple_api_session),
+                Arc::clone(&current.permission_modes),
+                Arc::clone(&current.web_tool_state),
+                request
+                    .model
+                    .clone()
+                    .unwrap_or_else(|| current.model.clone()),
+                request.mode.clone().unwrap_or_else(|| current.mode.clone()),
+            )
+        };
+        let requested_permission_mode = parse_user_permission_mode(&mode)?;
+
+        let user_item = message_to_timeline_items(&user_message, false)
+            .into_iter()
+            .next()
+            .ok_or_else(|| "Failed to create user timeline item".to_string())?;
+        let live_timelines = Arc::clone(&state.live_timelines);
+
+        // Claim the session before changing its title, provider, mode, or
+        // extensions. A duplicate send must not mutate an Agent that is already
+        // serving another run.
+        agent_manager
+            .try_register_cancel_token(&request.session_id, cancel_token.clone())
+            .await
+            .map_err(|e| format!("Agent task is already running: {e}"))?;
+
+        // A rejected or delayed send must not be able to change a live policy that
+        // the mode command already made authoritative. Seed only sessions that do
+        // not yet have runtime policy state, after Goose grants this run its claim.
+        let (permission_mode, seeded_permission_mode) = {
+            let mut modes = permission_modes.lock().await;
+            select_session_permission_mode(
+                &mut modes,
+                &request.session_id,
+                requested_permission_mode,
+            )
+        };
+        let effective_mode = permission_mode.to_string();
+
+        let setup_result: Result<
+            (
+                Arc<Agent>,
+                Vec<AgentMcpConnectionError>,
+                SharedAgentToolContext,
+            ),
+            String,
+        > = async {
+            // External surfaces present an opaque exact-match capability. Check
+            // it before any persisted-session work so deletion that won the
+            // session lifecycle race is reported as an expired surface task.
+            let external_tool_context = if tool_context_access.is_some() {
+                let mut runtime = state.inner.lock().await;
+                let current = runtime
+                    .as_mut()
+                    .ok_or_else(|| "Agent runtime is not running".to_string())?;
+                ensure_runtime_account(current, account_scope)?;
+                Some(resolve_session_tool_context(
+                    &mut current.session_tool_contexts,
+                    account_scope,
+                    &request.session_id,
+                    tool_context_access.as_ref(),
+                    &state.host.default_tool_context,
+                )?)
+            } else {
+                None
+            };
+            let mut session = session_manager
+                .get_session(&request.session_id, true)
+                .await
+                .map_err(|e| format!("Failed to load Agent task: {e}"))?;
+            validate_session_model_lock(
+                session.message_count,
+                session
+                    .model_config
+                    .as_ref()
+                    .map(|model| model.model_name.as_str()),
+                &model,
+            )?;
+            let tool_context = match external_tool_context {
+                Some(context) => context,
+                None => {
+                    let mut runtime = state.inner.lock().await;
+                    let current = runtime
+                        .as_mut()
+                        .ok_or_else(|| "Agent runtime is not running".to_string())?;
+                    ensure_runtime_account(current, account_scope)?;
+                    resolve_session_tool_context(
+                        &mut current.session_tool_contexts,
+                        account_scope,
+                        &request.session_id,
+                        None,
+                        &state.host.default_tool_context,
+                    )?
+                }
+            };
+            let should_name_from_prompt = should_name_session_from_prompt(&session);
+            if should_name_from_prompt {
+                session_manager
+                    .update(&session.id)
+                    .system_generated_name(prompt_title)
+                    .apply()
+                    .await
+                    .map_err(|e| format!("Failed to name Agent task: {e}"))?;
+                session = session_manager
+                    .get_session(&session.id, false)
+                    .await
+                    .map_err(|e| format!("Failed to load named Agent task: {e}"))?;
+                run_events
+                    .publish(AgentRunEvent::SessionUpdated(session_summary(&session)))
+                    .await;
+            }
+            let (agent, mcp_errors) = configure_session_agent(
+                AgentSkillsScope {
+                    paths: &state.host.paths,
+                    user_id,
+                },
+                &agent_manager,
+                &session_manager,
+                &maple_api_session,
+                SessionAgentConfiguration {
+                    web_tool_state: &web_tool_state,
+                    session: &session,
+                    model: &model,
+                    context_limit: request.context_limit,
+                    mode: &effective_mode,
+                    primary_model_supports_vision: request.vision_capable,
+                    tool_context: &tool_context,
+                },
+            )
+            .await?;
+            Ok((agent, mcp_errors, tool_context))
+        }
+        .await;
+        let (agent, mcp_errors, tool_context) = match setup_result {
+            Ok(setup) => setup,
+            Err(error) => {
+                if seeded_permission_mode {
+                    permission_modes.lock().await.remove(&request.session_id);
+                }
+                agent_manager
+                    .unregister_cancel_token(&request.session_id)
+                    .await;
+                return Err(error);
+            }
+        };
+        if !mcp_errors.is_empty() {
+            run_events
+                .publish(AgentRunEvent::SetupWarning(format_mcp_connection_errors(
+                    &mcp_errors,
+                )))
+                .await;
+        }
+        if cancel_token.is_cancelled() {
             if seeded_permission_mode {
                 permission_modes.lock().await.remove(&request.session_id);
             }
             agent_manager
                 .unregister_cancel_token(&request.session_id)
                 .await;
-            return Err(error);
-        }
-    };
-    if !mcp_errors.is_empty() {
-        emit_agent_event(
-            &app_handle,
-            AgentEventEnvelope {
-                event_type: "error".to_string(),
-                session_id: None,
-                run_id: Some(run_id.clone()),
-                item: None,
-                status: None,
-                session: None,
-                message: Some(format_mcp_connection_errors(&mcp_errors)),
-            },
-        );
-    }
-
-    let app_handle_for_task = app_handle.clone();
-    let state_inner = Arc::clone(&state.inner);
-    let session_lifecycle = Arc::clone(&state.session_lifecycle);
-    let pending_permissions = Arc::clone(&state.pending_permissions);
-    let session_id = request.session_id.clone();
-    let task_run_id = run_id.clone();
-    let task_agent_manager = Arc::clone(&agent_manager);
-    let task_session_manager = Arc::clone(&session_manager);
-    let task_permission_modes = Arc::clone(&permission_modes);
-    let task_web_tool_state = Arc::clone(&web_tool_state);
-    let task_user_message = user_message.clone();
-    let task_cancel_token = cancel_token.clone();
-    let cancelled_permission_ids = Arc::new(Mutex::new(HashSet::new()));
-    let task_cancelled_permission_ids = Arc::clone(&cancelled_permission_ids);
-    let (start_tx, start_rx) = oneshot::channel();
-    let task = tauri::async_runtime::spawn(async move {
-        let should_run = tokio::select! {
-            biased;
-            _ = task_cancel_token.cancelled() => false,
-            start = start_rx => start.is_ok(),
-        };
-        let result = if should_run {
-            provider::with_run_cancellation(
-                task_cancel_token.clone(),
-                run_agent_prompt(AgentPromptRun {
-                    app_handle: app_handle_for_task.clone(),
-                    agent,
-                    session_manager: Arc::clone(&task_session_manager),
-                    live_timelines: live_timelines.clone(),
-                    session_id: session_id.clone(),
-                    run_id: task_run_id.clone(),
-                    user_message: task_user_message.clone(),
-                    permission_modes: task_permission_modes,
-                    web_tool_state: Arc::clone(&task_web_tool_state),
-                    web_permission_context,
-                    cancel_token: task_cancel_token.clone(),
-                    pending_permissions,
-                    cancelled_permission_ids: Arc::clone(&task_cancelled_permission_ids),
-                }),
-            )
-            .await
-        } else {
-            Ok(AgentPromptOutcome::default())
-        };
-
-        // Keep deletion serialized until every terminal write and event for
-        // this run has completed. The active-run entry stays visible while
-        // the cleanup is in progress, so deletion continues to reject it.
-        let _session_lifecycle_guard = session_lifecycle.lock().await;
-        // Completion and cancellation linearize under the same lock used by
-        // agent_cancel_run. Whichever side acquires it first owns the terminal
-        // result, so Stop cannot succeed against an already-settled run.
-        let run_was_cancelled = !should_run || task_cancel_token.is_cancelled();
-        let cancelled_permission_ids = task_cancelled_permission_ids.lock().await.clone();
-        let result = if run_was_cancelled {
-            finalize_cancelled_agent_turn(
-                task_session_manager.as_ref(),
-                &live_timelines,
-                task_web_tool_state.as_ref(),
-                &session_id,
-                &task_user_message,
-                &cancelled_permission_ids,
-            )
-            .await
-            .map(|_| AgentPromptOutcome::default())
-        } else {
-            result
-        };
-        task_agent_manager
-            .unregister_cancel_token(&session_id)
-            .await;
-        if !run_was_cancelled {
-            if let Ok(outcome) = &result {
-                let mut timelines = live_timelines.lock().await;
-                apply_successful_prompt_outcome(&mut timelines, &session_id, outcome);
-            }
+            return Err("Agent surface closed before the run could start".to_string());
         }
 
-        let (status, message) = match result {
-            Ok(_) if run_was_cancelled => ("cancelled", None),
-            Ok(_) => ("completed", None),
-            Err(error) => ("failed", Some(error)),
-        };
-        if let Some(error) = message.as_ref() {
-            let item = error_item(error.clone());
-            {
-                let mut timelines = live_timelines.lock().await;
-                apply_failed_prompt_outcome(&mut timelines, &session_id, item.clone());
-            }
-            emit_agent_event(
-                &app_handle_for_task,
-                AgentEventEnvelope {
-                    event_type: "error".to_string(),
-                    session_id: Some(session_id.clone()),
-                    run_id: Some(task_run_id.clone()),
-                    item: Some(item),
-                    status: None,
-                    session: None,
-                    message: None,
-                },
-            );
-        }
-        emit_agent_event(
-            &app_handle_for_task,
-            AgentEventEnvelope {
-                event_type: "runFinished".to_string(),
-                session_id: Some(session_id),
-                run_id: Some(task_run_id.clone()),
-                item: None,
-                status: None,
-                session: None,
-                message: Some(status.to_string()),
-            },
-        );
-        // Remove the stored JoinHandle only after the final externally visible
-        // side effect. Stop may otherwise miss this task and return while its
-        // runFinished event is still pending.
-        let mut runtime = state_inner.lock().await;
-        if let Some(current) = runtime.as_mut() {
-            current.active_runs.remove(&task_run_id);
-        }
-    });
-
-    let mut task = Some(task);
-    let insertion_error = {
-        let mut runtime = state.inner.lock().await;
-        match runtime.as_mut() {
-            None => Some("Agent runtime is not running".to_string()),
-            Some(current) => match ensure_runtime_account(current, &account_scope) {
-                Err(error) => Some(error),
-                Ok(()) => {
-                    current.active_runs.insert(
-                        run_id.clone(),
-                        ActiveAgentRun {
-                            token: cancel_token.clone(),
-                            session_id: request.session_id.clone(),
-                            cancelled_permission_ids: Arc::clone(&cancelled_permission_ids),
-                            task_handle: task.take().expect("task handle must be available"),
-                        },
-                    );
-                    None
-                }
-            },
-        }
-    };
-    if let Some(error) = insertion_error {
-        let task = task.expect("failed insertion must retain task handle");
-        task.abort();
-        let _ = task.await;
-        agent_manager
-            .unregister_cancel_token(&request.session_id)
-            .await;
-        return Err(error);
-    }
-    emit_agent_event(
-        &app_handle,
-        AgentEventEnvelope {
-            event_type: "runStarted".to_string(),
-            session_id: Some(request.session_id.clone()),
-            run_id: Some(run_id.clone()),
-            item: None,
-            status: None,
-            session: None,
-            message: None,
-        },
-    );
-
-    record_and_emit_timeline_item(
-        &app_handle,
-        &state.live_timelines,
-        &request.session_id,
-        &run_id,
-        user_item.clone(),
-    )
-    .await;
-    let _ = start_tx.send(());
-    // Keep the session claimed until the optimistic timeline item and start
-    // signal are ordered. A cancellation cleanup must not finish and then be
-    // followed by this send path re-appending the cancelled prompt.
-    drop(session_lifecycle_guard);
-
-    Ok(AgentRunResponse { run_id })
-}
-
-#[tauri::command]
-pub async fn agent_cancel_run(
-    app_handle: AppHandle,
-    state: State<'_, AgentRuntimeState>,
-    user_id: String,
-    run_id: String,
-) -> Result<(), String> {
-    let account_scope = account_scope(&user_id)?;
-    let generation = account_generation(&state, &account_scope).await;
-    let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
-    ensure_account_generation(&state, &account_scope, generation).await?;
-    // Order permission updates before the worker's authoritative reload and
-    // terminal event. If the worker settled first, its active-run entry will
-    // already be gone by the time this command inspects it.
-    let _session_lifecycle_guard = state.session_lifecycle.lock().await;
-    let (agent_manager, session_id, cancel_token, cancelled_permission_ids) = {
-        let runtime = state.inner.lock().await;
-        let Some(current) = runtime.as_ref() else {
-            return Ok(());
-        };
-        ensure_runtime_account(current, &account_scope)?;
-        let Some(active_run) = current.active_runs.get(&run_id) else {
-            return Ok(());
-        };
-        (
-            Arc::clone(&current.agent_manager),
-            active_run.session_id.clone(),
-            active_run.token.clone(),
-            Arc::clone(&active_run.cancelled_permission_ids),
-        )
-    };
-    cancel_token.cancel();
-    let cancelled_permissions = cancel_pending_permissions_for_sessions(
-        &agent_manager,
-        &state.pending_permissions,
-        std::slice::from_ref(&session_id),
-    )
-    .await;
-    cancelled_permission_ids.lock().await.extend(
-        cancelled_permissions
-            .iter()
-            .map(|(request_id, _)| request_id.clone()),
-    );
-    for (request_id, session_id) in cancelled_permissions {
-        if let Some(item) = update_live_permission_status(
-            &state.live_timelines,
-            &session_id,
-            &request_id,
-            "cancelled",
-        )
-        .await
-        {
-            emit_timeline_item(&app_handle, &session_id, &run_id, item);
-        }
-    }
-    Ok(())
-}
-
-#[tauri::command]
-pub async fn agent_set_permission_mode(
-    app_handle: AppHandle,
-    state: State<'_, AgentRuntimeState>,
-    user_id: String,
-    request: AgentPermissionModeRequest,
-) -> Result<(), String> {
-    let account_scope = account_scope(&user_id)?;
-    let generation = account_generation(&state, &account_scope).await;
-    let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
-    ensure_account_generation(&state, &account_scope, generation).await?;
-
-    let session_id = request.session_id.trim().to_string();
-    if session_id.is_empty() {
-        return Err("Agent permission mode update requires a task ID".to_string());
-    }
-    let goose_mode = parse_user_permission_mode(&request.mode)?;
-    let (agent_manager, session_manager, maple_api_session, permission_modes) = {
-        let runtime = state.inner.lock().await;
-        let current = runtime
-            .as_ref()
-            .ok_or_else(|| "Agent runtime is not running".to_string())?;
-        ensure_runtime_account(current, &account_scope)?;
-        (
-            Arc::clone(&current.agent_manager),
-            Arc::clone(&current.session_manager),
-            Arc::clone(&current.maple_api_session),
-            Arc::clone(&current.permission_modes),
-        )
-    };
-
-    // Restrictive transitions take effect before any fallible Goose or disk
-    // work. Otherwise the selector could say Read only while a still-live Auto
-    // policy approves the next write. If setup fails, restore the previous
-    // policy so the command and optimistic UI can roll back consistently.
-    let previous_restrictive_mode = if goose_mode == GooseMode::SmartApprove {
-        permission_modes
-            .lock()
-            .await
-            .insert(session_id.clone(), goose_mode)
-    } else {
-        None
-    };
-    let update_result: Result<Arc<Agent>, String> = async {
-        let session = session_manager
-            .get_session(&session_id, false)
-            .await
-            .map_err(|error| format!("Failed to load Agent task: {error}"))?;
-        let agent = get_or_create_session_agent(
-            &agent_manager,
-            &maple_api_session,
-            &session,
-            RuntimeContext::default(),
-        )
-        .await
-        .map_err(|error| format!("Failed to resolve Goose agent for mode update: {error}"))?
-        .agent;
-        agent
-            .update_goose_mode(GOOSE_PERMISSION_ROUTING_MODE, &session_id)
-            .await
-            .map_err(|error| format!("Failed to update Goose mode: {error}"))?;
-        // update_goose_mode already persists SmartApprove, which is both our
-        // internal Goose routing mode and the user-facing Read-only mode. Auto
-        // is Maple-owned, so only that case needs a second persistence step.
-        // Keeping Read-only to one write avoids a failed duplicate write
-        // leaving the persisted session stricter than the live Maple policy.
-        if goose_mode == GooseMode::Auto {
-            session_manager
-                .update(&session_id)
-                .goose_mode(goose_mode)
-                .apply()
+        let task_events = run_events.clone();
+        let state_inner = Arc::clone(&state.inner);
+        let session_lifecycle = Arc::clone(&state.session_lifecycle);
+        let task_pending_permissions = Arc::clone(&state.pending_permissions);
+        let session_id = request.session_id.clone();
+        let task_run_id = run_id.clone();
+        let task_agent_manager = Arc::clone(&agent_manager);
+        let task_session_manager = Arc::clone(&session_manager);
+        let task_permission_modes = Arc::clone(&permission_modes);
+        let task_web_tool_state = Arc::clone(&web_tool_state);
+        let task_user_message = user_message.clone();
+        let task_cancel_token = cancel_token.clone();
+        let task_agent = Arc::clone(&agent);
+        let active_agent = Arc::clone(&agent);
+        let cancelled_permission_ids = Arc::new(Mutex::new(HashSet::new()));
+        let task_cancelled_permission_ids = Arc::clone(&cancelled_permission_ids);
+        let task_issued_permission_ids = Arc::new(Mutex::new(HashSet::new()));
+        let (start_tx, start_rx) = oneshot::channel();
+        let (terminal_tx, terminal_rx) = watch::channel(None);
+        let task = tokio::spawn(async move {
+            let should_run = tokio::select! {
+                biased;
+                _ = task_cancel_token.cancelled() => false,
+                start = start_rx => start.is_ok(),
+            };
+            let result = if should_run {
+                provider::with_run_cancellation(
+                    task_cancel_token.clone(),
+                    run_agent_prompt(AgentPromptRun {
+                        events: task_events.clone(),
+                        agent: Arc::clone(&task_agent),
+                        session_manager: Arc::clone(&task_session_manager),
+                        live_timelines: live_timelines.clone(),
+                        session_id: session_id.clone(),
+                        user_message: task_user_message.clone(),
+                        permission_modes: task_permission_modes,
+                        web_tool_state: Arc::clone(&task_web_tool_state),
+                        web_permission_context,
+                        cancel_token: task_cancel_token.clone(),
+                        pending_permissions: Arc::clone(&task_pending_permissions),
+                        issued_permission_ids: task_issued_permission_ids,
+                        cancelled_permission_ids: Arc::clone(&task_cancelled_permission_ids),
+                        run_id: task_run_id.clone(),
+                        permission_routing,
+                    }),
+                )
                 .await
-                .map_err(|error| format!("Failed to persist Agent permission mode: {error}"))?;
-        }
-        Ok(agent)
-    }
-    .await;
-    let agent = match update_result {
-        Ok(agent) => agent,
-        Err(error) => {
-            if goose_mode == GooseMode::SmartApprove {
-                let mut modes = permission_modes.lock().await;
-                match previous_restrictive_mode {
-                    Some(previous) => {
-                        modes.insert(session_id.clone(), previous);
-                    }
-                    None => {
-                        modes.remove(&session_id);
+            } else {
+                Ok(AgentPromptOutcome::default())
+            };
+
+            // Keep deletion serialized until every terminal write and event for
+            // this run has completed. The active-run entry stays visible while
+            // the cleanup is in progress, so deletion continues to reject it.
+            let _session_lifecycle_guard = session_lifecycle.lock().await;
+            // Completion and cancellation linearize under the same lock used by
+            // agent_cancel_run. Whichever side acquires it first owns the terminal
+            // result, so Stop cannot succeed against an already-settled run.
+            let run_was_cancelled = !should_run || task_cancel_token.is_cancelled();
+            let terminal_permissions = cancel_pending_permissions_for_runs(
+                &task_pending_permissions,
+                std::slice::from_ref(&task_run_id),
+                &HashMap::from([(task_run_id.clone(), Arc::clone(&task_agent))]),
+            )
+            .await;
+            if !terminal_permissions.is_empty() {
+                task_cancelled_permission_ids.lock().await.extend(
+                    terminal_permissions
+                        .iter()
+                        .map(|((_, request_id), _)| request_id.clone()),
+                );
+                for ((permission_session_id, request_id), _) in terminal_permissions {
+                    if let Some(item) = update_live_permission_status(
+                        &live_timelines,
+                        &permission_session_id,
+                        permission_routing,
+                        &request_id,
+                        "cancelled",
+                    )
+                    .await
+                    {
+                        task_events.publish(AgentRunEvent::TimelineItem(item)).await;
                     }
                 }
             }
+            let cancelled_permission_ids = task_cancelled_permission_ids.lock().await.clone();
+            let result = if run_was_cancelled {
+                finalize_cancelled_agent_turn(
+                    task_session_manager.as_ref(),
+                    &live_timelines,
+                    task_web_tool_state.as_ref(),
+                    &session_id,
+                    permission_routing,
+                    &task_user_message,
+                    &cancelled_permission_ids,
+                )
+                .await
+                .map(|_| AgentPromptOutcome::default())
+            } else {
+                result
+            };
+            task_agent_manager
+                .unregister_cancel_token(&session_id)
+                .await;
+            if !run_was_cancelled {
+                if let Ok(outcome) = &result {
+                    let mut timelines = live_timelines.lock().await;
+                    apply_successful_prompt_outcome(
+                        &mut timelines,
+                        &session_id,
+                        permission_routing,
+                        outcome,
+                    );
+                }
+            }
+
+            let (status, message) = match result {
+                Ok(_) if run_was_cancelled => ("cancelled", None),
+                Ok(_) => ("completed", None),
+                Err(error) => ("failed", Some(error)),
+            };
+            if let Some(error) = message.as_ref() {
+                let item = error_item(error.clone());
+                {
+                    let mut timelines = live_timelines.lock().await;
+                    apply_failed_prompt_outcome(
+                        &mut timelines,
+                        &session_id,
+                        permission_routing,
+                        item.clone(),
+                    );
+                }
+                task_events.publish(AgentRunEvent::Error(item)).await;
+            }
+            // This retained per-run signal is authoritative for non-UI consumers.
+            // It is deliberately published after runFinished so a receiver that
+            // can still drain the broadcast stream observes all timeline chunks
+            // before settling, while a lagged receiver can never miss completion.
+            let terminal = match status {
+                "cancelled" => AgentRunTerminal::Cancelled,
+                "failed" => AgentRunTerminal::Failed,
+                _ => AgentRunTerminal::Completed,
+            };
+            task_events.publish(AgentRunEvent::Finished(terminal)).await;
+            let _ = terminal_tx.send(Some(terminal));
+            // Remove the stored JoinHandle only after the final externally visible
+            // side effect. Stop may otherwise miss this task and return while its
+            // runFinished event is still pending.
+            let mut runtime = state_inner.lock().await;
+            if let Some(current) = runtime.as_mut() {
+                current.active_runs.remove(&task_run_id);
+            }
+        });
+
+        let mut task = Some(task);
+        let insertion_error = {
+            let mut runtime = state.inner.lock().await;
+            match runtime.as_mut() {
+                None => Some("Agent runtime is not running".to_string()),
+                Some(current) => match ensure_runtime_account(current, account_scope) {
+                    Err(error) => Some(error),
+                    Ok(()) => {
+                        current.active_runs.insert(
+                            run_id.clone(),
+                            ActiveAgentRun {
+                                agent: active_agent,
+                                permission_routing,
+                                token: cancel_token.clone(),
+                                tool_context: tool_context.clone(),
+                                session_id: request.session_id.clone(),
+                                events: run_events.clone(),
+                                cancelled_permission_ids: Arc::clone(&cancelled_permission_ids),
+                                task_handle: task.take().expect("task handle must be available"),
+                            },
+                        );
+                        None
+                    }
+                },
+            }
+        };
+        if let Some(error) = insertion_error {
+            let task = task.expect("failed insertion must retain task handle");
+            task.abort();
+            let _ = task.await;
+            agent_manager
+                .unregister_cancel_token(&request.session_id)
+                .await;
             return Err(error);
         }
-    };
-    if goose_mode == GooseMode::Auto {
-        permission_modes
-            .lock()
-            .await
-            .insert(session_id.clone(), goose_mode);
-    }
-    {
-        let mut runtime = state.inner.lock().await;
-        let current = runtime
-            .as_mut()
-            .ok_or_else(|| "Agent runtime is not running".to_string())?;
-        ensure_runtime_account(current, &account_scope)?;
-        current.mode = request.mode.clone();
+        run_events.publish(AgentRunEvent::Started).await;
+
+        record_and_emit_timeline_item(
+            &run_events,
+            &state.live_timelines,
+            &request.session_id,
+            permission_routing,
+            user_item.clone(),
+        )
+        .await;
+        let _ = start_tx.send(());
+        // Keep the session claimed until the optimistic timeline item and start
+        // signal are ordered. A cancellation cleanup must not finish and then be
+        // followed by this send path re-appending the cancelled prompt.
+        drop(session_lifecycle_guard);
+
+        let permission_responder =
+            matches!(permission_routing, AgentPermissionRouting::CallingSurface).then(|| {
+                AgentRunPermissionResponder {
+                    agent: self.clone(),
+                    session_id: Arc::from(request.session_id.as_str()),
+                    run_id: Arc::from(run_id.as_str()),
+                }
+            });
+        let cancellation = matches!(permission_routing, AgentPermissionRouting::CallingSurface)
+            .then(|| AgentRunCancellation {
+                agent: self.clone(),
+                session_id: Arc::from(request.session_id.as_str()),
+                run_id: Arc::from(run_id.as_str()),
+                routing: permission_routing,
+            });
+        Ok(AgentRunHandle {
+            run_id,
+            events: run_events_rx,
+            terminal: terminal_rx,
+            event_overflowed: run_events.overflow_flag(),
+            permission_responder,
+            cancellation,
+        })
     }
 
-    if goose_mode == GooseMode::Auto {
-        let request_ids = {
-            let mut pending = state.pending_permissions.lock().await;
-            let request_ids = pending
-                .keys()
-                .filter(|(pending_session_id, _)| pending_session_id == &session_id)
-                .map(|(_, request_id)| request_id.clone())
-                .collect::<Vec<_>>();
-            for request_id in &request_ids {
-                pending.remove(&(session_id.clone(), request_id.clone()));
-            }
-            request_ids
+    pub(crate) async fn cancel_desktop_run(&self, run_id: String) -> Result<(), String> {
+        self.cancel_run_scoped(&run_id, None, AgentPermissionRouting::Desktop)
+            .await
+    }
+
+    async fn cancel_run_scoped(
+        &self,
+        run_id: &str,
+        expected_session_id: Option<&str>,
+        expected_routing: AgentPermissionRouting,
+    ) -> Result<(), String> {
+        let state = &self.service;
+        let account_scope = self.account_scope.as_ref();
+        let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
+        self.verify_generation().await?;
+        // Order permission updates before the worker's authoritative reload and
+        // terminal event. If the worker settled first, its active-run entry will
+        // already be gone by the time this command inspects it.
+        let _session_lifecycle_guard = state.session_lifecycle.lock().await;
+        let (agent, cancel_token, tool_context, run_events, cancelled_permission_ids) = {
+            let runtime = state.inner.lock().await;
+            let Some(current) = runtime.as_ref() else {
+                return Ok(());
+            };
+            ensure_runtime_account(current, account_scope)?;
+            let Some(active_run) = current.active_runs.get(run_id) else {
+                return Ok(());
+            };
+            validate_run_cancellation_scope(
+                active_run.session_id.as_str(),
+                active_run.permission_routing,
+                expected_session_id,
+                expected_routing,
+            )?;
+            (
+                Arc::clone(&active_run.agent),
+                active_run.token.clone(),
+                active_run.tool_context.clone(),
+                active_run.events.clone(),
+                Arc::clone(&active_run.cancelled_permission_ids),
+            )
         };
-        for request_id in request_ids {
-            deliver_tool_permission(&agent, request_id.clone(), Permission::AllowOnce).await;
+        tool_context.cancel_run(&cancel_token);
+        let run_id = run_id.to_string();
+        let cancelled_permissions = cancel_pending_permissions_for_runs(
+            &state.pending_permissions,
+            std::slice::from_ref(&run_id),
+            &HashMap::from([(run_id.clone(), agent)]),
+        )
+        .await;
+        cancelled_permission_ids.lock().await.extend(
+            cancelled_permissions
+                .iter()
+                .map(|((_, request_id), _)| request_id.clone()),
+        );
+        for ((session_id, request_id), _) in cancelled_permissions {
             if let Some(item) = update_live_permission_status(
                 &state.live_timelines,
                 &session_id,
+                expected_routing,
                 &request_id,
-                "allow_once",
+                "cancelled",
             )
             .await
             {
-                emit_agent_event(
-                    &app_handle,
-                    AgentEventEnvelope {
-                        event_type: "timelineItem".to_string(),
-                        session_id: Some(session_id.clone()),
-                        run_id: None,
-                        item: Some(item),
-                        status: None,
-                        session: None,
-                        message: None,
-                    },
-                );
+                run_events.publish(AgentRunEvent::TimelineItem(item)).await;
             }
         }
+        Ok(())
     }
 
-    // The policy is already committed at this point. A best-effort refresh
-    // must not report failure to the selector and make it roll back to a mode
-    // that is no longer authoritative.
-    match session_manager.get_session(&session_id, false).await {
+    pub(crate) async fn set_permission_mode(
+        &self,
+        request: AgentPermissionModeRequest,
+    ) -> Result<(), String> {
+        let state = &self.service;
+        let account_scope = self.account_scope.as_ref();
+        let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
+        self.verify_generation().await?;
+        self.ensure_accepting_new_work()?;
+
+        let session_id = request.session_id.trim().to_string();
+        if session_id.is_empty() {
+            return Err("Agent permission mode update requires a task ID".to_string());
+        }
+        let goose_mode = parse_user_permission_mode(&request.mode)?;
+        let (agent_manager, session_manager, maple_api_session, permission_modes, active_agent) = {
+            let runtime = state.inner.lock().await;
+            let current = runtime
+                .as_ref()
+                .ok_or_else(|| "Agent runtime is not running".to_string())?;
+            ensure_runtime_account(current, account_scope)?;
+            if current.active_runs.values().any(|run| {
+                run.session_id == session_id
+                    && run.permission_routing == AgentPermissionRouting::CallingSurface
+            }) || current
+                .session_tool_contexts
+                .get(&session_id)
+                .is_some_and(|installed| installed.owner == AgentToolContextOwner::Leased)
+            {
+                return Err("This Agent task is controlled by another Agent surface".to_string());
+            }
+            (
+                Arc::clone(&current.agent_manager),
+                Arc::clone(&current.session_manager),
+                Arc::clone(&current.maple_api_session),
+                Arc::clone(&current.permission_modes),
+                current
+                    .active_runs
+                    .values()
+                    .find(|run| {
+                        run.session_id == session_id
+                            && run.permission_routing == AgentPermissionRouting::Desktop
+                    })
+                    .map(|run| Arc::clone(&run.agent)),
+            )
+        };
+
+        // Restrictive transitions take effect before any fallible Goose or disk
+        // work. Otherwise the selector could say Read only while a still-live Auto
+        // policy approves the next write. If setup fails, restore the previous
+        // policy so the command and optimistic UI can roll back consistently.
+        let previous_restrictive_mode = if goose_mode == GooseMode::SmartApprove {
+            permission_modes
+                .lock()
+                .await
+                .insert(session_id.clone(), goose_mode)
+        } else {
+            None
+        };
+        let update_result: Result<Arc<Agent>, String> = async {
+            let session = session_manager
+                .get_session(&session_id, false)
+                .await
+                .map_err(|error| format!("Failed to load Agent task: {error}"))?;
+            let agent = match active_agent {
+                Some(agent) => agent,
+                None => {
+                    get_or_create_session_agent(
+                        &agent_manager,
+                        &maple_api_session,
+                        &session,
+                        RuntimeContext::default(),
+                    )
+                    .await
+                    .map_err(|error| {
+                        format!("Failed to resolve Goose agent for mode update: {error}")
+                    })?
+                    .agent
+                }
+            };
+            agent
+                .update_goose_mode(GOOSE_PERMISSION_ROUTING_MODE, &session_id)
+                .await
+                .map_err(|error| format!("Failed to update Goose mode: {error}"))?;
+            // update_goose_mode already persists SmartApprove, which is both our
+            // internal Goose routing mode and the user-facing Read-only mode. Auto
+            // is Maple-owned, so only that case needs a second persistence step.
+            // Keeping Read-only to one write avoids a failed duplicate write
+            // leaving the persisted session stricter than the live Maple policy.
+            if goose_mode == GooseMode::Auto {
+                session_manager
+                    .update(&session_id)
+                    .goose_mode(goose_mode)
+                    .apply()
+                    .await
+                    .map_err(|error| format!("Failed to persist Agent permission mode: {error}"))?;
+            }
+            Ok(agent)
+        }
+        .await;
+        let agent = match update_result {
+            Ok(agent) => agent,
+            Err(error) => {
+                if goose_mode == GooseMode::SmartApprove {
+                    let mut modes = permission_modes.lock().await;
+                    match previous_restrictive_mode {
+                        Some(previous) => {
+                            modes.insert(session_id.clone(), previous);
+                        }
+                        None => {
+                            modes.remove(&session_id);
+                        }
+                    }
+                }
+                return Err(error);
+            }
+        };
+        if goose_mode == GooseMode::Auto {
+            permission_modes
+                .lock()
+                .await
+                .insert(session_id.clone(), goose_mode);
+        }
+        {
+            let mut runtime = state.inner.lock().await;
+            let current = runtime
+                .as_mut()
+                .ok_or_else(|| "Agent runtime is not running".to_string())?;
+            ensure_runtime_account(current, account_scope)?;
+            current.mode = request.mode.clone();
+        }
+
+        if goose_mode == GooseMode::Auto {
+            let request_ids = {
+                let mut pending = state.pending_permissions.lock().await;
+                let request_ids = pending
+                    .iter()
+                    .filter(|((pending_session_id, _), request)| {
+                        pending_session_id == &session_id
+                            && request.routing == AgentPermissionRouting::Desktop
+                    })
+                    .map(|((_, request_id), _)| request_id.clone())
+                    .collect::<Vec<_>>();
+                for request_id in &request_ids {
+                    pending.remove(&(session_id.clone(), request_id.clone()));
+                }
+                request_ids
+            };
+            for request_id in request_ids {
+                deliver_tool_permission(&agent, request_id.clone(), Permission::AllowOnce).await;
+                if let Some(item) = update_live_permission_status(
+                    &state.live_timelines,
+                    &session_id,
+                    AgentPermissionRouting::Desktop,
+                    &request_id,
+                    "allow_once",
+                )
+                .await
+                {
+                    emit_agent_event(
+                        &state.host.events,
+                        AgentServiceEvent::TimelineItem {
+                            session_id: session_id.clone(),
+                            run_id: None,
+                            item,
+                        },
+                    );
+                }
+            }
+        }
+
+        // The policy is already committed at this point. A best-effort refresh
+        // must not report failure to the selector and make it roll back to a mode
+        // that is no longer authoritative.
+        match session_manager.get_session(&session_id, false).await {
         Ok(session) => emit_agent_event(
-            &app_handle,
-            AgentEventEnvelope {
-                event_type: "sessionUpdated".to_string(),
-                session_id: Some(session_id),
+            &state.host.events,
+            AgentServiceEvent::SessionUpdated {
+                session_id,
                 run_id: None,
-                item: None,
-                status: None,
-                session: Some(session_summary(&session)),
-                message: None,
+                session: session_summary(&session),
             },
         ),
         Err(error) => log::warn!(
             "Agent permission mode was updated, but the refreshed session could not be loaded: {error}"
         ),
     }
-    Ok(())
-}
+        Ok(())
+    }
 
-#[tauri::command]
-pub async fn agent_permission_respond(
-    app_handle: AppHandle,
-    state: State<'_, AgentRuntimeState>,
-    user_id: String,
-    response: AgentPermissionResponse,
-) -> Result<(), String> {
-    let account_scope = account_scope(&user_id)?;
-    let generation = account_generation(&state, &account_scope).await;
-    let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
-    ensure_account_generation(&state, &account_scope, generation).await?;
-    let (agent_manager, session_id) = {
-        let runtime = state.inner.lock().await;
-        let current = runtime
-            .as_ref()
-            .ok_or_else(|| "Agent runtime is not running".to_string())?;
-        ensure_runtime_account(current, &account_scope)?;
-        let session_id = response.session_id.trim().to_string();
+    pub(crate) async fn permission_respond(
+        &self,
+        response: AgentPermissionResponse,
+    ) -> Result<(), String> {
+        let decision = permission_decision_from_str(&response.decision)?;
+        let display_status = response.decision.clone();
+        self.resolve_permission(
+            response.session_id,
+            response.request_id,
+            decision,
+            AgentPermissionResponseScope::Desktop,
+            Some(display_status),
+        )
+        .await
+    }
+
+    async fn permission_respond_for_run(
+        &self,
+        session_id: &str,
+        run_id: &str,
+        request_id: String,
+        decision: AgentPermissionDecision,
+    ) -> Result<(), String> {
+        self.resolve_permission(
+            session_id.to_string(),
+            request_id,
+            decision,
+            AgentPermissionResponseScope::CallingSurface {
+                run_id: run_id.to_string(),
+            },
+            None,
+        )
+        .await
+    }
+
+    async fn resolve_permission(
+        &self,
+        session_id: String,
+        request_id: String,
+        decision: AgentPermissionDecision,
+        scope: AgentPermissionResponseScope,
+        display_status: Option<String>,
+    ) -> Result<(), String> {
+        let state = &self.service;
+        let account_scope = self.account_scope.as_ref();
+        let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
+        self.verify_generation().await?;
+        self.ensure_accepting_new_work()?;
+        let _session_lifecycle_guard = state.session_lifecycle.lock().await;
+        let session_id = session_id.trim().to_string();
         if session_id.is_empty() {
             return Err("Agent permission response requires a task ID".to_string());
         }
-        let key = (session_id.clone(), response.request_id.clone());
-        if !state.pending_permissions.lock().await.contains_key(&key) {
-            return Err(format!(
-                "No pending Agent Mode permission request found for {} in task {}",
-                response.request_id, session_id
-            ));
+        if request_id.trim().is_empty() {
+            return Err("Agent permission response requires a request ID".to_string());
         }
-        (Arc::clone(&current.agent_manager), session_id)
-    };
-    let agent = agent_manager
-        .get_or_create_agent(session_id.clone())
-        .await
-        .map_err(|e| format!("Failed to resolve Goose agent for permission response: {e}"))?;
-    agent
-        .handle_confirmation(
-            response.request_id.clone(),
-            PermissionConfirmation {
-                principal_type: PrincipalType::Tool,
-                permission: permission_from_decision(&response.decision)?,
-            },
+        let (agent, run_id, expected_routing, run_events, cancelled_permission_ids) = {
+            let runtime = state.inner.lock().await;
+            let current = runtime
+                .as_ref()
+                .ok_or_else(|| "Agent runtime is not running".to_string())?;
+            ensure_runtime_account(current, account_scope)?;
+            let (run_id, expected_routing, active_run) = match &scope {
+                AgentPermissionResponseScope::Desktop => {
+                    let (run_id, active_run) = current
+                        .active_runs
+                        .iter()
+                        .find(|(_, run)| run.session_id == session_id)
+                        .ok_or_else(|| {
+                            format!(
+                                "No running Agent task found for permission request {request_id}"
+                            )
+                        })?;
+                    (run_id.clone(), AgentPermissionRouting::Desktop, active_run)
+                }
+                AgentPermissionResponseScope::CallingSurface { run_id } => {
+                    let active_run = current.active_runs.get(run_id).ok_or_else(|| {
+                        format!("No running Agent task found for permission request {request_id}")
+                    })?;
+                    if active_run.session_id != session_id {
+                        return Err("Agent permission responder does not own this task".to_string());
+                    }
+                    (
+                        run_id.clone(),
+                        AgentPermissionRouting::CallingSurface,
+                        active_run,
+                    )
+                }
+            };
+            if active_run.token.is_cancelled() {
+                return Err("Agent permission request is already cancelled".to_string());
+            }
+            (
+                Arc::clone(&active_run.agent),
+                run_id,
+                expected_routing,
+                active_run.events.clone(),
+                Arc::clone(&active_run.cancelled_permission_ids),
+            )
+        };
+        let key = (session_id.clone(), request_id.clone());
+        {
+            let mut pending = state.pending_permissions.lock().await;
+            let Some(request) = pending.get(&key) else {
+                return Err(format!(
+                    "No pending Agent Mode permission request found for {request_id} in task {session_id}"
+                ));
+            };
+            if request.run_id != run_id || request.routing != expected_routing {
+                return Err("Agent permission responder does not own this request".to_string());
+            }
+            pending.remove(&key);
+        }
+        if decision == AgentPermissionDecision::Cancel {
+            cancelled_permission_ids
+                .lock()
+                .await
+                .insert(request_id.clone());
+        }
+        agent
+            .handle_confirmation(
+                request_id.clone(),
+                PermissionConfirmation {
+                    principal_type: PrincipalType::Tool,
+                    permission: decision.goose_permission(),
+                },
+            )
+            .await;
+        if let Some(item) = update_live_permission_status(
+            &state.live_timelines,
+            &session_id,
+            expected_routing,
+            &request_id,
+            display_status
+                .as_deref()
+                .unwrap_or_else(|| decision.status()),
         )
-        .await;
-    if let Some(item) = update_live_permission_status(
-        &state.live_timelines,
-        &session_id,
-        &response.request_id,
-        &response.decision,
-    )
-    .await
-    {
-        emit_agent_event(
-            &app_handle,
-            AgentEventEnvelope {
-                event_type: "timelineItem".to_string(),
-                session_id: Some(session_id.clone()),
-                run_id: None,
-                item: Some(item),
-                status: None,
-                session: None,
-                message: None,
-            },
-        );
-    }
-    state
-        .pending_permissions
-        .lock()
         .await
-        .remove(&(session_id, response.request_id));
+        {
+            match scope {
+                AgentPermissionResponseScope::Desktop => emit_agent_event(
+                    &state.host.events,
+                    AgentServiceEvent::TimelineItem {
+                        session_id,
+                        run_id: None,
+                        item,
+                    },
+                ),
+                AgentPermissionResponseScope::CallingSurface { .. } => {
+                    run_events.publish(AgentRunEvent::TimelineItem(item)).await;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+fn validate_run_cancellation_scope(
+    actual_session_id: &str,
+    actual_routing: AgentPermissionRouting,
+    expected_session_id: Option<&str>,
+    expected_routing: AgentPermissionRouting,
+) -> Result<(), String> {
+    if actual_routing != expected_routing {
+        return Err("Agent run is controlled by another Agent surface".to_string());
+    }
+    if expected_session_id.is_some_and(|session_id| session_id != actual_session_id) {
+        return Err("Agent run cancellation capability does not own this task".to_string());
+    }
     Ok(())
 }
 
 struct AgentPromptRun {
-    app_handle: AppHandle,
+    events: AgentRunEventPublisher,
     agent: Arc<Agent>,
     session_manager: Arc<SessionManager>,
     live_timelines: LiveTimelines,
     session_id: String,
-    run_id: String,
     user_message: Message,
     permission_modes: SessionPermissionModes,
     web_tool_state: Arc<WebToolState>,
     web_permission_context: WebPermissionContext,
     cancel_token: CancellationToken,
     pending_permissions: PendingPermissions,
+    issued_permission_ids: IssuedPermissionIds,
     cancelled_permission_ids: CancelledPermissionIds,
+    run_id: String,
+    permission_routing: AgentPermissionRouting,
 }
 
 #[derive(Default)]
@@ -2561,29 +3467,63 @@ struct LiveMessageCandidate {
 }
 
 fn apply_successful_prompt_outcome(
-    timelines: &mut HashMap<String, LiveTimeline>,
+    timelines: &mut HashMap<String, LiveTimelineEntry>,
     session_id: &str,
+    routing: AgentPermissionRouting,
     outcome: &AgentPromptOutcome,
 ) {
+    if routing == AgentPermissionRouting::CallingSurface {
+        remove_live_timeline_for_routing(timelines, session_id, routing);
+        return;
+    }
     match outcome.terminal_message.as_ref() {
         Some(candidate) => {
             timelines.insert(
                 session_id.to_string(),
-                LiveTimeline::Completed(candidate.clone()),
+                LiveTimelineEntry {
+                    routing,
+                    timeline: LiveTimeline::Completed(candidate.clone()),
+                },
             );
         }
         None => {
-            timelines.remove(session_id);
+            remove_live_timeline_for_routing(timelines, session_id, routing);
         }
     }
 }
 
 fn apply_failed_prompt_outcome(
-    timelines: &mut HashMap<String, LiveTimeline>,
+    timelines: &mut HashMap<String, LiveTimelineEntry>,
     session_id: &str,
+    routing: AgentPermissionRouting,
     item: AgentTimelineItem,
 ) {
-    timelines.insert(session_id.to_string(), LiveTimeline::Failed(vec![item]));
+    if routing == AgentPermissionRouting::CallingSurface {
+        remove_live_timeline_for_routing(timelines, session_id, routing);
+        return;
+    }
+    timelines.insert(
+        session_id.to_string(),
+        LiveTimelineEntry {
+            routing,
+            timeline: LiveTimeline::Failed(vec![item]),
+        },
+    );
+}
+
+fn remove_live_timeline_for_routing(
+    timelines: &mut HashMap<String, LiveTimelineEntry>,
+    session_id: &str,
+    routing: AgentPermissionRouting,
+) -> Option<LiveTimelineEntry> {
+    timelines
+        .get(session_id)
+        .is_some_and(|entry| entry.routing == routing)
+        .then(|| {
+            timelines
+                .remove(session_id)
+                .expect("matching live timeline must still exist")
+        })
 }
 
 async fn selected_permission_mode(
@@ -2861,21 +3801,77 @@ async fn automatically_handle_permissions(
     handled
 }
 
+struct ExtractedToolPermissionRequests {
+    requests: HashMap<String, AgentPermissionRequest>,
+    conflicting_ids: HashSet<String>,
+}
+
+fn tool_permission_requests(message: &Message) -> ExtractedToolPermissionRequests {
+    let mut requests = HashMap::new();
+    let mut conflicting_ids = HashSet::new();
+    for content in &message.content {
+        let MessageContent::ActionRequired(action) = content else {
+            continue;
+        };
+        let ActionRequiredData::ToolConfirmation {
+            id,
+            tool_name,
+            arguments,
+            prompt,
+        } = &action.data
+        else {
+            continue;
+        };
+        if id.trim().is_empty() {
+            conflicting_ids.insert(id.clone());
+            continue;
+        }
+        let request = AgentPermissionRequest {
+            request_id: id.clone(),
+            tool_name: tool_name.clone(),
+            arguments: arguments.clone(),
+            prompt: prompt.clone(),
+        };
+        if conflicting_ids.contains(id) {
+            continue;
+        }
+        match requests.get(id) {
+            Some(_) => {
+                // A request ID is a one-shot capability. Even byte-for-byte
+                // duplicate entries in the same Goose message are ambiguous:
+                // registering one and suppressing the other can accidentally
+                // suppress the only caller-visible prompt. Fail closed instead.
+                requests.remove(id);
+                conflicting_ids.insert(id.clone());
+            }
+            None => {
+                requests.insert(id.clone(), request);
+            }
+        }
+    }
+    ExtractedToolPermissionRequests {
+        requests,
+        conflicting_ids,
+    }
+}
+
 async fn run_agent_prompt(run: AgentPromptRun) -> Result<AgentPromptOutcome, String> {
     let AgentPromptRun {
-        app_handle,
+        events,
         agent,
         session_manager,
         live_timelines,
         session_id,
-        run_id,
         user_message,
         permission_modes,
         web_tool_state,
         web_permission_context,
         cancel_token,
         pending_permissions,
+        issued_permission_ids,
         cancelled_permission_ids,
+        run_id,
+        permission_routing,
     } = run;
     let mut terminal_message = None;
     let session_config = SessionConfig {
@@ -2893,22 +3889,32 @@ async fn run_agent_prompt(run: AgentPromptRun) -> Result<AgentPromptOutcome, Str
         .await
         .map_err(|e| format!("Failed to load updated Agent task: {e}"))?;
     let working_dir = updated_session.working_dir.clone();
-    emit_agent_event(
-        &app_handle,
-        AgentEventEnvelope {
-            event_type: "sessionUpdated".to_string(),
-            session_id: Some(session_id.clone()),
-            run_id: Some(run_id.clone()),
-            item: None,
-            status: None,
-            session: Some(session_summary(&updated_session)),
-            message: None,
-        },
-    );
+    events
+        .publish(AgentRunEvent::SessionUpdated(session_summary(
+            &updated_session,
+        )))
+        .await;
 
     while let Some(event) = stream.next().await {
         match event {
             Ok(AgentEvent::Message(message)) => {
+                let extracted_permissions = tool_permission_requests(&message);
+                if !extracted_permissions.conflicting_ids.is_empty() {
+                    for request_id in &extracted_permissions.conflicting_ids {
+                        deliver_tool_permission(&agent, request_id.clone(), Permission::Cancel)
+                            .await;
+                    }
+                    return Err(format!(
+                        "Goose emitted an empty or conflicting permission request ID: {}",
+                        extracted_permissions
+                            .conflicting_ids
+                            .iter()
+                            .cloned()
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ));
+                }
+                let permission_requests = extracted_permissions.requests;
                 let automatically_handled = automatically_handle_permissions(
                     &agent,
                     &session_id,
@@ -2934,53 +3940,69 @@ async fn run_agent_prompt(run: AgentPromptRun) -> Result<AgentPromptOutcome, Str
                         .is_none_or(|request_id| !automatically_handled.contains(&request_id))
                 });
                 let mut newly_auto_handled = HashSet::new();
+                let mut duplicate_permissions = HashSet::new();
                 for item in &mut items {
                     if let Some(request_id) = pending_permission_request_id(item) {
-                        if !register_pending_permission(
-                            &pending_permissions,
-                            &request_id,
-                            &session_id,
-                            &cancel_token,
-                        )
-                        .await
-                        {
+                        let Some(request) = permission_requests.get(&request_id).cloned() else {
                             cancelled_permission_ids
                                 .lock()
                                 .await
                                 .insert(request_id.clone());
-                            agent
-                                .handle_confirmation(
-                                    request_id,
-                                    PermissionConfirmation {
-                                        principal_type: PrincipalType::Tool,
-                                        permission: Permission::Cancel,
-                                    },
-                                )
-                                .await;
+                            deliver_tool_permission(&agent, request_id, Permission::Cancel).await;
                             item.status = Some("cancelled".to_string());
-                        } else if claim_pending_permission_if_auto(
-                            &agent,
-                            &session_id,
-                            &permission_modes,
+                            continue;
+                        };
+                        match register_pending_permission(
                             &pending_permissions,
-                            &request_id,
+                            &issued_permission_ids,
+                            &session_id,
+                            &run_id,
+                            permission_routing,
+                            request,
                             &cancel_token,
                         )
                         .await
                         {
-                            if cancel_token.is_cancelled() {
+                            PendingPermissionRegistration::Rejected => {
                                 cancelled_permission_ids
                                     .lock()
                                     .await
                                     .insert(request_id.clone());
+                                deliver_tool_permission(&agent, request_id, Permission::Cancel)
+                                    .await;
+                                item.status = Some("cancelled".to_string());
                             }
-                            newly_auto_handled.insert(request_id);
+                            PendingPermissionRegistration::Existing => {
+                                duplicate_permissions.insert(request_id);
+                            }
+                            PendingPermissionRegistration::Registered => {
+                                if claim_pending_permission_if_auto(
+                                    &agent,
+                                    &session_id,
+                                    &permission_modes,
+                                    &pending_permissions,
+                                    &request_id,
+                                    &cancel_token,
+                                )
+                                .await
+                                {
+                                    if cancel_token.is_cancelled() {
+                                        cancelled_permission_ids
+                                            .lock()
+                                            .await
+                                            .insert(request_id.clone());
+                                    }
+                                    newly_auto_handled.insert(request_id);
+                                }
+                            }
                         }
                     }
                 }
                 items.retain(|item| {
-                    pending_permission_request_id(item)
-                        .is_none_or(|request_id| !newly_auto_handled.contains(&request_id))
+                    pending_permission_request_id(item).is_none_or(|request_id| {
+                        !newly_auto_handled.contains(&request_id)
+                            && !duplicate_permissions.contains(&request_id)
+                    })
                 });
                 // Publish a permission card while holding the same claim lock
                 // used by an Allow-all transition. If that transition already
@@ -3010,11 +4032,29 @@ async fn run_agent_prompt(run: AgentPromptRun) -> Result<AgentPromptOutcome, Str
                     ));
                 }
                 for item in items {
+                    if let Some(request_id) = pending_permission_request_id(&item) {
+                        if let Some(request) = permission_requests.get(&request_id) {
+                            record_timeline_item(
+                                &live_timelines,
+                                &session_id,
+                                permission_routing,
+                                item.clone(),
+                            )
+                            .await;
+                            events
+                                .publish(AgentRunEvent::PermissionRequested {
+                                    request: request.clone(),
+                                    item,
+                                })
+                                .await;
+                            continue;
+                        }
+                    }
                     record_and_emit_timeline_item(
-                        &app_handle,
+                        &events,
                         &live_timelines,
                         &session_id,
-                        &run_id,
+                        permission_routing,
                         item,
                     )
                     .await;
@@ -3033,21 +4073,11 @@ async fn run_agent_prompt(run: AgentPromptRun) -> Result<AgentPromptOutcome, Str
                 reseed_live_timeline_after_history_replaced(
                     &live_timelines,
                     &session_id,
+                    permission_routing,
                     &conversation,
                 )
                 .await;
-                emit_agent_event(
-                    &app_handle,
-                    AgentEventEnvelope {
-                        event_type: "historyReplaced".to_string(),
-                        session_id: Some(session_id.clone()),
-                        run_id: Some(run_id.clone()),
-                        item: None,
-                        status: None,
-                        session: None,
-                        message: None,
-                    },
-                );
+                events.publish(AgentRunEvent::HistoryReplaced).await;
             }
             Err(error) => {
                 return Err(format!("Goose stream failed: {error}"));
@@ -3180,8 +4210,8 @@ fn pending_permission_request_id(item: &AgentTimelineItem) -> Option<String> {
     None
 }
 
-fn project_skills_are_trusted(app_handle: &AppHandle, user_id: &str, project_root: &Path) -> bool {
-    match load_agent_config_inner(app_handle, user_id) {
+fn project_skills_are_trusted(paths: &AgentPathLayout, user_id: &str, project_root: &Path) -> bool {
+    match load_agent_config_inner(paths, user_id) {
         Ok(config) => {
             project_skills_trust_status(&config, project_root, true).decision == Some(true)
         }
@@ -3202,11 +4232,11 @@ fn project_skills_root_is_available(project_root: &Path) -> bool {
 }
 
 fn skills_discovery_working_dir(
-    app_handle: &AppHandle,
+    paths: &AgentPathLayout,
     user_id: &str,
     session: &Session,
 ) -> Result<PathBuf, String> {
-    if project_skills_are_trusted(app_handle, user_id, &session.working_dir) {
+    if project_skills_are_trusted(paths, user_id, &session.working_dir) {
         if project_skills_root_is_available(&session.working_dir) {
             return Ok(session.working_dir.clone());
         }
@@ -3216,7 +4246,7 @@ fn skills_discovery_working_dir(
         );
     }
 
-    let root = agent_config_dir(app_handle, user_id)
+    let root = agent_config_dir(paths, user_id)
         .map_err(|error| format!("Failed to locate Maple skills data: {error}"))?
         .join("untrusted-project-skills");
     fs::create_dir_all(&root)
@@ -3261,12 +4291,12 @@ fn skills_client_for_working_dir(
 }
 
 fn prepare_transient_skills_client(
-    app_handle: &AppHandle,
+    paths: &AgentPathLayout,
     user_id: &str,
     agent: &Arc<Agent>,
     session: &Session,
 ) -> Result<SkillsClient, String> {
-    let working_dir = skills_discovery_working_dir(app_handle, user_id, session)?;
+    let working_dir = skills_discovery_working_dir(paths, user_id, session)?;
     skills_client_for_working_dir(agent, session, working_dir)
 }
 
@@ -3284,7 +4314,7 @@ async fn attach_prepared_skills_client(agent: &Arc<Agent>, skills_client: Skills
 }
 
 struct AgentSkillsScope<'a> {
-    app_handle: &'a AppHandle,
+    paths: &'a AgentPathLayout,
     user_id: &'a str,
 }
 
@@ -3295,6 +4325,7 @@ struct SessionAgentConfiguration<'a> {
     context_limit: Option<usize>,
     mode: &'a str,
     primary_model_supports_vision: bool,
+    tool_context: &'a SharedAgentToolContext,
 }
 
 fn maple_model_config(
@@ -3401,6 +4432,7 @@ async fn configure_session_agent(
         context_limit,
         mode,
         primary_model_supports_vision,
+        tool_context,
     } = configuration;
     let session_mcp_keys = session_mcp_extension_keys(session);
     let manager_result = get_or_create_session_agent(
@@ -3411,12 +4443,8 @@ async fn configure_session_agent(
     )
     .await?;
     let agent = manager_result.agent;
-    let skills_client = prepare_transient_skills_client(
-        skills_scope.app_handle,
-        skills_scope.user_id,
-        &agent,
-        session,
-    )?;
+    let skills_client =
+        prepare_transient_skills_client(skills_scope.paths, skills_scope.user_id, &agent, session)?;
     let mcp_errors = mcp_connection_errors(manager_result.extension_results, &session_mcp_keys);
     install_maple_provider(&agent, maple_api_session, session, model, context_limit).await?;
     agent
@@ -3444,6 +4472,7 @@ async fn configure_session_agent(
         primary_model_supports_vision,
         web_transport,
         Arc::clone(web_tool_state),
+        tool_context.clone(),
     )
     .map_err(|e| format!("Failed to create Maple developer tools: {e}"))?;
     agent
@@ -3520,6 +4549,11 @@ fn conversation_to_timeline_items(conversation: &Conversation) -> Vec<AgentTimel
                 _ => {}
             }
         }
+        settle_turn_permission_items(
+            &mut items[current_turn_item_start..],
+            &resolved_permission_ids,
+            false,
+        );
 
         let visible_message = message.user_visible_content();
         // Match Goose's own session presentation contract: agent-only grind,
@@ -3565,23 +4599,11 @@ fn conversation_to_timeline_items(conversation: &Conversation) -> Vec<AgentTimel
             false,
             thinking.as_deref(),
         ));
-
-        if is_stopped_notice(message) {
-            for item in &mut items[current_turn_item_start..] {
-                let resolved = item
-                    .id
-                    .strip_prefix("permission-")
-                    .or_else(|| item.id.strip_prefix("elicitation-"))
-                    .is_some_and(|id| resolved_permission_ids.contains(id));
-                if item.item_type == "permission" && item.status.as_deref() == Some("pending") {
-                    item.status = Some(if resolved {
-                        "completed".to_string()
-                    } else {
-                        "cancelled".to_string()
-                    });
-                }
-            }
-        }
+        settle_turn_permission_items(
+            &mut items[current_turn_item_start..],
+            &resolved_permission_ids,
+            is_stopped_notice(message),
+        );
 
         if inference_ends {
             state.surfaced_thinking_in_inference = false;
@@ -3602,6 +4624,52 @@ fn is_stopped_notice(message: &Message) -> bool {
                         && notification.msg == "Stopped by user"
             )
         })
+}
+
+fn settle_turn_permission_items(
+    items: &mut [AgentTimelineItem],
+    resolved_ids: &HashSet<String>,
+    cancel_unresolved: bool,
+) {
+    for item in items {
+        if item.item_type != "permission" || item.status.as_deref() != Some("pending") {
+            continue;
+        }
+        let resolved = item
+            .id
+            .strip_prefix("permission-")
+            .or_else(|| item.id.strip_prefix("elicitation-"))
+            .is_some_and(|id| resolved_ids.contains(id));
+        if resolved {
+            item.status = Some("completed".to_string());
+        } else if cancel_unresolved {
+            item.status = Some("cancelled".to_string());
+        }
+    }
+}
+
+fn reconcile_desktop_permission_items(
+    items: &mut [AgentTimelineItem],
+    pending_routes: &HashMap<String, AgentPermissionRouting>,
+    calling_surface_active: bool,
+) {
+    for item in items {
+        if item.item_type != "permission" || item.status.as_deref() != Some("pending") {
+            continue;
+        }
+        let request_id = item
+            .id
+            .strip_prefix("permission-")
+            .or_else(|| item.id.strip_prefix("elicitation-"));
+        let route = request_id.and_then(|id| pending_routes.get(id));
+        item.status = match (calling_surface_active, route) {
+            (false, Some(AgentPermissionRouting::Desktop)) => continue,
+            (true, _) | (_, Some(AgentPermissionRouting::CallingSurface)) => {
+                Some("controlled_externally".to_string())
+            }
+            (false, None) => Some("cancelled".to_string()),
+        };
+    }
 }
 
 fn is_real_user_message(message: &Message, role: &str) -> bool {
@@ -4196,16 +5264,21 @@ fn tool_response_title(id: &str) -> Option<String> {
     })
 }
 
-fn permission_from_decision(decision: &str) -> Result<Permission, String> {
+fn permission_decision_from_str(decision: &str) -> Result<AgentPermissionDecision, String> {
     match decision {
-        "allow_once" | "allow" => Ok(Permission::AllowOnce),
-        "deny_once" | "deny" => Ok(Permission::DenyOnce),
-        "cancel" => Ok(Permission::Cancel),
+        "allow_once" | "allow" => Ok(AgentPermissionDecision::AllowOnce),
+        "deny_once" | "deny" => Ok(AgentPermissionDecision::DenyOnce),
+        "cancel" | "cancelled" => Ok(AgentPermissionDecision::Cancel),
         "always_allow" | "always_deny" => {
             Err("Persistent tool permissions are not supported by Maple Agent Mode".to_string())
         }
         other => Err(format!("Unknown permission decision: {other}")),
     }
+}
+
+#[cfg(test)]
+fn permission_from_decision(decision: &str) -> Result<Permission, String> {
+    permission_decision_from_str(decision).map(AgentPermissionDecision::goose_permission)
 }
 
 fn session_summary(session: &Session) -> AgentSessionSummary {
@@ -4228,60 +5301,55 @@ fn sort_sessions_newest_first(sessions: &mut [AgentSessionSummary]) {
     sessions.sort_by(|a, b| b.updated_ms.cmp(&a.updated_ms));
 }
 
-fn emit_timeline_item(
-    app_handle: &AppHandle,
-    session_id: &str,
-    run_id: &str,
-    item: AgentTimelineItem,
-) {
-    emit_agent_event(
-        app_handle,
-        AgentEventEnvelope {
-            event_type: "timelineItem".to_string(),
-            session_id: Some(session_id.to_string()),
-            run_id: Some(run_id.to_string()),
-            item: Some(item),
-            status: None,
-            session: None,
-            message: None,
-        },
-    );
-}
-
 async fn record_and_emit_timeline_item(
-    app_handle: &AppHandle,
+    events: &AgentRunEventPublisher,
     live_timelines: &LiveTimelines,
     session_id: &str,
-    run_id: &str,
+    routing: AgentPermissionRouting,
     item: AgentTimelineItem,
 ) {
-    record_timeline_item(live_timelines, session_id, item.clone()).await;
-    emit_timeline_item(app_handle, session_id, run_id, item);
+    record_timeline_item(live_timelines, session_id, routing, item.clone()).await;
+    events.publish(AgentRunEvent::TimelineItem(item)).await;
 }
 
 async fn record_timeline_item(
     live_timelines: &LiveTimelines,
     session_id: &str,
+    routing: AgentPermissionRouting,
     item: AgentTimelineItem,
 ) {
     let mut timelines = live_timelines.lock().await;
     let current = match timelines.remove(session_id) {
-        Some(LiveTimeline::Streaming(items)) => items,
+        Some(LiveTimelineEntry {
+            routing: owner,
+            timeline: LiveTimeline::Streaming(items),
+        }) if owner == routing => items,
         // A real user message starts a new live suffix. The preceding terminal
         // row is either already persisted or was a one-turn-only error/notice;
         // carrying it forward could duplicate it on a mid-run session reload.
-        Some(LiveTimeline::Completed(_) | LiveTimeline::Failed(_))
-            if is_user_message_item(&item) =>
-        {
-            Vec::new()
-        }
-        Some(LiveTimeline::Completed(candidate)) => candidate.items,
-        Some(LiveTimeline::Failed(items)) => items,
+        Some(LiveTimelineEntry {
+            routing: owner,
+            timeline: LiveTimeline::Completed(_) | LiveTimeline::Failed(_),
+        }) if owner == routing && is_user_message_item(&item) => Vec::new(),
+        Some(LiveTimelineEntry {
+            routing: owner,
+            timeline: LiveTimeline::Completed(candidate),
+        }) if owner == routing => candidate.items,
+        Some(LiveTimelineEntry {
+            routing: owner,
+            timeline: LiveTimeline::Failed(items),
+        }) if owner == routing => items,
+        // A new surface starts its own transient projection. Persisted Goose
+        // history remains the shared handoff boundary between surfaces.
+        Some(_) => Vec::new(),
         None => Vec::new(),
     };
     timelines.insert(
         session_id.to_string(),
-        LiveTimeline::Streaming(merge_timeline_item(current, item)),
+        LiveTimelineEntry {
+            routing,
+            timeline: LiveTimeline::Streaming(merge_timeline_item(current, item)),
+        },
     );
 }
 
@@ -4293,6 +5361,7 @@ async fn record_timeline_item(
 async fn reseed_live_timeline_after_history_replaced(
     live_timelines: &LiveTimelines,
     session_id: &str,
+    routing: AgentPermissionRouting,
     conversation: &Conversation,
 ) {
     let replacement_boundary = conversation
@@ -4318,8 +5387,9 @@ async fn reseed_live_timeline_after_history_replaced(
             // that compaction or an explicit history command removed.
             let boundary = timelines
                 .get(session_id)
-                .and_then(|items| {
-                    items.items().iter().rev().find(|item| {
+                .filter(|entry| entry.routing == routing)
+                .and_then(|entry| {
+                    entry.timeline.items().iter().rev().find(|item| {
                         is_user_message_item(item) && item.id == replacement_boundary.id
                     })
                 })
@@ -4327,11 +5397,14 @@ async fn reseed_live_timeline_after_history_replaced(
                 .unwrap_or(replacement_boundary);
             timelines.insert(
                 session_id.to_string(),
-                LiveTimeline::Streaming(vec![boundary]),
+                LiveTimelineEntry {
+                    routing,
+                    timeline: LiveTimeline::Streaming(vec![boundary]),
+                },
             );
         }
         None => {
-            timelines.remove(session_id);
+            remove_live_timeline_for_routing(&mut timelines, session_id, routing);
         }
     }
 }
@@ -4339,19 +5412,24 @@ async fn reseed_live_timeline_after_history_replaced(
 async fn overlay_live_timeline(
     live_timelines: &LiveTimelines,
     session_id: &str,
+    routing: AgentPermissionRouting,
     conversation: &Conversation,
     persisted: Vec<AgentTimelineItem>,
 ) -> Vec<AgentTimelineItem> {
     let live_items = {
         let mut timelines = live_timelines.lock().await;
-        match timelines.get(session_id).cloned() {
+        let timeline = timelines
+            .get(session_id)
+            .filter(|entry| entry.routing == routing)
+            .map(|entry| entry.timeline.clone());
+        match timeline {
             Some(LiveTimeline::Streaming(items)) => items,
             Some(LiveTimeline::Completed(candidate)) => {
                 // agent_load_session already paid to load Goose history. Use
                 // that snapshot here instead of deserializing it a second time
                 // at the end of every prompt.
                 if terminal_message_is_persisted(conversation, &candidate) {
-                    timelines.remove(session_id);
+                    remove_live_timeline_for_routing(&mut timelines, session_id, routing);
                     Vec::new()
                 } else {
                     candidate.items
@@ -4401,22 +5479,25 @@ fn live_overlay_item(mut item: AgentTimelineItem) -> AgentTimelineItem {
 async fn update_live_permission_status(
     live_timelines: &LiveTimelines,
     session_id: &str,
+    routing: AgentPermissionRouting,
     request_id: &str,
     decision: &str,
 ) -> Option<AgentTimelineItem> {
     let permission_id = format!("permission-{request_id}");
     let mut timelines = live_timelines.lock().await;
-    let items = timelines.get_mut(session_id)?.items_mut();
+    let entry = timelines.get_mut(session_id)?;
+    if entry.routing != routing {
+        return None;
+    }
+    let items = entry.timeline.items_mut();
     let item = items.iter_mut().find(|item| item.id == permission_id)?;
     item.status = Some(decision.to_string());
     item.merge = "replace".to_string();
     Some(item.clone())
 }
 
-fn emit_agent_event(app_handle: &AppHandle, event: AgentEventEnvelope) {
-    if let Err(error) = app_handle.emit(AGENT_EVENT_NAME, event) {
-        log::warn!("Failed to emit Agent Mode event: {error}");
-    }
+fn emit_agent_event(events: &AgentEventDispatcher, event: AgentServiceEvent) {
+    events.sink.emit(&event);
 }
 
 fn configure_embedded_goose(goose_path_root: &Path, model: &str, mode: &str) -> Result<(), String> {
@@ -4894,49 +5975,41 @@ fn normalize_project_root(path: &Path) -> Result<PathBuf, String> {
     Ok(canonical)
 }
 
-fn agent_root_dir(app_handle: &AppHandle) -> Result<PathBuf, anyhow::Error> {
-    let base = app_handle
-        .path()
-        .app_config_dir()
-        .map_err(|error| anyhow::anyhow!("Failed to resolve app config dir: {error}"))?;
-    let path = base.join("agent");
+fn agent_root_dir(paths: &AgentPathLayout) -> Result<PathBuf, anyhow::Error> {
+    let path = paths.config_root.clone();
     fs::create_dir_all(&path)?;
     set_owner_only_dir_permissions(&path);
     Ok(path)
 }
 
 fn account_config_dir_path(
-    app_handle: &AppHandle,
+    paths: &AgentPathLayout,
     user_id: &str,
 ) -> Result<PathBuf, anyhow::Error> {
     let scope = account_scope(user_id).map_err(anyhow::Error::msg)?;
-    Ok(agent_root_dir(app_handle)?.join("accounts").join(scope))
+    Ok(agent_root_dir(paths)?.join("accounts").join(scope))
 }
 
 fn account_local_data_dir_path(
-    app_handle: &AppHandle,
+    paths: &AgentPathLayout,
     user_id: &str,
 ) -> Result<PathBuf, anyhow::Error> {
     let scope = account_scope(user_id).map_err(anyhow::Error::msg)?;
-    let base = app_handle
-        .path()
-        .app_local_data_dir()
-        .map_err(|error| anyhow::anyhow!("Failed to resolve app local data dir: {error}"))?;
-    Ok(base.join("agent").join("accounts").join(scope))
+    Ok(paths.local_data_root.join("accounts").join(scope))
 }
 
-fn agent_config_dir(app_handle: &AppHandle, user_id: &str) -> Result<PathBuf, anyhow::Error> {
-    let path = account_config_dir_path(app_handle, user_id)?;
+fn agent_config_dir(paths: &AgentPathLayout, user_id: &str) -> Result<PathBuf, anyhow::Error> {
+    let path = account_config_dir_path(paths, user_id)?;
     fs::create_dir_all(&path)?;
     set_owner_only_dir_permissions(&path);
     Ok(path)
 }
 
 fn account_session_manager(
-    app_handle: &AppHandle,
+    paths: &AgentPathLayout,
     user_id: &str,
 ) -> Result<Arc<SessionManager>, String> {
-    let account_dir = agent_config_dir(app_handle, user_id).map_err(|error| error.to_string())?;
+    let account_dir = agent_config_dir(paths, user_id).map_err(|error| error.to_string())?;
     session_manager_for_account_dir(&account_dir)
 }
 
@@ -4965,12 +6038,12 @@ fn remove_agent_history_path(path: &Path) -> Result<(), anyhow::Error> {
     result.map_err(Into::into)
 }
 fn load_agent_config_inner(
-    app_handle: &AppHandle,
+    paths: &AgentPathLayout,
     user_id: &str,
 ) -> Result<AgentConfig, anyhow::Error> {
-    let path = agent_config_dir(app_handle, user_id)?.join("config.json");
+    let path = agent_config_dir(paths, user_id)?.join("config.json");
     let removed_project_roots_path =
-        account_local_data_dir_path(app_handle, user_id)?.join("removed_project_roots.json");
+        account_local_data_dir_path(paths, user_id)?.join("removed_project_roots.json");
     load_agent_config_files(&path, &removed_project_roots_path)
 }
 
@@ -5012,11 +6085,11 @@ fn migrate_agent_config(config: &mut AgentConfig) -> bool {
 }
 
 fn save_agent_config_inner(
-    app_handle: &AppHandle,
+    paths: &AgentPathLayout,
     user_id: &str,
     config: &AgentConfig,
 ) -> Result<(), anyhow::Error> {
-    let path = agent_config_dir(app_handle, user_id)?.join("config.json");
+    let path = agent_config_dir(paths, user_id)?.join("config.json");
     save_agent_config_file(&path, config)
 }
 
@@ -5040,11 +6113,11 @@ fn load_removed_project_roots_file(path: &Path) -> Result<Vec<String>, anyhow::E
 }
 
 fn save_removed_project_roots_inner(
-    app_handle: &AppHandle,
+    paths: &AgentPathLayout,
     user_id: &str,
     roots: &[String],
 ) -> Result<(), anyhow::Error> {
-    let path = account_local_data_dir_path(app_handle, user_id)?.join("removed_project_roots.json");
+    let path = account_local_data_dir_path(paths, user_id)?.join("removed_project_roots.json");
     write_device_local_json_file(&path, roots)
 }
 
@@ -5090,10 +6163,10 @@ fn apply_project_skills_trust(
 }
 
 fn load_recent_project_roots_inner(
-    app_handle: &AppHandle,
+    paths: &AgentPathLayout,
     user_id: &str,
 ) -> Result<Vec<RecentProjectRoot>, anyhow::Error> {
-    let path = agent_config_dir(app_handle, user_id)?.join("recent_roots.json");
+    let path = agent_config_dir(paths, user_id)?.join("recent_roots.json");
     load_recent_project_roots_file(&path)
 }
 
@@ -5178,11 +6251,11 @@ fn register_explicit_project_root_file(
 }
 
 fn register_explicit_project_root_inner(
-    app_handle: &AppHandle,
+    paths: &AgentPathLayout,
     user_id: &str,
     project_root: &Path,
 ) -> Result<Vec<RecentProjectRoot>, anyhow::Error> {
-    let file_path = agent_config_dir(app_handle, user_id)?.join("recent_roots.json");
+    let file_path = agent_config_dir(paths, user_id)?.join("recent_roots.json");
     register_explicit_project_root_file(&file_path, project_root, unix_ms())
 }
 
@@ -5215,11 +6288,11 @@ fn restore_explicit_project_root_file(
 }
 
 fn restore_explicit_project_root_inner(
-    app_handle: &AppHandle,
+    paths: &AgentPathLayout,
     user_id: &str,
     project_root: &Path,
 ) -> Result<Vec<RecentProjectRoot>, anyhow::Error> {
-    let file_path = agent_config_dir(app_handle, user_id)?.join("recent_roots.json");
+    let file_path = agent_config_dir(paths, user_id)?.join("recent_roots.json");
     restore_explicit_project_root_file(&file_path, project_root, unix_ms())
 }
 
@@ -5275,12 +6348,12 @@ fn save_project_root_order_file(
 }
 
 fn save_project_root_order_inner(
-    app_handle: &AppHandle,
+    layout: &AgentPathLayout,
     user_id: &str,
     mut paths: Vec<String>,
 ) -> Result<Vec<RecentProjectRoot>, anyhow::Error> {
-    let file_path = agent_config_dir(app_handle, user_id)?.join("recent_roots.json");
-    let removed = load_agent_config_inner(app_handle, user_id)?
+    let file_path = agent_config_dir(layout, user_id)?.join("recent_roots.json");
+    let removed = load_agent_config_inner(layout, user_id)?
         .removed_project_roots
         .into_iter()
         .collect::<HashSet<_>>();
@@ -5424,6 +6497,27 @@ fn path_string(path: &Path) -> String {
 mod tests {
     use super::*;
     use rmcp::model::{AnnotateAble, RawTextContent, Role as McpRole};
+    use std::collections::{BTreeMap, BTreeSet};
+
+    struct NoopAgentEventSink;
+
+    impl AgentEventSink for NoopAgentEventSink {
+        fn emit(&self, _event: &AgentServiceEvent) {}
+    }
+
+    #[derive(Default)]
+    struct RecordingAgentEventSink {
+        events: std::sync::Mutex<Vec<AgentServiceEvent>>,
+    }
+
+    impl AgentEventSink for RecordingAgentEventSink {
+        fn emit(&self, event: &AgentServiceEvent) {
+            self.events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(event.clone());
+        }
+    }
 
     struct InertMapleTransport;
 
@@ -5461,6 +6555,83 @@ mod tests {
 
     fn recent_root_paths(roots: &[RecentProjectRoot]) -> Vec<String> {
         roots.iter().map(|root| root.path.clone()).collect()
+    }
+
+    fn test_permission_request(request_id: &str) -> AgentPermissionRequest {
+        AgentPermissionRequest {
+            request_id: request_id.to_string(),
+            tool_name: "shell".to_string(),
+            arguments: serde_json::Map::from_iter([(
+                "command".to_string(),
+                Value::String("git status --short".to_string()),
+            )]),
+            prompt: Some("Run this command?".to_string()),
+        }
+    }
+
+    fn test_pending_permission(
+        run_id: &str,
+        routing: AgentPermissionRouting,
+        request_id: &str,
+    ) -> PendingAgentPermission {
+        PendingAgentPermission {
+            run_id: run_id.to_string(),
+            routing,
+            request: test_permission_request(request_id),
+        }
+    }
+
+    fn test_live_timeline(
+        routing: AgentPermissionRouting,
+        timeline: LiveTimeline,
+    ) -> LiveTimelineEntry {
+        LiveTimelineEntry { routing, timeline }
+    }
+
+    #[test]
+    fn desktop_status_excludes_calling_surface_runs() {
+        let status = active_run_status([
+            (
+                "desktop-run",
+                "desktop-session",
+                AgentPermissionRouting::Desktop,
+            ),
+            (
+                "acp-run",
+                "acp-session",
+                AgentPermissionRouting::CallingSurface,
+            ),
+        ]);
+
+        assert_eq!(
+            status,
+            HashMap::from([("desktop-session".to_string(), "desktop-run".to_string())])
+        );
+    }
+
+    #[test]
+    fn run_cancellation_scope_rejects_cross_surface_and_wrong_session_access() {
+        assert!(validate_run_cancellation_scope(
+            "session-1",
+            AgentPermissionRouting::CallingSurface,
+            None,
+            AgentPermissionRouting::Desktop,
+        )
+        .is_err());
+        assert!(validate_run_cancellation_scope(
+            "session-1",
+            AgentPermissionRouting::CallingSurface,
+            Some("session-2"),
+            AgentPermissionRouting::CallingSurface,
+        )
+        .is_err());
+        assert!(validate_run_cancellation_scope(
+            "session-1",
+            AgentPermissionRouting::CallingSurface,
+            Some("session-1"),
+            AgentPermissionRouting::CallingSurface,
+        )
+        .is_ok());
     }
 
     #[test]
@@ -7219,12 +8390,16 @@ mod tests {
         let reply_candidate = live_message_candidate(&live_reply, &reply_items);
         let live_timelines = Arc::new(Mutex::new(HashMap::from([(
             session_id.to_string(),
-            LiveTimeline::Completed(reply_candidate),
+            test_live_timeline(
+                AgentPermissionRouting::Desktop,
+                LiveTimeline::Completed(reply_candidate),
+            ),
         )])));
 
         let loaded = overlay_live_timeline(
             &live_timelines,
             session_id,
+            AgentPermissionRouting::Desktop,
             &persisted_conversation,
             persisted_timeline.clone(),
         )
@@ -7241,6 +8416,7 @@ mod tests {
         apply_successful_prompt_outcome(
             &mut timelines,
             session_id,
+            AgentPermissionRouting::Desktop,
             &AgentPromptOutcome {
                 terminal_message: Some(notice_candidate),
             },
@@ -7249,6 +8425,7 @@ mod tests {
         let loaded = overlay_live_timeline(
             &live_timelines,
             session_id,
+            AgentPermissionRouting::Desktop,
             &persisted_conversation,
             persisted_timeline,
         )
@@ -7259,11 +8436,167 @@ mod tests {
         );
         assert!(matches!(
             live_timelines.lock().await.get(session_id),
-            Some(LiveTimeline::Completed(_))
+            Some(LiveTimelineEntry {
+                routing: AgentPermissionRouting::Desktop,
+                timeline: LiveTimeline::Completed(_),
+            })
         ));
 
         let mut timelines = live_timelines.lock().await;
-        apply_successful_prompt_outcome(&mut timelines, session_id, &AgentPromptOutcome::default());
+        apply_successful_prompt_outcome(
+            &mut timelines,
+            session_id,
+            AgentPermissionRouting::Desktop,
+            &AgentPromptOutcome::default(),
+        );
+        assert!(!timelines.contains_key(session_id));
+    }
+
+    #[tokio::test]
+    async fn calling_surface_timeline_does_not_overlay_desktop_session_load() {
+        let session_id = "calling-surface-session";
+        let persisted_conversation = Conversation::new_unvalidated(vec![
+            Message::user()
+                .with_id("persisted-user")
+                .with_text("Persisted prompt"),
+            Message::assistant()
+                .with_content(MessageContent::action_required(
+                    "persisted-request",
+                    "shell".to_string(),
+                    serde_json::Map::new(),
+                    Some("Run this command?".to_string()),
+                ))
+                .with_generated_id(),
+        ]);
+        let persisted = conversation_to_timeline_items(&persisted_conversation);
+        let permission = AgentTimelineItem {
+            id: "permission-request-1".to_string(),
+            item_type: "permission".to_string(),
+            role: Some("assistant".to_string()),
+            title: Some("shell".to_string()),
+            text: Some("Run this command?".to_string()),
+            status: Some("pending".to_string()),
+            input: Some(json!({ "command": "git status --short" })),
+            output: None,
+            created_ms: 1,
+            merge: "replace".to_string(),
+        };
+        let live_timelines = Arc::new(Mutex::new(HashMap::from([(
+            session_id.to_string(),
+            test_live_timeline(
+                AgentPermissionRouting::CallingSurface,
+                LiveTimeline::Streaming(vec![permission]),
+            ),
+        )])));
+
+        let mut loaded = overlay_live_timeline(
+            &live_timelines,
+            session_id,
+            AgentPermissionRouting::Desktop,
+            &persisted_conversation,
+            persisted.clone(),
+        )
+        .await;
+        reconcile_desktop_permission_items(&mut loaded, &HashMap::new(), true);
+
+        assert_eq!(
+            loaded
+                .iter()
+                .find(|item| item.id == "permission-persisted-request")
+                .and_then(|item| item.status.as_deref()),
+            Some("controlled_externally")
+        );
+        assert!(!loaded.iter().any(|item| {
+            item.item_type == "permission" && item.status.as_deref() == Some("pending")
+        }));
+        assert_eq!(
+            live_timelines.lock().await.get(session_id).unwrap().routing,
+            AgentPermissionRouting::CallingSurface
+        );
+    }
+
+    #[tokio::test]
+    async fn permission_status_updates_only_the_owning_surface_timeline() {
+        let session_id = "permission-owner-session";
+        let permission = AgentTimelineItem {
+            id: "permission-request-1".to_string(),
+            item_type: "permission".to_string(),
+            role: Some("assistant".to_string()),
+            title: Some("shell".to_string()),
+            text: None,
+            status: Some("pending".to_string()),
+            input: None,
+            output: None,
+            created_ms: 1,
+            merge: "replace".to_string(),
+        };
+        let live_timelines = Arc::new(Mutex::new(HashMap::from([(
+            session_id.to_string(),
+            test_live_timeline(
+                AgentPermissionRouting::CallingSurface,
+                LiveTimeline::Streaming(vec![permission]),
+            ),
+        )])));
+
+        assert!(update_live_permission_status(
+            &live_timelines,
+            session_id,
+            AgentPermissionRouting::Desktop,
+            "request-1",
+            "allow_once",
+        )
+        .await
+        .is_none());
+        assert_eq!(
+            update_live_permission_status(
+                &live_timelines,
+                session_id,
+                AgentPermissionRouting::CallingSurface,
+                "request-1",
+                "allow_once",
+            )
+            .await
+            .and_then(|item| item.status),
+            Some("allow_once".to_string())
+        );
+    }
+
+    #[test]
+    fn calling_surface_terminal_cleanup_cannot_remove_desktop_live_state() {
+        let session_id = "terminal-owner-session";
+        let desktop_item = error_item("Desktop-only state".to_string());
+        let mut timelines = HashMap::from([(
+            session_id.to_string(),
+            test_live_timeline(
+                AgentPermissionRouting::Desktop,
+                LiveTimeline::Streaming(vec![desktop_item]),
+            ),
+        )]);
+
+        apply_successful_prompt_outcome(
+            &mut timelines,
+            session_id,
+            AgentPermissionRouting::CallingSurface,
+            &AgentPromptOutcome::default(),
+        );
+        assert_eq!(
+            timelines.get(session_id).unwrap().routing,
+            AgentPermissionRouting::Desktop
+        );
+
+        timelines.insert(
+            session_id.to_string(),
+            test_live_timeline(
+                AgentPermissionRouting::CallingSurface,
+                LiveTimeline::Streaming(Vec::new()),
+            ),
+        );
+        apply_successful_prompt_outcome(
+            &mut timelines,
+            session_id,
+            AgentPermissionRouting::CallingSurface,
+            &AgentPromptOutcome::default(),
+        );
         assert!(!timelines.contains_key(session_id));
     }
 
@@ -7276,21 +8609,28 @@ mod tests {
                 .with_text("Prior turn"),
             false,
         );
-        let mut timelines =
-            HashMap::from([(session_id.to_string(), LiveTimeline::Streaming(prior_turn))]);
+        let mut timelines = HashMap::from([(
+            session_id.to_string(),
+            test_live_timeline(
+                AgentPermissionRouting::Desktop,
+                LiveTimeline::Streaming(prior_turn),
+            ),
+        )]);
 
         apply_failed_prompt_outcome(
             &mut timelines,
             session_id,
+            AgentPermissionRouting::Desktop,
             error_item("First failure".to_string()),
         );
         apply_failed_prompt_outcome(
             &mut timelines,
             session_id,
+            AgentPermissionRouting::Desktop,
             error_item("Second failure".to_string()),
         );
 
-        let LiveTimeline::Failed(items) = timelines.get(session_id).unwrap() else {
+        let LiveTimeline::Failed(items) = &timelines.get(session_id).unwrap().timeline else {
             panic!("failed run should leave a bounded failed timeline");
         };
         assert_eq!(items.len(), 1);
@@ -7304,9 +8644,15 @@ mod tests {
         .into_iter()
         .next()
         .unwrap();
-        record_timeline_item(&live_timelines, session_id, next_user).await;
+        record_timeline_item(
+            &live_timelines,
+            session_id,
+            AgentPermissionRouting::Desktop,
+            next_user,
+        )
+        .await;
         let timelines = live_timelines.lock().await;
-        let LiveTimeline::Streaming(items) = timelines.get(session_id).unwrap() else {
+        let LiveTimeline::Streaming(items) = &timelines.get(session_id).unwrap().timeline else {
             panic!("a retry should start a fresh streaming timeline");
         };
         assert_eq!(items.len(), 1);
@@ -7511,6 +8857,103 @@ mod tests {
         assert!(items.iter().any(|item| {
             item.id == "elicitation-pending-input" && item.status.as_deref() == Some("cancelled")
         }));
+    }
+
+    #[test]
+    fn persisted_tool_permission_settles_without_stop_notice() {
+        let permission = Message::assistant()
+            .with_content(MessageContent::action_required(
+                "resolved-tool",
+                "shell".to_string(),
+                serde_json::Map::new(),
+                None,
+            ))
+            .with_generated_id();
+        let conversation = Conversation::new_unvalidated(vec![
+            Message::user().with_text("run tool").with_generated_id(),
+            permission,
+            tool_response_message("resolved-response", "resolved-tool"),
+        ]);
+
+        let items = conversation_to_timeline_items(&conversation);
+
+        assert!(items.iter().any(|item| {
+            item.id == "permission-resolved-tool" && item.status.as_deref() == Some("completed")
+        }));
+    }
+
+    #[test]
+    fn persisted_elicitation_settles_from_agent_only_response() {
+        let request = Message::assistant()
+            .with_content(MessageContent::action_required_elicitation(
+                "resolved-input",
+                "Need more input".to_string(),
+                json!({"type": "object"}),
+            ))
+            .with_generated_id();
+        let response = Message::user()
+            .with_content(MessageContent::action_required_elicitation_response(
+                "resolved-input",
+                json!({"answer": "yes"}),
+                rmcp::model::ElicitationAction::Accept,
+            ))
+            .agent_only()
+            .with_generated_id();
+        let conversation = Conversation::new_unvalidated(vec![
+            Message::user().with_text("ask me").with_generated_id(),
+            request,
+            response,
+        ]);
+
+        let items = conversation_to_timeline_items(&conversation);
+
+        assert!(items.iter().any(|item| {
+            item.id == "elicitation-resolved-input" && item.status.as_deref() == Some("completed")
+        }));
+    }
+
+    #[test]
+    fn desktop_permission_reconciliation_preserves_only_desktop_owned_pending_rows() {
+        fn permission(id: &str, status: &str) -> AgentTimelineItem {
+            AgentTimelineItem {
+                id: format!("permission-{id}"),
+                item_type: "permission".to_string(),
+                role: Some("system".to_string()),
+                title: Some("Permission".to_string()),
+                text: None,
+                status: Some(status.to_string()),
+                input: None,
+                output: None,
+                created_ms: 1,
+                merge: "replace".to_string(),
+            }
+        }
+
+        let original_completed = permission("completed", "completed");
+        let mut items = vec![
+            permission("desktop", "pending"),
+            permission("caller", "pending"),
+            permission("orphan", "pending"),
+            original_completed.clone(),
+        ];
+        let routes = HashMap::from([
+            ("desktop".to_string(), AgentPermissionRouting::Desktop),
+            ("caller".to_string(), AgentPermissionRouting::CallingSurface),
+        ]);
+
+        reconcile_desktop_permission_items(&mut items, &routes, false);
+
+        assert_eq!(items[0].status.as_deref(), Some("pending"));
+        assert_eq!(items[1].status.as_deref(), Some("controlled_externally"));
+        assert_eq!(items[2].status.as_deref(), Some("cancelled"));
+        assert_eq!(items[3], original_completed);
+
+        let mut registration_race = vec![permission("not-registered-yet", "pending")];
+        reconcile_desktop_permission_items(&mut registration_race, &HashMap::new(), true);
+        assert_eq!(
+            registration_race[0].status.as_deref(),
+            Some("controlled_externally")
+        );
     }
 
     #[test]
@@ -7991,16 +9434,25 @@ mod tests {
         ));
         let live_timelines = Arc::new(Mutex::new(HashMap::from([(
             session_id.to_string(),
-            LiveTimeline::Streaming(live),
+            test_live_timeline(
+                AgentPermissionRouting::Desktop,
+                LiveTimeline::Streaming(live),
+            ),
         )])));
 
-        reseed_live_timeline_after_history_replaced(&live_timelines, session_id, &conversation)
-            .await;
+        reseed_live_timeline_after_history_replaced(
+            &live_timelines,
+            session_id,
+            AgentPermissionRouting::Desktop,
+            &conversation,
+        )
+        .await;
 
         let timelines = live_timelines.lock().await;
         let items = timelines
             .get(session_id)
             .expect("replacement should retain a user boundary")
+            .timeline
             .items();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].id, "current-user-text");
@@ -8030,16 +9482,25 @@ mod tests {
             Conversation::new_unvalidated(vec![current_user.clone(), provider_only_user]);
         let live_timelines = Arc::new(Mutex::new(HashMap::from([(
             session_id.to_string(),
-            LiveTimeline::Streaming(message_to_timeline_items(&current_user, false)),
+            test_live_timeline(
+                AgentPermissionRouting::Desktop,
+                LiveTimeline::Streaming(message_to_timeline_items(&current_user, false)),
+            ),
         )])));
 
-        reseed_live_timeline_after_history_replaced(&live_timelines, session_id, &conversation)
-            .await;
+        reseed_live_timeline_after_history_replaced(
+            &live_timelines,
+            session_id,
+            AgentPermissionRouting::Desktop,
+            &conversation,
+        )
+        .await;
 
         let timelines = live_timelines.lock().await;
         let items = timelines
             .get(session_id)
             .expect("the latest visible user boundary should survive")
+            .timeline
             .items();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].id, "current-user-text");
@@ -8068,8 +9529,13 @@ mod tests {
             current_user.clone(),
         ]);
         let live_timelines = Arc::new(Mutex::new(HashMap::new()));
-        reseed_live_timeline_after_history_replaced(&live_timelines, session_id, &replacement)
-            .await;
+        reseed_live_timeline_after_history_replaced(
+            &live_timelines,
+            session_id,
+            AgentPermissionRouting::Desktop,
+            &replacement,
+        )
+        .await;
 
         let live_response = assistant_tool_message(
             "live-provider-response",
@@ -8078,7 +9544,13 @@ mod tests {
             "",
         );
         for item in message_to_timeline_items(&live_response, true) {
-            record_timeline_item(&live_timelines, session_id, item).await;
+            record_timeline_item(
+                &live_timelines,
+                session_id,
+                AgentPermissionRouting::Desktop,
+                item,
+            )
+            .await;
         }
 
         let persisted_conversation = Conversation::new_unvalidated(vec![
@@ -8102,6 +9574,7 @@ mod tests {
         let overlaid = overlay_live_timeline(
             &live_timelines,
             session_id,
+            AgentPermissionRouting::Desktop,
             &persisted_conversation,
             persisted,
         )
@@ -8288,12 +9761,38 @@ mod tests {
             .expect("surviving session should be created");
 
         let live_timelines = Arc::new(Mutex::new(HashMap::from([
-            (target.id.clone(), LiveTimeline::Streaming(Vec::new())),
-            (survivor.id.clone(), LiveTimeline::Streaming(Vec::new())),
+            (
+                target.id.clone(),
+                test_live_timeline(
+                    AgentPermissionRouting::Desktop,
+                    LiveTimeline::Streaming(Vec::new()),
+                ),
+            ),
+            (
+                survivor.id.clone(),
+                test_live_timeline(
+                    AgentPermissionRouting::Desktop,
+                    LiveTimeline::Streaming(Vec::new()),
+                ),
+            ),
         ])));
         let pending_permissions = Arc::new(Mutex::new(HashMap::from([
-            ((target.id.clone(), "target-request".to_string()), ()),
-            ((survivor.id.clone(), "survivor-request".to_string()), ()),
+            (
+                (target.id.clone(), "target-request".to_string()),
+                test_pending_permission(
+                    "target-run",
+                    AgentPermissionRouting::Desktop,
+                    "target-request",
+                ),
+            ),
+            (
+                (survivor.id.clone(), "survivor-request".to_string()),
+                test_pending_permission(
+                    "survivor-run",
+                    AgentPermissionRouting::Desktop,
+                    "survivor-request",
+                ),
+            ),
         ])));
         let web_tool_state = WebToolState::default();
         let provenance_cancel = CancellationToken::new();
@@ -8439,13 +9938,17 @@ mod tests {
 
         let live_timelines = Arc::new(Mutex::new(HashMap::from([(
             session.id.clone(),
-            LiveTimeline::Streaming(vec![error_item("speculative partial event".to_string())]),
+            test_live_timeline(
+                AgentPermissionRouting::Desktop,
+                LiveTimeline::Streaming(vec![error_item("speculative partial event".to_string())]),
+            ),
         )])));
         finalize_cancelled_agent_turn(
             &session_manager,
             &live_timelines,
             &web_tool_state,
             &session.id,
+            AgentPermissionRouting::Desktop,
             &stopped_user,
             &HashSet::from(["declined-tool".to_string()]),
         )
@@ -8531,13 +10034,17 @@ mod tests {
             .with_generated_id();
         live_timelines.lock().await.insert(
             first_turn_session.id.clone(),
-            LiveTimeline::Streaming(vec![error_item("optimistic first turn".to_string())]),
+            test_live_timeline(
+                AgentPermissionRouting::Desktop,
+                LiveTimeline::Streaming(vec![error_item("optimistic first turn".to_string())]),
+            ),
         );
         finalize_cancelled_agent_turn(
             &session_manager,
             &live_timelines,
             &web_tool_state,
             &first_turn_session.id,
+            AgentPermissionRouting::Desktop,
             &first_turn_user,
             &HashSet::new(),
         )
@@ -8566,21 +10073,233 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn detects_active_run_for_session() {
-        let mut active_runs = HashMap::new();
-        let task_handle = tauri::async_runtime::spawn(async {});
-        active_runs.insert(
+    async fn run_event_streams_are_ordered_isolated_and_host_policy_controls_projection() {
+        let sink = Arc::new(RecordingAgentEventSink::default());
+        let dispatcher = AgentEventDispatcher::new(sink.clone());
+        let (first, mut first_events) = AgentRunEventPublisher::new(
+            dispatcher.clone(),
+            "session-1".to_string(),
             "run-1".to_string(),
-            ActiveAgentRun {
-                token: CancellationToken::new(),
-                session_id: "session-1".to_string(),
-                cancelled_permission_ids: Arc::new(Mutex::new(HashSet::new())),
-                task_handle,
-            },
+            AgentHostEventPolicy::Publish,
+        );
+        let (second, mut second_events) = AgentRunEventPublisher::new(
+            dispatcher.clone(),
+            "session-2".to_string(),
+            "run-2".to_string(),
+            AgentHostEventPolicy::Publish,
+        );
+        let (external, mut external_events) = AgentRunEventPublisher::new(
+            dispatcher,
+            "session-3".to_string(),
+            "run-3".to_string(),
+            AgentHostEventPolicy::Suppress,
         );
 
-        assert!(has_active_session_run(&active_runs, "session-1"));
-        assert!(!has_active_session_run(&active_runs, "session-2"));
+        first.publish(AgentRunEvent::Started).await;
+        second
+            .publish(AgentRunEvent::SetupWarning("setup warning".to_string()))
+            .await;
+        first
+            .publish(AgentRunEvent::Finished(AgentRunTerminal::Completed))
+            .await;
+        second
+            .publish(AgentRunEvent::Finished(AgentRunTerminal::Failed))
+            .await;
+        external.publish(AgentRunEvent::Started).await;
+
+        assert!(matches!(
+            first_events.recv().await,
+            Some(AgentRunEvent::Started)
+        ));
+        assert!(matches!(
+            first_events.recv().await,
+            Some(AgentRunEvent::Finished(AgentRunTerminal::Completed))
+        ));
+        assert!(first_events.try_recv().is_err());
+
+        assert!(matches!(
+            second_events.recv().await,
+            Some(AgentRunEvent::SetupWarning(message)) if message == "setup warning"
+        ));
+        assert!(matches!(
+            second_events.recv().await,
+            Some(AgentRunEvent::Finished(AgentRunTerminal::Failed))
+        ));
+        assert!(second_events.try_recv().is_err());
+        assert!(matches!(
+            external_events.recv().await,
+            Some(AgentRunEvent::Started)
+        ));
+
+        let emitted = sink
+            .events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(emitted.len(), 4);
+        assert!(matches!(
+            &emitted[0],
+            AgentServiceEvent::Run { session_id, run_id, event: AgentRunEvent::Started }
+                if session_id == "session-1" && run_id == "run-1"
+        ));
+        assert!(matches!(
+            &emitted[1],
+            AgentServiceEvent::Run {
+                session_id,
+                run_id,
+                event: AgentRunEvent::SetupWarning(message),
+            } if session_id == "session-2" && run_id == "run-2" && message == "setup warning"
+        ));
+        assert!(matches!(
+            &emitted[2],
+            AgentServiceEvent::Run {
+                event: AgentRunEvent::Finished(AgentRunTerminal::Completed),
+                ..
+            }
+        ));
+        assert!(matches!(
+            &emitted[3],
+            AgentServiceEvent::Run {
+                event: AgentRunEvent::Finished(AgentRunTerminal::Failed),
+                ..
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn lagged_run_event_consumer_never_backpressures_the_agent() {
+        let (publisher, events) = AgentRunEventPublisher::new(
+            AgentEventDispatcher::new(Arc::new(NoopAgentEventSink)),
+            "session-1".to_string(),
+            "run-1".to_string(),
+            AgentHostEventPolicy::Suppress,
+        );
+        let overflowed = publisher.overflow_flag();
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            for _ in 0..(AGENT_RUN_EVENT_CAPACITY + 32) {
+                publisher.publish(AgentRunEvent::Started).await;
+            }
+            publisher
+                .publish(AgentRunEvent::Finished(AgentRunTerminal::Completed))
+                .await;
+        })
+        .await
+        .expect("a full protocol queue must not block the Agent run");
+
+        assert_eq!(events.len(), AGENT_RUN_EVENT_CAPACITY);
+        assert!(overflowed.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn stale_tool_context_identity_cannot_remove_its_replacement() {
+        let original = SharedAgentToolContext::new(
+            AgentToolContextSpec::try_new(
+                BTreeMap::from([("TOKEN".to_string(), "original".to_string())]),
+                BTreeSet::from(["TOKEN".to_string()]),
+                true,
+            )
+            .unwrap(),
+        );
+        let replacement = SharedAgentToolContext::new(
+            AgentToolContextSpec::try_new(
+                BTreeMap::from([("TOKEN".to_string(), "replacement".to_string())]),
+                BTreeSet::from(["TOKEN".to_string()]),
+                true,
+            )
+            .unwrap(),
+        );
+        let mut contexts = HashMap::from([(
+            "session-1".to_string(),
+            InstalledAgentToolContext {
+                installation_id: 2,
+                context: replacement.clone(),
+                owner: AgentToolContextOwner::Leased,
+            },
+        )]);
+
+        assert!(take_matching_tool_context(&mut contexts, "session-1", 1, &original).is_none());
+        assert_eq!(
+            contexts["session-1"].context.snapshot().values["TOKEN"],
+            "replacement"
+        );
+
+        let removed = take_matching_tool_context(&mut contexts, "session-1", 2, &replacement)
+            .expect("the exact replacement lease should remove its context");
+        assert!(removed.context.ptr_eq(&replacement));
+        assert!(contexts.is_empty());
+    }
+
+    #[test]
+    fn leased_tool_context_requires_the_exact_surface_capability() {
+        let leased = SharedAgentToolContext::new(
+            AgentToolContextSpec::try_new(
+                BTreeMap::from([("TOKEN".to_string(), "leased-secret".to_string())]),
+                BTreeSet::from(["TOKEN".to_string()]),
+                true,
+            )
+            .unwrap(),
+        );
+        let mut contexts = HashMap::from([(
+            "session-1".to_string(),
+            InstalledAgentToolContext {
+                installation_id: 7,
+                context: leased.clone(),
+                owner: AgentToolContextOwner::Leased,
+            },
+        )]);
+        let access = AgentToolContextAccess {
+            account_scope: Arc::from("account-1"),
+            session_id: Arc::from("session-1"),
+            installation_id: 7,
+            context: leased.clone(),
+        };
+
+        assert!(resolve_session_tool_context(
+            &mut contexts,
+            "account-1",
+            "session-1",
+            None,
+            &AgentToolContextSpec::default(),
+        )
+        .is_err());
+        assert!(resolve_session_tool_context(
+            &mut contexts,
+            "account-1",
+            "session-1",
+            Some(&access),
+            &AgentToolContextSpec::default(),
+        )
+        .unwrap()
+        .ptr_eq(&leased));
+
+        leased.revoke();
+        let local = resolve_session_tool_context(
+            &mut contexts,
+            "account-1",
+            "session-1",
+            None,
+            &AgentToolContextSpec::default(),
+        )
+        .expect("a revoked external context should be recoverable as a local task");
+        assert!(!local.ptr_eq(&leased));
+        assert_eq!(contexts["session-1"].owner, AgentToolContextOwner::Maple);
+    }
+
+    #[test]
+    fn uncommitted_tool_context_installation_revokes_synchronously() {
+        let context = SharedAgentToolContext::new(
+            AgentToolContextSpec::try_new(
+                BTreeMap::from([("TOKEN".to_string(), "secret".to_string())]),
+                BTreeSet::from(["TOKEN".to_string()]),
+                true,
+            )
+            .unwrap(),
+        );
+        {
+            let _pending = PendingAgentToolContextInstallation::new(context.clone());
+        }
+        assert!(context.is_revoked());
+        assert!(context.snapshot().values.is_empty());
     }
 
     #[test]
@@ -8599,23 +10318,54 @@ mod tests {
         assert!(ensure_account_scope(&first, &first).is_ok());
         assert!(ensure_account_scope(&first, &second).is_err());
     }
-
     #[tokio::test]
     async fn rejects_operations_captured_before_account_clear() {
-        let state = AgentRuntimeState::new();
+        let state = MapleAgentService::new(MapleAgentHostResources::new(
+            AgentPathLayout::from_app_roots(
+                PathBuf::from("unused-config-root"),
+                PathBuf::from("unused-local-root"),
+            ),
+            Arc::new(NoopAgentEventSink),
+            AgentToolContextSpec::default(),
+        ));
+        let stale_handle = state.handle_for_user("user-to-clear").await.unwrap();
         let scope = account_scope("user-to-clear").unwrap();
-        let stale_generation = account_generation(&state, &scope).await;
 
-        let current_generation = advance_account_generation(&state, &scope).await;
+        advance_account_generation(&state, &scope).await;
+        let current_handle = state.handle_for_user("user-to-clear").await.unwrap();
 
-        assert!(ensure_account_generation(&state, &scope, stale_generation)
-            .await
-            .is_err());
-        assert!(
-            ensure_account_generation(&state, &scope, current_generation)
-                .await
-                .is_ok()
+        assert!(stale_handle.verify_generation().await.is_err());
+        assert!(current_handle.verify_generation().await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn service_drain_rejects_new_work_and_failed_update_can_reopen_it() {
+        let state = MapleAgentService::new(MapleAgentHostResources::new(
+            AgentPathLayout::from_app_roots(
+                PathBuf::from("unused-config-root"),
+                PathBuf::from("unused-local-root"),
+            ),
+            Arc::new(NoopAgentEventSink),
+            AgentToolContextSpec::default(),
+        ));
+        let handle = state.handle_for_user("user-during-shutdown").await.unwrap();
+
+        assert!(state.ensure_accepting_new_work().is_ok());
+        assert!(handle.ensure_accepting_new_work().is_ok());
+
+        state.begin_draining();
+        assert_eq!(
+            state.ensure_accepting_new_work().unwrap_err(),
+            AGENT_SERVICE_DRAINING_ERROR
         );
+        assert_eq!(
+            handle.ensure_accepting_new_work().unwrap_err(),
+            AGENT_SERVICE_DRAINING_ERROR
+        );
+
+        state.reopen_after_failed_shutdown();
+        assert!(state.ensure_accepting_new_work().is_ok());
+        assert!(handle.ensure_accepting_new_work().is_ok());
     }
 
     #[test]
@@ -8638,7 +10388,7 @@ mod tests {
         let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let (started_tx, started_rx) = oneshot::channel();
         let task_dropped = Arc::clone(&dropped);
-        let task = tauri::async_runtime::spawn(async move {
+        let task = tokio::spawn(async move {
             let _drop_flag = DropFlag(task_dropped);
             let _ = started_tx.send(());
             futures_util::future::pending::<()>().await;
@@ -8663,32 +10413,223 @@ mod tests {
         assert!(!title.contains("  "));
     }
 
+    #[test]
+    fn permission_extraction_rejects_empty_and_conflicting_ids() {
+        let status_arguments = serde_json::Map::from_iter([(
+            "command".to_string(),
+            Value::String("git status --short".to_string()),
+        )]);
+        let push_arguments = serde_json::Map::from_iter([(
+            "command".to_string(),
+            Value::String("git push".to_string()),
+        )]);
+        let message = Message::assistant()
+            .with_content(MessageContent::action_required(
+                "request-1",
+                "shell".to_string(),
+                status_arguments,
+                None,
+            ))
+            .with_content(MessageContent::action_required(
+                "request-1",
+                "shell".to_string(),
+                push_arguments,
+                None,
+            ))
+            .with_content(MessageContent::action_required(
+                "",
+                "shell".to_string(),
+                serde_json::Map::new(),
+                None,
+            ));
+
+        let extracted = tool_permission_requests(&message);
+
+        assert!(extracted.requests.is_empty());
+        assert_eq!(
+            extracted.conflicting_ids,
+            HashSet::from(["request-1".to_string(), String::new()])
+        );
+    }
+
+    #[test]
+    fn permission_extraction_rejects_identical_duplicate_ids() {
+        let arguments = serde_json::Map::from_iter([(
+            "command".to_string(),
+            Value::String("git status --short".to_string()),
+        )]);
+        let message = Message::assistant()
+            .with_content(MessageContent::action_required(
+                "request-1",
+                "shell".to_string(),
+                arguments.clone(),
+                None,
+            ))
+            .with_content(MessageContent::action_required(
+                "request-1",
+                "shell".to_string(),
+                arguments,
+                None,
+            ));
+
+        let extracted = tool_permission_requests(&message);
+
+        assert!(extracted.requests.is_empty());
+        assert_eq!(
+            extracted.conflicting_ids,
+            HashSet::from(["request-1".to_string()])
+        );
+    }
+
     #[tokio::test]
     async fn cancelled_permission_is_not_registered() {
         let pending = Arc::new(Mutex::new(HashMap::new()));
+        let issued = Arc::new(Mutex::new(HashSet::new()));
         let cancel_token = CancellationToken::new();
         cancel_token.cancel();
 
-        assert!(
-            !register_pending_permission(&pending, "request-1", "session-1", &cancel_token).await
+        assert_eq!(
+            register_pending_permission(
+                &pending,
+                &issued,
+                "session-1",
+                "run-1",
+                AgentPermissionRouting::Desktop,
+                test_permission_request("request-1"),
+                &cancel_token,
+            )
+            .await,
+            PendingPermissionRegistration::Rejected
         );
         assert!(pending.lock().await.is_empty());
     }
 
     #[tokio::test]
-    async fn pending_permission_ids_are_scoped_by_session() {
+    async fn pending_permissions_are_taken_only_for_the_exact_run() {
         let pending = Arc::new(Mutex::new(HashMap::from([
-            (("session-1".to_string(), "shared-request".to_string()), ()),
-            (("session-2".to_string(), "shared-request".to_string()), ()),
+            (
+                ("session-1".to_string(), "request-1".to_string()),
+                test_pending_permission("run-1", AgentPermissionRouting::Desktop, "request-1"),
+            ),
+            (
+                ("session-1".to_string(), "request-2".to_string()),
+                test_pending_permission(
+                    "run-2",
+                    AgentPermissionRouting::CallingSurface,
+                    "request-2",
+                ),
+            ),
         ])));
 
-        let selected = pending_permissions_for_sessions(&pending, &["session-1".to_string()]).await;
+        let selected = take_pending_permissions_for_runs(&pending, &["run-1".to_string()]).await;
 
+        assert_eq!(selected.len(), 1);
         assert_eq!(
-            selected,
-            vec![("shared-request".to_string(), "session-1".to_string())]
+            selected[0].0,
+            ("session-1".to_string(), "request-1".to_string())
         );
-        assert_eq!(pending.lock().await.len(), 2);
+        assert_eq!(selected[0].1.run_id, "run-1");
+        let remaining = pending.lock().await;
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining.values().next().unwrap().run_id, "run-2");
+    }
+
+    #[tokio::test]
+    async fn conflicting_permission_registration_invalidates_the_stale_capability() {
+        let pending = Arc::new(Mutex::new(HashMap::new()));
+        let issued = Arc::new(Mutex::new(HashSet::new()));
+        let cancel_token = CancellationToken::new();
+        let original = test_permission_request("request-1");
+        assert_eq!(
+            register_pending_permission(
+                &pending,
+                &issued,
+                "session-1",
+                "run-1",
+                AgentPermissionRouting::CallingSurface,
+                original.clone(),
+                &cancel_token,
+            )
+            .await,
+            PendingPermissionRegistration::Registered
+        );
+        assert_eq!(
+            register_pending_permission(
+                &pending,
+                &issued,
+                "session-1",
+                "run-1",
+                AgentPermissionRouting::CallingSurface,
+                original,
+                &cancel_token,
+            )
+            .await,
+            PendingPermissionRegistration::Existing
+        );
+
+        let mut conflicting = test_permission_request("request-1");
+        conflicting
+            .arguments
+            .insert("command".to_string(), Value::String("git push".to_string()));
+        assert_eq!(
+            register_pending_permission(
+                &pending,
+                &issued,
+                "session-1",
+                "run-1",
+                AgentPermissionRouting::CallingSurface,
+                conflicting,
+                &cancel_token,
+            )
+            .await,
+            PendingPermissionRegistration::Rejected
+        );
+        assert!(pending.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn resolved_permission_ids_cannot_be_reissued_within_a_run() {
+        let pending = Arc::new(Mutex::new(HashMap::new()));
+        let issued = Arc::new(Mutex::new(HashSet::new()));
+        let cancel_token = CancellationToken::new();
+        assert_eq!(
+            register_pending_permission(
+                &pending,
+                &issued,
+                "session-1",
+                "run-1",
+                AgentPermissionRouting::Desktop,
+                test_permission_request("request-1"),
+                &cancel_token,
+            )
+            .await,
+            PendingPermissionRegistration::Registered
+        );
+        assert_eq!(
+            take_pending_permissions_for_runs(&pending, &["run-1".to_string()])
+                .await
+                .len(),
+            1
+        );
+
+        let mut reused = test_permission_request("request-1");
+        reused
+            .arguments
+            .insert("command".to_string(), Value::String("git push".to_string()));
+        assert_eq!(
+            register_pending_permission(
+                &pending,
+                &issued,
+                "session-1",
+                "run-1",
+                AgentPermissionRouting::Desktop,
+                reused,
+                &cancel_token,
+            )
+            .await,
+            PendingPermissionRegistration::Rejected
+        );
+        assert!(pending.lock().await.is_empty());
     }
 
     #[test]

@@ -4,6 +4,7 @@ import { useOpenSecret } from "@opensecret/react";
 import {
   ArrowLeft,
   BookOpen,
+  Cable,
   CreditCard,
   Database,
   KeyRound,
@@ -33,6 +34,7 @@ import {
   restoreMapleApiAuthForUser,
   stopAgentRuntimeForUser
 } from "@/services/agentRuntimeService";
+import { isAgentConnectionsAvailable } from "@/services/agentConnectionsAvailability";
 import { resetWorkspaceModePreference } from "@/services/workspaceModePreference";
 import { useLocalState } from "@/state/useLocalState";
 import type { TeamStatus } from "@/types/team";
@@ -50,6 +52,7 @@ type SettingsNavItem = {
     | "/settings/billing"
     | "/settings/team"
     | "/settings/api"
+    | "/settings/agent-connections"
     | "/settings/history"
     | "/settings/about";
   icon: ComponentType<{ className?: string }>;
@@ -233,6 +236,7 @@ function SettingsLayoutContent() {
   });
 
   const isIOSPlatform = isIOS();
+  const supportsAgentConnections = isAgentConnectionsAvailable();
   const { data: products, isError: productsError } = useQuery({
     queryKey: ["products-version-check", isIOSPlatform],
     queryFn: () => getBillingService().getProducts(`v${packageJson.version}`),
@@ -278,9 +282,20 @@ function SettingsLayoutContent() {
     },
     {
       label: "Developer",
-      items: showApiManagement
-        ? [{ label: "API & credits", to: "/settings/api", icon: KeyRound }]
-        : []
+      items: [
+        ...(showApiManagement
+          ? [{ label: "API & credits", to: "/settings/api" as const, icon: KeyRound }]
+          : []),
+        ...(supportsAgentConnections
+          ? [
+              {
+                label: "Agent connections",
+                to: "/settings/agent-connections" as const,
+                icon: Cable
+              }
+            ]
+          : [])
+      ]
     },
     {
       label: "Data",

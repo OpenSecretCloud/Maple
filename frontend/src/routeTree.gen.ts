@@ -35,6 +35,7 @@ import { Route as SettingsHistoryRouteImport } from './routes/settings.history'
 import { Route as SettingsDeleteAccountRouteImport } from './routes/settings.delete-account'
 import { Route as SettingsBillingRouteImport } from './routes/settings.billing'
 import { Route as SettingsApiRouteImport } from './routes/settings.api'
+import { Route as SettingsAgentConnectionsRouteImport } from './routes/settings.agent-connections'
 import { Route as SettingsAccountRouteImport } from './routes/settings.account'
 import { Route as SettingsAboutRouteImport } from './routes/settings.about'
 import { Route as PasswordResetConfirmRouteImport } from './routes/password-reset.confirm'
@@ -178,6 +179,12 @@ const SettingsApiRoute = SettingsApiRouteImport.update({
   path: '/api',
   getParentRoute: () => SettingsRoute,
 } as any)
+const SettingsAgentConnectionsRoute =
+  SettingsAgentConnectionsRouteImport.update({
+    id: '/agent-connections',
+    path: '/agent-connections',
+    getParentRoute: () => SettingsRoute,
+  } as any)
 const SettingsAccountRoute = SettingsAccountRouteImport.update({
   id: '/account',
   path: '/account',
@@ -260,6 +267,7 @@ export interface FileRoutesByFullPath {
   '/password-reset/confirm': typeof PasswordResetConfirmRoute
   '/settings/about': typeof SettingsAboutRoute
   '/settings/account': typeof SettingsAccountRoute
+  '/settings/agent-connections': typeof SettingsAgentConnectionsRoute
   '/settings/api': typeof SettingsApiRouteWithChildren
   '/settings/billing': typeof SettingsBillingRoute
   '/settings/delete-account': typeof SettingsDeleteAccountRoute
@@ -299,6 +307,7 @@ export interface FileRoutesByTo {
   '/password-reset/confirm': typeof PasswordResetConfirmRoute
   '/settings/about': typeof SettingsAboutRoute
   '/settings/account': typeof SettingsAccountRoute
+  '/settings/agent-connections': typeof SettingsAgentConnectionsRoute
   '/settings/billing': typeof SettingsBillingRoute
   '/settings/delete-account': typeof SettingsDeleteAccountRoute
   '/settings/history': typeof SettingsHistoryRoute
@@ -337,6 +346,7 @@ export interface FileRoutesById {
   '/password-reset/confirm': typeof PasswordResetConfirmRoute
   '/settings/about': typeof SettingsAboutRoute
   '/settings/account': typeof SettingsAccountRoute
+  '/settings/agent-connections': typeof SettingsAgentConnectionsRoute
   '/settings/api': typeof SettingsApiRouteWithChildren
   '/settings/billing': typeof SettingsBillingRoute
   '/settings/delete-account': typeof SettingsDeleteAccountRoute
@@ -379,6 +389,7 @@ export interface FileRouteTypes {
     | '/password-reset/confirm'
     | '/settings/about'
     | '/settings/account'
+    | '/settings/agent-connections'
     | '/settings/api'
     | '/settings/billing'
     | '/settings/delete-account'
@@ -418,6 +429,7 @@ export interface FileRouteTypes {
     | '/password-reset/confirm'
     | '/settings/about'
     | '/settings/account'
+    | '/settings/agent-connections'
     | '/settings/billing'
     | '/settings/delete-account'
     | '/settings/history'
@@ -455,6 +467,7 @@ export interface FileRouteTypes {
     | '/password-reset/confirm'
     | '/settings/about'
     | '/settings/account'
+    | '/settings/agent-connections'
     | '/settings/api'
     | '/settings/billing'
     | '/settings/delete-account'
@@ -682,6 +695,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SettingsApiRouteImport
       parentRoute: typeof SettingsRoute
     }
+    '/settings/agent-connections': {
+      id: '/settings/agent-connections'
+      path: '/agent-connections'
+      fullPath: '/settings/agent-connections'
+      preLoaderRoute: typeof SettingsAgentConnectionsRouteImport
+      parentRoute: typeof SettingsRoute
+    }
     '/settings/account': {
       id: '/settings/account'
       path: '/account'
@@ -828,6 +848,7 @@ const SettingsTeamRouteWithChildren = SettingsTeamRoute._addFileChildren(
 interface SettingsRouteChildren {
   SettingsAboutRoute: typeof SettingsAboutRoute
   SettingsAccountRoute: typeof SettingsAccountRoute
+  SettingsAgentConnectionsRoute: typeof SettingsAgentConnectionsRoute
   SettingsApiRoute: typeof SettingsApiRouteWithChildren
   SettingsBillingRoute: typeof SettingsBillingRoute
   SettingsDeleteAccountRoute: typeof SettingsDeleteAccountRoute
@@ -841,6 +862,7 @@ interface SettingsRouteChildren {
 const SettingsRouteChildren: SettingsRouteChildren = {
   SettingsAboutRoute: SettingsAboutRoute,
   SettingsAccountRoute: SettingsAccountRoute,
+  SettingsAgentConnectionsRoute: SettingsAgentConnectionsRoute,
   SettingsApiRoute: SettingsApiRouteWithChildren,
   SettingsBillingRoute: SettingsBillingRoute,
   SettingsDeleteAccountRoute: SettingsDeleteAccountRoute,

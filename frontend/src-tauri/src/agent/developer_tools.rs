@@ -28,6 +28,8 @@ use rmcp::model::{
 };
 use rmcp::object;
 use serde::{de::Error as SerdeDeError, Deserialize, Deserializer};
+#[cfg(test)]
+use std::collections::{BTreeMap, BTreeSet};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
@@ -45,6 +47,7 @@ use tokio_util::sync::CancellationToken;
 use windows::Win32::System::Threading::CREATE_NO_WINDOW;
 
 use super::shell_permission::{is_remote_file_source, thinking_disabled_request_params};
+use super::tool_context::{AgentToolContextSnapshot, SharedAgentToolContext};
 
 const MAX_READ_LINES: usize = 2_000;
 const MAX_READ_BYTES: usize = 50 * 1024;
@@ -132,6 +135,7 @@ pub(crate) struct MapleDeveloperClient {
     goose: DeveloperClient,
     web_transport: Arc<dyn MapleWebTransport>,
     web_state: Arc<WebToolState>,
+    tool_context: SharedAgentToolContext,
     contextual_image_context: Option<PlatformExtensionContext>,
     #[cfg(not(windows))]
     login_path_probe: ShellTool,
@@ -145,6 +149,7 @@ impl MapleDeveloperClient {
         primary_model_supports_vision: bool,
         web_transport: Arc<dyn MapleWebTransport>,
         web_state: Arc<WebToolState>,
+        tool_context: SharedAgentToolContext,
     ) -> anyhow::Result<Self> {
         let info = InitializeResult::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("developer", "1.0.0").with_title("Developer"))
@@ -160,6 +165,7 @@ impl MapleDeveloperClient {
             goose: DeveloperClient::new(context)?,
             web_transport,
             web_state,
+            tool_context,
             contextual_image_context,
             #[cfg(not(windows))]
             login_path_probe: ShellTool::new(true)?,
@@ -478,11 +484,13 @@ impl McpClientTrait for MapleDeveloperClient {
                 let login_path = self.login_path().await;
                 #[cfg(windows)]
                 let login_path: Option<String> = None;
+                let tool_context = self.tool_context.snapshot();
                 return Ok(run_bounded_shell(
                     params,
                     working_dir,
                     login_path.as_deref(),
                     Some(&ctx.session_id),
+                    &tool_context,
                     cancel_token,
                 )
                 .await);
@@ -811,11 +819,69 @@ struct BoundedShellExecution {
     cancelled: bool,
 }
 
+/// Keeps OS containment armed across every await in shell execution.
+///
+/// Tokio may drop the whole prompt future during forced runtime shutdown. Raw
+/// `Command::kill_on_drop` only reaches the shell leader; the process-wrap
+/// child reaches the Unix process group or Windows job from this synchronous
+/// drop path as well.
+struct ArmedShellChild {
+    child: Box<dyn ChildWrapper>,
+    armed: bool,
+}
+
+impl ArmedShellChild {
+    fn new(child: Box<dyn ChildWrapper>) -> Self {
+        Self { child, armed: true }
+    }
+
+    fn as_mut(&mut self) -> &mut dyn ChildWrapper {
+        self.child.as_mut()
+    }
+
+    async fn kill_and_wait(&mut self) -> Option<i32> {
+        let kill_succeeded = match self.child.start_kill() {
+            Ok(()) => true,
+            Err(error) => {
+                log::warn!("Failed to terminate shell containment unit: {error}");
+                false
+            }
+        };
+        match self.child.wait().await {
+            Ok(status) => {
+                if kill_succeeded {
+                    self.armed = false;
+                }
+                status.code()
+            }
+            Err(error) => {
+                log::warn!("Failed to reap shell containment unit: {error}");
+                None
+            }
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for ArmedShellChild {
+    fn drop(&mut self) {
+        if self.armed {
+            if let Err(error) = self.child.start_kill() {
+                log::warn!("Failed to terminate dropped shell containment unit: {error}");
+            }
+        }
+    }
+}
+
 async fn run_bounded_shell(
     params: ShellParams,
     working_dir: Option<&Path>,
     login_path: Option<&str>,
     session_id: Option<&str>,
+    tool_context: &AgentToolContextSnapshot,
     cancel_token: CancellationToken,
 ) -> CallToolResult {
     if params.command.trim().is_empty() {
@@ -829,6 +895,7 @@ async fn run_bounded_shell(
         working_dir,
         login_path,
         session_id,
+        tool_context,
         cancel_token,
     )
     .await
@@ -853,10 +920,22 @@ async fn execute_bounded_shell(
     working_dir: Option<&Path>,
     login_path: Option<&str>,
     session_id: Option<&str>,
+    tool_context: &AgentToolContextSnapshot,
     cancel_token: CancellationToken,
 ) -> Result<BoundedShellExecution, String> {
-    let mut command =
-        build_bounded_shell_command(command_line, working_dir, login_path, session_id);
+    let ephemeral = tool_context.ephemeral;
+    #[cfg(not(windows))]
+    if Path::new("/.flatpak-info").exists() && ephemeral {
+        return Err("Ephemeral Agent tool contexts are not supported inside Flatpak".to_string());
+    }
+    let launch_guard = tool_context.begin_process_launch(&cancel_token)?;
+    let mut command = build_bounded_shell_command(
+        command_line,
+        working_dir,
+        login_path,
+        session_id,
+        tool_context,
+    );
     command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -876,14 +955,19 @@ async fn execute_bounded_shell(
         command.wrap(CreationFlags(CREATE_NO_WINDOW));
         command.wrap(JobObject);
     }
-    let mut child = command
-        .spawn()
-        .map_err(|error| format!("Failed to spawn shell command: {error}"))?;
+    let mut child = ArmedShellChild::new(
+        command
+            .spawn()
+            .map_err(|error| format!("Failed to spawn shell command: {error}"))?,
+    );
+    drop(launch_guard);
     let stdout = child
+        .as_mut()
         .stdout()
         .take()
         .ok_or_else(|| "Failed to capture shell stdout".to_string())?;
     let stderr = child
+        .as_mut()
         .stderr()
         .take()
         .ok_or_else(|| "Failed to capture shell stderr".to_string())?;
@@ -913,46 +997,77 @@ async fn execute_bounded_shell(
         biased;
         _ = cancel_token.cancelled() => {
             cancelled = true;
-            terminate_shell_process(child.as_mut()).await
+            terminate_shell_process(&mut child).await
+        }
+        _ = tool_context.revoked.cancelled() => {
+            cancelled = true;
+            terminate_shell_process(&mut child).await
         }
         _ = output_limit_reached.cancelled() => {
-            terminate_shell_process(child.as_mut()).await
+            terminate_shell_process(&mut child).await
         }
         _ = &mut timeout => {
             timed_out = true;
-            terminate_shell_process(child.as_mut()).await
+            terminate_shell_process(&mut child).await
         }
         result = wait_for_shell_parent(child.as_mut()) => match result {
             Ok(status) => status.code(),
             Err(error) => {
                 wait_error = Some(format!("Failed waiting on shell command: {error}"));
-                terminate_shell_process(child.as_mut()).await
+                terminate_shell_process(&mut child).await
             }
         },
     };
 
-    let mut capture =
-        match tokio::time::timeout(SHELL_OUTPUT_DRAIN_TIMEOUT, &mut capture_task).await {
-            Ok(Ok(capture)) => capture,
-            Ok(Err(error)) => BoundedShellCapture {
-                collection_error: Some(format!("Shell output task failed: {error}")),
-                ..BoundedShellCapture::default()
-            },
-            Err(_) => {
-                stdout_task.abort();
-                stderr_task.abort();
-                match capture_task.await {
-                    Ok(mut capture) => {
-                        capture.drain_truncated = true;
-                        capture
-                    }
-                    Err(_) => BoundedShellCapture {
-                        drain_truncated: true,
-                        ..BoundedShellCapture::default()
-                    },
+    // Credential-bearing contexts cannot allow a descendant to outlive the
+    // shell parent even during output draining. On Unix this reaches the
+    // current process group; on Windows it reaches the assigned Job Object.
+    if ephemeral && child.armed {
+        let _ = terminate_shell_process(&mut child).await;
+    }
+
+    let drain_timeout = tokio::time::sleep(SHELL_OUTPUT_DRAIN_TIMEOUT);
+    tokio::pin!(drain_timeout);
+    let capture_result = tokio::select! {
+        biased;
+        _ = cancel_token.cancelled(), if !cancelled => {
+            cancelled = true;
+            let _ = terminate_shell_process(&mut child).await;
+            Some(tokio::time::timeout(SHELL_OUTPUT_DRAIN_TIMEOUT, &mut capture_task).await)
+        }
+        _ = tool_context.revoked.cancelled(), if !cancelled => {
+            cancelled = true;
+            let _ = terminate_shell_process(&mut child).await;
+            Some(tokio::time::timeout(SHELL_OUTPUT_DRAIN_TIMEOUT, &mut capture_task).await)
+        }
+        _ = output_limit_reached.cancelled() => {
+            let _ = terminate_shell_process(&mut child).await;
+            Some(tokio::time::timeout(SHELL_OUTPUT_DRAIN_TIMEOUT, &mut capture_task).await)
+        }
+        result = &mut capture_task => Some(Ok(result)),
+        _ = &mut drain_timeout => None,
+    };
+    let mut capture = match capture_result {
+        Some(Ok(Ok(capture))) => capture,
+        Some(Ok(Err(error))) => BoundedShellCapture {
+            collection_error: Some(format!("Shell output task failed: {error}")),
+            ..BoundedShellCapture::default()
+        },
+        Some(Err(_)) | None => {
+            stdout_task.abort();
+            stderr_task.abort();
+            match capture_task.await {
+                Ok(mut capture) => {
+                    capture.drain_truncated = true;
+                    capture
                 }
+                Err(_) => BoundedShellCapture {
+                    drain_truncated: true,
+                    ..BoundedShellCapture::default()
+                },
             }
-        };
+        }
+    };
     stdout_task.abort();
     stderr_task.abort();
     let _ = stdout_task.await;
@@ -961,14 +1076,17 @@ async fn execute_bounded_shell(
         capture.exceeded_limit = true;
     }
     // The top-level shell can exit before a noisy background descendant reaches
-    // the cap. Keep the wrapped process-tree handle alive and kill it even if
-    // the parent wait already completed. A quiet background job that merely
-    // holds the pipes open follows Pi/Goose semantics and is left running.
-    if capture.exceeded_limit {
-        let _ = terminate_shell_process(child.as_mut()).await;
+    // the cap. Keep the wrapped containment handle alive and kill the process
+    // group/job even if the parent wait already completed. A quiet ordinary
+    // background job follows Pi/Goose semantics and is left running.
+    if capture.exceeded_limit && child.armed {
+        let _ = terminate_shell_process(&mut child).await;
     }
     if let Some(error) = wait_error {
         return Err(error);
+    }
+    if !timed_out && !cancelled && !capture.exceeded_limit && !ephemeral {
+        child.disarm();
     }
 
     Ok(BoundedShellExecution {
@@ -1056,12 +1174,10 @@ async fn collect_bounded_shell_output(
     capture
 }
 
-async fn terminate_shell_process(child: &mut dyn ChildWrapper) -> Option<i32> {
-    // ProcessGroup and JobObject both override start_kill to terminate the
-    // complete descendant tree. Their wait implementations retain the
-    // top-level exit status and finish reaping the wrapped process container.
-    let _ = child.start_kill();
-    child.wait().await.ok().and_then(|status| status.code())
+async fn terminate_shell_process(child: &mut ArmedShellChild) -> Option<i32> {
+    // ProcessGroup and JobObject both override start_kill. On Unix this
+    // terminates the current process group; on Windows the assigned job.
+    child.kill_and_wait().await
 }
 
 fn build_bounded_shell_command(
@@ -1069,6 +1185,7 @@ fn build_bounded_shell_command(
     working_dir: Option<&Path>,
     login_path: Option<&str>,
     session_id: Option<&str>,
+    tool_context: &AgentToolContextSnapshot,
 ) -> tokio::process::Command {
     #[cfg(windows)]
     let mut command = {
@@ -1096,6 +1213,7 @@ fn build_bounded_shell_command(
         if let Some(path) = login_path {
             command.env("PATH", path);
         }
+        apply_tool_context(&mut command, tool_context);
         command
     };
 
@@ -1117,6 +1235,7 @@ fn build_bounded_shell_command(
                 command.arg(format!("--env=PATH={path}"));
             }
             apply_flatpak_session_environment(&mut command, session_id);
+            apply_flatpak_tool_context(&mut command, tool_context);
             command.arg(shell).args(["-c", command_line]);
             command
         } else {
@@ -1129,6 +1248,7 @@ fn build_bounded_shell_command(
                 command.env("PATH", path);
             }
             apply_session_environment(&mut command, session_id);
+            apply_tool_context(&mut command, tool_context);
             command
         }
     };
@@ -1149,6 +1269,16 @@ fn apply_session_environment(command: &mut tokio::process::Command, session_id: 
     }
 }
 
+fn apply_tool_context(
+    command: &mut tokio::process::Command,
+    tool_context: &AgentToolContextSnapshot,
+) {
+    for key in &tool_context.scrub_from_parent {
+        command.env_remove(key);
+    }
+    command.envs(&tool_context.values);
+}
+
 #[cfg(not(windows))]
 fn apply_flatpak_session_environment(
     command: &mut tokio::process::Command,
@@ -1158,6 +1288,19 @@ fn apply_flatpak_session_environment(
         command.arg(format!("--env=AGENT_SESSION_ID={session_id}"));
     } else {
         command.arg("--unset-env=AGENT_SESSION_ID");
+    }
+}
+
+#[cfg(not(windows))]
+fn apply_flatpak_tool_context(
+    command: &mut tokio::process::Command,
+    tool_context: &AgentToolContextSnapshot,
+) {
+    for key in &tool_context.scrub_from_parent {
+        command.arg(format!("--unset-env={key}"));
+    }
+    for (key, value) in &tool_context.values {
+        command.arg(format!("--env={key}={value}"));
     }
 }
 
@@ -1854,13 +1997,14 @@ async fn write_file(
 ) -> CallToolResult {
     let path = resolve_path(&params.path, working_dir);
     let lock = mutation_lock(&path);
-    let _guard = tokio::select! {
+    let guard = tokio::select! {
         biased;
         _ = cancel_token.cancelled() => return error_result("Write cancelled"),
-        guard = lock.lock() => guard,
+        guard = lock.lock_owned() => guard,
     };
     let worker_cancel_token = cancel_token.clone();
     match tokio::task::spawn_blocking(move || {
+        let _guard = guard;
         write_file_blocking(params, path, worker_cancel_token)
     })
     .await
@@ -1928,14 +2072,16 @@ async fn edit_file(
 
     let path = resolve_path(&params.path, working_dir);
     let lock = mutation_lock(&path);
-    let _guard = tokio::select! {
+    let guard = tokio::select! {
         biased;
         _ = cancel_token.cancelled() => return error_result("Edit cancelled"),
-        guard = lock.lock() => guard,
+        guard = lock.lock_owned() => guard,
     };
     let worker_cancel_token = cancel_token.clone();
-    let task =
-        tokio::task::spawn_blocking(move || edit_file_blocking(params, path, worker_cancel_token));
+    let task = tokio::task::spawn_blocking(move || {
+        let _guard = guard;
+        edit_file_blocking(params, path, worker_cancel_token)
+    });
     tokio::select! {
         biased;
         _ = cancel_token.cancelled() => error_result("Edit cancelled"),
@@ -2202,6 +2348,7 @@ fn mutation_key(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::tool_context::AgentToolContextSpec;
     use goose::config::GooseMode;
     use goose::providers::base::{ProviderUsage, Usage};
     use goose::session::SessionManager;
@@ -2253,13 +2400,44 @@ mod tests {
     }
 
     fn test_client(data_dir: PathBuf, primary_model_supports_vision: bool) -> MapleDeveloperClient {
+        test_client_with_environment(data_dir, primary_model_supports_vision, BTreeMap::new())
+    }
+
+    fn test_client_with_environment(
+        data_dir: PathBuf,
+        primary_model_supports_vision: bool,
+        tool_environment: BTreeMap<String, String>,
+    ) -> MapleDeveloperClient {
         MapleDeveloperClient::new(
             test_context(data_dir),
             primary_model_supports_vision,
             Arc::new(TestWebTransport),
             Arc::new(WebToolState::default()),
+            test_tool_context(tool_environment, BTreeSet::new(), false),
         )
         .unwrap()
+    }
+
+    fn test_tool_context(
+        values: BTreeMap<String, String>,
+        scrub_from_parent: BTreeSet<String>,
+        ephemeral: bool,
+    ) -> SharedAgentToolContext {
+        SharedAgentToolContext::new(
+            AgentToolContextSpec::try_new(values, scrub_from_parent, ephemeral).unwrap(),
+        )
+    }
+
+    fn test_tool_context_snapshot(
+        values: BTreeMap<String, String>,
+        scrub_from_parent: BTreeSet<String>,
+        ephemeral: bool,
+    ) -> AgentToolContextSnapshot {
+        test_tool_context(values, scrub_from_parent, ephemeral).snapshot()
+    }
+
+    fn empty_tool_context_snapshot() -> AgentToolContextSnapshot {
+        test_tool_context_snapshot(BTreeMap::new(), BTreeSet::new(), false)
     }
 
     struct TestDir(PathBuf);
@@ -2386,6 +2564,7 @@ mod tests {
             true,
             Arc::new(TestWebTransport),
             Arc::new(WebToolState::default()),
+            test_tool_context(BTreeMap::new(), BTreeSet::new(), false),
         )
         .unwrap();
         let config = goose::agents::ExtensionConfig::Builtin {
@@ -2904,6 +3083,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn shell_stops_processes_at_the_combined_output_limit() {
+        let tool_context = empty_tool_context_snapshot();
         let result = tokio::time::timeout(
             Duration::from_secs(5),
             run_bounded_shell(
@@ -2914,6 +3094,7 @@ mod tests {
                 None,
                 std::env::var("PATH").ok().as_deref(),
                 None,
+                &tool_context,
                 CancellationToken::new(),
             ),
         )
@@ -2958,6 +3139,77 @@ mod tests {
         assert_eq!(cleared_value, Some(None));
     }
 
+    #[test]
+    fn shell_tool_environment_is_applied_only_to_the_child_command() {
+        let process_value = std::env::var_os("BUZZ_ACP_DISPLAY_NAME");
+        let environment = BTreeMap::from([
+            (
+                "BUZZ_ACP_DISPLAY_NAME".to_string(),
+                "maple-test-agent".to_string(),
+            ),
+            ("BUZZ_AUTH_TAG".to_string(), "test-auth-tag".to_string()),
+        ]);
+        let tool_context = test_tool_context_snapshot(
+            environment.clone(),
+            environment.keys().cloned().collect(),
+            true,
+        );
+        let mut command = tokio::process::Command::new("unused");
+        apply_tool_context(&mut command, &tool_context);
+
+        let command_environment = command
+            .as_std()
+            .get_envs()
+            .filter_map(|(key, value)| {
+                Some((key.to_str()?.to_string(), value?.to_str()?.to_string()))
+            })
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(command_environment, environment);
+        assert_eq!(std::env::var_os("BUZZ_ACP_DISPLAY_NAME"), process_value);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn flatpak_shell_forwards_each_tool_environment_value_as_one_argument() {
+        let environment = BTreeMap::from([
+            (
+                "BUZZ_ACP_DISPLAY_NAME".to_string(),
+                "Maple Agent".to_string(),
+            ),
+            ("BUZZ_PRIVATE_KEY".to_string(), "key=value".to_string()),
+        ]);
+        let tool_context = test_tool_context_snapshot(
+            environment,
+            BTreeSet::from([
+                "BUZZ_RELAY_URL".to_string(),
+                "BUZZ_PRIVATE_KEY".to_string(),
+                "BUZZ_AUTH_TAG".to_string(),
+                "BUZZ_API_TOKEN".to_string(),
+                "BUZZ_ACP_DISPLAY_NAME".to_string(),
+            ]),
+            true,
+        );
+        let mut command = tokio::process::Command::new("flatpak-spawn");
+        apply_flatpak_tool_context(&mut command, &tool_context);
+        let arguments = command
+            .as_std()
+            .get_args()
+            .map(|value| value.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            arguments,
+            vec![
+                "--unset-env=BUZZ_ACP_DISPLAY_NAME",
+                "--unset-env=BUZZ_API_TOKEN",
+                "--unset-env=BUZZ_AUTH_TAG",
+                "--unset-env=BUZZ_PRIVATE_KEY",
+                "--unset-env=BUZZ_RELAY_URL",
+                "--env=BUZZ_ACP_DISPLAY_NAME=Maple Agent",
+                "--env=BUZZ_PRIVATE_KEY=key=value",
+            ]
+        );
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn shell_tool_forwards_the_current_agent_session_id() {
@@ -2984,10 +3236,100 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn shell_tool_environments_are_isolated_between_maple_sessions() {
+        let temp = TestDir::new();
+        let first = test_client_with_environment(
+            temp.path().join("first-sessions"),
+            true,
+            BTreeMap::from([(
+                "BUZZ_ACP_DISPLAY_NAME".to_string(),
+                "first-maple-agent".to_string(),
+            )]),
+        );
+        let second = test_client_with_environment(
+            temp.path().join("second-sessions"),
+            true,
+            BTreeMap::from([(
+                "BUZZ_ACP_DISPLAY_NAME".to_string(),
+                "second-maple-agent".to_string(),
+            )]),
+        );
+
+        for (client, session_id, expected) in [
+            (&first, "maple-first", "first-maple-agent"),
+            (&second, "maple-second", "second-maple-agent"),
+        ] {
+            let result = client
+                .call_tool(
+                    &ToolCallContext::new(session_id.to_string(), None, None),
+                    "shell",
+                    Some(object!({
+                        "command": "printf %s \"$BUZZ_ACP_DISPLAY_NAME\"",
+                        "timeout_secs": 2
+                    })),
+                    CancellationToken::new(),
+                )
+                .await
+                .unwrap();
+            let output: ShellOutput =
+                serde_json::from_value(result.structured_content.clone().unwrap()).unwrap();
+            assert_eq!(result.is_error, Some(false));
+            assert_eq!(output.stdout, expected);
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn shell_tool_environment_clear_is_observed_by_an_existing_client() {
+        let temp = TestDir::new();
+        let tool_context = test_tool_context(
+            BTreeMap::from([(
+                "BUZZ_AUTH_TAG".to_string(),
+                "maple-session-auth-tag".to_string(),
+            )]),
+            BTreeSet::from(["BUZZ_AUTH_TAG".to_string()]),
+            true,
+        );
+        let client = MapleDeveloperClient::new(
+            test_context(temp.path().join("sessions")),
+            true,
+            Arc::new(TestWebTransport),
+            Arc::new(WebToolState::default()),
+            tool_context.clone(),
+        )
+        .unwrap();
+        let context = ToolCallContext::new("maple-clear-test".to_string(), None, None);
+        let call_shell = || {
+            client.call_tool(
+                &context,
+                "shell",
+                Some(object!({
+                    "command": "printf %s \"${BUZZ_AUTH_TAG-}\"",
+                    "timeout_secs": 2
+                })),
+                CancellationToken::new(),
+            )
+        };
+
+        let result = call_shell().await.unwrap();
+        let output: ShellOutput =
+            serde_json::from_value(result.structured_content.clone().unwrap()).unwrap();
+        assert_eq!(output.stdout, "maple-session-auth-tag");
+
+        tool_context.revoke();
+        let result = call_shell().await.unwrap();
+        let output: ShellOutput =
+            serde_json::from_value(result.structured_content.clone().unwrap()).unwrap();
+        assert_eq!(output.stdout, "");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn shell_returns_without_killing_a_successful_background_job() {
         let temp = TestDir::new();
         let sentinel = temp.path().join("background-completed");
         let command = format!("(sleep 1; printf survived > '{}') &", sentinel.display());
+        let tool_context = empty_tool_context_snapshot();
 
         let result = tokio::time::timeout(
             Duration::from_secs(3),
@@ -2999,6 +3341,7 @@ mod tests {
                 None,
                 std::env::var("PATH").ok().as_deref(),
                 None,
+                &tool_context,
                 CancellationToken::new(),
             ),
         )
@@ -3016,12 +3359,18 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn shell_kills_a_noisy_background_tree_after_the_parent_exits() {
+    async fn shell_kills_background_descendants_with_non_private_key_session_secrets() {
         let temp = TestDir::new();
-        let sentinel = temp.path().join("noisy-background-survived");
-        let command = format!(
-            "((while :; do printf 1234567890; done) & sleep 1; printf survived > '{}') &",
-            sentinel.display()
+        let sentinel = temp.path().join("credential-descendant-survived");
+        let command = format!("(sleep 1; printf survived > '{}') &", sentinel.display());
+        let environment = BTreeMap::from([(
+            "BUZZ_AUTH_TAG".to_string(),
+            "maple-session-auth-tag".to_string(),
+        )]);
+        let tool_context = test_tool_context_snapshot(
+            environment,
+            BTreeSet::from(["BUZZ_AUTH_TAG".to_string()]),
+            true,
         );
 
         let result = tokio::time::timeout(
@@ -3034,6 +3383,46 @@ mod tests {
                 None,
                 std::env::var("PATH").ok().as_deref(),
                 None,
+                &tool_context,
+                CancellationToken::new(),
+            ),
+        )
+        .await
+        .expect("a credential-bearing background tree must be terminated");
+        let output: ShellOutput =
+            serde_json::from_value(result.structured_content.clone().unwrap()).unwrap();
+        assert_eq!(result.is_error, Some(false));
+        assert!(!output.timed_out);
+
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        assert!(
+            !sentinel.exists(),
+            "a background descendant retained a non-private-key session secret"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn shell_kills_a_noisy_background_tree_after_the_parent_exits() {
+        let temp = TestDir::new();
+        let sentinel = temp.path().join("noisy-background-survived");
+        let command = format!(
+            "((while :; do printf 1234567890; done) & sleep 1; printf survived > '{}') &",
+            sentinel.display()
+        );
+        let tool_context = empty_tool_context_snapshot();
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(3),
+            run_bounded_shell(
+                ShellParams {
+                    command,
+                    timeout_secs: Some(2),
+                },
+                None,
+                std::env::var("PATH").ok().as_deref(),
+                None,
+                &tool_context,
                 CancellationToken::new(),
             ),
         )
@@ -3054,13 +3443,14 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn shell_timeout_kills_the_complete_process_tree() {
+    async fn shell_timeout_kills_the_unix_process_group() {
         let temp = TestDir::new();
         let sentinel = temp.path().join("timed-out-descendant-survived");
         let command = format!(
             "(sleep 2; printf survived > '{}') & sleep 5",
             sentinel.display()
         );
+        let tool_context = empty_tool_context_snapshot();
         let result = run_bounded_shell(
             ShellParams {
                 command,
@@ -3069,6 +3459,7 @@ mod tests {
             None,
             std::env::var("PATH").ok().as_deref(),
             None,
+            &tool_context,
             CancellationToken::new(),
         )
         .await;
@@ -3080,13 +3471,13 @@ mod tests {
         tokio::time::sleep(Duration::from_secs(1)).await;
         assert!(
             !sentinel.exists(),
-            "timed-out descendant survived process-tree termination"
+            "timed-out descendant survived process-group termination"
         );
     }
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn shell_cancellation_kills_the_complete_process_tree() {
+    async fn shell_cancellation_kills_the_unix_process_group() {
         let temp = TestDir::new();
         let sentinel = temp.path().join("cancelled-descendant-survived");
         let command = format!(
@@ -3099,6 +3490,7 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(100)).await;
             cancellation.cancel();
         });
+        let tool_context = empty_tool_context_snapshot();
         let result = run_bounded_shell(
             ShellParams {
                 command,
@@ -3107,6 +3499,7 @@ mod tests {
             None,
             std::env::var("PATH").ok().as_deref(),
             None,
+            &tool_context,
             cancel_token,
         )
         .await;
@@ -3117,13 +3510,189 @@ mod tests {
         tokio::time::sleep(Duration::from_secs(1)).await;
         assert!(
             !sentinel.exists(),
-            "cancelled descendant survived process-tree termination"
+            "cancelled descendant survived process-group termination"
         );
     }
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn tool_context_revocation_kills_the_unix_process_group() {
+        let temp = TestDir::new();
+        let sentinel = temp.path().join("revoked-context-descendant-survived");
+        let command = format!(
+            "(sleep 1; printf survived > '{}') & sleep 5",
+            sentinel.display()
+        );
+        let shared_context = test_tool_context(BTreeMap::new(), BTreeSet::new(), false);
+        let tool_context = shared_context.snapshot();
+        let revocation = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            shared_context.revoke();
+        });
+
+        let result = run_bounded_shell(
+            ShellParams {
+                command,
+                timeout_secs: Some(4),
+            },
+            None,
+            std::env::var("PATH").ok().as_deref(),
+            None,
+            &tool_context,
+            CancellationToken::new(),
+        )
+        .await;
+        revocation.await.unwrap();
+        assert_eq!(result.is_error, Some(true));
+        assert!(text(&result).contains("Command cancelled"));
+
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        assert!(
+            !sentinel.exists(),
+            "revoked tool-context descendant survived process-group termination"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn pre_cancelled_shell_cannot_launch_a_process() {
+        let temp = TestDir::new();
+        let sentinel = temp.path().join("pre-cancelled-shell-launched");
+        let cancel_token = CancellationToken::new();
+        cancel_token.cancel();
+
+        let result = run_bounded_shell(
+            ShellParams {
+                command: format!("printf launched > '{}'", sentinel.display()),
+                timeout_secs: Some(2),
+            },
+            None,
+            std::env::var("PATH").ok().as_deref(),
+            None,
+            &empty_tool_context_snapshot(),
+            cancel_token,
+        )
+        .await;
+
+        assert_eq!(result.is_error, Some(true));
+        assert!(text(&result).contains("cancelled before command launch"));
+        assert!(!sentinel.exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn aborting_the_shell_task_kills_its_unix_process_group() {
+        let temp = TestDir::new();
+        let started = temp.path().join("abort-shell-started");
+        let sentinel = temp.path().join("abort-descendant-survived");
+        let command = format!(
+            "printf started > '{}'; (sleep 1; printf survived > '{}') & sleep 5",
+            started.display(),
+            sentinel.display()
+        );
+        let tool_context = test_tool_context_snapshot(BTreeMap::new(), BTreeSet::new(), true);
+        let task = tokio::spawn(async move {
+            run_bounded_shell(
+                ShellParams {
+                    command,
+                    timeout_secs: Some(10),
+                },
+                None,
+                std::env::var("PATH").ok().as_deref(),
+                None,
+                &tool_context,
+                CancellationToken::new(),
+            )
+            .await
+        });
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !started.exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("shell should start before forced task abort");
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        assert!(
+            !sentinel.exists(),
+            "forced task abort left a same-group descendant running"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn revocation_after_parent_exit_interrupts_output_drain() {
+        let temp = TestDir::new();
+        let sentinel = temp.path().join("draining-descendant-survived");
+        let shared_context = test_tool_context(BTreeMap::new(), BTreeSet::new(), false);
+        let tool_context = shared_context.snapshot();
+        let revocation = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            shared_context.revoke();
+        });
+
+        let result = run_bounded_shell(
+            ShellParams {
+                command: format!("(sleep 1; printf survived > '{}') &", sentinel.display()),
+                timeout_secs: Some(3),
+            },
+            None,
+            std::env::var("PATH").ok().as_deref(),
+            None,
+            &tool_context,
+            CancellationToken::new(),
+        )
+        .await;
+        revocation.await.unwrap();
+
+        assert_eq!(result.is_error, Some(true));
+        assert!(text(&result).contains("Command cancelled"));
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        assert!(
+            !sentinel.exists(),
+            "revocation during output drain left a same-group descendant running"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn snapshot_captured_before_revocation_cannot_launch_a_process() {
+        let temp = TestDir::new();
+        let sentinel = temp.path().join("revoked-context-launched");
+        let shared_context = test_tool_context(
+            BTreeMap::from([("PRIVATE_VALUE".to_string(), "secret".to_string())]),
+            BTreeSet::from(["PRIVATE_VALUE".to_string()]),
+            true,
+        );
+        let tool_context = shared_context.snapshot();
+        shared_context.revoke();
+
+        let result = run_bounded_shell(
+            ShellParams {
+                command: format!("printf launched > '{}'", sentinel.display()),
+                timeout_secs: Some(2),
+            },
+            None,
+            std::env::var("PATH").ok().as_deref(),
+            None,
+            &tool_context,
+            CancellationToken::new(),
+        )
+        .await;
+
+        assert_eq!(result.is_error, Some(true));
+        assert!(text(&result).contains("revoked before command launch"));
+        assert!(!sentinel.exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn shell_preserves_small_successful_output() {
+        let tool_context = empty_tool_context_snapshot();
         let result = run_bounded_shell(
             ShellParams {
                 command: "printf hello".to_string(),
@@ -3132,6 +3701,7 @@ mod tests {
             None,
             std::env::var("PATH").ok().as_deref(),
             None,
+            &tool_context,
             CancellationToken::new(),
         )
         .await;
