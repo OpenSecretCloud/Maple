@@ -4731,11 +4731,28 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
         finalText = originalDocumentText + (trimmedInput ? `\n\n${trimmedInput}` : "");
       }
 
-      // Prepend tool availability context to help the model understand what tools
-      // are available for this specific request, especially when it differs from
-      // previous turns in the conversation.
+      // Prepend Maple UX context for new conversations to help the assistant
+      // understand the interface and guide users through the app
       const hasConversationHistory = existingConversationId && isFollowUpConversation;
-      if (hasConversationHistory) {
+      const isFirstMessage = !hasConversationHistory;
+
+      if (isFirstMessage) {
+        const mapleUxContext = `[System: You are the Maple AI assistant. The user is interacting with you through the Maple app interface. You can reference these UI elements:
+
+- **Web Search Toggle**: Globe icon in the composer toolbar (bottom). Currently ${requestWebSearchEnabled ? "ENABLED" : "DISABLED"}. Tell users "tap the globe icon" to toggle it.
+- **File Uploads**: Plus (+) icon opens attachment menu with "Add Images" and "Add Document" options.
+- **Project Picker**: Folder icon to organize conversations into projects.
+- **Model Selection**: Quick (fast) or Powerful (vision-enabled, required for images).
+- **Settings**: Access via app menu for Preferences, Account, Billing, etc.
+
+When users ask about app features or how to do things in Maple, reference these specific UI elements. If they mention "API" or "proxy", they're NOT in the app - use capability language instead.]
+
+`;
+        finalText = mapleUxContext + finalText;
+      } else {
+        // Prepend tool availability context to help the model understand what tools
+        // are available for this specific request, especially when it differs from
+        // previous turns in the conversation.
         if (requestWebSearchEnabled) {
           finalText = `[System context: Web search is available for this request.]\n\n${finalText}`;
         } else {
