@@ -338,13 +338,20 @@ For an alternative approach using custom fetch directly, see the implementation 
 
 ### Library development
 
-This library uses [Bun](https://bun.sh/) for development.
+This library uses Bun 1.3.5 for development. The Nix shell and CI pin the same
+version. New Bun resolutions quarantine releases for seven days; routine
+installs are frozen to the committed lockfile and do not run lifecycle scripts.
+Age gates do not revalidate versions already present in either lock format.
 
-To run the demo app, run the following commands:
+The `bun.lockb` files are authoritative. The retained npm lockfiles are
+compatibility artifacts and must not be used for dependency updates; npm's age
+gate requires npm 11.10 or newer and does not revalidate locked versions.
+
+Enter the development shell and install the locked dependencies:
 
 ```bash
+nix develop
 bun install
-bun run dev
 ```
 
 To build the library, run the following command:
@@ -365,7 +372,9 @@ To test a specific file or test case:
 bun test --test-name-pattern="Developer login and token storage" src/lib/test/integration/developer.test.ts --env-file .env.local
 ```
 
-Currently this build step requires `npx` because of [a Bun incompatibility with `vite-plugin-dts`](https://github.com/OpenSecretCloud/OpenSecret-SDK/issues/16).
+The build invokes the installed Vite CLI with Node because of the historical
+[`vite-plugin-dts` Bun incompatibility](https://github.com/OpenSecretCloud/OpenSecret-SDK/issues/16).
+It never downloads a missing CLI during the build.
 
 To pack the library (for publishing) run the following command:
 
@@ -463,10 +472,13 @@ To customize the appearance:
 The documentation can be deployed to various platforms like GitHub Pages, Netlify, or Vercel. For CloudFlare Pages deployment, as mentioned in our guideline:
 
 1. In CloudFlare Pages, create a new project connected to your GitHub repo
-2. Use these build settings:
-   - Build command: `cd website && bun run build`
+2. Set `BUN_VERSION=1.3.5` to pin the available Bun binary.
+3. Set `SKIP_DEPENDENCY_INSTALL=true` to disable automatic package-manager
+   selection.
+4. Use these build settings:
+   - Build command: `cd website && bun install --frozen-lockfile --ignore-scripts && bun run build`
    - Build output directory: `website/build`
-3. Set up a custom domain through CloudFlare's dashboard
+5. Set up a custom domain through CloudFlare's dashboard
 
 #### Troubleshooting
 
