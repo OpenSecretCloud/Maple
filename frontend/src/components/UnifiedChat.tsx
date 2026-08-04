@@ -4730,6 +4730,19 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
       if (originalDocumentText) {
         finalText = originalDocumentText + (trimmedInput ? `\n\n${trimmedInput}` : "");
       }
+
+      // Prepend tool availability context to help the model understand what tools
+      // are available for this specific request, especially when it differs from
+      // previous turns in the conversation.
+      const hasConversationHistory = existingConversationId && isFollowUpConversation;
+      if (hasConversationHistory) {
+        if (requestWebSearchEnabled) {
+          finalText = `[System context: Web search is available for this request.]\n\n${finalText}`;
+        } else {
+          finalText = `[System context: Web search is not available for this request. Please respond without using web search capabilities.]\n\n${finalText}`;
+        }
+      }
+
       if (finalText) {
         messageContent.push({
           type: "input_text",
