@@ -4506,6 +4506,64 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
         ) {
           throw new Error("Response stream ended before completion");
         }
+
+        // Check if response completed but produced no useful output.
+        // This can happen when the model tries to use a tool that was available in
+        // previous conversation turns but is not in the current request's tools array.
+        if (terminalState === "completed") {
+          const finalSnapshot = runtimeStore.get(runtimeKey);
+          if (finalSnapshot) {
+            const ownedMessages = (finalSnapshot.messages as Message[]).filter((msg) =>
+              ownedItemIds.has(msg.id)
+            );
+
+            // Check if we have any assistant message content
+            const hasAssistantContent = ownedMessages.some((msg) => {
+              if (msg.type === "message" && (msg as ExtendedMessage).role === "assistant") {
+                const content = (msg as ExtendedMessage).content;
+                return content && content.length > 0 && content.some((part) => {
+                  if ("text" in part && typeof part.text === "string") {
+                    return part.text.trim().length > 0;
+                  }
+                  return false;
+                });
+              }
+              return false;
+            });
+
+            // Check if there are failed tool calls (tool call with no output)
+            const toolCallIds = new Set<string>();
+            const toolOutputCallIds = new Set<string>();
+            ownedMessages.forEach((msg) => {
+              if (isToolCallItem(msg)) {
+                toolCallIds.add(msg.call_id);
+              }
+              if (isToolOutputItem(msg)) {
+                toolOutputCallIds.add(msg.call_id);
+              }
+            });
+            const hasFailedToolCalls = toolCallIds.size > 0 &&
+              Array.from(toolCallIds).some(callId => !toolOutputCallIds.has(callId));
+
+            if (!hasAssistantContent) {
+              console.warn("Response completed with no assistant content", {
+                hasFailedToolCalls,
+                toolCallIds: Array.from(toolCallIds),
+                toolOutputCallIds: Array.from(toolOutputCallIds)
+              });
+
+              let errorMessage = "The response didn't produce any output.";
+              if (hasFailedToolCalls) {
+                errorMessage = "The model attempted to use a feature that's not currently available. Try rephrasing your request without requiring that feature.";
+              }
+
+              runtimeStore.updateForRun(runtimeKey, runToken, (snapshot) => ({
+                ...snapshot,
+                error: errorMessage
+              }));
+            }
+          }
+        }
       } catch (error) {
         // Commit the final partial frame before changing its status. UI cancel
         // and account teardown clear run ownership before aborting, so their
