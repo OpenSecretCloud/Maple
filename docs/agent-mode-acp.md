@@ -147,13 +147,15 @@ This keeps Maple's domain model a useful superset instead of forcing Maple, Taur
 
 ## Lifecycle and desktop configuration
 
-The Agent connections settings surface is fail-closed and hidden by default. To expose it in a macOS or Linux Tauri Desktop development build, set the local Vite override in `frontend/.env.local` (or the build environment) and restart the frontend dev server:
+The Agent connections settings surface is fail-closed and hidden by default. On macOS and Linux Tauri Desktop it can be enabled for a user by the remote `agent_connections` feature flag. For local development, set the Vite override in `frontend/.env.local` (or the build environment) and restart the frontend dev server:
 
 ```dotenv
 VITE_FORCE_FEATURE_FLAGS=agent_connections
 ```
 
-This preview gate uses only the local `VITE_FORCE_FEATURE_FLAGS` override; the remote feature-flag service cannot enable it. Web, mobile, and Windows builds keep both the navigation item and direct route unavailable even when the override is present.
+The local override takes precedence; otherwise Maple checks the user-scoped remote flag. Web, mobile, and Windows builds keep both the navigation item and direct route unavailable even when either flag is enabled. This gate controls discovery of the preview settings surface only: it does not start the ACP service, which remains a manual action after every app launch.
+
+Before remote rollout, create `agent_connections` with a default value of `false` in each OS Flags environment. An absent key is treated as disabled. Flag changes are resolved when the settings tree mounts, successful values may remain cached for up to ten minutes, and the flag is not a live kill switch for an already running ACP service.
 
 The macOS/Linux desktop settings page is intentionally manual. It can:
 

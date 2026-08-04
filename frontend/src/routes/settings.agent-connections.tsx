@@ -1,13 +1,17 @@
 import { createFileRoute, Navigate } from "@tanstack/react-router";
 import { AgentConnectionsSettings } from "@/components/settings/AgentConnectionsSettings";
-import { isAgentConnectionsAvailable } from "@/services/agentConnectionsAvailability";
+import { useAgentConnectionsAvailability } from "@/components/settings/useAgentConnectionsAvailability";
 
 export const Route = createFileRoute("/settings/agent-connections")({
   component: AgentConnectionsRoute
 });
 
 function AgentConnectionsRoute() {
-  if (!isAgentConnectionsAvailable()) {
+  const availability = useAgentConnectionsAvailability();
+
+  if (availability === "checking") return null;
+
+  if (availability === "unavailable") {
     return <Navigate to="/settings/account" replace />;
   }
 
