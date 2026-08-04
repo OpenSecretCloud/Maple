@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useOpenSecret } from "@opensecret/react";
 import {
   AlertCircle,
@@ -62,12 +62,15 @@ export function AgentConnectionsSettings() {
   const [message, setMessage] = useState<string | null>(null);
   const [copied, setCopied] = useState<CopyTarget | null>(null);
   const userIdRef = useRef(userId);
-  userIdRef.current = userId;
   const operationRef = useRef(operation);
-  operationRef.current = operation;
   const statusRequestGenerationRef = useRef(0);
   const isBusy = operation !== null;
   useSettingsNavigationLock(isBusy);
+
+  useLayoutEffect(() => {
+    userIdRef.current = userId;
+    operationRef.current = operation;
+  }, [operation, userId]);
 
   const refreshSettings = useCallback(async () => {
     if (!userId) return;

@@ -1532,8 +1532,11 @@ export function AgentMode({ userId }: { userId: string }) {
           const requestedMode = selectedModeRef.current;
           const request = { projectRoot, model: model || DEFAULT_MODEL, mode: requestedMode };
           const runStateGeneration = runStateGenerationRef.current;
-          const status = restart
+          const restartOutcome = restart
             ? await agentRuntimeService.restartRuntime(userId, request)
+            : null;
+          const status = restartOutcome
+            ? restartOutcome.status
             : await agentRuntimeService.startRuntime(userId, request);
           if (
             startRequestGenerationRef.current !== requestGeneration ||
@@ -1546,6 +1549,11 @@ export function AgentMode({ userId }: { userId: string }) {
           setModel(status.model || model || DEFAULT_MODEL);
           applyAuthoritativeMode(normalizeAgentPermissionMode(status.mode || requestedMode));
           await refreshSessions();
+          if (restartOutcome?.acpShutdownError) {
+            setError(
+              `Agent Mode restarted, but ACP cleanup failed: ${restartOutcome.acpShutdownError}`
+            );
+          }
           return status;
         });
       } catch (startError) {

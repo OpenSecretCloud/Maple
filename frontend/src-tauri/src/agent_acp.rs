@@ -1,8 +1,9 @@
 use crate::agent::{
     AgentCreateSessionRequest, AgentHostEventPolicy, AgentPermissionDecision,
-    AgentPermissionRequest, AgentRunEvent, AgentRunPermissionResponder, AgentRunTerminal,
-    AgentRuntimeHandle, AgentSendMessageRequest, AgentTimelineItem, AgentToolContextLease,
-    AgentToolContextSpec, MapleAgentService, AGENT_TOOL_CONTEXT_INACTIVE_ERROR,
+    AgentPermissionRequest, AgentRunCancellation, AgentRunEvent, AgentRunPermissionResponder,
+    AgentRunTerminal, AgentRuntimeHandle, AgentSendMessageRequest, AgentTimelineItem,
+    AgentToolContextLease, AgentToolContextSpec, MapleAgentService,
+    AGENT_TOOL_CONTEXT_INACTIVE_ERROR,
 };
 use crate::agent_host::AgentHostLifecycle;
 use crate::maple_api::{account_scope, MapleApiAuthState};
@@ -283,8 +284,8 @@ enum AcpPromptState {
         cancellation: CancellationToken,
     },
     Running {
-        run_id: String,
         cancellation: CancellationToken,
+        run_cancellation: Box<AgentRunCancellation>,
     },
 }
 
@@ -713,12 +714,18 @@ impl AcpConnectionContext {
                 return Err(internal_acp_error(error));
             }
         };
-        let run_id = run.run_id;
         let mut events = run.events;
         let mut terminal = run.terminal;
         let event_overflowed = run.event_overflowed;
+        let Some(run_cancellation) = run.cancellation else {
+            prompt_lifetime.cancel();
+            self.prompt_states.lock().await.remove(&session_id);
+            return Err(agent_client_protocol::Error::internal_error()
+                .data("Maple did not create an ACP cancellation capability for this run"));
+        };
         let Some(permission_responder) = run.permission_responder else {
-            let _ = self.agent.cancel_run(run_id).await;
+            prompt_lifetime.cancel();
+            let _ = run_cancellation.cancel().await;
             self.prompt_states.lock().await.remove(&session_id);
             return Err(agent_client_protocol::Error::internal_error()
                 .data("Maple did not create an ACP permission responder for this run"));
@@ -728,8 +735,8 @@ impl AcpConnectionContext {
             match states.get_mut(&session_id) {
                 Some(state @ AcpPromptState::Starting { .. }) => {
                     *state = AcpPromptState::Running {
-                        run_id: run_id.clone(),
                         cancellation: prompt_lifetime.clone(),
+                        run_cancellation: Box::new(run_cancellation.clone()),
                     };
                     true
                 }
@@ -737,7 +744,7 @@ impl AcpConnectionContext {
             }
         };
         if !prompt_registered {
-            let _ = self.agent.cancel_run(run_id.clone()).await;
+            let _ = run_cancellation.cancel().await;
             return Err(agent_client_protocol::Error::internal_error()
                 .data("The Maple ACP connection closed while starting the prompt"));
         }
@@ -745,14 +752,14 @@ impl AcpConnectionContext {
         if prompt_lifetime.is_cancelled() {
             // A cancellation failure does not make the active Maple run
             // disappear. Keep listening so its lifecycle remains tracked.
-            let _ = self.agent.cancel_run(run_id.clone()).await;
+            let _ = run_cancellation.cancel().await;
         }
 
         let mut cancel_after_result = false;
         let result = loop {
             if event_overflowed.load(Ordering::Acquire) {
                 cancel_after_result = true;
-                let _ = self.agent.cancel_run(run_id.clone()).await;
+                let _ = run_cancellation.cancel().await;
                 match self
                     .send_final_agent_message(
                         cx,
@@ -774,7 +781,7 @@ impl AcpConnectionContext {
             let event = events.recv().await;
             if event_overflowed.load(Ordering::Acquire) {
                 cancel_after_result = true;
-                let _ = self.agent.cancel_run(run_id.clone()).await;
+                let _ = run_cancellation.cancel().await;
                 match self
                     .send_final_agent_message(
                         cx,
@@ -807,7 +814,7 @@ impl AcpConnectionContext {
                             Ok(()) => {}
                             Err(AcpOutboundSendError::UpdateTooLarge) => {
                                 cancel_after_result = true;
-                                let _ = self.agent.cancel_run(run_id.clone()).await;
+                                let _ = run_cancellation.cancel().await;
                                 match self.send_final_agent_message(
                                     cx,
                                     request.session_id.clone(),
@@ -855,7 +862,7 @@ impl AcpConnectionContext {
                         }
                         Err(AcpOutboundSendError::UpdateTooLarge) => {
                             cancel_after_result = true;
-                            let _ = self.agent.cancel_run(run_id.clone()).await;
+                            let _ = run_cancellation.cancel().await;
                             match self
                                 .send_final_agent_message(
                                     cx,
@@ -899,7 +906,7 @@ impl AcpConnectionContext {
                             Ok(()) => {}
                             Err(AcpOutboundSendError::UpdateTooLarge) => {
                                 cancel_after_result = true;
-                                let _ = self.agent.cancel_run(run_id.clone()).await;
+                                let _ = run_cancellation.cancel().await;
                                 match self.send_final_agent_message(
                                     cx,
                                     request.session_id.clone(),
@@ -956,7 +963,7 @@ impl AcpConnectionContext {
             // Synthetic stream stops settle only after the underlying run has
             // drained, or retain a same-session fence while it finishes in the
             // background. A completed run makes this cancellation a no-op.
-            let _ = self.agent.cancel_run(run_id.clone()).await;
+            let _ = run_cancellation.cancel().await;
             if tokio::time::timeout(
                 ACP_SYNTHETIC_STOP_DRAIN_TIMEOUT,
                 wait_for_retained_terminal(&mut terminal),
@@ -987,7 +994,7 @@ impl AcpConnectionContext {
                 });
             }
         } else if result.is_err() {
-            let _ = self.agent.cancel_run(run_id).await;
+            let _ = run_cancellation.cancel().await;
         }
         if !deferred_prompt_cleanup
             && matches!(
@@ -1005,16 +1012,16 @@ impl AcpConnectionContext {
         notification: CancelNotification,
     ) -> Result<(), agent_client_protocol::Error> {
         let session_id = notification.session_id.0.to_string();
-        let (cancellation, run_id) = {
+        let (cancellation, run_cancellation) = {
             let states = self.prompt_states.lock().await;
             match states.get(&session_id) {
                 Some(AcpPromptState::Starting { cancellation }) => {
                     (Some(cancellation.clone()), None)
                 }
                 Some(AcpPromptState::Running {
-                    run_id,
                     cancellation,
-                }) => (Some(cancellation.clone()), Some(run_id.clone())),
+                    run_cancellation,
+                }) => (Some(cancellation.clone()), Some(run_cancellation.clone())),
                 None => (None, None),
             }
         };
@@ -1023,9 +1030,9 @@ impl AcpConnectionContext {
             // the worker start once core setup completes.
             cancellation.cancel();
         }
-        if let Some(run_id) = run_id {
-            self.agent
-                .cancel_run(run_id)
+        if let Some(run_cancellation) = run_cancellation {
+            run_cancellation
+                .cancel()
                 .await
                 .map_err(internal_acp_error)?;
         }
@@ -1049,16 +1056,16 @@ impl AcpConnectionContext {
             }
         }
         let prompt_states = std::mem::take(&mut *self.prompt_states.lock().await);
-        let mut running_ids = Vec::new();
+        let mut running_cancellations = Vec::new();
         for state in prompt_states.into_values() {
             match state {
                 AcpPromptState::Starting { cancellation } => cancellation.cancel(),
                 AcpPromptState::Running {
-                    run_id,
                     cancellation,
+                    run_cancellation,
                 } => {
                     cancellation.cancel();
-                    running_ids.push(run_id);
+                    running_cancellations.push(run_cancellation);
                     self.stats.active_runs.fetch_sub(1, Ordering::SeqCst);
                 }
             }
@@ -1075,10 +1082,9 @@ impl AcpConnectionContext {
             .active_sessions
             .fetch_sub(session_count, Ordering::SeqCst);
         let mut tasks = self.background_tasks.lock().await;
-        for run_id in running_ids {
-            let agent = self.agent.clone();
+        for run_cancellation in running_cancellations {
             tasks.spawn(async move {
-                let _ = agent.cancel_run(run_id).await;
+                let _ = run_cancellation.cancel().await;
             });
         }
         for lease in sessions.into_values() {

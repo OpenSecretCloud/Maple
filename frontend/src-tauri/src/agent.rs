@@ -241,7 +241,7 @@ pub struct AgentStartRequest {
     pub mode: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentRuntimeStatus {
     pub running: bool,
@@ -365,6 +365,7 @@ pub(crate) struct AgentRunHandle {
     pub terminal: watch::Receiver<Option<AgentRunTerminal>>,
     pub event_overflowed: Arc<AtomicBool>,
     pub permission_responder: Option<AgentRunPermissionResponder>,
+    pub cancellation: Option<AgentRunCancellation>,
 }
 
 #[derive(Clone)]
@@ -386,6 +387,31 @@ impl AgentRunPermissionResponder {
                 self.run_id.as_ref(),
                 request_id,
                 decision,
+            )
+            .await
+    }
+}
+
+/// Opaque cancellation capability for one run owned by a calling surface.
+///
+/// Unlike the Desktop command boundary, an adapter already has the exact run
+/// identity. Retaining that identity here prevents it from cancelling another
+/// surface's run through a caller-provided run ID.
+#[derive(Clone)]
+pub(crate) struct AgentRunCancellation {
+    agent: AgentRuntimeHandle,
+    session_id: Arc<str>,
+    run_id: Arc<str>,
+    routing: AgentPermissionRouting,
+}
+
+impl AgentRunCancellation {
+    pub(crate) async fn cancel(&self) -> Result<(), String> {
+        self.agent
+            .cancel_run_scoped(
+                self.run_id.as_ref(),
+                Some(self.session_id.as_ref()),
+                self.routing,
             )
             .await
     }
@@ -690,19 +716,33 @@ fn resolve_session_tool_context(
 }
 
 impl AgentRuntime {
-    fn status(&self) -> AgentRuntimeStatus {
+    fn desktop_status(&self) -> AgentRuntimeStatus {
         AgentRuntimeStatus {
             running: true,
             project_root: Some(path_string(&self.project_root)),
             model: Some(self.model.clone()),
             mode: Some(self.mode.clone()),
-            active_runs: self
-                .active_runs
-                .iter()
-                .map(|(run_id, run)| (run.session_id.clone(), run_id.clone()))
-                .collect(),
+            // AgentRuntimeStatus is Maple Desktop's projection. Calling surfaces
+            // retain their own run handles and lifecycle signals instead of
+            // becoming actionable through the Tauri command boundary.
+            active_runs: active_run_status(self.active_runs.iter().map(|(run_id, run)| {
+                (
+                    run_id.as_str(),
+                    run.session_id.as_str(),
+                    run.permission_routing,
+                )
+            })),
         }
     }
+}
+
+fn active_run_status<'a>(
+    runs: impl IntoIterator<Item = (&'a str, &'a str, AgentPermissionRouting)>,
+) -> HashMap<String, String> {
+    runs.into_iter()
+        .filter(|(_, _, routing)| *routing == AgentPermissionRouting::Desktop)
+        .map(|(run_id, session_id, _)| (session_id.to_string(), run_id.to_string()))
+        .collect()
 }
 
 #[derive(Clone)]
@@ -839,7 +879,13 @@ pub(crate) struct AgentRuntimeHandle {
     generation: u64,
 }
 
-type LiveTimelines = Arc<Mutex<HashMap<String, LiveTimeline>>>;
+type LiveTimelines = Arc<Mutex<HashMap<String, LiveTimelineEntry>>>;
+
+#[derive(Clone, Debug, PartialEq)]
+struct LiveTimelineEntry {
+    routing: AgentPermissionRouting,
+    timeline: LiveTimeline,
+}
 
 #[derive(Clone, Debug, PartialEq)]
 enum LiveTimeline {
@@ -1230,7 +1276,7 @@ impl AgentRuntimeHandle {
         let runtime = self.service.inner.lock().await;
         if let Some(current) = runtime.as_ref() {
             ensure_runtime_account(current, &self.account_scope)?;
-            return Ok(current.status());
+            return Ok(current.desktop_status());
         }
         Ok(stopped_status())
     }
@@ -1258,7 +1304,7 @@ async fn start_runtime_for_user(
         let runtime = state.inner.lock().await;
         if let Some(current) = runtime.as_ref() {
             ensure_runtime_account(current, &account_scope)?;
-            return Ok(current.status());
+            return Ok(current.desktop_status());
         }
     }
 
@@ -1342,7 +1388,7 @@ async fn start_runtime_for_user(
         mode: mode.clone(),
         account_scope,
     };
-    let status = runtime.status();
+    let status = runtime.desktop_status();
 
     {
         let mut guard = state.inner.lock().await;
@@ -1969,8 +2015,37 @@ impl AgentRuntimeHandle {
             .as_ref()
             .ok_or_else(|| "Agent task history was not loaded".to_string())?;
         let timeline = conversation_to_timeline_items(conversation);
-        let timeline =
-            overlay_live_timeline(&state.live_timelines, &session_id, conversation, timeline).await;
+        let mut timeline = overlay_live_timeline(
+            &state.live_timelines,
+            &session_id,
+            AgentPermissionRouting::Desktop,
+            conversation,
+            timeline,
+        )
+        .await;
+        // Goose can persist an action-required row before Maple has registered
+        // its responder. Reconcile the final Desktop projection against the
+        // actual surface owner so another caller's request can never acquire
+        // actionable Desktop buttons during that gap or from stale history.
+        let calling_surface_active = {
+            let runtime = state.inner.lock().await;
+            runtime.as_ref().is_some_and(|current| {
+                current.account_scope == account_scope
+                    && current.active_runs.values().any(|run| {
+                        run.session_id == session_id
+                            && run.permission_routing == AgentPermissionRouting::CallingSurface
+                    })
+            })
+        };
+        let pending_routes = state
+            .pending_permissions
+            .lock()
+            .await
+            .iter()
+            .filter(|((pending_session_id, _), _)| pending_session_id == &session_id)
+            .map(|((_, request_id), pending)| (request_id.clone(), pending.routing))
+            .collect::<HashMap<_, _>>();
+        reconcile_desktop_permission_items(&mut timeline, &pending_routes, calling_surface_active);
 
         Ok(AgentSessionDetail {
             session: session_summary(&session),
@@ -2259,6 +2334,7 @@ async fn finalize_cancelled_agent_turn(
     live_timelines: &LiveTimelines,
     web_tool_state: &WebToolState,
     session_id: &str,
+    routing: AgentPermissionRouting,
     user_message: &Message,
     cancelled_permission_ids: &HashSet<String>,
 ) -> Result<(), String> {
@@ -2299,7 +2375,10 @@ async fn finalize_cancelled_agent_turn(
 
     // Goose's persisted conversation is the committed cancellation boundary.
     // Drop Maple's speculative event suffix so reloads project only that history.
-    live_timelines.lock().await.remove(session_id);
+    {
+        let mut timelines = live_timelines.lock().await;
+        remove_live_timeline_for_routing(&mut timelines, session_id, routing);
+    }
     // Search provenance is an in-memory Maple permission convenience, not
     // Goose history. Reset it rather than letting a discarded search result
     // authorize a later open_url call. A cold session already starts empty.
@@ -2768,6 +2847,7 @@ impl AgentRuntimeHandle {
                     if let Some(item) = update_live_permission_status(
                         &live_timelines,
                         &permission_session_id,
+                        permission_routing,
                         &request_id,
                         "cancelled",
                     )
@@ -2784,6 +2864,7 @@ impl AgentRuntimeHandle {
                     &live_timelines,
                     task_web_tool_state.as_ref(),
                     &session_id,
+                    permission_routing,
                     &task_user_message,
                     &cancelled_permission_ids,
                 )
@@ -2798,7 +2879,12 @@ impl AgentRuntimeHandle {
             if !run_was_cancelled {
                 if let Ok(outcome) = &result {
                     let mut timelines = live_timelines.lock().await;
-                    apply_successful_prompt_outcome(&mut timelines, &session_id, outcome);
+                    apply_successful_prompt_outcome(
+                        &mut timelines,
+                        &session_id,
+                        permission_routing,
+                        outcome,
+                    );
                 }
             }
 
@@ -2811,7 +2897,12 @@ impl AgentRuntimeHandle {
                 let item = error_item(error.clone());
                 {
                     let mut timelines = live_timelines.lock().await;
-                    apply_failed_prompt_outcome(&mut timelines, &session_id, item.clone());
+                    apply_failed_prompt_outcome(
+                        &mut timelines,
+                        &session_id,
+                        permission_routing,
+                        item.clone(),
+                    );
                 }
                 task_events.publish(AgentRunEvent::Error(item)).await;
             }
@@ -2876,6 +2967,7 @@ impl AgentRuntimeHandle {
             &run_events,
             &state.live_timelines,
             &request.session_id,
+            permission_routing,
             user_item.clone(),
         )
         .await;
@@ -2893,16 +2985,34 @@ impl AgentRuntimeHandle {
                     run_id: Arc::from(run_id.as_str()),
                 }
             });
+        let cancellation = matches!(permission_routing, AgentPermissionRouting::CallingSurface)
+            .then(|| AgentRunCancellation {
+                agent: self.clone(),
+                session_id: Arc::from(request.session_id.as_str()),
+                run_id: Arc::from(run_id.as_str()),
+                routing: permission_routing,
+            });
         Ok(AgentRunHandle {
             run_id,
             events: run_events_rx,
             terminal: terminal_rx,
             event_overflowed: run_events.overflow_flag(),
             permission_responder,
+            cancellation,
         })
     }
 
-    pub(crate) async fn cancel_run(&self, run_id: String) -> Result<(), String> {
+    pub(crate) async fn cancel_desktop_run(&self, run_id: String) -> Result<(), String> {
+        self.cancel_run_scoped(&run_id, None, AgentPermissionRouting::Desktop)
+            .await
+    }
+
+    async fn cancel_run_scoped(
+        &self,
+        run_id: &str,
+        expected_session_id: Option<&str>,
+        expected_routing: AgentPermissionRouting,
+    ) -> Result<(), String> {
         let state = &self.service;
         let account_scope = self.account_scope.as_ref();
         let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
@@ -2917,9 +3027,15 @@ impl AgentRuntimeHandle {
                 return Ok(());
             };
             ensure_runtime_account(current, account_scope)?;
-            let Some(active_run) = current.active_runs.get(&run_id) else {
+            let Some(active_run) = current.active_runs.get(run_id) else {
                 return Ok(());
             };
+            validate_run_cancellation_scope(
+                active_run.session_id.as_str(),
+                active_run.permission_routing,
+                expected_session_id,
+                expected_routing,
+            )?;
             (
                 Arc::clone(&active_run.agent),
                 active_run.token.clone(),
@@ -2929,6 +3045,7 @@ impl AgentRuntimeHandle {
             )
         };
         tool_context.cancel_run(&cancel_token);
+        let run_id = run_id.to_string();
         let cancelled_permissions = cancel_pending_permissions_for_runs(
             &state.pending_permissions,
             std::slice::from_ref(&run_id),
@@ -2944,6 +3061,7 @@ impl AgentRuntimeHandle {
             if let Some(item) = update_live_permission_status(
                 &state.live_timelines,
                 &session_id,
+                expected_routing,
                 &request_id,
                 "cancelled",
             )
@@ -3108,6 +3226,7 @@ impl AgentRuntimeHandle {
                 if let Some(item) = update_live_permission_status(
                     &state.live_timelines,
                     &session_id,
+                    AgentPermissionRouting::Desktop,
                     &request_id,
                     "allow_once",
                 )
@@ -3275,6 +3394,7 @@ impl AgentRuntimeHandle {
         if let Some(item) = update_live_permission_status(
             &state.live_timelines,
             &session_id,
+            expected_routing,
             &request_id,
             display_status
                 .as_deref()
@@ -3298,6 +3418,21 @@ impl AgentRuntimeHandle {
         }
         Ok(())
     }
+}
+
+fn validate_run_cancellation_scope(
+    actual_session_id: &str,
+    actual_routing: AgentPermissionRouting,
+    expected_session_id: Option<&str>,
+    expected_routing: AgentPermissionRouting,
+) -> Result<(), String> {
+    if actual_routing != expected_routing {
+        return Err("Agent run is controlled by another Agent surface".to_string());
+    }
+    if expected_session_id.is_some_and(|session_id| session_id != actual_session_id) {
+        return Err("Agent run cancellation capability does not own this task".to_string());
+    }
+    Ok(())
 }
 
 struct AgentPromptRun {
@@ -3332,29 +3467,63 @@ struct LiveMessageCandidate {
 }
 
 fn apply_successful_prompt_outcome(
-    timelines: &mut HashMap<String, LiveTimeline>,
+    timelines: &mut HashMap<String, LiveTimelineEntry>,
     session_id: &str,
+    routing: AgentPermissionRouting,
     outcome: &AgentPromptOutcome,
 ) {
+    if routing == AgentPermissionRouting::CallingSurface {
+        remove_live_timeline_for_routing(timelines, session_id, routing);
+        return;
+    }
     match outcome.terminal_message.as_ref() {
         Some(candidate) => {
             timelines.insert(
                 session_id.to_string(),
-                LiveTimeline::Completed(candidate.clone()),
+                LiveTimelineEntry {
+                    routing,
+                    timeline: LiveTimeline::Completed(candidate.clone()),
+                },
             );
         }
         None => {
-            timelines.remove(session_id);
+            remove_live_timeline_for_routing(timelines, session_id, routing);
         }
     }
 }
 
 fn apply_failed_prompt_outcome(
-    timelines: &mut HashMap<String, LiveTimeline>,
+    timelines: &mut HashMap<String, LiveTimelineEntry>,
     session_id: &str,
+    routing: AgentPermissionRouting,
     item: AgentTimelineItem,
 ) {
-    timelines.insert(session_id.to_string(), LiveTimeline::Failed(vec![item]));
+    if routing == AgentPermissionRouting::CallingSurface {
+        remove_live_timeline_for_routing(timelines, session_id, routing);
+        return;
+    }
+    timelines.insert(
+        session_id.to_string(),
+        LiveTimelineEntry {
+            routing,
+            timeline: LiveTimeline::Failed(vec![item]),
+        },
+    );
+}
+
+fn remove_live_timeline_for_routing(
+    timelines: &mut HashMap<String, LiveTimelineEntry>,
+    session_id: &str,
+    routing: AgentPermissionRouting,
+) -> Option<LiveTimelineEntry> {
+    timelines
+        .get(session_id)
+        .is_some_and(|entry| entry.routing == routing)
+        .then(|| {
+            timelines
+                .remove(session_id)
+                .expect("matching live timeline must still exist")
+        })
 }
 
 async fn selected_permission_mode(
@@ -3865,7 +4034,13 @@ async fn run_agent_prompt(run: AgentPromptRun) -> Result<AgentPromptOutcome, Str
                 for item in items {
                     if let Some(request_id) = pending_permission_request_id(&item) {
                         if let Some(request) = permission_requests.get(&request_id) {
-                            record_timeline_item(&live_timelines, &session_id, item.clone()).await;
+                            record_timeline_item(
+                                &live_timelines,
+                                &session_id,
+                                permission_routing,
+                                item.clone(),
+                            )
+                            .await;
                             events
                                 .publish(AgentRunEvent::PermissionRequested {
                                     request: request.clone(),
@@ -3875,8 +4050,14 @@ async fn run_agent_prompt(run: AgentPromptRun) -> Result<AgentPromptOutcome, Str
                             continue;
                         }
                     }
-                    record_and_emit_timeline_item(&events, &live_timelines, &session_id, item)
-                        .await;
+                    record_and_emit_timeline_item(
+                        &events,
+                        &live_timelines,
+                        &session_id,
+                        permission_routing,
+                        item,
+                    )
+                    .await;
                 }
                 drop(pending_publication_guard);
             }
@@ -3892,6 +4073,7 @@ async fn run_agent_prompt(run: AgentPromptRun) -> Result<AgentPromptOutcome, Str
                 reseed_live_timeline_after_history_replaced(
                     &live_timelines,
                     &session_id,
+                    permission_routing,
                     &conversation,
                 )
                 .await;
@@ -4367,6 +4549,11 @@ fn conversation_to_timeline_items(conversation: &Conversation) -> Vec<AgentTimel
                 _ => {}
             }
         }
+        settle_turn_permission_items(
+            &mut items[current_turn_item_start..],
+            &resolved_permission_ids,
+            false,
+        );
 
         let visible_message = message.user_visible_content();
         // Match Goose's own session presentation contract: agent-only grind,
@@ -4412,23 +4599,11 @@ fn conversation_to_timeline_items(conversation: &Conversation) -> Vec<AgentTimel
             false,
             thinking.as_deref(),
         ));
-
-        if is_stopped_notice(message) {
-            for item in &mut items[current_turn_item_start..] {
-                let resolved = item
-                    .id
-                    .strip_prefix("permission-")
-                    .or_else(|| item.id.strip_prefix("elicitation-"))
-                    .is_some_and(|id| resolved_permission_ids.contains(id));
-                if item.item_type == "permission" && item.status.as_deref() == Some("pending") {
-                    item.status = Some(if resolved {
-                        "completed".to_string()
-                    } else {
-                        "cancelled".to_string()
-                    });
-                }
-            }
-        }
+        settle_turn_permission_items(
+            &mut items[current_turn_item_start..],
+            &resolved_permission_ids,
+            is_stopped_notice(message),
+        );
 
         if inference_ends {
             state.surfaced_thinking_in_inference = false;
@@ -4449,6 +4624,52 @@ fn is_stopped_notice(message: &Message) -> bool {
                         && notification.msg == "Stopped by user"
             )
         })
+}
+
+fn settle_turn_permission_items(
+    items: &mut [AgentTimelineItem],
+    resolved_ids: &HashSet<String>,
+    cancel_unresolved: bool,
+) {
+    for item in items {
+        if item.item_type != "permission" || item.status.as_deref() != Some("pending") {
+            continue;
+        }
+        let resolved = item
+            .id
+            .strip_prefix("permission-")
+            .or_else(|| item.id.strip_prefix("elicitation-"))
+            .is_some_and(|id| resolved_ids.contains(id));
+        if resolved {
+            item.status = Some("completed".to_string());
+        } else if cancel_unresolved {
+            item.status = Some("cancelled".to_string());
+        }
+    }
+}
+
+fn reconcile_desktop_permission_items(
+    items: &mut [AgentTimelineItem],
+    pending_routes: &HashMap<String, AgentPermissionRouting>,
+    calling_surface_active: bool,
+) {
+    for item in items {
+        if item.item_type != "permission" || item.status.as_deref() != Some("pending") {
+            continue;
+        }
+        let request_id = item
+            .id
+            .strip_prefix("permission-")
+            .or_else(|| item.id.strip_prefix("elicitation-"));
+        let route = request_id.and_then(|id| pending_routes.get(id));
+        item.status = match (calling_surface_active, route) {
+            (false, Some(AgentPermissionRouting::Desktop)) => continue,
+            (true, _) | (_, Some(AgentPermissionRouting::CallingSurface)) => {
+                Some("controlled_externally".to_string())
+            }
+            (false, None) => Some("cancelled".to_string()),
+        };
+    }
 }
 
 fn is_real_user_message(message: &Message, role: &str) -> bool {
@@ -5084,35 +5305,51 @@ async fn record_and_emit_timeline_item(
     events: &AgentRunEventPublisher,
     live_timelines: &LiveTimelines,
     session_id: &str,
+    routing: AgentPermissionRouting,
     item: AgentTimelineItem,
 ) {
-    record_timeline_item(live_timelines, session_id, item.clone()).await;
+    record_timeline_item(live_timelines, session_id, routing, item.clone()).await;
     events.publish(AgentRunEvent::TimelineItem(item)).await;
 }
 
 async fn record_timeline_item(
     live_timelines: &LiveTimelines,
     session_id: &str,
+    routing: AgentPermissionRouting,
     item: AgentTimelineItem,
 ) {
     let mut timelines = live_timelines.lock().await;
     let current = match timelines.remove(session_id) {
-        Some(LiveTimeline::Streaming(items)) => items,
+        Some(LiveTimelineEntry {
+            routing: owner,
+            timeline: LiveTimeline::Streaming(items),
+        }) if owner == routing => items,
         // A real user message starts a new live suffix. The preceding terminal
         // row is either already persisted or was a one-turn-only error/notice;
         // carrying it forward could duplicate it on a mid-run session reload.
-        Some(LiveTimeline::Completed(_) | LiveTimeline::Failed(_))
-            if is_user_message_item(&item) =>
-        {
-            Vec::new()
-        }
-        Some(LiveTimeline::Completed(candidate)) => candidate.items,
-        Some(LiveTimeline::Failed(items)) => items,
+        Some(LiveTimelineEntry {
+            routing: owner,
+            timeline: LiveTimeline::Completed(_) | LiveTimeline::Failed(_),
+        }) if owner == routing && is_user_message_item(&item) => Vec::new(),
+        Some(LiveTimelineEntry {
+            routing: owner,
+            timeline: LiveTimeline::Completed(candidate),
+        }) if owner == routing => candidate.items,
+        Some(LiveTimelineEntry {
+            routing: owner,
+            timeline: LiveTimeline::Failed(items),
+        }) if owner == routing => items,
+        // A new surface starts its own transient projection. Persisted Goose
+        // history remains the shared handoff boundary between surfaces.
+        Some(_) => Vec::new(),
         None => Vec::new(),
     };
     timelines.insert(
         session_id.to_string(),
-        LiveTimeline::Streaming(merge_timeline_item(current, item)),
+        LiveTimelineEntry {
+            routing,
+            timeline: LiveTimeline::Streaming(merge_timeline_item(current, item)),
+        },
     );
 }
 
@@ -5124,6 +5361,7 @@ async fn record_timeline_item(
 async fn reseed_live_timeline_after_history_replaced(
     live_timelines: &LiveTimelines,
     session_id: &str,
+    routing: AgentPermissionRouting,
     conversation: &Conversation,
 ) {
     let replacement_boundary = conversation
@@ -5149,8 +5387,9 @@ async fn reseed_live_timeline_after_history_replaced(
             // that compaction or an explicit history command removed.
             let boundary = timelines
                 .get(session_id)
-                .and_then(|items| {
-                    items.items().iter().rev().find(|item| {
+                .filter(|entry| entry.routing == routing)
+                .and_then(|entry| {
+                    entry.timeline.items().iter().rev().find(|item| {
                         is_user_message_item(item) && item.id == replacement_boundary.id
                     })
                 })
@@ -5158,11 +5397,14 @@ async fn reseed_live_timeline_after_history_replaced(
                 .unwrap_or(replacement_boundary);
             timelines.insert(
                 session_id.to_string(),
-                LiveTimeline::Streaming(vec![boundary]),
+                LiveTimelineEntry {
+                    routing,
+                    timeline: LiveTimeline::Streaming(vec![boundary]),
+                },
             );
         }
         None => {
-            timelines.remove(session_id);
+            remove_live_timeline_for_routing(&mut timelines, session_id, routing);
         }
     }
 }
@@ -5170,19 +5412,24 @@ async fn reseed_live_timeline_after_history_replaced(
 async fn overlay_live_timeline(
     live_timelines: &LiveTimelines,
     session_id: &str,
+    routing: AgentPermissionRouting,
     conversation: &Conversation,
     persisted: Vec<AgentTimelineItem>,
 ) -> Vec<AgentTimelineItem> {
     let live_items = {
         let mut timelines = live_timelines.lock().await;
-        match timelines.get(session_id).cloned() {
+        let timeline = timelines
+            .get(session_id)
+            .filter(|entry| entry.routing == routing)
+            .map(|entry| entry.timeline.clone());
+        match timeline {
             Some(LiveTimeline::Streaming(items)) => items,
             Some(LiveTimeline::Completed(candidate)) => {
                 // agent_load_session already paid to load Goose history. Use
                 // that snapshot here instead of deserializing it a second time
                 // at the end of every prompt.
                 if terminal_message_is_persisted(conversation, &candidate) {
-                    timelines.remove(session_id);
+                    remove_live_timeline_for_routing(&mut timelines, session_id, routing);
                     Vec::new()
                 } else {
                     candidate.items
@@ -5232,12 +5479,17 @@ fn live_overlay_item(mut item: AgentTimelineItem) -> AgentTimelineItem {
 async fn update_live_permission_status(
     live_timelines: &LiveTimelines,
     session_id: &str,
+    routing: AgentPermissionRouting,
     request_id: &str,
     decision: &str,
 ) -> Option<AgentTimelineItem> {
     let permission_id = format!("permission-{request_id}");
     let mut timelines = live_timelines.lock().await;
-    let items = timelines.get_mut(session_id)?.items_mut();
+    let entry = timelines.get_mut(session_id)?;
+    if entry.routing != routing {
+        return None;
+    }
+    let items = entry.timeline.items_mut();
     let item = items.iter_mut().find(|item| item.id == permission_id)?;
     item.status = Some(decision.to_string());
     item.merge = "replace".to_string();
@@ -6327,6 +6579,59 @@ mod tests {
             routing,
             request: test_permission_request(request_id),
         }
+    }
+
+    fn test_live_timeline(
+        routing: AgentPermissionRouting,
+        timeline: LiveTimeline,
+    ) -> LiveTimelineEntry {
+        LiveTimelineEntry { routing, timeline }
+    }
+
+    #[test]
+    fn desktop_status_excludes_calling_surface_runs() {
+        let status = active_run_status([
+            (
+                "desktop-run",
+                "desktop-session",
+                AgentPermissionRouting::Desktop,
+            ),
+            (
+                "acp-run",
+                "acp-session",
+                AgentPermissionRouting::CallingSurface,
+            ),
+        ]);
+
+        assert_eq!(
+            status,
+            HashMap::from([("desktop-session".to_string(), "desktop-run".to_string())])
+        );
+    }
+
+    #[test]
+    fn run_cancellation_scope_rejects_cross_surface_and_wrong_session_access() {
+        assert!(validate_run_cancellation_scope(
+            "session-1",
+            AgentPermissionRouting::CallingSurface,
+            None,
+            AgentPermissionRouting::Desktop,
+        )
+        .is_err());
+        assert!(validate_run_cancellation_scope(
+            "session-1",
+            AgentPermissionRouting::CallingSurface,
+            Some("session-2"),
+            AgentPermissionRouting::CallingSurface,
+        )
+        .is_err());
+        assert!(validate_run_cancellation_scope(
+            "session-1",
+            AgentPermissionRouting::CallingSurface,
+            Some("session-1"),
+            AgentPermissionRouting::CallingSurface,
+        )
+        .is_ok());
     }
 
     #[test]
@@ -8085,12 +8390,16 @@ mod tests {
         let reply_candidate = live_message_candidate(&live_reply, &reply_items);
         let live_timelines = Arc::new(Mutex::new(HashMap::from([(
             session_id.to_string(),
-            LiveTimeline::Completed(reply_candidate),
+            test_live_timeline(
+                AgentPermissionRouting::Desktop,
+                LiveTimeline::Completed(reply_candidate),
+            ),
         )])));
 
         let loaded = overlay_live_timeline(
             &live_timelines,
             session_id,
+            AgentPermissionRouting::Desktop,
             &persisted_conversation,
             persisted_timeline.clone(),
         )
@@ -8107,6 +8416,7 @@ mod tests {
         apply_successful_prompt_outcome(
             &mut timelines,
             session_id,
+            AgentPermissionRouting::Desktop,
             &AgentPromptOutcome {
                 terminal_message: Some(notice_candidate),
             },
@@ -8115,6 +8425,7 @@ mod tests {
         let loaded = overlay_live_timeline(
             &live_timelines,
             session_id,
+            AgentPermissionRouting::Desktop,
             &persisted_conversation,
             persisted_timeline,
         )
@@ -8125,11 +8436,167 @@ mod tests {
         );
         assert!(matches!(
             live_timelines.lock().await.get(session_id),
-            Some(LiveTimeline::Completed(_))
+            Some(LiveTimelineEntry {
+                routing: AgentPermissionRouting::Desktop,
+                timeline: LiveTimeline::Completed(_),
+            })
         ));
 
         let mut timelines = live_timelines.lock().await;
-        apply_successful_prompt_outcome(&mut timelines, session_id, &AgentPromptOutcome::default());
+        apply_successful_prompt_outcome(
+            &mut timelines,
+            session_id,
+            AgentPermissionRouting::Desktop,
+            &AgentPromptOutcome::default(),
+        );
+        assert!(!timelines.contains_key(session_id));
+    }
+
+    #[tokio::test]
+    async fn calling_surface_timeline_does_not_overlay_desktop_session_load() {
+        let session_id = "calling-surface-session";
+        let persisted_conversation = Conversation::new_unvalidated(vec![
+            Message::user()
+                .with_id("persisted-user")
+                .with_text("Persisted prompt"),
+            Message::assistant()
+                .with_content(MessageContent::action_required(
+                    "persisted-request",
+                    "shell".to_string(),
+                    serde_json::Map::new(),
+                    Some("Run this command?".to_string()),
+                ))
+                .with_generated_id(),
+        ]);
+        let persisted = conversation_to_timeline_items(&persisted_conversation);
+        let permission = AgentTimelineItem {
+            id: "permission-request-1".to_string(),
+            item_type: "permission".to_string(),
+            role: Some("assistant".to_string()),
+            title: Some("shell".to_string()),
+            text: Some("Run this command?".to_string()),
+            status: Some("pending".to_string()),
+            input: Some(json!({ "command": "git status --short" })),
+            output: None,
+            created_ms: 1,
+            merge: "replace".to_string(),
+        };
+        let live_timelines = Arc::new(Mutex::new(HashMap::from([(
+            session_id.to_string(),
+            test_live_timeline(
+                AgentPermissionRouting::CallingSurface,
+                LiveTimeline::Streaming(vec![permission]),
+            ),
+        )])));
+
+        let mut loaded = overlay_live_timeline(
+            &live_timelines,
+            session_id,
+            AgentPermissionRouting::Desktop,
+            &persisted_conversation,
+            persisted.clone(),
+        )
+        .await;
+        reconcile_desktop_permission_items(&mut loaded, &HashMap::new(), true);
+
+        assert_eq!(
+            loaded
+                .iter()
+                .find(|item| item.id == "permission-persisted-request")
+                .and_then(|item| item.status.as_deref()),
+            Some("controlled_externally")
+        );
+        assert!(!loaded.iter().any(|item| {
+            item.item_type == "permission" && item.status.as_deref() == Some("pending")
+        }));
+        assert_eq!(
+            live_timelines.lock().await.get(session_id).unwrap().routing,
+            AgentPermissionRouting::CallingSurface
+        );
+    }
+
+    #[tokio::test]
+    async fn permission_status_updates_only_the_owning_surface_timeline() {
+        let session_id = "permission-owner-session";
+        let permission = AgentTimelineItem {
+            id: "permission-request-1".to_string(),
+            item_type: "permission".to_string(),
+            role: Some("assistant".to_string()),
+            title: Some("shell".to_string()),
+            text: None,
+            status: Some("pending".to_string()),
+            input: None,
+            output: None,
+            created_ms: 1,
+            merge: "replace".to_string(),
+        };
+        let live_timelines = Arc::new(Mutex::new(HashMap::from([(
+            session_id.to_string(),
+            test_live_timeline(
+                AgentPermissionRouting::CallingSurface,
+                LiveTimeline::Streaming(vec![permission]),
+            ),
+        )])));
+
+        assert!(update_live_permission_status(
+            &live_timelines,
+            session_id,
+            AgentPermissionRouting::Desktop,
+            "request-1",
+            "allow_once",
+        )
+        .await
+        .is_none());
+        assert_eq!(
+            update_live_permission_status(
+                &live_timelines,
+                session_id,
+                AgentPermissionRouting::CallingSurface,
+                "request-1",
+                "allow_once",
+            )
+            .await
+            .and_then(|item| item.status),
+            Some("allow_once".to_string())
+        );
+    }
+
+    #[test]
+    fn calling_surface_terminal_cleanup_cannot_remove_desktop_live_state() {
+        let session_id = "terminal-owner-session";
+        let desktop_item = error_item("Desktop-only state".to_string());
+        let mut timelines = HashMap::from([(
+            session_id.to_string(),
+            test_live_timeline(
+                AgentPermissionRouting::Desktop,
+                LiveTimeline::Streaming(vec![desktop_item]),
+            ),
+        )]);
+
+        apply_successful_prompt_outcome(
+            &mut timelines,
+            session_id,
+            AgentPermissionRouting::CallingSurface,
+            &AgentPromptOutcome::default(),
+        );
+        assert_eq!(
+            timelines.get(session_id).unwrap().routing,
+            AgentPermissionRouting::Desktop
+        );
+
+        timelines.insert(
+            session_id.to_string(),
+            test_live_timeline(
+                AgentPermissionRouting::CallingSurface,
+                LiveTimeline::Streaming(Vec::new()),
+            ),
+        );
+        apply_successful_prompt_outcome(
+            &mut timelines,
+            session_id,
+            AgentPermissionRouting::CallingSurface,
+            &AgentPromptOutcome::default(),
+        );
         assert!(!timelines.contains_key(session_id));
     }
 
@@ -8142,21 +8609,28 @@ mod tests {
                 .with_text("Prior turn"),
             false,
         );
-        let mut timelines =
-            HashMap::from([(session_id.to_string(), LiveTimeline::Streaming(prior_turn))]);
+        let mut timelines = HashMap::from([(
+            session_id.to_string(),
+            test_live_timeline(
+                AgentPermissionRouting::Desktop,
+                LiveTimeline::Streaming(prior_turn),
+            ),
+        )]);
 
         apply_failed_prompt_outcome(
             &mut timelines,
             session_id,
+            AgentPermissionRouting::Desktop,
             error_item("First failure".to_string()),
         );
         apply_failed_prompt_outcome(
             &mut timelines,
             session_id,
+            AgentPermissionRouting::Desktop,
             error_item("Second failure".to_string()),
         );
 
-        let LiveTimeline::Failed(items) = timelines.get(session_id).unwrap() else {
+        let LiveTimeline::Failed(items) = &timelines.get(session_id).unwrap().timeline else {
             panic!("failed run should leave a bounded failed timeline");
         };
         assert_eq!(items.len(), 1);
@@ -8170,9 +8644,15 @@ mod tests {
         .into_iter()
         .next()
         .unwrap();
-        record_timeline_item(&live_timelines, session_id, next_user).await;
+        record_timeline_item(
+            &live_timelines,
+            session_id,
+            AgentPermissionRouting::Desktop,
+            next_user,
+        )
+        .await;
         let timelines = live_timelines.lock().await;
-        let LiveTimeline::Streaming(items) = timelines.get(session_id).unwrap() else {
+        let LiveTimeline::Streaming(items) = &timelines.get(session_id).unwrap().timeline else {
             panic!("a retry should start a fresh streaming timeline");
         };
         assert_eq!(items.len(), 1);
@@ -8377,6 +8857,103 @@ mod tests {
         assert!(items.iter().any(|item| {
             item.id == "elicitation-pending-input" && item.status.as_deref() == Some("cancelled")
         }));
+    }
+
+    #[test]
+    fn persisted_tool_permission_settles_without_stop_notice() {
+        let permission = Message::assistant()
+            .with_content(MessageContent::action_required(
+                "resolved-tool",
+                "shell".to_string(),
+                serde_json::Map::new(),
+                None,
+            ))
+            .with_generated_id();
+        let conversation = Conversation::new_unvalidated(vec![
+            Message::user().with_text("run tool").with_generated_id(),
+            permission,
+            tool_response_message("resolved-response", "resolved-tool"),
+        ]);
+
+        let items = conversation_to_timeline_items(&conversation);
+
+        assert!(items.iter().any(|item| {
+            item.id == "permission-resolved-tool" && item.status.as_deref() == Some("completed")
+        }));
+    }
+
+    #[test]
+    fn persisted_elicitation_settles_from_agent_only_response() {
+        let request = Message::assistant()
+            .with_content(MessageContent::action_required_elicitation(
+                "resolved-input",
+                "Need more input".to_string(),
+                json!({"type": "object"}),
+            ))
+            .with_generated_id();
+        let response = Message::user()
+            .with_content(MessageContent::action_required_elicitation_response(
+                "resolved-input",
+                json!({"answer": "yes"}),
+                rmcp::model::ElicitationAction::Accept,
+            ))
+            .agent_only()
+            .with_generated_id();
+        let conversation = Conversation::new_unvalidated(vec![
+            Message::user().with_text("ask me").with_generated_id(),
+            request,
+            response,
+        ]);
+
+        let items = conversation_to_timeline_items(&conversation);
+
+        assert!(items.iter().any(|item| {
+            item.id == "elicitation-resolved-input" && item.status.as_deref() == Some("completed")
+        }));
+    }
+
+    #[test]
+    fn desktop_permission_reconciliation_preserves_only_desktop_owned_pending_rows() {
+        fn permission(id: &str, status: &str) -> AgentTimelineItem {
+            AgentTimelineItem {
+                id: format!("permission-{id}"),
+                item_type: "permission".to_string(),
+                role: Some("system".to_string()),
+                title: Some("Permission".to_string()),
+                text: None,
+                status: Some(status.to_string()),
+                input: None,
+                output: None,
+                created_ms: 1,
+                merge: "replace".to_string(),
+            }
+        }
+
+        let original_completed = permission("completed", "completed");
+        let mut items = vec![
+            permission("desktop", "pending"),
+            permission("caller", "pending"),
+            permission("orphan", "pending"),
+            original_completed.clone(),
+        ];
+        let routes = HashMap::from([
+            ("desktop".to_string(), AgentPermissionRouting::Desktop),
+            ("caller".to_string(), AgentPermissionRouting::CallingSurface),
+        ]);
+
+        reconcile_desktop_permission_items(&mut items, &routes, false);
+
+        assert_eq!(items[0].status.as_deref(), Some("pending"));
+        assert_eq!(items[1].status.as_deref(), Some("controlled_externally"));
+        assert_eq!(items[2].status.as_deref(), Some("cancelled"));
+        assert_eq!(items[3], original_completed);
+
+        let mut registration_race = vec![permission("not-registered-yet", "pending")];
+        reconcile_desktop_permission_items(&mut registration_race, &HashMap::new(), true);
+        assert_eq!(
+            registration_race[0].status.as_deref(),
+            Some("controlled_externally")
+        );
     }
 
     #[test]
@@ -8857,16 +9434,25 @@ mod tests {
         ));
         let live_timelines = Arc::new(Mutex::new(HashMap::from([(
             session_id.to_string(),
-            LiveTimeline::Streaming(live),
+            test_live_timeline(
+                AgentPermissionRouting::Desktop,
+                LiveTimeline::Streaming(live),
+            ),
         )])));
 
-        reseed_live_timeline_after_history_replaced(&live_timelines, session_id, &conversation)
-            .await;
+        reseed_live_timeline_after_history_replaced(
+            &live_timelines,
+            session_id,
+            AgentPermissionRouting::Desktop,
+            &conversation,
+        )
+        .await;
 
         let timelines = live_timelines.lock().await;
         let items = timelines
             .get(session_id)
             .expect("replacement should retain a user boundary")
+            .timeline
             .items();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].id, "current-user-text");
@@ -8896,16 +9482,25 @@ mod tests {
             Conversation::new_unvalidated(vec![current_user.clone(), provider_only_user]);
         let live_timelines = Arc::new(Mutex::new(HashMap::from([(
             session_id.to_string(),
-            LiveTimeline::Streaming(message_to_timeline_items(&current_user, false)),
+            test_live_timeline(
+                AgentPermissionRouting::Desktop,
+                LiveTimeline::Streaming(message_to_timeline_items(&current_user, false)),
+            ),
         )])));
 
-        reseed_live_timeline_after_history_replaced(&live_timelines, session_id, &conversation)
-            .await;
+        reseed_live_timeline_after_history_replaced(
+            &live_timelines,
+            session_id,
+            AgentPermissionRouting::Desktop,
+            &conversation,
+        )
+        .await;
 
         let timelines = live_timelines.lock().await;
         let items = timelines
             .get(session_id)
             .expect("the latest visible user boundary should survive")
+            .timeline
             .items();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].id, "current-user-text");
@@ -8934,8 +9529,13 @@ mod tests {
             current_user.clone(),
         ]);
         let live_timelines = Arc::new(Mutex::new(HashMap::new()));
-        reseed_live_timeline_after_history_replaced(&live_timelines, session_id, &replacement)
-            .await;
+        reseed_live_timeline_after_history_replaced(
+            &live_timelines,
+            session_id,
+            AgentPermissionRouting::Desktop,
+            &replacement,
+        )
+        .await;
 
         let live_response = assistant_tool_message(
             "live-provider-response",
@@ -8944,7 +9544,13 @@ mod tests {
             "",
         );
         for item in message_to_timeline_items(&live_response, true) {
-            record_timeline_item(&live_timelines, session_id, item).await;
+            record_timeline_item(
+                &live_timelines,
+                session_id,
+                AgentPermissionRouting::Desktop,
+                item,
+            )
+            .await;
         }
 
         let persisted_conversation = Conversation::new_unvalidated(vec![
@@ -8968,6 +9574,7 @@ mod tests {
         let overlaid = overlay_live_timeline(
             &live_timelines,
             session_id,
+            AgentPermissionRouting::Desktop,
             &persisted_conversation,
             persisted,
         )
@@ -9154,8 +9761,20 @@ mod tests {
             .expect("surviving session should be created");
 
         let live_timelines = Arc::new(Mutex::new(HashMap::from([
-            (target.id.clone(), LiveTimeline::Streaming(Vec::new())),
-            (survivor.id.clone(), LiveTimeline::Streaming(Vec::new())),
+            (
+                target.id.clone(),
+                test_live_timeline(
+                    AgentPermissionRouting::Desktop,
+                    LiveTimeline::Streaming(Vec::new()),
+                ),
+            ),
+            (
+                survivor.id.clone(),
+                test_live_timeline(
+                    AgentPermissionRouting::Desktop,
+                    LiveTimeline::Streaming(Vec::new()),
+                ),
+            ),
         ])));
         let pending_permissions = Arc::new(Mutex::new(HashMap::from([
             (
@@ -9319,13 +9938,17 @@ mod tests {
 
         let live_timelines = Arc::new(Mutex::new(HashMap::from([(
             session.id.clone(),
-            LiveTimeline::Streaming(vec![error_item("speculative partial event".to_string())]),
+            test_live_timeline(
+                AgentPermissionRouting::Desktop,
+                LiveTimeline::Streaming(vec![error_item("speculative partial event".to_string())]),
+            ),
         )])));
         finalize_cancelled_agent_turn(
             &session_manager,
             &live_timelines,
             &web_tool_state,
             &session.id,
+            AgentPermissionRouting::Desktop,
             &stopped_user,
             &HashSet::from(["declined-tool".to_string()]),
         )
@@ -9411,13 +10034,17 @@ mod tests {
             .with_generated_id();
         live_timelines.lock().await.insert(
             first_turn_session.id.clone(),
-            LiveTimeline::Streaming(vec![error_item("optimistic first turn".to_string())]),
+            test_live_timeline(
+                AgentPermissionRouting::Desktop,
+                LiveTimeline::Streaming(vec![error_item("optimistic first turn".to_string())]),
+            ),
         );
         finalize_cancelled_agent_turn(
             &session_manager,
             &live_timelines,
             &web_tool_state,
             &first_turn_session.id,
+            AgentPermissionRouting::Desktop,
             &first_turn_user,
             &HashSet::new(),
         )

@@ -7,7 +7,7 @@ use crate::agent::{
     AgentSetSessionMcpServerRequest, AgentStartRequest, AgentTimelineItem, MapleAgentService,
     RecentProjectRoot,
 };
-use crate::agent_host::AgentHostLifecycle;
+use crate::agent_host::{AgentHostLifecycle, AgentRuntimeLifecycleOutcome};
 use crate::maple_api::MapleApiAuthState;
 use serde::Serialize;
 use std::sync::Arc;
@@ -187,7 +187,7 @@ pub async fn agent_stop_runtime(
     state: State<'_, MapleAgentService>,
     host_lifecycle: State<'_, AgentHostLifecycle>,
     user_id: String,
-) -> Result<AgentRuntimeStatus, String> {
+) -> Result<AgentRuntimeLifecycleOutcome, String> {
     let handle = handle_for_user(&state, &user_id).await?;
     host_lifecycle
         .stop_runtime(&app_handle, &user_id, &handle)
@@ -202,7 +202,7 @@ pub async fn agent_restart_runtime(
     host_lifecycle: State<'_, AgentHostLifecycle>,
     user_id: String,
     request: Option<AgentStartRequest>,
-) -> Result<AgentRuntimeStatus, String> {
+) -> Result<AgentRuntimeLifecycleOutcome, String> {
     let handle = handle_for_user(&state, &user_id).await?;
     let api_session = api_auth_state.session_for(&user_id).await?;
     host_lifecycle
@@ -481,7 +481,7 @@ pub async fn agent_cancel_run(
     let _ = app_handle;
     handle_for_user(&state, &user_id)
         .await?
-        .cancel_run(run_id)
+        .cancel_desktop_run(run_id)
         .await
 }
 

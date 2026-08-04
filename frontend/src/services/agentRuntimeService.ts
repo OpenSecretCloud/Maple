@@ -74,6 +74,11 @@ export interface AgentRuntimeStatus {
   activeRuns?: Record<string, string>;
 }
 
+export interface AgentRuntimeLifecycleOutcome {
+  status: AgentRuntimeStatus;
+  acpShutdownError: string | null;
+}
+
 export interface RecentProjectRoot {
   path: string;
   name: string;
@@ -161,14 +166,13 @@ export interface AgentRuntimeBridge {
 
 export interface AgentRuntimeStopBridge {
   blockAndDrain(userId: string): Promise<AgentOperationBlock>;
-  stopAcp(userId: string): Promise<void>;
-  stopRuntime(userId: string): Promise<void>;
+  stopHost(userId: string): Promise<AgentRuntimeLifecycleOutcome>;
 }
 
 /**
- * Owns the security-sensitive shutdown order shared by logout and account
- * transitions. ACP must be gone before the runtime can stop and credentials
- * can be cleared, because connected ACP clients can still submit Agent work.
+ * Owns the security-sensitive host shutdown shared by logout and account
+ * transitions. Native code attempts ACP cleanup first and always attempts the
+ * core runtime stop; credential cleanup proceeds only when both succeeded.
  */
 export class AgentRuntimeStopCoordinator {
   constructor(private readonly bridge: AgentRuntimeStopBridge) {}
@@ -176,13 +180,24 @@ export class AgentRuntimeStopCoordinator {
   async stop(userId: string): Promise<AgentOperationBlock> {
     const block = await this.bridge.blockAndDrain(userId);
     try {
-      await this.bridge.stopAcp(userId);
-      await this.bridge.stopRuntime(userId);
+      const outcome = await this.bridge.stopHost(userId);
+      if (outcome.acpShutdownError) {
+        throw new AgentRuntimePartialStopError(outcome);
+      }
       return block;
     } catch (error) {
       block.release();
       throw error;
     }
+  }
+}
+
+export class AgentRuntimePartialStopError extends Error {
+  constructor(readonly outcome: AgentRuntimeLifecycleOutcome) {
+    super(
+      `Agent runtime stopped, but ACP cleanup failed: ${outcome.acpShutdownError || "unknown ACP error"}`
+    );
+    this.name = "AgentRuntimePartialStopError";
   }
 }
 
@@ -194,13 +209,11 @@ const defaultAgentRuntimeBridge: AgentRuntimeBridge = {
 
 const agentRuntimeStopCoordinator = new AgentRuntimeStopCoordinator({
   blockAndDrain: async (userId) => await agentOperationFence.blockAndDrain(userId),
-  // The cleanup lease is already held, so this deliberately invokes the
-  // local command directly instead of re-entering MapleAcpService's fence.
-  stopAcp: async (userId) => {
-    await invokeAgent("agent_acp_stop", { userId });
-  },
-  stopRuntime: async (userId) => {
-    await invokeAgent<AgentRuntimeStatus>("agent_stop_runtime", { userId });
+  // The cleanup lease is already held. Native code owns the single composite
+  // ACP-plus-runtime lifecycle gate; the manual ACP Stop command is reserved
+  // for the settings page because it also changes saved configuration.
+  stopHost: async (userId) => {
+    return await invokeAgent<AgentRuntimeLifecycleOutcome>("agent_stop_runtime", { userId });
   }
 });
 
@@ -218,8 +231,11 @@ export class AgentRuntimeService {
     });
   }
 
-  async restartRuntime(userId: string, request?: AgentStartRequest): Promise<AgentRuntimeStatus> {
-    return await this.invokeForUser<AgentRuntimeStatus>(userId, "agent_restart_runtime", {
+  async restartRuntime(
+    userId: string,
+    request?: AgentStartRequest
+  ): Promise<AgentRuntimeLifecycleOutcome> {
+    return await this.invokeForUser<AgentRuntimeLifecycleOutcome>(userId, "agent_restart_runtime", {
       userId,
       request: request ?? null
     });

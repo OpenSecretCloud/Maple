@@ -141,7 +141,7 @@ flowchart LR
     Service --> Goose["embedded Goose runtime"]
 ```
 
-Tauri remains a thin projection of the existing Desktop contract: the original command names, arguments, result DTOs, `agent-event` envelopes, and frontend Agent Mode behavior are unchanged. ACP independently projects the same service operations and run events into ACP requests, notifications, and stop reasons. Socket ownership, protocol negotiation, connection leases, and `BUZZ_*` parsing remain adapter concerns.
+Tauri remains a thin projection of the Desktop contract: the original command names, arguments, and `agent-event` envelopes are unchanged. Stop and restart now return a small host-lifecycle outcome containing the authoritative runtime status plus any ACP cleanup warning; the frontend unwraps it without changing normal Agent Mode behavior. ACP independently projects the same service operations and run events into ACP requests, notifications, and stop reasons. Socket ownership, protocol negotiation, connection leases, and `BUZZ_*` parsing remain adapter concerns.
 
 This keeps Maple's domain model a useful superset instead of forcing Maple, Tauri, and ACP into exact wire parity. Neither adapter calls through the other, and the core service imports no Tauri or ACP types.
 
@@ -165,7 +165,7 @@ The macOS/Linux desktop settings page is intentionally manual. It can:
 - show protocol, endpoint, and Buzz credential diagnostics; and
 - warn that Buzz's default parallelism must be reduced to Maple's current default of one connection.
 
-Maple stops ACP before logout, local Agent-data clearing, Agent-runtime stop or restart, application update restart, and application exit. A saved `enabled` value does not auto-start ACP on the next launch; the user must explicitly start it again.
+Maple's composite host lifecycle attempts ACP shutdown before Agent-runtime stop or restart, and it always attempts the core runtime operation even if ACP cleanup reports an error. Desktop receives both the authoritative runtime result and any ACP cleanup warning, so it can resynchronize successful runtime changes while logout and credential cleanup still fail closed. Local Agent-data/history clearing remains stricter: it proceeds only after ACP has stopped successfully. Application update restart and exit also report failure if either surface cannot shut down. A saved `enabled` value does not auto-start ACP on the next launch; the user must explicitly start it again.
 
 Allowed-root and maximum-connection changes require Stop, then change and save, then Start. This prevents a new session from racing a policy update and retaining the previous policy.
 
