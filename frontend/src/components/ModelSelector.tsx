@@ -7,7 +7,7 @@ import {
   DropdownMenuTrigger,
   DropdownMenuSeparator
 } from "@/components/ui/dropdown-menu";
-import { useLocalState } from "@/state/useLocalState";
+import { useBillingState, useModelState } from "@/state/useLocalState";
 import { useOpenSecret } from "@opensecret/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { UpgradePromptDialog } from "@/components/UpgradePromptDialog";
@@ -82,9 +82,9 @@ export function ModelSelector({ hasImages = false }: { hasImages?: boolean }) {
     setAvailableModels,
     modelAliases,
     setModelAliases,
-    billingStatus,
     setHasWhisperModel
-  } = useLocalState();
+  } = useModelState();
+  const { billingStatus } = useBillingState();
   const os = useOpenSecret();
   const isFetching = useRef(false);
   const hasFetched = useRef(false);

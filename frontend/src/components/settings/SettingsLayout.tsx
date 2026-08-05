@@ -35,7 +35,7 @@ import {
   stopAgentRuntimeForUser
 } from "@/services/agentRuntimeService";
 import { resetWorkspaceModePreference } from "@/services/workspaceModePreference";
-import { useLocalState } from "@/state/useLocalState";
+import { useBillingState } from "@/state/useLocalState";
 import type { TeamStatus } from "@/types/team";
 import { isIOS } from "@/utils/platform";
 import { getTeamSeatMismatch } from "@/utils/teamSeats";
@@ -136,7 +136,7 @@ function SettingsLayoutContent() {
   const location = useLocation();
   const queryClient = useQueryClient();
   const { returnToHome } = usePersistentHomeNavigation();
-  const { billingStatus, setBillingStatus } = useLocalState();
+  const { billingStatus, setBillingStatus } = useBillingState();
   const isNavigationLocked = useSettingsNavigationLockState();
   const isCompactViewport = useCompactSettingsLayout();
   const isSettingsRoot = location.pathname === "/settings" || location.pathname === "/settings/";

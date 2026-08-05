@@ -1,4 +1,5 @@
 import {
+  memo,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -156,7 +157,8 @@ import {
   useIsMobile
 } from "@/utils/utils";
 import { isTauriDesktop } from "@/utils/platform";
-import { useLocalState } from "@/state/useLocalState";
+import { useLazyRef } from "@/utils/useLazyRef";
+import { useBillingState, useModelState } from "@/state/useLocalState";
 import {
   usePersistentHomeNavigation,
   usePersistentSidebarState
@@ -292,7 +294,7 @@ export function AgentMode({ userId }: { userId: string }) {
   const openai = useOpenAI();
   const os = useOpenSecret();
   const { availableModels, setAvailableModels, modelAliases, setModelAliases, setHasWhisperModel } =
-    useLocalState();
+    useModelState();
   const { agentSessionSelection } = usePersistentHomeNavigation();
   const isMobile = useIsMobile();
   const isLandscapeMobile = useIsLandscapeMobile();
@@ -353,18 +355,18 @@ export function AgentMode({ userId }: { userId: string }) {
   );
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const activeSessionIdRef = useRef(activeSessionId);
-  const deletedSessionIdsRef = useRef(new Set<string>());
+  const deletedSessionIdsRef = useLazyRef(() => new Set<string>());
   const shouldAutoScrollRef = useRef(true);
-  const permissionModeUpdateRef = useRef<Promise<void>>(Promise.resolve());
+  const permissionModeUpdateRef = useLazyRef<Promise<void>>(() => Promise.resolve());
   const permissionModeUpdateGenerationRef = useRef(0);
   const selectedModeRef = useRef<AgentPermissionMode>(mode);
   const committedModeRef = useRef<AgentPermissionMode>(mode);
-  const terminalRunIdsRef = useRef(new Set<string>());
-  const pendingSendTokensRef = useRef(new Map<string, number>());
-  const cancelledPendingSendTokensRef = useRef(new Set<number>());
+  const terminalRunIdsRef = useLazyRef(() => new Set<string>());
+  const pendingSendTokensRef = useLazyRef(() => new Map<string, number>());
+  const cancelledPendingSendTokensRef = useLazyRef(() => new Set<number>());
   const nextSendTokenRef = useRef(0);
   const activeRunsBySessionRef = useRef<Record<string, string>>({});
-  const timelineRevisionBySessionRef = useRef(new Map<string, number>());
+  const timelineRevisionBySessionRef = useLazyRef(() => new Map<string, number>());
   const sessionSelectionGenerationRef = useRef(0);
   const pendingSessionSelectionIdRef = useRef<string | null>(null);
   const interactionGenerationRef = useRef(0);
@@ -378,9 +380,11 @@ export function AgentMode({ userId }: { userId: string }) {
   const isAgentModeMountedRef = useRef(true);
   const projectOrderRequestIdRef = useRef(0);
   const projectSkillsTrustGenerationRef = useRef(0);
-  const thoughtPhaseTrackerRef = useRef(new AgentLiveThoughtPhaseTracker());
-  const thoughtLabelFinalRequestRegistryRef = useRef(new AgentThoughtLabelFinalRequestRegistry());
-  const thoughtPhaseSeededRunIdsRef = useRef(new Set<string>());
+  const thoughtPhaseTrackerRef = useLazyRef(() => new AgentLiveThoughtPhaseTracker());
+  const thoughtLabelFinalRequestRegistryRef = useLazyRef(
+    () => new AgentThoughtLabelFinalRequestRegistry()
+  );
+  const thoughtPhaseSeededRunIdsRef = useLazyRef(() => new Set<string>());
   const openaiRef = useRef(openai);
   const openSecretRef = useRef(os);
   const currentAgentModelRef = useRef(model);
@@ -440,10 +444,13 @@ export function AgentMode({ userId }: { userId: string }) {
     });
   }
 
-  const cancelThoughtLabelDisplays = useCallback((sessionId?: string, assistantTurnId?: string) => {
-    thoughtLabelProvisionalSchedulerRef.current?.cancelMatching(sessionId, assistantTurnId);
-    thoughtLabelFinalRequestRegistryRef.current.cancelMatching(sessionId, assistantTurnId);
-  }, []);
+  const cancelThoughtLabelDisplays = useCallback(
+    (sessionId?: string, assistantTurnId?: string) => {
+      thoughtLabelProvisionalSchedulerRef.current?.cancelMatching(sessionId, assistantTurnId);
+      thoughtLabelFinalRequestRegistryRef.current.cancelMatching(sessionId, assistantTurnId);
+    },
+    [thoughtLabelFinalRequestRegistryRef]
+  );
 
   const generateThoughtLabel = useCallback(
     (phase: AgentThoughtPhase, retainedLabel: string | null = null) => {
@@ -489,7 +496,7 @@ export function AgentMode({ userId }: { userId: string }) {
       });
       finalRequest.setCancel(cancelDisplay);
     },
-    [openai]
+    [deletedSessionIdsRef, openai, thoughtLabelFinalRequestRegistryRef]
   );
 
   const completeThoughtPhase = useCallback(
@@ -503,10 +510,13 @@ export function AgentMode({ userId }: { userId: string }) {
     [generateThoughtLabel]
   );
 
-  const observeActiveThoughtPhase = useCallback((sessionId: string) => {
-    const activePhase = thoughtPhaseTrackerRef.current.activePhase(sessionId);
-    if (activePhase) thoughtLabelProvisionalSchedulerRef.current?.observe(activePhase);
-  }, []);
+  const observeActiveThoughtPhase = useCallback(
+    (sessionId: string) => {
+      const activePhase = thoughtPhaseTrackerRef.current.activePhase(sessionId);
+      if (activePhase) thoughtLabelProvisionalSchedulerRef.current?.observe(activePhase);
+    },
+    [thoughtPhaseTrackerRef]
+  );
 
   const seedActiveThoughtPhases = useCallback(
     (activeRuns: Record<string, string>) => {
@@ -548,7 +558,14 @@ export function AgentMode({ userId }: { userId: string }) {
         })();
       }
     },
-    [observeActiveThoughtPhase, userId]
+    [
+      deletedSessionIdsRef,
+      observeActiveThoughtPhase,
+      thoughtPhaseSeededRunIdsRef,
+      thoughtPhaseTrackerRef,
+      timelineRevisionBySessionRef,
+      userId
+    ]
   );
 
   const invalidateThoughtLabelsForTurn = useCallback(
@@ -765,38 +782,47 @@ export function AgentMode({ userId }: { userId: string }) {
     setPendingSessionSelectionId(null);
   }, []);
 
-  const markPendingSend = useCallback((sessionKey: string, token: number) => {
-    pendingSendTokensRef.current.set(sessionKey, token);
-    setPendingSendSessionIds((current) => {
-      if (current.has(sessionKey)) return current;
-      const next = new Set(current);
-      next.add(sessionKey);
-      return next;
-    });
-  }, []);
+  const markPendingSend = useCallback(
+    (sessionKey: string, token: number) => {
+      pendingSendTokensRef.current.set(sessionKey, token);
+      setPendingSendSessionIds((current) => {
+        if (current.has(sessionKey)) return current;
+        const next = new Set(current);
+        next.add(sessionKey);
+        return next;
+      });
+    },
+    [pendingSendTokensRef]
+  );
 
-  const movePendingSend = useCallback((fromKey: string, toKey: string, token: number) => {
-    if (fromKey === toKey || pendingSendTokensRef.current.get(fromKey) !== token) return;
-    pendingSendTokensRef.current.delete(fromKey);
-    pendingSendTokensRef.current.set(toKey, token);
-    setPendingSendSessionIds((current) => {
-      const next = new Set(current);
-      next.delete(fromKey);
-      next.add(toKey);
-      return next;
-    });
-  }, []);
+  const movePendingSend = useCallback(
+    (fromKey: string, toKey: string, token: number) => {
+      if (fromKey === toKey || pendingSendTokensRef.current.get(fromKey) !== token) return;
+      pendingSendTokensRef.current.delete(fromKey);
+      pendingSendTokensRef.current.set(toKey, token);
+      setPendingSendSessionIds((current) => {
+        const next = new Set(current);
+        next.delete(fromKey);
+        next.add(toKey);
+        return next;
+      });
+    },
+    [pendingSendTokensRef]
+  );
 
-  const clearPendingSend = useCallback((sessionKey: string, token?: number) => {
-    if (token !== undefined && pendingSendTokensRef.current.get(sessionKey) !== token) return;
-    if (!pendingSendTokensRef.current.delete(sessionKey)) return;
-    setPendingSendSessionIds((current) => {
-      if (!current.has(sessionKey)) return current;
-      const next = new Set(current);
-      next.delete(sessionKey);
-      return next;
-    });
-  }, []);
+  const clearPendingSend = useCallback(
+    (sessionKey: string, token?: number) => {
+      if (token !== undefined && pendingSendTokensRef.current.get(sessionKey) !== token) return;
+      if (!pendingSendTokensRef.current.delete(sessionKey)) return;
+      setPendingSendSessionIds((current) => {
+        if (!current.has(sessionKey)) return current;
+        const next = new Set(current);
+        next.delete(sessionKey);
+        return next;
+      });
+    },
+    [pendingSendTokensRef]
+  );
 
   const applyRuntimeStatus = useCallback(
     (status: AgentRuntimeStatus, expectedRunStateGeneration?: number) => {
@@ -816,7 +842,7 @@ export function AgentMode({ userId }: { userId: string }) {
       });
       seedActiveThoughtPhases(activeRuns);
     },
-    [seedActiveThoughtPhases]
+    [seedActiveThoughtPhases, thoughtPhaseSeededRunIdsRef]
   );
 
   const recordActiveRun = useCallback((sessionId: string, runId: string) => {
@@ -835,11 +861,14 @@ export function AgentMode({ userId }: { userId: string }) {
     setActiveRunsBySession(next);
   }, []);
 
-  const bumpTimelineRevision = useCallback((sessionId: string): number => {
-    const revision = (timelineRevisionBySessionRef.current.get(sessionId) || 0) + 1;
-    timelineRevisionBySessionRef.current.set(sessionId, revision);
-    return revision;
-  }, []);
+  const bumpTimelineRevision = useCallback(
+    (sessionId: string): number => {
+      const revision = (timelineRevisionBySessionRef.current.get(sessionId) || 0) + 1;
+      timelineRevisionBySessionRef.current.set(sessionId, revision);
+      return revision;
+    },
+    [timelineRevisionBySessionRef]
+  );
 
   const replaceSessionTimeline = useCallback(
     (sessionId: string, items: AgentTimelineItem[], expectedRevision?: number): boolean => {
@@ -855,7 +884,7 @@ export function AgentMode({ userId }: { userId: string }) {
       }
       return true;
     },
-    [bumpTimelineRevision]
+    [bumpTimelineRevision, timelineRevisionBySessionRef]
   );
 
   const mergeSessionTimelineItem = useCallback(
@@ -1048,7 +1077,7 @@ export function AgentMode({ userId }: { userId: string }) {
       setSessions(nextSessions.filter((session) => !deletedSessionIdsRef.current.has(session.id)));
       setIsSessionHistoryReady(true);
     });
-  }, [trackAgentWorkflow, userId]);
+  }, [deletedSessionIdsRef, trackAgentWorkflow, userId]);
 
   const refreshSessions = useCallback(async () => {
     return await trackAgentWorkflow(async () => {
@@ -1514,7 +1543,7 @@ export function AgentMode({ userId }: { userId: string }) {
           }
         });
     },
-    [applyAuthoritativeMode, userId]
+    [applyAuthoritativeMode, permissionModeUpdateRef, userId]
   );
 
   const startRuntime = useCallback(
@@ -1641,6 +1670,7 @@ export function AgentMode({ userId }: { userId: string }) {
       applyAuthoritativeMode,
       agentSessionSelection,
       contextLimitForModel,
+      deletedSessionIdsRef,
       model,
       projectRoot,
       replaceSessionTimeline,
@@ -1712,6 +1742,7 @@ export function AgentMode({ userId }: { userId: string }) {
     agentSessionSelection,
     beginSessionSelection,
     contextLimitForModel,
+    deletedSessionIdsRef,
     finishSessionSelection,
     model,
     projectRoot,
@@ -1815,10 +1846,14 @@ export function AgentMode({ userId }: { userId: string }) {
       agentSessionSelection,
       beginSessionSelection,
       clearCompletedUnreadSession,
+      deletedSessionIdsRef,
       finishSessionSelection,
       observeActiveThoughtPhase,
+      pendingSendTokensRef,
       persistSelectedProjectRoot,
       replaceSessionTimeline,
+      thoughtPhaseTrackerRef,
+      timelineRevisionBySessionRef,
       trackAgentWorkflow,
       userId
     ]
@@ -1952,8 +1987,10 @@ export function AgentMode({ userId }: { userId: string }) {
   }, [
     activeRunsBySession,
     availableModels,
+    cancelledPendingSendTokensRef,
     clearPendingSend,
     contextLimitForModel,
+    deletedSessionIdsRef,
     ensureRuntimeAndSession,
     input,
     isAgentSendLocked,
@@ -1962,8 +1999,12 @@ export function AgentMode({ userId }: { userId: string }) {
     model,
     modelAliases,
     movePendingSend,
+    pendingSendTokensRef,
+    permissionModeUpdateRef,
     recordActiveRun,
     scrollTimelineToBottom,
+    terminalRunIdsRef,
+    thoughtPhaseTrackerRef,
     trackAgentWorkflow,
     userId
   ]);
@@ -1986,7 +2027,7 @@ export function AgentMode({ userId }: { userId: string }) {
         setError(errorMessage(cancelError));
       }
     }
-  }, [activeRunId, userId]);
+  }, [activeRunId, cancelledPendingSendTokensRef, pendingSendTokensRef, userId]);
 
   const respondToPermission = useCallback(
     async (item: AgentTimelineItem, decision: AgentPermissionDecision) => {
@@ -2053,7 +2094,15 @@ export function AgentMode({ userId }: { userId: string }) {
         setInput("");
       }
     },
-    [agentSessionSelection, cancelThoughtLabelDisplays, clearActiveRun, userId]
+    [
+      agentSessionSelection,
+      cancelThoughtLabelDisplays,
+      clearActiveRun,
+      deletedSessionIdsRef,
+      thoughtPhaseTrackerRef,
+      timelineRevisionBySessionRef,
+      userId
+    ]
   );
 
   const deleteSession = useCallback(
@@ -2136,18 +2185,21 @@ export function AgentMode({ userId }: { userId: string }) {
     };
   }, [removeSessionFromState, userId]);
 
-  const upsertSessionSummary = useCallback((summary: AgentSessionSummary) => {
-    if (deletedSessionIdsRef.current.has(summary.id)) return;
-    setSessions((current) => {
-      let replaced = false;
-      const next = current.map((session) => {
-        if (session.id !== summary.id) return session;
-        replaced = true;
-        return summary;
+  const upsertSessionSummary = useCallback(
+    (summary: AgentSessionSummary) => {
+      if (deletedSessionIdsRef.current.has(summary.id)) return;
+      setSessions((current) => {
+        let replaced = false;
+        const next = current.map((session) => {
+          if (session.id !== summary.id) return session;
+          replaced = true;
+          return summary;
+        });
+        return replaced ? next : [summary, ...current];
       });
-      return replaced ? next : [summary, ...current];
-    });
-  }, []);
+    },
+    [deletedSessionIdsRef]
+  );
 
   const observeLiveThoughtItem = useCallback(
     (sessionId: string, item: AgentTimelineItem) => {
@@ -2166,7 +2218,7 @@ export function AgentMode({ userId }: { userId: string }) {
       }
       observeActiveThoughtPhase(sessionId);
     },
-    [completeThoughtPhase, observeActiveThoughtPhase]
+    [completeThoughtPhase, observeActiveThoughtPhase, thoughtPhaseTrackerRef]
   );
 
   const handleAgentEvent = useCallback(
@@ -2314,6 +2366,7 @@ export function AgentMode({ userId }: { userId: string }) {
       clearActiveRun,
       clearCompletedUnreadSession,
       completeThoughtPhase,
+      deletedSessionIdsRef,
       invalidateThoughtLabelsForSession,
       invalidateThoughtLabelsForTurn,
       markCompletedUnreadSession,
@@ -2324,6 +2377,9 @@ export function AgentMode({ userId }: { userId: string }) {
       recordActiveRun,
       refreshSessionMcpServers,
       replaceSessionTimeline,
+      terminalRunIdsRef,
+      thoughtPhaseSeededRunIdsRef,
+      thoughtPhaseTrackerRef,
       upsertSessionSummary,
       userId
     ]
@@ -2355,6 +2411,29 @@ export function AgentMode({ userId }: { userId: string }) {
     };
   }, [handleAgentEvent, userId]);
 
+  const handleCreateSession = useCallback(() => {
+    void createSession();
+  }, [createSession]);
+  const handlePromptProjectRemoval = useCallback((root: RecentProjectRoot) => {
+    setProjectRemovalError(null);
+    setProjectToRemove(root);
+  }, []);
+  const handleSelectSession = useCallback(
+    (sessionId: string) => {
+      void loadSession(sessionId);
+    },
+    [loadSession]
+  );
+  const handleManageMcpServers = useCallback(() => {
+    setIsMcpServersDialogOpen(true);
+  }, []);
+  const handleSendMessage = useCallback(() => {
+    void sendMessage();
+  }, [sendMessage]);
+  const handleToggleAgentFullscreen = useCallback(() => {
+    setIsAgentFullscreen((current) => !current);
+  }, []);
+
   if (!isTauriDesktop()) {
     return (
       <div className="flex h-dvh items-center justify-center bg-background p-6 text-center">
@@ -2378,7 +2457,7 @@ export function AgentMode({ userId }: { userId: string }) {
         isOpen={isSidebarOpen}
         mode="agent"
         navigationContent={
-          <AgentSidebarContent
+          <MemoizedAgentSidebarContent
             activeSessionId={
               pendingSessionSelectionId && pendingSessionSelectionId !== NEW_SESSION_PENDING_KEY
                 ? pendingSessionSelectionId
@@ -2392,18 +2471,15 @@ export function AgentMode({ userId }: { userId: string }) {
             runningSessionIds={runningSessionIds}
             sessions={visibleSessions}
             onChooseProjectRoot={chooseProjectRoot}
-            onCreateSession={() => void createSession()}
+            onCreateSession={handleCreateSession}
             onProjectOrderChange={saveProjectRootOrder}
-            onProjectRemove={(root) => {
-              setProjectRemovalError(null);
-              setProjectToRemove(root);
-            }}
+            onProjectRemove={handlePromptProjectRemoval}
             onProjectRootChange={selectProjectRoot}
             onSessionDelete={setSessionToDelete}
-            onSessionSelect={(sessionId) => void loadSession(sessionId)}
+            onSessionSelect={handleSelectSession}
           />
         }
-        onNewItem={areAgentSettingsLocked || !projectRoot ? undefined : () => void createSession()}
+        onNewItem={areAgentSettingsLocked || !projectRoot ? undefined : handleCreateSession}
         onToggle={toggleSidebar}
       />
 
@@ -2534,7 +2610,7 @@ export function AgentMode({ userId }: { userId: string }) {
           <ChatDesktopConversationHeader
             title={activeSessionTitle}
             isSidebarOpen={isSidebarOpen}
-            onNewChat={() => void createSession()}
+            onNewChat={handleCreateSession}
             newItemLabel="New Task"
           />
         ) : null}
@@ -2583,13 +2659,13 @@ export function AgentMode({ userId }: { userId: string }) {
                   onChooseProjectRoot={chooseProjectRoot}
                   onInputChange={setInput}
                   onKeyDown={handleKeyDown}
-                  onManageMcpServers={() => setIsMcpServersDialogOpen(true)}
+                  onManageMcpServers={handleManageMcpServers}
                   onMcpToggle={toggleMcpServer}
                   onModeChange={selectMode}
                   onModelChange={selectModel}
                   onProjectRootChange={selectProjectRoot}
-                  onSendMessage={() => void sendMessage()}
-                  onToggleExpanded={() => setIsAgentFullscreen((current) => !current)}
+                  onSendMessage={handleSendMessage}
+                  onToggleExpanded={handleToggleAgentFullscreen}
                 />
               ) : (
                 <AgentTimeline
@@ -2607,7 +2683,7 @@ export function AgentMode({ userId }: { userId: string }) {
           {timelineItems.length > 0 ? (
             <div className="shrink-0 bg-background pb-[env(safe-area-inset-bottom)]">
               <div className="mx-auto max-w-4xl px-4 landscape-short:px-3">
-                <AgentComposer
+                <MemoizedAgentComposer
                   activeRootLabel={activeRootLabel}
                   areSettingsDisabled={areAgentSettingsLocked}
                   input={input}
@@ -2626,12 +2702,12 @@ export function AgentMode({ userId }: { userId: string }) {
                   onChooseProjectRoot={chooseProjectRoot}
                   onInputChange={setInput}
                   onKeyDown={handleKeyDown}
-                  onManageMcpServers={() => setIsMcpServersDialogOpen(true)}
+                  onManageMcpServers={handleManageMcpServers}
                   onMcpToggle={toggleMcpServer}
                   onModeChange={selectMode}
                   onModelChange={selectModel}
                   onProjectRootChange={selectProjectRoot}
-                  onSendMessage={() => void sendMessage()}
+                  onSendMessage={handleSendMessage}
                 />
                 <p className="mb-2 mt-1 text-center text-[10px] text-muted-foreground/50 landscape-short:mb-1">
                   AI can make mistakes. Check important info.
@@ -2661,7 +2737,7 @@ function EmptyAgentState(props: AgentComposerProps) {
             Work on anything...
           </h1>
         ) : null}
-        <AgentComposer {...props} />
+        <MemoizedAgentComposer {...props} />
         {!isExpanded ? (
           <p className="flex items-center justify-center gap-1 text-center text-xs text-muted-foreground/60">
             <Lock className="h-3 w-3" />
@@ -2727,11 +2803,11 @@ function AgentSidebarContent({
   onSessionDelete,
   onSessionSelect
 }: AgentSidebarContentProps) {
-  const rowElementsRef = useRef(new Map<string, HTMLElement>());
-  const previousRowTopsRef = useRef(new Map<string, number>());
+  const rowElementsRef = useLazyRef(() => new Map<string, HTMLElement>());
+  const previousRowTopsRef = useLazyRef(() => new Map<string, number>());
   const projectListRef = useRef<HTMLDivElement>(null);
-  const projectGroupElementsRef = useRef(new Map<string, HTMLDivElement>());
-  const projectHeaderElementsRef = useRef(new Map<string, HTMLDivElement>());
+  const projectGroupElementsRef = useLazyRef(() => new Map<string, HTMLDivElement>());
+  const projectHeaderElementsRef = useLazyRef(() => new Map<string, HTMLDivElement>());
   const pendingProjectPointerRef = useRef<PendingProjectPointer | null>(null);
   const projectDragRef = useRef<ProjectDragState | null>(null);
   const autoScrollFrameRef = useRef<number | null>(null);
@@ -2742,13 +2818,16 @@ function AgentSidebarContent({
   const [collapsedProjectRoots, setCollapsedProjectRoots] = useState<Set<string>>(() => new Set());
   const projectRows = recentRoots;
   const sessionsByRoot = useMemo(() => groupAgentSessionsByRoot(sessions), [sessions]);
-  const setAnimatedRowRef = useCallback((key: string, node: HTMLElement | null) => {
-    if (node) {
-      rowElementsRef.current.set(key, node);
-    } else {
-      rowElementsRef.current.delete(key);
-    }
-  }, []);
+  const setAnimatedRowRef = useCallback(
+    (key: string, node: HTMLElement | null) => {
+      if (node) {
+        rowElementsRef.current.set(key, node);
+      } else {
+        rowElementsRef.current.delete(key);
+      }
+    },
+    [rowElementsRef]
+  );
 
   useLayoutEffect(() => {
     const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -2784,7 +2863,7 @@ function AgentSidebarContent({
     }
 
     previousRowTopsRef.current = nextTops;
-  }, [collapsedProjectRoots, projectRows, sessions]);
+  }, [collapsedProjectRoots, previousRowTopsRef, projectRows, rowElementsRef, sessions]);
 
   const setProjectGroupRef = useCallback(
     (path: string, node: HTMLDivElement | null) => {
@@ -2795,16 +2874,19 @@ function AgentSidebarContent({
         projectGroupElementsRef.current.delete(path);
       }
     },
-    [setAnimatedRowRef]
+    [projectGroupElementsRef, setAnimatedRowRef]
   );
 
-  const setProjectHeaderRef = useCallback((path: string, node: HTMLDivElement | null) => {
-    if (node) {
-      projectHeaderElementsRef.current.set(path, node);
-    } else {
-      projectHeaderElementsRef.current.delete(path);
-    }
-  }, []);
+  const setProjectHeaderRef = useCallback(
+    (path: string, node: HTMLDivElement | null) => {
+      if (node) {
+        projectHeaderElementsRef.current.set(path, node);
+      } else {
+        projectHeaderElementsRef.current.delete(path);
+      }
+    },
+    [projectHeaderElementsRef]
+  );
 
   const measureProjectDrop = useCallback(
     (clientX: number, clientY: number, draggedPath: string) => {
@@ -2848,7 +2930,7 @@ function AgentSidebarContent({
         markerTop: Math.max(0, Math.min(listRect.height, markerViewportY - listRect.top))
       };
     },
-    [projectRows]
+    [projectGroupElementsRef, projectHeaderElementsRef, projectRows]
   );
 
   const stopProjectAutoScroll = useCallback(() => {
@@ -3165,7 +3247,7 @@ function AgentSidebarContent({
                 key={root.path}
                 ref={(node) => setProjectGroupRef(root.path, node)}
                 className={cn(
-                  "space-y-2 will-change-transform",
+                  "space-y-2",
                   rootIndex < projectRows.length - 1 && "mb-2",
                   isProjectDragging && "opacity-25"
                 )}
@@ -3282,7 +3364,7 @@ function AgentSidebarContent({
                           <div
                             key={session.id}
                             ref={(node) => setAnimatedRowRef(`session:${session.id}`, node)}
-                            className="group relative isolate flex w-full min-w-0 select-none items-stretch gap-0.5 rounded-2xl will-change-transform"
+                            className="group relative isolate flex w-full min-w-0 select-none items-stretch gap-0.5 rounded-2xl"
                             onContextMenu={(event) => event.preventDefault()}
                           >
                             <button
@@ -3595,6 +3677,9 @@ function AgentComposer({
   );
 }
 
+const MemoizedAgentSidebarContent = memo(AgentSidebarContent);
+const MemoizedAgentComposer = memo(AgentComposer);
+
 function AgentModeSelector({
   disabled,
   mode,
@@ -3648,7 +3733,8 @@ function AgentModelSelector({
   model: string;
   onModelChange: (value: string) => void;
 }) {
-  const { availableModels, modelAliases, billingStatus } = useLocalState();
+  const { availableModels, modelAliases } = useModelState();
+  const { billingStatus } = useBillingState();
   const [upgradeDialogOpen, setUpgradeDialogOpen] = useState(false);
   const [selectedModelName, setSelectedModelName] = useState("");
   const [showAdvanced, setShowAdvanced] = useState(false);

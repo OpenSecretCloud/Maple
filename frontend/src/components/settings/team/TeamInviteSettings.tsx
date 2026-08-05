@@ -21,7 +21,7 @@ import {
   useSettingsNavigationLock,
   useSettingsNavigationLockState
 } from "@/contexts/SettingsNavigationLockContext";
-import { useLocalState } from "@/state/useLocalState";
+import { useBillingState } from "@/state/useLocalState";
 import type { TeamStatus } from "@/types/team";
 import { getTeamSeatMismatch } from "@/utils/teamSeats";
 import { SettingsPage, SettingsSection } from "../SettingsPage";
@@ -51,7 +51,7 @@ function BackToTeamButton() {
 export function TeamInviteSettings() {
   const os = useOpenSecret();
   const queryClient = useQueryClient();
-  const { billingStatus } = useLocalState();
+  const { billingStatus } = useBillingState();
   const [emails, setEmails] = useState("");
   const [isInviting, setIsInviting] = useState(false);
   const [error, setError] = useState<string | null>(null);

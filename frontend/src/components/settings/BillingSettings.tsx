@@ -4,11 +4,11 @@ import { CreditCard, KeyRound, Loader2, Sparkles } from "lucide-react";
 import { openBillingPortal } from "@/billing/billingPortal";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import { useLocalState } from "@/state/useLocalState";
+import { useBillingState } from "@/state/useLocalState";
 import { SettingsPage, SettingsSection } from "./SettingsPage";
 
 export function BillingSettings() {
-  const { billingStatus } = useLocalState();
+  const { billingStatus } = useBillingState();
   const [isPortalLoading, setIsPortalLoading] = useState(false);
   const [portalError, setPortalError] = useState<string | null>(null);
 

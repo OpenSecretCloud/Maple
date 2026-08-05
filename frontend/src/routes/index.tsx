@@ -6,7 +6,7 @@ import { PromoDialog, hasSeenPromo, markPromoAsSeen } from "@/components/PromoDi
 import { useOpenSecret } from "@opensecret/react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { getBillingService } from "@/billing/billingService";
-import { useLocalState } from "@/state/useLocalState";
+import { useBillingState } from "@/state/useLocalState";
 import type { DiscountResponse } from "@/billing/billingApi";
 import { appUrl } from "@/config/domains";
 import { useRouteMeta } from "@/utils/routeMeta";
@@ -43,7 +43,7 @@ function Index() {
   const navigate = useNavigate();
   const os = useOpenSecret();
   const queryClient = useQueryClient();
-  const { setBillingStatus, billingStatus } = useLocalState();
+  const { setBillingStatus, billingStatus } = useBillingState();
 
   useRouteMeta({
     title: os.auth.user ? "Maple Research" : "Maple Research | Private AI Workspace",

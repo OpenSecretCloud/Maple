@@ -1,15 +1,35 @@
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { BillingStatus } from "@/billing/billingApi";
-import { LocalStateContext, OpenSecretModel, OpenSecretModelAlias } from "./LocalStateContextDef";
+import {
+  BillingStateContext,
+  ModelStateContext,
+  OpenSecretModel,
+  OpenSecretModelAlias,
+  SelectedProjectStateContext,
+  SidebarSearchStateContext,
+  type BillingState,
+  type ModelState,
+  type SelectedProjectState,
+  type SidebarSearchState
+} from "./LocalStateContextDef";
 import { aliasModelName, migrateStickyModelName } from "@/utils/utils";
-
-export { LocalStateContext, type LocalState } from "./LocalStateContextDef";
 
 export const QUICK_MODEL_ALIAS = "auto:quick";
 export const POWERFUL_MODEL_ALIAS = "auto:powerful";
 export const DEFAULT_MODEL_ID = QUICK_MODEL_ALIAS;
 export const PAID_DEFAULT_MODEL_ID = POWERFUL_MODEL_ALIAS;
 const SELECTED_MODEL_METADATA_KEY = "selectedModelMetadata";
+type LocalStateStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
+
+function getBrowserStorage(): LocalStateStorage | null {
+  if (typeof window === "undefined") return null;
+
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
+}
 
 const DEFAULT_MODEL_ALIASES: OpenSecretModelAlias[] = [
   {
@@ -39,18 +59,20 @@ function isProMaxOrTeamPlan(planName: string): boolean {
 
 // Check if paid defaults have already been applied for this user.
 // The value is an ISO date string indicating when defaults were last applied.
-function hasPaidDefaultsBeenApplied(): boolean {
-  return localStorage.getItem("paidDefaultsApplied") !== null;
+function hasPaidDefaultsBeenApplied(storage: LocalStateStorage | null): boolean {
+  return storage?.getItem("paidDefaultsApplied") != null;
 }
 
 // One-time migration: clear stale webSearchEnabled values that were auto-persisted
 // by the old useEffect (not explicit user choices). After this migration, only values
 // written by explicit user toggle clicks are trusted.
-function migrateWebSearchDefault(): void {
+function migrateWebSearchDefault(storage: LocalStateStorage | null): void {
+  if (!storage) return;
+
   try {
-    if (localStorage.getItem("webSearchDefaultMigrated") === null) {
-      localStorage.removeItem("webSearchEnabled");
-      localStorage.setItem("webSearchDefaultMigrated", "true");
+    if (storage.getItem("webSearchDefaultMigrated") === null) {
+      storage.removeItem("webSearchEnabled");
+      storage.setItem("webSearchDefaultMigrated", "true");
     }
   } catch {
     // Ignore storage errors
@@ -59,12 +81,14 @@ function migrateWebSearchDefault(): void {
 
 // Helper to get the initial web search state from localStorage.
 // Web search is on by default for all users, but respects the user's explicit preference.
-export function getInitialWebSearchEnabled(): boolean {
-  migrateWebSearchDefault();
+export function getInitialWebSearchEnabled(
+  storage: LocalStateStorage | null = getBrowserStorage()
+): boolean {
+  migrateWebSearchDefault(storage);
   try {
     // If user has explicitly toggled web search before, respect that
-    const webSearchSetting = localStorage.getItem("webSearchEnabled");
-    if (webSearchSetting !== null) {
+    const webSearchSetting = storage?.getItem("webSearchEnabled");
+    if (webSearchSetting != null) {
       return webSearchSetting === "true";
     }
   } catch (error) {
@@ -75,7 +99,7 @@ export function getInitialWebSearchEnabled(): boolean {
 }
 
 // Helper to get default model based on cached billing status
-function getInitialModel(): string {
+function getInitialModel(storage: LocalStateStorage | null): string {
   // Check for dev override first
   if (import.meta.env.VITE_DEV_MODEL_OVERRIDE) {
     return aliasModelName(import.meta.env.VITE_DEV_MODEL_OVERRIDE);
@@ -83,9 +107,9 @@ function getInitialModel(): string {
 
   try {
     // Priority 1: Check local storage for user's explicit model choice
-    const selectedModel = localStorage.getItem("selectedModel");
+    const selectedModel = storage?.getItem("selectedModel");
     if (selectedModel) {
-      if (getCachedSelectedModelMetadata(selectedModel)) {
+      if (getCachedSelectedModelMetadata(selectedModel, storage)) {
         return selectedModel;
       }
 
@@ -95,12 +119,12 @@ function getInitialModel(): string {
     // Priority 2: Check if paid defaults were already applied
     // (user is returning paid user who got the one-time flip but then
     // cleared selectedModel somehow — unlikely but safe fallback)
-    if (hasPaidDefaultsBeenApplied()) {
+    if (hasPaidDefaultsBeenApplied(storage)) {
       return PAID_DEFAULT_MODEL_ID;
     }
 
     // Priority 3: Check cached billing status for pro/max/team users
-    const cachedBillingStr = localStorage.getItem("cachedBillingStatus");
+    const cachedBillingStr = storage?.getItem("cachedBillingStatus");
     if (cachedBillingStr) {
       const cachedBilling = JSON.parse(cachedBillingStr) as BillingStatus;
       const planName = cachedBilling.product_name?.toLowerCase() || "";
@@ -134,11 +158,14 @@ function isAutoModelAlias(modelId: string): boolean {
   return modelId === QUICK_MODEL_ALIAS || modelId === POWERFUL_MODEL_ALIAS;
 }
 
-function getCachedSelectedModelMetadata(modelId: string): OpenSecretModel | null {
+function getCachedSelectedModelMetadata(
+  modelId: string,
+  storage: LocalStateStorage | null
+): OpenSecretModel | null {
   if (!modelId || isAutoModelAlias(modelId)) return null;
 
   try {
-    const cachedMetadata = localStorage.getItem(SELECTED_MODEL_METADATA_KEY);
+    const cachedMetadata = storage?.getItem(SELECTED_MODEL_METADATA_KEY);
     if (!cachedMetadata) return null;
 
     const parsedMetadata = JSON.parse(cachedMetadata) as OpenSecretModel;
@@ -156,10 +183,16 @@ function getCachedSelectedModelMetadata(modelId: string): OpenSecretModel | null
   }
 }
 
-function cacheSelectedModelMetadata(modelId: string, modelMetadata?: OpenSecretModel | null) {
+function cacheSelectedModelMetadata(
+  modelId: string,
+  storage: LocalStateStorage | null,
+  modelMetadata?: OpenSecretModel | null
+) {
+  if (!storage) return;
+
   try {
     if (!modelMetadata || isAutoModelAlias(modelId)) {
-      localStorage.removeItem(SELECTED_MODEL_METADATA_KEY);
+      storage.removeItem(SELECTED_MODEL_METADATA_KEY);
       return;
     }
 
@@ -171,196 +204,229 @@ function cacheSelectedModelMetadata(modelId: string, modelMetadata?: OpenSecretM
       owned_by: modelMetadata.owned_by || "opensecret"
     };
 
-    localStorage.setItem(SELECTED_MODEL_METADATA_KEY, JSON.stringify(cacheableMetadata));
+    storage.setItem(SELECTED_MODEL_METADATA_KEY, JSON.stringify(cacheableMetadata));
   } catch (error) {
     console.error("Failed to cache selected model metadata:", error);
   }
 }
 
-export const LocalStateProvider = ({ children }: { children: React.ReactNode }) => {
-  const initialModel = getInitialModel();
-  const cachedSelectedModel = getCachedSelectedModelMetadata(initialModel);
+export const LocalStateProvider = ({
+  children,
+  storage = getBrowserStorage()
+}: {
+  children: React.ReactNode;
+  storage?: LocalStateStorage | null;
+}) => {
+  const [modelState, setModelState] = useState(() => {
+    const model = getInitialModel(storage);
+    const cachedSelectedModel = getCachedSelectedModelMetadata(model, storage);
 
-  const [localState, setLocalState] = useState({
-    model: initialModel,
-    availableModels: cachedSelectedModel ? [cachedSelectedModel] : ([] as OpenSecretModel[]),
-    modelAliases: DEFAULT_MODEL_ALIASES,
-    hasWhisperModel: true, // Default to true to avoid hiding button during loading
-    billingStatus: null as BillingStatus | null,
-    searchQuery: "",
-    isSearchVisible: false,
-    selectedProjectId: null as string | null
+    return {
+      model,
+      availableModels: cachedSelectedModel ? [cachedSelectedModel] : ([] as OpenSecretModel[]),
+      modelAliases: DEFAULT_MODEL_ALIASES,
+      hasWhisperModel: true // Default to true to avoid hiding button during loading
+    };
   });
-
-  function setBillingStatus(status: BillingStatus) {
-    setLocalState((prev) => ({ ...prev, billingStatus: status }));
-
-    const planName = status.product_name?.toLowerCase() || "";
-    const isPaidPlan =
-      planName.includes("pro") || planName.includes("max") || planName.includes("team");
-
-    const isProMaxOrTeam = isProMaxOrTeamPlan(planName);
-
-    // Check if billing plan changed from cached version
-    let billingChanged = false;
-    try {
-      const cachedBillingStr = localStorage.getItem("cachedBillingStatus");
-      if (cachedBillingStr) {
-        const cachedBilling = JSON.parse(cachedBillingStr) as BillingStatus;
-        const cachedPlan = cachedBilling.product_name?.toLowerCase() || "";
-        billingChanged = cachedPlan !== planName;
-      }
-    } catch (error) {
-      console.error("Failed to check cached billing:", error);
-    }
-
-    // Cache billing status to localStorage only for paid users
-    try {
-      if (isPaidPlan) {
-        localStorage.setItem("cachedBillingStatus", JSON.stringify(status));
-      } else {
-        // Clear cache for free users
-        localStorage.removeItem("cachedBillingStatus");
-      }
-    } catch (error) {
-      console.error("Failed to cache billing status:", error);
-    }
-
-    // One-time paid defaults: when a user is on pro/max/team and we haven't
-    // applied paid defaults yet, flip model to "Powerful" and web search ON.
-    // This handles both new signups and free-to-paid upgrades.
-    try {
-      if (isProMaxOrTeam && !hasPaidDefaultsBeenApplied()) {
-        // Apply paid defaults — set model to Powerful reasoning model
-        setModelInternal(PAID_DEFAULT_MODEL_ID, true);
-
-        // Mark when we applied paid defaults (ISO date) so we never override again.
-        // Future defaults can check this date to decide whether to re-apply newer defaults.
-        localStorage.setItem("paidDefaultsApplied", new Date().toISOString());
-
-        return;
-      }
-    } catch (error) {
-      console.error("Failed to apply paid defaults:", error);
-    }
-
-    // For users who already had defaults applied: handle plan changes
-    try {
-      if (billingChanged) {
-        if (isProMaxOrTeam) {
-          // Plan changed but still pro-tier — only update model if user
-          // hasn't manually chosen one (selectedModel not in localStorage)
-          const selectedModel = localStorage.getItem("selectedModel");
-          if (!selectedModel) {
-            setModelInternal(PAID_DEFAULT_MODEL_ID, true);
-          }
-        } else {
-          // User downgraded to free — switch back to free model
-          // and clear paid defaults so they get re-applied if they upgrade again
-          setModelInternal(DEFAULT_MODEL_ID);
-          localStorage.removeItem("paidDefaultsApplied");
-          localStorage.removeItem("selectedModel");
-        }
-      }
-    } catch (error) {
-      console.error("Failed to update model based on billing status:", error);
-    }
-  }
-
-  function setSearchQuery(query: string) {
-    setLocalState((prev) => ({ ...prev, searchQuery: query }));
-  }
-
-  function setIsSearchVisible(visible: boolean) {
-    setLocalState((prev) => ({ ...prev, isSearchVisible: visible }));
-  }
-
-  const setSelectedProjectId = useCallback((projectId: string | null) => {
-    setLocalState((prev) => ({ ...prev, selectedProjectId: projectId }));
-  }, []);
+  const [billingStatus, setBillingStatusState] = useState<BillingStatus | null>(null);
+  const [searchQuery, setSearchQueryState] = useState("");
+  const [isSearchVisible, setIsSearchVisibleState] = useState(false);
+  const [selectedProjectId, setSelectedProjectIdState] = useState<string | null>(null);
+  const currentModelRef = useRef(modelState.model);
 
   // Internal model setter — updates state and localStorage but does NOT mark as
   // a user's explicit choice. Used by billing/system logic.
-  function setModelInternal(modelId: string, persist = false) {
-    const aliasedModel = aliasModelName(modelId);
-    setLocalState((prev) => {
-      if (prev.model === aliasedModel) return prev;
-      return { ...prev, model: aliasedModel };
-    });
-    if (persist) {
-      try {
-        localStorage.setItem("selectedModel", aliasedModel);
-        cacheSelectedModelMetadata(aliasedModel);
-      } catch (error) {
-        console.error("Failed to save model to localStorage:", error);
+  const setModelInternal = useCallback(
+    (modelId: string, persist = false) => {
+      const aliasedModel = aliasModelName(modelId);
+      currentModelRef.current = aliasedModel;
+      setModelState((prev) => {
+        if (prev.model === aliasedModel) return prev;
+        return { ...prev, model: aliasedModel };
+      });
+      if (persist) {
+        try {
+          storage?.setItem("selectedModel", aliasedModel);
+          cacheSelectedModelMetadata(aliasedModel, storage);
+        } catch (error) {
+          console.error("Failed to save model to localStorage:", error);
+        }
       }
-    }
-  }
+    },
+    [storage]
+  );
+
+  const setBillingStatus = useCallback(
+    (status: BillingStatus) => {
+      setBillingStatusState(status);
+
+      const planName = status.product_name?.toLowerCase() || "";
+      const isPaidPlan =
+        planName.includes("pro") || planName.includes("max") || planName.includes("team");
+
+      const isProMaxOrTeam = isProMaxOrTeamPlan(planName);
+
+      // Check if billing plan changed from cached version
+      let billingChanged = false;
+      try {
+        const cachedBillingStr = storage?.getItem("cachedBillingStatus");
+        if (cachedBillingStr) {
+          const cachedBilling = JSON.parse(cachedBillingStr) as BillingStatus;
+          const cachedPlan = cachedBilling.product_name?.toLowerCase() || "";
+          billingChanged = cachedPlan !== planName;
+        }
+      } catch (error) {
+        console.error("Failed to check cached billing:", error);
+      }
+
+      // Cache billing status to localStorage only for paid users
+      try {
+        if (isPaidPlan) {
+          storage?.setItem("cachedBillingStatus", JSON.stringify(status));
+        } else {
+          // Clear cache for free users
+          storage?.removeItem("cachedBillingStatus");
+        }
+      } catch (error) {
+        console.error("Failed to cache billing status:", error);
+      }
+
+      // One-time paid defaults: when a user is on pro/max/team and we haven't
+      // applied paid defaults yet, flip model to "Powerful" and web search ON.
+      // This handles both new signups and free-to-paid upgrades.
+      try {
+        if (storage && isProMaxOrTeam && !hasPaidDefaultsBeenApplied(storage)) {
+          // Apply paid defaults — set model to Powerful reasoning model
+          setModelInternal(PAID_DEFAULT_MODEL_ID, true);
+
+          // Mark when we applied paid defaults (ISO date) so we never override again.
+          // Future defaults can check this date to decide whether to re-apply newer defaults.
+          storage?.setItem("paidDefaultsApplied", new Date().toISOString());
+
+          return;
+        }
+      } catch (error) {
+        console.error("Failed to apply paid defaults:", error);
+      }
+
+      // For users who already had defaults applied: handle plan changes
+      try {
+        if (billingChanged) {
+          if (isProMaxOrTeam) {
+            // Plan changed but still pro-tier — only update model if user
+            // hasn't manually chosen one (selectedModel not in localStorage)
+            const selectedModel = storage?.getItem("selectedModel");
+            if (!selectedModel) {
+              setModelInternal(PAID_DEFAULT_MODEL_ID, true);
+            }
+          } else {
+            // User downgraded to free — switch back to free model
+            // and clear paid defaults so they get re-applied if they upgrade again
+            setModelInternal(DEFAULT_MODEL_ID);
+            storage?.removeItem("paidDefaultsApplied");
+            storage?.removeItem("selectedModel");
+          }
+        }
+      } catch (error) {
+        console.error("Failed to update model based on billing status:", error);
+      }
+    },
+    [setModelInternal, storage]
+  );
+
+  const setSearchQuery = useCallback((query: string) => setSearchQueryState(query), []);
+
+  const setIsSearchVisible = useCallback(
+    (visible: boolean) => setIsSearchVisibleState(visible),
+    []
+  );
+
+  const setSelectedProjectId = useCallback((projectId: string | null) => {
+    setSelectedProjectIdState(projectId);
+  }, []);
 
   // Public model setter — records the choice as a user-initiated selection.
   // After this, we won't auto-override their model choice.
-  function setModel(model: string, modelMetadata?: OpenSecretModel | null) {
-    const nextModel = modelMetadata ? model : aliasModelName(model);
-    setLocalState((prev) => {
-      if (prev.model === nextModel && !modelMetadata) return prev;
+  const setModel = useCallback(
+    (model: string, modelMetadata?: OpenSecretModel | null) => {
+      const nextModel = modelMetadata ? model : aliasModelName(model);
+      if (currentModelRef.current === nextModel && !modelMetadata) return;
+      currentModelRef.current = nextModel;
 
-      // Save to localStorage as user's explicit choice
+      // Save to localStorage as user's explicit choice. Keep this outside the
+      // state updater because React may replay updater functions.
       try {
-        localStorage.setItem("selectedModel", nextModel);
-        cacheSelectedModelMetadata(nextModel, modelMetadata);
+        storage?.setItem("selectedModel", nextModel);
+        cacheSelectedModelMetadata(nextModel, storage, modelMetadata);
       } catch (error) {
         console.error("Failed to save model to localStorage:", error);
       }
 
-      const availableModels =
-        modelMetadata && !isAutoModelAlias(nextModel)
-          ? normalizeAvailableModels([modelMetadata, ...prev.availableModels])
-          : prev.availableModels;
+      setModelState((prev) => {
+        const availableModels =
+          modelMetadata && !isAutoModelAlias(nextModel)
+            ? normalizeAvailableModels([modelMetadata, ...prev.availableModels])
+            : prev.availableModels;
 
-      return { ...prev, model: nextModel, availableModels };
-    });
-  }
+        return { ...prev, model: nextModel, availableModels };
+      });
+    },
+    [storage]
+  );
 
-  function setAvailableModels(models: OpenSecretModel[]) {
-    setLocalState((prev) => ({
+  const setAvailableModels = useCallback((models: OpenSecretModel[]) => {
+    setModelState((prev) => ({
       ...prev,
       availableModels: normalizeAvailableModels(models)
     }));
-  }
+  }, []);
 
-  function setModelAliases(aliases: OpenSecretModelAlias[]) {
-    setLocalState((prev) => ({
+  const setModelAliases = useCallback((aliases: OpenSecretModelAlias[]) => {
+    setModelState((prev) => ({
       ...prev,
       modelAliases: aliases.length > 0 ? aliases : DEFAULT_MODEL_ALIASES
     }));
-  }
+  }, []);
 
-  function setHasWhisperModel(hasWhisper: boolean) {
-    setLocalState((prev) => ({ ...prev, hasWhisperModel: hasWhisper }));
-  }
+  const setHasWhisperModel = useCallback((hasWhisper: boolean) => {
+    setModelState((prev) => ({ ...prev, hasWhisperModel: hasWhisper }));
+  }, []);
+
+  const modelValue = useMemo<ModelState>(
+    () => ({
+      model: modelState.model,
+      availableModels: modelState.availableModels,
+      modelAliases: modelState.modelAliases,
+      setModel,
+      setAvailableModels,
+      setModelAliases,
+      hasWhisperModel: modelState.hasWhisperModel,
+      setHasWhisperModel
+    }),
+    [modelState, setAvailableModels, setHasWhisperModel, setModel, setModelAliases]
+  );
+  const billingValue = useMemo<BillingState>(
+    () => ({ billingStatus, setBillingStatus }),
+    [billingStatus, setBillingStatus]
+  );
+  const sidebarSearchValue = useMemo<SidebarSearchState>(
+    () => ({ searchQuery, setSearchQuery, isSearchVisible, setIsSearchVisible }),
+    [isSearchVisible, searchQuery, setIsSearchVisible, setSearchQuery]
+  );
+  const selectedProjectValue = useMemo<SelectedProjectState>(
+    () => ({ selectedProjectId, setSelectedProjectId }),
+    [selectedProjectId, setSelectedProjectId]
+  );
 
   return (
-    <LocalStateContext.Provider
-      value={{
-        model: localState.model,
-        availableModels: localState.availableModels,
-        modelAliases: localState.modelAliases,
-        setModel,
-        setAvailableModels,
-        setModelAliases,
-        hasWhisperModel: localState.hasWhisperModel,
-        setHasWhisperModel,
-        billingStatus: localState.billingStatus,
-        searchQuery: localState.searchQuery,
-        setSearchQuery,
-        isSearchVisible: localState.isSearchVisible,
-        setIsSearchVisible,
-        selectedProjectId: localState.selectedProjectId,
-        setSelectedProjectId,
-        setBillingStatus
-      }}
-    >
-      {children}
-    </LocalStateContext.Provider>
+    <ModelStateContext.Provider value={modelValue}>
+      <BillingStateContext.Provider value={billingValue}>
+        <SidebarSearchStateContext.Provider value={sidebarSearchValue}>
+          <SelectedProjectStateContext.Provider value={selectedProjectValue}>
+            {children}
+          </SelectedProjectStateContext.Provider>
+        </SidebarSearchStateContext.Provider>
+      </BillingStateContext.Provider>
+    </ModelStateContext.Provider>
   );
 };

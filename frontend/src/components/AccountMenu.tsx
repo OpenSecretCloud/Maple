@@ -5,13 +5,13 @@ import { AlertCircle, Settings } from "lucide-react";
 import { getBillingService } from "@/billing/billingService";
 import { CreditUsage } from "@/components/CreditUsage";
 import { useCompactSettingsLayout } from "@/components/settings/useCompactSettingsLayout";
-import { useLocalState } from "@/state/useLocalState";
+import { useBillingState } from "@/state/useLocalState";
 import type { TeamStatus } from "@/types/team";
 import { getTeamSeatMismatch } from "@/utils/teamSeats";
 
 export function AccountMenu() {
   const os = useOpenSecret();
-  const { billingStatus, setBillingStatus } = useLocalState();
+  const { billingStatus, setBillingStatus } = useBillingState();
   const isCompactSettingsLayout = useCompactSettingsLayout();
   const isTeamPlan = billingStatus?.product_name?.toLowerCase().includes("team") ?? false;
 

@@ -17,7 +17,7 @@ import {
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import type { DiscountResponse } from "@/billing/billingApi";
 import { Badge } from "@/components/ui/badge";
-import { useLocalState } from "@/state/useLocalState";
+import { useBillingState } from "@/state/useLocalState";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { PRICING_PLANS } from "@/config/pricingConfig";
@@ -245,7 +245,7 @@ function PricingPage() {
   const [pendingTeamProductId, setPendingTeamProductId] = useState<string | null>(null);
   const navigate = useNavigate();
   const os = useOpenSecret();
-  const { setBillingStatus } = useLocalState();
+  const { setBillingStatus } = useBillingState();
   const isLoggedIn = !!os.auth.user;
   const isGuestUser = os.auth.user?.user.login_method?.toLowerCase() === "guest";
   const { selected_plan } = Route.useSearch();

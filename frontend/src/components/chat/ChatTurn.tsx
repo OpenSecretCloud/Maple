@@ -40,7 +40,7 @@ export function ChatUserTurn({
         className
       )}
     >
-      <div className="max-w-[min(100%,42rem)] rounded-2xl border border-border bg-muted px-4 py-3 backdrop-blur-lg dark:bg-card landscape-short:px-3 landscape-short:py-2">
+      <div className="max-w-[min(100%,42rem)] rounded-2xl border border-border bg-muted px-4 py-3 dark:bg-card landscape-short:px-3 landscape-short:py-2">
         <div className="prose prose-sm max-w-none text-left dark:prose-invert">
           <div className="space-y-3">{children}</div>
         </div>

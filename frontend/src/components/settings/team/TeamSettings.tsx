@@ -25,7 +25,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useSettingsNavigationLock } from "@/contexts/SettingsNavigationLockContext";
-import { useLocalState } from "@/state/useLocalState";
+import { useBillingState } from "@/state/useLocalState";
 import type { TeamStatus } from "@/types/team";
 import {
   formatTeamSeatMismatchMessage,
@@ -250,7 +250,7 @@ function TeamMemberDashboard({ teamStatus }: { teamStatus: TeamStatus }) {
 
 function TeamAdminDashboard({ teamStatus }: { teamStatus: TeamStatus }) {
   const queryClient = useQueryClient();
-  const { billingStatus } = useLocalState();
+  const { billingStatus } = useBillingState();
   const membersSectionRef = useRef<HTMLDivElement>(null);
   const [isEditingName, setIsEditingName] = useState(false);
   const [editedName, setEditedName] = useState("");

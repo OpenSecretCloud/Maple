@@ -9,7 +9,7 @@ const ignoreEnvFiles = process.env.MAPLE_IGNORE_VITE_ENV_FILES === "1";
 // https://vitejs.dev/config/
 export default defineConfig({
   envDir: ignoreEnvFiles ? path.resolve(__dirname, "src-tauri") : undefined,
-  plugins: [TanStackRouterVite(), react(), derPlugin()],
+  plugins: [TanStackRouterVite({ autoCodeSplitting: true }), react(), derPlugin()],
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src")

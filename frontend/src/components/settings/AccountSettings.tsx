@@ -16,7 +16,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useTheme } from "@/contexts/ThemeContext";
-import { useLocalState } from "@/state/useLocalState";
+import { useBillingState } from "@/state/useLocalState";
 import { SettingsPage, SettingsSection } from "./SettingsPage";
 
 type SettingsLinkRowProps = {
@@ -54,7 +54,7 @@ function SettingsLinkRow({ to, title, description, icon: Icon, danger }: Setting
 
 export function AccountSettings() {
   const os = useOpenSecret();
-  const { billingStatus } = useLocalState();
+  const { billingStatus } = useBillingState();
   const { theme, setTheme } = useTheme();
   const [verificationStatus, setVerificationStatus] = useState<"unverified" | "pending">(
     "unverified"

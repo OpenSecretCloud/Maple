@@ -1,4 +1,5 @@
-import { createContext, useContext, useLayoutEffect, useRef } from "react";
+import { createContext, useContext, useLayoutEffect } from "react";
+import { useLazyRef } from "@/utils/useLazyRef";
 
 export type SettingsNavigationLockContextValue = {
   isNavigationLocked: boolean;
@@ -10,7 +11,7 @@ export const SettingsNavigationLockContext =
 
 export function useSettingsNavigationLock(locked: boolean) {
   const context = useContext(SettingsNavigationLockContext);
-  const lockId = useRef(Symbol("settings-navigation-lock"));
+  const lockId = useLazyRef(() => Symbol("settings-navigation-lock"));
   const setLock = context?.setLock;
 
   useLayoutEffect(() => {
@@ -18,7 +19,7 @@ export function useSettingsNavigationLock(locked: boolean) {
     const id = lockId.current;
     setLock(id, locked);
     return () => setLock(id, false);
-  }, [locked, setLock]);
+  }, [lockId, locked, setLock]);
 
   if (!context) {
     throw new Error("useSettingsNavigationLock must be used within settings");

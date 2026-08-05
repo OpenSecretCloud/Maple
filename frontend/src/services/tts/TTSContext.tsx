@@ -11,7 +11,8 @@ import {
   type ReactNode
 } from "react";
 import { isIOS } from "@/utils/platform";
-import { useLocalState } from "@/state/useLocalState";
+import { useLazyRef } from "@/utils/useLazyRef";
+import { useBillingState } from "@/state/useLocalState";
 import { isKnownFreePlan } from "@/billing/billingAccess";
 import {
   INITIAL_TTS_PLAYBACK_STATE,
@@ -93,7 +94,7 @@ function errorMessage(error: unknown, fallback: string): string {
 
 export function TTSProvider({ children }: { children: ReactNode }) {
   const { aiCustomFetch, apiUrl } = useOpenSecret();
-  const { billingStatus } = useLocalState();
+  const { billingStatus } = useBillingState();
   const shouldShowTTSUpgrade = isKnownFreePlan(billingStatus);
 
   const [{ isPreparing, isPlaying, currentPlayingId }, dispatchPlayback] = useReducer(
@@ -109,7 +110,7 @@ export function TTSProvider({ children }: { children: ReactNode }) {
   const playbackRequestIdRef = useRef(0);
   const abortControllerRef = useRef<AbortController | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
-  const scheduledSourceNodesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
+  const scheduledSourceNodesRef = useLazyRef(() => new Set<AudioBufferSourceNode>());
   const audioSessionPrevTypeRef = useRef<string | null>(null);
   const mediaSessionPrevStateRef = useRef<{
     metadata: MediaMetadata | null;
@@ -166,7 +167,7 @@ export function TTSProvider({ children }: { children: ReactNode }) {
     }
 
     restorePlatformAudioSession();
-  }, [restorePlatformAudioSession]);
+  }, [restorePlatformAudioSession, scheduledSourceNodesRef]);
 
   const stop = useCallback(() => {
     cleanupPlaybackResources();
@@ -429,6 +430,7 @@ export function TTSProvider({ children }: { children: ReactNode }) {
       apiUrl,
       cleanupPlaybackResources,
       playbackSpeed,
+      scheduledSourceNodesRef,
       shouldShowTTSUpgrade,
       stop,
       voice
@@ -452,7 +454,7 @@ export function TTSProvider({ children }: { children: ReactNode }) {
       cleanupPlaybackResources();
       scheduledSources.clear();
     };
-  }, [cleanupPlaybackResources]);
+  }, [cleanupPlaybackResources, scheduledSourceNodesRef]);
 
   const contextValue = useMemo<TTSContextValue>(
     () => ({
