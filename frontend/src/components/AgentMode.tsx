@@ -3594,6 +3594,7 @@ function AgentComposer({
         className={cn(
           CHAT_COMPOSER_TEXTAREA_CLASS,
           onToggleExpanded && "pr-8",
+          onToggleExpanded && !isExpanded && "landscape-short:min-h-[52px]",
           isExpanded &&
             "min-h-0 max-h-none flex-1 overflow-y-auto landscape-short:min-h-0 landscape-short:max-h-none"
         )}
