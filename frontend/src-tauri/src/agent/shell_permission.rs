@@ -9,7 +9,7 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 const READ_ONLY_MODE: &str = "smart_approve";
-const CLASSIFIER_MODEL: &str = "gemma4-31b";
+const CLASSIFIER_MODEL: &str = "llama3-3-70b";
 const CLASSIFIER_TEMPERATURE: f32 = 0.0;
 const CLASSIFIER_MAX_TOKENS: i32 = 256;
 const CLASSIFIER_TOOL_NAME: &str = "maple__classify_shell_permission";
@@ -217,7 +217,7 @@ impl ShellPermissionClassifier {
                 provider.get_name(),
                 CLASSIFIER_MODEL,
                 None,
-                Some(thinking_disabled_request_params()),
+                None,
                 None,
             ) {
                 Ok(model_config) => model_config,
@@ -228,8 +228,8 @@ impl ShellPermissionClassifier {
             };
         // The classifier is intentionally isolated from session-level reasoning
         // and request settings. In particular, Goose may otherwise inherit a
-        // global thinking effort after applying the explicit request params.
-        model_config.request_params = Some(thinking_disabled_request_params());
+        // global thinking effort while materializing this isolated request.
+        model_config.request_params = None;
         model_config.reasoning = Some(false);
         let model_config = model_config
             .with_temperature(Some(CLASSIFIER_TEMPERATURE))
@@ -531,29 +531,19 @@ mod tests {
     }
 
     #[test]
-    fn classifier_uses_gemma_with_thinking_disabled() {
-        assert_eq!(CLASSIFIER_MODEL, "gemma4-31b");
-
-        let params = thinking_disabled_request_params();
-        assert_eq!(
-            params.get("include_reasoning"),
-            Some(&serde_json::json!(false))
-        );
-        assert_eq!(
-            params.get("chat_template_kwargs"),
-            Some(&serde_json::json!({ "enable_thinking": false }))
-        );
+    fn classifier_uses_llama_without_gemma_thinking_controls() {
+        assert_eq!(CLASSIFIER_MODEL, "llama3-3-70b");
 
         let mut model_config =
             goose::model_config::model_config_from_user_config_with_session_settings(
                 "openai",
                 CLASSIFIER_MODEL,
                 None,
-                Some(params),
+                None,
                 None,
             )
             .unwrap();
-        model_config.request_params = Some(thinking_disabled_request_params());
+        model_config.request_params = None;
         model_config.reasoning = Some(false);
         let model_config = model_config
             .with_temperature(Some(CLASSIFIER_TEMPERATURE))
@@ -562,20 +552,11 @@ mod tests {
         assert_eq!(model_config.temperature, Some(CLASSIFIER_TEMPERATURE));
         assert_eq!(model_config.max_tokens, Some(CLASSIFIER_MAX_TOKENS));
         assert_eq!(model_config.reasoning, Some(false));
-        let request_params = model_config.request_params.unwrap();
-        assert_eq!(
-            request_params.get("include_reasoning"),
-            Some(&serde_json::json!(false))
-        );
-        assert_eq!(
-            request_params.get("chat_template_kwargs"),
-            Some(&serde_json::json!({ "enable_thinking": false }))
-        );
-        assert!(!request_params.contains_key("thinking_effort"));
+        assert!(model_config.request_params.is_none());
     }
 
     #[tokio::test]
-    async fn goose_serializes_classifier_model_and_thinking_controls() {
+    async fn goose_serializes_classifier_model_without_gemma_thinking_controls() {
         let captured = Arc::new(StdMutex::new(None));
         let handler_capture = Arc::clone(&captured);
         let app = axum::Router::new().route(
@@ -614,11 +595,11 @@ mod tests {
                 provider.get_name(),
                 CLASSIFIER_MODEL,
                 None,
-                Some(thinking_disabled_request_params()),
+                None,
                 None,
             )
             .unwrap();
-        model_config.request_params = Some(thinking_disabled_request_params());
+        model_config.request_params = None;
         model_config.reasoning = Some(false);
         let model_config = model_config
             .with_temperature(Some(CLASSIFIER_TEMPERATURE))
@@ -641,8 +622,8 @@ mod tests {
         assert_eq!(payload["max_tokens"], CLASSIFIER_MAX_TOKENS);
         assert_eq!(payload["stream"], true);
         assert_eq!(payload["stream_options"]["include_usage"], true);
-        assert_eq!(payload["include_reasoning"], false);
-        assert_eq!(payload["chat_template_kwargs"]["enable_thinking"], false);
+        assert!(payload.get("include_reasoning").is_none());
+        assert!(payload.get("chat_template_kwargs").is_none());
         assert_eq!(
             payload["tools"][0]["function"]["name"],
             CLASSIFIER_TOOL_NAME

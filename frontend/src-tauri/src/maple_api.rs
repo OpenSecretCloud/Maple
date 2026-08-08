@@ -1099,7 +1099,7 @@ mod tests {
         let request = tokio::spawn(async move {
             provider
                 .complete(
-                    &ModelConfig::new("gemma4-31b"),
+                    &ModelConfig::new("llama3-3-70b"),
                     "classify web permission",
                     &[Message::user().with_text("untrusted classifier input")],
                     &[],

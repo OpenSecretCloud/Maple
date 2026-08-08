@@ -927,7 +927,7 @@ describe("AgentThoughtLabelProvisionalScheduler", () => {
 describe("requestAgentThoughtLabel", () => {
   const source = { userRequest: "Fix login", reasoningText: "Inspect auth." };
 
-  test("uses the installed OpenAI client and disables Gemma reasoning", async () => {
+  test("uses Llama 3.3 without Gemma-specific reasoning controls", async () => {
     let requestedUrl = "";
     let requestedBody: Record<string, unknown> | undefined;
     const controller = new AbortController();
@@ -942,7 +942,7 @@ describe("requestAgentThoughtLabel", () => {
             id: "chatcmpl-test",
             object: "chat.completion",
             created: 0,
-            model: "gemma4-31b",
+            model: "llama3-3-70b",
             choices: [
               {
                 index: 0,
@@ -964,13 +964,13 @@ describe("requestAgentThoughtLabel", () => {
 
     expect(requestedUrl).toBe("https://maple.test/v1/chat/completions");
     expect(requestedBody).toMatchObject({
-      model: "gemma4-31b",
+      model: "llama3-3-70b",
       temperature: 0,
       max_tokens: 64,
-      include_reasoning: false,
-      chat_template_kwargs: { enable_thinking: false },
       stream: false
     });
+    expect(requestedBody).not.toHaveProperty("include_reasoning");
+    expect(requestedBody).not.toHaveProperty("chat_template_kwargs");
     expect(requestedBody).not.toHaveProperty("conversation");
   });
 
