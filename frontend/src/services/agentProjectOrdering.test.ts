@@ -152,9 +152,9 @@ describe("groupAgentSessionsByRoot", () => {
 describe("project drag helpers", () => {
   const roots = [root("/a"), root("/b"), root("/c")];
 
-  test("uses a six pixel movement threshold", () => {
-    expect(hasExceededProjectDragThreshold(0, 0, 3, 4)).toBe(false);
-    expect(hasExceededProjectDragThreshold(0, 0, 6, 0)).toBe(true);
+  test("uses a ten pixel movement threshold", () => {
+    expect(hasExceededProjectDragThreshold(0, 0, 6, 0)).toBe(false);
+    expect(hasExceededProjectDragThreshold(0, 0, 6, 8)).toBe(true);
   });
 
   test("calculates insertion positions before, between, and after non-dragged rows", () => {
