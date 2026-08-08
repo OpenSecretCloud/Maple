@@ -2632,10 +2632,12 @@ export function AgentMode({ userId }: { userId: string }) {
           >
             <div
               className={cn(
-                "mx-auto w-full p-4 md:p-6 landscape-short:p-2",
-                timelineItems.length === 0 && isAgentFullscreen
-                  ? "flex min-h-full max-w-6xl flex-col"
-                  : "max-w-4xl"
+                "mx-auto w-full",
+                timelineItems.length > 0
+                  ? "max-w-4xl p-4 md:p-6 landscape-short:p-2"
+                  : isAgentFullscreen
+                    ? "flex min-h-full max-w-6xl flex-col p-4 md:p-6 landscape-short:p-2"
+                    : "flex min-h-full flex-col px-4"
               )}
             >
               {timelineItems.length === 0 ? (
@@ -2727,13 +2729,17 @@ function EmptyAgentState(props: AgentComposerProps) {
   return (
     <div
       className={cn(
-        "flex items-center justify-center",
-        isExpanded ? "min-h-0 flex-1" : "min-h-[52vh]"
+        "flex w-full flex-col",
+        isExpanded
+          ? "min-h-0 flex-1 items-center justify-center"
+          : "mx-auto min-h-0 max-w-[650px] flex-1 justify-center"
       )}
     >
+      {!isExpanded ? <div className="mb-16 landscape-short:mb-4" /> : null}
+
       <div className="flex w-full flex-col items-center gap-6 text-center landscape-short:gap-3">
         {!isExpanded ? (
-          <h1 className="mb-6 overflow-visible pb-1 font-displayWide text-4xl font-normal leading-relaxed brand-gradient-text landscape-short:mb-2 landscape-short:text-2xl">
+          <h1 className="mb-6 w-full overflow-visible pb-1 text-center font-displayWide text-4xl font-normal leading-tight brand-gradient-text landscape-short:mb-2 landscape-short:text-2xl sm:leading-relaxed">
             Work on anything...
           </h1>
         ) : null}
@@ -3588,6 +3594,7 @@ function AgentComposer({
         className={cn(
           CHAT_COMPOSER_TEXTAREA_CLASS,
           onToggleExpanded && "pr-8",
+          onToggleExpanded && !isExpanded && "landscape-short:min-h-[52px]",
           isExpanded &&
             "min-h-0 max-h-none flex-1 overflow-y-auto landscape-short:min-h-0 landscape-short:max-h-none"
         )}
@@ -3659,7 +3666,10 @@ function AgentComposer({
           ) : (
             <button
               type="button"
-              className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-b from-[hsl(var(--maple-primary))] to-[hsl(var(--maple-primary-strong))] text-[hsl(var(--maple-on-primary))]/90 transition-all duration-200 ease-out active:scale-[0.95] disabled:pointer-events-none disabled:opacity-40"
+              className={cn(
+                "flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-b from-[hsl(var(--maple-primary))] to-[hsl(var(--maple-primary-strong))] text-[hsl(var(--maple-on-primary))]/90 transition-all duration-200 ease-out active:scale-[0.95] disabled:pointer-events-none disabled:opacity-40",
+                onToggleExpanded && !isExpanded && "sm:h-9 sm:w-9"
+              )}
               onClick={onSendMessage}
               disabled={isSendDisabled || !input.trim() || !projectRoot}
               aria-label="Send agent message"

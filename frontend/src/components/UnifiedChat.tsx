@@ -5147,7 +5147,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
             <div
               className={`mx-auto w-full ${
                 isFullscreenAnimating ? "transition-all duration-300" : ""
-              } ${isFullscreen ? "flex h-full max-w-6xl flex-col" : "max-w-4xl"}`}
+              } ${isFullscreen ? "flex h-full max-w-6xl flex-col" : "max-w-[650px]"}`}
             >
               {!isFullscreen && <div className="mb-16 landscape-short:mb-4" />}
 
