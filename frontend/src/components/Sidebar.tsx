@@ -2,6 +2,7 @@ import {
   Search,
   SquarePenIcon,
   ArrowLeftFromLine,
+  Loader2,
   Menu,
   XCircle,
   Trash2,
@@ -49,6 +50,11 @@ import {
   createChatHistoryEntryForDraft,
   type NewChatNavigationDetail
 } from "@/services/chatRuntimeNavigation";
+import {
+  agentSidebarToggleLabel,
+  agentSidebarVisualStatus,
+  type AgentSidebarAggregateStatus
+} from "@/services/agentSidebarPresentation";
 
 export function Sidebar({
   chatId,
@@ -494,15 +500,41 @@ export function Sidebar({
   );
 }
 
-export function SidebarToggle({ onToggle }: { onToggle: () => void }) {
+export function SidebarToggle({
+  onToggle,
+  agentStatus
+}: {
+  onToggle: () => void;
+  agentStatus?: AgentSidebarAggregateStatus;
+}) {
+  const visualStatus = agentSidebarVisualStatus(agentStatus);
+
   return (
     <button
       type="button"
-      className="h-9 w-9 flex items-center justify-center text-foreground hover:text-foreground/70 transition-colors"
+      className={cn(
+        "h-9 w-9 flex items-center justify-center text-foreground hover:text-foreground/70 transition-colors",
+        agentStatus && "relative"
+      )}
       onClick={onToggle}
-      aria-label="Open sidebar"
+      aria-label={agentSidebarToggleLabel(agentStatus)}
+      aria-live={agentStatus ? "polite" : undefined}
+      aria-atomic={agentStatus ? "true" : undefined}
     >
       <Menu className="h-4 w-4" />
+      {visualStatus === "running" ? (
+        <Loader2
+          aria-hidden="true"
+          data-agent-sidebar-status="running"
+          className="absolute right-1 top-1 h-2.5 w-2.5 text-[hsl(var(--maple-primary))] motion-safe:animate-spin"
+        />
+      ) : visualStatus === "unread" ? (
+        <span
+          aria-hidden="true"
+          data-agent-sidebar-status="unread"
+          className="absolute right-1 top-1 h-2 w-2 rounded-full bg-maple-success"
+        />
+      ) : null}
     </button>
   );
 }

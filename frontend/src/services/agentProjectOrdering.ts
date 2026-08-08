@@ -1,6 +1,6 @@
 import type { AgentSessionSummary, RecentProjectRoot } from "@/services/agentRuntimeService";
 
-export const PROJECT_DRAG_THRESHOLD_PX = 6;
+export const PROJECT_DRAG_THRESHOLD_PX = 10;
 
 export interface ProjectHeaderCenter {
   path: string;
