@@ -51,6 +51,17 @@ export function agentTaskAccessibleLabel(title: string, status: AgentTaskAccessi
   return details.length > 0 ? `${title}, ${details.join(", ")}` : title;
 }
 
+export function agentProjectTaskSummaryLabel(taskCount: number, unreadCount: number): string {
+  const taskCountLabel = `${taskCount} ${pluralize("task", taskCount)}`;
+  return unreadCount > 0 ? `${taskCountLabel} · ${unreadCount} unread` : taskCountLabel;
+}
+
+export function agentProjectProgressLabel(inProgressCount: number): string {
+  return inProgressCount > 0
+    ? `${inProgressCount} ${pluralize("task", inProgressCount)} in progress`
+    : "No tasks in progress";
+}
+
 function pluralize(noun: string, count: number): string {
   return count === 1 ? noun : `${noun}s`;
 }

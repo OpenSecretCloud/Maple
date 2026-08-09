@@ -30,6 +30,7 @@ import {
   Globe2,
   Loader2,
   Lock,
+  MessageSquare,
   MessageSquarePlus,
   MoreHorizontal,
   ShieldCheck,
@@ -79,13 +80,14 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger
 } from "@/components/ui/dropdown-menu";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import { Sidebar, SidebarToggle } from "@/components/Sidebar";
 import { MapleWordmark } from "@/components/MapleWordmark";
 import { DeleteChatDialog } from "@/components/DeleteChatDialog";
 import { RenameAgentProjectDialog } from "@/components/RenameAgentProjectDialog";
 import { UpgradePromptDialog } from "@/components/UpgradePromptDialog";
 import { AgentMcpMenu, AgentMcpServersDialog } from "@/components/agent/AgentMcpControls";
+import { AgentSidebarInfoCard } from "@/components/agent/AgentSidebarInfoCard";
 import { handleAgentModeThoughtRunFinished } from "@/components/agent/agentModeThoughtRun";
 import {
   agentRuntimeService,
@@ -166,6 +168,8 @@ import { useLazyRef } from "@/utils/useLazyRef";
 import { revealAgentProjectFolder } from "@/services/agentProjectFolder";
 import {
   aggregateAgentSidebarStatus,
+  agentProjectProgressLabel,
+  agentProjectTaskSummaryLabel,
   agentTaskAccessibleLabel
 } from "@/services/agentSidebarPresentation";
 import {
@@ -1965,6 +1969,7 @@ export function AgentMode({ userId }: { userId: string }) {
         // this point the previous chat remains active and its composer is gated.
         shouldAutoScrollRef.current = true;
         activeSessionIdRef.current = detail.session.id;
+        clearCompletedUnreadSession(detail.session.id);
         setActiveSessionId(detail.session.id);
         agentSessionSelection.remember(userId, detail.session.id);
         setProjectRoot(detail.session.projectRoot);
@@ -2689,6 +2694,7 @@ export function AgentMode({ userId }: { userId: string }) {
             recentRoots={displayProjectRoots}
             completedUnreadSessionIds={completedUnreadSessionIds}
             disabled={areAgentSettingsLocked}
+            inProgressSessionIds={agentRunningSessionIds}
             runningSessionIds={runningSessionIds}
             sessions={visibleSessions}
             onChooseProjectRoot={chooseProjectRoot}
@@ -3003,6 +3009,7 @@ interface AgentSidebarContentProps {
   recentRoots: AgentProjectRootView[];
   completedUnreadSessionIds: Set<string>;
   disabled: boolean;
+  inProgressSessionIds: Set<string>;
   runningSessionIds: Set<string>;
   sessions: AgentSessionSummary[];
   onChooseProjectRoot: () => void;
@@ -3039,11 +3046,14 @@ interface ProjectDragState extends PendingProjectPointer {
 interface AgentSidebarTaskRowProps {
   actionsLocked: boolean;
   isActive: boolean;
+  isInProgress: boolean;
   isRunning: boolean;
   isTouchLayout: boolean;
   isUnreadCompleted: boolean;
   onDelete: (session: AgentSessionSummary) => void;
+  onRevealProjectRoot: (projectRoot: string) => void;
   onSelect: (sessionId: string) => void;
+  projectDisplayName: string;
   rowRef: (node: HTMLDivElement | null) => void;
   session: AgentSessionSummary;
 }
@@ -3051,48 +3061,62 @@ interface AgentSidebarTaskRowProps {
 function AgentSidebarTaskRow({
   actionsLocked,
   isActive,
+  isInProgress,
   isRunning,
   isTouchLayout,
   isUnreadCompleted,
   onDelete,
+  onRevealProjectRoot,
   onSelect,
+  projectDisplayName,
   rowRef,
   session
 }: AgentSidebarTaskRowProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [hasKeyboardFocusWithin, setHasKeyboardFocusWithin] = useState(false);
-  const [isTitleOverflowing, setIsTitleOverflowing] = useState(false);
-  const titleRef = useRef<HTMLSpanElement>(null);
+  const [infoCardOpen, setInfoCardOpen] = useState(false);
   const title = sessionTitle(session);
   const hasVisualStatus = isRunning || isUnreadCompleted;
+  const visibleInfoCardOpen = !isTouchLayout && infoCardOpen;
 
-  const measureTitleOverflow = useCallback(
-    (actionsVisible: boolean) => {
-      const titleElement = titleRef.current;
-      if (!titleElement) return;
-      const actionOverlayWidth = !isTouchLayout && actionsVisible ? (hasVisualStatus ? 16 : 48) : 0;
-      setIsTitleOverflowing(
-        titleElement.scrollWidth > Math.max(0, titleElement.clientWidth - actionOverlayWidth) + 1
-      );
-    },
-    [hasVisualStatus, isTouchLayout]
-  );
-
-  useLayoutEffect(() => {
-    measureTitleOverflow(menuOpen);
-    const titleElement = titleRef.current;
-    if (!titleElement || typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(() => measureTitleOverflow(menuOpen));
-    observer.observe(titleElement);
-    return () => observer.disconnect();
-  }, [measureTitleOverflow, menuOpen, title]);
+  useEffect(() => {
+    if (isTouchLayout) setInfoCardOpen(false);
+  }, [isTouchLayout]);
 
   const activeSurface =
-    menuOpen || hasKeyboardFocusWithin
+    menuOpen || hasKeyboardFocusWithin || visibleInfoCardOpen
       ? isActive
         ? "bg-[hsl(var(--sidebar-row-selected-hover))] ring-1 ring-ring/70"
         : "bg-[hsl(var(--sidebar-row-hover))] ring-1 ring-ring/70"
       : null;
+  const taskSelectionButton = (
+    <button
+      type="button"
+      className={cn(
+        "relative z-0 flex min-w-0 flex-1 cursor-pointer items-center pl-8 text-left text-sm text-foreground/95 transition-colors focus-visible:outline-none aria-disabled:cursor-default",
+        isTouchLayout ? "min-h-10" : "min-h-[30px]",
+        isActive && "font-medium text-foreground",
+        isTouchLayout
+          ? hasVisualStatus
+            ? "pr-[4.75rem]"
+            : "pr-10"
+          : hasVisualStatus
+            ? "pr-8"
+            : "pr-0"
+      )}
+      onClick={() => {
+        if (!actionsLocked) onSelect(session.id);
+      }}
+      aria-disabled={actionsLocked || undefined}
+      aria-current={isActive ? "page" : undefined}
+      aria-label={agentTaskAccessibleLabel(title, {
+        running: isRunning,
+        unread: isUnreadCompleted
+      })}
+    >
+      <span className="min-w-0 flex-1 truncate">{title}</span>
+    </button>
+  );
 
   return (
     <div
@@ -3113,48 +3137,34 @@ function AgentSidebarTaskRow({
           event.currentTarget.contains(nextTarget as Node) && isKeyboardFocusTarget(nextTarget)
         );
       }}
-      onPointerEnter={() => measureTitleOverflow(true)}
-      onPointerLeave={() => measureTitleOverflow(menuOpen || hasKeyboardFocusWithin)}
     >
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <button
-            type="button"
-            className={cn(
-              "relative z-0 flex min-w-0 flex-1 cursor-pointer items-center pl-8 text-left text-sm text-foreground/95 transition-colors focus-visible:outline-none aria-disabled:cursor-default",
-              isTouchLayout ? "min-h-10" : "min-h-[30px]",
-              isActive && "font-medium text-foreground",
-              isTouchLayout
-                ? hasVisualStatus
-                  ? "pr-[4.75rem]"
-                  : "pr-10"
-                : hasVisualStatus
-                  ? "pr-8"
-                  : "pr-0"
-            )}
-            onClick={() => {
-              if (!actionsLocked) onSelect(session.id);
-            }}
-            onFocus={() => measureTitleOverflow(true)}
-            onBlur={() => measureTitleOverflow(menuOpen)}
-            aria-disabled={actionsLocked || undefined}
-            aria-current={isActive ? "page" : undefined}
-            aria-label={agentTaskAccessibleLabel(title, {
-              running: isRunning,
-              unread: isUnreadCompleted
-            })}
-          >
-            <span ref={titleRef} className="min-w-0 flex-1 truncate">
-              {title}
-            </span>
-          </button>
-        </TooltipTrigger>
-        {isTitleOverflowing ? (
-          <TooltipContent side="right" className="max-w-xs break-words">
-            {title}
-          </TooltipContent>
+      <HoverCard
+        open={visibleInfoCardOpen}
+        openDelay={450}
+        closeDelay={180}
+        onOpenChange={setInfoCardOpen}
+      >
+        {isTouchLayout ? (
+          taskSelectionButton
+        ) : (
+          <HoverCardTrigger asChild>{taskSelectionButton}</HoverCardTrigger>
+        )}
+        {!isTouchLayout ? (
+          <HoverCardContent side="right">
+            <AgentSidebarInfoCard
+              folderPath={session.projectRoot}
+              icon={MessageSquare}
+              isInProgress={isInProgress}
+              metadata={projectDisplayName}
+              metadataIcon={Folder}
+              onDismiss={() => setInfoCardOpen(false)}
+              onOpenProjectFolder={() => onRevealProjectRoot(session.projectRoot)}
+              progressLabel={isInProgress ? "In progress" : "Not in progress"}
+              title={title}
+            />
+          </HoverCardContent>
         ) : null}
-      </Tooltip>
+      </HoverCard>
 
       {hasVisualStatus ? (
         <span
@@ -3163,7 +3173,9 @@ function AgentSidebarTaskRow({
             "pointer-events-none absolute top-1/2 z-40 flex -translate-y-1/2 items-center justify-center transition-opacity duration-150 motion-reduce:transition-none",
             isTouchLayout ? "right-10" : "right-2",
             !isTouchLayout && "group-hover/task:opacity-0",
-            !isTouchLayout && (menuOpen || hasKeyboardFocusWithin) && "opacity-0"
+            !isTouchLayout &&
+              (menuOpen || hasKeyboardFocusWithin || visibleInfoCardOpen) &&
+              "opacity-0"
           )}
         >
           {isRunning ? (
@@ -3174,7 +3186,13 @@ function AgentSidebarTaskRow({
         </span>
       ) : null}
 
-      <div className={taskActionRowClass(isTouchLayout, menuOpen, hasKeyboardFocusWithin)}>
+      <div
+        className={taskActionRowClass(
+          isTouchLayout,
+          menuOpen,
+          hasKeyboardFocusWithin || visibleInfoCardOpen
+        )}
+      >
         <div
           aria-hidden="true"
           className={cn(
@@ -3182,7 +3200,7 @@ function AgentSidebarTaskRow({
             isActive
               ? "to-[hsl(var(--sidebar-row-selected))] group-hover/task:to-[hsl(var(--sidebar-row-selected-hover))]"
               : "to-[hsl(var(--sidebar))] group-hover/task:to-[hsl(var(--sidebar-row-hover))]",
-            (menuOpen || hasKeyboardFocusWithin) &&
+            (menuOpen || hasKeyboardFocusWithin || visibleInfoCardOpen) &&
               (isActive
                 ? "to-[hsl(var(--sidebar-row-selected-hover))]"
                 : "to-[hsl(var(--sidebar-row-hover))]")
@@ -3194,7 +3212,7 @@ function AgentSidebarTaskRow({
             isActive
               ? "bg-[hsl(var(--sidebar-row-selected))] group-hover/task:bg-[hsl(var(--sidebar-row-selected-hover))]"
               : "bg-[hsl(var(--sidebar))] group-hover/task:bg-[hsl(var(--sidebar-row-hover))]",
-            (menuOpen || hasKeyboardFocusWithin) &&
+            (menuOpen || hasKeyboardFocusWithin || visibleInfoCardOpen) &&
               (isActive
                 ? "bg-[hsl(var(--sidebar-row-selected-hover))]"
                 : "bg-[hsl(var(--sidebar-row-hover))]")
@@ -3240,6 +3258,7 @@ function AgentSidebarContent({
   recentRoots,
   completedUnreadSessionIds,
   disabled,
+  inProgressSessionIds,
   runningSessionIds,
   sessions,
   onChooseProjectRoot,
@@ -3264,10 +3283,16 @@ function AgentSidebarContent({
   const suppressProjectClickUntilRef = useRef(0);
   const [projectDrag, setProjectDrag] = useState<ProjectDragState | null>(null);
   const isProjectDragging = projectDrag !== null;
+  const [openProjectInfoCardPath, setOpenProjectInfoCardPath] = useState<string | null>(null);
   const [openProjectMenuPath, setOpenProjectMenuPath] = useState<string | null>(null);
   const [keyboardFocusProjectPath, setKeyboardFocusProjectPath] = useState<string | null>(null);
   const projectRows = recentRoots;
   const sessionsByRoot = useMemo(() => groupAgentSessionsByRoot(sessions), [sessions]);
+
+  useEffect(() => {
+    if (isTouchLayout) setOpenProjectInfoCardPath(null);
+  }, [isTouchLayout]);
+
   const setAnimatedRowRef = useCallback(
     (key: string, node: HTMLElement | null) => {
       if (node) {
@@ -3480,6 +3505,7 @@ function AgentSidebarContent({
       ) {
         return;
       }
+      setOpenProjectInfoCardPath(null);
       const rect = event.currentTarget.getBoundingClientRect();
       pendingProjectPointerRef.current = {
         pointerId: event.pointerId,
@@ -3674,15 +3700,53 @@ function AgentSidebarContent({
             const hasRunningSession = projectSessions.some((session) =>
               runningSessionIds.has(session.id)
             );
-            const hasUnreadCompletedSession = projectSessions.some((session) =>
-              completedUnreadSessionIds.has(session.id)
+            const inProgressSessionCount = projectSessions.reduce(
+              (count, session) => count + (inProgressSessionIds.has(session.id) ? 1 : 0),
+              0
             );
+            const unreadSessionCount = projectSessions.reduce(
+              (count, session) => count + (completedUnreadSessionIds.has(session.id) ? 1 : 0),
+              0
+            );
+            const hasUnreadCompletedSession = unreadSessionCount > 0;
             const showProjectRunningIndicator = isCollapsed && hasRunningSession;
             const showProjectUnreadIndicator =
               isCollapsed && !hasRunningSession && hasUnreadCompletedSession;
             const hasProjectStatus = showProjectRunningIndicator || showProjectUnreadIndicator;
+            const projectInfoCardOpen = openProjectInfoCardPath === root.path;
             const projectMenuOpen = openProjectMenuPath === root.path;
             const hasProjectKeyboardFocus = keyboardFocusProjectPath === root.path;
+            const projectDisclosureButton = (
+              <button
+                type="button"
+                className={cn(
+                  "flex min-w-0 flex-1 items-center gap-2 rounded-xl px-2 text-left text-sm text-foreground/95 transition-colors focus-visible:outline-none",
+                  isTouchLayout ? "min-h-10" : "min-h-[30px]",
+                  isActive && "font-semibold text-foreground",
+                  isTouchLayout
+                    ? hasProjectStatus
+                      ? "pr-24"
+                      : "pr-[4.75rem]"
+                    : hasProjectStatus
+                      ? "pr-8"
+                      : "pr-2"
+                )}
+                onClick={() => onProjectDisclosureToggle(root.path)}
+                aria-expanded={!isCollapsed}
+                aria-label={`${isCollapsed ? "Expand" : "Collapse"} ${root.displayName}${
+                  inProgressSessionCount > 0
+                    ? `, ${agentProjectProgressLabel(inProgressSessionCount)}`
+                    : ""
+                }${unreadSessionCount > 0 ? `, ${unreadSessionCount} unread` : ""}`}
+              >
+                {isCollapsed ? (
+                  <Folder className="h-4 w-4 shrink-0" />
+                ) : (
+                  <FolderOpen className="h-4 w-4 shrink-0" />
+                )}
+                <span className="min-w-0 flex-1 truncate">{root.displayName}</span>
+              </button>
+            );
 
             return (
               <div
@@ -3699,7 +3763,7 @@ function AgentSidebarContent({
                   className={cn(
                     "group/project relative flex select-none items-center rounded-xl text-foreground transition-colors motion-reduce:transition-none hover:bg-[hsl(var(--sidebar-row-hover))]",
                     isTouchLayout ? "min-h-10" : "min-h-[30px]",
-                    (projectMenuOpen || hasProjectKeyboardFocus) &&
+                    (projectInfoCardOpen || projectMenuOpen || hasProjectKeyboardFocus) &&
                       "bg-[hsl(var(--sidebar-row-hover))] ring-1 ring-ring/70",
                     !disabled && projectRows.length > 1 && "touch-none",
                     !disabled &&
@@ -3722,38 +3786,40 @@ function AgentSidebarContent({
                     );
                   }}
                 >
-                  <button
-                    type="button"
-                    className={cn(
-                      "flex min-w-0 flex-1 items-center gap-2 rounded-xl px-2 text-left text-sm text-foreground/95 transition-colors focus-visible:outline-none",
-                      isTouchLayout ? "min-h-10" : "min-h-[30px]",
-                      isActive && "font-semibold text-foreground",
-                      isTouchLayout
-                        ? hasProjectStatus
-                          ? "pr-24"
-                          : "pr-[4.75rem]"
-                        : hasProjectStatus
-                          ? "pr-8"
-                          : "pr-2"
-                    )}
-                    onClick={() => onProjectDisclosureToggle(root.path)}
-                    aria-expanded={!isCollapsed}
-                    aria-label={`${isCollapsed ? "Expand" : "Collapse"} ${root.displayName}${
-                      hasRunningSession
-                        ? ", contains a running task"
-                        : hasUnreadCompletedSession
-                          ? ", contains a completed unread task"
-                          : ""
-                    }`}
-                    title={root.path}
+                  <HoverCard
+                    open={projectInfoCardOpen && !isProjectDragging && !isTouchLayout}
+                    openDelay={450}
+                    closeDelay={180}
+                    onOpenChange={(open) =>
+                      setOpenProjectInfoCardPath((current) =>
+                        open ? root.path : current === root.path ? null : current
+                      )
+                    }
                   >
-                    {isCollapsed ? (
-                      <Folder className="h-4 w-4 shrink-0" />
+                    {isTouchLayout ? (
+                      projectDisclosureButton
                     ) : (
-                      <FolderOpen className="h-4 w-4 shrink-0" />
+                      <HoverCardTrigger asChild>{projectDisclosureButton}</HoverCardTrigger>
                     )}
-                    <span className="min-w-0 flex-1 truncate">{root.displayName}</span>
-                  </button>
+                    {!isTouchLayout ? (
+                      <HoverCardContent side="right">
+                        <AgentSidebarInfoCard
+                          folderPath={root.path}
+                          icon={isCollapsed ? Folder : FolderOpen}
+                          isInProgress={inProgressSessionCount > 0}
+                          metadata={agentProjectTaskSummaryLabel(
+                            projectSessions.length,
+                            unreadSessionCount
+                          )}
+                          metadataIcon={MessageSquare}
+                          onDismiss={() => setOpenProjectInfoCardPath(null)}
+                          onOpenProjectFolder={() => onRevealProjectRoot(root.path)}
+                          progressLabel={agentProjectProgressLabel(inProgressSessionCount)}
+                          title={root.displayName}
+                        />
+                      </HoverCardContent>
+                    ) : null}
+                  </HoverCard>
 
                   {hasProjectStatus ? (
                     <span
@@ -3763,7 +3829,7 @@ function AgentSidebarContent({
                         isTouchLayout ? "right-[4.75rem]" : "right-2",
                         !isTouchLayout && "group-hover/project:opacity-0",
                         !isTouchLayout &&
-                          (projectMenuOpen || hasProjectKeyboardFocus) &&
+                          (projectInfoCardOpen || projectMenuOpen || hasProjectKeyboardFocus) &&
                           "opacity-0"
                       )}
                     >
@@ -3779,21 +3845,21 @@ function AgentSidebarContent({
                     className={projectActionRowClass(
                       isTouchLayout,
                       projectMenuOpen,
-                      hasProjectKeyboardFocus
+                      hasProjectKeyboardFocus || projectInfoCardOpen
                     )}
                   >
                     <div
                       aria-hidden="true"
                       className={cn(
                         "pointer-events-none w-5 shrink-0 self-stretch bg-gradient-to-r from-transparent to-[hsl(var(--sidebar))] transition-colors group-hover/project:to-[hsl(var(--sidebar-row-hover))]",
-                        (projectMenuOpen || hasProjectKeyboardFocus) &&
+                        (projectInfoCardOpen || projectMenuOpen || hasProjectKeyboardFocus) &&
                           "to-[hsl(var(--sidebar-row-hover))]"
                       )}
                     />
                     <div
                       className={cn(
                         "flex items-center rounded-r-xl bg-[hsl(var(--sidebar))] pr-0.5 transition-colors group-hover/project:bg-[hsl(var(--sidebar-row-hover))]",
-                        (projectMenuOpen || hasProjectKeyboardFocus) &&
+                        (projectInfoCardOpen || projectMenuOpen || hasProjectKeyboardFocus) &&
                           "bg-[hsl(var(--sidebar-row-hover))]"
                       )}
                     >
@@ -3897,6 +3963,7 @@ function AgentSidebarContent({
                 {!isCollapsed
                   ? projectSessions.map((session) => {
                       const isActiveSession = session.id === activeSessionId;
+                      const isInProgress = inProgressSessionIds.has(session.id);
                       const isRunning = runningSessionIds.has(session.id);
                       const isUnreadCompleted = completedUnreadSessionIds.has(session.id);
 
@@ -3905,11 +3972,14 @@ function AgentSidebarContent({
                           key={session.id}
                           actionsLocked={disabled}
                           isActive={isActiveSession}
+                          isInProgress={isInProgress}
                           isRunning={isRunning}
                           isTouchLayout={isTouchLayout}
                           isUnreadCompleted={isUnreadCompleted}
                           onDelete={onSessionDelete}
+                          onRevealProjectRoot={onRevealProjectRoot}
                           onSelect={onSessionSelect}
+                          projectDisplayName={root.displayName}
                           rowRef={(node) => setAnimatedRowRef(`session:${session.id}`, node)}
                           session={session}
                         />

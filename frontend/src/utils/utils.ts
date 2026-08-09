@@ -89,11 +89,6 @@ export function useIsLandscapeMobile() {
   return matches;
 }
 
-/**
- * Detect layouts whose primary pointer cannot rely on precise hover affordances.
- * This intentionally includes both coarse pointers and devices without hover so
- * controls remain discoverable on wide touchscreens and pen-first devices.
- */
 export function useIsCoarsePointer() {
   const QUERY = "(pointer: coarse), (hover: none)";
 

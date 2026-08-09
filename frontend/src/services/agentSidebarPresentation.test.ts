@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+  agentProjectProgressLabel,
+  agentProjectTaskSummaryLabel,
   agentSidebarToggleLabel,
   agentSidebarVisualStatus,
   agentTaskAccessibleLabel,
@@ -58,5 +60,24 @@ describe("Agent task accessible labels", () => {
     [{ running: true, unread: true }, "Investigate login, running, completed, unread"]
   ] as const)("preserves status text for %o", (status, expected) => {
     expect(agentTaskAccessibleLabel("Investigate login", status)).toBe(expected);
+  });
+});
+
+describe("Agent sidebar info-card labels", () => {
+  test.each([
+    [0, 0, "0 tasks"],
+    [1, 0, "1 task"],
+    [1, 1, "1 task · 1 unread"],
+    [3, 2, "3 tasks · 2 unread"]
+  ] as const)("formats %i project tasks with %i unread", (taskCount, unreadCount, expected) => {
+    expect(agentProjectTaskSummaryLabel(taskCount, unreadCount)).toBe(expected);
+  });
+
+  test.each([
+    [0, "No tasks in progress"],
+    [1, "1 task in progress"],
+    [3, "3 tasks in progress"]
+  ] as const)("formats an in-progress project count of %i", (count, expected) => {
+    expect(agentProjectProgressLabel(count)).toBe(expected);
   });
 });
