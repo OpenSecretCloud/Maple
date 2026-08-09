@@ -32,7 +32,7 @@ Maple rejects Goose's disallowed process-overriding variables, empty or duplicat
 
 ## Compatibility boundary
 
-Maple currently inherits the MCP implementation and protocol negotiation from its pinned Goose SDK. At the time of this MVP, Goose advertises MCP revision `2025-03-26`. A modern `@modelcontextprotocol/server-everything` release using TypeScript SDK 1.29.0 was verified to negotiate that revision successfully over both supported transports.
+Maple currently inherits the MCP implementation and protocol negotiation from its pinned Goose SDK. The current Goose pin uses RMCP 3's legacy Initialize lifecycle and advertises MCP revision `2025-11-25`; it does not yet opt into the newer `2026-07-28` discovery lifecycle. A modern `@modelcontextprotocol/server-everything` release was verified to negotiate the inherited revision successfully over both supported transports.
 
 This MVP does not include:
 
