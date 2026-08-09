@@ -1,7 +1,8 @@
 use async_trait::async_trait;
 use futures_util::{StreamExt, TryStreamExt};
-use goose_providers::base::{MessageStream, Provider};
+use goose_providers::base::{collect_stream, MessageStream, Provider};
 use goose_providers::conversation::message::Message;
+use goose_providers::conversation::token_usage::ProviderUsage;
 use goose_providers::errors::ProviderError;
 use goose_providers::formats::openai::{
     create_request_with_options, response_to_streaming_message, OpenAiFormatOptions,
@@ -23,6 +24,10 @@ use tokio_util::sync::CancellationToken;
 
 const CHAT_COMPLETIONS_PATH: &str = "/v1/chat/completions";
 pub(super) const MAPLE_PROVIDER_NAME: &str = "maple";
+// Agent Mode forwards the selected catalog ID unchanged for direct model
+// selections. Keep Gemma's provider-specific opt-in scoped to that explicit
+// selection; aliases and other reasoning models retain their existing behavior.
+const GEMMA4_AGENT_MODEL_ID: &str = "gemma4-31b";
 const MAX_ERROR_BODY_BYTES: usize = 16 * 1024;
 const MAX_STREAM_LINE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_RETRY_AFTER_SECS: f64 = 3_600.0;
@@ -128,6 +133,31 @@ impl MapleProvider {
         })
     }
 
+    fn gemma_agent_model_config(
+        model_config: &ModelConfig,
+        primary_agent_turn: bool,
+    ) -> ModelConfig {
+        let mut model_config = model_config.clone();
+        if model_config.model_name != GEMMA4_AGENT_MODEL_ID {
+            return model_config;
+        }
+
+        let request_params = model_config.request_params.get_or_insert_default();
+        request_params
+            .entry("include_reasoning".to_string())
+            .or_insert_with(|| json!(primary_agent_turn));
+        let template_kwargs = request_params
+            .entry("chat_template_kwargs".to_string())
+            .or_insert_with(|| json!({}));
+        if let Some(template_kwargs) = template_kwargs.as_object_mut() {
+            template_kwargs
+                .entry("enable_thinking".to_string())
+                .or_insert_with(|| json!(primary_agent_turn));
+        }
+
+        model_config
+    }
+
     fn inference_request(payload: Vec<u8>) -> Result<InferenceRequest, ProviderError> {
         let mut request = InferenceRequest::new(payload.into());
         *request.method_mut() = tauri::http::Method::POST;
@@ -230,32 +260,22 @@ impl MapleProvider {
             }
         }
     }
-}
 
-#[async_trait]
-impl Provider for MapleProvider {
-    fn get_name(&self) -> &str {
-        MAPLE_PROVIDER_NAME
-    }
-
-    fn retry_config(&self) -> RetryConfig {
-        // Retrying deterministic client failures can repeat side effects and
-        // causes the SDK to repeat its own stale-session recovery for a 400.
-        RetryConfig::default().transient_only()
-    }
-
-    async fn stream(
+    async fn stream_request(
         &self,
         model_config: &ModelConfig,
         system: &str,
         messages: &[Message],
         tools: &[Tool],
+        enable_primary_agent_thinking: bool,
     ) -> Result<MessageStream, ProviderError> {
-        let payload = self.build_request(model_config, system, messages, tools)?;
+        let effective_model_config =
+            Self::gemma_agent_model_config(model_config, enable_primary_agent_thinking);
+        let payload = self.build_request(&effective_model_config, system, messages, tools)?;
         let payload_bytes = serde_json::to_vec(&payload).map_err(|error| {
             ProviderError::RequestFailed(format!("Failed to serialize Maple request: {error}"))
         })?;
-        let mut request_log = start_log(model_config, &payload)?;
+        let mut request_log = start_log(&effective_model_config, &payload)?;
         let cancellation = current_run_cancellation();
 
         let response = self
@@ -308,6 +328,47 @@ impl Provider for MapleProvider {
         });
 
         Ok(Box::pin(stream))
+    }
+}
+
+#[async_trait]
+impl Provider for MapleProvider {
+    fn get_name(&self) -> &str {
+        MAPLE_PROVIDER_NAME
+    }
+
+    fn retry_config(&self) -> RetryConfig {
+        // Retrying deterministic client failures can repeat side effects and
+        // causes the SDK to repeat its own stale-session recovery for a 400.
+        RetryConfig::default().transient_only()
+    }
+
+    async fn stream(
+        &self,
+        model_config: &ModelConfig,
+        system: &str,
+        messages: &[Message],
+        tools: &[Tool],
+    ) -> Result<MessageStream, ProviderError> {
+        // Goose uses stream for the interactive Agent loop. Selecting Gemma
+        // directly in Agent Mode is the product-level opt-in to thinking.
+        self.stream_request(model_config, system, messages, tools, true)
+            .await
+    }
+
+    async fn complete(
+        &self,
+        model_config: &ModelConfig,
+        system: &str,
+        messages: &[Message],
+        tools: &[Tool],
+    ) -> Result<(Message, ProviderUsage), ProviderError> {
+        // Goose and Maple use complete for auxiliary work such as compaction,
+        // classifiers, and image descriptions; keep those requests non-thinking.
+        let stream = self
+            .stream_request(model_config, system, messages, tools, false)
+            .await?;
+        collect_stream(stream).await
     }
 }
 
@@ -604,7 +665,6 @@ pub(crate) fn opensecret_error_category(error: &opensecret::Error) -> &'static s
 #[cfg(test)]
 mod tests {
     use super::*;
-    use goose_providers::base::collect_stream;
     use goose_providers::conversation::message::MessageContent;
     use goose_providers::retry::should_retry;
     use rmcp::object;
@@ -784,6 +844,122 @@ mod tests {
             request.body["messages"][1]["content"][1]["image_url"]["url"],
             "data:image/png;base64,aGVsbG8="
         );
+    }
+
+    #[tokio::test]
+    async fn primary_agent_stream_enables_thinking_only_for_direct_gemma_selection() {
+        let gemma_transport = Arc::new(FakeTransport::new(fragmented_success_response()));
+        let gemma_provider = MapleProvider::new(gemma_transport.clone());
+        let gemma_config = super::super::maple_model_config(GEMMA4_AGENT_MODEL_ID, None)
+            .expect("Gemma model config");
+
+        let gemma_stream = gemma_provider
+            .stream(
+                &gemma_config,
+                "system",
+                &[Message::user().with_text("reason carefully")],
+                &[],
+            )
+            .await
+            .expect("Gemma stream should start");
+        let _ = collect_stream(gemma_stream)
+            .await
+            .expect("Gemma stream should parse");
+
+        let gemma_requests = gemma_transport.requests.lock().expect("request lock");
+        assert_eq!(gemma_requests[0].body["include_reasoning"], true);
+        assert_eq!(
+            gemma_requests[0].body["chat_template_kwargs"]["enable_thinking"],
+            true
+        );
+        drop(gemma_requests);
+
+        let llama_transport = Arc::new(FakeTransport::new(fragmented_success_response()));
+        let llama_provider = MapleProvider::new(llama_transport.clone());
+        let llama_config =
+            super::super::maple_model_config("llama3-3-70b", None).expect("Llama model config");
+
+        let llama_stream = llama_provider
+            .stream(
+                &llama_config,
+                "system",
+                &[Message::user().with_text("answer directly")],
+                &[],
+            )
+            .await
+            .expect("Llama stream should start");
+        let _ = collect_stream(llama_stream)
+            .await
+            .expect("Llama stream should parse");
+
+        let llama_requests = llama_transport.requests.lock().expect("request lock");
+        assert!(llama_requests[0].body.get("include_reasoning").is_none());
+        assert!(llama_requests[0].body.get("chat_template_kwargs").is_none());
+    }
+
+    #[tokio::test]
+    async fn gemma_auxiliary_completion_keeps_thinking_disabled() {
+        let transport = Arc::new(FakeTransport::new(fragmented_success_response()));
+        let provider = MapleProvider::new(transport.clone());
+        let model_config = super::super::maple_model_config(GEMMA4_AGENT_MODEL_ID, None)
+            .expect("Gemma model config");
+
+        provider
+            .complete(
+                &model_config,
+                "system",
+                &[Message::user().with_text("summarize")],
+                &[],
+            )
+            .await
+            .expect("Gemma completion should parse");
+
+        let requests = transport.requests.lock().expect("request lock");
+        assert_eq!(requests[0].body["include_reasoning"], false);
+        assert_eq!(
+            requests[0].body["chat_template_kwargs"]["enable_thinking"],
+            false
+        );
+    }
+
+    #[test]
+    fn gemma_request_defaults_preserve_explicit_controls_and_skip_aliases() {
+        let explicit_off =
+            ModelConfig::new(GEMMA4_AGENT_MODEL_ID).with_merged_request_params(HashMap::from([
+                ("include_reasoning".to_string(), json!(false)),
+                (
+                    "chat_template_kwargs".to_string(),
+                    json!({ "enable_thinking": false, "custom": "kept" }),
+                ),
+            ]));
+        let primary = MapleProvider::gemma_agent_model_config(&explicit_off, true);
+        let primary_params = primary.request_params.expect("primary request params");
+        assert_eq!(primary_params["include_reasoning"], false);
+        assert_eq!(
+            primary_params["chat_template_kwargs"]["enable_thinking"],
+            false
+        );
+        assert_eq!(primary_params["chat_template_kwargs"]["custom"], "kept");
+
+        let explicit_on =
+            ModelConfig::new(GEMMA4_AGENT_MODEL_ID).with_merged_request_params(HashMap::from([
+                ("include_reasoning".to_string(), json!(true)),
+                (
+                    "chat_template_kwargs".to_string(),
+                    json!({ "enable_thinking": true }),
+                ),
+            ]));
+        let auxiliary = MapleProvider::gemma_agent_model_config(&explicit_on, false);
+        let auxiliary_params = auxiliary.request_params.expect("auxiliary request params");
+        assert_eq!(auxiliary_params["include_reasoning"], true);
+        assert_eq!(
+            auxiliary_params["chat_template_kwargs"]["enable_thinking"],
+            true
+        );
+
+        let alias =
+            MapleProvider::gemma_agent_model_config(&ModelConfig::new("auto:powerful"), true);
+        assert!(alias.request_params.is_none());
     }
 
     #[tokio::test]
