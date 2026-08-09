@@ -74,6 +74,12 @@ tempfile = "3"
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# Let AppKit persist the frame in its native point coordinate space. This
+# avoids physical-pixel scaling errors on Retina and mixed-DPI displays.
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSWindow"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSString"] }
+
 [target.'cfg(target_os = "ios")'.dependencies]
 # We build ONNX Runtime 1.23.2 from source for iOS (see scripts/build-ios-onnxruntime.sh)
 # We disable download-binaries and copy-dylibs since we link our own xcframework

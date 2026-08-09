@@ -4596,6 +4596,8 @@ dependencies = [
  "libc",
  "log",
  "maple-proxy",
+ "objc2-app-kit",
+ "objc2-foundation 0.3.2",
  "once_cell",
  "opensecret",
  "openssl",
