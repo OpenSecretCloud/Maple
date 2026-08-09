@@ -24,7 +24,66 @@ async fn restart_for_update(app_handle: tauri::AppHandle) -> Result<(), String> 
     log::info!("User requested restart for update");
     let lifecycle = app_handle.state::<agent_host::AgentHostLifecycle>();
     lifecycle.shutdown_for_update(&app_handle).await?;
-    app_handle.restart();
+    app_handle.request_restart();
+    Ok(())
+}
+
+#[cfg(desktop)]
+fn reveal_main_window(app_handle: &tauri::AppHandle) {
+    #[cfg(target_os = "macos")]
+    if let Err(error) = app_handle.show() {
+        log::warn!("Failed to unhide Maple: {error}");
+    }
+
+    let Some(window) = app_handle.get_webview_window("main") else {
+        log::warn!("Cannot reveal Maple because the main window is unavailable");
+        return;
+    };
+
+    if let Err(error) = window.unminimize() {
+        log::warn!("Failed to unminimize the main window: {error}");
+    }
+    if let Err(error) = window.show() {
+        log::warn!("Failed to show the main window: {error}");
+    }
+    if let Err(error) = window.set_focus() {
+        log::warn!("Failed to focus the main window: {error}");
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn enable_main_window_frame_autosave(app_handle: &tauri::AppHandle) {
+    use objc2_app_kit::NSWindow;
+    use objc2_foundation::NSString;
+
+    let Some(window) = app_handle.get_webview_window("main") else {
+        log::warn!("Cannot enable frame autosave because the main window is unavailable");
+        return;
+    };
+
+    let ns_window = match window.ns_window() {
+        Ok(ns_window) => ns_window.cast::<NSWindow>(),
+        Err(error) => {
+            log::warn!("Failed to access the native main window: {error}");
+            return;
+        }
+    };
+
+    // SAFETY: Tauri returns the live NSWindow backing this WebviewWindow. This
+    // setup callback runs on the macOS main thread and the pointer is used only
+    // for the duration of this call.
+    let Some(ns_window) = (unsafe { ns_window.as_ref() }) else {
+        log::warn!("Cannot enable frame autosave because the native main window is null");
+        return;
+    };
+
+    let autosave_name = NSString::from_str("MapleMainWindow");
+    if !ns_window.setFrameUsingName(&autosave_name) {
+        ns_window.center();
+    }
+    if !ns_window.setFrameAutosaveName(&autosave_name) {
+        log::warn!("AppKit rejected the main window frame autosave name");
+    }
 }
 
 #[cfg(desktop)]
@@ -40,6 +99,17 @@ fn get_pending_update_failure() -> Result<Option<String>, String> {
 
 #[cfg(desktop)]
 fn handle_desktop_run_event(app_handle: &tauri::AppHandle, event: tauri::RunEvent) {
+    if matches!(&event, tauri::RunEvent::Ready) {
+        reveal_main_window(app_handle);
+        return;
+    }
+
+    #[cfg(target_os = "macos")]
+    if matches!(&event, tauri::RunEvent::Reopen { .. }) {
+        reveal_main_window(app_handle);
+        return;
+    }
+
     let tauri::RunEvent::ExitRequested { code, api, .. } = event else {
         return;
     };
@@ -71,6 +141,8 @@ fn handle_desktop_run_event(app_handle: &tauri::AppHandle, event: tauri::RunEven
 fn handle_deep_link_event(url: &str, app: &tauri::AppHandle) {
     // OAuth callbacks carry bearer tokens in the query string, so never log the raw URL.
     log::info!("[Deep Link] Received callback");
+    #[cfg(desktop)]
+    reveal_main_window(app);
     // Forward the URL to the frontend
     match app.emit_to("main", "deep-link-received", url.to_string()) {
         Ok(_) => log::info!("[Deep Link] Event emitted successfully"),
@@ -85,6 +157,7 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             // argv can contain a custom-scheme callback URL with OAuth bearer tokens.
             log::info!("Single instance detected for {}", app.package_info().name);
+            reveal_main_window(app);
         }))
         .plugin(tauri_plugin_log::Builder::default().level(log::LevelFilter::Info).build())
         .plugin(tauri_plugin_deep_link::init())
@@ -143,6 +216,9 @@ pub fn run() {
             get_pending_update_failure,
         ])
         .setup(|app| {
+            #[cfg(target_os = "macos")]
+            enable_main_window_frame_autosave(app.handle());
+
             legacy_tts_cleanup::schedule(app.handle());
 
             let service = agent_host::build_service(app.handle())?;
