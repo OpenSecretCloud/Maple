@@ -88,6 +88,16 @@ const MAPLE_GOOSE_PERMISSION_CONFIG: &str = r#"user:
   never_allow: []
 "#;
 const RUN_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+#[cfg(not(test))]
+const SESSION_TITLE_GENERATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+#[cfg(test)]
+const SESSION_TITLE_GENERATION_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_millis(1_500);
+const SESSION_TITLE_MODEL: &str = "llama3-3-70b";
+const SESSION_TITLE_TEMPERATURE: f32 = 0.7;
+const SESSION_TITLE_MAX_TOKENS: i32 = 15;
+const SESSION_TITLE_MAX_INPUT_CHARS: usize = 500;
+const SESSION_TITLE_SYSTEM_PROMPT: &str = "You are a helpful assistant that generates concise, meaningful titles (3-5 words) for chat conversations based on the user's first message. Return only the title without quotes or explanations.";
 const DEFAULT_AGENT_SESSION_TITLE: &str = "New task";
 const DEFAULT_MCP_TIMEOUT_SECONDS: u64 = 300;
 const MAX_AGENT_SESSION_TITLE_CHARS: usize = 80;
@@ -583,6 +593,12 @@ struct ActiveAgentRun {
     task_handle: tokio::task::JoinHandle<()>,
 }
 
+struct ActiveAgentSessionTitleTask {
+    run_id: String,
+    token: CancellationToken,
+    task_handle: tokio::task::JoinHandle<()>,
+}
+
 type PendingPermissionKey = (String, String);
 #[derive(Debug, Clone, PartialEq)]
 struct PendingAgentPermission {
@@ -605,6 +621,7 @@ struct AgentRuntime {
     session_manager: Arc<SessionManager>,
     maple_api_session: Arc<MapleApiSession>,
     active_runs: HashMap<String, ActiveAgentRun>,
+    session_title_tasks: HashMap<String, ActiveAgentSessionTitleTask>,
     session_tool_contexts: HashMap<String, InstalledAgentToolContext>,
     permission_modes: SessionPermissionModes,
     web_tool_state: Arc<WebToolState>,
@@ -1071,6 +1088,341 @@ fn should_name_session_from_prompt(session: &Session) -> bool {
         && session.name == DEFAULT_AGENT_SESSION_TITLE
 }
 
+fn strip_session_title_reasoning_blocks(raw: &str) -> String {
+    let mut value = raw.to_string();
+    for tag in ["think", "analysis"] {
+        loop {
+            let lowercase = value.to_ascii_lowercase();
+            let Some(start) = lowercase.find(&format!("<{tag}")) else {
+                break;
+            };
+            let Some(open_end_offset) = lowercase[start..].find('>') else {
+                value.truncate(start);
+                break;
+            };
+            let content_start = start + open_end_offset + 1;
+            let close = format!("</{tag}>");
+            let Some(close_offset) = lowercase[content_start..].find(&close) else {
+                value.truncate(start);
+                break;
+            };
+            let end = content_start + close_offset + close.len();
+            value.replace_range(start..end, "");
+        }
+    }
+    value
+}
+
+fn normalize_generated_session_title(raw: &str) -> Option<String> {
+    let without_reasoning = strip_session_title_reasoning_blocks(raw);
+    let printable = without_reasoning
+        .chars()
+        .filter(|character| !character.is_control() || character.is_whitespace())
+        .collect::<String>();
+    let first_line = printable
+        .lines()
+        .find(|line| !line.trim().is_empty())?
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let title = first_line
+        .strip_prefix('"')
+        .and_then(|value| value.strip_suffix('"'))
+        .or_else(|| {
+            first_line
+                .strip_prefix('\'')
+                .and_then(|value| value.strip_suffix('\''))
+        })
+        .unwrap_or(&first_line)
+        .trim();
+    if title.is_empty() {
+        return None;
+    }
+    Some(session_title_from_prompt(title))
+}
+
+// Maple keeps Goose's provider and session persistence boundaries, while using
+// the same dedicated first-message title policy as Maple Chat. Scheduling stays
+// account/session owned instead of using Goose's detached first-three-turn job.
+struct AgentSessionTitleGeneration<'a> {
+    session_manager: &'a SessionManager,
+    agent: &'a Agent,
+    session_lifecycle: &'a Arc<Mutex<()>>,
+    session_id: &'a str,
+    first_prompt: &'a str,
+    expected_fallback_title: &'a str,
+    cancel_token: &'a CancellationToken,
+    event_target: Option<(&'a AgentEventDispatcher, AgentHostEventPolicy)>,
+}
+
+async fn generate_agent_session_title(
+    generation: AgentSessionTitleGeneration<'_>,
+) -> Result<Option<AgentSessionSummary>, String> {
+    let AgentSessionTitleGeneration {
+        session_manager,
+        agent,
+        session_lifecycle,
+        session_id,
+        first_prompt,
+        expected_fallback_title,
+        cancel_token: title_cancel_token,
+        event_target,
+    } = generation;
+    let provider = agent
+        .provider()
+        .await
+        .map_err(|error| format!("Failed to resolve Agent title provider: {error}"))?;
+    let mut model_config =
+        goose::model_config::model_config_from_user_config_with_session_settings(
+            provider.get_name(),
+            SESSION_TITLE_MODEL,
+            None,
+            None,
+            None,
+        )
+        .map_err(|error| format!("Failed to configure Agent title model: {error}"))?;
+    model_config.request_params = None;
+    model_config.reasoning = Some(false);
+    let model_config = model_config
+        .with_temperature(Some(SESSION_TITLE_TEMPERATURE))
+        .with_max_tokens(Some(SESSION_TITLE_MAX_TOKENS));
+    let bounded_prompt = first_prompt
+        .chars()
+        .take(SESSION_TITLE_MAX_INPUT_CHARS)
+        .collect::<String>();
+    let messages = [Message::user().with_text(format!(
+        "Generate a concise, contextual title (3-5 words) for a chat that starts with this message: \"{bounded_prompt}\""
+    ))];
+    let generation = provider::with_run_cancellation(
+        title_cancel_token.clone(),
+        goose::session_context::with_session_id(
+            Some(session_id.to_string()),
+            provider.complete(&model_config, SESSION_TITLE_SYSTEM_PROMPT, &messages, &[]),
+        ),
+    );
+    tokio::pin!(generation);
+    let completion = tokio::select! {
+        result = &mut generation => result,
+        _ = tokio::time::sleep(SESSION_TITLE_GENERATION_TIMEOUT) => {
+            title_cancel_token.cancel();
+            // Maple's transport retains a credential-reconciliation task until
+            // the provider future settles. Drain it so timeout preserves the
+            // same account-lifetime barrier as Stop/logout.
+            let _ = generation.await;
+            return Err("Agent task title generation timed out".to_string());
+        }
+    }
+    .map_err(|error| format!("Failed to generate Agent task title: {error}"))?;
+    let Some(title) = normalize_generated_session_title(&completion.0.as_concat_text()) else {
+        return Ok(None);
+    };
+
+    // Serialize the authority check and write with Maple's other session
+    // mutations. Future manual-title entry points must use this same lifecycle
+    // lock so a classifier result cannot pass its check and then overwrite them.
+    let _session_lifecycle_guard = tokio::select! {
+        biased;
+        _ = title_cancel_token.cancelled() => return Ok(None),
+        guard = session_lifecycle.lock() => guard,
+    };
+    if title_cancel_token.is_cancelled() {
+        return Ok(None);
+    }
+
+    // Preserve explicit/source titles and any later title authority. This also
+    // prevents a stale auxiliary result from replacing a newer generation.
+    let session = session_manager
+        .get_session(session_id, false)
+        .await
+        .map_err(|error| format!("Failed to load Agent task before naming: {error}"))?;
+    if session.user_set_name || session.name != expected_fallback_title {
+        return Ok(None);
+    }
+    session_manager
+        .update(session_id)
+        .system_generated_name(title)
+        .apply()
+        .await
+        .map_err(|error| format!("Failed to persist Agent task title: {error}"))?;
+    let session = session_manager
+        .get_session(session_id, false)
+        .await
+        .map_err(|error| format!("Failed to load generated Agent task title: {error}"))?;
+    let summary = session_summary(&session);
+    if !title_cancel_token.is_cancelled() {
+        if let Some((dispatcher, _)) = event_target.filter(|(_, policy)| policy.publishes()) {
+            // Keep the authority lock through publication. A later manual title
+            // therefore persists and publishes after this semantic snapshot.
+            emit_agent_event(
+                dispatcher,
+                AgentServiceEvent::SessionUpdated {
+                    session_id: session_id.to_string(),
+                    run_id: None,
+                    session: summary.clone(),
+                },
+            );
+        }
+    }
+    Ok(Some(summary))
+}
+
+async fn restore_unused_agent_session_fallback_under_lifecycle(
+    session_manager: &SessionManager,
+    session_id: &str,
+    expected_fallback_title: &str,
+) -> Result<Option<AgentSessionSummary>, String> {
+    let session = session_manager
+        .get_session(session_id, false)
+        .await
+        .map_err(|error| format!("Failed to inspect unused Agent task title: {error}"))?;
+    if session.message_count != 0
+        || session.user_set_name
+        || session.name != expected_fallback_title
+    {
+        return Ok(None);
+    }
+    session_manager
+        .update(session_id)
+        .system_generated_name(DEFAULT_AGENT_SESSION_TITLE.to_string())
+        .apply()
+        .await
+        .map_err(|error| format!("Failed to restore unused Agent task title: {error}"))?;
+    let session = session_manager
+        .get_session(session_id, false)
+        .await
+        .map_err(|error| format!("Failed to load restored Agent task title: {error}"))?;
+    Ok(Some(session_summary(&session)))
+}
+
+struct AgentSessionTitleJob {
+    start: oneshot::Receiver<()>,
+    settled: oneshot::Receiver<()>,
+    session_manager: Arc<SessionManager>,
+    agent: Arc<Agent>,
+    session_lifecycle: Arc<Mutex<()>>,
+    session_id: String,
+    first_prompt: String,
+    expected_fallback_title: String,
+    cancel_token: CancellationToken,
+    dispatcher: AgentEventDispatcher,
+    host_events: AgentHostEventPolicy,
+}
+
+async fn run_agent_session_title_task(job: AgentSessionTitleJob) {
+    let AgentSessionTitleJob {
+        mut start,
+        mut settled,
+        session_manager,
+        agent,
+        session_lifecycle,
+        session_id,
+        first_prompt,
+        expected_fallback_title,
+        cancel_token,
+        dispatcher,
+        host_events,
+    } = job;
+    let should_start = tokio::select! {
+        biased;
+        _ = cancel_token.cancelled() => return,
+        started = &mut start => started.is_ok(),
+    };
+    if !should_start {
+        let settled = tokio::select! {
+            biased;
+            _ = cancel_token.cancelled() => false,
+            settled = &mut settled => settled.is_ok(),
+        };
+        if !settled {
+            return;
+        }
+        let session_lifecycle_guard = tokio::select! {
+            biased;
+            _ = cancel_token.cancelled() => return,
+            guard = session_lifecycle.lock() => guard,
+        };
+        let persisted_session = match session_manager.get_session(&session_id, false).await {
+            Ok(session) => session,
+            Err(error) => {
+                if !cancel_token.is_cancelled() {
+                    log::warn!("Failed to inspect Agent task after title start closed: {error}");
+                }
+                return;
+            }
+        };
+        let persisted_message_needs_title = persisted_session.message_count > 0
+            && !persisted_session.user_set_name
+            && persisted_session.name == expected_fallback_title;
+        if !persisted_message_needs_title {
+            if persisted_session.message_count == 0 {
+                match restore_unused_agent_session_fallback_under_lifecycle(
+                    session_manager.as_ref(),
+                    &session_id,
+                    &expected_fallback_title,
+                )
+                .await
+                {
+                    Ok(Some(session)) if host_events.publishes() => emit_agent_event(
+                        &dispatcher,
+                        AgentServiceEvent::SessionUpdated {
+                            session_id: session_id.clone(),
+                            run_id: None,
+                            session,
+                        },
+                    ),
+                    Ok(_) => {}
+                    Err(error) => log::warn!("{error}"),
+                }
+            }
+            return;
+        }
+        // Goose can persist the first message and then fail before returning
+        // its reply stream. The semantic title is still valid in that case.
+        drop(session_lifecycle_guard);
+    }
+
+    let result = generate_agent_session_title(AgentSessionTitleGeneration {
+        session_manager: session_manager.as_ref(),
+        agent: agent.as_ref(),
+        session_lifecycle: &session_lifecycle,
+        session_id: &session_id,
+        first_prompt: &first_prompt,
+        expected_fallback_title: &expected_fallback_title,
+        cancel_token: &cancel_token,
+        event_target: Some((&dispatcher, host_events)),
+    })
+    .await;
+    match result {
+        Ok(_) => {}
+        Err(error) if !cancel_token.is_cancelled() => {
+            log::warn!("{error}");
+        }
+        Err(_) => {}
+    }
+}
+
+async fn remove_agent_session_title_task(
+    state_inner: &Arc<Mutex<Option<AgentRuntime>>>,
+    account_scope: &str,
+    session_id: &str,
+    run_id: &str,
+) {
+    let mut runtime = state_inner.lock().await;
+    let Some(current) = runtime.as_mut() else {
+        return;
+    };
+    if current.account_scope != account_scope {
+        return;
+    }
+    let owns_registration = current
+        .session_title_tasks
+        .get(session_id)
+        .is_some_and(|task| task.run_id == run_id);
+    if owns_registration {
+        current.session_title_tasks.remove(session_id);
+    }
+}
+
 async fn take_pending_permissions_for_runs(
     pending_permissions: &PendingPermissions,
     run_ids: &[String],
@@ -1195,7 +1547,7 @@ async fn stop_runtime_inner(
     requested_scope: Option<&str>,
 ) -> Result<(), String> {
     let session_lifecycle_guard = state.session_lifecycle.lock().await;
-    let (active_runs, web_tool_state, tool_contexts) = {
+    let (active_runs, session_title_tasks, web_tool_state, tool_contexts) = {
         let mut runtime = state.inner.lock().await;
         let Some(current) = runtime.as_mut() else {
             return Ok(());
@@ -1205,6 +1557,7 @@ async fn stop_runtime_inner(
         }
         (
             std::mem::take(&mut current.active_runs),
+            std::mem::take(&mut current.session_title_tasks),
             Arc::clone(&current.web_tool_state),
             std::mem::take(&mut current.session_tool_contexts),
         )
@@ -1223,12 +1576,16 @@ async fn stop_runtime_inner(
         .iter()
         .map(|(run_id, run)| (run_id.clone(), Arc::clone(&run.cancelled_permission_ids)))
         .collect::<HashMap<_, _>>();
-    let mut task_handles = Vec::with_capacity(active_runs.len());
+    let mut task_handles = Vec::with_capacity(active_runs.len() + session_title_tasks.len());
     for (_, active_run) in active_runs {
         // Cancel first so an ActionRequired event racing this snapshot will
         // take the immediate-cancel path in register_pending_permission.
         active_run.tool_context.cancel_run(&active_run.token);
         task_handles.push(active_run.task_handle);
+    }
+    for (_, title_task) in session_title_tasks {
+        title_task.token.cancel();
+        task_handles.push(title_task.task_handle);
     }
     let cancelled_permissions =
         cancel_pending_permissions_for_runs(&state.pending_permissions, &run_ids, &agents_by_run)
@@ -1378,6 +1735,9 @@ async fn start_runtime_for_user(
         permission_manager,
         None,
         GOOSE_PERMISSION_ROUTING_MODE,
+        // Maple schedules its title-specific provider request as a tracked,
+        // first-turn-only task below. Enabling Goose's scheduler would add a
+        // detached first-three-turn job and could retitle source-defined tasks.
         true,
         GoosePlatform::GooseDesktop,
     )
@@ -1399,6 +1759,7 @@ async fn start_runtime_for_user(
         session_manager,
         maple_api_session,
         active_runs: HashMap::new(),
+        session_title_tasks: HashMap::new(),
         session_tool_contexts: HashMap::new(),
         permission_modes: Arc::new(Mutex::new(HashMap::new())),
         web_tool_state: Arc::new(WebToolState::default()),
@@ -2261,9 +2622,9 @@ impl AgentRuntimeHandle {
         }
 
         let _session_lifecycle_guard = state.session_lifecycle.lock().await;
-        let (agent_manager, session_manager, permission_modes, web_tool_state) = {
-            let runtime = state.inner.lock().await;
-            match runtime.as_ref() {
+        let (agent_manager, session_manager, permission_modes, web_tool_state, title_task) = {
+            let mut runtime = state.inner.lock().await;
+            match runtime.as_mut() {
                 Some(current) => {
                     ensure_runtime_account(current, account_scope)?;
                     if has_active_session_run(&current.active_runs, &session_id) {
@@ -2274,6 +2635,7 @@ impl AgentRuntimeHandle {
                         Arc::clone(&current.session_manager),
                         Some(Arc::clone(&current.permission_modes)),
                         Some(Arc::clone(&current.web_tool_state)),
+                        current.session_title_tasks.remove(&session_id),
                     )
                 }
                 None => (
@@ -2281,9 +2643,15 @@ impl AgentRuntimeHandle {
                     account_session_manager(&state.host.paths, user_id)?,
                     None,
                     None,
+                    None,
                 ),
             }
         };
+
+        if let Some(title_task) = title_task {
+            title_task.token.cancel();
+            join_agent_tasks(vec![title_task.task_handle], RUN_SHUTDOWN_TIMEOUT).await;
+        }
 
         delete_persisted_agent_session(
             session_manager.as_ref(),
@@ -2610,6 +2978,7 @@ impl AgentRuntimeHandle {
             return Err("Agent surface closed before the run could start".to_string());
         }
         let prompt_title = session_title_from_prompt(&text);
+        let session_title_prompt = text.clone();
         let web_permission_context = WebPermissionContext::from_user_prompt(&text);
         let user_message = Message::user().with_text(text).with_generated_id();
         let (
@@ -2668,11 +3037,13 @@ impl AgentRuntimeHandle {
         };
         let effective_mode = permission_mode.to_string();
 
+        let mut fallback_title_applied = false;
         let setup_result: Result<
             (
                 Arc<Agent>,
                 Vec<AgentMcpConnectionError>,
                 SharedAgentToolContext,
+                bool,
             ),
             String,
         > = async {
@@ -2728,10 +3099,11 @@ impl AgentRuntimeHandle {
             if should_name_from_prompt {
                 session_manager
                     .update(&session.id)
-                    .system_generated_name(prompt_title)
+                    .system_generated_name(prompt_title.clone())
                     .apply()
                     .await
                     .map_err(|e| format!("Failed to name Agent task: {e}"))?;
+                fallback_title_applied = true;
                 session = session_manager
                     .get_session(&session.id, false)
                     .await
@@ -2759,12 +3131,29 @@ impl AgentRuntimeHandle {
                 },
             )
             .await?;
-            Ok((agent, mcp_errors, tool_context))
+            Ok((agent, mcp_errors, tool_context, should_name_from_prompt))
         }
         .await;
-        let (agent, mcp_errors, tool_context) = match setup_result {
+        let (agent, mcp_errors, tool_context, generate_session_title) = match setup_result {
             Ok(setup) => setup,
             Err(error) => {
+                if fallback_title_applied {
+                    match restore_unused_agent_session_fallback_under_lifecycle(
+                        session_manager.as_ref(),
+                        &request.session_id,
+                        &prompt_title,
+                    )
+                    .await
+                    {
+                        Ok(Some(session)) => {
+                            run_events
+                                .publish(AgentRunEvent::SessionUpdated(session))
+                                .await;
+                        }
+                        Ok(None) => {}
+                        Err(restore_error) => log::warn!("{restore_error}"),
+                    }
+                }
                 if seeded_permission_mode {
                     permission_modes.lock().await.remove(&request.session_id);
                 }
@@ -2782,6 +3171,23 @@ impl AgentRuntimeHandle {
                 .await;
         }
         if cancel_token.is_cancelled() {
+            if generate_session_title {
+                match restore_unused_agent_session_fallback_under_lifecycle(
+                    session_manager.as_ref(),
+                    &request.session_id,
+                    &prompt_title,
+                )
+                .await
+                {
+                    Ok(Some(session)) => {
+                        run_events
+                            .publish(AgentRunEvent::SessionUpdated(session))
+                            .await;
+                    }
+                    Ok(None) => {}
+                    Err(error) => log::warn!("{error}"),
+                }
+            }
             if seeded_permission_mode {
                 permission_modes.lock().await.remove(&request.session_id);
             }
@@ -2808,6 +3214,74 @@ impl AgentRuntimeHandle {
         let cancelled_permission_ids = Arc::new(Mutex::new(HashSet::new()));
         let task_cancelled_permission_ids = Arc::clone(&cancelled_permission_ids);
         let task_issued_permission_ids = Arc::new(Mutex::new(HashSet::new()));
+        let (
+            session_title_start,
+            session_title_settled,
+            session_title_registered,
+            session_title_task,
+        ) = if generate_session_title {
+            // Once the first user message is persisted, title generation is a
+            // session/account concern rather than part of the reply stream.
+            // Stop/delete/logout own this token through the runtime registry.
+            let title_cancel_token = CancellationToken::new();
+            let (title_start_tx, title_start_rx) = oneshot::channel();
+            let (title_settled_tx, title_settled_rx) = oneshot::channel();
+            let (title_registered_tx, title_registered_rx) = oneshot::channel();
+            let title_state_inner = Arc::clone(&state_inner);
+            let title_session_manager = Arc::clone(&session_manager);
+            let title_agent = Arc::clone(&agent);
+            let title_session_lifecycle = Arc::clone(&session_lifecycle);
+            let title_session_id = session_id.clone();
+            let title_first_prompt = session_title_prompt.clone();
+            let title_expected_fallback = prompt_title.clone();
+            let title_run_id = run_id.clone();
+            let title_account_scope = account_scope.to_string();
+            let title_dispatcher = state.host.events.clone();
+            let title_task_cancel_token = title_cancel_token.clone();
+            let title_cleanup_cancel_token = title_cancel_token.clone();
+            let title_cleanup_session_id = title_session_id.clone();
+            let title_cleanup_run_id = title_run_id.clone();
+            let title_task_handle = tokio::spawn(async move {
+                // Do not finish or self-remove before the owning runtime has
+                // atomically registered this handle for Stop/delete.
+                if title_registered_rx.await.is_err() {
+                    return;
+                }
+                run_agent_session_title_task(AgentSessionTitleJob {
+                    start: title_start_rx,
+                    settled: title_settled_rx,
+                    session_manager: title_session_manager,
+                    agent: title_agent,
+                    session_lifecycle: title_session_lifecycle,
+                    session_id: title_session_id,
+                    first_prompt: title_first_prompt,
+                    expected_fallback_title: title_expected_fallback,
+                    cancel_token: title_task_cancel_token,
+                    dispatcher: title_dispatcher,
+                    host_events,
+                })
+                .await;
+                remove_agent_session_title_task(
+                    &title_state_inner,
+                    &title_account_scope,
+                    &title_cleanup_session_id,
+                    &title_cleanup_run_id,
+                )
+                .await;
+            });
+            (
+                Some(title_start_tx),
+                Some(title_settled_tx),
+                Some(title_registered_tx),
+                Some(ActiveAgentSessionTitleTask {
+                    run_id: title_run_id,
+                    token: title_cleanup_cancel_token,
+                    task_handle: title_task_handle,
+                }),
+            )
+        } else {
+            (None, None, None, None)
+        };
         let (start_tx, start_rx) = oneshot::channel();
         let (terminal_tx, terminal_rx) = watch::channel(None);
         let task = tokio::spawn(async move {
@@ -2830,6 +3304,7 @@ impl AgentRuntimeHandle {
                         web_tool_state: Arc::clone(&task_web_tool_state),
                         web_permission_context,
                         cancel_token: task_cancel_token.clone(),
+                        session_title_start,
                         pending_permissions: Arc::clone(&task_pending_permissions),
                         issued_permission_ids: task_issued_permission_ids,
                         cancelled_permission_ids: Arc::clone(&task_cancelled_permission_ids),
@@ -2892,6 +3367,12 @@ impl AgentRuntimeHandle {
             } else {
                 result
             };
+            if let Some(settled) = session_title_settled {
+                // If the normal post-persistence start signal was never sent,
+                // the title task may inspect the session only after cancellation
+                // repair or reply failure has reached its durable boundary.
+                let _ = settled.send(());
+            }
             task_agent_manager
                 .unregister_cancel_token(&session_id)
                 .await;
@@ -2946,12 +3427,21 @@ impl AgentRuntimeHandle {
         });
 
         let mut task = Some(task);
+        let mut session_title_task = session_title_task;
         let insertion_error = {
             let mut runtime = state.inner.lock().await;
             match runtime.as_mut() {
                 None => Some("Agent runtime is not running".to_string()),
                 Some(current) => match ensure_runtime_account(current, account_scope) {
                     Err(error) => Some(error),
+                    Ok(())
+                        if session_title_task.is_some()
+                            && current
+                                .session_title_tasks
+                                .contains_key(&request.session_id) =>
+                    {
+                        Some("Agent task title generation is already running".to_string())
+                    }
                     Ok(()) => {
                         current.active_runs.insert(
                             run_id.clone(),
@@ -2966,6 +3456,11 @@ impl AgentRuntimeHandle {
                                 task_handle: task.take().expect("task handle must be available"),
                             },
                         );
+                        if let Some(title_task) = session_title_task.take() {
+                            current
+                                .session_title_tasks
+                                .insert(request.session_id.clone(), title_task);
+                        }
                         None
                     }
                 },
@@ -2975,10 +3470,35 @@ impl AgentRuntimeHandle {
             let task = task.expect("failed insertion must retain task handle");
             task.abort();
             let _ = task.await;
+            if let Some(title_task) = session_title_task {
+                title_task.token.cancel();
+                title_task.task_handle.abort();
+                let _ = title_task.task_handle.await;
+            }
+            if generate_session_title {
+                match restore_unused_agent_session_fallback_under_lifecycle(
+                    session_manager.as_ref(),
+                    &request.session_id,
+                    &prompt_title,
+                )
+                .await
+                {
+                    Ok(Some(session)) => {
+                        run_events
+                            .publish(AgentRunEvent::SessionUpdated(session))
+                            .await;
+                    }
+                    Ok(None) => {}
+                    Err(restore_error) => log::warn!("{restore_error}"),
+                }
+            }
             agent_manager
                 .unregister_cancel_token(&request.session_id)
                 .await;
             return Err(error);
+        }
+        if let Some(registered) = session_title_registered {
+            let _ = registered.send(());
         }
         run_events.publish(AgentRunEvent::Started).await;
 
@@ -3465,6 +3985,7 @@ struct AgentPromptRun {
     web_tool_state: Arc<WebToolState>,
     web_permission_context: WebPermissionContext,
     cancel_token: CancellationToken,
+    session_title_start: Option<oneshot::Sender<()>>,
     pending_permissions: PendingPermissions,
     issued_permission_ids: IssuedPermissionIds,
     cancelled_permission_ids: CancelledPermissionIds,
@@ -3886,6 +4407,7 @@ async fn run_agent_prompt(run: AgentPromptRun) -> Result<AgentPromptOutcome, Str
         web_tool_state,
         web_permission_context,
         cancel_token,
+        session_title_start,
         pending_permissions,
         issued_permission_ids,
         cancelled_permission_ids,
@@ -3913,8 +4435,20 @@ async fn run_agent_prompt(run: AgentPromptRun) -> Result<AgentPromptOutcome, Str
             &updated_session,
         )))
         .await;
+    if let Some(start) = session_title_start {
+        // Goose has persisted the first user message and Maple has published
+        // the fallback snapshot. A semantic title can now advance that state,
+        // but can never be followed by a stale fallback event from this run.
+        let _ = start.send(());
+    }
 
-    while let Some(event) = stream.next().await {
+    let mut prompt_error = None;
+
+    loop {
+        let next_event = stream.next().await;
+        let Some(event) = next_event else {
+            break;
+        };
         match event {
             Ok(AgentEvent::Message(message)) => {
                 let extracted_permissions = tool_permission_requests(&message);
@@ -3923,7 +4457,7 @@ async fn run_agent_prompt(run: AgentPromptRun) -> Result<AgentPromptOutcome, Str
                         deliver_tool_permission(&agent, request_id.clone(), Permission::Cancel)
                             .await;
                     }
-                    return Err(format!(
+                    prompt_error = Some(format!(
                         "Goose emitted an empty or conflicting permission request ID: {}",
                         extracted_permissions
                             .conflicting_ids
@@ -3932,6 +4466,7 @@ async fn run_agent_prompt(run: AgentPromptRun) -> Result<AgentPromptOutcome, Str
                             .collect::<Vec<_>>()
                             .join(", ")
                     ));
+                    break;
                 }
                 let permission_requests = extracted_permissions.requests;
                 let automatically_handled = automatically_handle_permissions(
@@ -4099,13 +4634,18 @@ async fn run_agent_prompt(run: AgentPromptRun) -> Result<AgentPromptOutcome, Str
                 events.publish(AgentRunEvent::HistoryReplaced).await;
             }
             Err(error) => {
-                return Err(format!("Goose stream failed: {error}"));
+                prompt_error = Some(format!("Goose stream failed: {error}"));
+                break;
             }
         }
         // Keep polling Goose after cancellation. Goose observes the same token,
         // stops provider/tool work, and then commits any complete message/tool
         // batch before its stream ends. Dropping the stream here would discard
         // that standard durable boundary even after a completed result event.
+    }
+
+    if let Some(error) = prompt_error {
+        return Err(error);
     }
 
     Ok(AgentPromptOutcome { terminal_message })
@@ -6571,8 +7111,13 @@ fn path_string(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use goose_providers::base::{stream_from_single_message, MessageStream, Provider};
+    use goose_providers::conversation::token_usage::{ProviderUsage, Usage};
+    use goose_providers::errors::ProviderError;
+    use goose_providers::model::ModelConfig;
     use rmcp::model::{Annotations, Role as McpRole, TextContent};
     use std::collections::{BTreeMap, BTreeSet};
+    use std::sync::atomic::AtomicUsize;
 
     struct NoopAgentEventSink;
 
@@ -6607,6 +7152,198 @@ mod tests {
                 "test transport should not be called".to_string(),
             ))
         }
+    }
+
+    struct SessionTitleTestProvider {
+        calls: Arc<AtomicUsize>,
+        response: &'static str,
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for SessionTitleTestProvider {
+        fn get_name(&self) -> &str {
+            MAPLE_PROVIDER_NAME
+        }
+
+        async fn stream(
+            &self,
+            _model_config: &ModelConfig,
+            _system: &str,
+            _messages: &[Message],
+            _tools: &[rmcp::model::Tool],
+        ) -> Result<MessageStream, ProviderError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(stream_from_single_message(
+                Message::assistant().with_text(self.response),
+                ProviderUsage::new("title-test".to_string(), Usage::default()),
+            ))
+        }
+    }
+
+    #[derive(Clone, Debug)]
+    struct SessionTitleRequestCapture {
+        model_name: String,
+        temperature: Option<f32>,
+        max_tokens: Option<i32>,
+        reasoning: Option<bool>,
+        request_params_present: bool,
+        system: String,
+        user: String,
+        tool_count: usize,
+    }
+
+    struct CapturingSessionTitleProvider {
+        capture: Arc<std::sync::Mutex<Option<SessionTitleRequestCapture>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for CapturingSessionTitleProvider {
+        fn get_name(&self) -> &str {
+            MAPLE_PROVIDER_NAME
+        }
+
+        async fn stream(
+            &self,
+            model_config: &ModelConfig,
+            system: &str,
+            messages: &[Message],
+            tools: &[rmcp::model::Tool],
+        ) -> Result<MessageStream, ProviderError> {
+            let user = messages
+                .first()
+                .map(Message::as_concat_text)
+                .unwrap_or_default();
+            *self
+                .capture
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                Some(SessionTitleRequestCapture {
+                    model_name: model_config.model_name.clone(),
+                    temperature: model_config.temperature,
+                    max_tokens: model_config.max_tokens,
+                    reasoning: model_config.reasoning,
+                    request_params_present: model_config.request_params.is_some(),
+                    system: system.to_string(),
+                    user,
+                    tool_count: tools.len(),
+                });
+            Ok(stream_from_single_message(
+                Message::assistant().with_text("Bounded Llama Title"),
+                ProviderUsage::new("captured-title-test".to_string(), Usage::default()),
+            ))
+        }
+    }
+
+    struct BlockingSessionTitleProvider {
+        cancel_token: CancellationToken,
+        cancelled: Arc<AtomicBool>,
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for BlockingSessionTitleProvider {
+        fn get_name(&self) -> &str {
+            MAPLE_PROVIDER_NAME
+        }
+
+        async fn stream(
+            &self,
+            _model_config: &ModelConfig,
+            _system: &str,
+            _messages: &[Message],
+            _tools: &[rmcp::model::Tool],
+        ) -> Result<MessageStream, ProviderError> {
+            self.cancel_token.cancelled().await;
+            self.cancelled.store(true, Ordering::SeqCst);
+            Err(ProviderError::ExecutionError(
+                "title request cancelled".to_string(),
+            ))
+        }
+    }
+
+    struct DelayedSessionTitleProvider {
+        title_started: Arc<tokio::sync::Notify>,
+        title_release: Arc<tokio::sync::Notify>,
+        title_cancel_token: CancellationToken,
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for DelayedSessionTitleProvider {
+        fn get_name(&self) -> &str {
+            MAPLE_PROVIDER_NAME
+        }
+
+        async fn stream(
+            &self,
+            _model_config: &ModelConfig,
+            system: &str,
+            _messages: &[Message],
+            _tools: &[rmcp::model::Tool],
+        ) -> Result<MessageStream, ProviderError> {
+            let response = if system == SESSION_TITLE_SYSTEM_PROMPT {
+                self.title_started.notify_one();
+                tokio::select! {
+                    biased;
+                    _ = self.title_cancel_token.cancelled() => {
+                        return Err(ProviderError::ExecutionError(
+                            "title request cancelled".to_string(),
+                        ));
+                    }
+                    _ = self.title_release.notified() => "Friendly Check-In",
+                }
+            } else {
+                "I'm doing well!"
+            };
+            Ok(stream_from_single_message(
+                Message::assistant().with_text(response),
+                ProviderUsage::new("delayed-title-test".to_string(), Usage::default()),
+            ))
+        }
+    }
+
+    async fn session_title_test_context(
+        label: &str,
+        provider: Arc<dyn Provider>,
+    ) -> (PathBuf, Arc<SessionManager>, Agent, Session) {
+        let test_root = recent_roots_test_dir(label);
+        let project_root = test_root.join("project");
+        fs::create_dir_all(&project_root).unwrap();
+        let session_manager = Arc::new(SessionManager::new(test_root.join("sessions")));
+        let permission_manager = Arc::new(PermissionManager::new(test_root.join("permissions")));
+        let session = session_manager
+            .create_session(
+                project_root,
+                DEFAULT_AGENT_SESSION_TITLE.to_string(),
+                SessionType::User,
+                GooseMode::SmartApprove,
+            )
+            .await
+            .unwrap();
+        let agent = Agent::with_config(GooseAgentConfig::new(
+            Arc::clone(&session_manager),
+            permission_manager,
+            None,
+            GooseMode::SmartApprove,
+            true,
+            GoosePlatform::GooseDesktop,
+        ));
+        agent
+            .update_provider(provider, ModelConfig::new(DEFAULT_AGENT_MODEL), &session.id)
+            .await
+            .unwrap();
+        session_manager
+            .update(&session.id)
+            .system_generated_name("Explain reactive titles".to_string())
+            .apply()
+            .await
+            .unwrap();
+        session_manager
+            .add_message(
+                &session.id,
+                &Message::user().with_text("Explain how reactive Agent titles work"),
+            )
+            .await
+            .unwrap();
+        (test_root, session_manager, agent, session)
     }
 
     fn recent_roots_test_dir(label: &str) -> PathBuf {
@@ -10543,6 +11280,805 @@ mod tests {
         assert!(title.chars().count() <= MAX_AGENT_SESSION_TITLE_CHARS);
         assert!(title.ends_with('…'));
         assert!(!title.contains("  "));
+    }
+
+    #[test]
+    fn generated_session_title_is_sanitized_and_bounded() {
+        assert_eq!(
+            normalize_generated_session_title(
+                "<think>ignore me</think>  \"Friendly   Check-In\"\nextra"
+            ),
+            Some("Friendly Check-In".to_string())
+        );
+        assert_eq!(
+            normalize_generated_session_title("<analysis>ignore me</analysis>"),
+            None
+        );
+        assert!(normalize_generated_session_title(&"word ".repeat(100))
+            .is_some_and(|title| title.chars().count() <= MAX_AGENT_SESSION_TITLE_CHARS));
+    }
+
+    #[test]
+    fn semantic_title_generation_is_only_for_pristine_default_tasks() {
+        let mut session = Session {
+            name: DEFAULT_AGENT_SESSION_TITLE.to_string(),
+            ..Session::default()
+        };
+        assert!(should_name_session_from_prompt(&session));
+
+        session.name = "Buzz ACP".to_string();
+        assert!(!should_name_session_from_prompt(&session));
+
+        session.name = DEFAULT_AGENT_SESSION_TITLE.to_string();
+        session.user_set_name = true;
+        assert!(!should_name_session_from_prompt(&session));
+
+        session.user_set_name = false;
+        session.message_count = 1;
+        assert!(!should_name_session_from_prompt(&session));
+    }
+
+    #[tokio::test]
+    async fn fast_reply_finishes_before_delayed_semantic_title_updates_session() {
+        let test_root = recent_roots_test_dir("delayed-semantic-session-title");
+        let project_root = test_root.join("project");
+        fs::create_dir_all(&project_root).unwrap();
+        let session_manager = Arc::new(SessionManager::new(test_root.join("sessions")));
+        let permission_manager = Arc::new(PermissionManager::new(test_root.join("permissions")));
+        let session = session_manager
+            .create_session(
+                project_root,
+                DEFAULT_AGENT_SESSION_TITLE.to_string(),
+                SessionType::User,
+                GooseMode::SmartApprove,
+            )
+            .await
+            .unwrap();
+        session_manager
+            .update(&session.id)
+            .system_generated_name("hey how are you?".to_string())
+            .apply()
+            .await
+            .unwrap();
+
+        let title_started = Arc::new(tokio::sync::Notify::new());
+        let title_release = Arc::new(tokio::sync::Notify::new());
+        let title_cancel_token = CancellationToken::new();
+        let provider = Arc::new(DelayedSessionTitleProvider {
+            title_started: Arc::clone(&title_started),
+            title_release: Arc::clone(&title_release),
+            title_cancel_token: title_cancel_token.clone(),
+        });
+        let agent = Arc::new(Agent::with_config(GooseAgentConfig::new(
+            Arc::clone(&session_manager),
+            permission_manager,
+            None,
+            GooseMode::SmartApprove,
+            true,
+            GoosePlatform::GooseDesktop,
+        )));
+        agent
+            .update_provider(provider, ModelConfig::new(DEFAULT_AGENT_MODEL), &session.id)
+            .await
+            .unwrap();
+
+        let sink = Arc::new(RecordingAgentEventSink::default());
+        let dispatcher = AgentEventDispatcher::new(sink.clone());
+        let (events, _run_events) = AgentRunEventPublisher::new(
+            dispatcher.clone(),
+            session.id.clone(),
+            "fast-reply-run".to_string(),
+            AgentHostEventPolicy::Suppress,
+        );
+        let (title_start, title_start_rx) = oneshot::channel();
+        let (_title_settled, title_settled_rx) = oneshot::channel();
+        let title_task = tokio::spawn(run_agent_session_title_task(AgentSessionTitleJob {
+            start: title_start_rx,
+            settled: title_settled_rx,
+            session_manager: Arc::clone(&session_manager),
+            agent: Arc::clone(&agent),
+            session_lifecycle: Arc::new(Mutex::new(())),
+            session_id: session.id.clone(),
+            first_prompt: "hey how are you?".to_string(),
+            expected_fallback_title: "hey how are you?".to_string(),
+            cancel_token: title_cancel_token,
+            dispatcher,
+            host_events: AgentHostEventPolicy::Publish,
+        }));
+        let prompt = "hey how are you?";
+        let prompt_result = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            run_agent_prompt(AgentPromptRun {
+                events,
+                agent: Arc::clone(&agent),
+                session_manager: Arc::clone(&session_manager),
+                live_timelines: Arc::new(Mutex::new(HashMap::new())),
+                session_id: session.id.clone(),
+                user_message: Message::user().with_text(prompt).with_generated_id(),
+                permission_modes: Arc::new(Mutex::new(HashMap::new())),
+                web_tool_state: Arc::new(WebToolState::default()),
+                web_permission_context: WebPermissionContext::from_user_prompt(prompt),
+                cancel_token: CancellationToken::new(),
+                session_title_start: Some(title_start),
+                pending_permissions: Arc::new(Mutex::new(HashMap::new())),
+                issued_permission_ids: Arc::new(Mutex::new(HashSet::new())),
+                cancelled_permission_ids: Arc::new(Mutex::new(HashSet::new())),
+                run_id: "fast-reply-run".to_string(),
+                permission_routing: AgentPermissionRouting::Desktop,
+            }),
+        )
+        .await
+        .expect("the conversational reply must not wait for its title")
+        .expect("the conversational reply should succeed");
+        assert!(prompt_result.terminal_message.is_some());
+        tokio::time::timeout(std::time::Duration::from_secs(1), title_started.notified())
+            .await
+            .expect("the independent title request should start");
+        tokio::time::sleep(std::time::Duration::from_millis(550)).await;
+        assert!(!title_task.is_finished());
+        assert_eq!(
+            session_manager
+                .get_session(&session.id, false)
+                .await
+                .unwrap()
+                .name,
+            prompt
+        );
+
+        title_release.notify_one();
+        title_task.await.unwrap();
+
+        assert_eq!(
+            session_manager
+                .get_session(&session.id, false)
+                .await
+                .unwrap()
+                .name,
+            "Friendly Check-In"
+        );
+        let emitted = sink
+            .events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(emitted.iter().any(|event| {
+            matches!(
+                event,
+                AgentServiceEvent::SessionUpdated {
+                    session_id,
+                    run_id: None,
+                    session,
+                } if session_id == &session.id && session.title == "Friendly Check-In"
+            )
+        }));
+
+        drop(emitted);
+        drop(agent);
+        drop(session_manager);
+        let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[tokio::test]
+    async fn abandoned_first_send_restores_new_task_for_retry() {
+        let test_root = recent_roots_test_dir("abandoned-session-title");
+        let project_root = test_root.join("project");
+        fs::create_dir_all(&project_root).unwrap();
+        let session_manager = Arc::new(SessionManager::new(test_root.join("sessions")));
+        let permission_manager = Arc::new(PermissionManager::new(test_root.join("permissions")));
+        let session = session_manager
+            .create_session(
+                project_root,
+                DEFAULT_AGENT_SESSION_TITLE.to_string(),
+                SessionType::User,
+                GooseMode::SmartApprove,
+            )
+            .await
+            .unwrap();
+        session_manager
+            .update(&session.id)
+            .system_generated_name("hey how are you?".to_string())
+            .apply()
+            .await
+            .unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let agent = Arc::new(Agent::with_config(GooseAgentConfig::new(
+            Arc::clone(&session_manager),
+            permission_manager,
+            None,
+            GooseMode::SmartApprove,
+            true,
+            GoosePlatform::GooseDesktop,
+        )));
+        agent
+            .update_provider(
+                Arc::new(SessionTitleTestProvider {
+                    calls: Arc::clone(&calls),
+                    response: "Friendly Check-In",
+                }),
+                ModelConfig::new(DEFAULT_AGENT_MODEL),
+                &session.id,
+            )
+            .await
+            .unwrap();
+
+        let sink = Arc::new(RecordingAgentEventSink::default());
+        let (start, start_rx) = oneshot::channel();
+        let (settled, settled_rx) = oneshot::channel();
+        let title_task = tokio::spawn(run_agent_session_title_task(AgentSessionTitleJob {
+            start: start_rx,
+            settled: settled_rx,
+            session_manager: Arc::clone(&session_manager),
+            agent: Arc::clone(&agent),
+            session_lifecycle: Arc::new(Mutex::new(())),
+            session_id: session.id.clone(),
+            first_prompt: "hey how are you?".to_string(),
+            expected_fallback_title: "hey how are you?".to_string(),
+            cancel_token: CancellationToken::new(),
+            dispatcher: AgentEventDispatcher::new(sink.clone()),
+            host_events: AgentHostEventPolicy::Publish,
+        }));
+        drop(start);
+        settled.send(()).unwrap();
+        title_task.await.unwrap();
+
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            session_manager
+                .get_session(&session.id, false)
+                .await
+                .unwrap()
+                .name,
+            DEFAULT_AGENT_SESSION_TITLE
+        );
+        assert!(sink
+            .events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .any(|event| matches!(
+                event,
+                AgentServiceEvent::SessionUpdated { session, .. }
+                    if session.title == DEFAULT_AGENT_SESSION_TITLE
+            )));
+
+        drop(agent);
+        drop(session_manager);
+        let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[tokio::test]
+    async fn persisted_first_message_is_titled_when_reply_fails_before_stream_start() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let provider = Arc::new(SessionTitleTestProvider {
+            calls: Arc::clone(&calls),
+            response: "Friendly Check-In",
+        });
+        let (test_root, session_manager, agent, session) =
+            session_title_test_context("persisted-message-closed-title-start", provider).await;
+        let agent = Arc::new(agent);
+        let sink = Arc::new(RecordingAgentEventSink::default());
+        let (start, start_rx) = oneshot::channel();
+        let (settled, settled_rx) = oneshot::channel();
+        let title_task = tokio::spawn(run_agent_session_title_task(AgentSessionTitleJob {
+            start: start_rx,
+            settled: settled_rx,
+            session_manager: Arc::clone(&session_manager),
+            agent: Arc::clone(&agent),
+            session_lifecycle: Arc::new(Mutex::new(())),
+            session_id: session.id.clone(),
+            first_prompt: "hey how are you?".to_string(),
+            expected_fallback_title: "Explain reactive titles".to_string(),
+            cancel_token: CancellationToken::new(),
+            dispatcher: AgentEventDispatcher::new(sink.clone()),
+            host_events: AgentHostEventPolicy::Publish,
+        }));
+        drop(start);
+        settled.send(()).unwrap();
+        title_task.await.unwrap();
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            session_manager
+                .get_session(&session.id, false)
+                .await
+                .unwrap()
+                .name,
+            "Friendly Check-In"
+        );
+        assert!(sink
+            .events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .any(|event| matches!(
+                event,
+                AgentServiceEvent::SessionUpdated { session, .. }
+                    if session.title == "Friendly Check-In"
+            )));
+
+        drop(agent);
+        drop(session_manager);
+        let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[tokio::test]
+    async fn cancel_before_goose_persists_prompt_settles_before_semantic_title() {
+        let test_root = recent_roots_test_dir("cancel-before-title-start");
+        let project_root = test_root.join("project");
+        fs::create_dir_all(&project_root).unwrap();
+        let session_manager = Arc::new(SessionManager::new(test_root.join("sessions")));
+        let permission_manager = Arc::new(PermissionManager::new(test_root.join("permissions")));
+        let session = session_manager
+            .create_session(
+                project_root,
+                DEFAULT_AGENT_SESSION_TITLE.to_string(),
+                SessionType::User,
+                GooseMode::SmartApprove,
+            )
+            .await
+            .unwrap();
+        session_manager
+            .update(&session.id)
+            .system_generated_name("hey how are you?".to_string())
+            .apply()
+            .await
+            .unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let agent = Arc::new(Agent::with_config(GooseAgentConfig::new(
+            Arc::clone(&session_manager),
+            permission_manager,
+            None,
+            GooseMode::SmartApprove,
+            true,
+            GoosePlatform::GooseDesktop,
+        )));
+        agent
+            .update_provider(
+                Arc::new(SessionTitleTestProvider {
+                    calls: Arc::clone(&calls),
+                    response: "Friendly Check-In",
+                }),
+                ModelConfig::new(DEFAULT_AGENT_MODEL),
+                &session.id,
+            )
+            .await
+            .unwrap();
+
+        let session_lifecycle = Arc::new(Mutex::new(()));
+        let session_lifecycle_guard = session_lifecycle.lock().await;
+        let sink = Arc::new(RecordingAgentEventSink::default());
+        let (start, start_rx) = oneshot::channel();
+        let (settled, settled_rx) = oneshot::channel();
+        let title_task = tokio::spawn(run_agent_session_title_task(AgentSessionTitleJob {
+            start: start_rx,
+            settled: settled_rx,
+            session_manager: Arc::clone(&session_manager),
+            agent: Arc::clone(&agent),
+            session_lifecycle: Arc::clone(&session_lifecycle),
+            session_id: session.id.clone(),
+            first_prompt: "hey how are you?".to_string(),
+            expected_fallback_title: "hey how are you?".to_string(),
+            cancel_token: CancellationToken::new(),
+            dispatcher: AgentEventDispatcher::new(sink.clone()),
+            host_events: AgentHostEventPolicy::Publish,
+        }));
+        drop(start);
+
+        let user_message = Message::user()
+            .with_text("hey how are you?")
+            .with_generated_id();
+        finalize_cancelled_agent_turn(
+            session_manager.as_ref(),
+            &Arc::new(Mutex::new(HashMap::new())),
+            &WebToolState::default(),
+            &session.id,
+            AgentPermissionRouting::Desktop,
+            &user_message,
+            &HashSet::new(),
+        )
+        .await
+        .unwrap();
+        settled.send(()).unwrap();
+        drop(session_lifecycle_guard);
+        title_task.await.unwrap();
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let reloaded = session_manager
+            .get_session(&session.id, true)
+            .await
+            .unwrap();
+        assert_eq!(reloaded.name, "Friendly Check-In");
+        assert!(reloaded.conversation.as_ref().is_some_and(|conversation| {
+            conversation
+                .messages()
+                .iter()
+                .any(|message| message.id == user_message.id)
+        }));
+        assert!(sink
+            .events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .any(|event| matches!(
+                event,
+                AgentServiceEvent::SessionUpdated { session, .. }
+                    if session.title == "Friendly Check-In"
+            )));
+
+        drop(agent);
+        drop(session_manager);
+        let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[tokio::test]
+    async fn tracked_independent_session_title_is_cancelled_and_drained_without_late_update() {
+        let title_started = Arc::new(tokio::sync::Notify::new());
+        let title_release = Arc::new(tokio::sync::Notify::new());
+        let title_cancel_token = CancellationToken::new();
+        let provider = Arc::new(DelayedSessionTitleProvider {
+            title_started: Arc::clone(&title_started),
+            title_release,
+            title_cancel_token: title_cancel_token.clone(),
+        });
+        let (test_root, session_manager, agent, session) =
+            session_title_test_context("cancelled-independent-session-title", provider).await;
+        let agent = Arc::new(agent);
+        let sink = Arc::new(RecordingAgentEventSink::default());
+        let (start, start_rx) = oneshot::channel();
+        let (_settled, settled_rx) = oneshot::channel();
+        let title_task = tokio::spawn(run_agent_session_title_task(AgentSessionTitleJob {
+            start: start_rx,
+            settled: settled_rx,
+            session_manager: Arc::clone(&session_manager),
+            agent: Arc::clone(&agent),
+            session_lifecycle: Arc::new(Mutex::new(())),
+            session_id: session.id.clone(),
+            first_prompt: "Explain how reactive Agent titles work".to_string(),
+            expected_fallback_title: "Explain reactive titles".to_string(),
+            cancel_token: title_cancel_token.clone(),
+            dispatcher: AgentEventDispatcher::new(sink.clone()),
+            host_events: AgentHostEventPolicy::Publish,
+        }));
+
+        start.send(()).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(1), title_started.notified())
+            .await
+            .expect("the title request should start before cancellation");
+        let tracked_title_task = ActiveAgentSessionTitleTask {
+            run_id: "cancelled-independent-session-title-run".to_string(),
+            token: title_cancel_token,
+            task_handle: title_task,
+        };
+        tracked_title_task.token.cancel();
+        // Runtime shutdown takes the same token + handle pair from its title
+        // registry and joins it before dropping the account-scoped runtime.
+        join_agent_tasks(
+            vec![tracked_title_task.task_handle],
+            std::time::Duration::from_secs(1),
+        )
+        .await;
+
+        assert_eq!(
+            session_manager
+                .get_session(&session.id, false)
+                .await
+                .unwrap()
+                .name,
+            "Explain reactive titles"
+        );
+        assert!(sink
+            .events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_empty());
+
+        drop(agent);
+        drop(session_manager);
+        let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[tokio::test]
+    async fn session_deletion_drains_independent_title_before_removing_persisted_session() {
+        let title_started = Arc::new(tokio::sync::Notify::new());
+        let title_release = Arc::new(tokio::sync::Notify::new());
+        let title_cancel_token = CancellationToken::new();
+        let provider = Arc::new(DelayedSessionTitleProvider {
+            title_started: Arc::clone(&title_started),
+            title_release: Arc::clone(&title_release),
+            title_cancel_token: title_cancel_token.clone(),
+        });
+        let (test_root, session_manager, agent, session) =
+            session_title_test_context("delete-independent-session-title", provider).await;
+        let agent = Arc::new(agent);
+        let sink = Arc::new(RecordingAgentEventSink::default());
+        let (start, start_rx) = oneshot::channel();
+        let (_settled, settled_rx) = oneshot::channel();
+        let title_task = tokio::spawn(run_agent_session_title_task(AgentSessionTitleJob {
+            start: start_rx,
+            settled: settled_rx,
+            session_manager: Arc::clone(&session_manager),
+            agent: Arc::clone(&agent),
+            session_lifecycle: Arc::new(Mutex::new(())),
+            session_id: session.id.clone(),
+            first_prompt: "Explain how reactive Agent titles work".to_string(),
+            expected_fallback_title: "Explain reactive titles".to_string(),
+            cancel_token: title_cancel_token.clone(),
+            dispatcher: AgentEventDispatcher::new(sink.clone()),
+            host_events: AgentHostEventPolicy::Publish,
+        }));
+
+        start.send(()).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(1), title_started.notified())
+            .await
+            .expect("the title request should start before deletion");
+
+        let tracked_title_task = ActiveAgentSessionTitleTask {
+            run_id: "delete-independent-session-title-run".to_string(),
+            token: title_cancel_token,
+            task_handle: title_task,
+        };
+        tracked_title_task.token.cancel();
+        // Session deletion performs this drain while holding its lifecycle
+        // guard, before it removes the Goose row and Maple-owned session state.
+        join_agent_tasks(
+            vec![tracked_title_task.task_handle],
+            std::time::Duration::from_secs(1),
+        )
+        .await;
+
+        let pending_permissions = Arc::new(Mutex::new(HashMap::new()));
+        let live_timelines = Arc::new(Mutex::new(HashMap::new()));
+        delete_persisted_agent_session(
+            session_manager.as_ref(),
+            &pending_permissions,
+            &live_timelines,
+            None,
+            &session.id,
+        )
+        .await
+        .expect("the session should be deleted after its title task drains");
+
+        // Releasing the fake provider cannot produce a late write or event: the
+        // task was joined before deletion returned.
+        title_release.notify_waiters();
+        tokio::task::yield_now().await;
+        assert!(session_manager
+            .get_session(&session.id, false)
+            .await
+            .is_err());
+        assert!(sink
+            .events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_empty());
+
+        drop(agent);
+        drop(session_manager);
+        let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[tokio::test]
+    async fn manual_title_set_during_generation_wins_over_semantic_title() {
+        let title_started = Arc::new(tokio::sync::Notify::new());
+        let title_release = Arc::new(tokio::sync::Notify::new());
+        let title_cancel_token = CancellationToken::new();
+        let provider = Arc::new(DelayedSessionTitleProvider {
+            title_started: Arc::clone(&title_started),
+            title_release: Arc::clone(&title_release),
+            title_cancel_token: title_cancel_token.clone(),
+        });
+        let (test_root, session_manager, agent, session) =
+            session_title_test_context("manual-title-wins", provider).await;
+        let agent = Arc::new(agent);
+        let generation_session_manager = Arc::clone(&session_manager);
+        let generation_agent = Arc::clone(&agent);
+        let generation_session_id = session.id.clone();
+        let session_lifecycle = Arc::new(Mutex::new(()));
+        let generation_session_lifecycle = Arc::clone(&session_lifecycle);
+        let generation = tokio::spawn(async move {
+            generate_agent_session_title(AgentSessionTitleGeneration {
+                session_manager: generation_session_manager.as_ref(),
+                agent: generation_agent.as_ref(),
+                session_lifecycle: &generation_session_lifecycle,
+                session_id: &generation_session_id,
+                first_prompt: "Explain how reactive Agent titles work",
+                expected_fallback_title: "Explain reactive titles",
+                cancel_token: &title_cancel_token,
+                event_target: None,
+            })
+            .await
+        });
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), title_started.notified())
+            .await
+            .expect("title inference should start");
+        {
+            let _session_lifecycle_guard = session_lifecycle.lock().await;
+            session_manager
+                .update(&session.id)
+                .user_provided_name("My Manual Title".to_string())
+                .apply()
+                .await
+                .unwrap();
+        }
+        title_release.notify_one();
+
+        assert!(generation.await.unwrap().unwrap().is_none());
+        let reloaded = session_manager
+            .get_session(&session.id, false)
+            .await
+            .unwrap();
+        assert_eq!(reloaded.name, "My Manual Title");
+        assert!(reloaded.user_set_name);
+
+        drop(agent);
+        drop(session_manager);
+        let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[tokio::test]
+    async fn session_title_uses_bounded_non_thinking_llama_request() {
+        let capture = Arc::new(std::sync::Mutex::new(None));
+        let provider = Arc::new(CapturingSessionTitleProvider {
+            capture: Arc::clone(&capture),
+        });
+        let (test_root, session_manager, agent, session) =
+            session_title_test_context("bounded-llama-session-title", provider).await;
+        let first_prompt = format!("{}TAIL", "a".repeat(SESSION_TITLE_MAX_INPUT_CHARS));
+
+        let summary = generate_agent_session_title(AgentSessionTitleGeneration {
+            session_manager: session_manager.as_ref(),
+            agent: &agent,
+            session_lifecycle: &Arc::new(Mutex::new(())),
+            session_id: &session.id,
+            first_prompt: &first_prompt,
+            expected_fallback_title: "Explain reactive titles",
+            cancel_token: &CancellationToken::new(),
+            event_target: None,
+        })
+        .await
+        .unwrap()
+        .expect("the captured title should be persisted");
+
+        assert_eq!(summary.title, "Bounded Llama Title");
+        let capture = capture
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .expect("the provider should capture one title request");
+        assert_eq!(capture.model_name, SESSION_TITLE_MODEL);
+        assert_eq!(capture.temperature, Some(SESSION_TITLE_TEMPERATURE));
+        assert_eq!(capture.max_tokens, Some(SESSION_TITLE_MAX_TOKENS));
+        assert_eq!(capture.reasoning, Some(false));
+        assert!(!capture.request_params_present);
+        assert_eq!(capture.system, SESSION_TITLE_SYSTEM_PROMPT);
+        assert!(capture
+            .user
+            .contains(&"a".repeat(SESSION_TITLE_MAX_INPUT_CHARS)));
+        assert!(!capture.user.contains("TAIL"));
+        assert_eq!(capture.tool_count, 0);
+
+        drop(agent);
+        drop(session_manager);
+        let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[tokio::test]
+    async fn llama_generated_session_title_is_persisted_for_maple() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let provider = Arc::new(SessionTitleTestProvider {
+            calls: Arc::clone(&calls),
+            response: "Reactive Agent Titles",
+        });
+        let (test_root, session_manager, agent, session) =
+            session_title_test_context("generated-session-title", provider).await;
+
+        let summary = generate_agent_session_title(AgentSessionTitleGeneration {
+            session_manager: session_manager.as_ref(),
+            agent: &agent,
+            session_lifecycle: &Arc::new(Mutex::new(())),
+            session_id: &session.id,
+            first_prompt: "Explain how reactive Agent titles work",
+            expected_fallback_title: "Explain reactive titles",
+            cancel_token: &CancellationToken::new(),
+            event_target: None,
+        })
+        .await
+        .unwrap()
+        .expect("the first user message should generate a title");
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(summary.title, "Reactive Agent Titles");
+        assert_eq!(
+            session_manager
+                .get_session(&session.id, false)
+                .await
+                .unwrap()
+                .name,
+            "Reactive Agent Titles"
+        );
+
+        drop(agent);
+        drop(session_manager);
+        let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[tokio::test]
+    async fn empty_generated_session_title_keeps_maple_fallback() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let provider = Arc::new(SessionTitleTestProvider {
+            calls: Arc::clone(&calls),
+            response: "<think>discarded</think>   ",
+        });
+        let (test_root, session_manager, agent, session) =
+            session_title_test_context("empty-session-title", provider).await;
+
+        let summary = generate_agent_session_title(AgentSessionTitleGeneration {
+            session_manager: session_manager.as_ref(),
+            agent: &agent,
+            session_lifecycle: &Arc::new(Mutex::new(())),
+            session_id: &session.id,
+            first_prompt: "Explain how reactive Agent titles work",
+            expected_fallback_title: "Explain reactive titles",
+            cancel_token: &CancellationToken::new(),
+            event_target: None,
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(summary.is_none());
+        assert_eq!(
+            session_manager
+                .get_session(&session.id, false)
+                .await
+                .unwrap()
+                .name,
+            "Explain reactive titles"
+        );
+
+        drop(agent);
+        drop(session_manager);
+        let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[tokio::test]
+    async fn timed_out_session_title_generation_is_cancelled_drained_and_keeps_fallback() {
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let title_cancel_token = CancellationToken::new();
+        let provider = Arc::new(BlockingSessionTitleProvider {
+            cancel_token: title_cancel_token.clone(),
+            cancelled: Arc::clone(&cancelled),
+        });
+        let (test_root, session_manager, agent, session) =
+            session_title_test_context("timed-out-session-title", provider).await;
+
+        let error = generate_agent_session_title(AgentSessionTitleGeneration {
+            session_manager: session_manager.as_ref(),
+            agent: &agent,
+            session_lifecycle: &Arc::new(Mutex::new(())),
+            session_id: &session.id,
+            first_prompt: "Explain how reactive Agent titles work",
+            expected_fallback_title: "Explain reactive titles",
+            cancel_token: &title_cancel_token,
+            event_target: None,
+        })
+        .await
+        .unwrap_err();
+
+        assert!(error.contains("timed out"));
+        assert!(cancelled.load(Ordering::SeqCst));
+        assert_eq!(
+            session_manager
+                .get_session(&session.id, false)
+                .await
+                .unwrap()
+                .name,
+            "Explain reactive titles"
+        );
+
+        drop(agent);
+        drop(session_manager);
+        let _ = fs::remove_dir_all(test_root);
     }
 
     #[test]

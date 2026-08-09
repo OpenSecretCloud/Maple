@@ -123,6 +123,7 @@ import {
 } from "@/services/agentMcpErrors";
 import { reconcileNewChatMcpServerNames } from "@/services/agentMcpServers";
 import { agentOperationFence } from "@/services/agentOperationFence";
+import { reconcileAgentSessionSnapshot } from "@/services/agentSessionSummaries";
 import {
   agentToolKind,
   agentToolKindLabel,
@@ -390,6 +391,10 @@ export function AgentMode({ userId }: { userId: string }) {
   const recentRoots = projectOrderState.visible;
   const [removedProjectRoots, setRemovedProjectRoots] = useState<Set<string>>(() => new Set());
   const [sessions, setSessions] = useState<AgentSessionSummary[]>([]);
+  const sessionSummaryRevisionRef = useRef(0);
+  const sessionSummaryRevisionsRef = useRef(new Map<string, number>());
+  const sessionListRefreshGenerationRef = useRef(0);
+  const sessionListAppliedGenerationRef = useRef(0);
   const [isSessionHistoryReady, setIsSessionHistoryReady] = useState(false);
   const [sessionToDelete, setSessionToDelete] = useState<AgentSessionSummary | null>(null);
   const [projectToRename, setProjectToRename] = useState<AgentProjectRootView | null>(null);
@@ -443,6 +448,10 @@ export function AgentMode({ userId }: { userId: string }) {
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const activeSessionIdRef = useRef(activeSessionId);
   const deletedSessionIdsRef = useLazyRef(() => new Set<string>());
+  const markSessionSummaryChanged = useCallback((sessionId: string) => {
+    sessionSummaryRevisionRef.current += 1;
+    sessionSummaryRevisionsRef.current.set(sessionId, sessionSummaryRevisionRef.current);
+  }, []);
   const shouldAutoScrollRef = useRef(true);
   const permissionModeUpdateRef = useLazyRef<Promise<void>>(() => Promise.resolve());
   const permissionModeUpdateGenerationRef = useRef(0);
@@ -1236,8 +1245,25 @@ export function AgentMode({ userId }: { userId: string }) {
   const refreshSessionList = useCallback(async () => {
     return await trackAgentWorkflow(async () => {
       if (!isTauriDesktop()) return;
+      const refreshGeneration = sessionListRefreshGenerationRef.current + 1;
+      sessionListRefreshGenerationRef.current = refreshGeneration;
+      const summaryRevisionAtStart = sessionSummaryRevisionRef.current;
       const nextSessions = await agentRuntimeService.listSessions(userId, null);
-      setSessions(nextSessions.filter((session) => !deletedSessionIdsRef.current.has(session.id)));
+      if (refreshGeneration < sessionListAppliedGenerationRef.current) return;
+      sessionListAppliedGenerationRef.current = refreshGeneration;
+      const changedAfterRequest = new Set(
+        [...sessionSummaryRevisionsRef.current.entries()]
+          .filter(([, revision]) => revision > summaryRevisionAtStart)
+          .map(([sessionId]) => sessionId)
+      );
+      setSessions((current) =>
+        reconcileAgentSessionSnapshot(
+          nextSessions,
+          current,
+          changedAfterRequest,
+          deletedSessionIdsRef.current
+        )
+      );
       setIsSessionHistoryReady(true);
     });
   }, [deletedSessionIdsRef, trackAgentWorkflow, userId]);
@@ -1800,6 +1826,7 @@ export function AgentMode({ userId }: { userId: string }) {
         // Goose may reuse the newest deleted session ID. This detail represents
         // a new persisted session, so it supersedes any local deletion tombstone.
         deletedSessionIdsRef.current.delete(detail.session.id);
+        markSessionSummaryChanged(detail.session.id);
         sessionId = detail.session.id;
         setSessions((current) => [
           detail.session,
@@ -1837,6 +1864,7 @@ export function AgentMode({ userId }: { userId: string }) {
       agentSessionSelection,
       contextLimitForModel,
       deletedSessionIdsRef,
+      markSessionSummaryChanged,
       projectRoot,
       replaceSessionTimeline,
       selectedNewChatMcpServerNames,
@@ -1873,6 +1901,7 @@ export function AgentMode({ userId }: { userId: string }) {
           });
         });
         deletedSessionIdsRef.current.delete(detail.session.id);
+        markSessionSummaryChanged(detail.session.id);
         setSessions((current) => [
           detail.session,
           ...current.filter((session) => session.id !== detail.session.id)
@@ -1920,6 +1949,7 @@ export function AgentMode({ userId }: { userId: string }) {
       deletedSessionIdsRef,
       finishSessionSelection,
       isAgentModelCatalogLoading,
+      markSessionSummaryChanged,
       projectRoot,
       replaceSessionTimeline,
       runtimeStatus?.running,
@@ -2247,6 +2277,7 @@ export function AgentMode({ userId }: { userId: string }) {
   const removeSessionFromState = useCallback(
     (sessionId: string) => {
       deletedSessionIdsRef.current.add(sessionId);
+      sessionSummaryRevisionsRef.current.delete(sessionId);
       thoughtPhaseTrackerRef.current.forgetSession(sessionId);
       cancelThoughtLabelDisplays(sessionId);
       agentSessionSelection.forget(userId, sessionId);
@@ -2373,6 +2404,7 @@ export function AgentMode({ userId }: { userId: string }) {
   const upsertSessionSummary = useCallback(
     (summary: AgentSessionSummary) => {
       if (deletedSessionIdsRef.current.has(summary.id)) return;
+      markSessionSummaryChanged(summary.id);
       setSessions((current) => {
         let replaced = false;
         const next = current.map((session) => {
@@ -2383,7 +2415,7 @@ export function AgentMode({ userId }: { userId: string }) {
         return replaced ? next : [summary, ...current];
       });
     },
-    [deletedSessionIdsRef]
+    [deletedSessionIdsRef, markSessionSummaryChanged]
   );
 
   const observeLiveThoughtItem = useCallback(
