@@ -10,6 +10,19 @@ function characterCount(value: string): number {
   return Array.from(value).length;
 }
 
+function normalizeWindowsPathForDisplay(path: string): string {
+  const extendedPathPrefix = "\\\\?\\";
+  if (!path.startsWith(extendedPathPrefix)) return path;
+
+  const unprefixedPath = path.slice(extendedPathPrefix.length);
+  if (unprefixedPath.toUpperCase().startsWith("UNC\\")) {
+    return `\\\\${unprefixedPath.slice(4)}`;
+  }
+  if (/^[A-Za-z]:[\\/]/.test(unprefixedPath)) return unprefixedPath;
+
+  return path;
+}
+
 function truncateCharactersMiddle(value: string, maxLength: number): string {
   const characters = Array.from(value);
   if (characters.length <= maxLength) return value;
@@ -45,15 +58,16 @@ export function truncatePathMiddle(
   path: string,
   maxLength = DEFAULT_PATH_TRUNCATION_LENGTH
 ): string {
+  const displayPath = normalizeWindowsPathForDisplay(path);
   const normalizedMaxLength = Number.isFinite(maxLength)
     ? Math.max(0, Math.floor(maxLength))
     : DEFAULT_PATH_TRUNCATION_LENGTH;
-  if (characterCount(path) <= normalizedMaxLength) return path;
+  if (characterCount(displayPath) <= normalizedMaxLength) return displayPath;
 
-  const separator = pathSeparator(path);
-  const prefixLength = pathPrefixLength(path);
-  const prefix = path.slice(0, prefixLength);
-  const remainder = path.slice(prefixLength);
+  const separator = pathSeparator(displayPath);
+  const prefixLength = pathPrefixLength(displayPath);
+  const prefix = displayPath.slice(0, prefixLength);
+  const remainder = displayPath.slice(prefixLength);
   const hasTrailingSeparator = /[\\/]$/.test(remainder);
   const segments = remainder.split(/[\\/]+/).filter(Boolean);
 
@@ -70,5 +84,5 @@ export function truncatePathMiddle(
     if (characterCount(candidate) <= normalizedMaxLength) return candidate;
   }
 
-  return truncateCharactersMiddle(path, normalizedMaxLength);
+  return truncateCharactersMiddle(displayPath, normalizedMaxLength);
 }

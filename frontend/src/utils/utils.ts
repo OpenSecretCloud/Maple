@@ -90,7 +90,7 @@ export function useIsLandscapeMobile() {
 }
 
 export function useIsCoarsePointer() {
-  const QUERY = "(pointer: coarse), (hover: none)";
+  const QUERY = "(pointer: coarse), (any-pointer: coarse), (hover: none)";
 
   const [matches, setMatches] = useState(() =>
     typeof window !== "undefined" ? window.matchMedia(QUERY).matches : false

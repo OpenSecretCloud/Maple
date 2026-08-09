@@ -24,10 +24,26 @@ describe("truncatePathMiddle", () => {
     ).toBe("C:\\Users\\Admin\\…\\Maple\\Sidebar");
   });
 
+  it("removes an extended-length drive prefix before truncating", () => {
+    expect(
+      truncatePathMiddle(
+        "\\\\?\\C:\\Users\\Admin\\Documents\\OpenSecretCloud\\Maple\\worktrees\\Maple\\Sidebar"
+      )
+    ).toBe("C:\\Users\\Admin\\…\\Maple\\Sidebar");
+  });
+
   it("keeps the server, share, and final segments of a UNC path", () => {
     expect(
       truncatePathMiddle(
         "\\\\fileserver\\engineering\\teams\\desktop\\OpenSecretCloud\\worktrees\\Maple\\sidebar"
+      )
+    ).toBe("\\\\fileserver\\engineering\\…\\Maple\\sidebar");
+  });
+
+  it("converts an extended-length UNC prefix before truncating", () => {
+    expect(
+      truncatePathMiddle(
+        "\\\\?\\UNC\\fileserver\\engineering\\teams\\desktop\\OpenSecretCloud\\worktrees\\Maple\\sidebar"
       )
     ).toBe("\\\\fileserver\\engineering\\…\\Maple\\sidebar");
   });
