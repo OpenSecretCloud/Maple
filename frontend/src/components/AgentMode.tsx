@@ -24,10 +24,13 @@ import {
   Expand,
   FilePenLine,
   FileSearch,
+  Folder,
   FolderOpen,
+  FolderPlus,
   Globe2,
   Loader2,
   Lock,
+  MessageSquare,
   MessageSquarePlus,
   MoreHorizontal,
   ShieldCheck,
@@ -77,11 +80,14 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger
 } from "@/components/ui/dropdown-menu";
+import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import { Sidebar, SidebarToggle } from "@/components/Sidebar";
 import { MapleWordmark } from "@/components/MapleWordmark";
 import { DeleteChatDialog } from "@/components/DeleteChatDialog";
+import { RenameAgentProjectDialog } from "@/components/RenameAgentProjectDialog";
 import { UpgradePromptDialog } from "@/components/UpgradePromptDialog";
 import { AgentMcpMenu, AgentMcpServersDialog } from "@/components/agent/AgentMcpControls";
+import { AgentSidebarInfoCard } from "@/components/agent/AgentSidebarInfoCard";
 import { handleAgentModeThoughtRunFinished } from "@/components/agent/agentModeThoughtRun";
 import {
   agentRuntimeService,
@@ -153,11 +159,29 @@ import {
   cn,
   POWERFUL_MODEL_ALIAS,
   QUICK_MODEL_ALIAS,
+  useIsCoarsePointer,
   useIsLandscapeMobile,
   useIsMobile
 } from "@/utils/utils";
 import { isTauriDesktop } from "@/utils/platform";
 import { useLazyRef } from "@/utils/useLazyRef";
+import { revealAgentProjectFolder } from "@/services/agentProjectFolder";
+import {
+  aggregateAgentSidebarStatus,
+  agentProjectProgressLabel,
+  agentProjectTaskSummaryLabel,
+  agentTaskAccessibleLabel
+} from "@/services/agentSidebarPresentation";
+import {
+  loadAgentSidebarPreferences,
+  projectRootsWithDisplayNames,
+  renameAgentProjectDisplayName,
+  saveAgentSidebarPreferences,
+  toggleAgentProjectCollapsed,
+  type AgentProjectRootView,
+  type AgentSidebarPreferences
+} from "@/services/agentSidebarPreferences";
+import { useNotification } from "@/contexts/NotificationContext";
 import { useBillingState, useModelState } from "@/state/useLocalState";
 import {
   usePersistentHomeNavigation,
@@ -183,12 +207,9 @@ const AGENT_SESSION_DELETED_EVENT = "maple:agent-session-deleted";
 const AGENT_MODEL_PREFERENCE_KEY = "selectedAgentModel";
 // Mode switches remount AgentMode, so project-root mutations must be ordered outside it.
 const projectRootPersistenceQueues = new Map<string, Promise<void>>();
-const AGENT_SIDEBAR_ELLIPSIS_FADE =
-  "pointer-events-none w-4 shrink-0 self-stretch bg-gradient-to-r from-transparent to-[hsl(var(--muted))] dark:to-[hsl(var(--sidebar))]";
-const AGENT_SIDEBAR_ELLIPSIS_TRIGGER_ROW_BASE =
-  "absolute inset-y-0 right-0 z-30 flex min-h-0 items-stretch";
-const AGENT_SIDEBAR_ELLIPSIS_BUTTON =
-  "relative z-10 shrink-0 rounded-full border-0 bg-muted p-1.5 text-foreground/40 transition-colors dark:bg-[hsl(var(--sidebar))] hover:text-foreground group-hover:text-foreground focus-visible:text-foreground focus-visible:outline-none";
+const AGENT_SIDEBAR_ACTION_ROW_BASE = "absolute inset-y-0 right-0 z-30 flex min-h-0 items-stretch";
+const AGENT_SIDEBAR_ACTION_BUTTON =
+  "relative z-10 flex shrink-0 items-center justify-center rounded-full border-0 bg-transparent text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground focus-visible:bg-foreground/5 focus-visible:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring/70";
 
 class PendingAgentSendCancelledError extends Error {
   constructor() {
@@ -223,9 +244,36 @@ function newTaskAgentModel(preference: AgentModelPreference): string {
   return preference.preferred || preference.configuredDefault;
 }
 
-function agentSidebarEllipsisTriggerRowClass(isCompactLayout: boolean): string {
-  if (isCompactLayout) return AGENT_SIDEBAR_ELLIPSIS_TRIGGER_ROW_BASE;
-  return `${AGENT_SIDEBAR_ELLIPSIS_TRIGGER_ROW_BASE} transition-opacity duration-150 opacity-0 pointer-events-none group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100 has-[[data-state=open]]:pointer-events-auto has-[[data-state=open]]:opacity-100`;
+function projectActionRowClass(
+  isTouchLayout: boolean,
+  menuOpen: boolean,
+  hasKeyboardFocus: boolean
+): string {
+  return cn(
+    AGENT_SIDEBAR_ACTION_ROW_BASE,
+    "transition-opacity duration-150 motion-reduce:transition-none",
+    isTouchLayout || menuOpen || hasKeyboardFocus
+      ? "pointer-events-auto opacity-100"
+      : "pointer-events-none opacity-0 group-hover/project:pointer-events-auto group-hover/project:opacity-100"
+  );
+}
+
+function taskActionRowClass(
+  isTouchLayout: boolean,
+  menuOpen: boolean,
+  hasKeyboardFocus: boolean
+): string {
+  return cn(
+    AGENT_SIDEBAR_ACTION_ROW_BASE,
+    "transition-opacity duration-150 motion-reduce:transition-none",
+    isTouchLayout || menuOpen || hasKeyboardFocus
+      ? "pointer-events-auto opacity-100"
+      : "pointer-events-none opacity-0 group-hover/task:pointer-events-auto group-hover/task:opacity-100"
+  );
+}
+
+function isKeyboardFocusTarget(target: EventTarget | null): boolean {
+  return target instanceof Element && target.matches(":focus-visible");
 }
 
 type AgentPermissionMode = "smart_approve" | "auto";
@@ -323,10 +371,17 @@ export function AgentMode({ userId }: { userId: string }) {
   const { availableModels, setAvailableModels, modelAliases, setModelAliases, setHasWhisperModel } =
     useModelState();
   const { agentSessionSelection } = usePersistentHomeNavigation();
+  const { showNotification } = useNotification();
   const isMobile = useIsMobile();
   const isLandscapeMobile = useIsLandscapeMobile();
+  const isCoarsePointer = useIsCoarsePointer();
   const isCompactLayout = isMobile || isLandscapeMobile;
+  const isTouchLayout = isCompactLayout || isCoarsePointer;
   const [isSidebarOpen, setIsSidebarOpen] = usePersistentSidebarState(isCompactLayout);
+  const [sidebarPreferences, setSidebarPreferences] = useState<AgentSidebarPreferences>(() =>
+    loadAgentSidebarPreferences(userId)
+  );
+  const sidebarPreferencesRef = useRef(sidebarPreferences);
   const [runtimeStatus, setRuntimeStatus] = useState<AgentRuntimeStatus | null>(null);
   const [projectOrderState, dispatchProjectOrder] = useReducer(
     projectOrderReducer<RecentProjectRoot>,
@@ -337,7 +392,8 @@ export function AgentMode({ userId }: { userId: string }) {
   const [sessions, setSessions] = useState<AgentSessionSummary[]>([]);
   const [isSessionHistoryReady, setIsSessionHistoryReady] = useState(false);
   const [sessionToDelete, setSessionToDelete] = useState<AgentSessionSummary | null>(null);
-  const [projectToRemove, setProjectToRemove] = useState<RecentProjectRoot | null>(null);
+  const [projectToRename, setProjectToRename] = useState<AgentProjectRootView | null>(null);
+  const [projectToRemove, setProjectToRemove] = useState<AgentProjectRootView | null>(null);
   const [projectRemovalError, setProjectRemovalError] = useState<string | null>(null);
   const [isProjectRemovalPending, setIsProjectRemovalPending] = useState(false);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
@@ -469,6 +525,16 @@ export function AgentMode({ userId }: { userId: string }) {
       }
     },
     [agentModelPreferenceRef]
+  );
+
+  const commitSidebarPreferences = useCallback(
+    (update: (current: AgentSidebarPreferences) => AgentSidebarPreferences) => {
+      const next = update(sidebarPreferencesRef.current);
+      sidebarPreferencesRef.current = next;
+      setSidebarPreferences(next);
+      saveAgentSidebarPreferences(userId, next);
+    },
+    [userId]
   );
 
   if (!thoughtLabelProvisionalSchedulerRef.current) {
@@ -724,6 +790,10 @@ export function AgentMode({ userId }: { userId: string }) {
     () => mergeAgentProjectRoots(recentRoots, projectRoot, sessions, removedProjectRoots),
     [projectRoot, recentRoots, removedProjectRoots, sessions]
   );
+  const displayProjectRoots = useMemo(
+    () => projectRootsWithDisplayNames(visibleProjectRoots, sidebarPreferences),
+    [sidebarPreferences, visibleProjectRoots]
+  );
   const visibleSessions = useMemo(
     () => visibleAgentSessions(sessions, removedProjectRoots),
     [removedProjectRoots, sessions]
@@ -735,9 +805,10 @@ export function AgentMode({ userId }: { userId: string }) {
   const activeRootLabel = useMemo(() => {
     if (!projectRoot) return "Select folder";
     return (
-      visibleProjectRoots.find((root) => root.path === projectRoot)?.name || basename(projectRoot)
+      displayProjectRoots.find((root) => root.path === projectRoot)?.displayName ||
+      basename(projectRoot)
     );
-  }, [projectRoot, visibleProjectRoots]);
+  }, [displayProjectRoots, projectRoot]);
   const activeSessionTitle = useMemo(() => {
     const activeSession = sessions.find((session) => session.id === activeSessionId);
     return activeSession ? sessionTitle(activeSession) : "New task";
@@ -811,16 +882,43 @@ export function AgentMode({ userId }: { userId: string }) {
   const isComposerMcpLoading = activeSessionId
     ? isSessionMcpServersLoading || sessionMcpServersSessionId !== activeSessionId
     : isMcpServersLoading;
-  const runningSessionIds = useMemo(() => {
+  const agentRunningSessionIds = useMemo(() => {
     const ids = new Set(Object.keys(activeRunsBySession));
     for (const sessionId of pendingSendSessionIds) {
       if (sessionId !== NEW_SESSION_PENDING_KEY) ids.add(sessionId);
     }
+    return ids;
+  }, [activeRunsBySession, pendingSendSessionIds]);
+  const runningSessionIds = useMemo(() => {
+    const ids = new Set(agentRunningSessionIds);
     if (pendingSessionSelectionId && pendingSessionSelectionId !== NEW_SESSION_PENDING_KEY) {
       ids.add(pendingSessionSelectionId);
     }
     return ids;
-  }, [activeRunsBySession, pendingSendSessionIds, pendingSessionSelectionId]);
+  }, [agentRunningSessionIds, pendingSessionSelectionId]);
+  const agentSidebarStatus = useMemo(() => {
+    const sessionById = new Map(sessions.map((session) => [session.id, session]));
+    const isVisibleSessionId = (sessionId: string) => {
+      const session = sessionById.get(sessionId);
+      return !session || !removedProjectRoots.has(session.projectRoot);
+    };
+    const visibleRunningSessionIds = new Set(
+      [...agentRunningSessionIds].filter(isVisibleSessionId)
+    );
+    if (pendingSendSessionIds.has(NEW_SESSION_PENDING_KEY)) {
+      visibleRunningSessionIds.add(NEW_SESSION_PENDING_KEY);
+    }
+    const visibleUnreadSessionIds = new Set(
+      [...completedUnreadSessionIds].filter(isVisibleSessionId)
+    );
+    return aggregateAgentSidebarStatus(visibleRunningSessionIds, visibleUnreadSessionIds);
+  }, [
+    completedUnreadSessionIds,
+    agentRunningSessionIds,
+    pendingSendSessionIds,
+    removedProjectRoots,
+    sessions
+  ]);
 
   const toggleSidebar = useCallback(() => setIsSidebarOpen((prev) => !prev), [setIsSidebarOpen]);
 
@@ -1603,7 +1701,7 @@ export function AgentMode({ userId }: { userId: string }) {
   );
 
   const startRuntime = useCallback(
-    async (restart = false) => {
+    async (restart = false, requestedProjectRoot = projectRoot) => {
       const requestGeneration = startRequestGenerationRef.current + 1;
       startRequestGenerationRef.current = requestGeneration;
       const interactionGeneration = interactionGenerationRef.current;
@@ -1611,12 +1709,13 @@ export function AgentMode({ userId }: { userId: string }) {
       setIsStarting(true);
       try {
         return await trackAgentWorkflow(async () => {
-          if (!projectRoot) {
+          if (!requestedProjectRoot.trim()) {
             throw new Error("Select a project folder first");
           }
+          const targetProjectRoot = requestedProjectRoot;
           const requestedMode = selectedModeRef.current;
           const request = {
-            projectRoot,
+            projectRoot: targetProjectRoot,
             model: agentModelPreferenceRef.current.configuredDefault,
             mode: requestedMode
           };
@@ -1634,7 +1733,7 @@ export function AgentMode({ userId }: { userId: string }) {
             return status;
           }
           applyRuntimeStatus(status, runStateGeneration);
-          setProjectRoot(status.projectRoot || projectRoot);
+          setProjectRoot(status.projectRoot || targetProjectRoot);
           applyAuthoritativeMode(normalizeAgentPermissionMode(status.mode || requestedMode));
           await refreshSessions();
           if (restartOutcome?.acpShutdownError) {
@@ -1746,85 +1845,90 @@ export function AgentMode({ userId }: { userId: string }) {
     ]
   );
 
-  const createSession = useCallback(async () => {
-    if (isAgentModelCatalogLoading) return;
-    if (!projectRoot.trim()) {
-      setError("Select a project folder before creating a task");
-      return;
-    }
-    if (pendingSessionSelectionIdRef.current === NEW_SESSION_PENDING_KEY) return;
-    const requestModel = newTaskAgentModel(agentModelPreferenceRef.current);
-    const selectionGeneration = beginSessionSelection(NEW_SESSION_PENDING_KEY);
-    const interactionGeneration = interactionGenerationRef.current;
-    setError(null);
-    try {
-      const detail = await trackAgentWorkflow(async () => {
-        if (!runtimeStatus?.running) {
-          await startRuntime(false);
-        }
-        return await agentRuntimeService.createSession(userId, {
-          projectRoot,
-          title: "New task",
-          model: requestModel,
-          contextLimit: contextLimitForModel(requestModel),
-          mode: selectedModeRef.current,
-          mcpServerNames: selectedNewChatMcpServerNames
+  const createSession = useCallback(
+    async (requestedProjectRoot = projectRoot) => {
+      if (isAgentModelCatalogLoading) return;
+      if (!requestedProjectRoot.trim()) {
+        setError("Select a project folder before creating a task");
+        return;
+      }
+      const targetProjectRoot = requestedProjectRoot;
+      if (pendingSessionSelectionIdRef.current === NEW_SESSION_PENDING_KEY) return;
+      const requestModel = newTaskAgentModel(agentModelPreferenceRef.current);
+      const selectionGeneration = beginSessionSelection(NEW_SESSION_PENDING_KEY);
+      const interactionGeneration = interactionGenerationRef.current;
+      setError(null);
+      try {
+        const detail = await trackAgentWorkflow(async () => {
+          if (!runtimeStatus?.running) {
+            await startRuntime(false, targetProjectRoot);
+          }
+          return await agentRuntimeService.createSession(userId, {
+            projectRoot: targetProjectRoot,
+            title: "New task",
+            model: requestModel,
+            contextLimit: contextLimitForModel(requestModel),
+            mode: selectedModeRef.current,
+            mcpServerNames: selectedNewChatMcpServerNames
+          });
         });
-      });
-      deletedSessionIdsRef.current.delete(detail.session.id);
-      setSessions((current) => [
-        detail.session,
-        ...current.filter((session) => session.id !== detail.session.id)
-      ]);
-      replaceSessionTimeline(detail.session.id, detail.timeline);
-
-      if (
-        isAgentModeMountedRef.current &&
-        sessionSelectionGenerationRef.current === selectionGeneration &&
-        interactionGenerationRef.current === interactionGeneration
-      ) {
-        shouldAutoScrollRef.current = true;
-        activeSessionIdRef.current = detail.session.id;
-        setActiveSessionId(detail.session.id);
-        agentSessionSelection.remember(userId, detail.session.id);
-        isAgentModelLockedRef.current = false;
-        currentAgentModelRef.current = requestModel;
-        setModel(requestModel);
-        applyAuthoritativeMode(normalizeAgentPermissionMode(detail.session.mode));
+        deletedSessionIdsRef.current.delete(detail.session.id);
+        setSessions((current) => [
+          detail.session,
+          ...current.filter((session) => session.id !== detail.session.id)
+        ]);
         replaceSessionTimeline(detail.session.id, detail.timeline);
-        const mcpError = mcpConnectionErrorMessage(detail.mcpErrors);
-        if (mcpError) setError(mcpError);
+
+        if (
+          isAgentModeMountedRef.current &&
+          sessionSelectionGenerationRef.current === selectionGeneration &&
+          interactionGenerationRef.current === interactionGeneration
+        ) {
+          shouldAutoScrollRef.current = true;
+          activeSessionIdRef.current = detail.session.id;
+          setActiveSessionId(detail.session.id);
+          agentSessionSelection.remember(userId, detail.session.id);
+          setProjectRoot(detail.session.projectRoot);
+          isAgentModelLockedRef.current = false;
+          currentAgentModelRef.current = requestModel;
+          setModel(requestModel);
+          applyAuthoritativeMode(normalizeAgentPermissionMode(detail.session.mode));
+          replaceSessionTimeline(detail.session.id, detail.timeline);
+          const mcpError = mcpConnectionErrorMessage(detail.mcpErrors);
+          if (mcpError) setError(mcpError);
+        }
+      } catch (createError) {
+        if (
+          isAgentModeMountedRef.current &&
+          sessionSelectionGenerationRef.current === selectionGeneration &&
+          interactionGenerationRef.current === interactionGeneration
+        ) {
+          setError(errorMessage(createError));
+        }
+      } finally {
+        if (isAgentModeMountedRef.current) {
+          finishSessionSelection(selectionGeneration);
+        }
       }
-    } catch (createError) {
-      if (
-        isAgentModeMountedRef.current &&
-        sessionSelectionGenerationRef.current === selectionGeneration &&
-        interactionGenerationRef.current === interactionGeneration
-      ) {
-        setError(errorMessage(createError));
-      }
-    } finally {
-      if (isAgentModeMountedRef.current) {
-        finishSessionSelection(selectionGeneration);
-      }
-    }
-  }, [
-    agentModelPreferenceRef,
-    applyAuthoritativeMode,
-    agentSessionSelection,
-    beginSessionSelection,
-    contextLimitForModel,
-    deletedSessionIdsRef,
-    finishSessionSelection,
-    isAgentModelCatalogLoading,
-    projectRoot,
-    replaceSessionTimeline,
-    runtimeStatus?.running,
-    selectedNewChatMcpServerNames,
-    startRuntime,
-    trackAgentWorkflow,
-    userId
-  ]);
+    },
+    [
+      agentModelPreferenceRef,
+      applyAuthoritativeMode,
+      agentSessionSelection,
+      beginSessionSelection,
+      contextLimitForModel,
+      deletedSessionIdsRef,
+      finishSessionSelection,
+      isAgentModelCatalogLoading,
+      projectRoot,
+      replaceSessionTimeline,
+      runtimeStatus?.running,
+      selectedNewChatMcpServerNames,
+      startRuntime,
+      trackAgentWorkflow,
+      userId
+    ]
+  );
 
   const loadSession = useCallback(
     async (sessionId: string) => {
@@ -1865,6 +1969,7 @@ export function AgentMode({ userId }: { userId: string }) {
         // this point the previous chat remains active and its composer is gated.
         shouldAutoScrollRef.current = true;
         activeSessionIdRef.current = detail.session.id;
+        clearCompletedUnreadSession(detail.session.id);
         setActiveSessionId(detail.session.id);
         agentSessionSelection.remember(userId, detail.session.id);
         setProjectRoot(detail.session.projectRoot);
@@ -2492,12 +2597,52 @@ export function AgentMode({ userId }: { userId: string }) {
   }, [handleAgentEvent, userId]);
 
   const handleCreateSession = useCallback(() => {
-    void createSession();
-  }, [createSession]);
-  const handlePromptProjectRemoval = useCallback((root: RecentProjectRoot) => {
+    void createSession(projectRoot);
+  }, [createSession, projectRoot]);
+  const handleCreateSessionForProject = useCallback(
+    (targetProjectRoot: string) => {
+      if (targetProjectRoot !== projectRoot) {
+        selectProjectRoot(targetProjectRoot);
+      }
+      void createSession(targetProjectRoot);
+    },
+    [createSession, projectRoot, selectProjectRoot]
+  );
+  const handlePromptProjectRemoval = useCallback((root: AgentProjectRootView) => {
     setProjectRemovalError(null);
     setProjectToRemove(root);
   }, []);
+  const handlePromptProjectRename = useCallback((root: AgentProjectRootView) => {
+    setProjectToRename(root);
+  }, []);
+  const handleRenameProject = useCallback(
+    (root: AgentProjectRootView, displayName: string) => {
+      commitSidebarPreferences((current) =>
+        renameAgentProjectDisplayName(current, root, displayName)
+      );
+    },
+    [commitSidebarPreferences]
+  );
+  const handleToggleProjectDisclosure = useCallback(
+    (path: string) => {
+      commitSidebarPreferences((current) => toggleAgentProjectCollapsed(current, path));
+    },
+    [commitSidebarPreferences]
+  );
+  const handleRevealProjectRoot = useCallback(
+    (path: string) => {
+      void revealAgentProjectFolder(path).catch((revealError) => {
+        console.error("Unable to reveal Agent project folder", revealError);
+        showNotification({
+          type: "error",
+          title: "Couldn’t reveal project folder",
+          message: "The folder may have been moved or is no longer available.",
+          duration: 7000
+        });
+      });
+    },
+    [showNotification]
+  );
   const handleSelectSession = useCallback(
     (sessionId: string) => {
       void loadSession(sessionId);
@@ -2543,18 +2688,22 @@ export function AgentMode({ userId }: { userId: string }) {
                 ? pendingSessionSelectionId
                 : activeSessionId
             }
-            isCompactLayout={isCompactLayout}
+            collapsedProjectRoots={sidebarPreferences.collapsedProjectRoots}
+            isTouchLayout={isTouchLayout}
             projectRoot={projectRoot}
-            recentRoots={visibleProjectRoots}
+            recentRoots={displayProjectRoots}
             completedUnreadSessionIds={completedUnreadSessionIds}
             disabled={areAgentSettingsLocked}
+            inProgressSessionIds={agentRunningSessionIds}
             runningSessionIds={runningSessionIds}
             sessions={visibleSessions}
             onChooseProjectRoot={chooseProjectRoot}
-            onCreateSession={handleCreateSession}
+            onCreateSession={handleCreateSessionForProject}
+            onProjectDisclosureToggle={handleToggleProjectDisclosure}
             onProjectOrderChange={saveProjectRootOrder}
+            onProjectRename={handlePromptProjectRename}
             onProjectRemove={handlePromptProjectRemoval}
-            onProjectRootChange={selectProjectRoot}
+            onRevealProjectRoot={handleRevealProjectRoot}
             onSessionDelete={setSessionToDelete}
             onSessionSelect={handleSelectSession}
           />
@@ -2567,6 +2716,18 @@ export function AgentMode({ userId }: { userId: string }) {
         }
         onToggle={toggleSidebar}
       />
+
+      {projectToRename ? (
+        <RenameAgentProjectDialog
+          key={projectToRename.path}
+          open
+          currentDisplayName={projectToRename.displayName}
+          onOpenChange={(open) => {
+            if (!open) setProjectToRename(null);
+          }}
+          onRename={(displayName) => handleRenameProject(projectToRename, displayName)}
+        />
+      ) : null}
 
       {sessionToDelete ? (
         <DeleteChatDialog
@@ -2592,7 +2753,7 @@ export function AgentMode({ userId }: { userId: string }) {
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Remove {projectToRemove?.name || "project"}?</AlertDialogTitle>
+            <AlertDialogTitle>Remove {projectToRemove?.displayName || "project"}?</AlertDialogTitle>
             <AlertDialogDescription>
               Removing this project from Maple won&apos;t delete its files or existing tasks. Add
               the same folder again to restore its tasks on this account and device.
@@ -2683,7 +2844,7 @@ export function AgentMode({ userId }: { userId: string }) {
       <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         {!isSidebarOpen && (
           <div className="fixed left-4 top-[9.5px] z-20 flex items-center gap-1.5">
-            <SidebarToggle onToggle={toggleSidebar} />
+            <SidebarToggle onToggle={toggleSidebar} agentStatus={agentSidebarStatus} />
             <MapleWordmark
               className="h-4 w-auto animate-in fade-in-0 slide-in-from-left-1 duration-300"
               aria-hidden
@@ -2740,7 +2901,7 @@ export function AgentMode({ userId }: { userId: string }) {
                   mode={mode}
                   model={model}
                   projectRoot={projectRoot}
-                  recentRoots={visibleProjectRoots}
+                  recentRoots={displayProjectRoots}
                   isExpanded={isAgentFullscreen}
                   onCancelPrompt={cancelPrompt}
                   onChooseProjectRoot={chooseProjectRoot}
@@ -2784,7 +2945,7 @@ export function AgentMode({ userId }: { userId: string }) {
                   mode={mode}
                   model={model}
                   projectRoot={projectRoot}
-                  recentRoots={visibleProjectRoots}
+                  recentRoots={displayProjectRoots}
                   onCancelPrompt={cancelPrompt}
                   onChooseProjectRoot={chooseProjectRoot}
                   onInputChange={setInput}
@@ -2842,18 +3003,22 @@ function EmptyAgentState(props: AgentComposerProps) {
 
 interface AgentSidebarContentProps {
   activeSessionId: string | null;
-  isCompactLayout: boolean;
+  collapsedProjectRoots: ReadonlySet<string>;
+  isTouchLayout: boolean;
   projectRoot: string;
-  recentRoots: RecentProjectRoot[];
+  recentRoots: AgentProjectRootView[];
   completedUnreadSessionIds: Set<string>;
   disabled: boolean;
+  inProgressSessionIds: Set<string>;
   runningSessionIds: Set<string>;
   sessions: AgentSessionSummary[];
   onChooseProjectRoot: () => void;
-  onCreateSession: () => void;
-  onProjectOrderChange: (roots: RecentProjectRoot[]) => void;
-  onProjectRemove: (root: RecentProjectRoot) => void;
-  onProjectRootChange: (value: string) => void;
+  onCreateSession: (projectRoot: string) => void;
+  onProjectDisclosureToggle: (path: string) => void;
+  onProjectOrderChange: (roots: AgentProjectRootView[]) => void;
+  onProjectRename: (root: AgentProjectRootView) => void;
+  onProjectRemove: (root: AgentProjectRootView) => void;
+  onRevealProjectRoot: (projectRoot: string) => void;
   onSessionDelete: (session: AgentSessionSummary) => void;
   onSessionSelect: (sessionId: string) => void;
 }
@@ -2868,6 +3033,7 @@ interface PendingProjectPointer {
   grabOffsetY: number;
   ghostWidth: number;
   headerElement: HTMLElement;
+  isCollapsed: boolean;
 }
 
 interface ProjectDragState extends PendingProjectPointer {
@@ -2877,20 +3043,231 @@ interface ProjectDragState extends PendingProjectPointer {
   markerTop: number | null;
 }
 
+interface AgentSidebarTaskRowProps {
+  actionsLocked: boolean;
+  isActive: boolean;
+  isInProgress: boolean;
+  isRunning: boolean;
+  isTouchLayout: boolean;
+  isUnreadCompleted: boolean;
+  onDelete: (session: AgentSessionSummary) => void;
+  onRevealProjectRoot: (projectRoot: string) => void;
+  onSelect: (sessionId: string) => void;
+  projectDisplayName: string;
+  rowRef: (node: HTMLDivElement | null) => void;
+  session: AgentSessionSummary;
+}
+
+function AgentSidebarTaskRow({
+  actionsLocked,
+  isActive,
+  isInProgress,
+  isRunning,
+  isTouchLayout,
+  isUnreadCompleted,
+  onDelete,
+  onRevealProjectRoot,
+  onSelect,
+  projectDisplayName,
+  rowRef,
+  session
+}: AgentSidebarTaskRowProps) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [hasKeyboardFocusWithin, setHasKeyboardFocusWithin] = useState(false);
+  const [infoCardOpen, setInfoCardOpen] = useState(false);
+  const title = sessionTitle(session);
+  const hasVisualStatus = isRunning || isUnreadCompleted;
+  const visibleInfoCardOpen = !isTouchLayout && infoCardOpen;
+
+  useEffect(() => {
+    if (isTouchLayout) setInfoCardOpen(false);
+  }, [isTouchLayout]);
+
+  const activeSurface =
+    menuOpen || hasKeyboardFocusWithin || visibleInfoCardOpen
+      ? isActive
+        ? "bg-[hsl(var(--sidebar-row-selected-hover))] ring-1 ring-ring/70"
+        : "bg-[hsl(var(--sidebar-row-hover))] ring-1 ring-ring/70"
+      : null;
+  const taskSelectionButton = (
+    <button
+      type="button"
+      className={cn(
+        "relative z-0 flex min-w-0 flex-1 cursor-pointer items-center pl-8 text-left text-sm text-foreground/95 transition-colors focus-visible:outline-none aria-disabled:cursor-default",
+        isTouchLayout ? "min-h-10" : "min-h-[30px]",
+        isActive && "font-medium text-foreground",
+        isTouchLayout
+          ? hasVisualStatus
+            ? "pr-[4.75rem]"
+            : "pr-10"
+          : hasVisualStatus
+            ? "pr-8"
+            : "pr-0"
+      )}
+      onClick={() => {
+        if (!actionsLocked) onSelect(session.id);
+      }}
+      aria-disabled={actionsLocked || undefined}
+      aria-current={isActive ? "page" : undefined}
+      aria-label={agentTaskAccessibleLabel(title, {
+        running: isRunning,
+        unread: isUnreadCompleted
+      })}
+    >
+      <span className="min-w-0 flex-1 truncate">{title}</span>
+    </button>
+  );
+
+  return (
+    <div
+      ref={rowRef}
+      className={cn(
+        "group/task relative isolate flex w-full min-w-0 select-none items-stretch rounded-xl transition-colors motion-reduce:transition-none",
+        isTouchLayout ? "min-h-10" : "min-h-[30px]",
+        isActive
+          ? "bg-[hsl(var(--sidebar-row-selected))] hover:bg-[hsl(var(--sidebar-row-selected-hover))]"
+          : "hover:bg-[hsl(var(--sidebar-row-hover))]",
+        activeSurface
+      )}
+      onContextMenu={(event) => event.preventDefault()}
+      onFocusCapture={(event) => setHasKeyboardFocusWithin(isKeyboardFocusTarget(event.target))}
+      onBlurCapture={(event) => {
+        const nextTarget = event.relatedTarget;
+        setHasKeyboardFocusWithin(
+          event.currentTarget.contains(nextTarget as Node) && isKeyboardFocusTarget(nextTarget)
+        );
+      }}
+    >
+      <HoverCard
+        open={visibleInfoCardOpen}
+        openDelay={450}
+        closeDelay={180}
+        onOpenChange={setInfoCardOpen}
+      >
+        {isTouchLayout ? (
+          taskSelectionButton
+        ) : (
+          <HoverCardTrigger asChild>{taskSelectionButton}</HoverCardTrigger>
+        )}
+        {!isTouchLayout ? (
+          <HoverCardContent side="right">
+            <AgentSidebarInfoCard
+              folderPath={session.projectRoot}
+              icon={MessageSquare}
+              isInProgress={isInProgress}
+              metadata={projectDisplayName}
+              metadataIcon={Folder}
+              onDismiss={() => setInfoCardOpen(false)}
+              onOpenProjectFolder={() => onRevealProjectRoot(session.projectRoot)}
+              progressLabel={isInProgress ? "In progress" : "Not in progress"}
+              title={title}
+            />
+          </HoverCardContent>
+        ) : null}
+      </HoverCard>
+
+      {hasVisualStatus ? (
+        <span
+          aria-hidden="true"
+          className={cn(
+            "pointer-events-none absolute top-1/2 z-40 flex -translate-y-1/2 items-center justify-center transition-opacity duration-150 motion-reduce:transition-none",
+            isTouchLayout ? "right-10" : "right-2",
+            !isTouchLayout && "group-hover/task:opacity-0",
+            !isTouchLayout &&
+              (menuOpen || hasKeyboardFocusWithin || visibleInfoCardOpen) &&
+              "opacity-0"
+          )}
+        >
+          {isRunning ? (
+            <Loader2 className="h-3.5 w-3.5 text-[hsl(var(--maple-primary))] motion-safe:animate-spin" />
+          ) : (
+            <span className="h-2 w-2 rounded-full bg-maple-success" />
+          )}
+        </span>
+      ) : null}
+
+      <div
+        className={taskActionRowClass(
+          isTouchLayout,
+          menuOpen,
+          hasKeyboardFocusWithin || visibleInfoCardOpen
+        )}
+      >
+        <div
+          aria-hidden="true"
+          className={cn(
+            "pointer-events-none w-5 shrink-0 self-stretch bg-gradient-to-r from-transparent transition-colors",
+            isActive
+              ? "to-[hsl(var(--sidebar-row-selected))] group-hover/task:to-[hsl(var(--sidebar-row-selected-hover))]"
+              : "to-[hsl(var(--sidebar))] group-hover/task:to-[hsl(var(--sidebar-row-hover))]",
+            (menuOpen || hasKeyboardFocusWithin || visibleInfoCardOpen) &&
+              (isActive
+                ? "to-[hsl(var(--sidebar-row-selected-hover))]"
+                : "to-[hsl(var(--sidebar-row-hover))]")
+          )}
+        />
+        <div
+          className={cn(
+            "flex items-center rounded-r-xl pr-0.5",
+            isActive
+              ? "bg-[hsl(var(--sidebar-row-selected))] group-hover/task:bg-[hsl(var(--sidebar-row-selected-hover))]"
+              : "bg-[hsl(var(--sidebar))] group-hover/task:bg-[hsl(var(--sidebar-row-hover))]",
+            (menuOpen || hasKeyboardFocusWithin || visibleInfoCardOpen) &&
+              (isActive
+                ? "bg-[hsl(var(--sidebar-row-selected-hover))]"
+                : "bg-[hsl(var(--sidebar-row-hover))]")
+          )}
+        >
+          <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                className={cn(AGENT_SIDEBAR_ACTION_BUTTON, isTouchLayout ? "h-9 w-9" : "h-7 w-7")}
+                onClick={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                }}
+                aria-label={`Open task menu for ${title}`}
+              >
+                <MoreHorizontal className="h-4 w-4" strokeWidth={SIDEBAR_ICON_STROKE} />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" collisionPadding={8} className="max-w-48">
+              <DropdownMenuItem
+                disabled={actionsLocked || isRunning}
+                onClick={() => onDelete(session)}
+              >
+                <Trash className="mr-2 h-4 w-4 shrink-0" strokeWidth={SIDEBAR_ICON_STROKE} />
+                <span className="min-w-0 whitespace-normal leading-snug">
+                  {isRunning ? "Stop Agent Before Deleting Task" : "Delete Task"}
+                </span>
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function AgentSidebarContent({
   activeSessionId,
-  isCompactLayout,
+  collapsedProjectRoots,
+  isTouchLayout,
   projectRoot,
   recentRoots,
   completedUnreadSessionIds,
   disabled,
+  inProgressSessionIds,
   runningSessionIds,
   sessions,
   onChooseProjectRoot,
   onCreateSession,
+  onProjectDisclosureToggle,
   onProjectOrderChange,
+  onProjectRename,
   onProjectRemove,
-  onProjectRootChange,
+  onRevealProjectRoot,
   onSessionDelete,
   onSessionSelect
 }: AgentSidebarContentProps) {
@@ -2906,9 +3283,16 @@ function AgentSidebarContent({
   const suppressProjectClickUntilRef = useRef(0);
   const [projectDrag, setProjectDrag] = useState<ProjectDragState | null>(null);
   const isProjectDragging = projectDrag !== null;
-  const [collapsedProjectRoots, setCollapsedProjectRoots] = useState<Set<string>>(() => new Set());
+  const [openProjectInfoCardPath, setOpenProjectInfoCardPath] = useState<string | null>(null);
+  const [openProjectMenuPath, setOpenProjectMenuPath] = useState<string | null>(null);
+  const [keyboardFocusProjectPath, setKeyboardFocusProjectPath] = useState<string | null>(null);
   const projectRows = recentRoots;
   const sessionsByRoot = useMemo(() => groupAgentSessionsByRoot(sessions), [sessions]);
+
+  useEffect(() => {
+    if (isTouchLayout) setOpenProjectInfoCardPath(null);
+  }, [isTouchLayout]);
+
   const setAnimatedRowRef = useCallback(
     (key: string, node: HTMLElement | null) => {
       if (node) {
@@ -3111,7 +3495,7 @@ function AgentSidebarContent({
   );
 
   const beginProjectPointer = useCallback(
-    (event: React.PointerEvent<HTMLDivElement>, root: RecentProjectRoot) => {
+    (event: React.PointerEvent<HTMLDivElement>, root: AgentProjectRootView) => {
       if (
         disabled ||
         !event.isPrimary ||
@@ -3121,20 +3505,22 @@ function AgentSidebarContent({
       ) {
         return;
       }
+      setOpenProjectInfoCardPath(null);
       const rect = event.currentTarget.getBoundingClientRect();
       pendingProjectPointerRef.current = {
         pointerId: event.pointerId,
         path: root.path,
-        name: root.name,
+        name: root.displayName,
         startX: event.clientX,
         startY: event.clientY,
         grabOffsetX: event.clientX - rect.left,
         grabOffsetY: event.clientY - rect.top,
         ghostWidth: rect.width,
-        headerElement: event.currentTarget
+        headerElement: event.currentTarget,
+        isCollapsed: collapsedProjectRoots.has(root.path)
       };
     },
-    [disabled]
+    [collapsedProjectRoots, disabled]
   );
 
   const suppressActivatedProjectClick = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
@@ -3276,18 +3662,6 @@ function AgentSidebarContent({
     };
   }, [stopProjectAutoScroll]);
 
-  const toggleProjectCollapsed = useCallback((path: string) => {
-    setCollapsedProjectRoots((current) => {
-      const next = new Set(current);
-      if (next.has(path)) {
-        next.delete(path);
-      } else {
-        next.add(path);
-      }
-      return next;
-    });
-  }, []);
-
   return (
     <>
       <div className="mb-2 flex items-center justify-between gap-3">
@@ -3301,9 +3675,9 @@ function AgentSidebarContent({
           className="h-7 w-7 text-muted-foreground hover:text-foreground"
           onClick={onChooseProjectRoot}
           disabled={disabled}
-          aria-label="Choose project folder"
+          aria-label="Add project folder"
         >
-          <FolderOpen className="h-4 w-4" />
+          <FolderPlus className="h-4 w-4" />
         </Button>
       </div>
 
@@ -3326,215 +3700,292 @@ function AgentSidebarContent({
             const hasRunningSession = projectSessions.some((session) =>
               runningSessionIds.has(session.id)
             );
-            const hasUnreadCompletedSession = projectSessions.some((session) =>
-              completedUnreadSessionIds.has(session.id)
+            const inProgressSessionCount = projectSessions.reduce(
+              (count, session) => count + (inProgressSessionIds.has(session.id) ? 1 : 0),
+              0
             );
+            const unreadSessionCount = projectSessions.reduce(
+              (count, session) => count + (completedUnreadSessionIds.has(session.id) ? 1 : 0),
+              0
+            );
+            const hasUnreadCompletedSession = unreadSessionCount > 0;
             const showProjectRunningIndicator = isCollapsed && hasRunningSession;
             const showProjectUnreadIndicator =
               isCollapsed && !hasRunningSession && hasUnreadCompletedSession;
+            const hasProjectStatus = showProjectRunningIndicator || showProjectUnreadIndicator;
+            const projectInfoCardOpen = openProjectInfoCardPath === root.path;
+            const projectMenuOpen = openProjectMenuPath === root.path;
+            const hasProjectKeyboardFocus = keyboardFocusProjectPath === root.path;
+            const projectDisclosureButton = (
+              <button
+                type="button"
+                className={cn(
+                  "flex min-w-0 flex-1 items-center gap-2 rounded-xl px-2 text-left text-sm text-foreground/95 transition-colors focus-visible:outline-none",
+                  isTouchLayout ? "min-h-10" : "min-h-[30px]",
+                  isActive && "font-semibold text-foreground",
+                  isTouchLayout
+                    ? hasProjectStatus
+                      ? "pr-24"
+                      : "pr-[4.75rem]"
+                    : hasProjectStatus
+                      ? "pr-8"
+                      : "pr-2"
+                )}
+                onClick={() => onProjectDisclosureToggle(root.path)}
+                aria-expanded={!isCollapsed}
+                aria-label={`${isCollapsed ? "Expand" : "Collapse"} ${root.displayName}${
+                  inProgressSessionCount > 0
+                    ? `, ${agentProjectProgressLabel(inProgressSessionCount)}`
+                    : ""
+                }${unreadSessionCount > 0 ? `, ${unreadSessionCount} unread` : ""}`}
+              >
+                {isCollapsed ? (
+                  <Folder className="h-4 w-4 shrink-0" />
+                ) : (
+                  <FolderOpen className="h-4 w-4 shrink-0" />
+                )}
+                <span className="min-w-0 flex-1 truncate">{root.displayName}</span>
+              </button>
+            );
 
             return (
               <div
                 key={root.path}
                 ref={(node) => setProjectGroupRef(root.path, node)}
                 className={cn(
-                  "space-y-2",
-                  rootIndex < projectRows.length - 1 && "mb-2",
+                  "space-y-px",
+                  rootIndex < projectRows.length - 1 && "mb-3",
                   isProjectDragging && "opacity-25"
                 )}
               >
                 <div
                   ref={(node) => setProjectHeaderRef(root.path, node)}
                   className={cn(
-                    "flex select-none items-center gap-1 rounded-2xl text-foreground",
+                    "group/project relative flex select-none items-center rounded-xl text-foreground transition-colors motion-reduce:transition-none hover:bg-[hsl(var(--sidebar-row-hover))]",
+                    isTouchLayout ? "min-h-10" : "min-h-[30px]",
+                    (projectInfoCardOpen || projectMenuOpen || hasProjectKeyboardFocus) &&
+                      "bg-[hsl(var(--sidebar-row-hover))] ring-1 ring-ring/70",
                     !disabled && projectRows.length > 1 && "touch-none",
                     !disabled &&
                       (projectDrag?.path === root.path ? "cursor-grabbing" : "cursor-grab")
                   )}
                   onPointerDown={(event) => beginProjectPointer(event, root)}
                   onClickCapture={suppressActivatedProjectClick}
+                  onFocusCapture={(event) =>
+                    setKeyboardFocusProjectPath(
+                      isKeyboardFocusTarget(event.target) ? root.path : null
+                    )
+                  }
+                  onBlurCapture={(event) => {
+                    const nextTarget = event.relatedTarget;
+                    const staysKeyboardFocused =
+                      event.currentTarget.contains(nextTarget as Node) &&
+                      isKeyboardFocusTarget(nextTarget);
+                    setKeyboardFocusProjectPath((current) =>
+                      staysKeyboardFocused ? root.path : current === root.path ? null : current
+                    );
+                  }}
                 >
-                  <button
-                    type="button"
-                    className={cn(
-                      "flex min-w-0 flex-1 items-center gap-2 rounded-2xl py-1.5 pr-1 text-left text-sm transition-colors",
-                      isActive
-                        ? "font-bold text-foreground"
-                        : "text-foreground/95 hover:text-foreground"
-                    )}
-                    onClick={() => onProjectRootChange(root.path)}
-                    disabled={disabled}
-                    title={root.path}
+                  <HoverCard
+                    open={projectInfoCardOpen && !isProjectDragging && !isTouchLayout}
+                    openDelay={450}
+                    closeDelay={180}
+                    onOpenChange={(open) =>
+                      setOpenProjectInfoCardPath((current) =>
+                        open ? root.path : current === root.path ? null : current
+                      )
+                    }
                   >
-                    <FolderOpen className="h-4 w-4 shrink-0" />
-                    <span className="min-w-0 flex-1 truncate">{root.name}</span>
-                    {showProjectRunningIndicator ? (
-                      <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-[hsl(var(--maple-primary))]" />
-                    ) : showProjectUnreadIndicator ? (
-                      <span className="h-2 w-2 shrink-0 rounded-full bg-maple-success" />
+                    {isTouchLayout ? (
+                      projectDisclosureButton
+                    ) : (
+                      <HoverCardTrigger asChild>{projectDisclosureButton}</HoverCardTrigger>
+                    )}
+                    {!isTouchLayout ? (
+                      <HoverCardContent side="right">
+                        <AgentSidebarInfoCard
+                          folderPath={root.path}
+                          icon={isCollapsed ? Folder : FolderOpen}
+                          isInProgress={inProgressSessionCount > 0}
+                          metadata={agentProjectTaskSummaryLabel(
+                            projectSessions.length,
+                            unreadSessionCount
+                          )}
+                          metadataIcon={MessageSquare}
+                          onDismiss={() => setOpenProjectInfoCardPath(null)}
+                          onOpenProjectFolder={() => onRevealProjectRoot(root.path)}
+                          progressLabel={agentProjectProgressLabel(inProgressSessionCount)}
+                          title={root.displayName}
+                        />
+                      </HoverCardContent>
                     ) : null}
-                  </button>
-                  {projectSessions.length > 0 ? (
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon"
-                      className="h-7 w-7 shrink-0 text-muted-foreground hover:text-foreground"
-                      onClick={() => toggleProjectCollapsed(root.path)}
-                      aria-label={isCollapsed ? "Expand project tasks" : "Collapse project tasks"}
-                    >
-                      {isCollapsed ? (
-                        <ChevronRight className="h-4 w-4" />
-                      ) : (
-                        <ChevronDown className="h-4 w-4" />
+                  </HoverCard>
+
+                  {hasProjectStatus ? (
+                    <span
+                      aria-hidden="true"
+                      className={cn(
+                        "pointer-events-none absolute top-1/2 z-40 flex -translate-y-1/2 items-center justify-center transition-opacity duration-150 motion-reduce:transition-none",
+                        isTouchLayout ? "right-[4.75rem]" : "right-2",
+                        !isTouchLayout && "group-hover/project:opacity-0",
+                        !isTouchLayout &&
+                          (projectInfoCardOpen || projectMenuOpen || hasProjectKeyboardFocus) &&
+                          "opacity-0"
                       )}
-                    </Button>
-                  ) : null}
-                  {isActive ? (
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon"
-                      className="h-7 w-7 shrink-0 text-muted-foreground hover:text-foreground"
-                      onClick={onCreateSession}
-                      disabled={disabled || !projectRoot}
-                      aria-label="New Task"
                     >
-                      <MessageSquarePlus className="h-4 w-4" />
-                    </Button>
+                      {showProjectRunningIndicator ? (
+                        <Loader2 className="h-3.5 w-3.5 text-[hsl(var(--maple-primary))] motion-safe:animate-spin" />
+                      ) : (
+                        <span className="h-2 w-2 rounded-full bg-maple-success" />
+                      )}
+                    </span>
                   ) : null}
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
+
+                  <div
+                    className={projectActionRowClass(
+                      isTouchLayout,
+                      projectMenuOpen,
+                      hasProjectKeyboardFocus || projectInfoCardOpen
+                    )}
+                  >
+                    <div
+                      aria-hidden="true"
+                      className={cn(
+                        "pointer-events-none w-5 shrink-0 self-stretch bg-gradient-to-r from-transparent to-[hsl(var(--sidebar))] transition-colors group-hover/project:to-[hsl(var(--sidebar-row-hover))]",
+                        (projectInfoCardOpen || projectMenuOpen || hasProjectKeyboardFocus) &&
+                          "to-[hsl(var(--sidebar-row-hover))]"
+                      )}
+                    />
+                    <div
+                      className={cn(
+                        "flex items-center rounded-r-xl bg-[hsl(var(--sidebar))] pr-0.5 transition-colors group-hover/project:bg-[hsl(var(--sidebar-row-hover))]",
+                        (projectInfoCardOpen || projectMenuOpen || hasProjectKeyboardFocus) &&
+                          "bg-[hsl(var(--sidebar-row-hover))]"
+                      )}
+                    >
+                      <DropdownMenu
+                        modal={false}
+                        open={projectMenuOpen}
+                        onOpenChange={(open) => setOpenProjectMenuPath(open ? root.path : null)}
+                      >
+                        <DropdownMenuTrigger asChild>
+                          <button
+                            type="button"
+                            className={cn(
+                              AGENT_SIDEBAR_ACTION_BUTTON,
+                              isTouchLayout ? "h-9 w-9" : "h-7 w-7"
+                            )}
+                            disabled={disabled}
+                            onPointerDown={(event) => event.stopPropagation()}
+                            onClick={(event) => {
+                              event.preventDefault();
+                              event.stopPropagation();
+                            }}
+                            aria-label={`Open project menu for ${root.displayName}`}
+                          >
+                            <MoreHorizontal className="h-4 w-4" strokeWidth={SIDEBAR_ICON_STROKE} />
+                          </button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent
+                          align="end"
+                          collisionPadding={8}
+                          className={cn(
+                            "max-w-[calc(100vw-1rem)]",
+                            hasRunningSession ? "w-48" : "w-max"
+                          )}
+                        >
+                          <DropdownMenuItem
+                            disabled={disabled}
+                            onClick={() => onProjectRename(root)}
+                          >
+                            <FilePenLine
+                              className="mr-2 h-4 w-4 shrink-0"
+                              strokeWidth={SIDEBAR_ICON_STROKE}
+                            />
+                            Rename Project
+                          </DropdownMenuItem>
+                          <DropdownMenuItem onClick={() => onRevealProjectRoot(root.path)}>
+                            <FolderOpen
+                              className="mr-2 h-4 w-4 shrink-0"
+                              strokeWidth={SIDEBAR_ICON_STROKE}
+                            />
+                            <span className="whitespace-nowrap">Open Project Folder</span>
+                          </DropdownMenuItem>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem
+                            disabled={disabled || hasRunningSession}
+                            onClick={() => onProjectRemove(root)}
+                          >
+                            <X
+                              className="mr-2 h-4 w-4 shrink-0"
+                              strokeWidth={SIDEBAR_ICON_STROKE}
+                            />
+                            <span className="min-w-0 whitespace-normal leading-snug">
+                              {hasRunningSession
+                                ? "Stop Agent Before Removing Project"
+                                : "Remove Project"}
+                            </span>
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
                       <button
                         type="button"
-                        className={AGENT_SIDEBAR_ELLIPSIS_BUTTON}
-                        disabled={disabled}
+                        className={cn(
+                          AGENT_SIDEBAR_ACTION_BUTTON,
+                          isTouchLayout ? "h-9 w-9" : "h-7 w-7"
+                        )}
                         onPointerDown={(event) => event.stopPropagation()}
                         onClick={(event) => {
                           event.preventDefault();
                           event.stopPropagation();
+                          onCreateSession(root.path);
                         }}
-                        aria-label={`Open project menu for ${root.name}`}
+                        disabled={disabled || !root.path}
+                        aria-label={`New task in ${root.displayName}`}
                       >
-                        <MoreHorizontal className="h-4 w-4" strokeWidth={SIDEBAR_ICON_STROKE} />
+                        <MessageSquarePlus className="h-4 w-4" />
                       </button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end">
-                      <DropdownMenuItem
-                        disabled={disabled || hasRunningSession}
-                        onClick={() => onProjectRemove(root)}
-                      >
-                        <X className="mr-2 h-4 w-4" strokeWidth={SIDEBAR_ICON_STROKE} />
-                        {hasRunningSession
-                          ? "Stop Agent Before Removing Project"
-                          : "Remove Project"}
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
+                    </div>
+                  </div>
                 </div>
 
-                {!isCollapsed ? (
-                  <div className="mt-2 w-full space-y-2 pl-6">
-                    {projectSessions.length === 0 ? (
-                      isActive ? (
-                        <p className="py-1 text-xs text-muted-foreground/75">No tasks yet</p>
-                      ) : null
-                    ) : (
-                      projectSessions.map((session) => {
-                        const isActiveSession = session.id === activeSessionId;
-                        const isRunning = runningSessionIds.has(session.id);
-                        const isUnreadCompleted = completedUnreadSessionIds.has(session.id);
-                        const title = sessionTitle(session);
-                        const accessibleStatus = isRunning
-                          ? "running"
-                          : isUnreadCompleted
-                            ? "completed, unread"
-                            : null;
-
-                        return (
-                          <div
-                            key={session.id}
-                            ref={(node) => setAnimatedRowRef(`session:${session.id}`, node)}
-                            className="group relative isolate flex w-full min-w-0 select-none items-stretch gap-0.5 rounded-2xl"
-                            onContextMenu={(event) => event.preventDefault()}
-                          >
-                            <button
-                              type="button"
-                              className={cn(
-                                "relative z-0 min-w-0 flex-1 cursor-pointer py-1 pr-2 text-left text-sm transition-colors",
-                                isActiveSession
-                                  ? "font-bold text-foreground"
-                                  : "text-foreground/95 group-hover:text-foreground"
-                              )}
-                              onClick={() => onSessionSelect(session.id)}
-                              disabled={disabled}
-                              aria-current={isActiveSession ? "page" : undefined}
-                              aria-label={
-                                accessibleStatus ? `${title}, ${accessibleStatus}` : title
-                              }
-                            >
-                              <div className="pr-8">
-                                <div className="relative z-0 flex min-w-0 items-center gap-1.5">
-                                  {isRunning ? (
-                                    <Loader2
-                                      className="h-3 w-3 shrink-0 animate-spin text-[hsl(var(--maple-primary))]"
-                                      aria-hidden="true"
-                                    />
-                                  ) : isUnreadCompleted ? (
-                                    <span
-                                      className="h-2 w-2 shrink-0 rounded-full bg-maple-success"
-                                      aria-hidden="true"
-                                    />
-                                  ) : null}
-                                  <span className="min-w-0 flex-1 truncate">{title}</span>
-                                </div>
-                              </div>
-                            </button>
-
-                            <div className={agentSidebarEllipsisTriggerRowClass(isCompactLayout)}>
-                              <div className={AGENT_SIDEBAR_ELLIPSIS_FADE} aria-hidden="true" />
-                              <div className="flex items-center">
-                                <DropdownMenu>
-                                  <DropdownMenuTrigger asChild>
-                                    <button
-                                      type="button"
-                                      className={AGENT_SIDEBAR_ELLIPSIS_BUTTON}
-                                      disabled={disabled}
-                                      onClick={(event) => {
-                                        event.preventDefault();
-                                        event.stopPropagation();
-                                      }}
-                                      aria-label={`Open task menu for ${title}`}
-                                    >
-                                      <MoreHorizontal
-                                        className="h-4 w-4"
-                                        strokeWidth={SIDEBAR_ICON_STROKE}
-                                      />
-                                    </button>
-                                  </DropdownMenuTrigger>
-                                  <DropdownMenuContent align="end">
-                                    <DropdownMenuItem
-                                      disabled={disabled || isRunning}
-                                      onClick={() => onSessionDelete(session)}
-                                    >
-                                      <Trash
-                                        className="mr-2 h-4 w-4"
-                                        strokeWidth={SIDEBAR_ICON_STROKE}
-                                      />
-                                      {isRunning
-                                        ? "Stop Agent Before Deleting Task"
-                                        : "Delete Task"}
-                                    </DropdownMenuItem>
-                                  </DropdownMenuContent>
-                                </DropdownMenu>
-                              </div>
-                            </div>
-                          </div>
-                        );
-                      })
+                {!isCollapsed && projectSessions.length === 0 && isActive ? (
+                  <p
+                    className={cn(
+                      "flex items-center pl-8 text-xs text-muted-foreground/75",
+                      isTouchLayout ? "min-h-10" : "min-h-[30px]"
                     )}
-                  </div>
+                  >
+                    No tasks yet
+                  </p>
                 ) : null}
+
+                {!isCollapsed
+                  ? projectSessions.map((session) => {
+                      const isActiveSession = session.id === activeSessionId;
+                      const isInProgress = inProgressSessionIds.has(session.id);
+                      const isRunning = runningSessionIds.has(session.id);
+                      const isUnreadCompleted = completedUnreadSessionIds.has(session.id);
+
+                      return (
+                        <AgentSidebarTaskRow
+                          key={session.id}
+                          actionsLocked={disabled}
+                          isActive={isActiveSession}
+                          isInProgress={isInProgress}
+                          isRunning={isRunning}
+                          isTouchLayout={isTouchLayout}
+                          isUnreadCompleted={isUnreadCompleted}
+                          onDelete={onSessionDelete}
+                          onRevealProjectRoot={onRevealProjectRoot}
+                          onSelect={onSessionSelect}
+                          projectDisplayName={root.displayName}
+                          rowRef={(node) => setAnimatedRowRef(`session:${session.id}`, node)}
+                          session={session}
+                        />
+                      );
+                    })
+                  : null}
               </div>
             );
           })}
@@ -3561,7 +4012,11 @@ function AgentSidebarContent({
             maxWidth: "calc(100vw - 24px)"
           }}
         >
-          <FolderOpen className="h-4 w-4 shrink-0" />
+          {projectDrag.isCollapsed ? (
+            <Folder className="h-4 w-4 shrink-0" />
+          ) : (
+            <FolderOpen className="h-4 w-4 shrink-0" />
+          )}
           <span className="min-w-0 flex-1 truncate">{projectDrag.name}</span>
         </div>
       ) : null}
@@ -3592,7 +4047,7 @@ interface AgentComposerProps {
   mode: AgentPermissionMode;
   model: string;
   projectRoot: string;
-  recentRoots: RecentProjectRoot[];
+  recentRoots: AgentProjectRootView[];
   isExpanded?: boolean;
   onCancelPrompt: () => void;
   onChooseProjectRoot: () => void;
@@ -3729,7 +4184,7 @@ function AgentComposer({
               {rootOptions.length > 0 ? <SelectSeparator /> : null}
               {rootOptions.map((root) => (
                 <SelectItem key={root.path} value={root.path}>
-                  {root.name}
+                  {root.displayName}
                 </SelectItem>
               ))}
             </SelectContent>

@@ -2,9 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "enables the default permissions",
-  "windows": [
-    "main"
-  ],
+  "windows": ["main"],
   "platforms": ["macOS", "windows", "linux"],
   "permissions": [
     "core:default",
@@ -60,6 +58,7 @@
         }
       ]
     },
+    "opener:allow-reveal-item-in-dir",
     "sign-in-with-apple:default"
   ]
 }
