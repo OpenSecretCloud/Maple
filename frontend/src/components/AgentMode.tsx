@@ -686,23 +686,29 @@ export function AgentMode({ userId }: { userId: string }) {
   const activeRunId = activeSessionId ? (activeRunsBySession[activeSessionId] ?? null) : null;
   const activePendingSendKey = activeSessionId || NEW_SESSION_PENDING_KEY;
   const isSubmitting = pendingSendSessionIds.has(activePendingSendKey);
-  const isSessionSelectionPending = pendingSessionSelectionId !== null;
+  const isTaskSelectionPending =
+    pendingSessionSelectionId !== null && pendingSessionSelectionId !== NEW_SESSION_PENDING_KEY;
+  const isNewTaskCreationPending = pendingSessionSelectionId === NEW_SESSION_PENDING_KEY;
+  // Existing-task loads and their follow-up project trust lookup block actions without
+  // visually dimming the global New Task control.
+  const isTaskTransitionPending = isTaskSelectionPending || isProjectSkillsTrustLoading;
   const isProjectOrderSaving = projectOrderState.pendingRequestId !== null;
   const isProjectSkillsTrustSaving = projectSkillsTrustSavingDecision !== null;
-  const areAgentSettingsLocked =
+  const areAgentSettingsLockedOutsideTaskTransition =
     !isAuthTransitionReady ||
     isInitializing ||
     isStarting ||
     isPermissionModeUpdating ||
-    isSessionSelectionPending ||
+    isNewTaskCreationPending ||
     isSubmitting ||
     isProjectOrderSaving ||
     isProjectRootRegistrationPending ||
     isProjectRemovalPending ||
     isAgentModelCatalogLoading ||
-    isProjectSkillsTrustLoading ||
     isProjectSkillsTrustSaving ||
     projectSkillsTrustPrompt !== null;
+  const areAgentSettingsLocked =
+    areAgentSettingsLockedOutsideTaskTransition || isTaskTransitionPending;
   const hasStartedAgentSession =
     hasAgentUserMessage(timelineItems) ||
     sessions.some((session) => session.id === activeSessionId && session.messageCount > 0);
@@ -2479,7 +2485,12 @@ export function AgentMode({ userId }: { userId: string }) {
             onSessionSelect={handleSelectSession}
           />
         }
-        onNewItem={areAgentSettingsLocked || !projectRoot ? undefined : handleCreateSession}
+        isNewItemTemporarilyDisabled={isTaskTransitionPending}
+        onNewItem={
+          areAgentSettingsLockedOutsideTaskTransition || !projectRoot
+            ? undefined
+            : handleCreateSession
+        }
         onToggle={toggleSidebar}
       />
 
