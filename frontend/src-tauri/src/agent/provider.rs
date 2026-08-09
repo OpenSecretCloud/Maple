@@ -126,6 +126,7 @@ impl MapleProvider {
             true,
             OpenAiFormatOptions {
                 preserve_thinking_context: true,
+                thinking_preservation_format: None,
             },
         )
         .map_err(|error| {

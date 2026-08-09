@@ -20,7 +20,8 @@ use goose::config::{
     DEFAULT_EXTENSION_TIMEOUT,
 };
 use goose::conversation::message::{
-    ActionRequiredData, Message, MessageContent, SystemNotificationContent, SystemNotificationType,
+    ActionRequiredData, ErrorContent, Message, MessageContent, MessageErrorKind,
+    SystemNotificationContent, SystemNotificationType,
 };
 use goose::conversation::{fix_conversation, Conversation};
 use goose::execution::manager::{AgentManager, AgentManagerGetResult, RuntimeContext};
@@ -2503,7 +2504,7 @@ fn repair_cancelled_turn(
             .with_tool_response(
                 sentinel_id.clone(),
                 Ok(rmcp::model::CallToolResult::success(vec![
-                    rmcp::model::Content::text("cancel repair sentinel"),
+                    rmcp::model::ContentBlock::text("cancel repair sentinel"),
                 ])),
             )
             .with_generated_id(),
@@ -4840,9 +4841,7 @@ fn message_to_timeline_items_with_thinking(
                 created_ms,
                 merge: "replace".to_string(),
             }),
-            MessageContent::ActionRequired(action) => {
-                Some(action_required_item(action, created_ms))
-            }
+            MessageContent::ActionRequired(action) => action_required_item(action, created_ms),
             MessageContent::FrontendToolRequest(request) => {
                 let (title, text, input, status) = match &request.tool_call {
                     Ok(call) => (
@@ -4881,6 +4880,9 @@ fn message_to_timeline_items_with_thinking(
                 notification,
                 created_ms,
             )),
+            MessageContent::Error(error) => {
+                Some(message_error_item(&base_id, index, error, created_ms))
+            }
             // Images are provider-history payloads, not timeline events. The
             // read_image tool request/result already gives users the useful,
             // bounded presentation without exposing base64 metadata.
@@ -4929,13 +4931,13 @@ fn tool_request_item(
             title: Some(
                 descriptive_tool_title(call.name.as_ref(), &call.arguments).unwrap_or_else(|| {
                     request
-                        .persisted_title()
+                        .generated_title()
                         .unwrap_or_else(|| call.name.as_ref())
                         .to_string()
                 }),
             ),
             text: request
-                .persisted_chain_summary()
+                .generated_chain_summary()
                 .map(|summary| summary.summary),
             status: Some("running".to_string()),
             input: Some(serde_json::to_value(&call.arguments).unwrap_or(Value::Null)),
@@ -5102,7 +5104,7 @@ fn tool_response_item(
     }
 }
 
-fn summarize_tool_content(content: &rmcp::model::Content) -> Value {
+fn summarize_tool_content(content: &rmcp::model::ContentBlock) -> Value {
     if let Some(text) = content.as_text() {
         return json!({
             "type": "text",
@@ -5175,14 +5177,14 @@ fn merge_timeline_item(
 fn action_required_item(
     action: &goose::conversation::message::ActionRequired,
     created_ms: u128,
-) -> AgentTimelineItem {
+) -> Option<AgentTimelineItem> {
     match &action.data {
         ActionRequiredData::ToolConfirmation {
             id,
             tool_name,
             arguments,
             prompt,
-        } => AgentTimelineItem {
+        } => Some(AgentTimelineItem {
             id: format!("permission-{id}"),
             item_type: "permission".to_string(),
             role: Some("system".to_string()),
@@ -5193,12 +5195,12 @@ fn action_required_item(
             output: None,
             created_ms,
             merge: "replace".to_string(),
-        },
+        }),
         ActionRequiredData::Elicitation {
             id,
             message,
             requested_schema,
-        } => AgentTimelineItem {
+        } => Some(AgentTimelineItem {
             id: format!("elicitation-{id}"),
             item_type: "permission".to_string(),
             role: Some("system".to_string()),
@@ -5209,8 +5211,8 @@ fn action_required_item(
             output: None,
             created_ms,
             merge: "replace".to_string(),
-        },
-        ActionRequiredData::ElicitationResponse { id, .. } => AgentTimelineItem {
+        }),
+        ActionRequiredData::ElicitationResponse { id, .. } => Some(AgentTimelineItem {
             id: format!("elicitation-response-{id}"),
             item_type: "system".to_string(),
             role: Some("system".to_string()),
@@ -5221,7 +5223,36 @@ fn action_required_item(
             output: None,
             created_ms,
             merge: "replace".to_string(),
-        },
+        }),
+        // This is persisted state-machine resume bookkeeping, not a new user
+        // permission request. Maple keeps Goose's experimental state machine
+        // disabled and should not render an extra permission card for it.
+        ActionRequiredData::ToolConfirmationResponse { .. } => None,
+    }
+}
+
+fn message_error_item(
+    base_id: &str,
+    index: usize,
+    error: &ErrorContent,
+    created_ms: u128,
+) -> AgentTimelineItem {
+    let title = match error.kind {
+        MessageErrorKind::ContextLengthExceeded => "Context limit exceeded",
+        MessageErrorKind::CreditsExhausted => "Credits exhausted",
+        MessageErrorKind::Other => "Agent error",
+    };
+    AgentTimelineItem {
+        id: format!("{base_id}-error-{index}"),
+        item_type: "error".to_string(),
+        role: Some("system".to_string()),
+        title: Some(title.to_string()),
+        text: Some(bounded_timeline_text(&error.message, MAX_AGENT_ERROR_CHARS)),
+        status: Some("failed".to_string()),
+        input: None,
+        output: None,
+        created_ms,
+        merge: "replace".to_string(),
     }
 }
 
@@ -5538,6 +5569,9 @@ fn configure_embedded_goose(
     std::env::remove_var("OPENAI_BASE_URL");
     std::env::remove_var("GOOSE_DISABLE_KEYRING");
     std::env::remove_var("GOOSE_MAX_TOKENS");
+    // Maple still routes approvals through Goose's legacy reply loop. Keep the
+    // experimental state-machine loop off until upstream makes it the default.
+    std::env::remove_var("GOOSE_STATE_MACHINE");
     std::env::remove_var("GOOSE_TOOL_PAIR_SUMMARIZATION");
     std::env::remove_var("GOOSE_PROVIDER");
     std::env::remove_var("GOOSE_MODEL");
@@ -6537,7 +6571,7 @@ fn path_string(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rmcp::model::{AnnotateAble, RawTextContent, Role as McpRole};
+    use rmcp::model::{Annotations, Role as McpRole, TextContent};
     use std::collections::{BTreeMap, BTreeSet};
 
     struct NoopAgentEventSink;
@@ -7202,6 +7236,7 @@ mod tests {
             SkillsClient::new(PlatformExtensionContext {
                 extension_manager: None,
                 session_manager: Arc::clone(&session_manager),
+                scheduler: None,
                 session: Some(Arc::new(Session {
                     working_dir,
                     ..Session::default()
@@ -8775,7 +8810,7 @@ mod tests {
         Message::user().with_id(message_id).with_tool_response(
             tool_id,
             Ok(rmcp::model::CallToolResult::success(vec![
-                rmcp::model::Content::text("ok"),
+                rmcp::model::ContentBlock::text("ok"),
             ])),
         )
     }
@@ -8798,7 +8833,7 @@ mod tests {
             .with_tool_response(
                 "functions.load_skill:1",
                 Ok(rmcp::model::CallToolResult::success(vec![
-                    rmcp::model::Content::text("# Loaded Skill: release-maple"),
+                    rmcp::model::ContentBlock::text("# Loaded Skill: release-maple"),
                 ])),
             );
 
@@ -8829,7 +8864,7 @@ mod tests {
             .with_tool_response(
                 "functions.load_skill:1",
                 Ok(rmcp::model::CallToolResult::error(vec![
-                    rmcp::model::Content::text("Skill 'release-maple' not found"),
+                    rmcp::model::ContentBlock::text("Skill 'release-maple' not found"),
                 ])),
             );
         let failed = message_to_timeline_items(&failed_response, false)
@@ -8982,6 +9017,32 @@ mod tests {
         assert!(items.iter().any(|item| {
             item.id == "elicitation-resolved-input" && item.status.as_deref() == Some("completed")
         }));
+    }
+
+    #[test]
+    fn typed_provider_errors_render_without_exposing_confirmation_bookkeeping() {
+        let message = Message::assistant()
+            .with_id("assistant-error")
+            .with_content(MessageContent::error(
+                MessageErrorKind::ContextLengthExceeded,
+                "The conversation is too large for this model.",
+            ))
+            .with_content(MessageContent::action_required_tool_confirmation_response(
+                "tool-1",
+                Permission::AllowOnce,
+            ));
+
+        let items = message_to_timeline_items(&message, false);
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].id, "assistant-error-error-0");
+        assert_eq!(items[0].item_type, "error");
+        assert_eq!(items[0].title.as_deref(), Some("Context limit exceeded"));
+        assert_eq!(
+            items[0].text.as_deref(),
+            Some("The conversation is too large for this model.")
+        );
+        assert_eq!(items[0].status.as_deref(), Some("failed"));
     }
 
     #[test]
@@ -9293,12 +9354,8 @@ mod tests {
     fn persisted_timeline_enforces_content_audience_boundaries() {
         let audience_text = |text: &str, audience| {
             MessageContent::Text(
-                RawTextContent {
-                    text: text.to_string(),
-                    meta: None,
-                }
-                .no_annotation()
-                .with_audience(vec![audience]),
+                TextContent::new(text)
+                    .with_annotations(Annotations::default().with_audience(vec![audience])),
             )
         };
 
@@ -9336,10 +9393,16 @@ mod tests {
         let mixed_tool_result = Message::user().with_tool_response(
             "mixed-tool",
             Ok(rmcp::model::CallToolResult::success(vec![
-                rmcp::model::Content::text("visible tool output")
-                    .with_audience(vec![McpRole::User]),
-                rmcp::model::Content::text("provider-private-tool-state")
-                    .with_audience(vec![McpRole::Assistant]),
+                rmcp::model::ContentBlock::Text(
+                    TextContent::new("visible tool output").with_annotations(
+                        Annotations::default().with_audience(vec![McpRole::User]),
+                    ),
+                ),
+                rmcp::model::ContentBlock::Text(
+                    TextContent::new("provider-private-tool-state").with_annotations(
+                        Annotations::default().with_audience(vec![McpRole::Assistant]),
+                    ),
+                ),
             ])),
         );
         let tool_items = message_to_timeline_items(&mixed_tool_result, false);
@@ -9543,12 +9606,9 @@ mod tests {
             Message::user()
                 .with_id("provider-only-user")
                 .with_content(MessageContent::Text(
-                    RawTextContent {
-                        text: "provider-private-state".to_string(),
-                        meta: None,
-                    }
-                    .no_annotation()
-                    .with_audience(vec![McpRole::Assistant]),
+                    TextContent::new("provider-private-state").with_annotations(
+                        Annotations::default().with_audience(vec![McpRole::Assistant]),
+                    ),
                 ));
         let conversation =
             Conversation::new_unvalidated(vec![current_user.clone(), provider_only_user]);
@@ -9965,7 +10025,7 @@ mod tests {
             .with_tool_response(
                 "declined-tool",
                 Ok(rmcp::model::CallToolResult::error(vec![
-                    rmcp::model::Content::text(
+                    rmcp::model::ContentBlock::text(
                         "The user has declined to run this tool. DO NOT attempt again.",
                     ),
                 ])),
@@ -10760,7 +10820,7 @@ mod tests {
         let response = goose::conversation::message::ToolResponse {
             id: id.to_string(),
             tool_result: Ok(rmcp::model::CallToolResult::error(vec![
-                rmcp::model::Content::text("command failed"),
+                rmcp::model::ContentBlock::text("command failed"),
             ])),
             metadata: None,
         };
