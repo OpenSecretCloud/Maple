@@ -3,6 +3,7 @@ mod developer_tools;
 mod macos_login_path;
 pub(crate) mod provider;
 mod shell_permission;
+mod system_prompt;
 mod tool_context;
 mod web_permission;
 mod web_tools;
@@ -4415,6 +4416,17 @@ where
         .get_or_create_agent_with_runtime_context(session.id.clone(), runtime_context)
         .await
         .map_err(|e| format!("Failed to load Agent for task {}: {e}", session.id))?;
+
+    // Freshly created agents inherit goose's stock identity prompt, which
+    // names goose and AAIF even though users only ever meet Maple's Agent
+    // Mode. Brand the base prompt as Maple the moment the agent is created;
+    // cached agents keep the override for their whole lifetime.
+    if manager_result.agent_created {
+        manager_result
+            .agent
+            .override_system_prompt(system_prompt::MAPLE_SYSTEM_PROMPT_TEMPLATE.to_string())
+            .await;
+    }
 
     // Goose's built-in registry cannot reconstruct Maple's caller-owned
     // provider. Its default-provider fallback uses the runtime-global model and
