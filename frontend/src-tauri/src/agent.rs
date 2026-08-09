@@ -88,6 +88,11 @@ const MAPLE_GOOSE_PERMISSION_CONFIG: &str = r#"user:
   never_allow: []
 "#;
 const RUN_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+#[cfg(not(test))]
+const SESSION_TITLE_GENERATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+#[cfg(test)]
+const SESSION_TITLE_GENERATION_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(100);
+const SESSION_TITLE_COMPLETION_GRACE: std::time::Duration = std::time::Duration::from_millis(500);
 const DEFAULT_AGENT_SESSION_TITLE: &str = "New task";
 const DEFAULT_MCP_TIMEOUT_SECONDS: u64 = 300;
 const MAX_AGENT_SESSION_TITLE_CHARS: usize = 80;
@@ -1071,6 +1076,67 @@ fn should_name_session_from_prompt(session: &Session) -> bool {
         && session.name == DEFAULT_AGENT_SESSION_TITLE
 }
 
+// Goose owns the naming prompt, model selection, output cleanup, and session
+// persistence. Maple owns scheduling so the auxiliary request follows the same
+// cancellation/account lifetime as the Agent run instead of Goose's detached
+// automatic-naming task.
+async fn generate_agent_session_title(
+    session_manager: &SessionManager,
+    agent: &Agent,
+    session_id: &str,
+    title_cancel_token: &CancellationToken,
+) -> Result<Option<AgentSessionSummary>, String> {
+    let provider = agent
+        .provider()
+        .await
+        .map_err(|error| format!("Failed to resolve Agent title provider: {error}"))?;
+    let generation = provider::with_run_cancellation(
+        title_cancel_token.clone(),
+        session_manager.maybe_update_name(session_id, provider),
+    );
+    tokio::pin!(generation);
+    let update = tokio::select! {
+        result = &mut generation => result,
+        _ = tokio::time::sleep(SESSION_TITLE_GENERATION_TIMEOUT) => {
+            title_cancel_token.cancel();
+            // Maple's transport retains a credential-reconciliation task until
+            // the provider future settles. Drain it so timeout preserves the
+            // same account-lifetime barrier as Stop/logout.
+            match generation.await {
+                Ok(update) => Ok(update),
+                Err(_) => return Err("Agent task title generation timed out".to_string()),
+            }
+        }
+    }
+    .map_err(|error| format!("Failed to generate Agent task title: {error}"))?;
+
+    let Some(_) = update else {
+        return Ok(None);
+    };
+    let session = session_manager
+        .get_session(session_id, false)
+        .await
+        .map_err(|error| format!("Failed to load generated Agent task title: {error}"))?;
+    Ok(Some(session_summary(&session)))
+}
+
+async fn publish_agent_session_title(
+    events: &AgentRunEventPublisher,
+    run_cancel_token: &CancellationToken,
+    result: Result<Option<AgentSessionSummary>, String>,
+) {
+    match result {
+        Ok(Some(session)) => {
+            events.publish(AgentRunEvent::SessionUpdated(session)).await;
+        }
+        Ok(None) => {}
+        Err(error) if !run_cancel_token.is_cancelled() => {
+            log::warn!("{error}");
+        }
+        Err(_) => {}
+    }
+}
+
 async fn take_pending_permissions_for_runs(
     pending_permissions: &PendingPermissions,
     run_ids: &[String],
@@ -1378,6 +1444,9 @@ async fn start_runtime_for_user(
         permission_manager,
         None,
         GOOSE_PERMISSION_ROUTING_MODE,
+        // Maple invokes Goose naming inside its tracked first-turn run below.
+        // Enabling Goose's scheduler would detach the request and retitle turns
+        // two and three, including sessions with source-defined titles.
         true,
         GoosePlatform::GooseDesktop,
     )
@@ -2673,6 +2742,7 @@ impl AgentRuntimeHandle {
                 Arc<Agent>,
                 Vec<AgentMcpConnectionError>,
                 SharedAgentToolContext,
+                bool,
             ),
             String,
         > = async {
@@ -2759,10 +2829,10 @@ impl AgentRuntimeHandle {
                 },
             )
             .await?;
-            Ok((agent, mcp_errors, tool_context))
+            Ok((agent, mcp_errors, tool_context, should_name_from_prompt))
         }
         .await;
-        let (agent, mcp_errors, tool_context) = match setup_result {
+        let (agent, mcp_errors, tool_context, generate_session_title) = match setup_result {
             Ok(setup) => setup,
             Err(error) => {
                 if seeded_permission_mode {
@@ -2830,6 +2900,7 @@ impl AgentRuntimeHandle {
                         web_tool_state: Arc::clone(&task_web_tool_state),
                         web_permission_context,
                         cancel_token: task_cancel_token.clone(),
+                        generate_session_title,
                         pending_permissions: Arc::clone(&task_pending_permissions),
                         issued_permission_ids: task_issued_permission_ids,
                         cancelled_permission_ids: Arc::clone(&task_cancelled_permission_ids),
@@ -3465,6 +3536,7 @@ struct AgentPromptRun {
     web_tool_state: Arc<WebToolState>,
     web_permission_context: WebPermissionContext,
     cancel_token: CancellationToken,
+    generate_session_title: bool,
     pending_permissions: PendingPermissions,
     issued_permission_ids: IssuedPermissionIds,
     cancelled_permission_ids: CancelledPermissionIds,
@@ -3886,6 +3958,7 @@ async fn run_agent_prompt(run: AgentPromptRun) -> Result<AgentPromptOutcome, Str
         web_tool_state,
         web_permission_context,
         cancel_token,
+        generate_session_title,
         pending_permissions,
         issued_permission_ids,
         cancelled_permission_ids,
@@ -3914,7 +3987,42 @@ async fn run_agent_prompt(run: AgentPromptRun) -> Result<AgentPromptOutcome, Str
         )))
         .await;
 
-    while let Some(event) = stream.next().await {
+    // Poll naming beside the main reply stream. It can finish reactively without
+    // escaping the run handle that Stop/logout cancel and join.
+    let title_cancel_token = cancel_token.child_token();
+    let title_generation = async {
+        if generate_session_title {
+            generate_agent_session_title(
+                session_manager.as_ref(),
+                agent.as_ref(),
+                &session_id,
+                &title_cancel_token,
+            )
+            .await
+        } else {
+            Ok(None)
+        }
+    };
+    tokio::pin!(title_generation);
+    let mut title_generation_pending = true;
+    let mut prompt_error = None;
+
+    loop {
+        let next_event = if title_generation_pending {
+            tokio::select! {
+                title_result = &mut title_generation => {
+                    publish_agent_session_title(&events, &cancel_token, title_result).await;
+                    title_generation_pending = false;
+                    continue;
+                }
+                next_event = stream.next() => next_event,
+            }
+        } else {
+            stream.next().await
+        };
+        let Some(event) = next_event else {
+            break;
+        };
         match event {
             Ok(AgentEvent::Message(message)) => {
                 let extracted_permissions = tool_permission_requests(&message);
@@ -3923,7 +4031,7 @@ async fn run_agent_prompt(run: AgentPromptRun) -> Result<AgentPromptOutcome, Str
                         deliver_tool_permission(&agent, request_id.clone(), Permission::Cancel)
                             .await;
                     }
-                    return Err(format!(
+                    prompt_error = Some(format!(
                         "Goose emitted an empty or conflicting permission request ID: {}",
                         extracted_permissions
                             .conflicting_ids
@@ -3932,6 +4040,7 @@ async fn run_agent_prompt(run: AgentPromptRun) -> Result<AgentPromptOutcome, Str
                             .collect::<Vec<_>>()
                             .join(", ")
                     ));
+                    break;
                 }
                 let permission_requests = extracted_permissions.requests;
                 let automatically_handled = automatically_handle_permissions(
@@ -4099,13 +4208,46 @@ async fn run_agent_prompt(run: AgentPromptRun) -> Result<AgentPromptOutcome, Str
                 events.publish(AgentRunEvent::HistoryReplaced).await;
             }
             Err(error) => {
-                return Err(format!("Goose stream failed: {error}"));
+                prompt_error = Some(format!("Goose stream failed: {error}"));
+                break;
             }
         }
         // Keep polling Goose after cancellation. Goose observes the same token,
         // stops provider/tool work, and then commits any complete message/tool
         // batch before its stream ends. Dropping the stream here would discard
         // that standard durable boundary even after a completed result event.
+    }
+
+    if title_generation_pending {
+        let title_result = if prompt_error.is_some() || cancel_token.is_cancelled() {
+            title_cancel_token.cancel();
+            match title_generation.await {
+                Ok(Some(session)) => Some(Ok(Some(session))),
+                Ok(None) | Err(_) => None,
+            }
+        } else {
+            tokio::select! {
+                result = &mut title_generation => Some(result),
+                _ = tokio::time::sleep(SESSION_TITLE_COMPLETION_GRACE) => {
+                    title_cancel_token.cancel();
+                    // Drain Maple's provider task, but do not let a slow title keep
+                    // the conversational run open after the bounded grace period.
+                    match title_generation.await {
+                        // If persistence won the cancellation race, still publish
+                        // the matching session snapshot before the run finishes.
+                        Ok(Some(session)) => Some(Ok(Some(session))),
+                        Ok(None) | Err(_) => None,
+                    }
+                }
+            }
+        };
+        if let Some(title_result) = title_result {
+            publish_agent_session_title(&events, &cancel_token, title_result).await;
+        }
+    }
+
+    if let Some(error) = prompt_error {
+        return Err(error);
     }
 
     Ok(AgentPromptOutcome { terminal_message })
@@ -6571,8 +6713,13 @@ fn path_string(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use goose_providers::base::{stream_from_single_message, MessageStream, Provider};
+    use goose_providers::conversation::token_usage::{ProviderUsage, Usage};
+    use goose_providers::errors::ProviderError;
+    use goose_providers::model::ModelConfig;
     use rmcp::model::{Annotations, Role as McpRole, TextContent};
     use std::collections::{BTreeMap, BTreeSet};
+    use std::sync::atomic::AtomicUsize;
 
     struct NoopAgentEventSink;
 
@@ -6607,6 +6754,104 @@ mod tests {
                 "test transport should not be called".to_string(),
             ))
         }
+    }
+
+    struct SessionTitleTestProvider {
+        calls: Arc<AtomicUsize>,
+        response: &'static str,
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for SessionTitleTestProvider {
+        fn get_name(&self) -> &str {
+            MAPLE_PROVIDER_NAME
+        }
+
+        async fn stream(
+            &self,
+            _model_config: &ModelConfig,
+            _system: &str,
+            _messages: &[Message],
+            _tools: &[rmcp::model::Tool],
+        ) -> Result<MessageStream, ProviderError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(stream_from_single_message(
+                Message::assistant().with_text(self.response),
+                ProviderUsage::new("title-test".to_string(), Usage::default()),
+            ))
+        }
+    }
+
+    struct BlockingSessionTitleProvider {
+        cancel_token: CancellationToken,
+        cancelled: Arc<AtomicBool>,
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for BlockingSessionTitleProvider {
+        fn get_name(&self) -> &str {
+            MAPLE_PROVIDER_NAME
+        }
+
+        async fn stream(
+            &self,
+            _model_config: &ModelConfig,
+            _system: &str,
+            _messages: &[Message],
+            _tools: &[rmcp::model::Tool],
+        ) -> Result<MessageStream, ProviderError> {
+            self.cancel_token.cancelled().await;
+            self.cancelled.store(true, Ordering::SeqCst);
+            Err(ProviderError::ExecutionError(
+                "title request cancelled".to_string(),
+            ))
+        }
+    }
+
+    async fn session_title_test_context(
+        label: &str,
+        provider: Arc<dyn Provider>,
+    ) -> (PathBuf, Arc<SessionManager>, Agent, Session) {
+        let test_root = recent_roots_test_dir(label);
+        let project_root = test_root.join("project");
+        fs::create_dir_all(&project_root).unwrap();
+        let session_manager = Arc::new(SessionManager::new(test_root.join("sessions")));
+        let permission_manager = Arc::new(PermissionManager::new(test_root.join("permissions")));
+        let session = session_manager
+            .create_session(
+                project_root,
+                DEFAULT_AGENT_SESSION_TITLE.to_string(),
+                SessionType::User,
+                GooseMode::SmartApprove,
+            )
+            .await
+            .unwrap();
+        let agent = Agent::with_config(GooseAgentConfig::new(
+            Arc::clone(&session_manager),
+            permission_manager,
+            None,
+            GooseMode::SmartApprove,
+            true,
+            GoosePlatform::GooseDesktop,
+        ));
+        agent
+            .update_provider(provider, ModelConfig::new(DEFAULT_AGENT_MODEL), &session.id)
+            .await
+            .unwrap();
+        session_manager
+            .update(&session.id)
+            .system_generated_name("Explain reactive titles".to_string())
+            .apply()
+            .await
+            .unwrap();
+        session_manager
+            .add_message(
+                &session.id,
+                &Message::user().with_text("Explain how reactive Agent titles work"),
+            )
+            .await
+            .unwrap();
+        (test_root, session_manager, agent, session)
     }
 
     fn recent_roots_test_dir(label: &str) -> PathBuf {
@@ -10543,6 +10788,134 @@ mod tests {
         assert!(title.chars().count() <= MAX_AGENT_SESSION_TITLE_CHARS);
         assert!(title.ends_with('…'));
         assert!(!title.contains("  "));
+    }
+
+    #[test]
+    fn semantic_title_generation_is_only_for_pristine_default_tasks() {
+        let mut session = Session {
+            name: DEFAULT_AGENT_SESSION_TITLE.to_string(),
+            ..Session::default()
+        };
+        assert!(should_name_session_from_prompt(&session));
+
+        session.name = "Buzz ACP".to_string();
+        assert!(!should_name_session_from_prompt(&session));
+
+        session.name = DEFAULT_AGENT_SESSION_TITLE.to_string();
+        session.user_set_name = true;
+        assert!(!should_name_session_from_prompt(&session));
+
+        session.user_set_name = false;
+        session.message_count = 1;
+        assert!(!should_name_session_from_prompt(&session));
+    }
+
+    #[tokio::test]
+    async fn goose_generated_session_title_is_persisted_for_maple() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let provider = Arc::new(SessionTitleTestProvider {
+            calls: Arc::clone(&calls),
+            response: "Reactive Agent Titles",
+        });
+        let (test_root, session_manager, agent, session) =
+            session_title_test_context("generated-session-title", provider).await;
+
+        let summary = generate_agent_session_title(
+            session_manager.as_ref(),
+            &agent,
+            &session.id,
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap()
+        .expect("the first user message should generate a title");
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(summary.title, "Reactive Agent Titles");
+        assert_eq!(
+            session_manager
+                .get_session(&session.id, false)
+                .await
+                .unwrap()
+                .name,
+            "Reactive Agent Titles"
+        );
+
+        drop(agent);
+        drop(session_manager);
+        let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[tokio::test]
+    async fn empty_goose_session_title_keeps_maple_fallback() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let provider = Arc::new(SessionTitleTestProvider {
+            calls: Arc::clone(&calls),
+            response: "<think>discarded</think>   ",
+        });
+        let (test_root, session_manager, agent, session) =
+            session_title_test_context("empty-session-title", provider).await;
+
+        let summary = generate_agent_session_title(
+            session_manager.as_ref(),
+            &agent,
+            &session.id,
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap()
+        .expect("Goose reports an attempted generated title");
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(summary.title, "Explain reactive titles");
+        assert_eq!(
+            session_manager
+                .get_session(&session.id, false)
+                .await
+                .unwrap()
+                .name,
+            "Explain reactive titles"
+        );
+
+        drop(agent);
+        drop(session_manager);
+        let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[tokio::test]
+    async fn timed_out_session_title_generation_is_cancelled_drained_and_keeps_fallback() {
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let title_cancel_token = CancellationToken::new();
+        let provider = Arc::new(BlockingSessionTitleProvider {
+            cancel_token: title_cancel_token.clone(),
+            cancelled: Arc::clone(&cancelled),
+        });
+        let (test_root, session_manager, agent, session) =
+            session_title_test_context("timed-out-session-title", provider).await;
+
+        let error = generate_agent_session_title(
+            session_manager.as_ref(),
+            &agent,
+            &session.id,
+            &title_cancel_token,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.contains("timed out"));
+        assert!(cancelled.load(Ordering::SeqCst));
+        assert_eq!(
+            session_manager
+                .get_session(&session.id, false)
+                .await
+                .unwrap()
+                .name,
+            "Explain reactive titles"
+        );
+
+        drop(agent);
+        drop(session_manager);
+        let _ = fs::remove_dir_all(test_root);
     }
 
     #[test]
