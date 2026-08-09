@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use futures_util::{StreamExt, TryStreamExt};
 use goose_providers::base::{collect_stream, MessageStream, Provider};
-use goose_providers::conversation::message::Message;
+use goose_providers::conversation::message::{Message, MessageContent};
 use goose_providers::conversation::token_usage::ProviderUsage;
 use goose_providers::errors::ProviderError;
 use goose_providers::formats::openai::{
@@ -24,6 +24,7 @@ use tokio_util::sync::CancellationToken;
 
 const CHAT_COMPLETIONS_PATH: &str = "/v1/chat/completions";
 pub(super) const MAPLE_PROVIDER_NAME: &str = "maple";
+const KIMI_K3_MODEL_ID: &str = "kimi-k3";
 // Agent Mode forwards the selected catalog ID unchanged for direct model
 // selections. Keep Gemma's provider-specific opt-in scoped to that explicit
 // selection; aliases and other reasoning models retain their existing behavior.
@@ -157,6 +158,39 @@ impl MapleProvider {
         }
 
         model_config
+    }
+
+    fn replace_legacy_kimi_k3_tool_ids(
+        message: &mut Message,
+        replacements: &mut std::collections::HashMap<String, String>,
+    ) {
+        // Temporary compatibility for Kimi K3 deployments built before vLLM
+        // ab98034d4, where tool IDs are scoped to one assistant message and can
+        // repeat across turns. Goose treats them as conversation identifiers,
+        // so mirror current vLLM with a random ID per distinct call in this
+        // inference while preserving same-response duplicate detection.
+        // Remove this after Tinfoil's attested K3 image includes vLLM #50420.
+        for content in &mut message.content {
+            if let MessageContent::ToolRequest(request) = content {
+                let legacy_response_local_id = match request.tool_call.as_ref() {
+                    Ok(tool_call) => {
+                        let tool_name = tool_call.name.as_ref();
+                        request.id == tool_name
+                            || request
+                                .id
+                                .strip_prefix(tool_name)
+                                .is_some_and(|suffix| suffix.starts_with(':') && suffix.len() > 1)
+                    }
+                    Err(_) => !request.id.starts_with("chatcmpl-tool-"),
+                };
+                if legacy_response_local_id {
+                    request.id = replacements
+                        .entry(request.id.clone())
+                        .or_insert_with(|| format!("chatcmpl-tool-{:032x}", rand::random::<u128>()))
+                        .clone();
+                }
+            }
+        }
     }
 
     fn inference_request(payload: Vec<u8>) -> Result<InferenceRequest, ProviderError> {
@@ -321,9 +355,19 @@ impl MapleProvider {
         )
         .map_err(anyhow::Error::from);
         let parsed = response_to_streaming_message(lines);
+        let replace_legacy_kimi_k3_tool_ids = effective_model_config.model_name == KIMI_K3_MODEL_ID;
+        let mut kimi_k3_tool_id_replacements = std::collections::HashMap::new();
 
         let stream = parsed.map(move |result| {
-            let (message, usage) = result.map_err(|_| invalid_stream_error())?;
+            let (mut message, usage) = result.map_err(|_| invalid_stream_error())?;
+            if replace_legacy_kimi_k3_tool_ids {
+                if let Some(message) = message.as_mut() {
+                    Self::replace_legacy_kimi_k3_tool_ids(
+                        message,
+                        &mut kimi_k3_tool_id_replacements,
+                    );
+                }
+            }
             request_log.write(&message, usage.as_ref().map(|value| &value.usage))?;
             Ok((message, usage))
         });
@@ -703,9 +747,13 @@ mod tests {
 
     impl FakeTransport {
         fn new(response: InferenceResponse) -> Self {
+            Self::with_responses(vec![response])
+        }
+
+        fn with_responses(responses: Vec<InferenceResponse>) -> Self {
             Self {
                 requests: Mutex::new(Vec::new()),
-                responses: Mutex::new(VecDeque::from([Ok(response)])),
+                responses: Mutex::new(responses.into_iter().map(Ok).collect()),
             }
         }
     }
@@ -781,6 +829,73 @@ mod tests {
             ],
             None,
         )
+    }
+
+    fn tool_call_response(completion_id: &str, tool_id: &str) -> InferenceResponse {
+        let tool_chunk = json!({
+            "id": completion_id,
+            "object": "chat.completion.chunk",
+            "created": 1,
+            "model": KIMI_K3_MODEL_ID,
+            "choices": [{
+                "index": 0,
+                "delta": {
+                    "role": "assistant",
+                    "tool_calls": [{
+                        "index": 0,
+                        "id": tool_id,
+                        "type": "function",
+                        "function": { "name": "shell", "arguments": "{}" }
+                    }]
+                },
+                "finish_reason": null
+            }]
+        });
+        let finish_chunk = json!({
+            "id": completion_id,
+            "object": "chat.completion.chunk",
+            "created": 2,
+            "model": KIMI_K3_MODEL_ID,
+            "choices": [{
+                "index": 0,
+                "delta": {},
+                "finish_reason": "tool_calls"
+            }],
+            "usage": { "prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2 }
+        });
+        let sse = format!("data: {tool_chunk}\n\ndata: {finish_chunk}\n\ndata: [DONE]\n\n");
+        response(200, vec![sse.into_bytes()], None)
+    }
+
+    async fn streamed_tool_request_id(
+        model_name: &str,
+        completion_id: &str,
+        tool_id: &str,
+    ) -> String {
+        let provider = MapleProvider::new(Arc::new(FakeTransport::new(tool_call_response(
+            completion_id,
+            tool_id,
+        ))));
+        let stream = provider
+            .stream(
+                &ModelConfig::new(model_name),
+                "system",
+                &[Message::user().with_text("use a tool")],
+                &[],
+            )
+            .await
+            .expect("stream should start");
+        let (message, _) = collect_stream(stream)
+            .await
+            .expect("tool call should parse");
+        message
+            .content
+            .iter()
+            .find_map(|content| match content {
+                MessageContent::ToolRequest(request) => Some(request.id.clone()),
+                _ => None,
+            })
+            .expect("tool request should be present")
     }
 
     fn pending_success_response() -> InferenceResponse {
@@ -992,6 +1107,172 @@ mod tests {
         assert_eq!(usage.usage.input_tokens, Some(2));
         assert_eq!(usage.usage.output_tokens, Some(3));
         assert_eq!(usage.usage.total_tokens, Some(5));
+    }
+
+    #[tokio::test]
+    async fn replaces_only_legacy_kimi_k3_tool_ids_with_conversation_unique_ids() {
+        let first = streamed_tool_request_id(KIMI_K3_MODEL_ID, "completion-1", "shell:0").await;
+        let second = streamed_tool_request_id(KIMI_K3_MODEL_ID, "completion-2", "shell:0").await;
+
+        assert!(first.starts_with("chatcmpl-tool-"));
+        assert!(second.starts_with("chatcmpl-tool-"));
+        assert_ne!(first, second);
+
+        let missing_index =
+            streamed_tool_request_id(KIMI_K3_MODEL_ID, "completion-3", "shell").await;
+        assert!(missing_index.starts_with("chatcmpl-tool-"));
+
+        let malformed_index =
+            streamed_tool_request_id(KIMI_K3_MODEL_ID, "completion-4", "shell:not-a-number").await;
+        assert!(malformed_index.starts_with("chatcmpl-tool-"));
+
+        let already_unique = streamed_tool_request_id(
+            KIMI_K3_MODEL_ID,
+            "completion-5",
+            "chatcmpl-tool-upstream-unique",
+        )
+        .await;
+        assert_eq!(already_unique, "chatcmpl-tool-upstream-unique");
+
+        let other_model = streamed_tool_request_id("glm-5-2", "completion-6", "shell:0").await;
+        assert_eq!(other_model, "shell:0");
+
+        let kimi_k2_6 = streamed_tool_request_id("kimi-k2-6", "completion-7", "shell:0").await;
+        assert_eq!(kimi_k2_6, "shell:0");
+    }
+
+    #[test]
+    fn normalizes_kimi_k3_ids_without_defeating_duplicate_detection() {
+        let mut message = Message::assistant()
+            .with_tool_request(
+                "shell:0",
+                Ok(rmcp::model::CallToolRequestParams::new("shell")),
+            )
+            .with_tool_request(
+                "shell:0",
+                Ok(rmcp::model::CallToolRequestParams::new("shell")),
+            );
+        let mut replacements = HashMap::new();
+
+        MapleProvider::replace_legacy_kimi_k3_tool_ids(&mut message, &mut replacements);
+
+        let ids = message
+            .content
+            .iter()
+            .filter_map(|content| match content {
+                MessageContent::ToolRequest(request) => Some(request.id.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(ids.len(), 2);
+        assert_eq!(ids[0], ids[1]);
+        assert!(ids[0].starts_with("chatcmpl-tool-"));
+
+        let mut errored_message = Message::assistant()
+            .with_tool_request(
+                "shell:0",
+                Err(rmcp::model::ErrorData::invalid_params(
+                    "bad arguments",
+                    None,
+                )),
+            )
+            .with_tool_request(
+                "chatcmpl-tool-upstream-unique",
+                Err(rmcp::model::ErrorData::invalid_params(
+                    "bad arguments",
+                    None,
+                )),
+            );
+        let mut errored_replacements = HashMap::new();
+        MapleProvider::replace_legacy_kimi_k3_tool_ids(
+            &mut errored_message,
+            &mut errored_replacements,
+        );
+        let errored_ids = errored_message
+            .content
+            .iter()
+            .filter_map(|content| match content {
+                MessageContent::ToolRequest(request) => Some(request.id.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(errored_ids[0].starts_with("chatcmpl-tool-"));
+        assert_eq!(errored_ids[1], "chatcmpl-tool-upstream-unique");
+    }
+
+    #[tokio::test]
+    async fn normalized_kimi_k3_id_round_trips_with_its_tool_response() {
+        let transport = Arc::new(FakeTransport::with_responses(vec![
+            tool_call_response("completion-1", "shell:0"),
+            tool_call_response("completion-2", "shell:0"),
+        ]));
+        let provider = MapleProvider::new(Arc::clone(&transport));
+        let model_config = ModelConfig::new(KIMI_K3_MODEL_ID);
+        let initial_message = Message::user().with_text("use a tool twice");
+
+        let first_stream = provider
+            .stream(
+                &model_config,
+                "system",
+                std::slice::from_ref(&initial_message),
+                &[],
+            )
+            .await
+            .expect("first stream should start");
+        let (first_tool_message, _) = collect_stream(first_stream)
+            .await
+            .expect("first tool call should parse");
+        let first_id = first_tool_message
+            .content
+            .iter()
+            .find_map(|content| match content {
+                MessageContent::ToolRequest(request) => Some(request.id.clone()),
+                _ => None,
+            })
+            .expect("first tool request should be present");
+        let first_tool_response = Message::user().with_tool_response(
+            first_id.clone(),
+            Ok(rmcp::model::CallToolResult::success(vec![
+                rmcp::model::ContentBlock::text("done"),
+            ])),
+        );
+
+        let second_stream = provider
+            .stream(
+                &model_config,
+                "system",
+                &[initial_message, first_tool_message, first_tool_response],
+                &[],
+            )
+            .await
+            .expect("second stream should start");
+        let (second_tool_message, _) = collect_stream(second_stream)
+            .await
+            .expect("second tool call should parse");
+        let second_id = second_tool_message
+            .content
+            .iter()
+            .find_map(|content| match content {
+                MessageContent::ToolRequest(request) => Some(request.id.clone()),
+                _ => None,
+            })
+            .expect("second tool request should be present");
+
+        assert_ne!(first_id, second_id);
+        let requests = transport.requests.lock().expect("request lock");
+        let second_request_messages = requests[1].body["messages"]
+            .as_array()
+            .expect("request messages should be an array");
+        let serialized_tool_request = second_request_messages
+            .iter()
+            .find(|message| message["tool_calls"].is_array())
+            .expect("assistant tool request should be serialized");
+        let serialized_tool_response = second_request_messages
+            .iter()
+            .find(|message| message["role"] == "tool")
+            .expect("tool response should be serialized");
+        assert_eq!(serialized_tool_request["tool_calls"][0]["id"], first_id);
+        assert_eq!(serialized_tool_response["tool_call_id"], first_id);
     }
 
     #[tokio::test]
