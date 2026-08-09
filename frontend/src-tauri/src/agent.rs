@@ -89,7 +89,7 @@ const MAPLE_GOOSE_PERMISSION_CONFIG: &str = r#"user:
 "#;
 const RUN_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 #[cfg(not(test))]
-const SESSION_TITLE_GENERATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+const SESSION_TITLE_GENERATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 #[cfg(test)]
 const SESSION_TITLE_GENERATION_TIMEOUT: std::time::Duration =
     std::time::Duration::from_millis(1_500);
