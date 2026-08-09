@@ -1,4 +1,6 @@
 mod developer_tools;
+#[cfg(target_os = "macos")]
+mod macos_login_path;
 pub(crate) mod provider;
 mod shell_permission;
 mod tool_context;
@@ -864,6 +866,8 @@ pub struct MapleAgentService {
     host: MapleAgentHostResources,
     inner: Arc<Mutex<Option<AgentRuntime>>>,
     runtime_lifecycle: Arc<Mutex<()>>,
+    #[cfg(target_os = "macos")]
+    login_shell_search_paths: Arc<tokio::sync::OnceCell<Vec<String>>>,
     account_generations: Arc<Mutex<HashMap<String, u64>>>,
     session_lifecycle: Arc<Mutex<()>>,
     pending_permissions: PendingPermissions,
@@ -925,6 +929,8 @@ impl MapleAgentService {
             host,
             inner: Arc::new(Mutex::new(None)),
             runtime_lifecycle: Arc::new(Mutex::new(())),
+            #[cfg(target_os = "macos")]
+            login_shell_search_paths: Arc::new(tokio::sync::OnceCell::new()),
             account_generations: Arc::new(Mutex::new(HashMap::new())),
             session_lifecycle: Arc::new(Mutex::new(())),
             pending_permissions: Arc::new(Mutex::new(HashMap::new())),
@@ -1345,12 +1351,24 @@ async fn start_runtime_for_user(
     // is constructed so stale Goose AlwaysAllow entries cannot bypass Maple.
     reset_maple_owned_permission_file(&goose_path_root.join("config").join("permission.yaml"))?;
 
+    #[cfg(target_os = "macos")]
+    let login_shell_search_paths = Some(
+        state
+            .login_shell_search_paths
+            .get_or_init(macos_login_path::resolve_login_shell_search_paths)
+            .await
+            .as_slice(),
+    );
+    #[cfg(not(target_os = "macos"))]
+    let login_shell_search_paths: Option<&[String]> = None;
+
     configure_embedded_goose(
         &agent_root_dir(&state.host.paths)
             .map_err(|e| e.to_string())?
             .join("goose-runtime"),
         &model,
         DEFAULT_GOOSE_MODE,
+        login_shell_search_paths,
     )?;
     let session_manager = Arc::new(SessionManager::new(goose_path_root.join("data")));
     let permission_manager = Arc::new(PermissionManager::new(goose_path_root.join("config")));
@@ -5500,7 +5518,12 @@ fn emit_agent_event(events: &AgentEventDispatcher, event: AgentServiceEvent) {
     events.sink.emit(&event);
 }
 
-fn configure_embedded_goose(goose_path_root: &Path, model: &str, mode: &str) -> Result<(), String> {
+fn configure_embedded_goose(
+    goose_path_root: &Path,
+    model: &str,
+    mode: &str,
+    login_shell_search_paths: Option<&[String]>,
+) -> Result<(), String> {
     fs::create_dir_all(goose_path_root.join("config"))
         .map_err(|e| format!("Failed to create Goose config dir: {e}"))?;
     fs::create_dir_all(goose_path_root.join("data"))
@@ -5528,10 +5551,28 @@ fn configure_embedded_goose(goose_path_root: &Path, model: &str, mode: &str) -> 
     delete_goose_config_key(config, "GOOSE_DISABLE_KEYRING")?;
     delete_goose_config_key(config, "GOOSE_MAX_TOKENS")?;
     delete_goose_config_key(config, "OPENAI_BASE_URL")?;
+    configure_embedded_goose_search_paths(config, login_shell_search_paths)?;
     configure_embedded_goose_params(config, model, mode)?;
 
     set_owner_only_permissions(&goose_path_root.join("config").join("config.yaml"));
     Ok(())
+}
+
+fn configure_embedded_goose_search_paths(
+    config: &goose::config::Config,
+    login_shell_search_paths: Option<&[String]>,
+) -> Result<(), String> {
+    let Some(paths) = login_shell_search_paths else {
+        // Linux and Windows retain Goose's normal inherited-PATH behavior.
+        return Ok(());
+    };
+    // Goose prepends this supported setting to its built-in search directories
+    // and inherited PATH for both STDIO executable lookup and the child PATH.
+    // Persist [] after a failed probe so paths recovered by an earlier app run
+    // cannot remain active after the user's shell configuration changes.
+    config
+        .set_goose_search_paths(paths.to_vec())
+        .map_err(|e| format!("Failed to configure Goose search paths: {e}"))
 }
 
 fn configure_embedded_goose_params(
@@ -6781,6 +6822,37 @@ mod tests {
         assert!(!config
             .get_param::<bool>("GOOSE_TOOL_PAIR_SUMMARIZATION")
             .unwrap());
+        let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[test]
+    fn embedded_goose_search_paths_update_is_desktop_scoped_and_clears_stale_values() {
+        let test_root = recent_roots_test_dir("embedded-goose-search-paths");
+        let config_path = test_root.join("config.yaml");
+        let config = goose::config::Config::new_with_file_secrets(
+            &config_path,
+            test_root.join("secrets.yaml"),
+        )
+        .unwrap();
+        let sentinel = vec!["/preserved/on/non-macos".to_string()];
+        config.set_goose_search_paths(sentinel).unwrap();
+
+        configure_embedded_goose_search_paths(&config, None).unwrap();
+        let persisted = fs::read_to_string(&config_path).unwrap();
+        assert!(persisted.contains("- /preserved/on/non-macos"));
+
+        let recovered = vec!["/login/first".to_string(), "/login/second".to_string()];
+        configure_embedded_goose_search_paths(&config, Some(&recovered)).unwrap();
+        let persisted = fs::read_to_string(&config_path).unwrap();
+        assert!(persisted.contains("- /login/first"));
+        assert!(persisted.contains("- /login/second"));
+        assert!(!persisted.contains("/preserved/on/non-macos"));
+
+        configure_embedded_goose_search_paths(&config, Some(&[])).unwrap();
+        let persisted = fs::read_to_string(&config_path).unwrap();
+        assert!(persisted.contains("GOOSE_SEARCH_PATHS: []"));
+        assert!(!persisted.contains("/login/first"));
+        assert!(!persisted.contains("/login/second"));
         let _ = fs::remove_dir_all(test_root);
     }
 
