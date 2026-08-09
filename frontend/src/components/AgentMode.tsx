@@ -144,7 +144,7 @@ import {
   DEFAULT_AGENT_MODEL,
   PRIMARY_AGENT_MODEL_IDS,
   reconcileAgentModel,
-  reconcileAgentModelForCatalog,
+  resolveAgentModelForSession,
   resolveAgentModelContextLimit,
   resolveAgentModelVisionCapability
 } from "@/services/agentModels";
@@ -180,6 +180,7 @@ const AUTO_SCROLL_BOTTOM_THRESHOLD_PX = 100;
 const SIDEBAR_REORDER_ANIMATION_MS = 150;
 const SIDEBAR_ICON_STROKE = 2;
 const AGENT_SESSION_DELETED_EVENT = "maple:agent-session-deleted";
+const AGENT_MODEL_PREFERENCE_KEY = "selectedAgentModel";
 // Mode switches remount AgentMode, so project-root mutations must be ordered outside it.
 const projectRootPersistenceQueues = new Map<string, Promise<void>>();
 const AGENT_SIDEBAR_ELLIPSIS_FADE =
@@ -194,6 +195,32 @@ class PendingAgentSendCancelledError extends Error {
     super("Agent message cancelled before the run started");
     this.name = "PendingAgentSendCancelledError";
   }
+}
+
+type AgentModelPreference = {
+  preferred: string | null;
+  configuredDefault: string;
+};
+
+function readAgentModelPreference(): string | null {
+  try {
+    return localStorage.getItem(AGENT_MODEL_PREFERENCE_KEY)?.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+function persistAgentModelPreference(model: string | null): void {
+  try {
+    if (model) localStorage.setItem(AGENT_MODEL_PREFERENCE_KEY, model);
+    else localStorage.removeItem(AGENT_MODEL_PREFERENCE_KEY);
+  } catch {
+    // Storage failures should not prevent changing the in-memory selection.
+  }
+}
+
+function newTaskAgentModel(preference: AgentModelPreference): string {
+  return preference.preferred || preference.configuredDefault;
 }
 
 function agentSidebarEllipsisTriggerRowClass(isCompactLayout: boolean): string {
@@ -315,7 +342,11 @@ export function AgentMode({ userId }: { userId: string }) {
   const [isProjectRemovalPending, setIsProjectRemovalPending] = useState(false);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [projectRoot, setProjectRoot] = useState("");
-  const [model, setModel] = useState(DEFAULT_MODEL);
+  const agentModelPreferenceRef = useLazyRef<AgentModelPreference>(() => ({
+    preferred: readAgentModelPreference(),
+    configuredDefault: DEFAULT_MODEL
+  }));
+  const [model, setModel] = useState(() => newTaskAgentModel(agentModelPreferenceRef.current));
   const [mode, setMode] = useState<AgentPermissionMode>(DEFAULT_MODE);
   const [timelineItems, setTimelineItems] = useState<AgentTimelineItem[]>([]);
   const [generatedThoughtLabels, setGeneratedThoughtLabels] = useState<
@@ -411,6 +442,34 @@ export function AgentMode({ userId }: { userId: string }) {
     };
     userIdRef.current = userId;
   }, [model, openai, os, setAvailableModels, setHasWhisperModel, setModelAliases, userId]);
+
+  const restoreNewTaskModel = useCallback(() => {
+    const nextModel = newTaskAgentModel(agentModelPreferenceRef.current);
+    isAgentModelLockedRef.current = false;
+    currentAgentModelRef.current = nextModel;
+    setModel(nextModel);
+  }, [agentModelPreferenceRef]);
+
+  const reconcileNewTaskModel = useCallback(
+    (models: OpenSecretModel[]) => {
+      const preference = agentModelPreferenceRef.current;
+      preference.configuredDefault = reconcileAgentModel(preference.configuredDefault, models);
+      if (
+        preference.preferred &&
+        reconcileAgentModel(preference.preferred, models) !== preference.preferred
+      ) {
+        preference.preferred = null;
+        persistAgentModelPreference(null);
+      }
+
+      const nextModel = newTaskAgentModel(preference);
+      if (!isAgentModelLockedRef.current) {
+        currentAgentModelRef.current = nextModel;
+        setModel(nextModel);
+      }
+    },
+    [agentModelPreferenceRef]
+  );
 
   if (!thoughtLabelProvisionalSchedulerRef.current) {
     thoughtLabelProvisionalSchedulerRef.current = new AgentThoughtLabelProvisionalScheduler({
@@ -1248,14 +1307,13 @@ export function AgentMode({ userId }: { userId: string }) {
           removedRoots
         );
         const configuredModel = status.model || config.defaultModel || DEFAULT_MODEL;
+        agentModelPreferenceRef.current.configuredDefault = configuredModel;
+        isAgentModelLockedRef.current = false;
         const selectableModels = selectableAgentModelsRef.current;
-        const nextModel = selectableModels
-          ? reconcileAgentModel(configuredModel, selectableModels)
-          : configuredModel;
+        if (selectableModels) reconcileNewTaskModel(selectableModels);
+        else restoreNewTaskModel();
         const nextMode = normalizeAgentPermissionMode(status.mode);
         setProjectRoot(root);
-        currentAgentModelRef.current = nextModel;
-        setModel(nextModel);
         applyAuthoritativeMode(nextMode);
 
         // Session history is local account data and remains browseable before
@@ -1271,7 +1329,7 @@ export function AgentMode({ userId }: { userId: string }) {
           const startRunStateGeneration = runStateGenerationRef.current;
           const startedStatus = await agentRuntimeService.startRuntime(userId, {
             projectRoot: root,
-            model: nextModel,
+            model: agentModelPreferenceRef.current.configuredDefault,
             mode: nextMode
           });
           if (cancelled || interactionGenerationRef.current !== initializationGeneration) {
@@ -1307,10 +1365,13 @@ export function AgentMode({ userId }: { userId: string }) {
       cancelled = true;
     };
   }, [
+    agentModelPreferenceRef,
     applyAuthoritativeMode,
     applyRuntimeStatus,
+    reconcileNewTaskModel,
     refreshSessionList,
     refreshSessions,
+    restoreNewTaskModel,
     trackAgentWorkflow,
     userId
   ]);
@@ -1339,6 +1400,7 @@ export function AgentMode({ userId }: { userId: string }) {
             activeSessionIdRef.current = null;
             setActiveSessionId(null);
             setTimelineItems([]);
+            restoreNewTaskModel();
             setRemovedProjectRoots(new Set(registration.config.removedProjectRoots || []));
             dispatchProjectOrder({ type: "replace", roots: registration.roots });
           } finally {
@@ -1353,6 +1415,7 @@ export function AgentMode({ userId }: { userId: string }) {
     agentSessionSelection,
     invalidateSessionSelection,
     registerProjectRoot,
+    restoreNewTaskModel,
     trackAgentWorkflow,
     userId
   ]);
@@ -1366,6 +1429,7 @@ export function AgentMode({ userId }: { userId: string }) {
       setActiveSessionId(null);
       activeSessionIdRef.current = null;
       setTimelineItems([]);
+      restoreNewTaskModel();
       shouldAutoScrollRef.current = true;
       void (async () => {
         try {
@@ -1385,16 +1449,22 @@ export function AgentMode({ userId }: { userId: string }) {
       invalidateSessionSelection,
       persistSelectedProjectRoot,
       refreshSessions,
+      restoreNewTaskModel,
       userId
     ]
   );
 
-  const selectModel = useCallback((value: string) => {
-    if (isAgentModelLockedRef.current) return;
-    interactionGenerationRef.current += 1;
-    currentAgentModelRef.current = value;
-    setModel(value);
-  }, []);
+  const selectModel = useCallback(
+    (value: string) => {
+      if (isAgentModelLockedRef.current || currentAgentModelRef.current === value) return;
+      interactionGenerationRef.current += 1;
+      agentModelPreferenceRef.current.preferred = value;
+      persistAgentModelPreference(value);
+      currentAgentModelRef.current = value;
+      setModel(value);
+    },
+    [agentModelPreferenceRef]
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -1426,18 +1496,7 @@ export function AgentMode({ userId }: { userId: string }) {
             updateHasWhisperModel(
               catalog.audio?.transcription?.available ?? hasCatalogWhisperModel
             );
-            const currentModel = currentAgentModelRef.current;
-            const reconciledModel = reconcileAgentModelForCatalog(
-              currentModel,
-              selectableModels,
-              isAgentModelLockedRef.current
-            );
-            if (reconciledModel !== currentModel) {
-              // Catalog reconciliation is not a user interaction and must not
-              // invalidate concurrent account/session initialization.
-              currentAgentModelRef.current = reconciledModel;
-              setModel(reconciledModel);
-            }
+            reconcileNewTaskModel(selectableModels);
             return;
           } catch (fetchCatalogError) {
             if (import.meta.env.DEV) {
@@ -1464,16 +1523,7 @@ export function AgentMode({ userId }: { userId: string }) {
           selectableAgentModelsRef.current = availableGenerateModels;
           updateAvailableModels(availableGenerateModels);
           updateModelAliases(buildFallbackModelAliases(availableGenerateModels));
-          const currentModel = currentAgentModelRef.current;
-          const reconciledModel = reconcileAgentModelForCatalog(
-            currentModel,
-            availableGenerateModels,
-            isAgentModelLockedRef.current
-          );
-          if (reconciledModel !== currentModel) {
-            currentAgentModelRef.current = reconciledModel;
-            setModel(reconciledModel);
-          }
+          reconcileNewTaskModel(availableGenerateModels);
         }
       } catch (fetchError) {
         if (import.meta.env.DEV) {
@@ -1487,7 +1537,7 @@ export function AgentMode({ userId }: { userId: string }) {
     return () => {
       cancelled = true;
     };
-  }, [userId]);
+  }, [reconcileNewTaskModel, userId]);
 
   const contextLimitForModel = useCallback(
     (modelId: string) =>
@@ -1565,7 +1615,11 @@ export function AgentMode({ userId }: { userId: string }) {
             throw new Error("Select a project folder first");
           }
           const requestedMode = selectedModeRef.current;
-          const request = { projectRoot, model: model || DEFAULT_MODEL, mode: requestedMode };
+          const request = {
+            projectRoot,
+            model: agentModelPreferenceRef.current.configuredDefault,
+            mode: requestedMode
+          };
           const runStateGeneration = runStateGenerationRef.current;
           const restartOutcome = restart
             ? await agentRuntimeService.restartRuntime(userId, request)
@@ -1581,7 +1635,6 @@ export function AgentMode({ userId }: { userId: string }) {
           }
           applyRuntimeStatus(status, runStateGeneration);
           setProjectRoot(status.projectRoot || projectRoot);
-          setModel(status.model || model || DEFAULT_MODEL);
           applyAuthoritativeMode(normalizeAgentPermissionMode(status.mode || requestedMode));
           await refreshSessions();
           if (restartOutcome?.acpShutdownError) {
@@ -1606,9 +1659,9 @@ export function AgentMode({ userId }: { userId: string }) {
       }
     },
     [
+      agentModelPreferenceRef,
       applyAuthoritativeMode,
       applyRuntimeStatus,
-      model,
       projectRoot,
       refreshSessions,
       trackAgentWorkflow,
@@ -1626,6 +1679,10 @@ export function AgentMode({ userId }: { userId: string }) {
         throw new Error("Select a project folder first");
       }
 
+      const requestModel = requestedSessionId
+        ? currentAgentModelRef.current
+        : newTaskAgentModel(agentModelPreferenceRef.current);
+
       const status = await agentRuntimeService.getRuntimeStatus(userId);
       if (!status.running) {
         await startRuntime(false);
@@ -1636,8 +1693,8 @@ export function AgentMode({ userId }: { userId: string }) {
         const detail = await agentRuntimeService.createSession(userId, {
           projectRoot,
           title: "New task",
-          model: model || DEFAULT_MODEL,
-          contextLimit: contextLimitForModel(model || DEFAULT_MODEL),
+          model: requestModel,
+          contextLimit: contextLimitForModel(requestModel),
           mode: selectedModeRef.current,
           mcpServerNames: selectedNewChatMcpServerNames
         });
@@ -1663,6 +1720,9 @@ export function AgentMode({ userId }: { userId: string }) {
           activeSessionIdRef.current = sessionId;
           setActiveSessionId(sessionId);
           agentSessionSelection.remember(userId, sessionId);
+          isAgentModelLockedRef.current = false;
+          currentAgentModelRef.current = requestModel;
+          setModel(requestModel);
           applyAuthoritativeMode(normalizeAgentPermissionMode(detail.session.mode));
           replaceSessionTimeline(sessionId, detail.timeline);
           const mcpError = mcpConnectionErrorMessage(detail.mcpErrors);
@@ -1670,14 +1730,14 @@ export function AgentMode({ userId }: { userId: string }) {
         }
       }
 
-      return sessionId;
+      return { sessionId, requestModel };
     },
     [
+      agentModelPreferenceRef,
       applyAuthoritativeMode,
       agentSessionSelection,
       contextLimitForModel,
       deletedSessionIdsRef,
-      model,
       projectRoot,
       replaceSessionTimeline,
       selectedNewChatMcpServerNames,
@@ -1687,11 +1747,13 @@ export function AgentMode({ userId }: { userId: string }) {
   );
 
   const createSession = useCallback(async () => {
+    if (isAgentModelCatalogLoading) return;
     if (!projectRoot.trim()) {
       setError("Select a project folder before creating a task");
       return;
     }
     if (pendingSessionSelectionIdRef.current === NEW_SESSION_PENDING_KEY) return;
+    const requestModel = newTaskAgentModel(agentModelPreferenceRef.current);
     const selectionGeneration = beginSessionSelection(NEW_SESSION_PENDING_KEY);
     const interactionGeneration = interactionGenerationRef.current;
     setError(null);
@@ -1703,8 +1765,8 @@ export function AgentMode({ userId }: { userId: string }) {
         return await agentRuntimeService.createSession(userId, {
           projectRoot,
           title: "New task",
-          model: model || DEFAULT_MODEL,
-          contextLimit: contextLimitForModel(model || DEFAULT_MODEL),
+          model: requestModel,
+          contextLimit: contextLimitForModel(requestModel),
           mode: selectedModeRef.current,
           mcpServerNames: selectedNewChatMcpServerNames
         });
@@ -1725,6 +1787,9 @@ export function AgentMode({ userId }: { userId: string }) {
         activeSessionIdRef.current = detail.session.id;
         setActiveSessionId(detail.session.id);
         agentSessionSelection.remember(userId, detail.session.id);
+        isAgentModelLockedRef.current = false;
+        currentAgentModelRef.current = requestModel;
+        setModel(requestModel);
         applyAuthoritativeMode(normalizeAgentPermissionMode(detail.session.mode));
         replaceSessionTimeline(detail.session.id, detail.timeline);
         const mcpError = mcpConnectionErrorMessage(detail.mcpErrors);
@@ -1744,13 +1809,14 @@ export function AgentMode({ userId }: { userId: string }) {
       }
     }
   }, [
+    agentModelPreferenceRef,
     applyAuthoritativeMode,
     agentSessionSelection,
     beginSessionSelection,
     contextLimitForModel,
     deletedSessionIdsRef,
     finishSessionSelection,
-    model,
+    isAgentModelCatalogLoading,
     projectRoot,
     replaceSessionTimeline,
     runtimeStatus?.running,
@@ -1802,15 +1868,19 @@ export function AgentMode({ userId }: { userId: string }) {
         setActiveSessionId(detail.session.id);
         agentSessionSelection.remember(userId, detail.session.id);
         setProjectRoot(detail.session.projectRoot);
-        isAgentModelLockedRef.current =
+        const isModelLocked =
           detail.session.messageCount > 0 ||
           hasAgentUserMessage(detail.timeline) ||
           Boolean(activeRunsBySessionRef.current[detail.session.id]) ||
           pendingSendTokensRef.current.has(detail.session.id);
-        if (detail.session.model) {
-          currentAgentModelRef.current = detail.session.model;
-          setModel(detail.session.model);
-        }
+        isAgentModelLockedRef.current = isModelLocked;
+        const sessionModel = resolveAgentModelForSession(
+          newTaskAgentModel(agentModelPreferenceRef.current),
+          detail.session.model,
+          isModelLocked
+        );
+        currentAgentModelRef.current = sessionModel;
+        setModel(sessionModel);
         applyAuthoritativeMode(normalizeAgentPermissionMode(detail.session.mode));
         setTimelineItems(detail.timeline);
         if (activeRunsBySessionRef.current[detail.session.id]) {
@@ -1848,6 +1918,7 @@ export function AgentMode({ userId }: { userId: string }) {
       }
     },
     [
+      agentModelPreferenceRef,
       applyAuthoritativeMode,
       agentSessionSelection,
       beginSessionSelection,
@@ -1917,7 +1988,7 @@ export function AgentMode({ userId }: { userId: string }) {
     requestAnimationFrame(() => scrollTimelineToBottom("smooth"));
     try {
       await trackAgentWorkflow(async () => {
-        const sessionId = await ensureRuntimeAndSession(
+        const { sessionId, requestModel } = await ensureRuntimeAndSession(
           selectionGeneration,
           interactionGeneration,
           requestedSessionId
@@ -1940,11 +2011,11 @@ export function AgentMode({ userId }: { userId: string }) {
         const response = await agentRuntimeService.sendMessage(userId, {
           sessionId,
           text,
-          model: model || DEFAULT_MODEL,
-          contextLimit: contextLimitForModel(model || DEFAULT_MODEL),
+          model: requestModel,
+          contextLimit: contextLimitForModel(requestModel),
           mode: selectedModeRef.current,
           visionCapable: resolveAgentModelVisionCapability(
-            model || DEFAULT_MODEL,
+            requestModel,
             availableModels,
             modelAliases
           )
@@ -2002,7 +2073,6 @@ export function AgentMode({ userId }: { userId: string }) {
     isAgentSendLocked,
     markPendingSend,
     mergeSessionTimelineItem,
-    model,
     modelAliases,
     movePendingSend,
     pendingSendTokensRef,
@@ -2098,6 +2168,7 @@ export function AgentMode({ userId }: { userId: string }) {
         setActiveSessionId(null);
         setTimelineItems([]);
         setInput("");
+        restoreNewTaskModel();
       }
     },
     [
@@ -2105,6 +2176,7 @@ export function AgentMode({ userId }: { userId: string }) {
       cancelThoughtLabelDisplays,
       clearActiveRun,
       deletedSessionIdsRef,
+      restoreNewTaskModel,
       thoughtPhaseTrackerRef,
       timelineRevisionBySessionRef,
       userId
@@ -2154,6 +2226,7 @@ export function AgentMode({ userId }: { userId: string }) {
           setSessionMcpServers([]);
           setSessionMcpServersSessionId(null);
           setProjectRoot(fallback || "");
+          restoreNewTaskModel();
           shouldAutoScrollRef.current = true;
         }
         await refreshSessions().catch((refreshError) => {
@@ -2172,6 +2245,7 @@ export function AgentMode({ userId }: { userId: string }) {
       isProjectRemovalPending,
       projectRoot,
       refreshSessions,
+      restoreNewTaskModel,
       userId
     ]
   );

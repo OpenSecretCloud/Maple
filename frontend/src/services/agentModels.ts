@@ -55,6 +55,14 @@ export function reconcileAgentModelForCatalog(
   return isModelLocked ? currentModel : reconcileAgentModel(currentModel, models);
 }
 
+export function resolveAgentModelForSession(
+  newTaskModel: string,
+  sessionModel: string | null | undefined,
+  isLocked: boolean
+): string {
+  return isLocked && sessionModel ? sessionModel : newTaskModel;
+}
+
 export function resolveAgentModelVisionCapability(
   modelId: string,
   models: AgentModelReference[],
