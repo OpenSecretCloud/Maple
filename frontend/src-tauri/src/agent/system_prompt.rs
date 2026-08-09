@@ -12,8 +12,9 @@
 //!
 //! When bumping the goose pin in `Cargo.toml`, diff this template against the
 //! pinned `crates/goose/src/prompts/system.md`; only the first two lines may
-//! differ. `template_keeps_stock_structure_and_maple_branding` enforces that
-//! contract.
+//! differ. `body_matches_pinned_goose_system_prompt_byte_for_byte` compares
+//! this template against goose's compile-time-embedded stock `system.md` and
+//! fails on any such drift until the Maple header is re-applied.
 
 /// System prompt template applied to every freshly created Agent Mode agent
 /// via goose's `Agent::override_system_prompt`.
@@ -71,6 +72,7 @@ Use Markdown formatting for all responses.
 mod tests {
     use super::MAPLE_SYSTEM_PROMPT_TEMPLATE;
     use goose::agents::prompt_manager::PromptManager;
+    use goose::prompt_template::get_template;
 
     #[test]
     fn renders_maple_identity_with_stock_structure() {
@@ -99,10 +101,33 @@ mod tests {
         }
     }
 
+    /// Everything after the two-line identity header.
+    fn template_body(template: &str) -> &str {
+        template
+            .splitn(3, '\n')
+            .nth(2)
+            .expect("template must have a two-line identity header plus a body")
+    }
+
     #[test]
-    fn template_keeps_stock_structure_and_maple_branding() {
-        // Branding: Maple identity only, no upstream identity leaks. The
-        // goose turn-context block (which mentions goose machinery) comes
+    fn body_matches_pinned_goose_system_prompt_byte_for_byte() {
+        // goose's get_template embeds the prompts directory at compile time,
+        // so default_content is the exact pinned upstream system.md and is
+        // unaffected by any on-disk user prompt override.
+        let stock = get_template("system.md")
+            .expect("the pinned goose crate ships system.md")
+            .default_content;
+        assert_eq!(
+            template_body(MAPLE_SYSTEM_PROMPT_TEMPLATE),
+            template_body(&stock),
+            "Maple's system prompt drifted from the pinned goose system.md; \
+             re-diff the template and re-apply only the two-line Maple header"
+        );
+    }
+
+    #[test]
+    fn template_has_maple_branding_without_upstream_identity() {
+        // The goose turn-context block (which mentions goose machinery) comes
         // from goose at render time and is intentionally out of scope here. The
         // stock template variable `moim_system_prompt_block` must stay intact,
         // so blank it out before scanning for the "Block" creator brand.
@@ -112,30 +137,6 @@ mod tests {
             assert!(
                 !template.contains(leak),
                 "template leaks upstream brand {leak:?}"
-            );
-        }
-
-        // Structure: every dynamic block of the pinned stock
-        // crates/goose/src/prompts/system.md must survive in byte-exact form.
-        for marker in [
-            "{% if moim_system_prompt_block is defined %}",
-            "{{ moim_system_prompt_block }}",
-            "{% if include_extensions and not code_execution_mode %}",
-            "# Extensions",
-            "{% for extension in extensions %}",
-            "## {{extension.name}}",
-            "{% if extension.has_resources %}",
-            "{{extension.instructions}}{% endif %}",
-            "No extensions are defined. You should let the user know that they should add extensions.",
-            "{% if include_extensions and extension_tool_limits is defined and not code_execution_mode %}",
-            "{% with (extension_count, tool_count) = extension_tool_limits  %}",
-            "# Suggestion",
-            "# Response Guidelines",
-            "Use Markdown formatting for all responses.",
-        ] {
-            assert!(
-                MAPLE_SYSTEM_PROMPT_TEMPLATE.contains(marker),
-                "template drifted from the pinned stock goose system.md: missing {marker:?}"
             );
         }
     }
