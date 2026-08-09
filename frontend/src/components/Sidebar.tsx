@@ -9,6 +9,7 @@ import {
   FolderInput
 } from "lucide-react";
 import { Button } from "./ui/button";
+import { SidebarNewItemButton } from "./SidebarNewItemButton";
 import { useLocation, useRouter } from "@tanstack/react-router";
 import { ChatHistoryList } from "./ChatHistoryList";
 import { AccountMenu } from "./AccountMenu";
@@ -55,6 +56,7 @@ export function Sidebar({
   isOpen,
   mode = "chat",
   navigationContent,
+  isNewItemTemporarilyDisabled = false,
   onNewItem,
   onToggle
 }: {
@@ -62,6 +64,7 @@ export function Sidebar({
   isOpen: boolean;
   mode?: WorkspaceMode;
   navigationContent?: ReactNode;
+  isNewItemTemporarilyDisabled?: boolean;
   onNewItem?: () => void;
   onToggle: () => void;
 }) {
@@ -369,15 +372,15 @@ export function Sidebar({
             </div>
           )}
           <div className="flex flex-col gap-2 px-4">
-            <button
-              type="button"
-              className="flex w-full items-center justify-start gap-2 py-1.5 pr-1 pl-0 text-sm text-[hsl(var(--maple-primary-strong))] transition-colors hover:text-[hsl(var(--maple-primary))] disabled:cursor-not-allowed disabled:opacity-50 dark:text-[hsl(var(--maple-primary))] dark:hover:text-[hsl(var(--maple-primary-strong))]"
-              disabled={isAgentMode && !onNewItem}
+            <SidebarNewItemButton
+              hasAction={Boolean(onNewItem)}
+              isAgentMode={isAgentMode}
+              isTemporarilyDisabled={isNewItemTemporarilyDisabled}
               onClick={() => void addItem()}
             >
               <SquarePenIcon className="h-4 w-4 shrink-0" />
               {isAgentMode ? "New Task" : "New Chat"}
-            </button>
+            </SidebarNewItemButton>
             {!isAgentMode && (
               <button
                 type="button"
