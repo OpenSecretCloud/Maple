@@ -6,6 +6,7 @@ import {
   fallbackAgentModel,
   reconcileAgentModel,
   reconcileAgentModelForCatalog,
+  resolveAgentModelForSession,
   resolveAgentModelContextLimit,
   resolveAgentModelVisionCapability
 } from "./agentModels";
@@ -37,6 +38,11 @@ describe("Agent Mode model defaults", () => {
   test("catalog refresh preserves a started task's locked model", () => {
     expect(reconcileAgentModelForCatalog("retired-model", models, true)).toBe("retired-model");
     expect(reconcileAgentModelForCatalog("retired-model", models, false)).toBe(DEFAULT_AGENT_MODEL);
+  });
+
+  test("uses remembered models for new tasks without changing started tasks", () => {
+    expect(resolveAgentModelForSession("remembered", "session", false)).toBe("remembered");
+    expect(resolveAgentModelForSession("remembered", "session", true)).toBe("session");
   });
 });
 
