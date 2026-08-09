@@ -17,7 +17,7 @@ export const AGENT_THOUGHT_LABEL_PROVISIONAL_MIN_LENGTH = 100;
 export const AGENT_THOUGHT_LABEL_PROVISIONAL_DEADLINE_MS = 3_000;
 export const AGENT_THOUGHT_LABEL_MAX_CONCURRENT_PROVISIONAL_REQUESTS = 2;
 
-const AGENT_THOUGHT_LABEL_MODEL = "gemma4-31b";
+const AGENT_THOUGHT_LABEL_MODEL = "llama3-3-70b";
 const AGENT_THOUGHT_LABEL_MAX_TOKENS = 64;
 const AGENT_THOUGHT_LABEL_TEMPERATURE = 0;
 const AGENT_THOUGHT_LABEL_STREAMING_PREMATURE_VERBS = [
@@ -429,10 +429,7 @@ export async function requestAgentThoughtLabel(
     if (signal?.aborted) return null;
 
     const input = buildAgentThoughtLabelInput(source, phaseState);
-    const requestBody: OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming & {
-      include_reasoning: false;
-      chat_template_kwargs: { enable_thinking: false };
-    } = {
+    const requestBody: OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming = {
       model: AGENT_THOUGHT_LABEL_MODEL,
       messages: [
         { role: "system", content: AGENT_THOUGHT_LABEL_INSTRUCTIONS },
@@ -440,8 +437,6 @@ export async function requestAgentThoughtLabel(
       ],
       temperature: AGENT_THOUGHT_LABEL_TEMPERATURE,
       max_tokens: AGENT_THOUGHT_LABEL_MAX_TOKENS,
-      include_reasoning: false,
-      chat_template_kwargs: { enable_thinking: false },
       stream: false
     };
     const response = await client.chat.completions.create(requestBody, { signal });
