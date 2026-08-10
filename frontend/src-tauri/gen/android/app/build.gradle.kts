@@ -15,15 +15,17 @@ val tauriProperties = Properties().apply {
 val mapleUnsignedRelease = providers.gradleProperty("mapleUnsignedRelease")
     .map { it.toBoolean() }
     .orElse(false)
+val mapleCompileSdk = providers.gradleProperty("maple.compileSdk").get().toInt()
+val mapleTargetSdk = providers.gradleProperty("maple.targetSdk").get().toInt()
 
 android {
-    compileSdk = 35
+    compileSdk = mapleCompileSdk
     namespace = "cloud.opensecret.maple"
     defaultConfig {
         manifestPlaceholders["usesCleartextTraffic"] = "false"
         applicationId = "cloud.opensecret.maple"
         minSdk = 24
-        targetSdk = 35
+        targetSdk = mapleTargetSdk
         versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1").toInt()
         versionName = tauriProperties.getProperty("tauri.android.versionName", "1.0")
     }

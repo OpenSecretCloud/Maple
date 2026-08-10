@@ -868,6 +868,61 @@ android_zipalign() {
   return 1
 }
 
+android_aapt2() {
+  local found
+
+  if command -v aapt2 >/dev/null 2>&1; then
+    command -v aapt2
+    return 0
+  fi
+
+  if [ -n "${ANDROID_HOME:-}" ]; then
+    found="$(
+      find -L "${ANDROID_HOME}/build-tools" -mindepth 2 -maxdepth 4 -type f -name aapt2 2>/dev/null \
+        | LC_ALL=C sort -V \
+        | tail -n 1 || true
+    )"
+    if [ -n "${found}" ]; then
+      printf '%s\n' "${found}"
+      return 0
+    fi
+  fi
+
+  echo "aapt2 is required to verify the Android target SDK." >&2
+  return 1
+}
+
+configured_android_target_sdk() {
+  local gradle_properties="${TAURI_DIR}/gen/android/gradle.properties"
+  local target_sdk
+
+  target_sdk="$(sed -n 's/^maple[.]targetSdk=//p' "${gradle_properties}")"
+  if ! [[ "${target_sdk}" =~ ^[0-9]+$ ]]; then
+    echo "Could not read maple.targetSdk from ${gradle_properties}." >&2
+    return 1
+  fi
+
+  printf '%s\n' "${target_sdk}"
+}
+
+verify_android_apk_target_sdk() {
+  local artifact="$1"
+  local aapt2 expected actual
+
+  aapt2="$(android_aapt2)"
+  expected="$(configured_android_target_sdk)"
+  actual="$("${aapt2}" dump badging "${artifact}" | sed -n "s/^targetSdkVersion:'\\([^']*\\)'.*/\\1/p")"
+
+  if [ "${actual}" != "${expected}" ]; then
+    echo "Android APK target SDK mismatch for ${artifact}." >&2
+    echo "expected=${expected}" >&2
+    echo "actual=${actual:-missing}" >&2
+    return 1
+  fi
+
+  printf 'verified-android-target-sdk  %s  %s\n' "${actual}" "$(basename "${artifact}")"
+}
+
 verify_android_onnxruntime_artifact() (
   set -euo pipefail
 

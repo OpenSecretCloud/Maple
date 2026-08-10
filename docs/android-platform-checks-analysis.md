@@ -988,7 +988,7 @@ Set the override in `tauri.conf.json`:
 - ✅ Google's SHA256 certificate obtained
 - ✅ assetlinks.json updated with both certificates
 - ✅ Privacy policy URL configured (https://opensecret.cloud/privacy)
-- ✅ API level 35 requirement met
+- ✅ API level 36 requirement met for the August 31, 2026 Google Play deadline
 
 ### Current Status:
 - **Internal Testing Release**: Version 1.3.2 (Build 1003002002) is live
@@ -1023,15 +1023,7 @@ To avoid conflicts with Tauri's automatic version code generation and Google Pla
 ### Build Warnings and Version Compatibility
 
 #### Current Warnings Observed:
-1. **Gradle Plugin Version**:
-   ```
-   WARNING: We recommend using a newer Android Gradle plugin to use compileSdk = 36
-   This Android Gradle plugin (8.5.1) was tested up to compileSdk = 34.
-   ```
-   - **Impact**: Build succeeds but may have compatibility issues
-   - **TODO**: Wait for Tauri to update their Android template or manually update Gradle plugin
-
-2. **Deprecated targetSdk in library DSL**:
+1. **Deprecated targetSdk in library DSL**:
    ```
    'targetSdk: Int?' is deprecated. Will be removed from library DSL in v9.0
    ```
@@ -1039,7 +1031,7 @@ To avoid conflicts with Tauri's automatic version code generation and Google Pla
    - **Impact**: Warning only, will need update when Gradle 9.0 releases
    - **TODO**: Wait for Tauri plugin updates
 
-3. **Unused Rust Functions**:
+2. **Unused Rust Functions**:
    ```
    warning: function `get_config_path` is never used
    warning: function `save_proxy_config` is never used
@@ -1048,12 +1040,14 @@ To avoid conflicts with Tauri's automatic version code generation and Google Pla
    - **TODO**: Clean up unused proxy functions or add #[cfg] attributes for desktop-only
 
 #### Version Information:
-- **Current Gradle**: 8.9
-- **Android Gradle Plugin**: 8.5.1
-- **compileSdk**: 35 (Updated for Google Play requirements)
-- **targetSdk**: 35 (Required by Google Play as of Aug 2025)
+- **Google Play requirement**: [API level 36 for app updates starting August 31, 2026](https://developer.android.com/google/play/requirements/target-sdk)
+- **Toolchain compatibility**: [AGP 8.10 supports API 36 and requires Gradle 8.11.1](https://developer.android.com/build/releases/agp-8-10-0-release-notes)
+- **Current Gradle**: 8.11.1
+- **Android Gradle Plugin**: 8.10.1
+- **compileSdk**: 36
+- **targetSdk**: 36 (Required by Google Play for updates starting Aug 31, 2026)
 - **minSdk**: 24 (Android 7.0+, covers 99%+ of devices)
-- **NDK**: r25c
+- **NDK**: 27.2.12479018
 
 #### Build Performance:
 - **Initial build time**: ~9-10 minutes (includes downloading dependencies)
@@ -1081,18 +1075,17 @@ To avoid conflicts with Tauri's automatic version code generation and Google Pla
 3. **NDK toolchain not found** - Fixed by adding NDK bin to PATH and setting env vars
 
 #### 📋 TODO for Production:
-1. **Update Gradle Plugin** when Tauri updates templates
-2. **Google Play Store Setup**:
+1. **Google Play Store Setup**:
    - Create developer account
    - Configure Play App Signing
    - Add Google's SHA256 to assetlinks.json
-3. **Version Management**:
+2. **Version Management**:
    - Implement automatic version bumping
    - Consider using semantic-release
-4. **Testing**:
+3. **Testing**:
    - Add Android emulator tests
    - Implement UI testing with Espresso
-5. **Optimization**:
+4. **Optimization**:
    - Consider using `--target` flags to build specific architectures only
    - Implement APK size optimization
    - Add ProGuard/R8 rules if needed
