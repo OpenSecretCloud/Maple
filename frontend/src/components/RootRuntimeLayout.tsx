@@ -10,6 +10,7 @@ type RootRuntimeLayoutProps = {
 };
 
 const OAUTH_CALLBACK_PATH = /^\/auth\/([^/]+)\/callback\/?$/;
+const SIGNUP_PATH = /^\/signup\/?$/;
 
 function getAccountScopeKey(userId: string | null): string {
   return userId === null ? "account:signed-out" : `account:user:${userId}`;
@@ -17,15 +18,21 @@ function getAccountScopeKey(userId: string | null): string {
 
 function getRouteScopeKey(pathname: string, accountScopeKey: string): string {
   const callbackMatch = OAUTH_CALLBACK_PATH.exec(pathname);
-  return callbackMatch ? `route:oauth-callback:${callbackMatch[1]}` : `route:${accountScopeKey}`;
+  if (callbackMatch) return `route:oauth-callback:${callbackMatch[1]}`;
+
+  // Anonymous signup must retain its component-local Account ID while
+  // signUpGuest transitions auth from signed out to the newly created user.
+  if (SIGNUP_PATH.test(pathname)) return "route:signup";
+
+  return `route:${accountScopeKey}`;
 }
 
 /**
  * Keeps account-scoped chat state around the persistent authenticated home and
- * ordinary routed content. The OAuth callback route alone stays outside that
- * provider so it survives the signed-out-to-user transition and its one-shot
- * effect cannot replay. Global account-scoped UI retains its previous remount
- * behavior.
+ * ordinary routed content. The OAuth callback route stays outside that provider
+ * so its one-shot effect cannot replay. Signup also retains its route state long
+ * enough to show a newly created anonymous user's Account ID. Global
+ * account-scoped UI retains its previous remount behavior.
  */
 export function RootRuntimeLayout({
   userId,
@@ -37,15 +44,17 @@ export function RootRuntimeLayout({
   const accountScopeKey = getAccountScopeKey(userId);
   const routeScopeKey = getRouteScopeKey(pathname, accountScopeKey);
   const isOAuthCallback = OAUTH_CALLBACK_PATH.test(pathname);
+  const isSignup = SIGNUP_PATH.test(pathname);
+  const isAuthTransitionRoute = isOAuthCallback || isSignup;
   const keyedRouteContent = <Fragment key={routeScopeKey}>{routeContent}</Fragment>;
 
   return (
     <>
       <ChatRuntimeProvider key={`chat:${accountScopeKey}`}>
         {authenticatedHome}
-        {!isOAuthCallback ? keyedRouteContent : null}
+        {!isAuthTransitionRoute ? keyedRouteContent : null}
       </ChatRuntimeProvider>
-      {isOAuthCallback ? keyedRouteContent : null}
+      {isAuthTransitionRoute ? keyedRouteContent : null}
       <Fragment key={`global:${accountScopeKey}`}>{accountScopedUi}</Fragment>
     </>
   );

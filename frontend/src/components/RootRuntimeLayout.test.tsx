@@ -56,7 +56,7 @@ function ChatStoreProbe({ onStore }: { onStore: (store: unknown) => void }) {
 }
 
 describe("RootRuntimeLayout", () => {
-  test("keeps only the OAuth callback route mounted when success authenticates a user", () => {
+  test("keeps the OAuth callback route mounted when success authenticates a user", () => {
     const processCallback = mock(() => {});
     const globalMounted = mock(() => {});
     const globalUnmounted = mock(() => {});
@@ -74,6 +74,42 @@ describe("RootRuntimeLayout", () => {
     expect(processCallback).toHaveBeenCalledTimes(1);
     expect(globalMounted).toHaveBeenCalledTimes(2);
     expect(globalUnmounted).toHaveBeenCalledTimes(1);
+
+    act(() => renderer.unmount());
+  });
+
+  test("keeps signup mounted while anonymous account creation authenticates the new user", () => {
+    const routeMounted = mock(() => {});
+    const routeUnmounted = mock(() => {});
+    const signup = <LifecycleProbe onMount={routeMounted} onUnmount={routeUnmounted} />;
+    let renderer: ReactTestRenderer;
+
+    act(() => {
+      renderer = create(
+        <RootRuntimeLayout
+          userId={null}
+          pathname="/signup"
+          authenticatedHome={null}
+          routeContent={signup}
+          accountScopedUi={null}
+        />
+      );
+    });
+
+    act(() => {
+      renderer.update(
+        <RootRuntimeLayout
+          userId="new-anonymous-user"
+          pathname="/signup"
+          authenticatedHome={null}
+          routeContent={signup}
+          accountScopedUi={null}
+        />
+      );
+    });
+
+    expect(routeMounted).toHaveBeenCalledTimes(1);
+    expect(routeUnmounted).not.toHaveBeenCalled();
 
     act(() => renderer.unmount());
   });

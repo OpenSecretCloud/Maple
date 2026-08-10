@@ -1,4 +1,4 @@
-import { createFileRoute, Link, useNavigate, useRouter } from "@tanstack/react-router";
+import { createFileRoute, Link, useLocation, useNavigate, useRouter } from "@tanstack/react-router";
 import { useOpenSecret, type LoginResponse } from "@opensecret/react";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -23,6 +23,7 @@ import { UserCircle } from "lucide-react";
 import { appUrl } from "@/config/domains";
 import { useRouteMeta } from "@/utils/routeMeta";
 import { getSafeInternalRedirect, navigateToSafeInternalRedirect } from "@/utils/internalRedirect";
+import { shouldRedirectAuthenticatedSignup } from "@/utils/signupRedirect";
 
 type SignupSearchParams = {
   next?: string;
@@ -51,6 +52,7 @@ function SignupPage() {
 
   const navigate = useNavigate();
   const router = useRouter();
+  const location = useLocation();
   const os = useOpenSecret();
   const { next, selected_plan, code } = Route.useSearch();
   const [signUpMethod, setSignUpMethod] = useState<SignUpMethod>(null);
@@ -66,7 +68,14 @@ function SignupPage() {
 
   // Redirect if already logged in (but not if we're showing guest credentials)
   useEffect(() => {
-    if (os.auth.user && !showGuestCredentials) {
+    if (
+      shouldRedirectAuthenticatedSignup({
+        isAuthenticated: !!os.auth.user,
+        isGuestSignup: signUpMethod === "guest",
+        isSignupRoute: location.pathname === "/signup",
+        showGuestCredentials
+      })
+    ) {
       if (selected_plan) {
         navigate({
           to: "/pricing",
@@ -83,7 +92,17 @@ function SignupPage() {
         }
       }
     }
-  }, [os.auth.user, navigate, next, selected_plan, code, showGuestCredentials, router]);
+  }, [
+    os.auth.user,
+    navigate,
+    next,
+    selected_plan,
+    code,
+    location.pathname,
+    signUpMethod,
+    showGuestCredentials,
+    router
+  ]);
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
