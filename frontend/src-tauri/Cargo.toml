@@ -70,6 +70,10 @@ httpdate = "1"
 process-wrap = { version = "=9.1.0", default-features = false, features = ["tokio1", "creation-flags", "job-object", "process-group"] }
 pulldown-cmark = { version = "0.13", default-features = false }
 tempfile = "3"
+# Research-only, opt-in Agent safeguard transport. Pin the reviewed SDK release so
+# attestation and request semantics cannot drift under a Maple build.
+tinfoil = { git = "https://github.com/tinfoilsh/tinfoil-rs", rev = "91e8aef8fbc34129b68de8667ece5bd9ef7b7110" }
+unicode-normalization = "0.1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

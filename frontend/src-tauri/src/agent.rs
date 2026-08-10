@@ -2,6 +2,7 @@ mod developer_tools;
 #[cfg(target_os = "macos")]
 mod macos_login_path;
 pub(crate) mod provider;
+mod safeguard;
 mod shell_permission;
 mod system_prompt;
 mod tool_context;
@@ -32,6 +33,8 @@ use goose::session::session_manager::{Session, SessionType};
 use goose::session::SessionManager;
 use goose::skills::{SkillsClient, EXTENSION_NAME as SKILLS_EXTENSION_NAME};
 use provider::{MapleProvider, MAPLE_PROVIDER_NAME};
+use safeguard::{AgentSafeguard, GptOssSafeguardShadow};
+pub(crate) use safeguard::{SafeguardStartup, SafeguardTrustedUserRequest};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use shell_permission::{
@@ -864,6 +867,7 @@ pub(crate) struct MapleAgentHostResources {
     paths: AgentPathLayout,
     events: AgentEventDispatcher,
     default_tool_context: AgentToolContextSpec,
+    safeguard: Option<Arc<GptOssSafeguardShadow>>,
 }
 
 impl MapleAgentHostResources {
@@ -871,11 +875,13 @@ impl MapleAgentHostResources {
         paths: AgentPathLayout,
         event_sink: Arc<dyn AgentEventSink>,
         default_tool_context: AgentToolContextSpec,
+        safeguard_startup: SafeguardStartup,
     ) -> Self {
         Self {
             paths,
             events: AgentEventDispatcher::new(event_sink),
             default_tool_context,
+            safeguard: GptOssSafeguardShadow::from_process_environment(safeguard_startup),
         }
     }
 }
@@ -1752,7 +1758,11 @@ async fn start_runtime_for_user(
     // registry. Keep it available for new or uncached sessions; each turn still
     // reapplies the session's selected model below.
     agent_manager
-        .set_default_provider(Arc::new(MapleProvider::new(Arc::clone(&maple_api_session))))
+        .set_default_provider(Arc::new(maple_provider(
+            &maple_api_session,
+            &project_root,
+            state.host.safeguard.as_ref(),
+        )))
         .await;
 
     let runtime = AgentRuntime {
@@ -2215,6 +2225,7 @@ impl AgentRuntimeHandle {
                 &maple_api_session,
                 SessionAgentConfiguration {
                     web_tool_state: &web_tool_state,
+                    safeguard: state.host.safeguard.as_ref(),
                     session: &session,
                     model: &model,
                     context_limit: request.context_limit,
@@ -2516,6 +2527,7 @@ impl AgentRuntimeHandle {
             &maple_api_session,
             &session,
             RuntimeContext::default(),
+            state.host.safeguard.as_ref(),
         )
         .await
         .map_err(|error| format!("Failed to load Goose agent: {error}"))?;
@@ -3123,6 +3135,7 @@ impl AgentRuntimeHandle {
                 &maple_api_session,
                 SessionAgentConfiguration {
                     web_tool_state: &web_tool_state,
+                    safeguard: state.host.safeguard.as_ref(),
                     session: &session,
                     model: &model,
                     context_limit: request.context_limit,
@@ -3209,6 +3222,8 @@ impl AgentRuntimeHandle {
         let task_permission_modes = Arc::clone(&permission_modes);
         let task_web_tool_state = Arc::clone(&web_tool_state);
         let task_user_message = user_message.clone();
+        let task_account_scope = account_scope.to_string();
+        let task_safeguard_enabled = state.host.safeguard.is_some();
         let task_cancel_token = cancel_token.clone();
         let task_agent = Arc::clone(&agent);
         let active_agent = Arc::clone(&agent);
@@ -3292,8 +3307,16 @@ impl AgentRuntimeHandle {
                 start = start_rx => start.is_ok(),
             };
             let result = if should_run {
-                provider::with_run_cancellation(
+                let trusted_user_request = task_safeguard_enabled.then(|| {
+                    SafeguardTrustedUserRequest::from_message(
+                        &task_user_message,
+                        &task_cancel_token,
+                    )
+                });
+                provider::with_agent_run_context(
                     task_cancel_token.clone(),
+                    Some(task_account_scope),
+                    trusted_user_request,
                     run_agent_prompt(AgentPromptRun {
                         events: task_events.clone(),
                         agent: Arc::clone(&task_agent),
@@ -3685,6 +3708,7 @@ impl AgentRuntimeHandle {
                         &maple_api_session,
                         &session,
                         RuntimeContext::default(),
+                        state.host.safeguard.as_ref(),
                     )
                     .await
                     .map_err(|error| {
@@ -4880,6 +4904,7 @@ struct AgentSkillsScope<'a> {
 
 struct SessionAgentConfiguration<'a> {
     web_tool_state: &'a Arc<WebToolState>,
+    safeguard: Option<&'a Arc<GptOssSafeguardShadow>>,
     session: &'a Session,
     model: &'a str,
     context_limit: Option<usize>,
@@ -4907,6 +4932,7 @@ async fn install_maple_provider<T>(
     session: &Session,
     model: &str,
     context_limit: Option<usize>,
+    safeguard: Option<&Arc<GptOssSafeguardShadow>>,
 ) -> Result<(), String>
 where
     T: provider::MapleInferenceTransport + 'static,
@@ -4924,23 +4950,51 @@ where
             .filter(|limit| *limit > 0)
     });
     let model_config = maple_model_config(model, context_limit)?;
-    install_maple_provider_config(agent, transport, &session.id, model_config).await
+    install_maple_provider_config(
+        agent,
+        transport,
+        &session.id,
+        &session.working_dir,
+        model_config,
+        safeguard,
+    )
+    .await
 }
 
 async fn install_maple_provider_config<T>(
     agent: &Arc<Agent>,
     transport: &Arc<T>,
     session_id: &str,
+    working_directory: &Path,
     model_config: goose_providers::model::ModelConfig,
+    safeguard: Option<&Arc<GptOssSafeguardShadow>>,
 ) -> Result<(), String>
 where
     T: provider::MapleInferenceTransport + 'static,
 {
-    let provider = Arc::new(MapleProvider::new(Arc::clone(transport)));
+    let provider = maple_provider(transport, working_directory, safeguard);
+    let provider = Arc::new(provider);
     agent
         .update_provider(provider, model_config, session_id)
         .await
         .map_err(|e| format!("Failed to update Goose provider: {e}"))
+}
+
+fn maple_provider<T>(
+    transport: &Arc<T>,
+    working_directory: &Path,
+    safeguard: Option<&Arc<GptOssSafeguardShadow>>,
+) -> MapleProvider
+where
+    T: provider::MapleInferenceTransport + 'static,
+{
+    let mut provider = MapleProvider::new(Arc::clone(transport));
+    if let Some(safeguard) = safeguard {
+        let safeguard: Arc<dyn AgentSafeguard> = safeguard.clone();
+        provider =
+            provider.with_safeguard(safeguard, working_directory.to_string_lossy().into_owned());
+    }
+    provider
 }
 
 async fn get_or_create_session_agent<T>(
@@ -4948,6 +5002,7 @@ async fn get_or_create_session_agent<T>(
     transport: &Arc<T>,
     session: &Session,
     runtime_context: RuntimeContext,
+    safeguard: Option<&Arc<GptOssSafeguardShadow>>,
 ) -> Result<AgentManagerGetResult, String>
 where
     T: provider::MapleInferenceTransport + 'static,
@@ -4980,7 +5035,9 @@ where
                 &manager_result.agent,
                 transport,
                 &session.id,
+                &session.working_dir,
                 model_config.clone(),
+                safeguard,
             )
             .await?;
         }
@@ -4998,6 +5055,7 @@ async fn configure_session_agent(
 ) -> Result<(Arc<Agent>, Vec<AgentMcpConnectionError>), String> {
     let SessionAgentConfiguration {
         web_tool_state,
+        safeguard,
         session,
         model,
         context_limit,
@@ -5011,13 +5069,22 @@ async fn configure_session_agent(
         maple_api_session,
         session,
         RuntimeContext::default(),
+        safeguard,
     )
     .await?;
     let agent = manager_result.agent;
     let skills_client =
         prepare_transient_skills_client(skills_scope.paths, skills_scope.user_id, &agent, session)?;
     let mcp_errors = mcp_connection_errors(manager_result.extension_results, &session_mcp_keys);
-    install_maple_provider(&agent, maple_api_session, session, model, context_limit).await?;
+    install_maple_provider(
+        &agent,
+        maple_api_session,
+        session,
+        model,
+        context_limit,
+        safeguard,
+    )
+    .await?;
     agent
         .update_goose_mode(GOOSE_PERMISSION_ROUTING_MODE, &session.id)
         .await
@@ -7693,6 +7760,7 @@ mod tests {
             &transport,
             &session,
             RuntimeContext::default(),
+            None,
         )
         .await
         .unwrap();
@@ -7783,6 +7851,7 @@ mod tests {
             &transport,
             &glm_session,
             RuntimeContext::default(),
+            None,
         )
         .await
         .unwrap();
@@ -7792,6 +7861,7 @@ mod tests {
             &glm_session,
             "glm-5-2",
             Some(384_000),
+            None,
         )
         .await
         .unwrap();
@@ -7802,6 +7872,7 @@ mod tests {
             &transport,
             &kimi_session,
             RuntimeContext::default(),
+            None,
         )
         .await
         .unwrap();
@@ -7811,6 +7882,7 @@ mod tests {
             &kimi_session,
             "auto:powerful",
             Some(256_000),
+            None,
         )
         .await
         .unwrap();
@@ -7844,6 +7916,7 @@ mod tests {
             &transport,
             &persisted_glm,
             RuntimeContext::default(),
+            None,
         )
         .await
         .unwrap();
@@ -7852,6 +7925,7 @@ mod tests {
             &transport,
             &persisted_glm,
             "glm-5-2",
+            None,
             None,
         )
         .await
@@ -11208,6 +11282,7 @@ mod tests {
             ),
             Arc::new(NoopAgentEventSink),
             AgentToolContextSpec::default(),
+            SafeguardStartup::disabled_for_test(),
         ));
         let stale_handle = state.handle_for_user("user-to-clear").await.unwrap();
         let scope = account_scope("user-to-clear").unwrap();
@@ -11228,6 +11303,7 @@ mod tests {
             ),
             Arc::new(NoopAgentEventSink),
             AgentToolContextSpec::default(),
+            SafeguardStartup::disabled_for_test(),
         ));
         let handle = state.handle_for_user("user-during-shutdown").await.unwrap();
 

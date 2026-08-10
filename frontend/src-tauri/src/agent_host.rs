@@ -1,6 +1,6 @@
 use crate::agent::{
     AgentPathLayout, AgentRuntimeHandle, AgentRuntimeStatus, AgentStartRequest,
-    MapleAgentHostResources, MapleAgentService,
+    MapleAgentHostResources, MapleAgentService, SafeguardStartup,
 };
 use crate::maple_api::MapleApiSession;
 use serde::Serialize;
@@ -169,7 +169,10 @@ fn combine_runtime_lifecycle_results(
 ///
 /// Tauri owns Desktop event projection; ACP owns its transient environment
 /// policy. Neither adapter reaches through the other to operate the runtime.
-pub(crate) fn build_service(app_handle: &AppHandle) -> Result<MapleAgentService, String> {
+pub(crate) fn build_service(
+    app_handle: &AppHandle,
+    safeguard_startup: SafeguardStartup,
+) -> Result<MapleAgentService, String> {
     let app_config_root = app_handle
         .path()
         .app_config_dir()
@@ -185,6 +188,7 @@ pub(crate) fn build_service(app_handle: &AppHandle) -> Result<MapleAgentService,
         paths,
         event_sink,
         default_tool_context,
+        safeguard_startup,
     )))
 }
 
