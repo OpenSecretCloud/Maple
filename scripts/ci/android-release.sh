@@ -357,6 +357,9 @@ else
 fi
 
 for artifact in "${android_artifacts[@]}"; do
+  if [[ "${artifact}" == *.apk ]]; then
+    verify_android_apk_target_sdk "${artifact}"
+  fi
   verify_android_artifact_native_libraries "${artifact}"
   verify_android_onnxruntime_artifact "${artifact}"
 done

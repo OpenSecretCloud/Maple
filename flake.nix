@@ -33,12 +33,12 @@
           rust = "1.94.1";
           jdk = "21";
           xcode = "26.5";
-          android = {
-            compileSdk = "35";
+          android = rec {
+            compileSdk = "36";
             platforms = [
               "34"
               "35"
-              "36"
+              compileSdk
             ];
             buildTools = [
               "35.0.0"

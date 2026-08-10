@@ -116,6 +116,7 @@ while IFS= read -r -d '' file; do
 done < <(find "${TAURI_DIR}/gen/android/app/build/outputs/apk" -type f -name '*.apk' -print0 | LC_ALL=C sort -z)
 
 for artifact in "${android_artifacts[@]}"; do
+  verify_android_apk_target_sdk "${artifact}"
   verify_android_artifact_native_libraries "${artifact}"
   verify_android_onnxruntime_artifact "${artifact}"
 done
