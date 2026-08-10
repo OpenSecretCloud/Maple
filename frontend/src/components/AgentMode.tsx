@@ -155,7 +155,7 @@ import {
   resolveAgentModelContextLimit,
   resolveAgentModelVisionCapability
 } from "@/services/agentModels";
-import { SIDEBAR_GRID_COLUMNS_CLASS, getSidebarLayoutStyle } from "@/constants/layout";
+import { ResizableSidebarLayout } from "@/components/ResizableSidebarLayout";
 import {
   cn,
   POWERFUL_MODEL_ALIAS,
@@ -379,6 +379,7 @@ export function AgentMode({ userId }: { userId: string }) {
   const isCompactLayout = isMobile || isLandscapeMobile;
   const isTouchLayout = isCompactLayout || isCoarsePointer;
   const [isSidebarOpen, setIsSidebarOpen] = usePersistentSidebarState(isCompactLayout);
+  const [isSidebarTransitioning, setIsSidebarTransitioning] = useState(false);
   const [sidebarPreferences, setSidebarPreferences] = useState<AgentSidebarPreferences>(() =>
     loadAgentSidebarPreferences(userId)
   );
@@ -2273,7 +2274,6 @@ export function AgentMode({ userId }: { userId: string }) {
     [isCompactLayout, sendMessage]
   );
 
-  const sidebarLayoutStyle = getSidebarLayoutStyle({ offsetContent: isSidebarOpen });
   const removeSessionFromState = useCallback(
     (sessionId: string) => {
       deletedSessionIdsRef.current.add(sessionId);
@@ -2703,52 +2703,54 @@ export function AgentMode({ userId }: { userId: string }) {
   }
 
   return (
-    <div
-      style={sidebarLayoutStyle}
-      className={cn(
-        "grid h-dvh min-h-0 w-full grid-cols-1 overflow-hidden bg-background",
-        isSidebarOpen ? SIDEBAR_GRID_COLUMNS_CLASS : ""
-      )}
+    <ResizableSidebarLayout
+      isCompactLayout={isCompactLayout}
+      isOpen={isSidebarOpen}
+      mode="agent"
+      onOpenChange={setIsSidebarOpen}
+      onTransitionChange={setIsSidebarTransitioning}
+      userId={userId}
+      sidebar={
+        <Sidebar
+          isOpen={isSidebarOpen}
+          mode="agent"
+          navigationContent={
+            <MemoizedAgentSidebarContent
+              activeSessionId={
+                pendingSessionSelectionId && pendingSessionSelectionId !== NEW_SESSION_PENDING_KEY
+                  ? pendingSessionSelectionId
+                  : activeSessionId
+              }
+              collapsedProjectRoots={sidebarPreferences.collapsedProjectRoots}
+              isTouchLayout={isTouchLayout}
+              projectRoot={projectRoot}
+              recentRoots={displayProjectRoots}
+              completedUnreadSessionIds={completedUnreadSessionIds}
+              disabled={areAgentSettingsLocked}
+              inProgressSessionIds={agentRunningSessionIds}
+              runningSessionIds={runningSessionIds}
+              sessions={visibleSessions}
+              onChooseProjectRoot={chooseProjectRoot}
+              onCreateSession={handleCreateSessionForProject}
+              onProjectDisclosureToggle={handleToggleProjectDisclosure}
+              onProjectOrderChange={saveProjectRootOrder}
+              onProjectRename={handlePromptProjectRename}
+              onProjectRemove={handlePromptProjectRemoval}
+              onRevealProjectRoot={handleRevealProjectRoot}
+              onSessionDelete={setSessionToDelete}
+              onSessionSelect={handleSelectSession}
+            />
+          }
+          isNewItemTemporarilyDisabled={isTaskTransitionPending}
+          onNewItem={
+            areAgentSettingsLockedOutsideTaskTransition || !projectRoot
+              ? undefined
+              : handleCreateSession
+          }
+          onToggle={toggleSidebar}
+        />
+      }
     >
-      <Sidebar
-        isOpen={isSidebarOpen}
-        mode="agent"
-        navigationContent={
-          <MemoizedAgentSidebarContent
-            activeSessionId={
-              pendingSessionSelectionId && pendingSessionSelectionId !== NEW_SESSION_PENDING_KEY
-                ? pendingSessionSelectionId
-                : activeSessionId
-            }
-            collapsedProjectRoots={sidebarPreferences.collapsedProjectRoots}
-            isTouchLayout={isTouchLayout}
-            projectRoot={projectRoot}
-            recentRoots={displayProjectRoots}
-            completedUnreadSessionIds={completedUnreadSessionIds}
-            disabled={areAgentSettingsLocked}
-            inProgressSessionIds={agentRunningSessionIds}
-            runningSessionIds={runningSessionIds}
-            sessions={visibleSessions}
-            onChooseProjectRoot={chooseProjectRoot}
-            onCreateSession={handleCreateSessionForProject}
-            onProjectDisclosureToggle={handleToggleProjectDisclosure}
-            onProjectOrderChange={saveProjectRootOrder}
-            onProjectRename={handlePromptProjectRename}
-            onProjectRemove={handlePromptProjectRemoval}
-            onRevealProjectRoot={handleRevealProjectRoot}
-            onSessionDelete={setSessionToDelete}
-            onSessionSelect={handleSelectSession}
-          />
-        }
-        isNewItemTemporarilyDisabled={isTaskTransitionPending}
-        onNewItem={
-          areAgentSettingsLockedOutsideTaskTransition || !projectRoot
-            ? undefined
-            : handleCreateSession
-        }
-        onToggle={toggleSidebar}
-      />
-
       {projectToRename ? (
         <RenameAgentProjectDialog
           key={projectToRename.path}
@@ -2874,7 +2876,7 @@ export function AgentMode({ userId }: { userId: string }) {
       </AlertDialog>
 
       <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-        {!isSidebarOpen && (
+        {!isSidebarOpen && !isSidebarTransitioning && (
           <div className="fixed left-4 top-[9.5px] z-20 flex items-center gap-1.5">
             <SidebarToggle onToggle={toggleSidebar} agentStatus={agentSidebarStatus} />
             <MapleWordmark
@@ -2997,7 +2999,7 @@ export function AgentMode({ userId }: { userId: string }) {
           ) : null}
         </section>
       </div>
-    </div>
+    </ResizableSidebarLayout>
   );
 }
 

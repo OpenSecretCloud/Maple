@@ -11,7 +11,10 @@ import { useLocation, useRouter } from "@tanstack/react-router";
 import { useOpenSecret } from "@opensecret/react";
 import { ProjectDetailView } from "@/components/ProjectDetailView";
 import { UnifiedChat } from "@/components/UnifiedChat";
-import { PersistentHomeNavigationContext } from "@/contexts/PersistentHomeNavigationContext";
+import {
+  PersistentHomeNavigationContext,
+  useAccountSidebarOpenState
+} from "@/contexts/PersistentHomeNavigationContext";
 import { AgentSessionSelectionMemory } from "@/services/agentSessionSelection";
 
 const TRANSIENT_HOME_SEARCH_PARAMS = ["team_setup", "credits_success", "api_settings"];
@@ -56,7 +59,7 @@ export function PersistentHomeNavigationProvider({ children }: { children: React
   const homeHrefRef = useRef(initialHomeHref);
   const homeHrefUserIdRef = useRef(userId);
   const skipNextHomeCaptureRef = useRef(false);
-  const [sidebarOpen, setSidebarOpen] = useState<boolean | null>(null);
+  const [sidebarOpen, setSidebarOpen] = useAccountSidebarOpenState(userId);
   const [agentSessionSelection] = useState(() => new AgentSessionSelectionMemory());
 
   const captureHomeHref = useCallback(() => {
@@ -124,7 +127,7 @@ export function PersistentHomeNavigationProvider({ children }: { children: React
       setSidebarOpen,
       agentSessionSelection
     }),
-    [agentSessionSelection, returnToHome, sidebarOpen]
+    [agentSessionSelection, returnToHome, setSidebarOpen, sidebarOpen]
   );
 
   return (

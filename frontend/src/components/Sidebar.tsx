@@ -1,7 +1,7 @@
 import {
   Search,
   SquarePenIcon,
-  ArrowLeftFromLine,
+  PanelLeft,
   Loader2,
   Menu,
   XCircle,
@@ -32,11 +32,7 @@ import {
   useSelectedProjectState,
   useSidebarSearchState
 } from "@/state/useLocalState";
-import {
-  SIDEBAR_LAYOUT_STYLE,
-  SIDEBAR_MAX_WIDTH_CLASS,
-  SIDEBAR_WIDTH_CLASS
-} from "@/constants/layout";
+import { SIDEBAR_MAX_WIDTH_CLASS, SIDEBAR_WIDTH_CLASS } from "@/constants/layout";
 import { isTauriDesktop } from "@/utils/platform";
 import { useOpenSecret } from "@opensecret/react";
 import { FEATURE_FLAGS, flagsClient, isForcedOn } from "@/services/flags";
@@ -336,7 +332,6 @@ export function Sidebar({
   return (
     <div
       ref={sidebarRef}
-      style={SIDEBAR_LAYOUT_STYLE}
       className={cn([
         "fixed md:static landscape-short:fixed z-10 h-full overflow-x-hidden overflow-y-hidden",
         isOpen ? `block ${SIDEBAR_WIDTH_CLASS}` : "hidden"
@@ -359,9 +354,9 @@ export function Sidebar({
               type="button"
               className="flex h-9 w-9 shrink-0 items-center justify-center text-foreground transition-colors hover:text-foreground/70"
               onClick={onToggle}
-              aria-label="Close sidebar"
+              aria-label={isAgentMode ? "Collapse Agent sidebar" : "Close sidebar"}
             >
-              <ArrowLeftFromLine className="h-4 w-4" />
+              <PanelLeft className="h-4 w-4" />
             </button>
           </div>
           {(showAgentMode || isAgentMode) && (
