@@ -1,13 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# This script runs inside `nix develop`, so it cannot retroactively scrub a
+# credential inherited by Nix itself. Refuse and require the documented outer
+# `env -u` boundary instead of forwarding it into build hooks or Maple.
 if [[ -n "${TINFOIL_API_KEY+x}" ]]; then
-  echo "Refusing an inherited TINFOIL_API_KEY; unset it and use the secure prompt." >&2
-  exit 2
-fi
-
-if [[ ! -t 0 ]]; then
-  echo "The safeguard runner requires an interactive terminal for the API-key prompt." >&2
+  echo "Refusing an inherited TINFOIL_API_KEY; rerun through 'env -u TINFOIL_API_KEY nix develop ...'." >&2
   exit 2
 fi
 
@@ -56,9 +54,9 @@ if [[ ! -x "${maple_binary}" ]]; then
   exit 2
 fi
 
-# Complete all provisioning before reading the secret so no build hook or
-# helper subprocess can inherit it. After the prompt this shell only exports
-# the key and immediately replaces itself with Maple.
+# Complete all provisioning before enabling the experiment. Maple reads the
+# workspace-manager secret file directly; the key never enters this shell or
+# Maple's launch environment.
 ort_env="$("${provider}")"
 ort_dylib_path="$(printf '%s\n' "${ort_env}" | sed -n 's/^ORT_DYLIB_PATH=//p')"
 if [[ -z "${ort_dylib_path}" ]]; then
@@ -66,15 +64,13 @@ if [[ -z "${ort_dylib_path}" ]]; then
   exit 1
 fi
 
-IFS= read -r -s -p "Tinfoil API key: " safeguard_key
-printf '\n'
-if [[ -z "${safeguard_key}" ]]; then
-  echo "A nonblank Tinfoil API key is required." >&2
+shared_secrets_dir="${OPENSECRET_WORKSPACES_SECRETS_DIR:-${HOME}/.config/opensecret-workspaces/secrets}"
+safeguard_key_file="${MAPLE_TINFOIL_API_KEY_FILE:-${shared_secrets_dir}/tinfoil_api_key}"
+if [[ ! -r "${safeguard_key_file}" || ! -s "${safeguard_key_file}" ]]; then
+  echo "The shared Tinfoil API-key file is unavailable or empty: ${safeguard_key_file}" >&2
   exit 2
 fi
 
 export ORT_DYLIB_PATH="${ort_dylib_path}"
-export MAPLE_SAFEGUARD_SHADOW=1
-export TINFOIL_API_KEY="${safeguard_key}"
-unset safeguard_key
+export MAPLE_SAFEGUARD_ENABLED=1
 exec "${maple_binary}"

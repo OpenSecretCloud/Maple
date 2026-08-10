@@ -54,11 +54,11 @@ sha2 = "0.10"
 ort = { version = "=2.0.0-rc.11", default-features = false, features = ["std", "ndarray", "load-dynamic"] }
 
 [target.'cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))'.dependencies]
-# Pin Goose to an exact official upstream commit. Keep this as a git dependency
-# instead of a submodule so ordinary Maple checkouts do not need the full Goose
-# history.
-goose = { git = "https://github.com/aaif-goose/goose.git", rev = "064244e6bddf641876676f054a006b7da1da5182", package = "goose", default-features = false }
-goose-providers = { git = "https://github.com/aaif-goose/goose.git", rev = "064244e6bddf641876676f054a006b7da1da5182", package = "goose-providers", default-features = false }
+# Pin Goose to an exact reviewed OpenSecretCloud fork commit. Keep this as a git
+# dependency instead of a submodule so ordinary Maple checkouts do not need the
+# full Goose history.
+goose = { git = "https://github.com/OpenSecretCloud/goose.git", rev = "8362ed49ff8a8fcbbbfdaa3b28dc6eb1da13a0b5", package = "goose", default-features = false }
+goose-providers = { git = "https://github.com/OpenSecretCloud/goose.git", rev = "8362ed49ff8a8fcbbbfdaa3b28dc6eb1da13a0b5", package = "goose-providers", default-features = false }
 opensecret = "3.5.0"
 rand = "0.8.6"
 async-trait = "0.1"

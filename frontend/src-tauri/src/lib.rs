@@ -155,15 +155,21 @@ type PlatformStartup = agent::SafeguardStartup;
 #[cfg(not(desktop))]
 type PlatformStartup = ();
 
-/// Start the desktop application after capturing process-global secrets.
+/// Start the desktop application after removing the legacy environment secret
+/// and reading the optional safeguard secret file.
 ///
 /// # Safety
 ///
-/// The caller must invoke this before any other process thread exists because
-/// Unix environment mutation is not thread-safe.
+/// This must be called as the desktop process's first operation, before any
+/// other thread can read the environment. Unix process environments cannot be
+/// mutated safely once another thread may access them.
 #[cfg(desktop)]
 pub unsafe fn run() {
-    let startup = unsafe { agent::SafeguardStartup::capture_before_threads() };
+    // SAFETY: required by this function's caller contract. Maple no longer
+    // consumes this legacy variable, but removing it prevents direct, ACP, or
+    // standard launches from forwarding a stale credential to tool children.
+    unsafe { std::env::remove_var("TINFOIL_API_KEY") };
+    let startup = agent::SafeguardStartup::capture_before_threads();
 
     let mut args = std::env::args().skip(1);
     if args.next().as_deref() == Some("acp") {
