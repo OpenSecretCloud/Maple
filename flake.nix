@@ -33,9 +33,17 @@
           rust = "1.94.1";
           jdk = "21";
           xcode = "26.5";
-          android = {
+          android = rec {
             compileSdk = "36";
-            buildTools = "35.0.0";
+            platforms = [
+              "34"
+              "35"
+              compileSdk
+            ];
+            buildTools = [
+              "35.0.0"
+              "34.0.0"
+            ];
             ndk = "27.2.12479018";
           };
         };
@@ -497,8 +505,8 @@
         androidComposition =
           if supportsAndroidHost then
             pkgs.androidenv.composeAndroidPackages {
-              platformVersions = [ versions.android.compileSdk ];
-              buildToolsVersions = [ versions.android.buildTools ];
+              platformVersions = versions.android.platforms;
+              buildToolsVersions = versions.android.buildTools;
               ndkVersions = [ versions.android.ndk ];
               includeNDK = true;
               includeEmulator = false;
