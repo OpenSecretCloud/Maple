@@ -113,11 +113,11 @@ For frontend changes:
 
 ```bash
 cd frontend
-bun test path/to/test.ts             # focused loop
+bun --no-env-file test path/to/test.ts
 bun run format:check
 bun run lint
 bun run typecheck
-bun run test
+bun --no-env-file test
 bun run build
 ```
 
@@ -126,8 +126,8 @@ For Rust/Tauri changes:
 ```bash
 cd frontend/src-tauri
 cargo fmt --check
-cargo clippy -- -D warnings
-cargo test --all-targets
+./scripts/run-with-desktop-onnxruntime.sh cargo clippy --locked -- -D warnings
+./scripts/run-with-desktop-onnxruntime.sh cargo test --locked --all-targets
 ```
 
 There is no `just test` recipe. The pre-commit hook is useful but does not replace ESLint, Clippy, CI-equivalent checks, or runtime smoke testing.

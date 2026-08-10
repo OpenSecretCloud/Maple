@@ -241,10 +241,18 @@ Choose only scenarios relevant to the change, but cross every changed boundary.
 ### Agent Mode, MCP, and local proxy
 
 - Run Agent Mode in the desktop app; it is unavailable in the web build.
-- Verify start, useful intermediate state, permission handling, cancellation, completion, restart, and shutdown.
-- Confirm process and listener ownership before and after cancellation, logout, account switch, and app exit.
+- For presentation-only Agent Mode changes, exercise the exact changed states,
+  interactions, accessibility, focus, theme, and layout in the native app. Do
+  not add file writes, shell execution, account switching, or lifecycle
+  manipulation merely to populate the UI.
+- For behavioral changes, verify the applicable start, intermediate state,
+  permission, cancellation, completion, restart, and shutdown boundaries. Run
+  `$change-maple-agent-mode` for the proportional lifecycle matrix.
+- Confirm process and listener ownership before and after cancellation, logout,
+  account switch, and app exit when those long-lived boundaries are affected.
 - For MCP, follow `docs/agent-mode-mcp.md`: use the pinned Everything server, send a unique marker, verify server request, arguments, result, and final answer, then disable or stop the server and verify a clear failure.
-- Verify that stale sessions cannot cross account boundaries.
+- Verify that stale sessions cannot cross account boundaries when session or
+  account ownership changed.
 
 ### PDF and OCR
 

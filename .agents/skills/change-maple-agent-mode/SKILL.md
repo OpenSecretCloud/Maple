@@ -141,9 +141,37 @@ Select only affected module filters for the edit loop; run the complete locked R
 
 Use a local open-source OpenSecret backend or an explicitly configured development API. Use a disposable account and non-sensitive fixtures. If remote rollout has not enabled Agent Mode for that account, set `VITE_FORCE_FEATURE_FLAGS=agent_mode` in untracked `frontend/.env.local` and restart the frontend server.
 
-1. Record the commit SHA, `VITE_OPEN_SECRET_API_URL`, selected model ID, build profile, and whether `.local/tauri-workspace.json` is active. Record the effective Tauri identifier, dev URL, exact executable/application path, frontend-server PID, and native PID.
-2. Create a disposable project directory with a `README.md` containing a unique marker. Record the exact directory so cleanup cannot target a broader path.
+1. Record the commit SHA, `VITE_OPEN_SECRET_API_URL`, selected model ID when relevant, build profile, and whether `.local/tauri-workspace.json` is active. Record the effective Tauri identifier, dev URL, exact executable/application path, frontend-server PID, and native PID.
+2. When the scenario needs project content, create a disposable project directory with a `README.md` containing a unique marker. Record the exact directory so cleanup cannot target a broader path.
 3. Launch from the repository root with `nix develop -c just desktop-dev`. Operate the native window belonging to the recorded PID and identifier, never a browser tab or another installed app named Maple.
+
+Every Agent Mode UI change requires an exact native-app smoke because the web
+build does not exercise this desktop-only path. Keep the smoke proportional to
+the changed boundary and classify it by behavior, not file path:
+
+- For presentation-only changes confined to icons, copy, spacing, or markup for
+  already-derived timeline state, exercise the exact changed states and
+  interactions in the native app. Sign in, open Agent Mode, and navigate only
+  as far as the changed state requires. Check relevant loading, streaming,
+  completed, error, or permission presentation plus keyboard, focus,
+  accessibility, theme, and layout behavior as applicable. Use a minimal
+  read-only prompt when runtime data is needed. Do not create files, approve
+  shell execution, switch accounts, or run restart/logout lifecycle exercises
+  unless the changed UI depends on those boundaries. If event mapping, state
+  derivation, timeline grouping or merging, status transitions, action handlers,
+  IPC calls, permission callbacks, or account/session/run ownership changed,
+  this is not presentation-only. If permission presentation itself changed,
+  trigger one disposable request, deny it, and verify that no mutation occurred.
+- For runtime, tool, permission, cancellation, persistence, task ownership,
+  session switching, restart, logout, app-exit, authentication, or account
+  isolation changes, run the applicable full-baseline steps below. Run the
+  complete baseline when the change is cross-cutting or its affected lifecycle
+  boundaries cannot be isolated. For a narrower change within one of these
+  areas, run the affected steps and explicitly report what was not exercised.
+
+For changes requiring full lifecycle coverage, continue through the remaining
+baseline:
+
 4. Sign in, open Agent Mode, select the disposable project, choose the intended model, keep `Read only`, and start a new task.
 5. Send: `Read README.md using the read tool. Reply only with the exact marker. Do not use shell.` Confirm the visible user row, tool activity, exact marker result, final answer, and completed terminal state.
 6. Send: `Create agent-smoke-output.txt containing exactly <marker> using the write tool. Do not use shell.` Confirm a single pending permission card. Choose `Deny once`; verify the card settles as denied, the run terminates coherently, and the file does not exist.
@@ -152,7 +180,12 @@ Use a local open-source OpenSecret backend or an explicitly configured developme
 9. Create a second task, switch between tasks during a streamed response, and confirm events remain with their owning task. Relaunch the exact app and verify local task order/history plus the selected task restore without duplicating the terminal message.
 10. Exercise restart, logout, and app exit. Confirm active work is drained, native authentication is cleared on logout, no old-account runtime or tool context can be used afterward, and no Agent/ACP child or listener from the exact tested app remains after exit. If account isolation changed, repeat with a second disposable account and verify neither account can see or mutate the other's tasks/configuration.
 
-When the change is narrower, run the complete baseline above once, then add boundary-specific proof:
+Use steps 4–5 for core run, stream, and completion behavior; 6–7 for write and
+permission behavior; 8 for shell cancellation and descendant cleanup; 9 for
+task ownership, switching, persistence, and relaunch; and 10 for restart,
+logout, app exit, authentication, and account isolation.
+
+After the applicable baseline coverage, add boundary-specific proof:
 
 - MCP: follow `docs/agent-mode-mcp.md` with its pinned Everything-server fixture over each affected transport; verify the unique marker through request, arguments, result, answer, disable, and failure paths.
 - ACP: follow `docs/agent-mode-acp.md`, but re-check the live Cargo pin and implementation first. Verify socket ownership, allowed-root rejection, caller-only permission routing, disconnect/cancel cleanup, and bounded overflow behavior with the actual client in scope.
