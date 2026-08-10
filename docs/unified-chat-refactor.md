@@ -1,5 +1,9 @@
 # Unified Chat Refactor - Phase 1
 
+> Historical refactor note. It describes an earlier architecture and migration
+> phase, not the complete current chat contract. Use current source,
+> `AGENTS.md`, and the applicable `.agents/skills/` workflow as the authority.
+
 ## Overview
 
 This document describes the initial refactor of Maple's chat interface in preparation for migrating from the current localStorage-based chat system to OpenAI's Conversations/Responses API.
@@ -87,7 +91,8 @@ We maintained backward compatibility:
 
 **New Files**:
 - `frontend/src/components/UnifiedChat.tsx` - The unified chat component
-- `frontend/src/routes/index.backup.tsx` - Backup of original index
+- Historical backup of the original index (the backup file is no longer part of
+  the repository)
 
 **Modified Files**:
 - `frontend/src/routes/index.tsx` - Simplified to show Marketing or UnifiedChat based on auth

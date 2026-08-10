@@ -1,0 +1,4 @@
+interface:
+  display_name: "Validate Maple"
+  short_description: "Run risk-based Maple checks and smoke tests"
+  default_prompt: "Use $validate-maple to validate this Maple change at the right depth."

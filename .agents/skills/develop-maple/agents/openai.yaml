@@ -1,0 +1,4 @@
+interface:
+  display_name: "Develop Maple"
+  short_description: "Plan and implement Maple changes safely"
+  default_prompt: "Use $develop-maple to plan and implement this Maple change."

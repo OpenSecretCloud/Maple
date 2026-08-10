@@ -1,0 +1,167 @@
+---
+name: change-maple-agent-mode
+description: Develop, debug, review, and test Maple Agent Mode across its React UI, Tauri command and event bridge, account-scoped native runtime, embedded Goose integration, OpenSecret provider, developer tools, permissions, skills, MCP, and ACP adapter. Use for any change involving AgentMode, agent runtime lifecycle or persistence, Goose pins or prompts, model/tool streaming, cancellation, local filesystem or shell tools, project trust, MCP servers, external ACP callers, or Agent account isolation.
+---
+
+# Change Maple Agent Mode
+
+Work from the Maple repository root. Read root `AGENTS.md`, the current source, nearby tests, and relevant docs before editing. Treat `frontend/src-tauri/Cargo.toml`, `frontend/src-tauri/Cargo.lock`, the implementation, and test suite as authoritative when historical prose disagrees.
+
+Use `$develop-maple` for general repository setup and ordinary Maple conventions. Use `$validate-maple` for complete CI-equivalent, packaged, or cross-platform validation, and `$review-maple-security` when a change touches credentials, authorization, privileged tools, process execution, local IPC, or another trust boundary.
+
+Do not commit, push, open a PR, merge, release, or clean unrelated work unless the user explicitly requests it.
+
+## Understand the Runtime Before Changing It
+
+Keep Maple's two inference paths distinct:
+
+- Research chat is a browser-capable React path. `UnifiedChat.tsx` uses the OpenAI JavaScript client with `@opensecret/react`'s authenticated and encrypted `aiCustomFetch`, targeting OpenSecret's Conversations and Responses APIs.
+- Agent Mode is desktop-only. `AgentMode.tsx` calls typed frontend services, which invoke Tauri commands and receive `agent-event` envelopes. Native Rust owns `MapleAgentService`, the embedded Goose managers and local sessions, Maple's provider, developer tools, permissions, and cancellation. `MapleProvider` sends encrypted OpenSecret SDK requests to `/v1/chat/completions`.
+- ACP is a secondary local adapter over the same `MapleAgentService`. It must not initialize a second Goose runtime or call through the Tauri adapter.
+- The local OpenAI-compatible proxy is a separate user-facing feature. Neither Research chat nor Agent Mode should silently route through it.
+- Agent Mode, Goose, native OpenSecret auth, MCP, and ACP compile only for desktop. Mobile retains shared React functionality and selected native facilities such as document extraction, not Agent Mode.
+
+Maple locally persists Agent tasks, project configuration, MCP snapshots, and Goose session history under an opaque account scope. OpenSecret remains authoritative for account identity, authentication, encrypted inference, model/backend policy, and web search or extraction. Do not confuse local Agent history with server-persisted Research conversations.
+
+## Put Changes at the Owning Boundary
+
+Use these seams:
+
+- `frontend/src/components/AgentMode.tsx` and `frontend/src/components/agent/`: presentation, interaction state, accessible controls, and projection of native events. Do not enforce security only here.
+- `frontend/src/services/agentRuntimeService.ts`: typed Tauri commands/events, user-operation fencing, and logout/account-transition coordination.
+- `frontend/src/services/mapleApiAuthService.ts`: browser/native credential reconciliation. Do not copy this logic into components.
+- `frontend/src-tauri/src/agent_tauri.rs`: the stable Desktop command and event adapter. Keep it thin.
+- `frontend/src-tauri/src/agent_host.rs`: operations spanning the core runtime and ACP, including stop, restart, clear, exit, and update shutdown.
+- `frontend/src-tauri/src/agent.rs`: transport-neutral Agent domain state, account handles, Goose/session orchestration, persistence, run ownership, timelines, MCP and skills attachment, and permission routing. Do not import Tauri or ACP protocol types into this core.
+- `frontend/src-tauri/src/agent/provider.rs`: Goose-provider request construction, encrypted inference transport, streaming, bounded error handling, retry policy, and cancellation.
+- `frontend/src-tauri/src/maple_api.rs`: account-scoped native OpenSecret SDK sessions, backend identity validation, atomic credential replacement, and refresh reconciliation.
+- `frontend/src-tauri/src/agent/developer_tools.rs`: Maple's privileged read, write, edit, image, shell, and backend web-tool implementations. Add privileged tools here rather than exposing an unmediated Goose tool path.
+- `frontend/src-tauri/src/agent/{shell_permission,web_permission,tool_context,web_tools}.rs`: automatic policy, secret-bearing execution context, public-URL admission, provenance, and output bounds.
+- `frontend/src-tauri/src/agent/system_prompt.rs`: the narrowly rebranded copy of the pinned Goose system prompt.
+- `frontend/src-tauri/src/agent_acp.rs`: ACP framing, Unix socket ownership, connection/session leases, caller-owned permissions, and adapter-specific environment allowlists.
+
+Put behavior in OpenSecret instead when it must be authoritative against a modified client, shared by multiple clients, durable across devices, or part of the public API, authentication, confidential-compute, model, provider, search, or extraction contract. Coordinate the open-source backend and SDK rather than emulating missing enforcement in Maple.
+
+## Preserve Trust and Lifecycle Invariants
+
+### Account and credential isolation
+
+- Bind every native operation to the requested user's opaque account scope and current handle generation. Reject stale handles and cross-account sessions.
+- Validate candidate native credentials against the backend before publishing them. Preserve atomic replacement and prevent a late refresh from overwriting a newer browser or native token pair.
+- Synchronize auth before authenticated Tauri calls. On logout or account switch, block new operations, drain Agent/ACP, then clear native auth and account-bound local proxy credentials.
+- Never put OpenSecret access or refresh tokens into Goose configuration, prompts, tool arguments, child environments, logs, or error strings.
+
+### Runtime, session, and run lifecycle
+
+- Keep one authoritative native runtime for the signed-in account. Serialize start, stop, restart, clear, exit, and update operations across Agent and ACP.
+- Claim a session before changing its title, model, permission mode, extensions, or tool context. Reject concurrent mutation rather than racing it.
+- Define ownership for every spawned task, listener, stream, permission request, cancellation token, and secret-bearing context. Ensure every terminal path cancels, joins, revokes, persists or repairs history, emits an authoritative terminal event, and removes active state in the intended order.
+- Fence frontend async work by account, session, run, and revision/generation. Navigation may change the visible task but must not redirect an existing run's events.
+- Preserve the session model lock after history exists. Treat a model change as a new task unless product requirements explicitly change that contract.
+- Keep bounded event queues fail-loud. Never let Desktop or ACP backpressure Goose indefinitely or silently present a truncated stream as complete.
+
+### Permissions and privileged tools
+
+- Keep Goose live in `SmartApprove` so every sensitive tool reaches Maple's policy boundary. Persist the user-facing `Read only` (`smart_approve`) or `Allow all` (`auto`) choice separately.
+- Reset Maple's Goose permission file so `read`, `shell`, `edit`, `write`, `read_image`, `web_search`, and `open_url` route through `ask_before`; only `load_skill` is always allowed.
+- Automatic classifiers may approve only narrowly established safe behavior. Timeout, provider failure, malformed output, ambiguity, secret access, mutation, network access, or arbitrary execution must fail closed to interactive approval.
+- Preserve one-shot, run-scoped permission capabilities. The calling surface owns unresolved permissions: Desktop for Desktop runs and ACP for ACP runs. Never expose one actionable request to both.
+- Bound shell time and output; kill the process group or job object on cancellation, revocation, timeout, or overflow. A child receiving ephemeral credentials must not outlive its parent command.
+- Treat paths, shell commands, MCP definitions, headers, environment values, model output, URLs, extracted pages, and tool results as untrusted. Revalidate at the native enforcing boundary.
+- Admit `open_url` only for normalized public HTTPS URLs. Preserve private, loopback, link-local, metadata, credential-bearing, and malformed URL rejection, bounded output, per-session provenance, and explicit untrusted-evidence notices.
+
+### Skills, projects, MCP, and ACP
+
+- Keep project roots canonical and account-scoped. Project removal, ordering, history, and trust decisions must not mutate another account or silently re-add a removed root.
+- Load project instructions and skills only after the user trusts that canonical project. Keep the skills client transient so Goose cannot reconstruct it later with an untrusted real working directory.
+- Validate and freeze MCP definitions into each session. Preserve reserved names, unsafe-environment rejection, header normalization, owner-only storage where supported, and the warning that obscured stored values are not encrypted at rest.
+- Keep ACP disabled by default and Unix-only until its implementation changes. Require absolute admitted roots, owner-only socket access, bounded frames/connections/outbound work, exact session leases, and explicit environment allowlists. Revocation or disconnect must make captured tool context unusable.
+- Never describe `read_only` ACP configuration as a sandbox. It is caller-mediated permission policy; a caller can still approve mutation.
+
+### Provider and privacy behavior
+
+- Preserve authenticated encrypted transport through the OpenSecret SDK. `MapleProvider` must not own token storage or refresh.
+- Retry only failures that are safe before the first successful streamed item. Do not repeat deterministic client failures or side effects speculatively.
+- Keep parser errors, HTTP bodies, provider details, decrypted SSE data, prompts, tool results, and private file contents out of logs and user-facing error strings. Return bounded, categorized errors.
+- Preserve cancellation through Goose, provider transport, SDK operations, tools, and terminal history repair.
+
+## Follow the Change Workflow
+
+1. Inspect `git status --short --branch`, current SHA, `origin/master`, and the complete existing diff. Preserve unrelated work and do not switch branches over a dirty tree.
+2. Trace the request through UI, frontend bridge, Tauri adapter, core service, Goose, provider/tools, persistence, and backend. Identify which boundaries do not need to change.
+3. Write down the account owner, session owner, run owner, permission owner, cancellation path, persistence point, terminal event, and cleanup path for the proposed behavior before editing concurrent code.
+4. Add or update the smallest transport-neutral core behavior first, then adapters/wire types, then UI projection. Keep adapters from reaching through one another.
+5. Add regression tests for success plus stale account/session/run, cancellation, duplicate/concurrent calls, partial failure, restart/reload, and bounded-input behavior relevant to the change.
+6. Update public docs when behavior or compatibility changes. Mark historical smoke evidence as historical and never copy an old dependency pin into current instructions.
+7. Inspect the final diff for secret logging, unbounded data, bypassed permissions, detached tasks, stale completion, cross-account access, and behavior that belongs in OpenSecret.
+
+For a Goose bump, obtain the exact revision from
+`frontend/src-tauri/Cargo.toml`, inspect that revision in a real git checkout,
+update `frontend/src-tauri/Cargo.lock`, and compare
+`frontend/src-tauri/src/agent/system_prompt.rs` byte-for-byte with the pinned
+Goose `crates/goose/src/prompts/system.md`. Only Maple's two identity lines may
+differ. Re-run the prompt-drift test and every affected provider, permission,
+tool, MCP, session, and lifecycle test. Do not reason from an unversioned source
+archive or current Goose `main`.
+
+## Run Targeted Tests
+
+Run frontend tests without loading `.env.local`:
+
+```bash
+cd frontend
+bun --no-env-file test src/components/AgentMode.test.ts
+bun --no-env-file test \
+  src/services/agentRuntimeService.test.ts \
+  src/services/mapleApiAuthService.test.ts \
+  src/services/agentAuthLifecycle.test.ts \
+  src/services/agentOperationFence.test.ts
+```
+
+Add the focused service tests matching the change, such as `agentTimeline`, `agentThoughtRunLifecycle`, `agentModels`, `agentMcpServers`, `agentProjectOrdering`, `agentSessionSelection`, `agentConnectionsAvailability`, or `flags`.
+
+Run Rust tests by affected module while iterating:
+
+```bash
+cd frontend/src-tauri
+cargo test --locked 'agent::tests::'
+cargo test --locked 'agent::provider::tests::'
+cargo test --locked 'agent::developer_tools::tests::'
+cargo test --locked 'agent::shell_permission::tests::'
+cargo test --locked 'agent::web_permission::tests::'
+cargo test --locked 'agent::web_tools::tests::'
+cargo test --locked 'maple_api::tests::'
+cargo test --locked 'agent_host::tests::'
+cargo test --locked 'agent_acp::tests::'
+```
+
+Select only affected module filters for the edit loop; run the complete locked Rust suite before handing off a native change. For any Agent Mode change, also run formatting, linting, typechecking, and builds required by `$validate-maple`. Unit tests do not replace a real desktop smoke.
+
+## Perform the Exact Desktop Smoke
+
+Use a local open-source OpenSecret backend or an explicitly configured development API. Use a disposable account and non-sensitive fixtures. If remote rollout has not enabled Agent Mode for that account, set `VITE_FORCE_FEATURE_FLAGS=agent_mode` in untracked `frontend/.env.local` and restart the frontend server.
+
+1. Record the commit SHA, `VITE_OPEN_SECRET_API_URL`, selected model ID, build profile, and whether `.local/tauri-workspace.json` is active. Record the effective Tauri identifier, dev URL, exact executable/application path, frontend-server PID, and native PID.
+2. Create a disposable project directory with a `README.md` containing a unique marker. Record the exact directory so cleanup cannot target a broader path.
+3. Launch from the repository root with `nix develop -c just desktop-dev`. Operate the native window belonging to the recorded PID and identifier, never a browser tab or another installed app named Maple.
+4. Sign in, open Agent Mode, select the disposable project, choose the intended model, keep `Read only`, and start a new task.
+5. Send: `Read README.md using the read tool. Reply only with the exact marker. Do not use shell.` Confirm the visible user row, tool activity, exact marker result, final answer, and completed terminal state.
+6. Send: `Create agent-smoke-output.txt containing exactly <marker> using the write tool. Do not use shell.` Confirm a single pending permission card. Choose `Deny once`; verify the card settles as denied, the run terminates coherently, and the file does not exist.
+7. Repeat the write request and choose `Allow once`. Verify one settled permission card, exact on-disk contents, a visible tool result, final answer, and completed state. Do not use `Allow all` merely to make the smoke easier.
+8. Send: `Run the shell command sleep 30 and do nothing else.` Approve the shell request, wait until the tool is running, then press Cancel. Confirm the UI reaches a cancelled terminal state, no permission remains actionable, a reload shows repaired coherent history, and process inspection shows no shell descendant owned by that run after cancellation.
+9. Create a second task, switch between tasks during a streamed response, and confirm events remain with their owning task. Relaunch the exact app and verify local task order/history plus the selected task restore without duplicating the terminal message.
+10. Exercise restart, logout, and app exit. Confirm active work is drained, native authentication is cleared on logout, no old-account runtime or tool context can be used afterward, and no Agent/ACP child or listener from the exact tested app remains after exit. If account isolation changed, repeat with a second disposable account and verify neither account can see or mutate the other's tasks/configuration.
+
+When the change is narrower, run the complete baseline above once, then add boundary-specific proof:
+
+- MCP: follow `docs/agent-mode-mcp.md` with its pinned Everything-server fixture over each affected transport; verify the unique marker through request, arguments, result, answer, disable, and failure paths.
+- ACP: follow `docs/agent-mode-acp.md`, but re-check the live Cargo pin and implementation first. Verify socket ownership, allowed-root rejection, caller-only permission routing, disconnect/cancel cleanup, and bounded overflow behavior with the actual client in scope.
+- Provider or streaming: exercise first-byte failure, partial stream, cancellation, context-limit failure, and reload without exposing decrypted bodies.
+- Auth or lifecycle: exercise token refresh, logout during a run, account switch, restart, and app exit while inspecting only sanitized logs and exact owned processes.
+- Skills or project trust: test trusted and untrusted canonical roots, restart, removal, and account isolation.
+
+Clean up only the exact disposable project, account data, processes, listeners, and test server instances created for the smoke. Report automated, artifact, runtime, integration, and untested evidence separately. Never call a web build, Rust test, or successful app launch an Agent Mode end-to-end pass.
+
+## Hand Off the Change
+
+Report the behavior and owning boundary, affected account/session/run and trust invariants, files changed, exact commands and results, exact native smoke identity and observations, backend/model configuration used, and every untested platform or integration. State whether the tree remains uncommitted and unpushed.
