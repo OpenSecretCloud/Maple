@@ -9,119 +9,49 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
-import { Route as TermsRouteImport } from './routes/terms'
-import { Route as SignupRouteImport } from './routes/signup'
-import { Route as SettingsRouteImport } from './routes/settings'
-import { Route as RedeemRouteImport } from './routes/redeem'
-import { Route as ProofRouteImport } from './routes/proof'
-import { Route as PrivacyRouteImport } from './routes/privacy'
-import { Route as PricingRouteImport } from './routes/pricing'
-import { Route as PaymentSuccessCreditsRouteImport } from './routes/payment-success-credits'
-import { Route as PaymentSuccessRouteImport } from './routes/payment-success'
-import { Route as PaymentCanceledRouteImport } from './routes/payment-canceled'
-import { Route as PasswordResetRouteImport } from './routes/password-reset'
-import { Route as LoginRouteImport } from './routes/login'
-import { Route as DownloadsRouteImport } from './routes/downloads'
-import { Route as DesktopAuthRouteImport } from './routes/desktop-auth'
-import { Route as AgentRouteImport } from './routes/agent'
-import { Route as AboutRouteImport } from './routes/about'
 import { Route as IndexRouteImport } from './routes/index'
-import { Route as SettingsIndexRouteImport } from './routes/settings.index'
-import { Route as VerifyCodeRouteImport } from './routes/verify.$code'
-import { Route as SettingsTeamRouteImport } from './routes/settings.team'
-import { Route as SettingsSecurityRouteImport } from './routes/settings.security'
-import { Route as SettingsPreferencesRouteImport } from './routes/settings.preferences'
-import { Route as SettingsHistoryRouteImport } from './routes/settings.history'
-import { Route as SettingsDeleteAccountRouteImport } from './routes/settings.delete-account'
-import { Route as SettingsBillingRouteImport } from './routes/settings.billing'
-import { Route as SettingsApiRouteImport } from './routes/settings.api'
-import { Route as SettingsAgentConnectionsRouteImport } from './routes/settings.agent-connections'
-import { Route as SettingsAccountRouteImport } from './routes/settings.account'
-import { Route as SettingsAboutRouteImport } from './routes/settings.about'
+import { Route as AboutRouteImport } from './routes/about'
+import { Route as AgentRouteImport } from './routes/agent'
+import { Route as DesktopAuthRouteImport } from './routes/desktop-auth'
+import { Route as DownloadsRouteImport } from './routes/downloads'
+import { Route as LoginRouteImport } from './routes/login'
+import { Route as PasswordResetRouteImport } from './routes/password-reset'
+import { Route as PaymentCanceledRouteImport } from './routes/payment-canceled'
+import { Route as PaymentSuccessRouteImport } from './routes/payment-success'
+import { Route as PaymentSuccessCreditsRouteImport } from './routes/payment-success-credits'
+import { Route as PricingRouteImport } from './routes/pricing'
+import { Route as PrivacyRouteImport } from './routes/privacy'
+import { Route as ProofRouteImport } from './routes/proof'
+import { Route as RedeemRouteImport } from './routes/redeem'
+import { Route as SettingsRouteImport } from './routes/settings'
+import { Route as SignupRouteImport } from './routes/signup'
+import { Route as TermsRouteImport } from './routes/terms'
 import { Route as PasswordResetConfirmRouteImport } from './routes/password-reset.confirm'
-import { Route as SettingsTeamIndexRouteImport } from './routes/settings.team.index'
-import { Route as SettingsApiIndexRouteImport } from './routes/settings.api.index'
-import { Route as TeamInviteInviteIdRouteImport } from './routes/team.invite.$inviteId'
-import { Route as SettingsTeamInviteRouteImport } from './routes/settings.team.invite'
-import { Route as SettingsApiProxyRouteImport } from './routes/settings.api.proxy'
-import { Route as SettingsApiKeysRouteImport } from './routes/settings.api.keys'
+import { Route as SettingsIndexRouteImport } from './routes/settings.index'
+import { Route as SettingsAboutRouteImport } from './routes/settings.about'
+import { Route as SettingsAccountRouteImport } from './routes/settings.account'
+import { Route as SettingsAgentConnectionsRouteImport } from './routes/settings.agent-connections'
+import { Route as SettingsApiRouteImport } from './routes/settings.api'
+import { Route as SettingsBillingRouteImport } from './routes/settings.billing'
+import { Route as SettingsDeleteAccountRouteImport } from './routes/settings.delete-account'
+import { Route as SettingsHistoryRouteImport } from './routes/settings.history'
+import { Route as SettingsPreferencesRouteImport } from './routes/settings.preferences'
+import { Route as SettingsSecurityRouteImport } from './routes/settings.security'
+import { Route as SettingsTeamRouteImport } from './routes/settings.team'
+import { Route as VerifyCodeRouteImport } from './routes/verify.$code'
 import { Route as AuthProviderCallbackRouteImport } from './routes/auth.$provider.callback'
+import { Route as SettingsApiIndexRouteImport } from './routes/settings.api.index'
+import { Route as SettingsApiKeysRouteImport } from './routes/settings.api.keys'
+import { Route as SettingsApiProxyRouteImport } from './routes/settings.api.proxy'
+import { Route as SettingsTeamIndexRouteImport } from './routes/settings.team.index'
+import { Route as SettingsTeamInviteRouteImport } from './routes/settings.team.invite'
+import { Route as TeamInviteInviteIdRouteImport } from './routes/team.invite.$inviteId'
 import { Route as SettingsApiKeysIndexRouteImport } from './routes/settings.api.keys.index'
 import { Route as SettingsApiKeysNewRouteImport } from './routes/settings.api.keys.new'
 
-const TermsRoute = TermsRouteImport.update({
-  id: '/terms',
-  path: '/terms',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const SignupRoute = SignupRouteImport.update({
-  id: '/signup',
-  path: '/signup',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const SettingsRoute = SettingsRouteImport.update({
-  id: '/settings',
-  path: '/settings',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const RedeemRoute = RedeemRouteImport.update({
-  id: '/redeem',
-  path: '/redeem',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ProofRoute = ProofRouteImport.update({
-  id: '/proof',
-  path: '/proof',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const PrivacyRoute = PrivacyRouteImport.update({
-  id: '/privacy',
-  path: '/privacy',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const PricingRoute = PricingRouteImport.update({
-  id: '/pricing',
-  path: '/pricing',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const PaymentSuccessCreditsRoute = PaymentSuccessCreditsRouteImport.update({
-  id: '/payment-success-credits',
-  path: '/payment-success-credits',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const PaymentSuccessRoute = PaymentSuccessRouteImport.update({
-  id: '/payment-success',
-  path: '/payment-success',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const PaymentCanceledRoute = PaymentCanceledRouteImport.update({
-  id: '/payment-canceled',
-  path: '/payment-canceled',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const PasswordResetRoute = PasswordResetRouteImport.update({
-  id: '/password-reset',
-  path: '/password-reset',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const LoginRoute = LoginRouteImport.update({
-  id: '/login',
-  path: '/login',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const DownloadsRoute = DownloadsRouteImport.update({
-  id: '/downloads',
-  path: '/downloads',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const DesktopAuthRoute = DesktopAuthRouteImport.update({
-  id: '/desktop-auth',
-  path: '/desktop-auth',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const AgentRoute = AgentRouteImport.update({
-  id: '/agent',
-  path: '/agent',
+const IndexRoute = IndexRouteImport.update({
+  id: '/',
+  path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AboutRoute = AboutRouteImport.update({
@@ -129,54 +59,99 @@ const AboutRoute = AboutRouteImport.update({
   path: '/about',
   getParentRoute: () => rootRouteImport,
 } as any)
-const IndexRoute = IndexRouteImport.update({
-  id: '/',
-  path: '/',
+const AgentRoute = AgentRouteImport.update({
+  id: '/agent',
+  path: '/agent',
   getParentRoute: () => rootRouteImport,
+} as any)
+const DesktopAuthRoute = DesktopAuthRouteImport.update({
+  id: '/desktop-auth',
+  path: '/desktop-auth',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const DownloadsRoute = DownloadsRouteImport.update({
+  id: '/downloads',
+  path: '/downloads',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const LoginRoute = LoginRouteImport.update({
+  id: '/login',
+  path: '/login',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const PasswordResetRoute = PasswordResetRouteImport.update({
+  id: '/password-reset',
+  path: '/password-reset',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const PaymentCanceledRoute = PaymentCanceledRouteImport.update({
+  id: '/payment-canceled',
+  path: '/payment-canceled',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const PaymentSuccessRoute = PaymentSuccessRouteImport.update({
+  id: '/payment-success',
+  path: '/payment-success',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const PaymentSuccessCreditsRoute = PaymentSuccessCreditsRouteImport.update({
+  id: '/payment-success-credits',
+  path: '/payment-success-credits',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const PricingRoute = PricingRouteImport.update({
+  id: '/pricing',
+  path: '/pricing',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const PrivacyRoute = PrivacyRouteImport.update({
+  id: '/privacy',
+  path: '/privacy',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ProofRoute = ProofRouteImport.update({
+  id: '/proof',
+  path: '/proof',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const RedeemRoute = RedeemRouteImport.update({
+  id: '/redeem',
+  path: '/redeem',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SettingsRoute = SettingsRouteImport.update({
+  id: '/settings',
+  path: '/settings',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SignupRoute = SignupRouteImport.update({
+  id: '/signup',
+  path: '/signup',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const TermsRoute = TermsRouteImport.update({
+  id: '/terms',
+  path: '/terms',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const PasswordResetConfirmRoute = PasswordResetConfirmRouteImport.update({
+  id: '/confirm',
+  path: '/confirm',
+  getParentRoute: () => PasswordResetRoute,
 } as any)
 const SettingsIndexRoute = SettingsIndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => SettingsRoute,
 } as any)
-const VerifyCodeRoute = VerifyCodeRouteImport.update({
-  id: '/verify/$code',
-  path: '/verify/$code',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const SettingsTeamRoute = SettingsTeamRouteImport.update({
-  id: '/team',
-  path: '/team',
+const SettingsAboutRoute = SettingsAboutRouteImport.update({
+  id: '/about',
+  path: '/about',
   getParentRoute: () => SettingsRoute,
 } as any)
-const SettingsSecurityRoute = SettingsSecurityRouteImport.update({
-  id: '/security',
-  path: '/security',
-  getParentRoute: () => SettingsRoute,
-} as any)
-const SettingsPreferencesRoute = SettingsPreferencesRouteImport.update({
-  id: '/preferences',
-  path: '/preferences',
-  getParentRoute: () => SettingsRoute,
-} as any)
-const SettingsHistoryRoute = SettingsHistoryRouteImport.update({
-  id: '/history',
-  path: '/history',
-  getParentRoute: () => SettingsRoute,
-} as any)
-const SettingsDeleteAccountRoute = SettingsDeleteAccountRouteImport.update({
-  id: '/delete-account',
-  path: '/delete-account',
-  getParentRoute: () => SettingsRoute,
-} as any)
-const SettingsBillingRoute = SettingsBillingRouteImport.update({
-  id: '/billing',
-  path: '/billing',
-  getParentRoute: () => SettingsRoute,
-} as any)
-const SettingsApiRoute = SettingsApiRouteImport.update({
-  id: '/api',
-  path: '/api',
+const SettingsAccountRoute = SettingsAccountRouteImport.update({
+  id: '/account',
+  path: '/account',
   getParentRoute: () => SettingsRoute,
 } as any)
 const SettingsAgentConnectionsRoute =
@@ -185,44 +160,54 @@ const SettingsAgentConnectionsRoute =
     path: '/agent-connections',
     getParentRoute: () => SettingsRoute,
   } as any)
-const SettingsAccountRoute = SettingsAccountRouteImport.update({
-  id: '/account',
-  path: '/account',
+const SettingsApiRoute = SettingsApiRouteImport.update({
+  id: '/api',
+  path: '/api',
   getParentRoute: () => SettingsRoute,
 } as any)
-const SettingsAboutRoute = SettingsAboutRouteImport.update({
-  id: '/about',
-  path: '/about',
+const SettingsBillingRoute = SettingsBillingRouteImport.update({
+  id: '/billing',
+  path: '/billing',
   getParentRoute: () => SettingsRoute,
 } as any)
-const PasswordResetConfirmRoute = PasswordResetConfirmRouteImport.update({
-  id: '/confirm',
-  path: '/confirm',
-  getParentRoute: () => PasswordResetRoute,
+const SettingsDeleteAccountRoute = SettingsDeleteAccountRouteImport.update({
+  id: '/delete-account',
+  path: '/delete-account',
+  getParentRoute: () => SettingsRoute,
 } as any)
-const SettingsTeamIndexRoute = SettingsTeamIndexRouteImport.update({
-  id: '/',
-  path: '/',
-  getParentRoute: () => SettingsTeamRoute,
+const SettingsHistoryRoute = SettingsHistoryRouteImport.update({
+  id: '/history',
+  path: '/history',
+  getParentRoute: () => SettingsRoute,
+} as any)
+const SettingsPreferencesRoute = SettingsPreferencesRouteImport.update({
+  id: '/preferences',
+  path: '/preferences',
+  getParentRoute: () => SettingsRoute,
+} as any)
+const SettingsSecurityRoute = SettingsSecurityRouteImport.update({
+  id: '/security',
+  path: '/security',
+  getParentRoute: () => SettingsRoute,
+} as any)
+const SettingsTeamRoute = SettingsTeamRouteImport.update({
+  id: '/team',
+  path: '/team',
+  getParentRoute: () => SettingsRoute,
+} as any)
+const VerifyCodeRoute = VerifyCodeRouteImport.update({
+  id: '/verify/$code',
+  path: '/verify/$code',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AuthProviderCallbackRoute = AuthProviderCallbackRouteImport.update({
+  id: '/auth/$provider/callback',
+  path: '/auth/$provider/callback',
+  getParentRoute: () => rootRouteImport,
 } as any)
 const SettingsApiIndexRoute = SettingsApiIndexRouteImport.update({
   id: '/',
   path: '/',
-  getParentRoute: () => SettingsApiRoute,
-} as any)
-const TeamInviteInviteIdRoute = TeamInviteInviteIdRouteImport.update({
-  id: '/team/invite/$inviteId',
-  path: '/team/invite/$inviteId',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const SettingsTeamInviteRoute = SettingsTeamInviteRouteImport.update({
-  id: '/invite',
-  path: '/invite',
-  getParentRoute: () => SettingsTeamRoute,
-} as any)
-const SettingsApiProxyRoute = SettingsApiProxyRouteImport.update({
-  id: '/proxy',
-  path: '/proxy',
   getParentRoute: () => SettingsApiRoute,
 } as any)
 const SettingsApiKeysRoute = SettingsApiKeysRouteImport.update({
@@ -230,9 +215,24 @@ const SettingsApiKeysRoute = SettingsApiKeysRouteImport.update({
   path: '/keys',
   getParentRoute: () => SettingsApiRoute,
 } as any)
-const AuthProviderCallbackRoute = AuthProviderCallbackRouteImport.update({
-  id: '/auth/$provider/callback',
-  path: '/auth/$provider/callback',
+const SettingsApiProxyRoute = SettingsApiProxyRouteImport.update({
+  id: '/proxy',
+  path: '/proxy',
+  getParentRoute: () => SettingsApiRoute,
+} as any)
+const SettingsTeamIndexRoute = SettingsTeamIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => SettingsTeamRoute,
+} as any)
+const SettingsTeamInviteRoute = SettingsTeamInviteRouteImport.update({
+  id: '/invite',
+  path: '/invite',
+  getParentRoute: () => SettingsTeamRoute,
+} as any)
+const TeamInviteInviteIdRoute = TeamInviteInviteIdRouteImport.update({
+  id: '/team/invite/$inviteId',
+  path: '/team/invite/$inviteId',
   getParentRoute: () => rootRouteImport,
 } as any)
 const SettingsApiKeysIndexRoute = SettingsApiKeysIndexRouteImport.update({
@@ -513,109 +513,11 @@ export interface RootRouteChildren {
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
-    '/terms': {
-      id: '/terms'
-      path: '/terms'
-      fullPath: '/terms'
-      preLoaderRoute: typeof TermsRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/signup': {
-      id: '/signup'
-      path: '/signup'
-      fullPath: '/signup'
-      preLoaderRoute: typeof SignupRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/settings': {
-      id: '/settings'
-      path: '/settings'
-      fullPath: '/settings'
-      preLoaderRoute: typeof SettingsRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/redeem': {
-      id: '/redeem'
-      path: '/redeem'
-      fullPath: '/redeem'
-      preLoaderRoute: typeof RedeemRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/proof': {
-      id: '/proof'
-      path: '/proof'
-      fullPath: '/proof'
-      preLoaderRoute: typeof ProofRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/privacy': {
-      id: '/privacy'
-      path: '/privacy'
-      fullPath: '/privacy'
-      preLoaderRoute: typeof PrivacyRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/pricing': {
-      id: '/pricing'
-      path: '/pricing'
-      fullPath: '/pricing'
-      preLoaderRoute: typeof PricingRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/payment-success-credits': {
-      id: '/payment-success-credits'
-      path: '/payment-success-credits'
-      fullPath: '/payment-success-credits'
-      preLoaderRoute: typeof PaymentSuccessCreditsRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/payment-success': {
-      id: '/payment-success'
-      path: '/payment-success'
-      fullPath: '/payment-success'
-      preLoaderRoute: typeof PaymentSuccessRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/payment-canceled': {
-      id: '/payment-canceled'
-      path: '/payment-canceled'
-      fullPath: '/payment-canceled'
-      preLoaderRoute: typeof PaymentCanceledRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/password-reset': {
-      id: '/password-reset'
-      path: '/password-reset'
-      fullPath: '/password-reset'
-      preLoaderRoute: typeof PasswordResetRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/login': {
-      id: '/login'
-      path: '/login'
-      fullPath: '/login'
-      preLoaderRoute: typeof LoginRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/downloads': {
-      id: '/downloads'
-      path: '/downloads'
-      fullPath: '/downloads'
-      preLoaderRoute: typeof DownloadsRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/desktop-auth': {
-      id: '/desktop-auth'
-      path: '/desktop-auth'
-      fullPath: '/desktop-auth'
-      preLoaderRoute: typeof DesktopAuthRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/agent': {
-      id: '/agent'
-      path: '/agent'
-      fullPath: '/agent'
-      preLoaderRoute: typeof AgentRouteImport
+    '/': {
+      id: '/'
+      path: '/'
+      fullPath: '/'
+      preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/about': {
@@ -625,88 +527,123 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AboutRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/': {
-      id: '/'
-      path: '/'
-      fullPath: '/'
-      preLoaderRoute: typeof IndexRouteImport
+    '/agent': {
+      id: '/agent'
+      path: '/agent'
+      fullPath: '/agent'
+      preLoaderRoute: typeof AgentRouteImport
       parentRoute: typeof rootRouteImport
+    }
+    '/desktop-auth': {
+      id: '/desktop-auth'
+      path: '/desktop-auth'
+      fullPath: '/desktop-auth'
+      preLoaderRoute: typeof DesktopAuthRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/downloads': {
+      id: '/downloads'
+      path: '/downloads'
+      fullPath: '/downloads'
+      preLoaderRoute: typeof DownloadsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/login': {
+      id: '/login'
+      path: '/login'
+      fullPath: '/login'
+      preLoaderRoute: typeof LoginRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/password-reset': {
+      id: '/password-reset'
+      path: '/password-reset'
+      fullPath: '/password-reset'
+      preLoaderRoute: typeof PasswordResetRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/payment-canceled': {
+      id: '/payment-canceled'
+      path: '/payment-canceled'
+      fullPath: '/payment-canceled'
+      preLoaderRoute: typeof PaymentCanceledRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/payment-success': {
+      id: '/payment-success'
+      path: '/payment-success'
+      fullPath: '/payment-success'
+      preLoaderRoute: typeof PaymentSuccessRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/payment-success-credits': {
+      id: '/payment-success-credits'
+      path: '/payment-success-credits'
+      fullPath: '/payment-success-credits'
+      preLoaderRoute: typeof PaymentSuccessCreditsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/pricing': {
+      id: '/pricing'
+      path: '/pricing'
+      fullPath: '/pricing'
+      preLoaderRoute: typeof PricingRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/privacy': {
+      id: '/privacy'
+      path: '/privacy'
+      fullPath: '/privacy'
+      preLoaderRoute: typeof PrivacyRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/proof': {
+      id: '/proof'
+      path: '/proof'
+      fullPath: '/proof'
+      preLoaderRoute: typeof ProofRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/redeem': {
+      id: '/redeem'
+      path: '/redeem'
+      fullPath: '/redeem'
+      preLoaderRoute: typeof RedeemRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/settings': {
+      id: '/settings'
+      path: '/settings'
+      fullPath: '/settings'
+      preLoaderRoute: typeof SettingsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/signup': {
+      id: '/signup'
+      path: '/signup'
+      fullPath: '/signup'
+      preLoaderRoute: typeof SignupRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/terms': {
+      id: '/terms'
+      path: '/terms'
+      fullPath: '/terms'
+      preLoaderRoute: typeof TermsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/password-reset/confirm': {
+      id: '/password-reset/confirm'
+      path: '/confirm'
+      fullPath: '/password-reset/confirm'
+      preLoaderRoute: typeof PasswordResetConfirmRouteImport
+      parentRoute: typeof PasswordResetRoute
     }
     '/settings/': {
       id: '/settings/'
       path: '/'
       fullPath: '/settings/'
       preLoaderRoute: typeof SettingsIndexRouteImport
-      parentRoute: typeof SettingsRoute
-    }
-    '/verify/$code': {
-      id: '/verify/$code'
-      path: '/verify/$code'
-      fullPath: '/verify/$code'
-      preLoaderRoute: typeof VerifyCodeRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/settings/team': {
-      id: '/settings/team'
-      path: '/team'
-      fullPath: '/settings/team'
-      preLoaderRoute: typeof SettingsTeamRouteImport
-      parentRoute: typeof SettingsRoute
-    }
-    '/settings/security': {
-      id: '/settings/security'
-      path: '/security'
-      fullPath: '/settings/security'
-      preLoaderRoute: typeof SettingsSecurityRouteImport
-      parentRoute: typeof SettingsRoute
-    }
-    '/settings/preferences': {
-      id: '/settings/preferences'
-      path: '/preferences'
-      fullPath: '/settings/preferences'
-      preLoaderRoute: typeof SettingsPreferencesRouteImport
-      parentRoute: typeof SettingsRoute
-    }
-    '/settings/history': {
-      id: '/settings/history'
-      path: '/history'
-      fullPath: '/settings/history'
-      preLoaderRoute: typeof SettingsHistoryRouteImport
-      parentRoute: typeof SettingsRoute
-    }
-    '/settings/delete-account': {
-      id: '/settings/delete-account'
-      path: '/delete-account'
-      fullPath: '/settings/delete-account'
-      preLoaderRoute: typeof SettingsDeleteAccountRouteImport
-      parentRoute: typeof SettingsRoute
-    }
-    '/settings/billing': {
-      id: '/settings/billing'
-      path: '/billing'
-      fullPath: '/settings/billing'
-      preLoaderRoute: typeof SettingsBillingRouteImport
-      parentRoute: typeof SettingsRoute
-    }
-    '/settings/api': {
-      id: '/settings/api'
-      path: '/api'
-      fullPath: '/settings/api'
-      preLoaderRoute: typeof SettingsApiRouteImport
-      parentRoute: typeof SettingsRoute
-    }
-    '/settings/agent-connections': {
-      id: '/settings/agent-connections'
-      path: '/agent-connections'
-      fullPath: '/settings/agent-connections'
-      preLoaderRoute: typeof SettingsAgentConnectionsRouteImport
-      parentRoute: typeof SettingsRoute
-    }
-    '/settings/account': {
-      id: '/settings/account'
-      path: '/account'
-      fullPath: '/settings/account'
-      preLoaderRoute: typeof SettingsAccountRouteImport
       parentRoute: typeof SettingsRoute
     }
     '/settings/about': {
@@ -716,46 +653,88 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SettingsAboutRouteImport
       parentRoute: typeof SettingsRoute
     }
-    '/password-reset/confirm': {
-      id: '/password-reset/confirm'
-      path: '/confirm'
-      fullPath: '/password-reset/confirm'
-      preLoaderRoute: typeof PasswordResetConfirmRouteImport
-      parentRoute: typeof PasswordResetRoute
+    '/settings/account': {
+      id: '/settings/account'
+      path: '/account'
+      fullPath: '/settings/account'
+      preLoaderRoute: typeof SettingsAccountRouteImport
+      parentRoute: typeof SettingsRoute
     }
-    '/settings/team/': {
-      id: '/settings/team/'
-      path: '/'
-      fullPath: '/settings/team/'
-      preLoaderRoute: typeof SettingsTeamIndexRouteImport
-      parentRoute: typeof SettingsTeamRoute
+    '/settings/agent-connections': {
+      id: '/settings/agent-connections'
+      path: '/agent-connections'
+      fullPath: '/settings/agent-connections'
+      preLoaderRoute: typeof SettingsAgentConnectionsRouteImport
+      parentRoute: typeof SettingsRoute
+    }
+    '/settings/api': {
+      id: '/settings/api'
+      path: '/api'
+      fullPath: '/settings/api'
+      preLoaderRoute: typeof SettingsApiRouteImport
+      parentRoute: typeof SettingsRoute
+    }
+    '/settings/billing': {
+      id: '/settings/billing'
+      path: '/billing'
+      fullPath: '/settings/billing'
+      preLoaderRoute: typeof SettingsBillingRouteImport
+      parentRoute: typeof SettingsRoute
+    }
+    '/settings/delete-account': {
+      id: '/settings/delete-account'
+      path: '/delete-account'
+      fullPath: '/settings/delete-account'
+      preLoaderRoute: typeof SettingsDeleteAccountRouteImport
+      parentRoute: typeof SettingsRoute
+    }
+    '/settings/history': {
+      id: '/settings/history'
+      path: '/history'
+      fullPath: '/settings/history'
+      preLoaderRoute: typeof SettingsHistoryRouteImport
+      parentRoute: typeof SettingsRoute
+    }
+    '/settings/preferences': {
+      id: '/settings/preferences'
+      path: '/preferences'
+      fullPath: '/settings/preferences'
+      preLoaderRoute: typeof SettingsPreferencesRouteImport
+      parentRoute: typeof SettingsRoute
+    }
+    '/settings/security': {
+      id: '/settings/security'
+      path: '/security'
+      fullPath: '/settings/security'
+      preLoaderRoute: typeof SettingsSecurityRouteImport
+      parentRoute: typeof SettingsRoute
+    }
+    '/settings/team': {
+      id: '/settings/team'
+      path: '/team'
+      fullPath: '/settings/team'
+      preLoaderRoute: typeof SettingsTeamRouteImport
+      parentRoute: typeof SettingsRoute
+    }
+    '/verify/$code': {
+      id: '/verify/$code'
+      path: '/verify/$code'
+      fullPath: '/verify/$code'
+      preLoaderRoute: typeof VerifyCodeRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/auth/$provider/callback': {
+      id: '/auth/$provider/callback'
+      path: '/auth/$provider/callback'
+      fullPath: '/auth/$provider/callback'
+      preLoaderRoute: typeof AuthProviderCallbackRouteImport
+      parentRoute: typeof rootRouteImport
     }
     '/settings/api/': {
       id: '/settings/api/'
       path: '/'
       fullPath: '/settings/api/'
       preLoaderRoute: typeof SettingsApiIndexRouteImport
-      parentRoute: typeof SettingsApiRoute
-    }
-    '/team/invite/$inviteId': {
-      id: '/team/invite/$inviteId'
-      path: '/team/invite/$inviteId'
-      fullPath: '/team/invite/$inviteId'
-      preLoaderRoute: typeof TeamInviteInviteIdRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/settings/team/invite': {
-      id: '/settings/team/invite'
-      path: '/invite'
-      fullPath: '/settings/team/invite'
-      preLoaderRoute: typeof SettingsTeamInviteRouteImport
-      parentRoute: typeof SettingsTeamRoute
-    }
-    '/settings/api/proxy': {
-      id: '/settings/api/proxy'
-      path: '/proxy'
-      fullPath: '/settings/api/proxy'
-      preLoaderRoute: typeof SettingsApiProxyRouteImport
       parentRoute: typeof SettingsApiRoute
     }
     '/settings/api/keys': {
@@ -765,11 +744,32 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SettingsApiKeysRouteImport
       parentRoute: typeof SettingsApiRoute
     }
-    '/auth/$provider/callback': {
-      id: '/auth/$provider/callback'
-      path: '/auth/$provider/callback'
-      fullPath: '/auth/$provider/callback'
-      preLoaderRoute: typeof AuthProviderCallbackRouteImport
+    '/settings/api/proxy': {
+      id: '/settings/api/proxy'
+      path: '/proxy'
+      fullPath: '/settings/api/proxy'
+      preLoaderRoute: typeof SettingsApiProxyRouteImport
+      parentRoute: typeof SettingsApiRoute
+    }
+    '/settings/team/': {
+      id: '/settings/team/'
+      path: '/'
+      fullPath: '/settings/team/'
+      preLoaderRoute: typeof SettingsTeamIndexRouteImport
+      parentRoute: typeof SettingsTeamRoute
+    }
+    '/settings/team/invite': {
+      id: '/settings/team/invite'
+      path: '/invite'
+      fullPath: '/settings/team/invite'
+      preLoaderRoute: typeof SettingsTeamInviteRouteImport
+      parentRoute: typeof SettingsTeamRoute
+    }
+    '/team/invite/$inviteId': {
+      id: '/team/invite/$inviteId'
+      path: '/team/invite/$inviteId'
+      fullPath: '/team/invite/$inviteId'
+      preLoaderRoute: typeof TeamInviteInviteIdRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/settings/api/keys/': {
