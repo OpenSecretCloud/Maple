@@ -1,3 +1,4 @@
+use crate::open_secret_config::configured_pcr0_environment;
 use anyhow::{anyhow, Result};
 use axum::{
     body::Body,
@@ -206,7 +207,7 @@ async fn start_proxy_inner(
         .clone()
         .unwrap_or_else(|| "https://enclave.trymaple.ai".to_string());
 
-    let proxy_config = build_proxy_server_config(&config, backend_url);
+    let proxy_config = build_proxy_server_config(&config, backend_url)?;
 
     // Try to bind to the address first to check if port is available
     let addr = proxy_config
@@ -258,8 +259,9 @@ async fn start_proxy_inner(
     })
 }
 
-fn build_proxy_server_config(config: &ProxyConfig, backend_url: String) -> Config {
+fn build_proxy_server_config(config: &ProxyConfig, backend_url: String) -> Result<Config, String> {
     let proxy_config = Config::new(config.host.clone(), config.port, backend_url)
+        .with_pcr0_environment(configured_pcr0_environment()?)
         .with_debug(false)
         // Maple owns the browser boundary below so it can both list the
         // non-wildcard Authorization header and reject browser origins when
@@ -270,9 +272,9 @@ fn build_proxy_server_config(config: &ProxyConfig, backend_url: String) -> Confi
     // combine that reachability with Maple's saved credential: browser-enabled
     // clients must provide their own Authorization header on every request.
     if config.enable_cors {
-        proxy_config
+        Ok(proxy_config)
     } else {
-        proxy_config.with_api_key(config.api_key.clone())
+        Ok(proxy_config.with_api_key(config.api_key.clone()))
     }
 }
 
@@ -458,10 +460,14 @@ mod tests {
         };
 
         let server_config =
-            build_proxy_server_config(&config, "https://example.invalid".to_string());
+            build_proxy_server_config(&config, "https://example.invalid".to_string()).unwrap();
 
         assert!(!server_config.enable_cors);
         assert!(server_config.default_api_key.is_none());
+        assert_eq!(
+            server_config.pcr0_environment,
+            configured_pcr0_environment().unwrap()
+        );
     }
 
     #[test]
@@ -472,7 +478,7 @@ mod tests {
         };
 
         let server_config =
-            build_proxy_server_config(&config, "https://example.invalid".to_string());
+            build_proxy_server_config(&config, "https://example.invalid".to_string()).unwrap();
 
         assert!(!server_config.enable_cors);
         assert_eq!(server_config.default_api_key.as_deref(), Some("saved-key"));
@@ -492,7 +498,7 @@ mod tests {
             ..ProxyConfig::default()
         };
         let server_config =
-            build_proxy_server_config(&config, "https://example.invalid".to_string());
+            build_proxy_server_config(&config, "https://example.invalid".to_string()).unwrap();
         let app = apply_proxy_access_policy(server_config, config.enable_cors);
         let (base_url, server) = serve_test_app(app).await;
 
@@ -516,7 +522,7 @@ mod tests {
             ..ProxyConfig::default()
         };
         let server_config =
-            build_proxy_server_config(&config, "https://example.invalid".to_string());
+            build_proxy_server_config(&config, "https://example.invalid".to_string()).unwrap();
         let app = apply_proxy_access_policy(server_config, config.enable_cors);
         let (base_url, server) = serve_test_app(app).await;
 
@@ -539,7 +545,7 @@ mod tests {
             ..ProxyConfig::default()
         };
         let server_config =
-            build_proxy_server_config(&config, "https://example.invalid".to_string());
+            build_proxy_server_config(&config, "https://example.invalid".to_string()).unwrap();
         let app = apply_proxy_access_policy(server_config, config.enable_cors);
         let (base_url, server) = serve_test_app(app).await;
 

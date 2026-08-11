@@ -17,6 +17,7 @@ import { ThemeProvider } from "./contexts/ThemeContext";
 import { ProxyEventListener } from "./components/ProxyEventListener";
 import { UpdateEventListener } from "./components/UpdateEventListener";
 import { TTSProvider } from "./services/tts/TTSContext";
+import { openSecretPcrEnvironment } from "./config/openSecretPcrEnvironment";
 
 const DEFAULT_OPEN_SECRET_CLIENT_ID = "ba5a14b5-d915-47b1-b7b1-afda52bc5fc6";
 
@@ -61,6 +62,7 @@ export default function App() {
           apiUrl={import.meta.env.VITE_OPEN_SECRET_API_URL}
           clientId={import.meta.env.VITE_CLIENT_ID || DEFAULT_OPEN_SECRET_CLIENT_ID}
           pcrConfig={{
+            environment: openSecretPcrEnvironment(),
             pcr0Values: [
               "ed9109c16f30a470cf0ea2251816789b4ffa510c990118323ce94a2364b9bf05bdb8777959cbac86f5cabc4852e0da71",
               "4f2bcdf16c38842e1a45defd944d24ea58bb5bcb76491843223022acfe9eb6f1ff79b2cb9a6b2a9219daf9c7bf40fa37",
