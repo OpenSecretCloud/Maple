@@ -1,13 +1,19 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
+import { useOpenSecret } from "@opensecret/react";
 import { isTauri } from "@/utils/platform";
 import { listen } from "@tauri-apps/api/event";
 import { getSafeInternalRedirect } from "@/utils/internalRedirect";
+import { authorizeNativeOAuthCallback } from "@/services/nativeOAuthAttempt";
 
 // For direct deep link handling, we'll listen to our custom event
 // If we had the types installed, we would use:
 // import { onOpenUrl } from '@tauri-apps/plugin-deep-link';
 
 export function DeepLinkHandler() {
+  const os = useOpenSecret();
+  const isAuthenticatedRef = useRef(false);
+  isAuthenticatedRef.current = Boolean(os.auth.user);
+
   useEffect(() => {
     let unlisten: (() => void) | undefined;
 
@@ -37,6 +43,16 @@ export function DeepLinkHandler() {
                 const safeNext = getSafeInternalRedirect(next) ?? "/";
 
                 if (accessToken && refreshToken) {
+                  const authorization = authorizeNativeOAuthCallback(isAuthenticatedRef.current);
+                  if (authorization === "already_authenticated") {
+                    console.warn("[Deep Link] Ignoring auth callback for an existing session");
+                    return;
+                  }
+                  if (authorization === "missing_or_expired_attempt") {
+                    console.warn("[Deep Link] Ignoring unsolicited or expired auth callback");
+                    return;
+                  }
+
                   console.log("[Deep Link] Auth tokens received");
 
                   // Store the tokens in localStorage with consistent naming

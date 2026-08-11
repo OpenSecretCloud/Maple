@@ -24,6 +24,7 @@ import { appUrl } from "@/config/domains";
 import { useRouteMeta } from "@/utils/routeMeta";
 import { getSafeInternalRedirect, navigateToSafeInternalRedirect } from "@/utils/internalRedirect";
 import { shouldRedirectAuthenticatedSignup } from "@/utils/signupRedirect";
+import { beginNativeOAuthAttempt, cancelNativeOAuthAttempt } from "@/services/nativeOAuthAttempt";
 
 type SignupSearchParams = {
   next?: string;
@@ -175,7 +176,9 @@ function SignupPage() {
         // Use the opener plugin by directly invoking the command
         // This works for both desktop and mobile (iOS/Android)
         console.log("[OAuth] Opening URL in external browser:", desktopAuthUrl);
+        const nativeOAuthAttemptId = beginNativeOAuthAttempt();
         invoke("plugin:opener|open_url", { url: desktopAuthUrl }).catch((error: Error) => {
+          cancelNativeOAuthAttempt(nativeOAuthAttemptId);
           console.error("[OAuth] Failed to open external browser:", error);
           setError("Failed to open authentication page in browser");
         });
@@ -226,7 +229,9 @@ function SignupPage() {
         // Use the opener plugin by directly invoking the command
         // This works for both desktop and mobile (iOS/Android)
         console.log("[OAuth] Opening URL in external browser:", desktopAuthUrl);
+        const nativeOAuthAttemptId = beginNativeOAuthAttempt();
         invoke("plugin:opener|open_url", { url: desktopAuthUrl }).catch((error: Error) => {
+          cancelNativeOAuthAttempt(nativeOAuthAttemptId);
           console.error("[OAuth] Failed to open external browser:", error);
           setError("Failed to open authentication page in browser");
         });
@@ -406,7 +411,9 @@ function SignupPage() {
 
         // Use the opener plugin by directly invoking the command
         console.log("[OAuth] Opening URL in external browser:", desktopAuthUrl);
+        const nativeOAuthAttemptId = beginNativeOAuthAttempt();
         invoke("plugin:opener|open_url", { url: desktopAuthUrl }).catch((error: Error) => {
+          cancelNativeOAuthAttempt(nativeOAuthAttemptId);
           console.error("[OAuth] Failed to open external browser:", error);
           setError("Failed to open authentication page in browser");
         });
