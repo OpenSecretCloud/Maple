@@ -163,6 +163,7 @@ env:
     @echo "MAPLE_HOST: ${MAPLE_HOST:-127.0.0.1}"
     @echo "MAPLE_PORT: ${MAPLE_PORT:-8080}"
     @echo "MAPLE_BACKEND_URL: ${MAPLE_BACKEND_URL:-https://enclave.trymaple.ai}"
+    @echo "MAPLE_PCR0_ENVIRONMENT: ${MAPLE_PCR0_ENVIRONMENT:-production}"
     @echo "MAPLE_API_KEY: ${MAPLE_API_KEY:-[not set]}"
     @echo "MAPLE_DEBUG: ${MAPLE_DEBUG:-false}"
     @echo "MAPLE_ENABLE_CORS: ${MAPLE_ENABLE_CORS:-false}"
@@ -182,6 +183,7 @@ docker-run:
         -p ${MAPLE_PORT:-8080}:8080 \
         -e MAPLE_API_KEY=${MAPLE_API_KEY} \
         -e MAPLE_BACKEND_URL=${MAPLE_BACKEND_URL:-https://enclave.trymaple.ai} \
+        -e MAPLE_PCR0_ENVIRONMENT=${MAPLE_PCR0_ENVIRONMENT:-production} \
         -e MAPLE_DEBUG=${MAPLE_DEBUG:-false} \
         -e MAPLE_ENABLE_CORS=${MAPLE_ENABLE_CORS:-true} \
         -e MAPLE_REQUEST_TIMEOUT_SECS=${MAPLE_REQUEST_TIMEOUT_SECS:-300} \
@@ -196,6 +198,7 @@ docker-run-detached:
         -p ${MAPLE_PORT:-8080}:8080 \
         -e MAPLE_API_KEY=${MAPLE_API_KEY} \
         -e MAPLE_BACKEND_URL=${MAPLE_BACKEND_URL:-https://enclave.trymaple.ai} \
+        -e MAPLE_PCR0_ENVIRONMENT=${MAPLE_PCR0_ENVIRONMENT:-production} \
         -e MAPLE_DEBUG=${MAPLE_DEBUG:-false} \
         -e MAPLE_ENABLE_CORS=${MAPLE_ENABLE_CORS:-true} \
         -e MAPLE_REQUEST_TIMEOUT_SECS=${MAPLE_REQUEST_TIMEOUT_SECS:-300} \
@@ -263,50 +266,5 @@ ghcr-pull tag="latest":
     @{{container}} pull ghcr.io/opensecretcloud/maple-proxy:{{tag}}
     @echo "✅ Pulled ghcr.io/opensecretcloud/maple-proxy:{{tag}}"
 
-# === OpenClaw Plugin ===
-
-# Install plugin dependencies
-plugin-install:
-    @echo "📦 Installing plugin dependencies..."
-    @cd openclaw-plugin && npm install
-    @echo "✅ Plugin dependencies installed"
-
-# Build plugin (TypeScript -> JS)
-plugin-build:
-    @echo "🔨 Building OpenClaw plugin..."
-    @cd openclaw-plugin && npm run build
-    @echo "✅ Plugin built"
-
-# Lint plugin
-plugin-lint:
-    @echo "🔍 Linting plugin..."
-    @cd openclaw-plugin && npm run lint
-    @echo "✅ Plugin linted"
-
-# Test plugin
-plugin-test:
-    @echo "🧪 Testing plugin..."
-    @cd openclaw-plugin && npm test
-    @echo "✅ Plugin tests passed"
-
-# Check all (Rust + plugin)
-check-all: check plugin-lint plugin-test
-    @echo "✅ All checks passed (Rust + Plugin)"
-
-# Link plugin locally for OpenClaw development
-plugin-link:
-    @echo "🔗 Linking plugin to OpenClaw extensions..."
-    @openclaw plugins install -l ./openclaw-plugin
-    @echo "✅ Plugin linked"
-
-# Pack plugin for npm publishing
-plugin-pack:
-    @echo "📦 Packing plugin for npm..."
-    @cd openclaw-plugin && npm pack
-    @echo "✅ Plugin packed"
-
-# Publish plugin to npm
-plugin-publish:
-    @echo "🚀 Publishing plugin to npm..."
-    @cd openclaw-plugin && npm publish --access public
-    @echo "✅ Plugin published"
+# Compatibility alias for the complete repository check.
+check-all: check

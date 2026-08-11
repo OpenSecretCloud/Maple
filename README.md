@@ -33,7 +33,7 @@ Add to your `Cargo.toml`:
 [dependencies]
 maple-proxy = { git = "https://github.com/opensecretcloud/maple-proxy" }
 # Or if published to crates.io:
-# maple-proxy = "0.2.0"
+# maple-proxy = "0.3.0"
 ```
 
 ## ⚙️ Configuration
@@ -45,6 +45,7 @@ Set environment variables or use command-line arguments:
 export MAPLE_HOST=127.0.0.1                    # Server host (default: 127.0.0.1)
 export MAPLE_PORT=8080                         # Server port (default: 8080)
 export MAPLE_BACKEND_URL=http://localhost:3000         # Maple backend URL (prod: https://enclave.trymaple.ai)
+export MAPLE_PCR0_ENVIRONMENT=production       # PCR0 trust roots: production (default) or development
 export MAPLE_API_KEY=your-maple-api-key        # Default API key (optional)
 export MAPLE_DEBUG=true                        # Enable debug logging
 export MAPLE_ENABLE_CORS=true                  # Enable CORS
@@ -55,6 +56,9 @@ export MAPLE_STREAM_IDLE_TIMEOUT_SECS=300      # Streaming idle timeout between 
 Or use CLI arguments:
 ```bash
 cargo run -- --host 0.0.0.0 --port 8080 --backend-url https://enclave.trymaple.ai
+
+# Development enclaves must be selected explicitly
+cargo run -- --backend-url https://enclave.secretgpt.ai --pcr0-environment development
 ```
 
 ## 🛠️ Usage
@@ -119,7 +123,7 @@ curl http://localhost:8080/v1/embeddings \
 You can also embed Maple Proxy in your own Rust application:
 
 ```rust
-use maple_proxy::{Config, create_app};
+use maple_proxy::{Config, Pcr0Environment, create_app};
 use tokio::net::TcpListener;
 
 #[tokio::main]
@@ -133,6 +137,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         8081,  // Custom port
         "https://enclave.trymaple.ai".to_string(),
     )
+    .with_pcr0_environment(Pcr0Environment::Production)
     .with_api_key("your-api-key-here".to_string())
     .with_debug(true)
     .with_cors(true);

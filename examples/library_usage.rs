@@ -1,4 +1,4 @@
-use maple_proxy::{create_app, Config};
+use maple_proxy::{create_app, Config, Pcr0Environment};
 use tokio::net::TcpListener;
 
 #[tokio::main]
@@ -12,6 +12,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         8081, // Custom port
         "https://enclave.trymaple.ai".to_string(),
     )
+    .with_pcr0_environment(Pcr0Environment::Production)
     .with_api_key("your-api-key-here".to_string())
     .with_debug(true)
     .with_cors(true);

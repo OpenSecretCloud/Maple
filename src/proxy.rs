@@ -107,6 +107,7 @@ impl ProxyState {
         let cache_key = api_key.to_string();
         let client_entry = self.client_entry_for_api_key(&cache_key);
         let backend_url = self.config.backend_url.clone();
+        let pcr0_environment = self.config.pcr0_environment;
         let request_timeout = self.config.request_timeout();
         let init_api_key = cache_key.clone();
 
@@ -117,9 +118,14 @@ impl ProxyState {
                     "Creating OpenSecret client for API key: {}...",
                     &init_api_key[..8.min(init_api_key.len())]
                 );
-                create_client_with_auth(&backend_url, &init_api_key, request_timeout)
-                    .await
-                    .map(Arc::new)
+                create_client_with_auth(
+                    &backend_url,
+                    &init_api_key,
+                    pcr0_environment,
+                    request_timeout,
+                )
+                .await
+                .map(Arc::new)
             })
             .await;
 
@@ -203,10 +209,15 @@ fn extract_api_key(
 async fn create_client_with_auth(
     backend_url: &str,
     api_key: &str,
+    pcr0_environment: opensecret::Pcr0Environment,
     request_timeout: Duration,
 ) -> Result<OpenSecretClient, ProxyError> {
-    let client = OpenSecretClient::new_with_api_key(backend_url, api_key.to_string())
-        .map_err(|e| transport_error_response("OpenSecret client creation", &e))?;
+    let client = OpenSecretClient::new_with_api_key_and_pcr0_environment(
+        backend_url,
+        api_key.to_string(),
+        pcr0_environment,
+    )
+    .map_err(|e| transport_error_response("OpenSecret client creation", &e))?;
 
     // Perform attestation handshake
     tokio::time::timeout(request_timeout, client.perform_attestation_handshake())
@@ -424,6 +435,7 @@ mod tests {
             host: "127.0.0.1".to_string(),
             port: 0,
             backend_url: "http://localhost:3000".to_string(),
+            pcr0_environment: opensecret::Pcr0Environment::Production,
             default_api_key: None,
             debug: false,
             enable_cors: false,
