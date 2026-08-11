@@ -1,4 +1,6 @@
-use opensecret::{KeyOptions, OpenSecretClient, Result, SigningAlgorithm};
+mod common;
+
+use opensecret::{KeyOptions, Result, SigningAlgorithm};
 use uuid::Uuid;
 
 #[tokio::test]
@@ -21,7 +23,7 @@ async fn test_user_profile_api() -> Result<()> {
         std::env::var("VITE_TEST_PASSWORD").expect("VITE_TEST_PASSWORD must be set");
 
     // Create client and login
-    let client = OpenSecretClient::new(base_url)?;
+    let client = common::new_test_client(base_url)?;
     client.perform_attestation_handshake().await?;
 
     // Try to login, register if it fails
@@ -61,7 +63,7 @@ async fn test_kv_storage_apis() -> Result<()> {
         .expect("VITE_TEST_CLIENT_ID must be set");
 
     // Create client and login as guest for isolation
-    let client = OpenSecretClient::new(base_url)?;
+    let client = common::new_test_client(base_url)?;
     client.perform_attestation_handshake().await?;
 
     let guest_password = "test_kv_password";
@@ -116,7 +118,7 @@ async fn test_kv_delete_all() -> Result<()> {
         .expect("VITE_TEST_CLIENT_ID must be set");
 
     // Create client and login as guest for isolation
-    let client = OpenSecretClient::new(base_url)?;
+    let client = common::new_test_client(base_url)?;
     client.perform_attestation_handshake().await?;
 
     client
@@ -161,7 +163,7 @@ async fn test_kv_storage_with_special_characters() -> Result<()> {
         .expect("VITE_TEST_CLIENT_ID must be set");
 
     // Create client and login
-    let client = OpenSecretClient::new(base_url)?;
+    let client = common::new_test_client(base_url)?;
     client.perform_attestation_handshake().await?;
     client
         .register_guest("test_kv_special".to_string(), client_id)
@@ -226,7 +228,7 @@ async fn test_private_key_generation() -> Result<()> {
         .expect("VITE_TEST_CLIENT_ID must be set");
 
     // Create client and login as guest
-    let client = OpenSecretClient::new(base_url)?;
+    let client = common::new_test_client(base_url)?;
     client.perform_attestation_handshake().await?;
     client
         .register_guest("test_key_gen".to_string(), client_id)
@@ -277,7 +279,7 @@ async fn test_message_signing() -> Result<()> {
         .expect("VITE_TEST_CLIENT_ID must be set");
 
     // Create client and login
-    let client = OpenSecretClient::new(base_url)?;
+    let client = common::new_test_client(base_url)?;
     client.perform_attestation_handshake().await?;
     client
         .register_guest("test_signing".to_string(), client_id)
@@ -331,7 +333,7 @@ async fn test_public_key_retrieval() -> Result<()> {
         .expect("VITE_TEST_CLIENT_ID must be set");
 
     // Create client and login
-    let client = OpenSecretClient::new(base_url)?;
+    let client = common::new_test_client(base_url)?;
     client.perform_attestation_handshake().await?;
     client
         .register_guest("test_pubkey".to_string(), client_id)
@@ -384,7 +386,7 @@ async fn test_encryption_decryption() -> Result<()> {
         .expect("VITE_TEST_CLIENT_ID must be set");
 
     // Create client and login
-    let client = OpenSecretClient::new(base_url)?;
+    let client = common::new_test_client(base_url)?;
     client.perform_attestation_handshake().await?;
     client
         .register_guest("test_crypto".to_string(), client_id)
@@ -482,7 +484,7 @@ async fn test_third_party_token() -> Result<()> {
         std::env::var("VITE_TEST_PASSWORD").expect("VITE_TEST_PASSWORD must be set");
 
     // Create client and login with email user (third party tokens may require email user)
-    let client = OpenSecretClient::new(base_url)?;
+    let client = common::new_test_client(base_url)?;
     client.perform_attestation_handshake().await?;
 
     let _ = match client

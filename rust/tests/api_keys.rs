@@ -1,3 +1,5 @@
+mod common;
+
 use opensecret::{Error, OpenSecretClient, Result};
 use std::env;
 use uuid::Uuid;
@@ -45,7 +47,7 @@ fn is_live_ai_usage_limit(error: &Error) -> bool {
 async fn setup_test_client() -> Result<OpenSecretClient> {
     let (api_url, email, password, client_id) = get_test_config();
 
-    let client = OpenSecretClient::new(&api_url)?;
+    let client = common::new_test_client(&api_url)?;
     client.perform_attestation_handshake().await?;
     client.login(email, password, client_id).await?;
 
@@ -92,7 +94,7 @@ async fn test_api_key_authentication() -> Result<()> {
     let (api_url, email, password, client_id) = get_test_config();
 
     // First create an API key using regular auth
-    let client = OpenSecretClient::new(&api_url)?;
+    let client = common::new_test_client(&api_url)?;
     client.perform_attestation_handshake().await?;
     client.login(email, password, client_id).await?;
 
@@ -102,7 +104,7 @@ async fn test_api_key_authentication() -> Result<()> {
     let api_key_name = created_key.name.clone();
 
     // Now create a new client with just the API key
-    let api_client = OpenSecretClient::new_with_api_key(&api_url, api_key.clone())?;
+    let api_client = common::new_test_client_with_api_key(&api_url, api_key.clone())?;
     api_client.perform_attestation_handshake().await?;
 
     // Test fetching models with API key authentication
@@ -133,7 +135,7 @@ async fn test_streaming_chat_with_api_key() -> Result<()> {
     let (api_url, email, password, client_id) = get_test_config();
 
     // First create an API key using regular auth
-    let client = OpenSecretClient::new(&api_url)?;
+    let client = common::new_test_client(&api_url)?;
     client.perform_attestation_handshake().await?;
     client.login(email, password, client_id).await?;
 
@@ -143,7 +145,7 @@ async fn test_streaming_chat_with_api_key() -> Result<()> {
     let api_key_name = created_key.name.clone();
 
     // Create a new client with the API key
-    let api_client = OpenSecretClient::new_with_api_key(&api_url, api_key)?;
+    let api_client = common::new_test_client_with_api_key(&api_url, api_key)?;
     api_client.perform_attestation_handshake().await?;
 
     // Test streaming chat completion
@@ -232,7 +234,7 @@ async fn test_invalid_api_key_fails() -> Result<()> {
 
     // Create a client with an invalid API key
     let invalid_key = "550e8400-e29b-41d4-a716-000000000000".to_string();
-    let api_client = OpenSecretClient::new_with_api_key(&api_url, invalid_key)?;
+    let api_client = common::new_test_client_with_api_key(&api_url, invalid_key)?;
     api_client.perform_attestation_handshake().await?;
 
     // This should fail with authentication error

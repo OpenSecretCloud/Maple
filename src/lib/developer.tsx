@@ -12,7 +12,7 @@ import {
 import type { AttestationDocument } from "./attestation";
 import { PcrConfig } from "./pcr";
 
-const DEFAULT_PCR_CONFIG: PcrConfig = {};
+const DEFAULT_PCR_CONFIG: PcrConfig = { environment: "production" };
 import type {
   Organization,
   Project,
@@ -179,7 +179,8 @@ export type OpenSecretDeveloperContextType = {
   refetchDeveloper: () => Promise<void>;
 
   /**
-   * PCR0 trust policy enforced before every non-loopback session key exchange
+   * PCR0 trust policy enforced before every non-loopback session key exchange.
+   * The trust environment defaults to production.
    */
   pcrConfig: PcrConfig;
 
@@ -467,7 +468,7 @@ export const OpenSecretDeveloperContext = createContext<OpenSecretDeveloperConte
   requestPasswordReset: platformApi.requestPlatformPasswordReset,
   confirmPasswordReset: platformApi.confirmPlatformPasswordReset,
   changePassword: platformApi.changePlatformPassword,
-  pcrConfig: {},
+  pcrConfig: DEFAULT_PCR_CONFIG,
   getAttestation,
   authenticate,
   parseAttestationForView,
@@ -511,7 +512,7 @@ export const OpenSecretDeveloperContext = createContext<OpenSecretDeveloperConte
  * @param props - Configuration properties for the OpenSecret developer provider
  * @param props.children - React child components to be wrapped by the provider
  * @param props.apiUrl - URL of OpenSecret developer API
- * @param props.pcrConfig - Optional PCR0 trust policy enforced before session establishment
+ * @param props.pcrConfig - Optional PCR0 trust policy enforced before session establishment; its environment defaults to production
  *
  * @example
  * ```tsx

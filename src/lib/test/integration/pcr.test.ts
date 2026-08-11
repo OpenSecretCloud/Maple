@@ -1,5 +1,5 @@
 import { expect, test, mock, afterAll } from "bun:test";
-import { validatePcr0Hash, type PcrConfig } from "../../pcr";
+import { serializePcrConfig, snapshotPcrConfig, validatePcr0Hash, type PcrConfig } from "../../pcr";
 
 // Mock localStorage and other browser APIs
 const storageMock = () => {
@@ -29,7 +29,8 @@ const VALID_PCR0_PROD =
   "eeddbb58f57c38894d6d5af5e575fbe791c5bf3bbcfb5df8da8cfcf0c2e1da1913108e6a762112444740b88c163d7f4b";
 const VALID_PCR0_DEV =
   "62c0407056217a4c10764ed9045694c29fa93255d3cc04c2f989cdd9a1f8050c8b169714c71f1118ebce2fcc9951d1a9";
-const CUSTOM_PCR0 = "custom_pcr0_value_for_testing";
+const CUSTOM_PCR0 = "11".repeat(48);
+const CUSTOM_PCR0_DEV = "22".repeat(48);
 
 // Verified PCR0 with matching signature
 const VERIFIED_PCR0 =
@@ -94,9 +95,25 @@ test("validates known production PCR0 values", async () => {
 });
 
 test("validates known development PCR0 values", async () => {
-  const result = await validatePcr0Hash(VALID_PCR0_DEV);
+  const result = await validatePcr0Hash(VALID_PCR0_DEV, {
+    environment: "development",
+    remoteAttestation: false
+  });
   expect(result.isMatch).toBe(true);
   expect(result.text).toBe("PCR0 matches development enclave");
+});
+
+test("defaults to production and rejects development PCR0 values", async () => {
+  const result = await validatePcr0Hash(VALID_PCR0_DEV, { remoteAttestation: false });
+  expect(result.isMatch).toBe(false);
+});
+
+test("development rejects production PCR0 values", async () => {
+  const result = await validatePcr0Hash(VALID_PCR0_PROD, {
+    environment: "development",
+    remoteAttestation: false
+  });
+  expect(result.isMatch).toBe(false);
 });
 
 test("validates custom PCR0 values", async () => {
@@ -108,6 +125,54 @@ test("validates custom PCR0 values", async () => {
   expect(result.text).toBe("PCR0 matches a known good value");
 });
 
+test("additional PCR0 values are scoped to the selected environment", async () => {
+  const config: PcrConfig = {
+    pcr0Values: [CUSTOM_PCR0],
+    pcr0DevValues: [CUSTOM_PCR0_DEV],
+    remoteAttestation: false
+  };
+
+  expect((await validatePcr0Hash(CUSTOM_PCR0, config)).isMatch).toBe(true);
+  expect((await validatePcr0Hash(CUSTOM_PCR0_DEV, config)).isMatch).toBe(false);
+  expect(
+    (
+      await validatePcr0Hash(CUSTOM_PCR0_DEV, {
+        ...config,
+        environment: "development"
+      })
+    ).isMatch
+  ).toBe(true);
+  expect(
+    (
+      await validatePcr0Hash(CUSTOM_PCR0, {
+        ...config,
+        environment: "development"
+      })
+    ).isMatch
+  ).toBe(false);
+});
+
+test("snapshots a production default and rejects invalid runtime environments", () => {
+  expect(snapshotPcrConfig().environment).toBe("production");
+  expect(snapshotPcrConfig({ environment: "production" }).environment).toBe("production");
+  expect(() => snapshotPcrConfig({ environment: "staging" } as unknown as PcrConfig)).toThrow(
+    /environment/i
+  );
+});
+
+test("serializes only the effective environment policy", () => {
+  const productionPolicy = serializePcrConfig();
+  expect(JSON.parse(productionPolicy).version).toBe("pcr0-environment-v1");
+  expect(productionPolicy).toBe(serializePcrConfig({ environment: "production" }));
+  expect(serializePcrConfig()).toBe(serializePcrConfig({ pcr0DevValues: [CUSTOM_PCR0_DEV] }));
+  expect(productionPolicy).toBe(
+    serializePcrConfig({
+      remoteAttestationUrls: { dev: "https://unused.example.test/dev.json" }
+    })
+  );
+  expect(serializePcrConfig()).not.toBe(serializePcrConfig({ environment: "development" }));
+});
+
 test("rejects unknown PCR0 values when remote attestation is disabled", async () => {
   const config: PcrConfig = {
     remoteAttestation: false
@@ -116,12 +181,63 @@ test("rejects unknown PCR0 values when remote attestation is disabled", async ()
   expect(result.isMatch).toBe(false);
 });
 
-test("validates PCR0 from remote attestation", async () => {
-  // Need to use the exact PCR0 that matches our signature
-  const result = await validatePcr0Hash(VERIFIED_PCR0);
-  expect(result.isMatch).toBe(true);
-  expect(result.text).toBe("PCR0 matches remotely attested value");
-  expect(result.verifiedAt).toBeDefined();
+test("validates PCR0 from only the selected production history by default", async () => {
+  const historyFetch = mock(
+    async (input: RequestInfo | URL, _init?: RequestInit): Promise<Response> => {
+      const url =
+        typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      expect(url).toContain("pcrProdHistory.json");
+      return createMockResponse([
+        {
+          PCR0: VERIFIED_PCR0,
+          PCR1: VERIFIED_PCR1,
+          PCR2: VERIFIED_PCR2,
+          timestamp: 1743710235,
+          signature: VERIFIED_SIGNATURE
+        }
+      ]);
+    }
+  );
+
+  try {
+    global.fetch = historyFetch;
+    const result = await validatePcr0Hash(VERIFIED_PCR0);
+    expect(result.isMatch).toBe(true);
+    expect(result.text).toBe("PCR0 matches remotely attested value");
+    expect(result.verifiedAt).toBeDefined();
+    expect(historyFetch).toHaveBeenCalledTimes(1);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("validates PCR0 from only the selected development history", async () => {
+  const historyFetch = mock(
+    async (input: RequestInfo | URL, _init?: RequestInit): Promise<Response> => {
+      const url =
+        typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      expect(url).toContain("pcrDevHistory.json");
+      return createMockResponse([
+        {
+          PCR0: VERIFIED_PCR0,
+          PCR1: VERIFIED_PCR1,
+          PCR2: VERIFIED_PCR2,
+          timestamp: 1743710235,
+          signature: VERIFIED_SIGNATURE
+        }
+      ]);
+    }
+  );
+
+  try {
+    global.fetch = historyFetch;
+    const result = await validatePcr0Hash(VERIFIED_PCR0, { environment: "development" });
+    expect(result.isMatch).toBe(true);
+    expect(result.text).toBe("PCR0 matches remotely attested value");
+    expect(historyFetch).toHaveBeenCalledTimes(1);
+  } finally {
+    global.fetch = originalFetch;
+  }
 });
 
 test("prioritizes local PCR0 values over remote ones", async () => {
@@ -154,6 +270,7 @@ test("handles fetch errors gracefully", async () => {
     // Should fall back to rejecting the PCR0
     expect(result.isMatch).toBe(false);
     expect(result.text).toBe("PCR0 does not match a known good value");
+    expect(failingFetch).toHaveBeenCalledTimes(1);
   } finally {
     // Restore the working fetch mock
     global.fetch = originalFetch;
@@ -194,6 +311,122 @@ test("supports custom remote attestation URLs", async () => {
     const result = await validatePcr0Hash(VERIFIED_PCR0, config);
     expect(result.isMatch).toBe(true);
     expect(result.text).toBe("PCR0 matches remotely attested value");
+    expect(customFetch).toHaveBeenCalledTimes(1);
+    expect(String(customFetch.mock.calls[0]?.[0])).toContain("/prod.json");
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("selects the custom development history without requesting production", async () => {
+  const customFetch = mock(
+    async (input: RequestInfo | URL, _init?: RequestInit): Promise<Response> => {
+      const url =
+        typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      expect(url).toBe("https://custom.example.com/dev.json");
+      return createMockResponse([
+        {
+          PCR0: VERIFIED_PCR0,
+          PCR1: VERIFIED_PCR1,
+          PCR2: VERIFIED_PCR2,
+          timestamp: 1743710235,
+          signature: VERIFIED_SIGNATURE
+        }
+      ]);
+    }
+  );
+
+  try {
+    global.fetch = customFetch;
+    const result = await validatePcr0Hash(VERIFIED_PCR0, {
+      environment: "development",
+      remoteAttestationUrls: {
+        prod: "https://custom.example.com/prod.json",
+        dev: "https://custom.example.com/dev.json"
+      }
+    });
+    expect(result.isMatch).toBe(true);
+    expect(customFetch).toHaveBeenCalledTimes(1);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("does not fall back to the opposite environment's signed history", async () => {
+  const historyFetch = mock(
+    async (input: RequestInfo | URL, _init?: RequestInit): Promise<Response> => {
+      const url =
+        typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("pcrDevHistory.json")) {
+        return createMockResponse([
+          {
+            PCR0: VERIFIED_PCR0,
+            PCR1: VERIFIED_PCR1,
+            PCR2: VERIFIED_PCR2,
+            timestamp: 1743710235,
+            signature: VERIFIED_SIGNATURE
+          }
+        ]);
+      }
+      return createMockResponse([
+        {
+          PCR0: CUSTOM_PCR0,
+          PCR1: VERIFIED_PCR1,
+          PCR2: VERIFIED_PCR2,
+          timestamp: 1743710235,
+          signature: VERIFIED_SIGNATURE
+        }
+      ]);
+    }
+  );
+
+  try {
+    global.fetch = historyFetch;
+    const result = await validatePcr0Hash(VERIFIED_PCR0);
+    expect(result.isMatch).toBe(false);
+    expect(historyFetch).toHaveBeenCalledTimes(1);
+    expect(String(historyFetch.mock.calls[0]?.[0])).toContain("pcrProdHistory.json");
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("development does not fall back to the production signed history", async () => {
+  const historyFetch = mock(
+    async (input: RequestInfo | URL, _init?: RequestInit): Promise<Response> => {
+      const url =
+        typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("pcrProdHistory.json")) {
+        return createMockResponse([
+          {
+            PCR0: VERIFIED_PCR0,
+            PCR1: VERIFIED_PCR1,
+            PCR2: VERIFIED_PCR2,
+            timestamp: 1743710235,
+            signature: VERIFIED_SIGNATURE
+          }
+        ]);
+      }
+      return createMockResponse([
+        {
+          PCR0: CUSTOM_PCR0_DEV,
+          PCR1: VERIFIED_PCR1,
+          PCR2: VERIFIED_PCR2,
+          timestamp: 1743710235,
+          signature: VERIFIED_SIGNATURE
+        }
+      ]);
+    }
+  );
+
+  try {
+    global.fetch = historyFetch;
+    const result = await validatePcr0Hash(VERIFIED_PCR0, {
+      environment: "development"
+    });
+    expect(result.isMatch).toBe(false);
+    expect(historyFetch).toHaveBeenCalledTimes(1);
+    expect(String(historyFetch.mock.calls[0]?.[0])).toContain("pcrDevHistory.json");
   } finally {
     global.fetch = originalFetch;
   }
@@ -216,7 +449,7 @@ test("rejects a matching remote PCR0 whose pinned-key signature is tampered", as
     global.fetch = tamperedHistoryFetch;
     const result = await validatePcr0Hash(VERIFIED_PCR0);
     expect(result.isMatch).toBe(false);
-    expect(tamperedHistoryFetch).toHaveBeenCalledTimes(2);
+    expect(tamperedHistoryFetch).toHaveBeenCalledTimes(1);
   } finally {
     global.fetch = originalFetch;
   }
@@ -241,8 +474,8 @@ test("rejects and cancels PCR history streams larger than one MiB", async () => 
     global.fetch = oversizedHistoryFetch;
     const result = await validatePcr0Hash(VERIFIED_PCR0);
     expect(result.isMatch).toBe(false);
-    expect(oversizedHistoryFetch).toHaveBeenCalledTimes(2);
-    expect(cancelCount).toBe(2);
+    expect(oversizedHistoryFetch).toHaveBeenCalledTimes(1);
+    expect(cancelCount).toBe(1);
   } finally {
     global.fetch = originalFetch;
   }
@@ -257,7 +490,7 @@ test("rejects signed PCR history with a malformed schema", async () => {
     global.fetch = malformedHistoryFetch;
     const result = await validatePcr0Hash(VERIFIED_PCR0);
     expect(result.isMatch).toBe(false);
-    expect(malformedHistoryFetch).toHaveBeenCalledTimes(2);
+    expect(malformedHistoryFetch).toHaveBeenCalledTimes(1);
   } finally {
     global.fetch = originalFetch;
   }
@@ -272,7 +505,7 @@ test("rejects redirected signed PCR history responses", async () => {
     global.fetch = redirectedHistoryFetch;
     const result = await validatePcr0Hash(VERIFIED_PCR0);
     expect(result.isMatch).toBe(false);
-    expect(redirectedHistoryFetch).toHaveBeenCalledTimes(2);
+    expect(redirectedHistoryFetch).toHaveBeenCalledTimes(1);
   } finally {
     global.fetch = originalFetch;
   }

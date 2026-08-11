@@ -62,4 +62,4 @@ dotenv = "0.15"
 
 [features]
 default = []
-mock-attestation = []  # Enable mock attestation for development
+mock-attestation = []  # Expose mock document helpers; client bypass remains exact-loopback only

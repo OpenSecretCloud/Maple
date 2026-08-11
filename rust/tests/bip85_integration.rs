@@ -1,4 +1,6 @@
-use opensecret::{KeyOptions, OpenSecretClient, Result, SigningAlgorithm};
+mod common;
+
+use opensecret::{KeyOptions, Result, SigningAlgorithm};
 use uuid::Uuid;
 
 // BIP-85 test constants (matching TypeScript tests)
@@ -22,7 +24,7 @@ async fn test_bip85_derive_child_mnemonic() -> Result<()> {
         .expect("VITE_TEST_CLIENT_ID must be set");
 
     // Create client and login
-    let client = OpenSecretClient::new(base_url)?;
+    let client = common::new_test_client(base_url)?;
     client.perform_attestation_handshake().await?;
     client
         .register_guest("test_bip85".to_string(), client_id)
@@ -77,7 +79,7 @@ async fn test_bip85_private_key_bytes() -> Result<()> {
         .expect("VITE_TEST_CLIENT_ID must be set");
 
     // Create client and login
-    let client = OpenSecretClient::new(base_url)?;
+    let client = common::new_test_client(base_url)?;
     client.perform_attestation_handshake().await?;
     client
         .register_guest("test_bip85_bytes".to_string(), client_id)
@@ -133,7 +135,7 @@ async fn test_bip85_public_key_derivation() -> Result<()> {
         .expect("VITE_TEST_CLIENT_ID must be set");
 
     // Create client and login
-    let client = OpenSecretClient::new(base_url)?;
+    let client = common::new_test_client(base_url)?;
     client.perform_attestation_handshake().await?;
     client
         .register_guest("test_bip85_pubkey".to_string(), client_id)
@@ -191,7 +193,7 @@ async fn test_bip85_message_signing() -> Result<()> {
         .expect("VITE_TEST_CLIENT_ID must be set");
 
     // Create client and login
-    let client = OpenSecretClient::new(base_url)?;
+    let client = common::new_test_client(base_url)?;
     client.perform_attestation_handshake().await?;
     client
         .register_guest("test_bip85_signing".to_string(), client_id)
@@ -259,7 +261,7 @@ async fn test_bip85_encryption_decryption() -> Result<()> {
         .expect("VITE_TEST_CLIENT_ID must be set");
 
     // Create client and login
-    let client = OpenSecretClient::new(base_url)?;
+    let client = common::new_test_client(base_url)?;
     client.perform_attestation_handshake().await?;
     client
         .register_guest("test_bip85_encrypt".to_string(), client_id)

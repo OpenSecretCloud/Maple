@@ -1,3 +1,5 @@
+mod common;
+
 use opensecret::{OpenSecretClient, Result, WebExtractRequest, WebSearchRequest};
 use uuid::Uuid;
 
@@ -11,7 +13,7 @@ async fn authenticated_client() -> Result<OpenSecretClient> {
         .parse::<Uuid>()
         .expect("VITE_TEST_CLIENT_ID must be a UUID");
 
-    let client = OpenSecretClient::new(base_url)?;
+    let client = common::new_test_client(base_url)?;
     client.perform_attestation_handshake().await?;
 
     if client

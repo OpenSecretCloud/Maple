@@ -32,6 +32,7 @@ jobs:
       - name: Run tests
         env:
           VITE_OPEN_SECRET_API_URL: ${{ secrets.VITE_OPEN_SECRET_API_URL }}
+          VITE_OPEN_SECRET_PCR_ENVIRONMENT: development
           VITE_TEST_EMAIL: ${{ secrets.VITE_TEST_EMAIL }}
           VITE_TEST_PASSWORD: ${{ secrets.VITE_TEST_PASSWORD }}
           VITE_TEST_NAME: ${{ secrets.VITE_TEST_NAME }}

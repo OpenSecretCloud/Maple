@@ -13,7 +13,7 @@ function App() {
   return (
     <OpenSecretDeveloper 
       apiUrl="https://developer.opensecret.cloud"
-      pcrConfig={{}} // Optional PCR0 trust policy enforced before session establishment
+      pcrConfig={{ environment: "production" }} // Optional; production is the default
     >
       <YourApp />
     </OpenSecretDeveloper>
@@ -351,7 +351,7 @@ function PlatformManagement() {
 
 ### Attestation Verification
 
-- `pcrConfig`: The PCR0 trust policy enforced before non-loopback session establishment. Custom hashes are additive to the SDK's built-in roots.
+- `pcrConfig`: The PCR0 trust policy enforced before non-loopback session establishment. Its environment defaults to production. Only the selected environment's embedded roots, custom roots, and pinned-key signed GitHub history are trusted; set `environment: "development"` explicitly for development enclaves.
 - `getAttestation`: Gets an attested session after enforcing the effective PCR0 trust policy.
 - `authenticate`: Authenticates an attestation document.
 - `parseAttestationForView`: Parses an attestation document for viewing.

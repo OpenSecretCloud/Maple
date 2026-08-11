@@ -36,7 +36,7 @@ UUID identifying which project/tenant this instance belongs to
 
 [`PcrConfig`](../type-aliases/PcrConfig.md) = `DEFAULT_PCR_CONFIG`
 
-Optional PCR0 trust policy enforced before session establishment
+Optional PCR0 trust policy enforced before session establishment; its environment defaults to production
 
 ## Returns
 

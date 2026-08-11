@@ -42,18 +42,25 @@ OpenSecret primarily validates PCR0, which is the most critical measurement as i
 
 ## PCR0 Validation Process
 
-OpenSecret uses a multi-layered approach to PCR0 validation:
+OpenSecret uses an environment-scoped approach to PCR0 validation. The trust environment defaults
+to production and must be set explicitly to development for a hosted development enclave:
 
-1. **Local Validation**: First, the SDK checks if the PCR0 value matches one of the known good values:
-   - Built-in production PCR0 values
-   - Built-in development PCR0 values
-   - Custom PCR0 values provided in your configuration
+1. **Local Validation**: The SDK checks only the selected environment's built-in and custom PCR0
+   values. Static production roots are not checked by a development policy, and static development
+   roots are not checked by a production policy.
 
-2. **Remote Attestation**: If local validation doesn't find a match, the SDK fetches and verifies signed PCR history from:
-   - Production PCR history: `https://raw.githubusercontent.com/OpenSecretCloud/opensecret/master/pcrProdHistory.json`
-   - Development PCR history: `https://raw.githubusercontent.com/OpenSecretCloud/opensecret/master/pcrDevHistory.json`
+2. **Signed History**: If local validation doesn't find a match, the SDK fetches only the selected
+   environment's pinned-key signed history:
+   - Production: `https://raw.githubusercontent.com/OpenSecretCloud/opensecret/master/pcrProdHistory.json`
+   - Development: `https://raw.githubusercontent.com/OpenSecretCloud/opensecret/master/pcrDevHistory.json`
 
-3. **Signature Verification**: The SDK verifies that the PCR history entries are properly signed by OpenSecret
+3. **Signature Verification**: The SDK verifies matching history entries with OpenSecret's pinned
+   public key. It never falls back to the other environment's history.
+
+Environment separation for signed history is currently enforced by selecting one pinned history
+URL. History signatures authenticate the PCR0 value with a shared verification key; they do not
+cryptographically encode the environment. Separate keys or an environment-bearing signed payload
+would be required for cryptographic domain separation between the two history files.
 
 ## Configuration Options
 
@@ -70,14 +77,12 @@ function App() {
       apiUrl="https://api.opensecret.cloud"
       clientId="your-project-uuid"
       pcrConfig={{
-        // Add custom PCR0 values you want to trust (production environment)
+        // Optional: production is the default trust environment.
+        environment: "production",
+        // Additional roots are scoped to the selected environment.
         pcr0Values: [
           "your-trusted-pcr0-value-1",
           "your-trusted-pcr0-value-2"
-        ],
-        // Add custom PCR0 values for development environment
-        pcr0DevValues: [
-          "your-dev-pcr0-value"
         ]
       }}
     >
@@ -85,6 +90,22 @@ function App() {
     </OpenSecretProvider>
   );
 }
+```
+
+For a hosted development enclave, select development explicitly and use `pcr0DevValues` for any
+additional development roots:
+
+```tsx
+<OpenSecretProvider
+  apiUrl="https://your-development-enclave.example"
+  clientId="your-project-uuid"
+  pcrConfig={{
+    environment: "development",
+    pcr0DevValues: ["your-dev-pcr0-value"]
+  }}
+>
+  <YourApp />
+</OpenSecretProvider>
 ```
 
 ### Disabling Remote Attestation
@@ -100,6 +121,7 @@ function App() {
       apiUrl="https://api.opensecret.cloud"
       clientId="your-project-uuid"
       pcrConfig={{
+        environment: "production",
         // Disable remote attestation - only use local PCR0 values
         remoteAttestation: false,
         // Your trusted PCR0 values
@@ -114,7 +136,8 @@ function App() {
 
 ### Custom Remote Attestation URLs
 
-You can specify custom URLs for remote attestation verification:
+You can specify custom URLs for signed-history verification. Only the URL for the selected
+environment is requested:
 
 ```tsx
 import { OpenSecretProvider } from "@opensecret/react";
@@ -125,6 +148,7 @@ function App() {
       apiUrl="https://api.opensecret.cloud"
       clientId="your-project-uuid"
       pcrConfig={{
+        environment: "production",
         // Custom URLs for remote attestation
         remoteAttestationUrls: {
           prod: "https://your-custom-url/pcrProdHistory.json",
@@ -248,15 +272,17 @@ The attestation document returned by `getAttestationDocument()` includes:
 OpenSecret's PCR0 validation process follows these steps:
 
 1. **Local Static Validation**:
-   - First checks against hardcoded production PCR0 values
-   - Then checks against hardcoded development PCR0 values
-   - Then checks against any custom PCR0 values you've provided
+   - Defaults to the production trust environment
+   - Checks only the selected environment's hardcoded PCR0 values
+   - Checks only custom PCR0 values for that environment (`pcr0Values` for production or
+     `pcr0DevValues` for development)
 
 2. **Remote Attestation** (if enabled):
-   - Fetches signed PCR history from the configured URLs
+   - Fetches signed PCR history only for the selected environment
    - Verifies the authenticity of each entry using OpenSecret's public key
    - Checks if the PCR0 value matches any entry in the history
    - Validates the signature on the matching entry
+   - Does not fall back to the other environment
 
 3. **Result Reporting**:
    - Returns a validation result indicating whether the PCR0 value is trusted
@@ -269,13 +295,20 @@ OpenSecret's PCR0 validation process follows these steps:
 
 For production deployments:
 
-1. **Use explicit PCR values**: Specify the exact PCR0 values you trust rather than relying solely on remote attestation.
+1. **Keep the production default or select it explicitly**: Never configure a production client
+   with `environment: "development"`.
 
-2. **Keep remote attestation enabled**: Remote attestation provides an additional security layer that can detect new legitimate PCR0 values.
+2. **Use explicit PCR values when appropriate**: Additional values are additive to the selected
+   environment's built-in roots.
 
-3. **Verify attestation before sensitive operations**: Always verify attestation before sending sensitive data to the enclave.
+3. **Keep signed-history lookup enabled**: The signed GitHub history lets approved backend PCR0
+   values rotate without requiring every client to update immediately.
 
-4. **Rotate sensitive data**: If you discover that a PCR0 value is no longer trusted, rotate any sensitive data that was sent to that enclave.
+4. **Verify attestation before sensitive operations**: Always verify attestation before sending
+   sensitive data to the enclave.
+
+5. **Rotate sensitive data**: If you discover that a PCR0 value is no longer trusted, rotate any
+   sensitive data that was sent to that enclave.
 
 ### Obtaining Trusted PCR0 Values
 

@@ -620,7 +620,8 @@ Parses an attestation document for viewing
 
 > **pcrConfig**: [`PcrConfig`](PcrConfig.md)
 
-PCR0 trust policy enforced before every non-loopback session key exchange
+PCR0 trust policy enforced before every non-loopback session key exchange.
+The trust environment defaults to production.
 
 ***
 

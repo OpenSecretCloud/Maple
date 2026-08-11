@@ -1,3 +1,5 @@
+mod common;
+
 use futures::StreamExt;
 use opensecret::{
     AgentItemsListParams, AgentSseEvent, ConversationItem, CreateSubagentRequest,
@@ -25,7 +27,7 @@ async fn setup_authenticated_client() -> Result<OpenSecretClient> {
 
     let base_url = env::var("VITE_OPEN_SECRET_API_URL")
         .unwrap_or_else(|_| "http://localhost:3000".to_string());
-    let client = OpenSecretClient::new(base_url)?;
+    let client = common::new_test_client(base_url)?;
     client.perform_attestation_handshake().await?;
 
     let email = env::var("VITE_TEST_EMAIL").expect("VITE_TEST_EMAIL must be set");

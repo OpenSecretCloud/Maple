@@ -1,3 +1,5 @@
+mod common;
+
 use base64::{engine::general_purpose, Engine as _};
 use futures::StreamExt;
 use opensecret::{
@@ -63,7 +65,7 @@ async fn setup_authenticated_client() -> Result<OpenSecretClient> {
 
     let base_url = env::var("VITE_OPEN_SECRET_API_URL")
         .unwrap_or_else(|_| "http://localhost:3000".to_string());
-    let client = OpenSecretClient::new(base_url)?;
+    let client = common::new_test_client(base_url)?;
     client.perform_attestation_handshake().await?;
 
     // Login with test credentials
@@ -357,7 +359,7 @@ async fn test_guest_user_cannot_use_ai() {
         .and_then(|id| Uuid::parse_str(&id).ok())
         .unwrap_or_else(Uuid::new_v4);
 
-    let client = OpenSecretClient::new(base_url).expect("Failed to create client");
+    let client = common::new_test_client(base_url).expect("Failed to create client");
     client
         .perform_attestation_handshake()
         .await

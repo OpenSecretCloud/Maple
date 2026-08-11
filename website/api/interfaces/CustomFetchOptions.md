@@ -26,4 +26,4 @@ API URL used for attestation; required outside OpenSecretProvider.
 
 > `optional` **pcrConfig?**: [`PcrConfig`](../type-aliases/PcrConfig.md)
 
-PCR0 trust policy enforced before non-loopback session key exchange.
+PCR0 trust policy enforced before non-loopback session key exchange; defaults to production.

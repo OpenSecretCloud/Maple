@@ -166,7 +166,7 @@ describe("attested session establishment", () => {
 
     expect(validatePcr0Hash).toHaveBeenCalledWith(
       bytesToHex(TRUSTED_PCR0),
-      expect.objectContaining(PCR_CONFIG)
+      expect.objectContaining({ ...PCR_CONFIG, environment: "production" })
     );
     expect(keyExchange).not.toHaveBeenCalled();
     expect(window.sessionStorage.length).toBe(0);
@@ -193,7 +193,7 @@ describe("attested session establishment", () => {
     expect(validatePcr0Hash).toHaveBeenCalledTimes(1);
     expect(validatePcr0Hash).toHaveBeenCalledWith(
       bytesToHex(TRUSTED_PCR0),
-      expect.objectContaining(PCR_CONFIG)
+      expect.objectContaining({ ...PCR_CONFIG, environment: "production" })
     );
     expect(keyExchange).toHaveBeenCalledTimes(1);
     expect(
@@ -231,6 +231,73 @@ describe("attested session establishment", () => {
 
     expect(verifyAttestation).toHaveBeenCalledTimes(1);
     expect(keyExchange).not.toHaveBeenCalled();
+  });
+
+  test("production and development use distinct session cache scopes", async () => {
+    const productionKey = await getAttestationSessionStorageKey(REMOTE_API_URL, PCR_CONFIG);
+    const explicitProductionKey = await getAttestationSessionStorageKey(REMOTE_API_URL, {
+      ...PCR_CONFIG,
+      environment: "production"
+    });
+    const developmentKey = await getAttestationSessionStorageKey(REMOTE_API_URL, {
+      environment: "development",
+      pcr0DevValues: [bytesToHex(TRUSTED_PCR0)],
+      remoteAttestation: false
+    });
+
+    expect(productionKey).toBe(explicitProductionKey);
+    expect(developmentKey).not.toBe(productionKey);
+  });
+
+  test("an environment change cannot reuse a session or reach key exchange when PCR0 mismatches", async () => {
+    await establish(dependencies());
+
+    const verifyAttestation = mock(async () => attestationDocument(TRUSTED_PCR0));
+    const validatePcr0Hash = mock(async () => ({
+      isMatch: false,
+      text: "PCR0 belongs to the production environment"
+    }));
+    const keyExchange = mock(async () => ({
+      encrypted_session_key: "must-not-be-used",
+      session_id: "must-not-be-created"
+    }));
+    const developmentPolicy: PcrConfig = {
+      environment: "development",
+      remoteAttestation: false
+    };
+
+    await expect(
+      establish(
+        dependencies({ verifyAttestation, validatePcr0Hash, keyExchange }),
+        REMOTE_API_URL,
+        developmentPolicy
+      )
+    ).rejects.toThrow(/PCR0/i);
+
+    expect(verifyAttestation).toHaveBeenCalledTimes(1);
+    expect(validatePcr0Hash).toHaveBeenCalledWith(
+      bytesToHex(TRUSTED_PCR0),
+      expect.objectContaining(developmentPolicy)
+    );
+    expect(keyExchange).not.toHaveBeenCalled();
+  });
+
+  test("rejects an invalid runtime environment before attestation or key exchange", async () => {
+    const verifyAttestation = mock(async () => attestationDocument(TRUSTED_PCR0));
+    const keyExchange = mock(async () => ({
+      encrypted_session_key: "must-not-be-used",
+      session_id: "must-not-be-created"
+    }));
+
+    await expect(
+      establish(dependencies({ verifyAttestation, keyExchange }), REMOTE_API_URL, {
+        environment: "staging"
+      } as unknown as PcrConfig)
+    ).rejects.toThrow(/environment/i);
+
+    expect(verifyAttestation).not.toHaveBeenCalled();
+    expect(keyExchange).not.toHaveBeenCalled();
+    expect(window.sessionStorage.length).toBe(0);
   });
 
   test("ignores and removes a legacy unscoped cached session", async () => {

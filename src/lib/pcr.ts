@@ -86,18 +86,29 @@ export type Pcr0ValidationResult = {
   verifiedAt?: string;
 };
 
+/** The OpenSecret deployment environment whose PCR0 roots are trusted. */
+export type PcrEnvironment = "production" | "development";
+
 /**
  * Configuration options for PCR validation
  */
 export type PcrConfig = {
   /**
+   * OpenSecret deployment environment to trust (defaults to production).
+   * Only this environment's embedded roots, additional roots, and signed
+   * history are considered during session establishment.
+   */
+  environment?: PcrEnvironment;
+  /**
    * Additional trusted PCR0 values for production environments.
-   * The SDK's built-in production trust roots always remain trusted.
+   * These and the SDK's built-in production roots are considered only when
+   * `environment` is `"production"`.
    */
   pcr0Values?: string[];
   /**
    * Additional trusted PCR0 values for development environments.
-   * The SDK's built-in development trust roots always remain trusted.
+   * These and the SDK's built-in development roots are considered only when
+   * `environment` is `"development"`.
    */
   pcr0DevValues?: string[];
   /**
@@ -105,7 +116,7 @@ export type PcrConfig = {
    * (defaults to true). This does not enable or disable Nitro attestation verification.
    */
   remoteAttestation?: boolean;
-  /** Custom URLs for pinned-key signed PCR history */
+  /** Custom URLs for pinned-key signed PCR history. Only the selected environment is fetched. */
   remoteAttestationUrls?: {
     /** URL for production PCR history */
     prod?: string;
@@ -157,21 +168,23 @@ async function readBoundedUtf8Body(response: Response, maxBytes: number): Promis
 }
 
 type CanonicalPcrConfig = {
-  version: "pcr0-union-v1";
+  version: "pcr0-environment-v1";
+  environment: PcrEnvironment;
   verificationKey: string;
   defaultPcr0Values: string[];
-  defaultPcr0DevValues: string[];
   pcr0Values: string[];
-  pcr0DevValues: string[];
   remoteAttestation: boolean;
-  remoteAttestationUrls: {
-    prod: string;
-    dev: string;
-  };
+  remoteAttestationUrl: string;
 };
 
 function normalizedValues(values: string[] | undefined): string[] {
   return [...new Set((values || []).map((value) => value.trim().toLowerCase()))].sort();
+}
+
+function normalizePcrEnvironment(environment: unknown): PcrEnvironment {
+  if (environment === undefined || environment === "production") return "production";
+  if (environment === "development") return "development";
+  throw new TypeError('PCR environment must be either "production" or "development".');
 }
 
 /**
@@ -180,6 +193,7 @@ function normalizedValues(values: string[] | undefined): string[] {
  */
 export function snapshotPcrConfig(config?: PcrConfig): PcrConfig {
   return {
+    environment: normalizePcrEnvironment(config?.environment),
     pcr0Values: normalizedValues(config?.pcr0Values),
     pcr0DevValues: normalizedValues(config?.pcr0DevValues),
     remoteAttestation: config?.remoteAttestation !== false,
@@ -193,18 +207,18 @@ export function snapshotPcrConfig(config?: PcrConfig): PcrConfig {
 /** Stable representation used to bind cached sessions to their trust policy. */
 export function serializePcrConfig(config?: PcrConfig): string {
   const snapshot = snapshotPcrConfig(config);
+  const environment = snapshot.environment || "production";
+  const development = environment === "development";
   const canonical: CanonicalPcrConfig = {
-    version: "pcr0-union-v1",
+    version: "pcr0-environment-v1",
+    environment,
     verificationKey: PCR_VERIFICATION_PUBLIC_KEY_B64,
-    defaultPcr0Values: [...DEFAULT_PCR0_VALUES].sort(),
-    defaultPcr0DevValues: [...DEFAULT_PCR0_VALUES_DEV].sort(),
-    pcr0Values: snapshot.pcr0Values || [],
-    pcr0DevValues: snapshot.pcr0DevValues || [],
+    defaultPcr0Values: [...(development ? DEFAULT_PCR0_VALUES_DEV : DEFAULT_PCR0_VALUES)].sort(),
+    pcr0Values: development ? snapshot.pcr0DevValues || [] : snapshot.pcr0Values || [],
     remoteAttestation: snapshot.remoteAttestation !== false,
-    remoteAttestationUrls: {
-      prod: snapshot.remoteAttestationUrls?.prod || PCR_HISTORY_URLS.prod,
-      dev: snapshot.remoteAttestationUrls?.dev || PCR_HISTORY_URLS.dev
-    }
+    remoteAttestationUrl: development
+      ? snapshot.remoteAttestationUrls?.dev || PCR_HISTORY_URLS.dev
+      : snapshot.remoteAttestationUrls?.prod || PCR_HISTORY_URLS.prod
   };
 
   return JSON.stringify(canonical);
@@ -457,21 +471,15 @@ export async function validatePcr0Hash(
 ): Promise<Pcr0ValidationResult> {
   const normalizedHash = hash.trim().toLowerCase();
   const snapshot = snapshotPcrConfig(config);
-  // First check against local values
-  const validPcr0Values = [...(snapshot.pcr0Values || []), ...DEFAULT_PCR0_VALUES];
-  const validPcr0DevValues = [...(snapshot.pcr0DevValues || []), ...DEFAULT_PCR0_VALUES_DEV];
+  const development = snapshot.environment === "development";
+  const validPcr0Values = development
+    ? [...(snapshot.pcr0DevValues || []), ...DEFAULT_PCR0_VALUES_DEV]
+    : [...(snapshot.pcr0Values || []), ...DEFAULT_PCR0_VALUES];
 
   if (validPcr0Values.includes(normalizedHash)) {
     return {
       isMatch: true,
-      text: "PCR0 matches a known good value"
-    };
-  }
-
-  if (validPcr0DevValues.includes(normalizedHash)) {
-    return {
-      isMatch: true,
-      text: "PCR0 matches development enclave"
+      text: development ? "PCR0 matches development enclave" : "PCR0 matches a known good value"
     };
   }
 
@@ -480,27 +488,13 @@ export async function validatePcr0Hash(
 
   if (remoteAttestationEnabled) {
     try {
-      // Try prod first
-      const prodResult = await validatePcrAgainstRemoteHistory(
+      const remoteResult = await validatePcrAgainstRemoteHistory(
         normalizedHash,
-        "prod",
+        development ? "dev" : "prod",
         snapshot.remoteAttestationUrls
       );
 
-      if (prodResult) {
-        return prodResult;
-      }
-
-      // Try dev if prod didn't match
-      const devResult = await validatePcrAgainstRemoteHistory(
-        normalizedHash,
-        "dev",
-        snapshot.remoteAttestationUrls
-      );
-
-      if (devResult) {
-        return devResult;
-      }
+      if (remoteResult) return remoteResult;
     } catch (error) {
       console.error("Error during remote PCR validation:", error);
       // We continue with default behavior if remote validation fails
