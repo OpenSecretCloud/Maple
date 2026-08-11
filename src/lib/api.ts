@@ -1,15 +1,22 @@
 import { encode } from "@stablelib/base64";
 import { authenticatedApiCall, encryptedApiCall, openAiAuthenticatedApiCall } from "./encryptedApi";
 import type { Model } from "openai/resources/models.js";
+import { snapshotPcrConfig, type PcrConfig } from "./pcr";
 
 let apiUrl = "";
+let apiPcrConfig: PcrConfig = snapshotPcrConfig();
 
-export function setApiUrl(url: string) {
+export function setApiUrl(url: string, pcrConfig?: PcrConfig) {
   apiUrl = url;
+  apiPcrConfig = snapshotPcrConfig(pcrConfig);
 }
 
 export function getApiUrl(): string {
   return apiUrl;
+}
+
+export function getApiPcrConfig(): PcrConfig {
+  return snapshotPcrConfig(apiPcrConfig);
 }
 
 export type LoginResponse = {

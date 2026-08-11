@@ -1,7 +1,7 @@
 import React, { createContext, useState, useEffect } from "react";
 import * as platformApi from "./platformApi";
 import { setPlatformApiUrl } from "./platformApi";
-import { getAttestation } from "./getAttestation";
+import { clearAttestationSessions, getAttestation } from "./getAttestation";
 import { authenticate } from "./attestation";
 import {
   parseAttestationForView,
@@ -11,6 +11,8 @@ import {
 } from "./attestationForView";
 import type { AttestationDocument } from "./attestation";
 import { PcrConfig } from "./pcr";
+
+const DEFAULT_PCR_CONFIG: PcrConfig = {};
 import type {
   Organization,
   Project,
@@ -177,12 +179,12 @@ export type OpenSecretDeveloperContextType = {
   refetchDeveloper: () => Promise<void>;
 
   /**
-   * Additional PCR0 hashes to validate against
+   * PCR0 trust policy enforced before every non-loopback session key exchange
    */
   pcrConfig: PcrConfig;
 
   /**
-   * Gets attestation from the enclave
+   * Gets an attested session after enforcing the effective PCR0 trust policy
    */
   getAttestation: typeof getAttestation;
 
@@ -509,6 +511,7 @@ export const OpenSecretDeveloperContext = createContext<OpenSecretDeveloperConte
  * @param props - Configuration properties for the OpenSecret developer provider
  * @param props.children - React child components to be wrapped by the provider
  * @param props.apiUrl - URL of OpenSecret developer API
+ * @param props.pcrConfig - Optional PCR0 trust policy enforced before session establishment
  *
  * @example
  * ```tsx
@@ -522,7 +525,7 @@ export const OpenSecretDeveloperContext = createContext<OpenSecretDeveloperConte
 export function OpenSecretDeveloper({
   children,
   apiUrl,
-  pcrConfig = {}
+  pcrConfig = DEFAULT_PCR_CONFIG
 }: {
   children: React.ReactNode;
   apiUrl: string;
@@ -539,7 +542,7 @@ export function OpenSecretDeveloper({
         "OpenSecretDeveloper requires a non-empty apiUrl. Please provide a valid API endpoint URL."
       );
     }
-    setPlatformApiUrl(apiUrl);
+    setPlatformApiUrl(apiUrl, pcrConfig);
 
     // Configure the apiConfig service with the platform URL
     // Using dynamic import to avoid circular dependencies
@@ -554,7 +557,7 @@ export function OpenSecretDeveloper({
           "Failed to initialize OpenSecretDeveloper - could not load required dependencies"
         );
       });
-  }, [apiUrl]);
+  }, [apiUrl, pcrConfig]);
 
   async function fetchDeveloper() {
     const access_token = window.localStorage.getItem("access_token");
@@ -652,6 +655,7 @@ export function OpenSecretDeveloper({
       }
       localStorage.removeItem("access_token");
       localStorage.removeItem("refresh_token");
+      clearAttestationSessions();
       setAuth({
         loading: false,
         developer: undefined
@@ -664,7 +668,8 @@ export function OpenSecretDeveloper({
     confirmPasswordReset: platformApi.confirmPlatformPasswordReset,
     changePassword: platformApi.changePlatformPassword,
     pcrConfig,
-    getAttestation,
+    getAttestation: (forceRefresh, explicitApiUrl, explicitPcrConfig) =>
+      getAttestation(forceRefresh, explicitApiUrl || apiUrl, explicitPcrConfig || pcrConfig),
     authenticate,
     parseAttestationForView,
     awsRootCertDer: AWS_ROOT_CERT_DER,

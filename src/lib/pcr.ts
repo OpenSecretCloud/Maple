@@ -38,6 +38,31 @@ const PCR_HISTORY_URLS = {
   dev: "https://raw.githubusercontent.com/OpenSecretCloud/opensecret/master/pcrDevHistory.json"
 };
 
+const PCR0_HEX_LENGTH = 96;
+const PCR0_HEX_PATTERN = /^[0-9a-f]{96}$/;
+const PCR_HISTORY_TIMEOUT_MS = 5000;
+const PCR_HISTORY_MAX_BYTES = 1024 * 1024;
+const PCR_HISTORY_MAX_ENTRIES = 2048;
+const PCR_SIGNATURE_BYTES = 96;
+
+export type Pcr0ValidationErrorCode =
+  | "PCR0_MISSING"
+  | "PCR0_INVALID_LENGTH"
+  | "PCR0_INVALID_FORMAT"
+  | "PCR0_ALL_ZERO"
+  | "PCR0_UNTRUSTED";
+
+/** A hard attestation failure caused by an invalid or untrusted enclave identity. */
+export class Pcr0ValidationError extends Error {
+  readonly code: Pcr0ValidationErrorCode;
+
+  constructor(code: Pcr0ValidationErrorCode, message: string) {
+    super(message);
+    this.name = "Pcr0ValidationError";
+    this.code = code;
+  }
+}
+
 /**
  * PCR history entry type
  */
@@ -65,13 +90,22 @@ export type Pcr0ValidationResult = {
  * Configuration options for PCR validation
  */
 export type PcrConfig = {
-  /** Additional custom PCR0 values for production environments */
+  /**
+   * Additional trusted PCR0 values for production environments.
+   * The SDK's built-in production trust roots always remain trusted.
+   */
   pcr0Values?: string[];
-  /** Additional custom PCR0 values for development environments */
+  /**
+   * Additional trusted PCR0 values for development environments.
+   * The SDK's built-in development trust roots always remain trusted.
+   */
   pcr0DevValues?: string[];
-  /** Enable/disable remote attestation (defaults to true) */
+  /**
+   * Whether to consult pinned-key signed PCR history after local trust roots miss
+   * (defaults to true). This does not enable or disable Nitro attestation verification.
+   */
   remoteAttestation?: boolean;
-  /** Custom URLs for remote attestation */
+  /** Custom URLs for pinned-key signed PCR history */
   remoteAttestationUrls?: {
     /** URL for production PCR history */
     prod?: string;
@@ -79,6 +113,150 @@ export type PcrConfig = {
     dev?: string;
   };
 };
+
+async function readBoundedUtf8Body(response: Response, maxBytes: number): Promise<string> {
+  // Real fetch responses expose a byte stream. Some unit-test and legacy fetch
+  // implementations only expose text(), so keep a byte-counted fallback for them.
+  if (!response.body) {
+    const text = await response.text();
+    if (new TextEncoder().encode(text).byteLength > maxBytes) {
+      throw new Error("PCR history response is too large");
+    }
+    return text;
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  let totalBytes = 0;
+  let text = "";
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+
+      totalBytes += value.byteLength;
+      if (totalBytes > maxBytes) {
+        try {
+          await reader.cancel("PCR history response is too large");
+        } catch {
+          // Preserve the size-limit failure even if the stream cannot be cancelled.
+        }
+        throw new Error("PCR history response is too large");
+      }
+
+      text += decoder.decode(value, { stream: true });
+    }
+
+    text += decoder.decode();
+    return text;
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+type CanonicalPcrConfig = {
+  version: "pcr0-union-v1";
+  verificationKey: string;
+  defaultPcr0Values: string[];
+  defaultPcr0DevValues: string[];
+  pcr0Values: string[];
+  pcr0DevValues: string[];
+  remoteAttestation: boolean;
+  remoteAttestationUrls: {
+    prod: string;
+    dev: string;
+  };
+};
+
+function normalizedValues(values: string[] | undefined): string[] {
+  return [...new Set((values || []).map((value) => value.trim().toLowerCase()))].sort();
+}
+
+/**
+ * Takes an immutable snapshot of a PCR policy before an asynchronous handshake.
+ * This prevents caller mutations from changing which policy is validated or cached.
+ */
+export function snapshotPcrConfig(config?: PcrConfig): PcrConfig {
+  return {
+    pcr0Values: normalizedValues(config?.pcr0Values),
+    pcr0DevValues: normalizedValues(config?.pcr0DevValues),
+    remoteAttestation: config?.remoteAttestation !== false,
+    remoteAttestationUrls: {
+      prod: config?.remoteAttestationUrls?.prod || PCR_HISTORY_URLS.prod,
+      dev: config?.remoteAttestationUrls?.dev || PCR_HISTORY_URLS.dev
+    }
+  };
+}
+
+/** Stable representation used to bind cached sessions to their trust policy. */
+export function serializePcrConfig(config?: PcrConfig): string {
+  const snapshot = snapshotPcrConfig(config);
+  const canonical: CanonicalPcrConfig = {
+    version: "pcr0-union-v1",
+    verificationKey: PCR_VERIFICATION_PUBLIC_KEY_B64,
+    defaultPcr0Values: [...DEFAULT_PCR0_VALUES].sort(),
+    defaultPcr0DevValues: [...DEFAULT_PCR0_VALUES_DEV].sort(),
+    pcr0Values: snapshot.pcr0Values || [],
+    pcr0DevValues: snapshot.pcr0DevValues || [],
+    remoteAttestation: snapshot.remoteAttestation !== false,
+    remoteAttestationUrls: {
+      prod: snapshot.remoteAttestationUrls?.prod || PCR_HISTORY_URLS.prod,
+      dev: snapshot.remoteAttestationUrls?.dev || PCR_HISTORY_URLS.dev
+    }
+  };
+
+  return JSON.stringify(canonical);
+}
+
+/** Converts the authenticated Nitro PCR0 value into its canonical SHA-384 hex form. */
+export function pcr0BytesToHex(pcr0: Uint8Array | undefined): string {
+  if (!pcr0) {
+    throw new Pcr0ValidationError("PCR0_MISSING", "Attestation document is missing PCR0.");
+  }
+  if (pcr0.length !== PCR0_HEX_LENGTH / 2) {
+    throw new Pcr0ValidationError(
+      "PCR0_INVALID_LENGTH",
+      "Attestation document contains an invalid PCR0 length."
+    );
+  }
+  if (pcr0.every((byte) => byte === 0)) {
+    throw new Pcr0ValidationError(
+      "PCR0_ALL_ZERO",
+      "Attestation document contains an all-zero PCR0."
+    );
+  }
+
+  const hash = Array.from(pcr0, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  if (!PCR0_HEX_PATTERN.test(hash)) {
+    throw new Pcr0ValidationError(
+      "PCR0_INVALID_FORMAT",
+      "Attestation document contains an invalid PCR0."
+    );
+  }
+  return hash;
+}
+
+/**
+ * Enforces PCR0 trust for the already Nitro-authenticated attestation document.
+ * Callers must run this before key exchange or session persistence.
+ */
+export async function requireTrustedPcr0(
+  pcrs: Map<number, Uint8Array>,
+  config?: PcrConfig,
+  validate: typeof validatePcr0Hash = validatePcr0Hash
+): Promise<{ hash: string; validation: Pcr0ValidationResult }> {
+  const hash = pcr0BytesToHex(pcrs.get(0));
+  const validation = await validate(hash, config);
+  if (!validation.isMatch) {
+    throw new Pcr0ValidationError(
+      "PCR0_UNTRUSTED",
+      "Attestation PCR0 is not in the configured trust roots."
+    );
+  }
+  return { hash, validation };
+}
 
 /**
  * Imports the verification public key into the Web Crypto API
@@ -116,18 +294,78 @@ async function fetchPcrHistory(
   env: "prod" | "dev",
   urls?: { prod?: string; dev?: string }
 ): Promise<PcrHistoryEntry[]> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), PCR_HISTORY_TIMEOUT_MS);
   try {
     const baseUrl = urls?.[env] || PCR_HISTORY_URLS[env];
-    const response = await fetch(baseUrl);
+    const parsedUrl = new URL(baseUrl);
+    if (
+      (parsedUrl.protocol !== "https:" && parsedUrl.protocol !== "http:") ||
+      parsedUrl.username ||
+      parsedUrl.password ||
+      parsedUrl.hash ||
+      baseUrl.length > 2048
+    ) {
+      throw new Error("Invalid PCR history URL");
+    }
 
-    if (!response.ok) {
+    const response = await fetch(baseUrl, {
+      redirect: "error",
+      signal: controller.signal
+    });
+
+    if (!response.ok || response.redirected) {
       throw new Error(`Failed to fetch PCR history: ${response.status}`);
     }
 
-    return await response.json();
+    const contentLength = response.headers.get("content-length");
+    if (contentLength && Number(contentLength) > PCR_HISTORY_MAX_BYTES) {
+      throw new Error("PCR history response is too large");
+    }
+
+    const text = await readBoundedUtf8Body(response, PCR_HISTORY_MAX_BYTES);
+
+    const history: unknown = JSON.parse(text);
+    if (
+      !Array.isArray(history) ||
+      history.length === 0 ||
+      history.length > PCR_HISTORY_MAX_ENTRIES ||
+      !history.every(isValidPcrHistoryEntry)
+    ) {
+      throw new Error("PCR history response has an invalid schema");
+    }
+    return history;
   } catch (error) {
     console.error("Error fetching PCR history:", error);
     throw new Error("Failed to fetch PCR history");
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function isValidPcrHistoryEntry(entry: unknown): entry is PcrHistoryEntry {
+  if (!entry || typeof entry !== "object") return false;
+  const candidate = entry as Partial<PcrHistoryEntry>;
+  if (
+    typeof candidate.PCR0 !== "string" ||
+    typeof candidate.PCR1 !== "string" ||
+    typeof candidate.PCR2 !== "string" ||
+    !PCR0_HEX_PATTERN.test(candidate.PCR0) ||
+    !PCR0_HEX_PATTERN.test(candidate.PCR1) ||
+    !PCR0_HEX_PATTERN.test(candidate.PCR2) ||
+    typeof candidate.timestamp !== "number" ||
+    !Number.isSafeInteger(candidate.timestamp) ||
+    candidate.timestamp <= 0 ||
+    typeof candidate.signature !== "string" ||
+    candidate.signature.length > 256
+  ) {
+    return false;
+  }
+
+  try {
+    return atob(candidate.signature).length === PCR_SIGNATURE_BYTES;
+  } catch {
+    return false;
   }
 }
 
@@ -217,18 +455,20 @@ export async function validatePcr0Hash(
   hash: string,
   config?: PcrConfig
 ): Promise<Pcr0ValidationResult> {
+  const normalizedHash = hash.trim().toLowerCase();
+  const snapshot = snapshotPcrConfig(config);
   // First check against local values
-  const validPcr0Values = [...(config?.pcr0Values || []), ...DEFAULT_PCR0_VALUES];
-  const validPcr0DevValues = [...(config?.pcr0DevValues || []), ...DEFAULT_PCR0_VALUES_DEV];
+  const validPcr0Values = [...(snapshot.pcr0Values || []), ...DEFAULT_PCR0_VALUES];
+  const validPcr0DevValues = [...(snapshot.pcr0DevValues || []), ...DEFAULT_PCR0_VALUES_DEV];
 
-  if (validPcr0Values.includes(hash)) {
+  if (validPcr0Values.includes(normalizedHash)) {
     return {
       isMatch: true,
       text: "PCR0 matches a known good value"
     };
   }
 
-  if (validPcr0DevValues.includes(hash)) {
+  if (validPcr0DevValues.includes(normalizedHash)) {
     return {
       isMatch: true,
       text: "PCR0 matches development enclave"
@@ -236,15 +476,15 @@ export async function validatePcr0Hash(
   }
 
   // If remote attestation is enabled (default is true), check against remote PCR history
-  const remoteAttestationEnabled = config?.remoteAttestation !== false;
+  const remoteAttestationEnabled = snapshot.remoteAttestation !== false;
 
   if (remoteAttestationEnabled) {
     try {
       // Try prod first
       const prodResult = await validatePcrAgainstRemoteHistory(
-        hash,
+        normalizedHash,
         "prod",
-        config?.remoteAttestationUrls
+        snapshot.remoteAttestationUrls
       );
 
       if (prodResult) {
@@ -253,9 +493,9 @@ export async function validatePcr0Hash(
 
       // Try dev if prod didn't match
       const devResult = await validatePcrAgainstRemoteHistory(
-        hash,
+        normalizedHash,
         "dev",
-        config?.remoteAttestationUrls
+        snapshot.remoteAttestationUrls
       );
 
       if (devResult) {

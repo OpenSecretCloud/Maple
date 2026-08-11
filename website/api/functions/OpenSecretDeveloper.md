@@ -29,7 +29,9 @@ React child components to be wrapped by the provider
 
 #### pcrConfig?
 
-[`PcrConfig`](../type-aliases/PcrConfig.md) = `{}`
+[`PcrConfig`](../type-aliases/PcrConfig.md) = `DEFAULT_PCR_CONFIG`
+
+Optional PCR0 trust policy enforced before session establishment
 
 ## Returns
 

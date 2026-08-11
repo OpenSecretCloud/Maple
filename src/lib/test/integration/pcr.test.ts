@@ -45,7 +45,7 @@ const VERIFIED_SIGNATURE =
 const originalFetch = global.fetch;
 
 // Create a more complete Response-like object for TypeScript
-function createMockResponse(data: any, status = 200, ok = true): Response {
+function createMockResponse(data: any, status = 200, ok = true, redirected = false): Response {
   return {
     ok,
     status,
@@ -53,7 +53,7 @@ function createMockResponse(data: any, status = 200, ok = true): Response {
     headers: new Headers(),
     body: null,
     bodyUsed: false,
-    redirected: false,
+    redirected,
     type: "basic" as ResponseType,
     url: "",
     json: async () => data,
@@ -68,7 +68,7 @@ function createMockResponse(data: any, status = 200, ok = true): Response {
 }
 
 // Use more precise typing for the mock function
-global.fetch = mock(async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+global.fetch = mock(async (input: RequestInfo | URL, _init?: RequestInit): Promise<Response> => {
   const url =
     typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
 
@@ -142,7 +142,7 @@ test("prioritizes local PCR0 values over remote ones", async () => {
 test("handles fetch errors gracefully", async () => {
   // Mock a failing fetch call
   const failingFetch = mock(
-    async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> => {
       throw new Error("Network error");
     }
   );
@@ -162,7 +162,7 @@ test("handles fetch errors gracefully", async () => {
 
 test("supports custom remote attestation URLs", async () => {
   const customFetch = mock(
-    async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    async (input: RequestInfo | URL, _init?: RequestInit): Promise<Response> => {
       const url =
         typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
 
@@ -194,6 +194,85 @@ test("supports custom remote attestation URLs", async () => {
     const result = await validatePcr0Hash(VERIFIED_PCR0, config);
     expect(result.isMatch).toBe(true);
     expect(result.text).toBe("PCR0 matches remotely attested value");
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("rejects a matching remote PCR0 whose pinned-key signature is tampered", async () => {
+  const tamperedHistoryFetch = mock(async (): Promise<Response> => {
+    return createMockResponse([
+      {
+        PCR0: VERIFIED_PCR0,
+        PCR1: VERIFIED_PCR1,
+        PCR2: VERIFIED_PCR2,
+        timestamp: 1743710235,
+        signature: `${VERIFIED_SIGNATURE.slice(0, -2)}AA`
+      }
+    ]);
+  });
+
+  try {
+    global.fetch = tamperedHistoryFetch;
+    const result = await validatePcr0Hash(VERIFIED_PCR0);
+    expect(result.isMatch).toBe(false);
+    expect(tamperedHistoryFetch).toHaveBeenCalledTimes(2);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("rejects and cancels PCR history streams larger than one MiB", async () => {
+  let cancelCount = 0;
+  const oversizedHistoryFetch = mock(async (): Promise<Response> => {
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(1024 * 1024).fill(0x20));
+        controller.enqueue(new Uint8Array([0x20]));
+      },
+      cancel() {
+        cancelCount += 1;
+      }
+    });
+    return new Response(stream, { status: 200 });
+  });
+
+  try {
+    global.fetch = oversizedHistoryFetch;
+    const result = await validatePcr0Hash(VERIFIED_PCR0);
+    expect(result.isMatch).toBe(false);
+    expect(oversizedHistoryFetch).toHaveBeenCalledTimes(2);
+    expect(cancelCount).toBe(2);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("rejects signed PCR history with a malformed schema", async () => {
+  const malformedHistoryFetch = mock(async (): Promise<Response> => {
+    return createMockResponse([{ PCR0: VERIFIED_PCR0 }]);
+  });
+
+  try {
+    global.fetch = malformedHistoryFetch;
+    const result = await validatePcr0Hash(VERIFIED_PCR0);
+    expect(result.isMatch).toBe(false);
+    expect(malformedHistoryFetch).toHaveBeenCalledTimes(2);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("rejects redirected signed PCR history responses", async () => {
+  const redirectedHistoryFetch = mock(async (): Promise<Response> => {
+    return createMockResponse([], 200, true, true);
+  });
+
+  try {
+    global.fetch = redirectedHistoryFetch;
+    const result = await validatePcr0Hash(VERIFIED_PCR0);
+    expect(result.isMatch).toBe(false);
+    expect(redirectedHistoryFetch).toHaveBeenCalledTimes(2);
   } finally {
     global.fetch = originalFetch;
   }

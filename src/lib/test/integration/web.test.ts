@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, expect, mock, test } from "bun:test";
-import { encode } from "@stablelib/base64";
 import { decryptMessage, encryptMessage } from "../../encryption";
+import { cacheAttestationSessionForTesting } from "../../getAttestation";
+import type { PcrConfig } from "../../pcr";
 import {
+  getApiPcrConfig,
   getApiUrl,
   setApiUrl,
   webExtract,
@@ -16,21 +18,29 @@ const apiUrl = "https://api.example.com";
 const accessToken = "web-access-token";
 const sessionId = "web-session-id";
 const sessionKey = new Uint8Array(32).fill(19);
+const verifiedPcr0 =
+  "eeddbb58f57c38894d6d5af5e575fbe791c5bf3bbcfb5df8da8cfcf0c2e1da1913108e6a762112444740b88c163d7f4b";
+const pcrConfig: PcrConfig = { pcr0Values: [verifiedPcr0], remoteAttestation: false };
 const originalFetch = globalThis.fetch;
 const originalApiUrl = getApiUrl();
+const originalApiPcrConfig = getApiPcrConfig();
 
-beforeEach(() => {
+beforeEach(async () => {
   window.localStorage.clear();
   window.sessionStorage.clear();
   window.localStorage.setItem("access_token", accessToken);
-  window.sessionStorage.setItem("sessionKey", encode(sessionKey));
-  window.sessionStorage.setItem("sessionId", sessionId);
-  setApiUrl(apiUrl);
+  setApiUrl(apiUrl, pcrConfig);
+  await cacheAttestationSessionForTesting(
+    apiUrl,
+    pcrConfig,
+    { sessionKey, sessionId },
+    verifiedPcr0
+  );
 });
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
-  setApiUrl(originalApiUrl);
+  setApiUrl(originalApiUrl, originalApiPcrConfig);
   window.localStorage.clear();
   window.sessionStorage.clear();
 });
