@@ -1,9 +1,9 @@
 use crate::agent::{
     AgentConfig, AgentCreateSessionRequest, AgentEventSink, AgentMcpServer,
     AgentPermissionModeRequest, AgentPermissionResponse, AgentProjectRootRegistration,
-    AgentProjectSkillsTrustStatus, AgentRunEvent, AgentRunResponse, AgentRunTerminal,
-    AgentRuntimeHandle, AgentRuntimeStatus, AgentSendMessageRequest, AgentServiceEvent,
-    AgentSessionDetail, AgentSessionMcpServer, AgentSessionSummary,
+    AgentProjectSkillsTrustStatus, AgentRenameSessionRequest, AgentRunEvent, AgentRunResponse,
+    AgentRunTerminal, AgentRuntimeHandle, AgentRuntimeStatus, AgentSendMessageRequest,
+    AgentServiceEvent, AgentSessionDetail, AgentSessionMcpServer, AgentSessionSummary,
     AgentSetSessionMcpServerRequest, AgentStartRequest, AgentTimelineItem, MapleAgentService,
     RecentProjectRoot,
 };
@@ -412,6 +412,18 @@ pub async fn agent_load_session(
         .await?
         .load_session(session_id)
         .await
+}
+
+#[tauri::command]
+pub async fn agent_rename_session(
+    state: State<'_, MapleAgentService>,
+    api_auth_state: State<'_, MapleApiAuthState>,
+    user_id: String,
+    request: AgentRenameSessionRequest,
+) -> Result<AgentSessionSummary, String> {
+    let handle = handle_for_user(&state, &user_id).await?;
+    let api_session = api_auth_state.session_for(&user_id).await?;
+    handle.rename_session(api_session, request).await
 }
 
 #[tauri::command]

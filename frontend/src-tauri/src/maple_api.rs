@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, RwLockReadGuard};
 use tokio_util::sync::CancellationToken;
 
 const AUTH_CHANGED_EVENT: &str = "maple-api-auth-changed";
@@ -82,6 +82,10 @@ pub(crate) struct MapleApiSession {
     native_instance_id: String,
     event_sink: Arc<dyn MapleApiAuthEventSink>,
     inner: RwLock<MapleApiSessionInner>,
+}
+
+pub(crate) struct MapleApiAuthLease<'a> {
+    _inner: RwLockReadGuard<'a, MapleApiSessionInner>,
 }
 
 struct ClientSnapshot {
@@ -170,6 +174,19 @@ impl MapleApiSession {
 
     async fn invalidate(&self) {
         self.inner.write().await.active = false;
+    }
+
+    pub(crate) async fn active_lease(&self) -> Result<MapleApiAuthLease<'_>, String> {
+        let inner = self.inner.read().await;
+        if !inner.active {
+            return Err("Maple API authentication is no longer active".to_string());
+        }
+        Ok(MapleApiAuthLease { _inner: inner })
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn invalidate_for_test(&self) {
+        self.invalidate().await;
     }
 
     async fn client_snapshot(&self) -> Result<ClientSnapshot, String> {
@@ -312,6 +329,32 @@ impl MapleApiSession {
         });
         operation.await.map_err(map_operation_join_error)?
     }
+}
+
+#[cfg(test)]
+struct TestMapleApiAuthEventSink;
+
+#[cfg(test)]
+impl MapleApiAuthEventSink for TestMapleApiAuthEventSink {
+    fn auth_changed(&self, _user_id: &str, _revision: u64) {}
+}
+
+#[cfg(test)]
+pub(crate) fn test_maple_api_session(user_id: &str) -> Arc<MapleApiSession> {
+    let user_id = normalized_user_id(user_id).unwrap();
+    let account_scope = account_scope(&user_id).unwrap();
+    let client = build_client("http://127.0.0.1:1", "test-access-token".to_string(), None).unwrap();
+    Arc::new(
+        MapleApiSession::new(
+            Arc::new(TestMapleApiAuthEventSink),
+            user_id,
+            account_scope,
+            "test-native-instance".to_string(),
+            "http://127.0.0.1:1".to_string(),
+            client,
+        )
+        .unwrap(),
+    )
 }
 
 fn map_operation_join_error(error: tokio::task::JoinError) -> opensecret::Error {

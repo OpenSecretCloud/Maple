@@ -7,6 +7,8 @@ import {
   type AgentRuntimeStopBridge,
   type AgentRuntimeLifecycleOutcome,
   type AgentCreateSessionRequest,
+  type AgentRenameSessionRequest,
+  type AgentSessionSummary,
   type AgentSendMessageRequest
 } from "./agentRuntimeService";
 import type { AgentOperationBlock } from "./agentOperationFence";
@@ -14,6 +16,8 @@ import type { AgentOperationBlock } from "./agentOperationFence";
 class RecordingBridge implements AgentRuntimeBridge {
   readonly events: string[] = [];
   lastArgs: Record<string, unknown> | undefined;
+  response: unknown;
+  invokeError: unknown;
 
   async syncAuth(userId: string): Promise<void> {
     this.events.push(`sync:${userId}`);
@@ -27,7 +31,8 @@ class RecordingBridge implements AgentRuntimeBridge {
   async invoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
     this.events.push(`invoke:${command}`);
     this.lastArgs = args;
-    return undefined as T;
+    if (this.invokeError) throw this.invokeError;
+    return this.response as T;
   }
 }
 
@@ -71,6 +76,43 @@ describe("AgentRuntimeService", () => {
 
     expect(bridge.events).toEqual(["fence:user-a", "sync:user-a", "invoke:agent_create_session"]);
     expect(bridge.lastArgs).toEqual({ userId: "user-a", request });
+  });
+
+  test("session rename forwards the request and returns the persisted summary", async () => {
+    const bridge = new RecordingBridge();
+    const service = new AgentRuntimeService(bridge);
+    const request: AgentRenameSessionRequest = {
+      sessionId: "session-1",
+      title: "Renamed task"
+    };
+    const summary: AgentSessionSummary = {
+      id: "session-1",
+      title: "Renamed task",
+      projectRoot: "/tmp/project",
+      createdMs: 100,
+      updatedMs: 200,
+      messageCount: 3,
+      model: "kimi-k2-6",
+      mode: "auto"
+    };
+    bridge.response = summary;
+
+    const result = await service.renameSession("user-a", request);
+
+    expect(result).toBe(summary);
+    expect(bridge.events).toEqual(["fence:user-a", "sync:user-a", "invoke:agent_rename_session"]);
+    expect(bridge.lastArgs).toEqual({ userId: "user-a", request });
+  });
+
+  test("session rename propagates persistence failures", async () => {
+    const bridge = new RecordingBridge();
+    const service = new AgentRuntimeService(bridge);
+    const persistenceError = new Error("database write failed");
+    bridge.invokeError = persistenceError;
+
+    await expect(
+      service.renameSession("user-a", { sessionId: "session-1", title: "Renamed task" })
+    ).rejects.toBe(persistenceError);
   });
 });
 

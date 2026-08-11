@@ -308,6 +308,13 @@ pub struct AgentSendMessageRequest {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AgentRenameSessionRequest {
+    pub session_id: String,
+    pub title: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AgentPermissionResponse {
     pub session_id: String,
     pub request_id: String,
@@ -1081,6 +1088,19 @@ fn session_title_from_prompt(prompt: &str) -> String {
     title.truncate(title.trim_end().len());
     title.push('…');
     title
+}
+
+fn normalize_user_provided_session_title(title: &str) -> Result<String, String> {
+    let title = title.trim();
+    if title.is_empty() {
+        return Err("Agent task title cannot be empty".to_string());
+    }
+    if title.chars().count() > MAX_AGENT_SESSION_TITLE_CHARS {
+        return Err(format!(
+            "Agent task title must be {MAX_AGENT_SESSION_TITLE_CHARS} characters or fewer"
+        ));
+    }
+    Ok(title.to_string())
 }
 
 fn should_name_session_from_prompt(session: &Session) -> bool {
@@ -2435,6 +2455,61 @@ impl AgentRuntimeHandle {
         })
     }
 
+    pub(crate) async fn rename_session(
+        &self,
+        maple_api_session: Arc<MapleApiSession>,
+        request: AgentRenameSessionRequest,
+    ) -> Result<AgentSessionSummary, String> {
+        let state = &self.service;
+        let user_id = self.user_id.as_ref();
+        let account_scope = self.account_scope.as_ref();
+        ensure_account_scope(maple_api_session.account_scope(), account_scope).map_err(|_| {
+            "Maple API authentication belongs to a different signed-in account".to_string()
+        })?;
+        let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
+        self.verify_generation().await?;
+        self.ensure_accepting_new_work()?;
+
+        let session_id = request.session_id.trim().to_string();
+        if session_id.is_empty() {
+            return Err("Agent task rename requires a task ID".to_string());
+        }
+        let title = normalize_user_provided_session_title(&request.title)?;
+        let _session_lifecycle_guard = state.session_lifecycle.lock().await;
+        let _auth_lease = maple_api_session.active_lease().await?;
+        let session_manager = {
+            let runtime = state.inner.lock().await;
+            match runtime.as_ref() {
+                Some(current) => {
+                    ensure_runtime_account(current, account_scope)?;
+                    Arc::clone(&current.session_manager)
+                }
+                None => account_session_manager(&state.host.paths, user_id)?,
+            }
+        };
+
+        session_manager
+            .update(&session_id)
+            .user_provided_name(title)
+            .apply()
+            .await
+            .map_err(|error| format!("Failed to rename Agent task: {error}"))?;
+        let session = session_manager
+            .get_session(&session_id, false)
+            .await
+            .map_err(|error| format!("Failed to load renamed Agent task: {error}"))?;
+        let summary = session_summary(&session);
+        emit_agent_event(
+            &state.host.events,
+            AgentServiceEvent::SessionUpdated {
+                session_id,
+                run_id: None,
+                session: summary.clone(),
+            },
+        );
+        Ok(summary)
+    }
+
     pub(crate) async fn list_session_mcp_servers(
         &self,
         session_id: String,
@@ -3298,6 +3373,7 @@ impl AgentRuntimeHandle {
                         events: task_events.clone(),
                         agent: Arc::clone(&task_agent),
                         session_manager: Arc::clone(&task_session_manager),
+                        session_lifecycle: Arc::clone(&session_lifecycle),
                         live_timelines: live_timelines.clone(),
                         session_id: session_id.clone(),
                         user_message: task_user_message.clone(),
@@ -3979,6 +4055,7 @@ struct AgentPromptRun {
     events: AgentRunEventPublisher,
     agent: Arc<Agent>,
     session_manager: Arc<SessionManager>,
+    session_lifecycle: Arc<Mutex<()>>,
     live_timelines: LiveTimelines,
     session_id: String,
     user_message: Message,
@@ -4401,6 +4478,7 @@ async fn run_agent_prompt(run: AgentPromptRun) -> Result<AgentPromptOutcome, Str
         events,
         agent,
         session_manager,
+        session_lifecycle,
         live_timelines,
         session_id,
         user_message,
@@ -4426,6 +4504,7 @@ async fn run_agent_prompt(run: AgentPromptRun) -> Result<AgentPromptOutcome, Str
         .reply(user_message, session_config, Some(cancel_token.clone()))
         .await
         .map_err(|e| format!("Goose reply failed: {e}"))?;
+    let session_lifecycle_guard = session_lifecycle.lock().await;
     let updated_session = session_manager
         .get_session(&session_id, false)
         .await
@@ -4436,6 +4515,7 @@ async fn run_agent_prompt(run: AgentPromptRun) -> Result<AgentPromptOutcome, Str
             &updated_session,
         )))
         .await;
+    drop(session_lifecycle_guard);
     if let Some(start) = session_title_start {
         // Goose has persisted the first user message and Maple has published
         // the fallback snapshot. A semantic title can now advance that state,
@@ -7364,6 +7444,32 @@ mod tests {
             std::process::id(),
             NEXT_RUN_ID.fetch_add(1, Ordering::Relaxed)
         ))
+    }
+
+    fn agent_service_test_context(
+        label: &str,
+        event_sink: Arc<dyn AgentEventSink>,
+    ) -> (PathBuf, AgentPathLayout, MapleAgentService) {
+        let test_root = recent_roots_test_dir(label);
+        let paths = AgentPathLayout::from_app_roots(
+            test_root.join("app-config"),
+            test_root.join("app-local-data"),
+        );
+        let service = MapleAgentService::new(MapleAgentHostResources::new(
+            paths.clone(),
+            event_sink,
+            AgentToolContextSpec::default(),
+        ));
+        (test_root, paths, service)
+    }
+
+    fn persisted_session_except_title(session: &Session) -> Value {
+        let mut value = serde_json::to_value(session).unwrap();
+        let fields = value.as_object_mut().unwrap();
+        fields.remove("name");
+        fields.remove("user_set_name");
+        fields.remove("updated_at");
+        value
     }
 
     fn test_project_path(label: &str) -> String {
@@ -11199,6 +11305,281 @@ mod tests {
         assert!(ensure_account_scope(&first, &first).is_ok());
         assert!(ensure_account_scope(&first, &second).is_err());
     }
+
+    #[test]
+    fn user_provided_session_title_trims_and_enforces_unicode_scalar_limit() {
+        assert_eq!(
+            normalize_user_provided_session_title("\u{2003}Renamed 🙂\u{2003}").unwrap(),
+            "Renamed 🙂"
+        );
+        assert_eq!(
+            normalize_user_provided_session_title(" \n\t ").unwrap_err(),
+            "Agent task title cannot be empty"
+        );
+
+        let maximum = "🙂".repeat(MAX_AGENT_SESSION_TITLE_CHARS);
+        assert_eq!(
+            normalize_user_provided_session_title(&maximum).unwrap(),
+            maximum
+        );
+        assert_eq!(
+            normalize_user_provided_session_title(&"🙂".repeat(MAX_AGENT_SESSION_TITLE_CHARS + 1))
+                .unwrap_err(),
+            format!("Agent task title must be {MAX_AGENT_SESSION_TITLE_CHARS} characters or fewer")
+        );
+    }
+
+    #[tokio::test]
+    async fn rename_session_is_account_scoped_persistent_and_authoritative() {
+        let sink = Arc::new(RecordingAgentEventSink::default());
+        let (test_root, paths, state) = agent_service_test_context("rename-session", sink.clone());
+        let first_user = "rename-user-a";
+        let second_user = "rename-user-b";
+        let project_root = test_root.join("project");
+        fs::create_dir_all(&project_root).unwrap();
+        let first_manager = account_session_manager(&paths, first_user).unwrap();
+        let second_manager = account_session_manager(&paths, second_user).unwrap();
+        let first_session = first_manager
+            .create_session(
+                project_root.clone(),
+                "Original task".to_string(),
+                SessionType::User,
+                GooseMode::SmartApprove,
+            )
+            .await
+            .unwrap();
+        let second_session = second_manager
+            .create_session(
+                project_root.clone(),
+                "Other account task".to_string(),
+                SessionType::User,
+                GooseMode::SmartApprove,
+            )
+            .await
+            .unwrap();
+        first_manager
+            .update(&first_session.id)
+            .model_config(ModelConfig::new("preserved-model").with_context_limit(Some(42_424)))
+            .goose_mode(GooseMode::Chat)
+            .apply()
+            .await
+            .unwrap();
+        first_manager
+            .add_message(
+                &first_session.id,
+                &Message::user()
+                    .with_text("Preserve this message")
+                    .with_generated_id(),
+            )
+            .await
+            .unwrap();
+        let before = first_manager
+            .get_session(&first_session.id, true)
+            .await
+            .unwrap();
+        let handle = state.handle_for_user(first_user).await.unwrap();
+        let api_session = crate::maple_api::test_maple_api_session(first_user);
+        assert_eq!(first_session.id, second_session.id);
+
+        let summary = handle
+            .rename_session(
+                api_session,
+                AgentRenameSessionRequest {
+                    session_id: format!(" {} ", first_session.id),
+                    title: " \u{2003}Renamed task 🙂\u{2003} ".to_string(),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(summary.id, first_session.id);
+        assert_eq!(summary.title, "Renamed task 🙂");
+        assert_eq!(summary.project_root, path_string(&project_root));
+        assert_eq!(summary.message_count, 1);
+        assert_eq!(summary.model.as_deref(), Some("preserved-model"));
+        assert_eq!(summary.mode, "chat");
+
+        let persisted = first_manager
+            .get_session(&first_session.id, true)
+            .await
+            .unwrap();
+        assert_eq!(persisted.name, "Renamed task 🙂");
+        assert!(persisted.user_set_name);
+        assert_eq!(
+            persisted_session_except_title(&persisted),
+            persisted_session_except_title(&before)
+        );
+        let isolated = second_manager
+            .get_session(&second_session.id, false)
+            .await
+            .unwrap();
+        assert_eq!(isolated.name, "Other account task");
+        assert!(!isolated.user_set_name);
+
+        let events = sink
+            .events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            AgentServiceEvent::SessionUpdated {
+                session_id,
+                run_id,
+                session,
+            } => {
+                assert_eq!(session_id, &first_session.id);
+                assert!(run_id.is_none());
+                assert_eq!(session.title, "Renamed task 🙂");
+            }
+            event => panic!("unexpected rename event: {event:?}"),
+        }
+
+        drop(handle);
+        drop(state);
+        drop(first_manager);
+        drop(second_manager);
+        let restarted = MapleAgentService::new(MapleAgentHostResources::new(
+            paths.clone(),
+            Arc::new(NoopAgentEventSink),
+            AgentToolContextSpec::default(),
+        ));
+        let restarted_handle = restarted.handle_for_user(first_user).await.unwrap();
+        let listed = restarted_handle.list_sessions(None).await.unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].title, "Renamed task 🙂");
+        let loaded = restarted_handle
+            .load_session(first_session.id.clone())
+            .await
+            .unwrap();
+        assert_eq!(loaded.session.title, "Renamed task 🙂");
+        assert_eq!(loaded.session.message_count, 1);
+
+        drop(restarted_handle);
+        drop(restarted);
+        let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[tokio::test]
+    async fn stale_handle_cannot_rename_or_emit_an_event() {
+        let sink = Arc::new(RecordingAgentEventSink::default());
+        let (test_root, paths, state) = agent_service_test_context("stale-rename", sink.clone());
+        let user_id = "stale-rename-user";
+        let project_root = test_root.join("project");
+        fs::create_dir_all(&project_root).unwrap();
+        let session_manager = account_session_manager(&paths, user_id).unwrap();
+        let session = session_manager
+            .create_session(
+                project_root,
+                "Original task".to_string(),
+                SessionType::User,
+                GooseMode::SmartApprove,
+            )
+            .await
+            .unwrap();
+        let stale_handle = state.handle_for_user(user_id).await.unwrap();
+        let api_session = crate::maple_api::test_maple_api_session(user_id);
+        advance_account_generation(&state, &account_scope(user_id).unwrap()).await;
+
+        assert_eq!(
+            stale_handle
+                .rename_session(
+                    api_session,
+                    AgentRenameSessionRequest {
+                        session_id: session.id.clone(),
+                        title: "Rejected rename".to_string(),
+                    },
+                )
+                .await
+                .unwrap_err(),
+            "Agent Mode data changed while this operation was waiting"
+        );
+        let persisted = session_manager
+            .get_session(&session.id, false)
+            .await
+            .unwrap();
+        assert_eq!(persisted.name, "Original task");
+        assert!(!persisted.user_set_name);
+        assert!(sink
+            .events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_empty());
+
+        drop(stale_handle);
+        drop(state);
+        drop(session_manager);
+        let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[tokio::test]
+    async fn invalidated_auth_cannot_rename_after_waiting_for_session_lifecycle() {
+        let sink = Arc::new(RecordingAgentEventSink::default());
+        let (test_root, paths, state) =
+            agent_service_test_context("invalidated-auth-rename", sink.clone());
+        let user_id = "invalidated-auth-rename-user";
+        let project_root = test_root.join("project");
+        fs::create_dir_all(&project_root).unwrap();
+        let session_manager = account_session_manager(&paths, user_id).unwrap();
+        let session = session_manager
+            .create_session(
+                project_root,
+                "Original task".to_string(),
+                SessionType::User,
+                GooseMode::SmartApprove,
+            )
+            .await
+            .unwrap();
+        let handle = state.handle_for_user(user_id).await.unwrap();
+        let api_session = crate::maple_api::test_maple_api_session(user_id);
+        let session_lifecycle_guard = state.session_lifecycle.lock().await;
+        let rename_api_session = Arc::clone(&api_session);
+        let rename_session_id = session.id.clone();
+        let rename_task = tokio::spawn(async move {
+            handle
+                .rename_session(
+                    rename_api_session,
+                    AgentRenameSessionRequest {
+                        session_id: rename_session_id,
+                        title: "Rejected rename".to_string(),
+                    },
+                )
+                .await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if state.runtime_lifecycle.try_lock().is_err() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the rename should wait for the session lifecycle");
+
+        api_session.invalidate_for_test().await;
+        drop(session_lifecycle_guard);
+
+        assert_eq!(
+            rename_task.await.unwrap().unwrap_err(),
+            "Maple API authentication is no longer active"
+        );
+        let persisted = session_manager
+            .get_session(&session.id, false)
+            .await
+            .unwrap();
+        assert_eq!(persisted.name, "Original task");
+        assert!(!persisted.user_set_name);
+        assert!(sink
+            .events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_empty());
+
+        drop(state);
+        drop(session_manager);
+        let _ = fs::remove_dir_all(test_root);
+    }
+
     #[tokio::test]
     async fn rejects_operations_captured_before_account_clear() {
         let state = MapleAgentService::new(MapleAgentHostResources::new(
@@ -11382,6 +11763,7 @@ mod tests {
             "fast-reply-run".to_string(),
             AgentHostEventPolicy::Suppress,
         );
+        let session_lifecycle = Arc::new(Mutex::new(()));
         let (title_start, title_start_rx) = oneshot::channel();
         let (_title_settled, title_settled_rx) = oneshot::channel();
         let title_task = tokio::spawn(run_agent_session_title_task(AgentSessionTitleJob {
@@ -11389,7 +11771,7 @@ mod tests {
             settled: title_settled_rx,
             session_manager: Arc::clone(&session_manager),
             agent: Arc::clone(&agent),
-            session_lifecycle: Arc::new(Mutex::new(())),
+            session_lifecycle: Arc::clone(&session_lifecycle),
             session_id: session.id.clone(),
             first_prompt: "hey how are you?".to_string(),
             expected_fallback_title: "hey how are you?".to_string(),
@@ -11404,6 +11786,7 @@ mod tests {
                 events,
                 agent: Arc::clone(&agent),
                 session_manager: Arc::clone(&session_manager),
+                session_lifecycle,
                 live_timelines: Arc::new(Mutex::new(HashMap::new())),
                 session_id: session.id.clone(),
                 user_message: Message::user().with_text(prompt).with_generated_id(),
@@ -11466,6 +11849,141 @@ mod tests {
         drop(emitted);
         drop(agent);
         drop(session_manager);
+        let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[tokio::test]
+    async fn rename_waits_for_initial_run_summary_before_publishing_new_title() {
+        let sink = Arc::new(RecordingAgentEventSink::default());
+        let (test_root, paths, state) =
+            agent_service_test_context("rename-during-run-summary", sink.clone());
+        let user_id = "rename-during-run-summary-user";
+        let project_root = test_root.join("project");
+        fs::create_dir_all(&project_root).unwrap();
+        let session_manager = Arc::new(account_session_manager(&paths, user_id).unwrap());
+        let permission_manager = Arc::new(PermissionManager::new(test_root.join("permissions")));
+        let session = session_manager
+            .create_session(
+                project_root,
+                "Fallback task".to_string(),
+                SessionType::User,
+                GooseMode::SmartApprove,
+            )
+            .await
+            .unwrap();
+        let agent = Arc::new(Agent::with_config(GooseAgentConfig::new(
+            Arc::clone(&session_manager),
+            permission_manager,
+            None,
+            GooseMode::SmartApprove,
+            true,
+            GoosePlatform::GooseDesktop,
+        )));
+        agent
+            .update_provider(
+                Arc::new(SessionTitleTestProvider {
+                    calls: Arc::new(AtomicUsize::new(0)),
+                    response: "Done",
+                }),
+                ModelConfig::new(DEFAULT_AGENT_MODEL),
+                &session.id,
+            )
+            .await
+            .unwrap();
+        let handle = state.handle_for_user(user_id).await.unwrap();
+        let api_session = crate::maple_api::test_maple_api_session(user_id);
+        let (events, _run_events) = AgentRunEventPublisher::new(
+            AgentEventDispatcher::new(sink.clone()),
+            session.id.clone(),
+            "rename-during-run-summary".to_string(),
+            AgentHostEventPolicy::Publish,
+        );
+        let event_order = Arc::clone(&events.order);
+        let event_order_guard = event_order.lock().await;
+        let prompt = "Start the task";
+        let prompt_task = tokio::spawn(run_agent_prompt(AgentPromptRun {
+            events,
+            agent: Arc::clone(&agent),
+            session_manager: Arc::clone(&session_manager),
+            session_lifecycle: Arc::clone(&state.session_lifecycle),
+            live_timelines: Arc::new(Mutex::new(HashMap::new())),
+            session_id: session.id.clone(),
+            user_message: Message::user().with_text(prompt).with_generated_id(),
+            permission_modes: Arc::new(Mutex::new(HashMap::new())),
+            web_tool_state: Arc::new(WebToolState::default()),
+            web_permission_context: WebPermissionContext::from_user_prompt(prompt),
+            cancel_token: CancellationToken::new(),
+            session_title_start: None,
+            pending_permissions: Arc::new(Mutex::new(HashMap::new())),
+            issued_permission_ids: Arc::new(Mutex::new(HashSet::new())),
+            cancelled_permission_ids: Arc::new(Mutex::new(HashSet::new())),
+            run_id: "rename-during-run-summary".to_string(),
+            permission_routing: AgentPermissionRouting::Desktop,
+        }));
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if state.session_lifecycle.try_lock().is_err() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the run should hold the session lifecycle while publishing its summary");
+
+        let rename_task = tokio::spawn(async move {
+            handle
+                .rename_session(
+                    api_session,
+                    AgentRenameSessionRequest {
+                        session_id: session.id,
+                        title: "Manual title".to_string(),
+                    },
+                )
+                .await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if state.runtime_lifecycle.try_lock().is_err() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the rename should wait behind the run summary");
+        assert!(!rename_task.is_finished());
+
+        drop(event_order_guard);
+        prompt_task.await.unwrap().unwrap();
+        let renamed = rename_task.await.unwrap().unwrap();
+        assert_eq!(renamed.title, "Manual title");
+
+        let emitted_titles = sink
+            .events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .filter_map(|event| match event {
+                AgentServiceEvent::Run {
+                    event: AgentRunEvent::SessionUpdated(session),
+                    ..
+                }
+                | AgentServiceEvent::SessionUpdated { session, .. } => Some(session.title.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(emitted_titles, vec!["Fallback task", "Manual title"]);
+        let persisted = session_manager
+            .get_session(&renamed.id, false)
+            .await
+            .unwrap();
+        assert_eq!(persisted.name, "Manual title");
+        assert!(persisted.user_set_name);
+
+        drop(agent);
+        drop(session_manager);
+        drop(state);
         let _ = fs::remove_dir_all(test_root);
     }
 
@@ -11878,14 +12396,53 @@ mod tests {
             title_release: Arc::clone(&title_release),
             title_cancel_token: title_cancel_token.clone(),
         });
-        let (test_root, session_manager, agent, session) =
-            session_title_test_context("manual-title-wins", provider).await;
+        let sink = Arc::new(RecordingAgentEventSink::default());
+        let (test_root, paths, state) =
+            agent_service_test_context("manual-title-wins", sink.clone());
+        let user_id = "manual-title-user";
+        let project_root = test_root.join("project");
+        fs::create_dir_all(&project_root).unwrap();
+        let session_manager = account_session_manager(&paths, user_id).unwrap();
+        let permission_manager = Arc::new(PermissionManager::new(test_root.join("permissions")));
+        let session = session_manager
+            .create_session(
+                project_root,
+                DEFAULT_AGENT_SESSION_TITLE.to_string(),
+                SessionType::User,
+                GooseMode::SmartApprove,
+            )
+            .await
+            .unwrap();
+        let agent = Agent::with_config(GooseAgentConfig::new(
+            Arc::clone(&session_manager),
+            permission_manager,
+            None,
+            GooseMode::SmartApprove,
+            true,
+            GoosePlatform::GooseDesktop,
+        ));
+        agent
+            .update_provider(provider, ModelConfig::new(DEFAULT_AGENT_MODEL), &session.id)
+            .await
+            .unwrap();
+        session_manager
+            .update(&session.id)
+            .system_generated_name("Explain reactive titles".to_string())
+            .apply()
+            .await
+            .unwrap();
+        session_manager
+            .add_message(
+                &session.id,
+                &Message::user().with_text("Explain how reactive Agent titles work"),
+            )
+            .await
+            .unwrap();
         let agent = Arc::new(agent);
         let generation_session_manager = Arc::clone(&session_manager);
         let generation_agent = Arc::clone(&agent);
         let generation_session_id = session.id.clone();
-        let session_lifecycle = Arc::new(Mutex::new(()));
-        let generation_session_lifecycle = Arc::clone(&session_lifecycle);
+        let generation_session_lifecycle = Arc::clone(&state.session_lifecycle);
         let generation = tokio::spawn(async move {
             generate_agent_session_title(AgentSessionTitleGeneration {
                 session_manager: generation_session_manager.as_ref(),
@@ -11903,15 +12460,20 @@ mod tests {
         tokio::time::timeout(std::time::Duration::from_secs(1), title_started.notified())
             .await
             .expect("title inference should start");
-        {
-            let _session_lifecycle_guard = session_lifecycle.lock().await;
-            session_manager
-                .update(&session.id)
-                .user_provided_name("My Manual Title".to_string())
-                .apply()
-                .await
-                .unwrap();
-        }
+        let summary = state
+            .handle_for_user(user_id)
+            .await
+            .unwrap()
+            .rename_session(
+                crate::maple_api::test_maple_api_session(user_id),
+                AgentRenameSessionRequest {
+                    session_id: session.id.clone(),
+                    title: " My Manual Title ".to_string(),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(summary.title, "My Manual Title");
         title_release.notify_one();
 
         assert!(generation.await.unwrap().unwrap().is_none());
@@ -11921,9 +12483,24 @@ mod tests {
             .unwrap();
         assert_eq!(reloaded.name, "My Manual Title");
         assert!(reloaded.user_set_name);
+        let events = sink
+            .events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            &events[0],
+            AgentServiceEvent::SessionUpdated {
+                session_id,
+                run_id: None,
+                session,
+            } if session_id == &reloaded.id && session.title == "My Manual Title"
+        ));
 
         drop(agent);
         drop(session_manager);
+        drop(state);
         let _ = fs::remove_dir_all(test_root);
     }
 

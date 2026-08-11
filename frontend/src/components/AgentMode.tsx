@@ -89,6 +89,7 @@ import { Sidebar, SidebarToggle } from "@/components/Sidebar";
 import { MapleWordmark } from "@/components/MapleWordmark";
 import { DeleteChatDialog } from "@/components/DeleteChatDialog";
 import { RenameAgentProjectDialog } from "@/components/RenameAgentProjectDialog";
+import { RenameAgentTaskDialog } from "@/components/RenameAgentTaskDialog";
 import { UpgradePromptDialog } from "@/components/UpgradePromptDialog";
 import { AgentMcpMenu, AgentMcpServersDialog } from "@/components/agent/AgentMcpControls";
 import { AgentSidebarInfoCard } from "@/components/agent/AgentSidebarInfoCard";
@@ -402,6 +403,7 @@ export function AgentMode({ userId }: { userId: string }) {
   const sessionListAppliedGenerationRef = useRef(0);
   const [isSessionHistoryReady, setIsSessionHistoryReady] = useState(false);
   const [sessionToDelete, setSessionToDelete] = useState<AgentSessionSummary | null>(null);
+  const [sessionToRename, setSessionToRename] = useState<AgentSessionSummary | null>(null);
   const [projectToRename, setProjectToRename] = useState<AgentProjectRootView | null>(null);
   const [projectToRemove, setProjectToRemove] = useState<AgentProjectRootView | null>(null);
   const [projectRemovalError, setProjectRemovalError] = useState<string | null>(null);
@@ -479,6 +481,7 @@ export function AgentMode({ userId }: { userId: string }) {
   const previousIsCompactLayoutRef = useRef(isCompactLayout);
   const hasAttemptedSessionRestoreRef = useRef(false);
   const isAgentModeMountedRef = useRef(true);
+  const renameTaskMenuTriggerRef = useRef<HTMLButtonElement | null>(null);
   const projectOrderRequestIdRef = useRef(0);
   const projectSkillsTrustGenerationRef = useRef(0);
   const thoughtPhaseTrackerRef = useLazyRef(() => new AgentLiveThoughtPhaseTracker());
@@ -2309,6 +2312,7 @@ export function AgentMode({ userId }: { userId: string }) {
       });
       clearActiveRun(sessionId);
       setSessionToDelete((current) => (current?.id === sessionId ? null : current));
+      setSessionToRename((current) => (current?.id === sessionId ? null : current));
 
       if (activeSessionIdRef.current === sessionId) {
         activeSessionIdRef.current = null;
@@ -2428,6 +2432,23 @@ export function AgentMode({ userId }: { userId: string }) {
       });
     },
     [deletedSessionIdsRef, markSessionSummaryChanged]
+  );
+
+  const renameAgentSession = useCallback(
+    async (sessionId: string, title: string) => {
+      const revision = sessionSummaryRevisionsRef.current.get(sessionId);
+      const summary = await agentRuntimeService.renameSession(userId, { sessionId, title });
+      if (
+        !isAgentModeMountedRef.current ||
+        userIdRef.current !== userId ||
+        deletedSessionIdsRef.current.has(sessionId) ||
+        sessionSummaryRevisionsRef.current.get(sessionId) !== revision
+      ) {
+        return;
+      }
+      upsertSessionSummary(summary);
+    },
+    [deletedSessionIdsRef, upsertSessionSummary, userId]
   );
 
   const observeLiveThoughtItem = useCallback(
@@ -2659,6 +2680,18 @@ export function AgentMode({ userId }: { userId: string }) {
   const handlePromptProjectRename = useCallback((root: AgentProjectRootView) => {
     setProjectToRename(root);
   }, []);
+  const handlePromptSessionRename = useCallback(
+    (session: AgentSessionSummary, menuTrigger: HTMLButtonElement) => {
+      renameTaskMenuTriggerRef.current = menuTrigger;
+      setSessionToRename(session);
+    },
+    []
+  );
+  const handleReturnRenameTaskFocus = useCallback(() => {
+    const menuTrigger = renameTaskMenuTriggerRef.current;
+    renameTaskMenuTriggerRef.current = null;
+    if (menuTrigger?.isConnected) menuTrigger.focus();
+  }, []);
   const handleRenameProject = useCallback(
     (root: AgentProjectRootView, displayName: string) => {
       commitSidebarPreferences((current) =>
@@ -2750,6 +2783,7 @@ export function AgentMode({ userId }: { userId: string }) {
               onProjectRemove={handlePromptProjectRemoval}
               onRevealProjectRoot={handleRevealProjectRoot}
               onSessionDelete={setSessionToDelete}
+              onSessionRename={handlePromptSessionRename}
               onSessionSelect={handleSelectSession}
             />
           }
@@ -2772,6 +2806,19 @@ export function AgentMode({ userId }: { userId: string }) {
             if (!open) setProjectToRename(null);
           }}
           onRename={(displayName) => handleRenameProject(projectToRename, displayName)}
+        />
+      ) : null}
+
+      {sessionToRename ? (
+        <RenameAgentTaskDialog
+          key={sessionToRename.id}
+          open
+          currentTitle={sessionTitle(sessionToRename)}
+          onOpenChange={(open) => {
+            if (!open) setSessionToRename(null);
+          }}
+          onRename={(title) => renameAgentSession(sessionToRename.id, title)}
+          onReturnFocus={handleReturnRenameTaskFocus}
         />
       ) : null}
 
@@ -3068,6 +3115,7 @@ interface AgentSidebarContentProps {
   onProjectRemove: (root: AgentProjectRootView) => void;
   onRevealProjectRoot: (projectRoot: string) => void;
   onSessionDelete: (session: AgentSessionSummary) => void;
+  onSessionRename: (session: AgentSessionSummary, menuTrigger: HTMLButtonElement) => void;
   onSessionSelect: (sessionId: string) => void;
 }
 
@@ -3099,6 +3147,7 @@ interface AgentSidebarTaskRowProps {
   isTouchLayout: boolean;
   isUnreadCompleted: boolean;
   onDelete: (session: AgentSessionSummary) => void;
+  onRename: (session: AgentSessionSummary, menuTrigger: HTMLButtonElement) => void;
   onRevealProjectRoot: (projectRoot: string) => void;
   onSelect: (sessionId: string) => void;
   projectDisplayName: string;
@@ -3114,6 +3163,7 @@ function AgentSidebarTaskRow({
   isTouchLayout,
   isUnreadCompleted,
   onDelete,
+  onRename,
   onRevealProjectRoot,
   onSelect,
   projectDisplayName,
@@ -3123,6 +3173,7 @@ function AgentSidebarTaskRow({
   const [menuOpen, setMenuOpen] = useState(false);
   const [hasKeyboardFocusWithin, setHasKeyboardFocusWithin] = useState(false);
   const [infoCardOpen, setInfoCardOpen] = useState(false);
+  const menuTriggerRef = useRef<HTMLButtonElement>(null);
   const title = sessionTitle(session);
   const hasVisualStatus = isRunning || isUnreadCompleted;
   const visibleInfoCardOpen = !isTouchLayout && infoCardOpen;
@@ -3269,6 +3320,7 @@ function AgentSidebarTaskRow({
           <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
             <DropdownMenuTrigger asChild>
               <button
+                ref={menuTriggerRef}
                 type="button"
                 className={cn(AGENT_SIDEBAR_ACTION_BUTTON, isTouchLayout ? "h-9 w-9" : "h-7 w-7")}
                 onClick={(event) => {
@@ -3281,6 +3333,16 @@ function AgentSidebarTaskRow({
               </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" collisionPadding={8} className="max-w-48">
+              <DropdownMenuItem
+                disabled={actionsLocked}
+                onClick={() => {
+                  if (menuTriggerRef.current) onRename(session, menuTriggerRef.current);
+                }}
+              >
+                <FilePenLine className="mr-2 h-4 w-4 shrink-0" strokeWidth={SIDEBAR_ICON_STROKE} />
+                <span className="min-w-0 whitespace-normal leading-snug">Rename Task</span>
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
               <DropdownMenuItem
                 disabled={actionsLocked || isRunning}
                 onClick={() => onDelete(session)}
@@ -3317,6 +3379,7 @@ function AgentSidebarContent({
   onProjectRemove,
   onRevealProjectRoot,
   onSessionDelete,
+  onSessionRename,
   onSessionSelect
 }: AgentSidebarContentProps) {
   const rowElementsRef = useLazyRef(() => new Map<string, HTMLElement>());
@@ -4025,6 +4088,7 @@ function AgentSidebarContent({
                           isTouchLayout={isTouchLayout}
                           isUnreadCompleted={isUnreadCompleted}
                           onDelete={onSessionDelete}
+                          onRename={onSessionRename}
                           onRevealProjectRoot={onRevealProjectRoot}
                           onSelect={onSessionSelect}
                           projectDisplayName={root.displayName}
