@@ -66,6 +66,10 @@ import {
 } from "@/components/chat/ChatTurn";
 import { ChatCopyButton } from "@/components/chat/ChatCopyButton";
 import {
+  continueChatComposerList,
+  continueChatComposerListBeforeInput
+} from "@/components/chatComposerListContinuation";
+import {
   Select,
   SelectContent,
   SelectItem,
@@ -2266,6 +2270,10 @@ export function AgentMode({ userId }: { userId: string }) {
 
   const handleKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+      if (event.nativeEvent.isComposing) return;
+      if ((event.shiftKey || isCompactLayout) && continueChatComposerList(event, setInput)) {
+        return;
+      }
       if (event.key === "Enter" && !event.shiftKey && !isCompactLayout) {
         event.preventDefault();
         void sendMessage();
@@ -2273,6 +2281,10 @@ export function AgentMode({ userId }: { userId: string }) {
     },
     [isCompactLayout, sendMessage]
   );
+
+  const handleBeforeInput = useCallback((event: React.FormEvent<HTMLTextAreaElement>) => {
+    continueChatComposerListBeforeInput(event, setInput);
+  }, []);
 
   const removeSessionFromState = useCallback(
     (sessionId: string) => {
@@ -2941,6 +2953,7 @@ export function AgentMode({ userId }: { userId: string }) {
                   onChooseProjectRoot={chooseProjectRoot}
                   onInputChange={setInput}
                   onKeyDown={handleKeyDown}
+                  onBeforeInput={handleBeforeInput}
                   onManageMcpServers={handleManageMcpServers}
                   onMcpToggle={toggleMcpServer}
                   onModeChange={selectMode}
@@ -2984,6 +2997,7 @@ export function AgentMode({ userId }: { userId: string }) {
                   onChooseProjectRoot={chooseProjectRoot}
                   onInputChange={setInput}
                   onKeyDown={handleKeyDown}
+                  onBeforeInput={handleBeforeInput}
                   onManageMcpServers={handleManageMcpServers}
                   onMcpToggle={toggleMcpServer}
                   onModeChange={selectMode}
@@ -4086,6 +4100,7 @@ interface AgentComposerProps {
   onCancelPrompt: () => void;
   onChooseProjectRoot: () => void;
   onInputChange: (value: string) => void;
+  onBeforeInput: (event: React.FormEvent<HTMLTextAreaElement>) => void;
   onKeyDown: (event: React.KeyboardEvent<HTMLTextAreaElement>) => void;
   onManageMcpServers: () => void;
   onMcpToggle: (name: string, enabled: boolean) => void;
@@ -4115,6 +4130,7 @@ function AgentComposer({
   onCancelPrompt,
   onChooseProjectRoot,
   onInputChange,
+  onBeforeInput,
   onKeyDown,
   onManageMcpServers,
   onMcpToggle,
@@ -4162,6 +4178,7 @@ function AgentComposer({
         id="agent-message"
         value={input}
         onChange={(event) => onInputChange(event.target.value)}
+        onBeforeInput={onBeforeInput}
         onKeyDown={onKeyDown}
         disabled={isSendDisabled}
         placeholder="Ask Maple to work in this folder..."
