@@ -6,6 +6,22 @@ export interface ChatComposerListEdit {
   selectionEnd: number;
 }
 
+type ChatComposerSelectionTarget = Pick<
+  HTMLTextAreaElement,
+  "scrollHeight" | "scrollTop" | "setSelectionRange"
+>;
+
+export function restoreChatComposerListSelection(
+  textarea: ChatComposerSelectionTarget,
+  edit: ChatComposerListEdit,
+  shouldScrollToEnd: boolean
+): void {
+  textarea.setSelectionRange(edit.selectionStart, edit.selectionEnd);
+  if (shouldScrollToEnd) {
+    textarea.scrollTop = textarea.scrollHeight;
+  }
+}
+
 interface ListMarkerMatch {
   indentation: string;
   continuationPrefix: string;
@@ -113,6 +129,7 @@ function applyChatComposerListEdit(
   onInputChange: (value: string) => void
 ): void {
   const originalValue = textarea.value;
+  const shouldScrollToEnd = textarea.selectionEnd === originalValue.length;
   let replaceStart = 0;
   while (
     replaceStart < originalValue.length &&
@@ -143,7 +160,7 @@ function applyChatComposerListEdit(
 
   requestAnimationFrame(() => {
     if (textarea.isConnected && document.activeElement === textarea) {
-      textarea.setSelectionRange(edit.selectionStart, edit.selectionEnd);
+      restoreChatComposerListSelection(textarea, edit, shouldScrollToEnd);
     }
   });
 }

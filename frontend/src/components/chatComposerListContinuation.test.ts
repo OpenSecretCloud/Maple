@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
 
-import { chatComposerListEdit } from "./chatComposerListContinuation";
+import {
+  chatComposerListEdit,
+  restoreChatComposerListSelection
+} from "./chatComposerListContinuation";
 
 function editAtEnd(value: string) {
   return chatComposerListEdit(value, value.length, value.length);
@@ -117,5 +120,44 @@ describe("chatComposerListEdit", () => {
   test("continues again after the matching fence closes", () => {
     expect(editAtEnd("```\n- code\n```\n- real")?.value).toBe("```\n- code\n```\n- real\n- ");
     expect(editAtEnd("~~~~\n1. code\n~~~\n2. still code")).toBeNull();
+  });
+});
+
+describe("restoreChatComposerListSelection", () => {
+  test("scrolls a capped composer to a continuation inserted at the end", () => {
+    const selection: [number, number] = [-1, -1];
+    const textarea = {
+      scrollHeight: 640,
+      scrollTop: 120,
+      setSelectionRange(start: number, end: number) {
+        selection[0] = start;
+        selection[1] = end;
+      }
+    };
+
+    restoreChatComposerListSelection(
+      textarea,
+      { value: "- first\n- ", selectionStart: 10, selectionEnd: 10 },
+      true
+    );
+
+    expect(selection).toEqual([10, 10]);
+    expect(textarea.scrollTop).toBe(640);
+  });
+
+  test("does not jump to the bottom when editing in the middle of a draft", () => {
+    const textarea = {
+      scrollHeight: 640,
+      scrollTop: 120,
+      setSelectionRange() {}
+    };
+
+    restoreChatComposerListSelection(
+      textarea,
+      { value: "- first\n- second", selectionStart: 10, selectionEnd: 10 },
+      false
+    );
+
+    expect(textarea.scrollTop).toBe(120);
   });
 });
