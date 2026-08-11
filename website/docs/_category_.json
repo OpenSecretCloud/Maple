@@ -1,8 +1,0 @@
-{
-  "label": "Documentation",
-  "position": 1,
-  "link": {
-    "type": "generated-index",
-    "description": "OpenSecret SDK Documentation"
-  }
-}
