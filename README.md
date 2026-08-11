@@ -55,6 +55,9 @@ present.
 `frontend/.env.example` documents Maple's public configuration surface:
 
 - `VITE_OPEN_SECRET_API_URL` selects the required OpenSecret backend.
+- `VITE_OPEN_SECRET_PCR_ENVIRONMENT` selects the matching PCR0 trust roots;
+  it defaults to `production`, so hosted development enclaves must set
+  `development` explicitly.
 - `VITE_CLIENT_ID` overrides Maple's public project ID when developing against
   another OpenSecret project.
 - `VITE_OS_FLAGS_BASE_URL` selects an optional feature-flags API.
