@@ -8,7 +8,7 @@ async fn test_user_profile_api() -> Result<()> {
     // Load environment variables from .env.local in SDK root
     let env_path = std::path::Path::new("../.env.local");
     if env_path.exists() {
-        dotenv::from_path(env_path).ok();
+        dotenvy::from_path(env_path).ok();
     }
 
     let base_url = std::env::var("VITE_OPEN_SECRET_API_URL")
@@ -52,7 +52,7 @@ async fn test_kv_storage_apis() -> Result<()> {
     // Load environment variables
     let env_path = std::path::Path::new("../.env.local");
     if env_path.exists() {
-        dotenv::from_path(env_path).ok();
+        dotenvy::from_path(env_path).ok();
     }
 
     let base_url = std::env::var("VITE_OPEN_SECRET_API_URL")
@@ -107,7 +107,7 @@ async fn test_kv_delete_all() -> Result<()> {
     // Load environment variables
     let env_path = std::path::Path::new("../.env.local");
     if env_path.exists() {
-        dotenv::from_path(env_path).ok();
+        dotenvy::from_path(env_path).ok();
     }
 
     let base_url = std::env::var("VITE_OPEN_SECRET_API_URL")
@@ -152,7 +152,7 @@ async fn test_kv_storage_with_special_characters() -> Result<()> {
     // Load environment variables
     let env_path = std::path::Path::new("../.env.local");
     if env_path.exists() {
-        dotenv::from_path(env_path).ok();
+        dotenvy::from_path(env_path).ok();
     }
 
     let base_url = std::env::var("VITE_OPEN_SECRET_API_URL")
@@ -217,7 +217,7 @@ async fn test_private_key_generation() -> Result<()> {
     // Load environment variables
     let env_path = std::path::Path::new("../.env.local");
     if env_path.exists() {
-        dotenv::from_path(env_path).ok();
+        dotenvy::from_path(env_path).ok();
     }
 
     let base_url = std::env::var("VITE_OPEN_SECRET_API_URL")
@@ -268,7 +268,7 @@ async fn test_message_signing() -> Result<()> {
     // Load environment variables
     let env_path = std::path::Path::new("../.env.local");
     if env_path.exists() {
-        dotenv::from_path(env_path).ok();
+        dotenvy::from_path(env_path).ok();
     }
 
     let base_url = std::env::var("VITE_OPEN_SECRET_API_URL")
@@ -322,7 +322,7 @@ async fn test_public_key_retrieval() -> Result<()> {
     // Load environment variables
     let env_path = std::path::Path::new("../.env.local");
     if env_path.exists() {
-        dotenv::from_path(env_path).ok();
+        dotenvy::from_path(env_path).ok();
     }
 
     let base_url = std::env::var("VITE_OPEN_SECRET_API_URL")
@@ -375,7 +375,7 @@ async fn test_encryption_decryption() -> Result<()> {
     // Load environment variables
     let env_path = std::path::Path::new("../.env.local");
     if env_path.exists() {
-        dotenv::from_path(env_path).ok();
+        dotenvy::from_path(env_path).ok();
     }
 
     let base_url = std::env::var("VITE_OPEN_SECRET_API_URL")
@@ -469,7 +469,7 @@ async fn test_third_party_token() -> Result<()> {
     // Load environment variables
     let env_path = std::path::Path::new("../.env.local");
     if env_path.exists() {
-        dotenv::from_path(env_path).ok();
+        dotenvy::from_path(env_path).ok();
     }
 
     let base_url = std::env::var("VITE_OPEN_SECRET_API_URL")

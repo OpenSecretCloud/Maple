@@ -39,7 +39,7 @@ async fn test_health_check_mock() -> Result<()> {
 #[tokio::test]
 async fn test_full_flow_with_real_server() -> Result<()> {
     // Load .env.local from OpenSecret-SDK directory
-    dotenv::from_path("../.env.local").ok();
+    dotenvy::from_path("../.env.local").ok();
 
     // This test requires environment variables to be set
     let base_url = env::var("VITE_OPEN_SECRET_API_URL")

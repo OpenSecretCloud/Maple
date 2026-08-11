@@ -26,6 +26,9 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile --ignore-scripts
 
+      - name: Audit dependencies
+        run: bun audit --audit-level=high
+
       - name: Build library
         run: bun run build
 

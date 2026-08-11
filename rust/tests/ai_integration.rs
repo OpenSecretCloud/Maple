@@ -57,10 +57,10 @@ async fn setup_authenticated_client() -> Result<OpenSecretClient> {
     // Load .env.local from OpenSecret-SDK directory
     let env_path = std::path::Path::new("../.env.local");
     if env_path.exists() {
-        dotenv::from_path(env_path).ok();
+        dotenvy::from_path(env_path).ok();
     } else {
         // Fallback to standard .env
-        dotenv::dotenv().ok();
+        dotenvy::dotenv().ok();
     }
 
     let base_url = env::var("VITE_OPEN_SECRET_API_URL")
@@ -347,7 +347,7 @@ async fn test_guest_user_cannot_use_ai() {
     // Load .env.local from OpenSecret-SDK directory
     let env_path = std::path::Path::new("../.env.local");
     if env_path.exists() {
-        dotenv::from_path(env_path).ok();
+        dotenvy::from_path(env_path).ok();
     }
 
     let base_url = env::var("VITE_OPEN_SECRET_API_URL")
