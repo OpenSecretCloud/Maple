@@ -1,3 +1,10 @@
+#[cfg(test)]
+use super::safeguard::ProposedActionReservation;
+use super::safeguard::{
+    AgentSafeguard, ProposedActionAssessment, ProposedActionBudget, SafeguardToolCatalog,
+    SafeguardTrustedUserRequest, SafeguardTurnContext, UntrustedInputInspection,
+    WITHHELD_TOOL_RESULT_MESSAGE,
+};
 use async_trait::async_trait;
 use futures_util::{StreamExt, TryStreamExt};
 use goose_providers::base::{collect_stream, MessageStream, Provider};
@@ -13,10 +20,12 @@ use goose_providers::model::ModelConfig;
 use goose_providers::request_log::{start_log, LoggerHandleExt};
 use goose_providers::retry::{should_retry, RetryConfig};
 use opensecret::{InferenceRequest, InferenceResponse, OpenSecretClient, OpenSecretResponseBody};
-use rmcp::model::Tool;
-use serde_json::{json, Value};
+use rmcp::model::{CallToolResult, ContentBlock, Tool};
+use serde_json::{json, Map, Value};
+use std::collections::HashMap;
 use std::future::{ready, Future};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 use tokio_util::codec::{FramedRead, LinesCodec};
 use tokio_util::io::StreamReader;
@@ -32,6 +41,11 @@ const GEMMA4_AGENT_MODEL_ID: &str = "gemma4-31b";
 const MAX_ERROR_BODY_BYTES: usize = 16 * 1024;
 const MAX_STREAM_LINE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_RETRY_AFTER_SECS: f64 = 3_600.0;
+const GOOSE_COMPACTION_SYSTEM_PREFIX: &str = "## Task Context\n- An llm context limit was reached";
+const GOOSE_COMPACTION_USER_PROMPT: &str =
+    "Please summarize the conversation history provided in the system prompt.";
+const GUARDED_CONTEXT_LIMIT_MESSAGE: &str =
+    "Maple cannot compact guarded tool history; start a new Agent task or use a larger-context model";
 #[cfg(not(test))]
 const RESPONSE_START_TIMEOUT: Duration = Duration::from_secs(300);
 #[cfg(test)]
@@ -43,6 +57,153 @@ const STREAM_IDLE_TIMEOUT: Duration = Duration::from_millis(100);
 
 tokio::task_local! {
     static MAPLE_RUN_CANCELLATION: CancellationToken;
+    static MAPLE_TRUSTED_USER_REQUEST: Option<SafeguardTrustedUserRequest>;
+    static MAPLE_ACCOUNT_SCOPE: Option<String>;
+    static MAPLE_SAFEGUARD_RUN_STATE: Arc<SafeguardRunState>;
+}
+
+struct SafeguardRunState {
+    active: bool,
+    proposed_action_seen: AtomicBool,
+    action_dispositions: Mutex<HashMap<String, SafeguardActionClearance>>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct SafeguardActionClearance {
+    disposition: SafeguardActionDisposition,
+    tool_name: Option<String>,
+    arguments: Option<Map<String, Value>>,
+}
+
+impl SafeguardActionClearance {
+    fn require_approval() -> Self {
+        Self {
+            disposition: SafeguardActionDisposition::RequireApproval,
+            tool_name: None,
+            arguments: None,
+        }
+    }
+
+    fn auto_execute_candidate(tool_name: String, arguments: Map<String, Value>) -> Self {
+        Self {
+            disposition: SafeguardActionDisposition::AutoExecuteCandidate,
+            tool_name: Some(tool_name),
+            arguments: Some(arguments),
+        }
+    }
+
+    fn disposition_for(
+        &self,
+        tool_name: &str,
+        arguments: &Map<String, Value>,
+    ) -> SafeguardActionDisposition {
+        if self.disposition == SafeguardActionDisposition::AutoExecuteCandidate
+            && self.tool_name.as_deref() == Some(tool_name)
+            && self.arguments.as_ref() == Some(arguments)
+        {
+            SafeguardActionDisposition::AutoExecuteCandidate
+        } else {
+            SafeguardActionDisposition::RequireApproval
+        }
+    }
+}
+
+impl SafeguardRunState {
+    fn new(active: bool) -> Self {
+        Self {
+            active,
+            proposed_action_seen: AtomicBool::new(false),
+            action_dispositions: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn follows_untrusted_tool_output(&self) -> bool {
+        self.proposed_action_seen.load(AtomicOrdering::Acquire)
+    }
+
+    fn mark_proposed_action(&self) {
+        self.proposed_action_seen
+            .store(true, AtomicOrdering::Release);
+    }
+
+    fn record_action_assessments(
+        &self,
+        message: &Message,
+        assessments: Vec<ProposedActionAssessment>,
+    ) {
+        if !self.active {
+            return;
+        }
+        let mut expected = HashMap::<String, Vec<(String, Map<String, Value>)>>::new();
+        for content in &message.content {
+            let MessageContent::ToolRequest(request) = content else {
+                continue;
+            };
+            if let Ok(call) = &request.tool_call {
+                expected.entry(request.id.clone()).or_default().push((
+                    call.name.to_string(),
+                    call.arguments.clone().unwrap_or_default(),
+                ));
+            }
+        }
+        let mut observed = HashMap::<String, (usize, bool)>::new();
+        for assessment in assessments {
+            let entry = observed.entry(assessment.request_id).or_insert((0, true));
+            entry.0 += 1;
+            entry.1 &= assessment.auto_execute_candidate;
+        }
+        let mut dispositions = self
+            .action_dispositions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        for (request_id, expected_calls) in expected {
+            let clearance = match (expected_calls.as_slice(), observed.get(&request_id)) {
+                ([(tool_name, arguments)], Some((1, true))) => {
+                    SafeguardActionClearance::auto_execute_candidate(
+                        tool_name.clone(),
+                        arguments.clone(),
+                    )
+                }
+                _ => SafeguardActionClearance::require_approval(),
+            };
+            match dispositions.entry(request_id) {
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert(clearance);
+                }
+                std::collections::hash_map::Entry::Occupied(mut entry) => {
+                    // A request ID is a one-shot capability. Reuse anywhere in
+                    // the same response stream is ambiguous, even when both
+                    // calls look identical, so it can never retain auto-clearance.
+                    entry.insert(SafeguardActionClearance::require_approval());
+                }
+            }
+        }
+    }
+
+    fn take_action_disposition(
+        &self,
+        request_id: &str,
+        tool_name: &str,
+        arguments: &Map<String, Value>,
+    ) -> SafeguardActionDisposition {
+        if !self.active {
+            return SafeguardActionDisposition::Inactive;
+        }
+        self.action_dispositions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(request_id)
+            .map_or(SafeguardActionDisposition::RequireApproval, |clearance| {
+                clearance.disposition_for(tool_name, arguments)
+            })
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SafeguardActionDisposition {
+    Inactive,
+    AutoExecuteCandidate,
+    RequireApproval,
 }
 
 pub(crate) async fn with_run_cancellation<F>(
@@ -55,14 +216,157 @@ where
     MAPLE_RUN_CANCELLATION.scope(cancellation, future).await
 }
 
+pub(crate) async fn with_agent_run_context<F>(
+    cancellation: CancellationToken,
+    account_scope: Option<String>,
+    trusted_user_request: Option<SafeguardTrustedUserRequest>,
+    safeguard_active: bool,
+    future: F,
+) -> F::Output
+where
+    F: Future,
+{
+    let safeguard_run_state = Arc::new(SafeguardRunState::new(safeguard_active));
+    MAPLE_RUN_CANCELLATION
+        .scope(
+            cancellation,
+            MAPLE_ACCOUNT_SCOPE.scope(
+                account_scope,
+                MAPLE_TRUSTED_USER_REQUEST.scope(
+                    trusted_user_request,
+                    MAPLE_SAFEGUARD_RUN_STATE.scope(safeguard_run_state, future),
+                ),
+            ),
+        )
+        .await
+}
+
+#[cfg(test)]
+pub(crate) async fn with_test_safeguard_action_clearance<F>(
+    cancellation: CancellationToken,
+    request_id: &str,
+    tool_name: &str,
+    arguments: Map<String, Value>,
+    future: F,
+) -> F::Output
+where
+    F: Future,
+{
+    let safeguard_run_state = Arc::new(SafeguardRunState::new(true));
+    let message = Message::assistant().with_tool_request(
+        request_id,
+        Ok(
+            rmcp::model::CallToolRequestParams::new(tool_name.to_string())
+                .with_arguments(arguments),
+        ),
+    );
+    safeguard_run_state.record_action_assessments(
+        &message,
+        vec![ProposedActionAssessment {
+            request_id: request_id.to_string(),
+            auto_execute_candidate: true,
+        }],
+    );
+    MAPLE_RUN_CANCELLATION
+        .scope(
+            cancellation,
+            MAPLE_ACCOUNT_SCOPE.scope(
+                None,
+                MAPLE_TRUSTED_USER_REQUEST.scope(
+                    None,
+                    MAPLE_SAFEGUARD_RUN_STATE.scope(safeguard_run_state, future),
+                ),
+            ),
+        )
+        .await
+}
+
 fn current_run_cancellation() -> CancellationToken {
     MAPLE_RUN_CANCELLATION
         .try_with(CancellationToken::clone)
         .unwrap_or_default()
 }
 
+fn current_trusted_user_request() -> Option<SafeguardTrustedUserRequest> {
+    MAPLE_TRUSTED_USER_REQUEST
+        .try_with(Clone::clone)
+        .ok()
+        .flatten()
+}
+
+fn current_account_scope() -> Option<String> {
+    MAPLE_ACCOUNT_SCOPE.try_with(Clone::clone).ok().flatten()
+}
+
+fn current_safeguard_run_state() -> Option<Arc<SafeguardRunState>> {
+    MAPLE_SAFEGUARD_RUN_STATE.try_with(Arc::clone).ok()
+}
+
+pub(crate) fn take_safeguard_action_disposition(
+    request_id: &str,
+    tool_name: &str,
+    arguments: &Map<String, Value>,
+) -> SafeguardActionDisposition {
+    current_safeguard_run_state().map_or(SafeguardActionDisposition::Inactive, |state| {
+        state.take_action_disposition(request_id, tool_name, arguments)
+    })
+}
+
 fn cancellation_error() -> ProviderError {
     ProviderError::ExecutionError("Maple request cancelled".to_string())
+}
+
+fn guarded_provider_messages(
+    messages: &[Message],
+    inspection: &UntrustedInputInspection,
+) -> Option<Vec<Message>> {
+    let has_replacement = messages.iter().enumerate().any(|(message_index, message)| {
+        message
+            .content
+            .iter()
+            .enumerate()
+            .any(|(content_index, content)| {
+                matches!(content, MessageContent::ToolResponse(_))
+                    && !inspection.allows(message_index, content_index)
+            })
+    });
+    if !has_replacement {
+        return None;
+    }
+    Some(
+        messages
+            .iter()
+            .enumerate()
+            .map(|(message_index, message)| Message {
+                id: message.id.clone(),
+                role: message.role.clone(),
+                created: message.created,
+                content: message
+                    .content
+                    .iter()
+                    .enumerate()
+                    .map(|(content_index, content)| match content {
+                        MessageContent::ToolResponse(response)
+                            if !inspection.allows(message_index, content_index) =>
+                        {
+                            MessageContent::ToolResponse(
+                                goose_providers::conversation::message::ToolResponse {
+                                    id: response.id.clone(),
+                                    tool_result: Ok(CallToolResult::error(vec![
+                                        ContentBlock::text(WITHHELD_TOOL_RESULT_MESSAGE),
+                                    ])),
+                                    metadata: response.metadata.clone(),
+                                    provenance: Default::default(),
+                                },
+                            )
+                        }
+                        _ => content.clone(),
+                    })
+                    .collect(),
+                metadata: message.metadata.clone(),
+            })
+            .collect(),
+    )
 }
 
 /// Authenticated, encrypted delivery for a caller-owned OpenSecret inference request.
@@ -101,6 +405,8 @@ impl MapleInferenceTransport for OpenSecretClient {
 
 pub(crate) struct MapleProvider {
     transport: Arc<dyn MapleInferenceTransport>,
+    safeguard: Option<Arc<dyn AgentSafeguard>>,
+    safeguard_working_directory: Option<String>,
     #[cfg(test)]
     test_retry_config: Option<RetryConfig>,
 }
@@ -112,9 +418,21 @@ impl MapleProvider {
     {
         Self {
             transport,
+            safeguard: None,
+            safeguard_working_directory: None,
             #[cfg(test)]
             test_retry_config: None,
         }
+    }
+
+    pub(crate) fn with_safeguard(
+        mut self,
+        safeguard: Arc<dyn AgentSafeguard>,
+        working_directory: String,
+    ) -> Self {
+        self.safeguard = Some(safeguard);
+        self.safeguard_working_directory = Some(working_directory);
+        self
     }
 
     #[cfg(test)]
@@ -441,6 +759,21 @@ impl Provider for MapleProvider {
         MAPLE_PROVIDER_NAME
     }
 
+    fn manages_own_context(&self) -> bool {
+        // Goose compaction flattens raw ToolResponses into a provenance-free
+        // system prompt before calling Provider::complete. While enforcement
+        // is enabled, skip that unsafe summarization path; Provider::stream
+        // applies the guarded outbound conversation directly instead.
+        self.safeguard.is_some()
+    }
+
+    fn blocks_subagent_delegation(&self) -> bool {
+        // Detached Goose subagents cannot inherit Maple's run-scoped safeguard
+        // provenance, cancellation, or permission state. Reject delegation
+        // while enforcement is enabled, including explicit provider overrides.
+        self.safeguard.is_some()
+    }
+
     fn retry_config(&self) -> RetryConfig {
         #[cfg(test)]
         if let Some(config) = &self.test_retry_config {
@@ -462,8 +795,127 @@ impl Provider for MapleProvider {
     ) -> Result<MessageStream, ProviderError> {
         // Goose uses stream for the interactive Agent loop. Selecting Gemma
         // directly in Agent Mode is the product-level opt-in to thinking.
-        self.stream_request(model_config, system, messages, tools, true)
+        let cancellation = current_run_cancellation();
+        let account_scope = current_account_scope();
+        let trusted_user_request = current_trusted_user_request();
+        let safeguard_run_state = current_safeguard_run_state();
+        let session_id = goose::session_context::current_session_id();
+        let safeguard_context = self
+            .safeguard
+            .as_ref()
+            .zip(self.safeguard_working_directory.as_deref())
+            .map(|(_, working_directory)| {
+                SafeguardTurnContext::from_messages(
+                    account_scope,
+                    session_id,
+                    working_directory,
+                    trusted_user_request,
+                    safeguard_run_state
+                        .as_ref()
+                        .is_some_and(|state| state.follows_untrusted_tool_output()),
+                    messages,
+                    &cancellation,
+                )
+            });
+        let input_inspection = if let (Some(safeguard), Some(context)) =
+            (self.safeguard.as_ref(), safeguard_context.as_ref())
+        {
+            Some(
+                safeguard
+                    .inspect_untrusted_inputs(context, messages, &cancellation)
+                    .await,
+            )
+        } else {
+            None
+        };
+        if cancellation.is_cancelled() {
+            return Err(cancellation_error());
+        }
+
+        let guarded_messages = input_inspection
+            .as_ref()
+            .and_then(|inspection| guarded_provider_messages(messages, inspection));
+        let provider_messages = guarded_messages.as_deref().unwrap_or(messages);
+
+        let stream = self
+            .stream_request(model_config, system, provider_messages, tools, true)
             .await
+            .map_err(|error| {
+                if self.safeguard.is_some() {
+                    guarded_context_error(error)
+                } else {
+                    error
+                }
+            })?;
+        let (Some(safeguard), Some(context)) = (self.safeguard.as_ref(), safeguard_context) else {
+            return Ok(stream);
+        };
+        let safeguard = Arc::clone(safeguard);
+        let context = Arc::new(context);
+        let safeguard_tools = Arc::new(SafeguardToolCatalog::from_tools(tools, &cancellation));
+        safeguard.record_provider_preparation(
+            &context,
+            &safeguard_tools,
+            cancellation.is_cancelled(),
+        );
+        if cancellation.is_cancelled() {
+            return Err(cancellation_error());
+        }
+        let mut proposed_action_budget = ProposedActionBudget::default();
+        let guarded_stream = stream.then(move |result| {
+            let result = result.map_err(guarded_context_error);
+            let safeguard = Arc::clone(&safeguard);
+            let safeguard_tools = Arc::clone(&safeguard_tools);
+            let context = Arc::clone(&context);
+            let cancellation = cancellation.clone();
+            let safeguard_run_state = safeguard_run_state.clone();
+            let reservation = result
+                .as_ref()
+                .ok()
+                .and_then(|(message, _)| message.as_ref())
+                .and_then(|message| {
+                    proposed_action_budget.reserve_message(
+                        message,
+                        &cancellation,
+                        context.preprocessing_exhausted()
+                            || safeguard_tools.preprocessing_exhausted(),
+                    )
+                });
+            async move {
+                if let Some(reservation) = reservation {
+                    let has_valid_action = reservation.has_valid_action();
+                    if let Ok((Some(message), _)) = &result {
+                        let assessments = if reservation.should_inspect() {
+                            safeguard
+                                .inspect_proposed_actions(
+                                    &context,
+                                    message,
+                                    &safeguard_tools,
+                                    reservation,
+                                    &cancellation,
+                                )
+                                .await
+                        } else {
+                            Vec::new()
+                        };
+                        if cancellation.is_cancelled() {
+                            return Err(cancellation_error());
+                        }
+                        if has_valid_action {
+                            if let Some(state) = safeguard_run_state {
+                                state.record_action_assessments(message, assessments);
+                                state.mark_proposed_action();
+                            }
+                        }
+                    }
+                }
+                if cancellation.is_cancelled() {
+                    return Err(cancellation_error());
+                }
+                result
+            }
+        });
+        Ok(Box::pin(guarded_stream))
     }
 
     async fn complete(
@@ -475,11 +927,38 @@ impl Provider for MapleProvider {
     ) -> Result<(Message, ProviderUsage), ProviderError> {
         // Goose and Maple use complete for auxiliary work such as compaction,
         // classifiers, and image descriptions; keep those requests non-thinking.
+        if self.safeguard.is_some() && is_goose_compaction_request(system, messages, tools) {
+            log::warn!(
+                "Blocked Goose conversation compaction while safeguard enforcement is enabled"
+            );
+            return Err(ProviderError::NotImplemented(
+                GUARDED_CONTEXT_LIMIT_MESSAGE.to_string(),
+            ));
+        }
         let stream = self
             .stream_request(model_config, system, messages, tools, false)
             .await?;
         collect_stream(stream).await
     }
+}
+
+fn guarded_context_error(error: ProviderError) -> ProviderError {
+    if matches!(error, ProviderError::ContextLengthExceeded(_)) {
+        ProviderError::RequestFailed(GUARDED_CONTEXT_LIMIT_MESSAGE.to_string())
+    } else {
+        error
+    }
+}
+
+fn is_goose_compaction_request(system: &str, messages: &[Message], tools: &[Tool]) -> bool {
+    tools.is_empty()
+        && system.starts_with(GOOSE_COMPACTION_SYSTEM_PREFIX)
+        && matches!(
+            messages,
+            [message]
+                if message.role == rmcp::model::Role::User
+                    && message.as_concat_text().trim() == GOOSE_COMPACTION_USER_PROMPT
+        )
 }
 
 fn invalid_stream_error() -> ProviderError {
@@ -775,10 +1254,12 @@ pub(crate) fn opensecret_error_category(error: &opensecret::Error) -> &'static s
 #[cfg(test)]
 mod tests {
     use super::*;
+    use goose::conversation::Conversation;
     use goose_providers::conversation::message::MessageContent;
     use goose_providers::retry::should_retry;
     use rmcp::object;
     use std::collections::{HashMap, VecDeque};
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
     use tokio::sync::Notify;
 
@@ -798,6 +1279,148 @@ mod tests {
     }
 
     struct PendingTransport;
+
+    struct BlockingSafeguard {
+        action_entered: Notify,
+        action_release: tokio::sync::Semaphore,
+    }
+
+    impl Default for BlockingSafeguard {
+        fn default() -> Self {
+            Self {
+                action_entered: Notify::new(),
+                action_release: tokio::sync::Semaphore::new(0),
+            }
+        }
+    }
+
+    #[derive(Default)]
+    struct RecordingSafeguard {
+        provider_preparations: AtomicUsize,
+        untrusted_input_checks: AtomicUsize,
+        proposed_action_checks: AtomicUsize,
+        proposed_action_tools: AtomicUsize,
+        proposed_action_follows: Mutex<Vec<bool>>,
+    }
+
+    struct WithholdingSafeguard;
+
+    #[async_trait]
+    impl AgentSafeguard for RecordingSafeguard {
+        fn record_provider_preparation(
+            &self,
+            _context: &SafeguardTurnContext,
+            _tools: &SafeguardToolCatalog,
+            _cancelled: bool,
+        ) {
+            self.provider_preparations.fetch_add(1, Ordering::SeqCst);
+        }
+
+        async fn inspect_untrusted_inputs(
+            &self,
+            _context: &SafeguardTurnContext,
+            messages: &[Message],
+            _cancel_token: &CancellationToken,
+        ) -> UntrustedInputInspection {
+            if messages.iter().any(|message| {
+                message
+                    .content
+                    .iter()
+                    .any(|content| matches!(content, MessageContent::ToolResponse(_)))
+            }) {
+                self.untrusted_input_checks.fetch_add(1, Ordering::SeqCst);
+            }
+            UntrustedInputInspection::allow_all(messages)
+        }
+
+        async fn inspect_proposed_actions(
+            &self,
+            context: &SafeguardTurnContext,
+            message: &Message,
+            tools: &SafeguardToolCatalog,
+            _reservation: ProposedActionReservation,
+            _cancel_token: &CancellationToken,
+        ) -> Vec<ProposedActionAssessment> {
+            if message
+                .content
+                .iter()
+                .any(|content| matches!(content, MessageContent::ToolRequest(_)))
+            {
+                self.proposed_action_checks.fetch_add(1, Ordering::SeqCst);
+                self.proposed_action_tools
+                    .store(tools.len(), Ordering::SeqCst);
+                self.proposed_action_follows
+                    .lock()
+                    .unwrap()
+                    .push(context.follows_untrusted_tool_output());
+            }
+            message
+                .content
+                .iter()
+                .filter_map(|content| match content {
+                    MessageContent::ToolRequest(request) if request.tool_call.is_ok() => {
+                        Some(ProposedActionAssessment {
+                            request_id: request.id.clone(),
+                            auto_execute_candidate: true,
+                        })
+                    }
+                    _ => None,
+                })
+                .collect()
+        }
+    }
+
+    #[async_trait]
+    impl AgentSafeguard for BlockingSafeguard {
+        async fn inspect_untrusted_inputs(
+            &self,
+            _context: &SafeguardTurnContext,
+            _messages: &[Message],
+            _cancel_token: &CancellationToken,
+        ) -> UntrustedInputInspection {
+            UntrustedInputInspection::allow_all(_messages)
+        }
+
+        async fn inspect_proposed_actions(
+            &self,
+            _context: &SafeguardTurnContext,
+            _message: &Message,
+            _tools: &SafeguardToolCatalog,
+            _reservation: ProposedActionReservation,
+            _cancel_token: &CancellationToken,
+        ) -> Vec<ProposedActionAssessment> {
+            self.action_entered.notify_one();
+            self.action_release
+                .acquire()
+                .await
+                .expect("test semaphore remains open")
+                .forget();
+            Vec::new()
+        }
+    }
+
+    #[async_trait]
+    impl AgentSafeguard for WithholdingSafeguard {
+        async fn inspect_untrusted_inputs(
+            &self,
+            _context: &SafeguardTurnContext,
+            _messages: &[Message],
+            _cancel_token: &CancellationToken,
+        ) -> UntrustedInputInspection {
+            UntrustedInputInspection::default()
+        }
+
+        async fn inspect_proposed_actions(
+            &self,
+            _context: &SafeguardTurnContext,
+            _message: &Message,
+            _tools: &SafeguardToolCatalog,
+            _reservation: ProposedActionReservation,
+            _cancel_token: &CancellationToken,
+        ) -> Vec<ProposedActionAssessment> {
+            Vec::new()
+        }
+    }
 
     #[async_trait]
     impl MapleInferenceTransport for PendingTransport {
@@ -1040,6 +1663,564 @@ mod tests {
                 _ => None,
             })
             .expect("tool request should be present")
+    }
+
+    fn conversation_with_trailing_tool_output() -> Vec<Message> {
+        vec![
+            Message::user().with_text("inspect the project"),
+            Message::assistant().with_tool_request(
+                "read-1",
+                Ok(rmcp::model::CallToolRequestParams::new("read")
+                    .with_arguments(object!({"path": "README.md"}))),
+            ),
+            Message::user().with_tool_response(
+                "read-1",
+                Ok(rmcp::model::CallToolResult::success(vec![
+                    rmcp::model::ContentBlock::text("tool output"),
+                ])),
+            ),
+        ]
+    }
+
+    #[test]
+    fn guarded_messages_replace_only_the_selected_tool_result() {
+        let raw_sentinel = "RAW_TOOL_RESULT_MUST_NOT_REACH_THE_MODEL";
+        let mut response_message = Message::user().with_id("message-1").with_tool_response(
+            "call-1",
+            Ok(CallToolResult::success(vec![ContentBlock::text(
+                raw_sentinel,
+            )])),
+        );
+        let response_metadata = object!({"source": "mcp-server"});
+        let MessageContent::ToolResponse(original_response) = &mut response_message.content[0]
+        else {
+            panic!("fixture must contain a tool response");
+        };
+        original_response.metadata = Some(response_metadata.clone());
+        let original = response_message.clone();
+
+        let guarded = guarded_provider_messages(
+            std::slice::from_ref(&response_message),
+            &UntrustedInputInspection::default(),
+        )
+        .expect("an uncleared response must be replaced");
+
+        assert_eq!(guarded.len(), 1);
+        assert_eq!(guarded[0].id, original.id);
+        assert_eq!(guarded[0].role, original.role);
+        assert_eq!(guarded[0].created, original.created);
+        assert_eq!(guarded[0].metadata, original.metadata);
+        let MessageContent::ToolResponse(guarded_response) = &guarded[0].content[0] else {
+            panic!("guarded content must remain a tool response");
+        };
+        assert_eq!(guarded_response.id, "call-1");
+        assert_eq!(guarded_response.metadata, Some(response_metadata));
+        let guarded_result = guarded_response
+            .tool_result
+            .as_ref()
+            .expect("withheld response is a protocol-level tool error");
+        assert_eq!(guarded_result.is_error, Some(true));
+        let serialized = serde_json::to_string(guarded_result).unwrap();
+        assert!(serialized.contains(WITHHELD_TOOL_RESULT_MESSAGE));
+        assert!(!serialized.contains(raw_sentinel));
+
+        assert_eq!(
+            response_message, original,
+            "the stored history is not mutated"
+        );
+    }
+
+    #[tokio::test]
+    async fn uncleared_tool_output_is_withheld_from_the_primary_request() {
+        let raw_sentinel = "RAW_PRIVATE_MCP_OUTPUT_SENTINEL";
+        let transport = Arc::new(FakeTransport::new(fragmented_success_response()));
+        let provider = MapleProvider::new(transport.clone())
+            .with_safeguard(Arc::new(WithholdingSafeguard), "/project".to_string());
+        let messages = [
+            Message::assistant().with_tool_request(
+                "call-1",
+                Ok(rmcp::model::CallToolRequestParams::new("read")),
+            ),
+            Message::user().with_tool_response(
+                "call-1",
+                Ok(CallToolResult::success(vec![ContentBlock::text(
+                    raw_sentinel,
+                )])),
+            ),
+        ];
+
+        let stream = provider
+            .stream(&ModelConfig::new("test-model"), "system", &messages, &[])
+            .await
+            .expect("guarded request should start");
+        collect_stream(stream)
+            .await
+            .expect("primary response should parse");
+
+        let requests = transport.requests.lock().expect("request lock");
+        assert_eq!(requests.len(), 1);
+        let body = String::from_utf8_lossy(&requests[0].raw_body);
+        assert!(body.contains(WITHHELD_TOOL_RESULT_MESSAGE));
+        assert!(!body.contains(raw_sentinel));
+    }
+
+    #[test]
+    fn action_dispositions_require_complete_explicit_auto_clearance() {
+        let state = SafeguardRunState::new(true);
+        let expected_arguments =
+            Map::from_iter([("path".to_string(), Value::String("README.md".to_string()))]);
+        let message = Message::assistant()
+            .with_tool_request(
+                "auto",
+                Ok(rmcp::model::CallToolRequestParams::new("read")
+                    .with_arguments(expected_arguments.clone())),
+            )
+            .with_tool_request(
+                "missing",
+                Ok(rmcp::model::CallToolRequestParams::new("shell")),
+            )
+            .with_tool_request(
+                "duplicate",
+                Ok(rmcp::model::CallToolRequestParams::new("read")),
+            )
+            .with_tool_request(
+                "duplicate",
+                Ok(rmcp::model::CallToolRequestParams::new("read")),
+            )
+            .with_tool_request(
+                "mismatch",
+                Ok(rmcp::model::CallToolRequestParams::new("read")),
+            );
+        state.record_action_assessments(
+            &message,
+            vec![
+                ProposedActionAssessment {
+                    request_id: "auto".to_string(),
+                    auto_execute_candidate: true,
+                },
+                ProposedActionAssessment {
+                    request_id: "duplicate".to_string(),
+                    auto_execute_candidate: true,
+                },
+                ProposedActionAssessment {
+                    request_id: "mismatch".to_string(),
+                    auto_execute_candidate: true,
+                },
+            ],
+        );
+
+        assert_eq!(
+            state.take_action_disposition("auto", "read", &expected_arguments),
+            SafeguardActionDisposition::AutoExecuteCandidate
+        );
+        assert_eq!(
+            state.take_action_disposition("auto", "read", &expected_arguments),
+            SafeguardActionDisposition::RequireApproval,
+            "an auto-clearance must be consumed exactly once"
+        );
+        assert_eq!(
+            state.take_action_disposition("missing", "shell", &Map::new()),
+            SafeguardActionDisposition::RequireApproval
+        );
+        assert_eq!(
+            state.take_action_disposition("duplicate", "read", &Map::new()),
+            SafeguardActionDisposition::RequireApproval
+        );
+        assert_eq!(
+            state.take_action_disposition("unknown", "read", &Map::new()),
+            SafeguardActionDisposition::RequireApproval
+        );
+        assert_eq!(
+            state.take_action_disposition("mismatch", "shell", &Map::new()),
+            SafeguardActionDisposition::RequireApproval,
+            "a clearance must match the exact tool name and arguments"
+        );
+
+        state.record_action_assessments(
+            &Message::assistant()
+                .with_tool_request("auto", Ok(rmcp::model::CallToolRequestParams::new("read"))),
+            vec![ProposedActionAssessment {
+                request_id: "auto".to_string(),
+                auto_execute_candidate: false,
+            }],
+        );
+        assert_eq!(
+            state.take_action_disposition("auto", "read", &Map::new()),
+            SafeguardActionDisposition::RequireApproval,
+            "a later restrictive assessment must never be loosened"
+        );
+        assert_eq!(
+            SafeguardRunState::new(false).take_action_disposition("auto", "read", &Map::new()),
+            SafeguardActionDisposition::Inactive
+        );
+    }
+
+    #[tokio::test]
+    async fn stream_runs_safeguard_checks_without_changing_the_original_tool_call() {
+        let guard = Arc::new(RecordingSafeguard::default());
+        let provider = MapleProvider::new(Arc::new(FakeTransport::new(tool_call_response(
+            "completion-guarded",
+            "shell:0",
+        ))))
+        .with_safeguard(guard.clone(), "/project".to_string());
+        let messages = conversation_with_trailing_tool_output();
+        let tools = [Tool::new(
+            "shell",
+            "Run a shell command",
+            object!({"type": "object"}),
+        )];
+
+        let stream = provider
+            .stream(&ModelConfig::new("test-model"), "system", &messages, &tools)
+            .await
+            .expect("stream should start");
+        assert_eq!(guard.provider_preparations.load(Ordering::SeqCst), 1);
+        assert_eq!(guard.untrusted_input_checks.load(Ordering::SeqCst), 1);
+        assert_eq!(guard.proposed_action_checks.load(Ordering::SeqCst), 0);
+
+        let (message, _) = collect_stream(stream)
+            .await
+            .expect("guarded tool call should parse");
+        assert_eq!(guard.proposed_action_checks.load(Ordering::SeqCst), 1);
+        assert_eq!(guard.proposed_action_tools.load(Ordering::SeqCst), 1);
+        let request = message
+            .content
+            .iter()
+            .find_map(|content| match content {
+                MessageContent::ToolRequest(request) => Some(request),
+                _ => None,
+            })
+            .expect("tool request should be preserved");
+        assert_eq!(request.id, "shell:0");
+        assert_eq!(
+            request.tool_call.as_ref().expect("valid tool call").name,
+            "shell"
+        );
+    }
+
+    #[tokio::test]
+    async fn text_only_stream_records_bounded_provider_preparation_without_an_action() {
+        let guard = Arc::new(RecordingSafeguard::default());
+        let provider =
+            MapleProvider::new(Arc::new(FakeTransport::new(fragmented_success_response())))
+                .with_safeguard(guard.clone(), "/project".to_string());
+        let tools = [Tool::new(
+            "read",
+            "Read a file",
+            object!({"type": "object"}),
+        )];
+
+        let stream = provider
+            .stream(
+                &ModelConfig::new("test-model"),
+                "system",
+                &[Message::user().with_text("say hello")],
+                &tools,
+            )
+            .await
+            .expect("text stream should start");
+        assert_eq!(guard.provider_preparations.load(Ordering::SeqCst), 1);
+
+        let (message, _) = collect_stream(stream)
+            .await
+            .expect("text response should parse");
+        assert!(message
+            .content
+            .iter()
+            .all(|content| !matches!(content, MessageContent::ToolRequest(_))));
+        assert_eq!(guard.proposed_action_checks.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn cancellation_during_action_check_never_yields_the_buffered_tool_call() {
+        let guard = Arc::new(BlockingSafeguard::default());
+        let provider = MapleProvider::new(Arc::new(FakeTransport::new(tool_call_response(
+            "completion-cancelled-guard",
+            "shell:0",
+        ))))
+        .with_safeguard(guard.clone(), "/project".to_string());
+        let cancellation = CancellationToken::new();
+        let run_state = Arc::new(SafeguardRunState::new(true));
+        let stream = MAPLE_RUN_CANCELLATION
+            .scope(
+                cancellation.clone(),
+                MAPLE_SAFEGUARD_RUN_STATE.scope(
+                    Arc::clone(&run_state),
+                    provider.stream(
+                        &ModelConfig::new("test-model"),
+                        "system",
+                        &[Message::user().with_text("use a tool")],
+                        &[],
+                    ),
+                ),
+            )
+            .await
+            .expect("stream should start");
+        let collected = tokio::spawn(async move { collect_stream(stream).await });
+
+        guard.action_entered.notified().await;
+        cancellation.cancel();
+        guard.action_release.add_permits(1);
+
+        assert!(collected
+            .await
+            .expect("collector task should finish")
+            .is_err());
+        assert!(!run_state.follows_untrusted_tool_output());
+    }
+
+    #[tokio::test]
+    async fn cancellation_before_poll_never_yields_a_buffered_tool_call() {
+        let guard = Arc::new(RecordingSafeguard::default());
+        let provider = MapleProvider::new(Arc::new(FakeTransport::new(tool_call_response(
+            "completion-cancelled-before-poll",
+            "shell:0",
+        ))))
+        .with_safeguard(guard, "/project".to_string());
+        let cancellation = CancellationToken::new();
+        let stream = MAPLE_RUN_CANCELLATION
+            .scope(
+                cancellation.clone(),
+                provider.stream(
+                    &ModelConfig::new("test-model"),
+                    "system",
+                    &[Message::user().with_text("use a tool")],
+                    &[],
+                ),
+            )
+            .await
+            .expect("stream should start");
+
+        cancellation.cancel();
+
+        assert!(collect_stream(stream).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn provider_run_state_preserves_the_post_tool_signal_when_kickoff_id_is_missing() {
+        let guard = Arc::new(RecordingSafeguard::default());
+        let provider = MapleProvider::new(Arc::new(FakeTransport::with_responses(vec![
+            tool_call_response("completion-first", "shell:0"),
+            tool_call_response("completion-second", "shell:1"),
+        ])))
+        .with_safeguard(guard.clone(), "/project".to_string());
+        let model = ModelConfig::new("test-model");
+        let messages = [Message::user().with_text("compacted kickoff without its id")];
+
+        with_agent_run_context(
+            CancellationToken::new(),
+            Some("test-account".to_string()),
+            Some(SafeguardTrustedUserRequest::new(
+                "missing-kickoff-id".to_string(),
+                "trusted request".to_string(),
+            )),
+            true,
+            async {
+                for _ in 0..2 {
+                    let stream = provider
+                        .stream(&model, "system", &messages, &[])
+                        .await
+                        .expect("stream should start");
+                    collect_stream(stream)
+                        .await
+                        .expect("tool call should parse");
+                }
+            },
+        )
+        .await;
+
+        assert_eq!(
+            *guard.proposed_action_follows.lock().unwrap(),
+            [false, true]
+        );
+    }
+
+    #[tokio::test]
+    async fn auxiliary_complete_requests_bypass_the_safeguard() {
+        let guard = Arc::new(RecordingSafeguard::default());
+        let provider =
+            MapleProvider::new(Arc::new(FakeTransport::new(fragmented_success_response())))
+                .with_safeguard(guard.clone(), "/project".to_string());
+
+        provider
+            .complete(
+                &ModelConfig::new("test-model"),
+                "system",
+                &conversation_with_trailing_tool_output(),
+                &[],
+            )
+            .await
+            .expect("auxiliary request should complete");
+
+        assert_eq!(guard.untrusted_input_checks.load(Ordering::SeqCst), 0);
+        assert_eq!(guard.proposed_action_checks.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn guarded_provider_blocks_goose_compaction_before_transport() {
+        let transport = Arc::new(FakeTransport::new(fragmented_success_response()));
+        let provider = MapleProvider::new(transport.clone()).with_safeguard(
+            Arc::new(RecordingSafeguard::default()),
+            "/project".to_string(),
+        );
+        let system = format!("{GOOSE_COMPACTION_SYSTEM_PREFIX}\nprivate raw tool history follows");
+        let messages = [Message::user().with_text(GOOSE_COMPACTION_USER_PROMPT)];
+
+        let error = provider
+            .complete(&ModelConfig::new("test-model"), &system, &messages, &[])
+            .await
+            .expect_err("guarded Goose compaction must be rejected");
+
+        assert_eq!(
+            error,
+            ProviderError::NotImplemented(GUARDED_CONTEXT_LIMIT_MESSAGE.to_string())
+        );
+        assert!(transport.requests.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn pinned_goose_refuses_guarded_compaction_and_tool_pair_summary() {
+        let transport = Arc::new(FakeTransport::new(fragmented_success_response()));
+        let provider = MapleProvider::new(transport.clone()).with_safeguard(
+            Arc::new(RecordingSafeguard::default()),
+            "/project".to_string(),
+        );
+        let model = ModelConfig::new("test-model");
+        let conversation = Conversation::new_unvalidated(vec![
+            Message::assistant().with_tool_request(
+                "tool-1",
+                Ok(rmcp::model::CallToolRequestParams::new("read")),
+            ),
+            Message::user().with_tool_response(
+                "tool-1",
+                Ok(CallToolResult::success(vec![ContentBlock::text(
+                    "private raw tool output",
+                )])),
+            ),
+        ]);
+
+        let compact_error = match goose::context_mgmt::compact_messages(
+            &provider,
+            &model,
+            "session-1",
+            &conversation,
+            true,
+        )
+        .await
+        {
+            Ok(_) => panic!("the pinned Goose must honor provider-managed context"),
+            Err(error) => error,
+        };
+        assert!(compact_error
+            .to_string()
+            .contains("Provider-managed context cannot be compacted"));
+
+        let summary_error = goose::context_mgmt::summarize_tool_call(
+            &provider,
+            &model,
+            "session-1",
+            &conversation,
+            "tool-1",
+        )
+        .await
+        .expect_err("the pinned Goose must not flatten guarded tool pairs");
+        assert!(summary_error
+            .to_string()
+            .contains("Provider-managed context cannot be summarized"));
+        assert!(transport.requests.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn guarded_stream_maps_context_errors_without_triggering_goose_recovery() {
+        let guarded = MapleProvider::new(Arc::new(FakeTransport::new(response(
+            413,
+            vec![br#"{"error":{"message":"private context detail"}}"#.to_vec()],
+            None,
+        ))))
+        .with_safeguard(
+            Arc::new(RecordingSafeguard::default()),
+            "/project".to_string(),
+        );
+        let guarded_error = match guarded
+            .stream(
+                &ModelConfig::new("test-model"),
+                "system",
+                &[Message::user().with_text("request")],
+                &[],
+            )
+            .await
+        {
+            Ok(_) => panic!("guarded context errors must fail without Goose recovery"),
+            Err(error) => error,
+        };
+        assert_eq!(
+            guarded_error,
+            ProviderError::RequestFailed(GUARDED_CONTEXT_LIMIT_MESSAGE.to_string())
+        );
+
+        let plain = MapleProvider::new(Arc::new(FakeTransport::new(response(
+            413,
+            vec![br#"{"error":{"message":"private context detail"}}"#.to_vec()],
+            None,
+        ))));
+        let plain_error = match plain
+            .stream(
+                &ModelConfig::new("test-model"),
+                "system",
+                &[Message::user().with_text("request")],
+                &[],
+            )
+            .await
+        {
+            Ok(_) => panic!("plain providers should retain Goose recovery semantics"),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            plain_error,
+            ProviderError::ContextLengthExceeded(_)
+        ));
+    }
+
+    #[test]
+    fn guarded_context_errors_cannot_trigger_goose_recovery_compaction() {
+        assert_eq!(
+            guarded_context_error(ProviderError::ContextLengthExceeded(
+                "private provider detail".to_string()
+            )),
+            ProviderError::RequestFailed(GUARDED_CONTEXT_LIMIT_MESSAGE.to_string())
+        );
+        assert_eq!(
+            guarded_context_error(ProviderError::RateLimitExceeded {
+                details: "retry later".to_string(),
+                retry_delay: None,
+            }),
+            ProviderError::RateLimitExceeded {
+                details: "retry later".to_string(),
+                retry_delay: None,
+            }
+        );
+    }
+
+    #[test]
+    fn enabled_safeguard_disables_goose_compaction_of_raw_tool_history() {
+        let plain = MapleProvider::new(Arc::new(FakeTransport::new(fragmented_success_response())));
+        assert!(!plain.manages_own_context());
+        assert!(!plain.blocks_subagent_delegation());
+
+        let guarded =
+            MapleProvider::new(Arc::new(FakeTransport::new(fragmented_success_response())))
+                .with_safeguard(
+                    Arc::new(RecordingSafeguard::default()),
+                    "/project".to_string(),
+                );
+        assert!(
+            guarded.manages_own_context(),
+            "Goose must not flatten unguarded tool output into compaction prompts"
+        );
+        assert!(
+            guarded.blocks_subagent_delegation(),
+            "Goose must not start a subagent outside Maple's safeguard boundary"
+        );
     }
 
     fn pending_success_response() -> InferenceResponse {

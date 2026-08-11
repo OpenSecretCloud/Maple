@@ -2,6 +2,7 @@ mod developer_tools;
 #[cfg(target_os = "macos")]
 mod macos_login_path;
 pub(crate) mod provider;
+mod safeguard;
 mod shell_permission;
 mod system_prompt;
 mod tool_context;
@@ -31,7 +32,12 @@ use goose::permission::{Permission, PermissionConfirmation};
 use goose::session::session_manager::{Session, SessionType};
 use goose::session::SessionManager;
 use goose::skills::{SkillsClient, EXTENSION_NAME as SKILLS_EXTENSION_NAME};
-use provider::{MapleProvider, MAPLE_PROVIDER_NAME};
+use provider::{
+    take_safeguard_action_disposition, MapleProvider, SafeguardActionDisposition,
+    MAPLE_PROVIDER_NAME,
+};
+use safeguard::{AgentSafeguard, GptOssSafeguard};
+pub(crate) use safeguard::{SafeguardStartup, SafeguardTrustedUserRequest};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use shell_permission::{
@@ -59,9 +65,10 @@ use web_tools::WebToolState;
 const DEFAULT_AGENT_MODEL: &str = "glm-5-2";
 const LEGACY_AGENT_DEFAULT_MODEL: &str = "auto:powerful";
 const DEFAULT_GOOSE_MODE: &str = "smart_approve";
-// Keep Goose on its ActionRequired path so Maple can apply the currently selected
-// policy at every tool boundary, including when the user changes it mid-run.
-const GOOSE_PERMISSION_ROUTING_MODE: GooseMode = GooseMode::SmartApprove;
+// This remains Maple's user-facing fallback. The enforcement experiment uses
+// Goose Approve internally so every ordinary backend tool reaches Maple's
+// existing confirmation boundary, independent of readOnlyHint.
+const DEFAULT_MAPLE_PERMISSION_ROUTING_MODE: GooseMode = GooseMode::SmartApprove;
 const MAPLE_DEVELOPER_TOOLS: [&str; 7] = [
     "read",
     "shell",
@@ -79,6 +86,19 @@ const MAPLE_GOOSE_PERMISSION_CONFIG: &str = r#"user:
   always_allow:
   - load_skill
   ask_before:
+  - read
+  - shell
+  - edit
+  - write
+  - read_image
+  - web_search
+  - open_url
+  never_allow: []
+"#;
+const MAPLE_GOOSE_SAFEGUARD_PERMISSION_CONFIG: &str = r#"user:
+  always_allow: []
+  ask_before:
+  - load_skill
   - read
   - shell
   - edit
@@ -606,6 +626,47 @@ struct PendingAgentPermission {
     run_id: String,
     routing: AgentPermissionRouting,
     request: AgentPermissionRequest,
+    requires_explicit_approval: bool,
+}
+
+fn pending_permission_allows_auto_resolution(request: &PendingAgentPermission) -> bool {
+    !request.requires_explicit_approval
+}
+
+async fn take_auto_resolvable_desktop_permission_ids(
+    pending_permissions: &PendingPermissions,
+    session_id: &str,
+) -> Vec<String> {
+    let mut pending = pending_permissions.lock().await;
+    let request_ids = pending
+        .iter()
+        .filter(|((pending_session_id, _), request)| {
+            pending_session_id == session_id
+                && request.routing == AgentPermissionRouting::Desktop
+                && pending_permission_allows_auto_resolution(request)
+        })
+        .map(|((_, request_id), _)| request_id.clone())
+        .collect::<Vec<_>>();
+    for request_id in &request_ids {
+        pending.remove(&(session_id.to_string(), request_id.clone()));
+    }
+    request_ids
+}
+
+fn safeguard_allows_automatic_permission(
+    disposition: SafeguardActionDisposition,
+    independent_prompt: Option<&str>,
+) -> bool {
+    disposition == SafeguardActionDisposition::AutoExecuteCandidate && independent_prompt.is_none()
+}
+
+fn permission_requires_explicit_approval(request: &AgentPermissionRequest) -> bool {
+    let disposition = take_safeguard_action_disposition(
+        &request.request_id,
+        &request.tool_name,
+        &request.arguments,
+    );
+    request.prompt.is_some() || disposition == SafeguardActionDisposition::RequireApproval
 }
 type PendingPermissions = Arc<Mutex<HashMap<PendingPermissionKey, PendingAgentPermission>>>;
 type IssuedPermissionIds = Arc<Mutex<HashSet<String>>>;
@@ -864,6 +925,7 @@ pub(crate) struct MapleAgentHostResources {
     paths: AgentPathLayout,
     events: AgentEventDispatcher,
     default_tool_context: AgentToolContextSpec,
+    safeguard: Option<Arc<GptOssSafeguard>>,
 }
 
 impl MapleAgentHostResources {
@@ -871,11 +933,13 @@ impl MapleAgentHostResources {
         paths: AgentPathLayout,
         event_sink: Arc<dyn AgentEventSink>,
         default_tool_context: AgentToolContextSpec,
+        safeguard_startup: SafeguardStartup,
     ) -> Self {
         Self {
             paths,
             events: AgentEventDispatcher::new(event_sink),
             default_tool_context,
+            safeguard: GptOssSafeguard::from_process_environment(safeguard_startup),
         }
     }
 }
@@ -1483,20 +1547,16 @@ async fn register_pending_permission(
     pending_permissions: &PendingPermissions,
     issued_permission_ids: &IssuedPermissionIds,
     session_id: &str,
-    run_id: &str,
-    routing: AgentPermissionRouting,
-    request: AgentPermissionRequest,
+    pending_request: PendingAgentPermission,
     cancel_token: &CancellationToken,
 ) -> PendingPermissionRegistration {
     if cancel_token.is_cancelled() {
         return PendingPermissionRegistration::Rejected;
     }
-    let key = (session_id.to_string(), request.request_id.clone());
-    let pending_request = PendingAgentPermission {
-        run_id: run_id.to_string(),
-        routing,
-        request,
-    };
+    let key = (
+        session_id.to_string(),
+        pending_request.request.request_id.clone(),
+    );
     {
         let mut pending = pending_permissions.lock().await;
         match pending.get(&key) {
@@ -1706,9 +1766,14 @@ async fn start_runtime_for_user(
     fs::create_dir_all(goose_path_root.join("config"))
         .map_err(|e| format!("Failed to create Goose config dir: {e}"))?;
     // This account-scoped PermissionManager is the one AgentManager actually
-    // inspects. Force every Maple-routed tool through ActionRequired before it
-    // is constructed so stale Goose AlwaysAllow entries cannot bypass Maple.
-    reset_maple_owned_permission_file(&goose_path_root.join("config").join("permission.yaml"))?;
+    // inspects. Reset Maple's owned file before construction so persisted
+    // Goose AlwaysAllow entries cannot bypass this experiment. Out-of-band
+    // mutation after startup is explicitly outside the prototype boundary.
+    let safeguard_enabled = state.host.safeguard.is_some();
+    reset_maple_owned_permission_file(
+        &goose_path_root.join("config").join("permission.yaml"),
+        safeguard_enabled,
+    )?;
 
     #[cfg(target_os = "macos")]
     let login_shell_search_paths = Some(
@@ -1735,7 +1800,7 @@ async fn start_runtime_for_user(
         Arc::clone(&session_manager),
         permission_manager,
         None,
-        GOOSE_PERMISSION_ROUTING_MODE,
+        internal_goose_permission_mode(safeguard_enabled),
         // Maple schedules its title-specific provider request as a tracked,
         // first-turn-only task below. Enabling Goose's scheduler would add a
         // detached first-three-turn job and could retitle source-defined tasks.
@@ -1752,7 +1817,11 @@ async fn start_runtime_for_user(
     // registry. Keep it available for new or uncached sessions; each turn still
     // reapplies the session's selected model below.
     agent_manager
-        .set_default_provider(Arc::new(MapleProvider::new(Arc::clone(&maple_api_session))))
+        .set_default_provider(Arc::new(maple_provider(
+            &maple_api_session,
+            &project_root,
+            state.host.safeguard.as_ref(),
+        )))
         .await;
 
     let runtime = AgentRuntime {
@@ -2215,6 +2284,7 @@ impl AgentRuntimeHandle {
                 &maple_api_session,
                 SessionAgentConfiguration {
                     web_tool_state: &web_tool_state,
+                    safeguard: state.host.safeguard.as_ref(),
                     session: &session,
                     model: &model,
                     context_limit: request.context_limit,
@@ -2516,6 +2586,7 @@ impl AgentRuntimeHandle {
             &maple_api_session,
             &session,
             RuntimeContext::default(),
+            state.host.safeguard.as_ref(),
         )
         .await
         .map_err(|error| format!("Failed to load Goose agent: {error}"))?;
@@ -3123,6 +3194,7 @@ impl AgentRuntimeHandle {
                 &maple_api_session,
                 SessionAgentConfiguration {
                     web_tool_state: &web_tool_state,
+                    safeguard: state.host.safeguard.as_ref(),
                     session: &session,
                     model: &model,
                     context_limit: request.context_limit,
@@ -3209,6 +3281,8 @@ impl AgentRuntimeHandle {
         let task_permission_modes = Arc::clone(&permission_modes);
         let task_web_tool_state = Arc::clone(&web_tool_state);
         let task_user_message = user_message.clone();
+        let task_account_scope = account_scope.to_string();
+        let task_safeguard_enabled = state.host.safeguard.is_some();
         let task_cancel_token = cancel_token.clone();
         let task_agent = Arc::clone(&agent);
         let active_agent = Arc::clone(&agent);
@@ -3292,8 +3366,17 @@ impl AgentRuntimeHandle {
                 start = start_rx => start.is_ok(),
             };
             let result = if should_run {
-                provider::with_run_cancellation(
+                let trusted_user_request = task_safeguard_enabled.then(|| {
+                    SafeguardTrustedUserRequest::from_message(
+                        &task_user_message,
+                        &task_cancel_token,
+                    )
+                });
+                provider::with_agent_run_context(
                     task_cancel_token.clone(),
+                    Some(task_account_scope),
+                    trusted_user_request,
+                    task_safeguard_enabled,
                     run_agent_prompt(AgentPromptRun {
                         events: task_events.clone(),
                         agent: Arc::clone(&task_agent),
@@ -3302,6 +3385,7 @@ impl AgentRuntimeHandle {
                         session_id: session_id.clone(),
                         user_message: task_user_message.clone(),
                         permission_modes: task_permission_modes,
+                        session_lifecycle: Arc::clone(&session_lifecycle),
                         web_tool_state: Arc::clone(&task_web_tool_state),
                         web_permission_context,
                         cancel_token: task_cancel_token.clone(),
@@ -3685,6 +3769,7 @@ impl AgentRuntimeHandle {
                         &maple_api_session,
                         &session,
                         RuntimeContext::default(),
+                        state.host.safeguard.as_ref(),
                     )
                     .await
                     .map_err(|error| {
@@ -3694,22 +3779,20 @@ impl AgentRuntimeHandle {
                 }
             };
             agent
-                .update_goose_mode(GOOSE_PERMISSION_ROUTING_MODE, &session_id)
+                .update_goose_mode(
+                    internal_goose_permission_mode(state.host.safeguard.is_some()),
+                    &session_id,
+                )
                 .await
                 .map_err(|error| format!("Failed to update Goose mode: {error}"))?;
-            // update_goose_mode already persists SmartApprove, which is both our
-            // internal Goose routing mode and the user-facing Read-only mode. Auto
-            // is Maple-owned, so only that case needs a second persistence step.
-            // Keeping Read-only to one write avoids a failed duplicate write
-            // leaving the persisted session stricter than the live Maple policy.
-            if goose_mode == GooseMode::Auto {
-                session_manager
-                    .update(&session_id)
-                    .goose_mode(goose_mode)
-                    .apply()
-                    .await
-                    .map_err(|error| format!("Failed to persist Agent permission mode: {error}"))?;
-            }
+            // Internal Goose routing is an implementation detail. Persist the
+            // selected Maple mode so reloads and the UI never expose Approve.
+            session_manager
+                .update(&session_id)
+                .goose_mode(goose_mode)
+                .apply()
+                .await
+                .map_err(|error| format!("Failed to persist Agent permission mode: {error}"))?;
             Ok(agent)
         }
         .await;
@@ -3746,21 +3829,11 @@ impl AgentRuntimeHandle {
         }
 
         if goose_mode == GooseMode::Auto {
-            let request_ids = {
-                let mut pending = state.pending_permissions.lock().await;
-                let request_ids = pending
-                    .iter()
-                    .filter(|((pending_session_id, _), request)| {
-                        pending_session_id == &session_id
-                            && request.routing == AgentPermissionRouting::Desktop
-                    })
-                    .map(|((_, request_id), _)| request_id.clone())
-                    .collect::<Vec<_>>();
-                for request_id in &request_ids {
-                    pending.remove(&(session_id.clone(), request_id.clone()));
-                }
-                request_ids
-            };
+            let request_ids = take_auto_resolvable_desktop_permission_ids(
+                &state.pending_permissions,
+                &session_id,
+            )
+            .await;
             for request_id in request_ids {
                 deliver_tool_permission(&agent, request_id.clone(), Permission::AllowOnce).await;
                 if let Some(item) = update_live_permission_status(
@@ -3983,6 +4056,7 @@ struct AgentPromptRun {
     session_id: String,
     user_message: Message,
     permission_modes: SessionPermissionModes,
+    session_lifecycle: Arc<Mutex<()>>,
     web_tool_state: Arc<WebToolState>,
     web_permission_context: WebPermissionContext,
     cancel_token: CancellationToken,
@@ -4076,7 +4150,7 @@ async fn selected_permission_mode(
         .await
         .get(session_id)
         .copied()
-        .unwrap_or(GOOSE_PERMISSION_ROUTING_MODE)
+        .unwrap_or(DEFAULT_MAPLE_PERMISSION_ROUTING_MODE)
 }
 
 fn select_session_permission_mode(
@@ -4104,22 +4178,44 @@ async fn deliver_tool_permission(agent: &Agent, request_id: String, permission: 
         .await;
 }
 
+async fn deliver_active_run_tool_permission(
+    agent: &Agent,
+    request_id: String,
+    requested_permission: Permission,
+    session_lifecycle: &Arc<Mutex<()>>,
+    cancel_token: &CancellationToken,
+) {
+    // Run cancellation takes this same lifecycle lock before cancelling the
+    // token and draining pending permissions. Holding it through confirmation
+    // delivery prevents Stop from returning and then being followed by a stale
+    // AllowOnce that was sampled before cancellation.
+    let _session_lifecycle_guard = session_lifecycle.lock().await;
+    let permission = if cancel_token.is_cancelled() {
+        Permission::Cancel
+    } else {
+        requested_permission
+    };
+    deliver_tool_permission(agent, request_id, permission).await;
+}
+
 async fn deliver_tool_permission_if_auto(
     agent: &Agent,
     session_id: &str,
     permission_modes: &SessionPermissionModes,
     request_id: &str,
+    session_lifecycle: &Arc<Mutex<()>>,
     cancel_token: &CancellationToken,
 ) -> bool {
     // Keep the policy lock through confirmation delivery. This is the
     // linearization point for Auto -> Read only: once the restrictive mode
     // command returns, no permission decision based on an older Auto snapshot
     // can still be delivered.
+    let _session_lifecycle_guard = session_lifecycle.lock().await;
     let modes = permission_modes.lock().await;
     if modes
         .get(session_id)
         .copied()
-        .unwrap_or(GOOSE_PERMISSION_ROUTING_MODE)
+        .unwrap_or(DEFAULT_MAPLE_PERMISSION_ROUTING_MODE)
         != GooseMode::Auto
     {
         return false;
@@ -4140,22 +4236,30 @@ async fn claim_pending_permission_if_auto(
     permission_modes: &SessionPermissionModes,
     pending_permissions: &PendingPermissions,
     request_id: &str,
+    session_lifecycle: &Arc<Mutex<()>>,
     cancel_token: &CancellationToken,
 ) -> bool {
     // This is the same Auto -> Read only linearization boundary as the direct
     // path above, with the pending request claimed while the policy is locked.
+    let _session_lifecycle_guard = session_lifecycle.lock().await;
     let modes = permission_modes.lock().await;
     if modes
         .get(session_id)
         .copied()
-        .unwrap_or(GOOSE_PERMISSION_ROUTING_MODE)
+        .unwrap_or(DEFAULT_MAPLE_PERMISSION_ROUTING_MODE)
         != GooseMode::Auto
     {
         return false;
     }
-    let claimed = pending_permissions
-        .lock()
-        .await
+    let claimed = pending_permissions.lock().await;
+    if claimed
+        .get(&(session_id.to_string(), request_id.to_string()))
+        .is_some_and(|request| !pending_permission_allows_auto_resolution(request))
+    {
+        return false;
+    }
+    let mut claimed = claimed;
+    let claimed = claimed
         .remove(&(session_id.to_string(), request_id.to_string()))
         .is_some();
     if claimed {
@@ -4175,6 +4279,7 @@ struct PermissionAutomationContext<'a> {
     web_tool_state: &'a WebToolState,
     web_permission_context: &'a WebPermissionContext,
     working_dir: &'a Path,
+    session_lifecycle: &'a Arc<Mutex<()>>,
     cancel_token: &'a CancellationToken,
 }
 
@@ -4189,6 +4294,7 @@ async fn automatically_handle_permissions(
         web_tool_state,
         web_permission_context,
         working_dir,
+        session_lifecycle,
         cancel_token,
     } = context;
     let shell_classifier = ShellPermissionClassifier;
@@ -4199,16 +4305,55 @@ async fn automatically_handle_permissions(
         let MessageContent::ActionRequired(action) = content else {
             continue;
         };
-        let tool_request_id = match &action.data {
-            ActionRequiredData::ToolConfirmation { id, .. } => Some(id.clone()),
+        let tool_request = match &action.data {
+            ActionRequiredData::ToolConfirmation {
+                id,
+                tool_name,
+                arguments,
+                prompt,
+            } => Some((id, tool_name, arguments, prompt)),
             _ => None,
         };
-        if let Some(request_id) = tool_request_id.as_ref() {
+        let tool_request_id = tool_request.map(|(id, _, _, _)| id);
+        if let Some((request_id, tool_name, arguments, prompt)) = tool_request {
+            let safeguard_disposition =
+                take_safeguard_action_disposition(request_id, tool_name, arguments);
+            match safeguard_disposition {
+                disposition
+                    if safeguard_allows_automatic_permission(disposition, prompt.as_deref()) =>
+                {
+                    deliver_active_run_tool_permission(
+                        agent,
+                        request_id.clone(),
+                        Permission::AllowOnce,
+                        session_lifecycle,
+                        cancel_token,
+                    )
+                    .await;
+                    handled.insert(request_id.clone());
+                    continue;
+                }
+                SafeguardActionDisposition::AutoExecuteCandidate
+                | SafeguardActionDisposition::RequireApproval => {
+                    // Leave this ActionRequired unresolved so the existing
+                    // Maple permission card supplies Allow/Deny to the user.
+                    // A Goose inspector prompt is an independent reason for
+                    // approval and can never be cleared by the classifier.
+                    continue;
+                }
+                SafeguardActionDisposition::Inactive if prompt.is_some() => {
+                    // Goose produced a reason-bearing confirmation independently
+                    // of Maple's optional safeguard. Auto never dismisses it.
+                    continue;
+                }
+                SafeguardActionDisposition::Inactive => {}
+            }
             if deliver_tool_permission_if_auto(
                 agent,
                 session_id,
                 permission_modes,
                 request_id,
+                session_lifecycle,
                 cancel_token,
             )
             .await
@@ -4229,7 +4374,14 @@ async fn automatically_handle_permissions(
                 log::info!("Auto-approved Agent Mode web search request {request_id}");
                 Permission::AllowOnce
             };
-            deliver_tool_permission(agent, request_id.clone(), permission).await;
+            deliver_active_run_tool_permission(
+                agent,
+                request_id.clone(),
+                permission,
+                session_lifecycle,
+                cancel_token,
+            )
+            .await;
             handled.insert(request_id);
             continue;
         }
@@ -4255,6 +4407,7 @@ async fn automatically_handle_permissions(
                 session_id,
                 permission_modes,
                 &request_id,
+                session_lifecycle,
                 cancel_token,
             )
             .await
@@ -4271,7 +4424,14 @@ async fn automatically_handle_permissions(
                     WebPermissionOutcome::RequiresApproval => continue,
                 }
             };
-            deliver_tool_permission(agent, request_id.clone(), permission).await;
+            deliver_active_run_tool_permission(
+                agent,
+                request_id.clone(),
+                permission,
+                session_lifecycle,
+                cancel_token,
+            )
+            .await;
             handled.insert(request_id);
             continue;
         }
@@ -4285,7 +4445,14 @@ async fn automatically_handle_permissions(
                 log::info!("Auto-approved local Agent Mode file read request {request_id}");
                 Permission::AllowOnce
             };
-            deliver_tool_permission(agent, request_id.clone(), permission).await;
+            deliver_active_run_tool_permission(
+                agent,
+                request_id.clone(),
+                permission,
+                session_lifecycle,
+                cancel_token,
+            )
+            .await;
             handled.insert(request_id);
             continue;
         }
@@ -4296,12 +4463,13 @@ async fn automatically_handle_permissions(
                     agent,
                     session_id,
                     permission_modes,
-                    &request_id,
+                    request_id,
+                    session_lifecycle,
                     cancel_token,
                 )
                 .await
                 {
-                    handled.insert(request_id);
+                    handled.insert(request_id.clone());
                 }
             }
             continue;
@@ -4315,6 +4483,7 @@ async fn automatically_handle_permissions(
             session_id,
             permission_modes,
             &request_id,
+            session_lifecycle,
             cancel_token,
         )
         .await
@@ -4335,7 +4504,14 @@ async fn automatically_handle_permissions(
             }
         };
 
-        deliver_tool_permission(agent, request_id.clone(), permission).await;
+        deliver_active_run_tool_permission(
+            agent,
+            request_id.clone(),
+            permission,
+            session_lifecycle,
+            cancel_token,
+        )
+        .await;
         handled.insert(request_id);
     }
 
@@ -4405,6 +4581,7 @@ async fn run_agent_prompt(run: AgentPromptRun) -> Result<AgentPromptOutcome, Str
         session_id,
         user_message,
         permission_modes,
+        session_lifecycle,
         web_tool_state,
         web_permission_context,
         cancel_token,
@@ -4479,6 +4656,7 @@ async fn run_agent_prompt(run: AgentPromptRun) -> Result<AgentPromptOutcome, Str
                         web_tool_state: &web_tool_state,
                         web_permission_context: &web_permission_context,
                         working_dir: &working_dir,
+                        session_lifecycle: &session_lifecycle,
                         cancel_token: &cancel_token,
                     },
                 )
@@ -4507,13 +4685,18 @@ async fn run_agent_prompt(run: AgentPromptRun) -> Result<AgentPromptOutcome, Str
                             item.status = Some("cancelled".to_string());
                             continue;
                         };
+                        let requires_explicit_approval =
+                            permission_requires_explicit_approval(&request);
                         match register_pending_permission(
                             &pending_permissions,
                             &issued_permission_ids,
                             &session_id,
-                            &run_id,
-                            permission_routing,
-                            request,
+                            PendingAgentPermission {
+                                run_id: run_id.clone(),
+                                routing: permission_routing,
+                                request,
+                                requires_explicit_approval,
+                            },
                             &cancel_token,
                         )
                         .await
@@ -4537,6 +4720,7 @@ async fn run_agent_prompt(run: AgentPromptRun) -> Result<AgentPromptOutcome, Str
                                     &permission_modes,
                                     &pending_permissions,
                                     &request_id,
+                                    &session_lifecycle,
                                     &cancel_token,
                                 )
                                 .await
@@ -4880,6 +5064,7 @@ struct AgentSkillsScope<'a> {
 
 struct SessionAgentConfiguration<'a> {
     web_tool_state: &'a Arc<WebToolState>,
+    safeguard: Option<&'a Arc<GptOssSafeguard>>,
     session: &'a Session,
     model: &'a str,
     context_limit: Option<usize>,
@@ -4907,6 +5092,7 @@ async fn install_maple_provider<T>(
     session: &Session,
     model: &str,
     context_limit: Option<usize>,
+    safeguard: Option<&Arc<GptOssSafeguard>>,
 ) -> Result<(), String>
 where
     T: provider::MapleInferenceTransport + 'static,
@@ -4924,23 +5110,51 @@ where
             .filter(|limit| *limit > 0)
     });
     let model_config = maple_model_config(model, context_limit)?;
-    install_maple_provider_config(agent, transport, &session.id, model_config).await
+    install_maple_provider_config(
+        agent,
+        transport,
+        &session.id,
+        &session.working_dir,
+        model_config,
+        safeguard,
+    )
+    .await
 }
 
 async fn install_maple_provider_config<T>(
     agent: &Arc<Agent>,
     transport: &Arc<T>,
     session_id: &str,
+    working_directory: &Path,
     model_config: goose_providers::model::ModelConfig,
+    safeguard: Option<&Arc<GptOssSafeguard>>,
 ) -> Result<(), String>
 where
     T: provider::MapleInferenceTransport + 'static,
 {
-    let provider = Arc::new(MapleProvider::new(Arc::clone(transport)));
+    let provider = maple_provider(transport, working_directory, safeguard);
+    let provider = Arc::new(provider);
     agent
         .update_provider(provider, model_config, session_id)
         .await
         .map_err(|e| format!("Failed to update Goose provider: {e}"))
+}
+
+fn maple_provider<T>(
+    transport: &Arc<T>,
+    working_directory: &Path,
+    safeguard: Option<&Arc<GptOssSafeguard>>,
+) -> MapleProvider
+where
+    T: provider::MapleInferenceTransport + 'static,
+{
+    let mut provider = MapleProvider::new(Arc::clone(transport));
+    if let Some(safeguard) = safeguard {
+        let safeguard: Arc<dyn AgentSafeguard> = safeguard.clone();
+        provider =
+            provider.with_safeguard(safeguard, working_directory.to_string_lossy().into_owned());
+    }
+    provider
 }
 
 async fn get_or_create_session_agent<T>(
@@ -4948,6 +5162,7 @@ async fn get_or_create_session_agent<T>(
     transport: &Arc<T>,
     session: &Session,
     runtime_context: RuntimeContext,
+    safeguard: Option<&Arc<GptOssSafeguard>>,
 ) -> Result<AgentManagerGetResult, String>
 where
     T: provider::MapleInferenceTransport + 'static,
@@ -4980,7 +5195,9 @@ where
                 &manager_result.agent,
                 transport,
                 &session.id,
+                &session.working_dir,
                 model_config.clone(),
+                safeguard,
             )
             .await?;
         }
@@ -4998,6 +5215,7 @@ async fn configure_session_agent(
 ) -> Result<(Arc<Agent>, Vec<AgentMcpConnectionError>), String> {
     let SessionAgentConfiguration {
         web_tool_state,
+        safeguard,
         session,
         model,
         context_limit,
@@ -5011,17 +5229,35 @@ async fn configure_session_agent(
         maple_api_session,
         session,
         RuntimeContext::default(),
+        safeguard,
     )
     .await?;
     let agent = manager_result.agent;
     let skills_client =
         prepare_transient_skills_client(skills_scope.paths, skills_scope.user_id, &agent, session)?;
     let mcp_errors = mcp_connection_errors(manager_result.extension_results, &session_mcp_keys);
-    install_maple_provider(&agent, maple_api_session, session, model, context_limit).await?;
+    install_maple_provider(
+        &agent,
+        maple_api_session,
+        session,
+        model,
+        context_limit,
+        safeguard,
+    )
+    .await?;
     agent
-        .update_goose_mode(GOOSE_PERMISSION_ROUTING_MODE, &session.id)
+        .update_goose_mode(
+            internal_goose_permission_mode(safeguard.is_some()),
+            &session.id,
+        )
         .await
         .map_err(|e| format!("Failed to configure Goose permission routing: {e}"))?;
+    session_manager
+        .update(&session.id)
+        .goose_mode(parse_user_permission_mode(mode)?)
+        .apply()
+        .await
+        .map_err(|e| format!("Failed to preserve Maple permission mode: {e}"))?;
     let developer = ExtensionConfig::Builtin {
         name: "developer".to_string(),
         description: DEFAULT_EXTENSION_DESCRIPTION.to_string(),
@@ -6200,8 +6436,21 @@ fn remove_maple_owned_goose_file(path: &Path, description: &str) -> Result<(), S
     }
 }
 
-fn reset_maple_owned_permission_file(path: &Path) -> Result<(), String> {
-    fs::write(path, MAPLE_GOOSE_PERMISSION_CONFIG).map_err(|error| {
+fn internal_goose_permission_mode(safeguard_enabled: bool) -> GooseMode {
+    if safeguard_enabled {
+        GooseMode::Approve
+    } else {
+        GooseMode::SmartApprove
+    }
+}
+
+fn reset_maple_owned_permission_file(path: &Path, safeguard_enabled: bool) -> Result<(), String> {
+    let config = if safeguard_enabled {
+        MAPLE_GOOSE_SAFEGUARD_PERMISSION_CONFIG
+    } else {
+        MAPLE_GOOSE_PERMISSION_CONFIG
+    };
+    fs::write(path, config).map_err(|error| {
         format!(
             "Failed to reset Maple-owned Goose permission file {}: {error}",
             path.display()
@@ -7402,6 +7651,7 @@ mod tests {
             run_id: run_id.to_string(),
             routing,
             request: test_permission_request(request_id),
+            requires_explicit_approval: false,
         }
     }
 
@@ -7693,6 +7943,7 @@ mod tests {
             &transport,
             &session,
             RuntimeContext::default(),
+            None,
         )
         .await
         .unwrap();
@@ -7783,6 +8034,7 @@ mod tests {
             &transport,
             &glm_session,
             RuntimeContext::default(),
+            None,
         )
         .await
         .unwrap();
@@ -7792,6 +8044,7 @@ mod tests {
             &glm_session,
             "glm-5-2",
             Some(384_000),
+            None,
         )
         .await
         .unwrap();
@@ -7802,6 +8055,7 @@ mod tests {
             &transport,
             &kimi_session,
             RuntimeContext::default(),
+            None,
         )
         .await
         .unwrap();
@@ -7811,6 +8065,7 @@ mod tests {
             &kimi_session,
             "auto:powerful",
             Some(256_000),
+            None,
         )
         .await
         .unwrap();
@@ -7844,6 +8099,7 @@ mod tests {
             &transport,
             &persisted_glm,
             RuntimeContext::default(),
+            None,
         )
         .await
         .unwrap();
@@ -7852,6 +8108,7 @@ mod tests {
             &transport,
             &persisted_glm,
             "glm-5-2",
+            None,
             None,
         )
         .await
@@ -9025,7 +9282,7 @@ mod tests {
         )
         .unwrap();
 
-        reset_maple_owned_permission_file(&path).unwrap();
+        reset_maple_owned_permission_file(&path, false).unwrap();
         let manager = PermissionManager::new(root.clone());
         for tool in MAPLE_DEVELOPER_TOOLS {
             assert_eq!(
@@ -9037,6 +9294,96 @@ mod tests {
             manager.get_user_permission("load_skill"),
             Some(goose::config::permission::PermissionLevel::AlwaysAllow)
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn safeguard_permission_file_removes_every_always_allow_rule() {
+        let root = std::env::temp_dir().join(format!(
+            "maple-safeguard-permissions-{}-{}",
+            std::process::id(),
+            NEXT_RUN_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("permission.yaml");
+        fs::write(
+            &path,
+            "user:\n  always_allow:\n  - shell\n  - load_skill\n  ask_before: []\n  never_allow: []\n",
+        )
+        .unwrap();
+
+        reset_maple_owned_permission_file(&path, true).unwrap();
+        let manager = PermissionManager::new(root.clone());
+        for tool in MAPLE_DEVELOPER_TOOLS
+            .into_iter()
+            .chain(std::iter::once("load_skill"))
+        {
+            assert_eq!(
+                manager.get_user_permission(tool),
+                Some(goose::config::permission::PermissionLevel::AskBefore),
+                "{tool} must reach Maple's permission boundary"
+            );
+        }
+        assert_eq!(internal_goose_permission_mode(true), GooseMode::Approve);
+        assert_eq!(
+            internal_goose_permission_mode(false),
+            GooseMode::SmartApprove
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn safeguard_approve_routing_ignores_readonly_hints_and_smart_cache() {
+        use goose::permission::permission_inspector::PermissionInspector;
+        use goose::tool_inspection::{InspectionAction, ToolInspector};
+        use rmcp::model::{CallToolRequestParams, Tool, ToolAnnotations};
+
+        let root = std::env::temp_dir().join(format!(
+            "maple-safeguard-approve-{}-{}",
+            std::process::id(),
+            NEXT_RUN_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&root).unwrap();
+        reset_maple_owned_permission_file(&root.join("permission.yaml"), true).unwrap();
+        let manager = Arc::new(PermissionManager::new(root.clone()));
+        manager.update_smart_approve_permission(
+            "mcp_read",
+            goose::config::permission::PermissionLevel::AlwaysAllow,
+        );
+        let provider: goose::agents::types::SharedProvider = Arc::new(Mutex::new(None));
+        let inspector = PermissionInspector::new(
+            Arc::clone(&manager),
+            provider,
+            Arc::new(SessionManager::new(root.join("data"))),
+        );
+        let mut annotations = ToolAnnotations::default();
+        annotations.read_only_hint = Some(true);
+        inspector.apply_tool_annotations(&[Tool::new(
+            "mcp_read",
+            "Untrusted server claims this mutating tool is read-only",
+            rmcp::object!({"type": "object"}),
+        )
+        .with_annotations(annotations)]);
+        let request = Message::assistant()
+            .with_tool_request("mcp-request", Ok(CallToolRequestParams::new("mcp_read")));
+        let requests = request
+            .content
+            .iter()
+            .filter_map(|content| match content {
+                MessageContent::ToolRequest(request) => Some(request.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        let results = inspector
+            .inspect("session", &requests, &[], GooseMode::Approve)
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(matches!(
+            results[0].action,
+            InspectionAction::RequireApproval(None)
+        ));
         let _ = fs::remove_dir_all(root);
     }
 
@@ -9052,7 +9399,7 @@ mod tests {
             NEXT_RUN_ID.fetch_add(1, Ordering::Relaxed)
         ));
         fs::create_dir_all(&root).unwrap();
-        reset_maple_owned_permission_file(&root.join("permission.yaml")).unwrap();
+        reset_maple_owned_permission_file(&root.join("permission.yaml"), false).unwrap();
         let manager = Arc::new(PermissionManager::new(root.clone()));
         let provider: goose::agents::types::SharedProvider = Arc::new(Mutex::new(None));
         let inspector = PermissionInspector::new(
@@ -11208,6 +11555,7 @@ mod tests {
             ),
             Arc::new(NoopAgentEventSink),
             AgentToolContextSpec::default(),
+            SafeguardStartup::disabled_for_test(),
         ));
         let stale_handle = state.handle_for_user("user-to-clear").await.unwrap();
         let scope = account_scope("user-to-clear").unwrap();
@@ -11228,6 +11576,7 @@ mod tests {
             ),
             Arc::new(NoopAgentEventSink),
             AgentToolContextSpec::default(),
+            SafeguardStartup::disabled_for_test(),
         ));
         let handle = state.handle_for_user("user-during-shutdown").await.unwrap();
 
@@ -11408,6 +11757,7 @@ mod tests {
                 session_id: session.id.clone(),
                 user_message: Message::user().with_text(prompt).with_generated_id(),
                 permission_modes: Arc::new(Mutex::new(HashMap::new())),
+                session_lifecycle: Arc::new(Mutex::new(())),
                 web_tool_state: Arc::new(WebToolState::default()),
                 web_permission_context: WebPermissionContext::from_user_prompt(prompt),
                 cancel_token: CancellationToken::new(),
@@ -12173,15 +12523,372 @@ mod tests {
                 &pending,
                 &issued,
                 "session-1",
-                "run-1",
-                AgentPermissionRouting::Desktop,
-                test_permission_request("request-1"),
+                test_pending_permission("run-1", AgentPermissionRouting::Desktop, "request-1"),
                 &cancel_token,
             )
             .await,
             PendingPermissionRegistration::Rejected
         );
         assert!(pending.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn cancellation_fence_turns_a_waiting_auto_approval_into_cancel() {
+        let test_root = recent_roots_test_dir("permission-cancellation-fence");
+        let agent = Arc::new(Agent::with_config(GooseAgentConfig::new(
+            Arc::new(SessionManager::new(test_root.join("sessions"))),
+            Arc::new(PermissionManager::new(test_root.join("permissions"))),
+            None,
+            GooseMode::Approve,
+            true,
+            GoosePlatform::GooseDesktop,
+        )));
+        let receiver = agent
+            .tool_confirmation_router
+            .register("request-1".to_string())
+            .await;
+        let session_lifecycle = Arc::new(Mutex::new(()));
+        let lifecycle_guard = session_lifecycle.lock().await;
+        let cancel_token = CancellationToken::new();
+        let task = tokio::spawn({
+            let agent = Arc::clone(&agent);
+            let session_lifecycle = Arc::clone(&session_lifecycle);
+            let cancel_token = cancel_token.clone();
+            async move {
+                deliver_active_run_tool_permission(
+                    agent.as_ref(),
+                    "request-1".to_string(),
+                    Permission::AllowOnce,
+                    &session_lifecycle,
+                    &cancel_token,
+                )
+                .await;
+            }
+        });
+
+        cancel_token.cancel();
+        drop(lifecycle_guard);
+        task.await.unwrap();
+
+        assert_eq!(receiver.await.unwrap().permission, Permission::Cancel);
+        let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[tokio::test]
+    async fn cancellation_fence_preserves_an_active_auto_approval() {
+        let test_root = recent_roots_test_dir("permission-approval-fence");
+        let agent = Agent::with_config(GooseAgentConfig::new(
+            Arc::new(SessionManager::new(test_root.join("sessions"))),
+            Arc::new(PermissionManager::new(test_root.join("permissions"))),
+            None,
+            GooseMode::Approve,
+            true,
+            GoosePlatform::GooseDesktop,
+        ));
+        let receiver = agent
+            .tool_confirmation_router
+            .register("request-1".to_string())
+            .await;
+
+        deliver_active_run_tool_permission(
+            &agent,
+            "request-1".to_string(),
+            Permission::AllowOnce,
+            &Arc::new(Mutex::new(())),
+            &CancellationToken::new(),
+        )
+        .await;
+
+        assert_eq!(receiver.await.unwrap().permission, Permission::AllowOnce);
+        let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[tokio::test]
+    async fn forced_pending_permission_cannot_be_auto_resolved() {
+        let pending = Arc::new(Mutex::new(HashMap::new()));
+        let issued = Arc::new(Mutex::new(HashSet::new()));
+        let cancel_token = CancellationToken::new();
+
+        let mut forced =
+            test_pending_permission("run-1", AgentPermissionRouting::Desktop, "request-1");
+        forced.requires_explicit_approval = true;
+        assert_eq!(
+            register_pending_permission(&pending, &issued, "session-1", forced, &cancel_token,)
+                .await,
+            PendingPermissionRegistration::Registered
+        );
+        let pending = pending.lock().await;
+        let request = pending
+            .get(&("session-1".to_string(), "request-1".to_string()))
+            .expect("forced permission remains pending");
+        assert!(!pending_permission_allows_auto_resolution(request));
+    }
+
+    #[tokio::test]
+    async fn safeguard_requirement_preempts_auto_and_read_only_automation() {
+        for mode in [GooseMode::Auto, GooseMode::SmartApprove] {
+            let test_root = recent_roots_test_dir("safeguard-permission-preemption");
+            let agent = Agent::with_config(GooseAgentConfig::new(
+                Arc::new(SessionManager::new(test_root.join("sessions"))),
+                Arc::new(PermissionManager::new(test_root.join("permissions"))),
+                None,
+                GooseMode::Approve,
+                true,
+                GoosePlatform::GooseDesktop,
+            ));
+            let request_id = format!("request-{mode}");
+            let mut receiver = agent
+                .tool_confirmation_router
+                .register(request_id.clone())
+                .await;
+            let arguments = serde_json::Map::from_iter([(
+                "command".to_string(),
+                Value::String("git status --short".to_string()),
+            )]);
+            let message = Message::assistant().with_content(MessageContent::action_required(
+                request_id.clone(),
+                "shell".to_string(),
+                arguments,
+                None,
+            ));
+            let permission_modes =
+                Arc::new(Mutex::new(HashMap::from([("session-1".to_string(), mode)])));
+            let lifecycle = Arc::new(Mutex::new(()));
+            let cancellation = CancellationToken::new();
+            let web_tool_state = WebToolState::default();
+            let web_permission_context = WebPermissionContext::from_user_prompt("inspect status");
+
+            let handled = provider::with_agent_run_context(
+                cancellation.clone(),
+                None,
+                None,
+                true,
+                automatically_handle_permissions(
+                    &agent,
+                    "session-1",
+                    &message,
+                    PermissionAutomationContext {
+                        permission_modes: &permission_modes,
+                        web_tool_state: &web_tool_state,
+                        web_permission_context: &web_permission_context,
+                        working_dir: Path::new("."),
+                        session_lifecycle: &lifecycle,
+                        cancel_token: &cancellation,
+                    },
+                ),
+            )
+            .await;
+
+            assert!(handled.is_empty());
+            assert!(matches!(
+                receiver.try_recv(),
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+            ));
+            drop(receiver);
+            let _ = fs::remove_dir_all(test_root);
+        }
+    }
+
+    #[tokio::test]
+    async fn exact_safeguard_auto_clearance_delivers_allow_once_and_is_consumed() {
+        let test_root = recent_roots_test_dir("safeguard-auto-clearance");
+        let agent = Agent::with_config(GooseAgentConfig::new(
+            Arc::new(SessionManager::new(test_root.join("sessions"))),
+            Arc::new(PermissionManager::new(test_root.join("permissions"))),
+            None,
+            GooseMode::Approve,
+            true,
+            GoosePlatform::GooseDesktop,
+        ));
+        let request_id = "request-auto";
+        let arguments = serde_json::Map::from_iter([(
+            "path".to_string(),
+            Value::String("README.md".to_string()),
+        )]);
+        let message = Message::assistant().with_content(MessageContent::action_required(
+            request_id,
+            "read".to_string(),
+            arguments.clone(),
+            None,
+        ));
+        let permission_modes = Arc::new(Mutex::new(HashMap::from([(
+            "session-1".to_string(),
+            GooseMode::SmartApprove,
+        )])));
+        let lifecycle = Arc::new(Mutex::new(()));
+        let cancellation = CancellationToken::new();
+        let web_tool_state = WebToolState::default();
+        let web_permission_context = WebPermissionContext::from_user_prompt("read the README");
+
+        let first_receiver = agent
+            .tool_confirmation_router
+            .register(request_id.to_string())
+            .await;
+        let (first_handled, second_handled, mut second_receiver) =
+            provider::with_test_safeguard_action_clearance(
+                cancellation.clone(),
+                request_id,
+                "read",
+                arguments,
+                async {
+                    let first_handled = automatically_handle_permissions(
+                        &agent,
+                        "session-1",
+                        &message,
+                        PermissionAutomationContext {
+                            permission_modes: &permission_modes,
+                            web_tool_state: &web_tool_state,
+                            web_permission_context: &web_permission_context,
+                            working_dir: Path::new("."),
+                            session_lifecycle: &lifecycle,
+                            cancel_token: &cancellation,
+                        },
+                    )
+                    .await;
+                    let second_receiver = agent
+                        .tool_confirmation_router
+                        .register(request_id.to_string())
+                        .await;
+                    let second_handled = automatically_handle_permissions(
+                        &agent,
+                        "session-1",
+                        &message,
+                        PermissionAutomationContext {
+                            permission_modes: &permission_modes,
+                            web_tool_state: &web_tool_state,
+                            web_permission_context: &web_permission_context,
+                            working_dir: Path::new("."),
+                            session_lifecycle: &lifecycle,
+                            cancel_token: &cancellation,
+                        },
+                    )
+                    .await;
+                    (first_handled, second_handled, second_receiver)
+                },
+            )
+            .await;
+
+        assert_eq!(
+            first_receiver.await.unwrap().permission,
+            Permission::AllowOnce
+        );
+        assert_eq!(first_handled, HashSet::from([request_id.to_string()]));
+        assert!(second_handled.is_empty());
+        assert!(matches!(
+            second_receiver.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
+        drop(second_receiver);
+        let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[tokio::test]
+    async fn forced_pending_permission_survives_post_registration_auto_claim() {
+        let test_root = recent_roots_test_dir("forced-post-registration-claim");
+        let agent = Agent::with_config(GooseAgentConfig::new(
+            Arc::new(SessionManager::new(test_root.join("sessions"))),
+            Arc::new(PermissionManager::new(test_root.join("permissions"))),
+            None,
+            GooseMode::Approve,
+            true,
+            GoosePlatform::GooseDesktop,
+        ));
+        let mut receiver = agent
+            .tool_confirmation_router
+            .register("request-1".to_string())
+            .await;
+        let pending = Arc::new(Mutex::new(HashMap::from([(
+            ("session-1".to_string(), "request-1".to_string()),
+            PendingAgentPermission {
+                run_id: "run-1".to_string(),
+                routing: AgentPermissionRouting::Desktop,
+                request: test_permission_request("request-1"),
+                requires_explicit_approval: true,
+            },
+        )])));
+        let modes = Arc::new(Mutex::new(HashMap::from([(
+            "session-1".to_string(),
+            GooseMode::Auto,
+        )])));
+
+        assert!(
+            !claim_pending_permission_if_auto(
+                &agent,
+                "session-1",
+                &modes,
+                &pending,
+                "request-1",
+                &Arc::new(Mutex::new(())),
+                &CancellationToken::new(),
+            )
+            .await
+        );
+        assert!(pending
+            .lock()
+            .await
+            .contains_key(&("session-1".to_string(), "request-1".to_string())));
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
+        drop(receiver);
+        let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[tokio::test]
+    async fn auto_mode_transition_drains_only_unforced_desktop_permissions() {
+        let pending = Arc::new(Mutex::new(HashMap::from([
+            (
+                ("session-1".to_string(), "ordinary".to_string()),
+                test_pending_permission("run-1", AgentPermissionRouting::Desktop, "ordinary"),
+            ),
+            (
+                ("session-1".to_string(), "forced".to_string()),
+                PendingAgentPermission {
+                    requires_explicit_approval: true,
+                    ..test_pending_permission("run-1", AgentPermissionRouting::Desktop, "forced")
+                },
+            ),
+            (
+                ("session-1".to_string(), "calling".to_string()),
+                test_pending_permission("run-2", AgentPermissionRouting::CallingSurface, "calling"),
+            ),
+            (
+                ("session-2".to_string(), "other".to_string()),
+                test_pending_permission("run-3", AgentPermissionRouting::Desktop, "other"),
+            ),
+        ])));
+
+        assert_eq!(
+            take_auto_resolvable_desktop_permission_ids(&pending, "session-1").await,
+            vec!["ordinary".to_string()]
+        );
+        let pending = pending.lock().await;
+        assert!(!pending.contains_key(&("session-1".to_string(), "ordinary".to_string())));
+        assert!(pending.contains_key(&("session-1".to_string(), "forced".to_string())));
+        assert!(pending.contains_key(&("session-1".to_string(), "calling".to_string())));
+        assert!(pending.contains_key(&("session-2".to_string(), "other".to_string())));
+    }
+
+    #[test]
+    fn independent_goose_prompt_cannot_be_cleared_by_safeguard() {
+        assert!(safeguard_allows_automatic_permission(
+            SafeguardActionDisposition::AutoExecuteCandidate,
+            None,
+        ));
+        assert!(!safeguard_allows_automatic_permission(
+            SafeguardActionDisposition::AutoExecuteCandidate,
+            Some("Security Alert"),
+        ));
+        assert!(!safeguard_allows_automatic_permission(
+            SafeguardActionDisposition::RequireApproval,
+            None,
+        ));
+
+        let mut request = test_permission_request("request-with-security-prompt");
+        assert!(permission_requires_explicit_approval(&request));
+        request.prompt = None;
+        assert!(!permission_requires_explicit_approval(&request));
     }
 
     #[tokio::test]
@@ -12225,9 +12932,12 @@ mod tests {
                 &pending,
                 &issued,
                 "session-1",
-                "run-1",
-                AgentPermissionRouting::CallingSurface,
-                original.clone(),
+                PendingAgentPermission {
+                    run_id: "run-1".to_string(),
+                    routing: AgentPermissionRouting::CallingSurface,
+                    request: original.clone(),
+                    requires_explicit_approval: false,
+                },
                 &cancel_token,
             )
             .await,
@@ -12238,9 +12948,12 @@ mod tests {
                 &pending,
                 &issued,
                 "session-1",
-                "run-1",
-                AgentPermissionRouting::CallingSurface,
-                original,
+                PendingAgentPermission {
+                    run_id: "run-1".to_string(),
+                    routing: AgentPermissionRouting::CallingSurface,
+                    request: original,
+                    requires_explicit_approval: false,
+                },
                 &cancel_token,
             )
             .await,
@@ -12256,9 +12969,12 @@ mod tests {
                 &pending,
                 &issued,
                 "session-1",
-                "run-1",
-                AgentPermissionRouting::CallingSurface,
-                conflicting,
+                PendingAgentPermission {
+                    run_id: "run-1".to_string(),
+                    routing: AgentPermissionRouting::CallingSurface,
+                    request: conflicting,
+                    requires_explicit_approval: false,
+                },
                 &cancel_token,
             )
             .await,
@@ -12277,9 +12993,7 @@ mod tests {
                 &pending,
                 &issued,
                 "session-1",
-                "run-1",
-                AgentPermissionRouting::Desktop,
-                test_permission_request("request-1"),
+                test_pending_permission("run-1", AgentPermissionRouting::Desktop, "request-1"),
                 &cancel_token,
             )
             .await,
@@ -12301,9 +13015,12 @@ mod tests {
                 &pending,
                 &issued,
                 "session-1",
-                "run-1",
-                AgentPermissionRouting::Desktop,
-                reused,
+                PendingAgentPermission {
+                    run_id: "run-1".to_string(),
+                    routing: AgentPermissionRouting::Desktop,
+                    request: reused,
+                    requires_explicit_approval: false,
+                },
                 &cancel_token,
             )
             .await,
@@ -12371,6 +13088,7 @@ mod tests {
                 rmcp::model::ContentBlock::text("command failed"),
             ])),
             metadata: None,
+            provenance: Default::default(),
         };
         let response = tool_response_item(&response, 2000);
         assert_eq!(response.status.as_deref(), Some("failed"));

@@ -150,8 +150,47 @@ fn handle_deep_link_event(url: &str, app: &tauri::AppHandle) {
     }
 }
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
+#[cfg(desktop)]
+type PlatformStartup = agent::SafeguardStartup;
+#[cfg(not(desktop))]
+type PlatformStartup = ();
+
+/// Start the desktop application after removing the legacy environment secret
+/// and reading the optional safeguard secret file.
+///
+/// # Safety
+///
+/// This must be called as the desktop process's first operation, before any
+/// other thread can read the environment. Unix process environments cannot be
+/// mutated safely once another thread may access them.
+#[cfg(desktop)]
+pub unsafe fn run() {
+    // SAFETY: required by this function's caller contract. Maple no longer
+    // consumes this legacy variable, but removing it prevents direct, ACP, or
+    // standard launches from forwarding a stale credential to tool children.
+    unsafe { std::env::remove_var("TINFOIL_API_KEY") };
+    let startup = agent::SafeguardStartup::capture_before_threads();
+
+    let mut args = std::env::args().skip(1);
+    if args.next().as_deref() == Some("acp") {
+        drop(startup);
+        if let Err(error) = run_acp_connector() {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
+    run_with_startup(startup);
+}
+
+#[cfg(not(desktop))]
+#[tauri::mobile_entry_point]
 pub fn run() {
+    run_with_startup(());
+}
+
+fn run_with_startup(startup: PlatformStartup) {
     #[cfg(desktop)]
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
@@ -215,13 +254,13 @@ pub fn run() {
             restart_for_update,
             get_pending_update_failure,
         ])
-        .setup(|app| {
+        .setup(move |app| {
             #[cfg(target_os = "macos")]
             enable_main_window_frame_autosave(app.handle());
 
             legacy_tts_cleanup::schedule(app.handle());
 
-            let service = agent_host::build_service(app.handle())?;
+            let service = agent_host::build_service(app.handle(), startup)?;
             if !app.manage(service) {
                 return Err("Maple Agent service was already initialized".into());
             }
@@ -466,7 +505,7 @@ pub fn run() {
 }
 
 #[cfg(desktop)]
-pub fn run_acp_connector() -> Result<(), String> {
+fn run_acp_connector() -> Result<(), String> {
     agent_acp::run_acp_connector()
 }
 
