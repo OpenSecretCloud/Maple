@@ -62,6 +62,10 @@ import {
   ChatUserTurn
 } from "@/components/chat/ChatTurn";
 import { ChatCopyButton } from "@/components/chat/ChatCopyButton";
+import {
+  continueChatComposerList,
+  continueChatComposerListBeforeInput
+} from "@/components/chatComposerListContinuation";
 import { ModelSelector } from "@/components/ModelSelector";
 import { useBillingState, useModelState, useSelectedProjectState } from "@/state/useLocalState";
 import { isKnownFreePlan } from "@/billing/billingAccess";
@@ -4968,10 +4972,18 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // On desktop: Enter submits, Shift+Enter for new line
     // On mobile: Enter for new line, no keyboard shortcut to submit (use button)
+    if (e.nativeEvent.isComposing) return;
+    if ((e.shiftKey || isCompactLayout) && continueChatComposerList(e, setInput)) {
+      return;
+    }
     if (e.key === "Enter" && !e.shiftKey && !isCompactLayout) {
       e.preventDefault();
       handleSendMessage();
     }
+  };
+
+  const handleBeforeInput = (event: React.FormEvent<HTMLTextAreaElement>) => {
+    continueChatComposerListBeforeInput(event, setInput);
   };
 
   return (
@@ -5230,6 +5242,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
                         value={input}
                         onChange={(e) => setInput(e.target.value)}
                         onKeyDown={handleKeyDown}
+                        onBeforeInput={handleBeforeInput}
                         onPaste={handlePaste}
                         placeholder="Message Maple..."
                         disabled={isGenerating || isRecordingForActive}
@@ -5475,6 +5488,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
                       value={input}
                       onChange={(e) => setInput(e.target.value)}
                       onKeyDown={handleKeyDown}
+                      onBeforeInput={handleBeforeInput}
                       onPaste={handlePaste}
                       placeholder="Message Maple..."
                       disabled={isGenerating || isRecordingForActive}
