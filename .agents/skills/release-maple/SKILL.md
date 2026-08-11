@@ -1,26 +1,47 @@
 ---
 name: release-maple
-description: Prepare, publish, and verify a Maple GitHub release from master. Use when asked to cut, create, publish, monitor, or finish a Maple release, including preparing a missing version bump through the pinned Nix and just workflow, generating GitHub release notes, creating the release tag, monitoring release CI, retrying genuinely transient failures, verifying artifacts, and confirming Zapstore publication.
+description: Prepare, publish, monitor, and verify a Maple release from current master. Use when asked to bump a release version, cut or create a GitHub release, verify signed artifacts and updater metadata, monitor downstream publication, or prepare an explicitly authorized App Store, TestFlight, Google Play, or billing-API handoff.
 ---
 
 # Release Maple
 
-Run this workflow from the `OpenSecretCloud/Maple` repository. Treat publishing a release as a production action: report the intended tag and commit before creating it, then stay with all workflows until they succeed or a real defect is identified.
+Treat every release step as a production action. Do not use this workflow for
+routine validation. Before a write, state the exact repository, version, tag,
+commit, external effect, and authority provided by the user.
 
-## Prepare Version
+## Know the triggers
 
-1. Start from a clean, current `master`. Compare `just get-version` with the latest published release:
+- A push to `master` starts production-shaped desktop, Android, iOS, web,
+  frontend, and Rust workflows. The iOS master workflow uploads its verified
+  IPA to TestFlight automatically.
+- Creating a GitHub Release starts the cross-platform release workflow. A
+  successful release workflow triggers Zapstore publication.
+- GitHub Release creation does not itself submit the release IPA or AAB to
+  Apple App Store review or Google Play.
+
+Never push or merge `master`, create a release, retry a workflow, upload to a
+store, submit for review, or alter a rollout merely to see whether it works.
+
+## Prepare the version
+
+1. Prepare the bump on a clean focused branch based on current `origin/master`;
+   do not switch another worktree to `master` or force its owning worktree off
+   that branch. Compare the checked-in version with the latest release:
 
    ```bash
-   git switch master
-   git pull --ff-only origin master
+   git fetch origin master
+   git merge-base --is-ancestor origin/master HEAD
    current_version="$(nix develop .#ci -c just get-version | tail -n 1)"
    released_version="$(gh api repos/OpenSecretCloud/Maple/releases/latest --jq '.tag_name | ltrimstr("v")')"
    printf 'current=%s released=%s\n' "$current_version" "$released_version"
    ```
 
-2. If `current_version` is newer than `released_version`, keep the existing version. Never bump it again merely because a release was requested.
-3. If they are equal, prepare the intended next version through the repository helpers. Proceed directly only when the user's current request explicitly names the version or patch/minor/major level. Otherwise ask which version to stage and recommend a patch bump. If the user explicitly delegates the choice, use patch; never infer a minor or major bump from the commit list. After the choice is established, run exactly one of:
+2. If `current_version` is newer, retain it. Never bump again merely because a
+   release was requested.
+3. If versions are equal, establish the intended next version. Proceed when
+   the user names an exact version or patch/minor/major level. If the user
+   delegates the choice, use patch; do not infer minor or major from commits.
+4. On a focused branch, run exactly one repository helper:
 
    ```bash
    nix develop .#ci -c just update-version X.Y.Z
@@ -29,36 +50,50 @@ Run this workflow from the `OpenSecretCloud/Maple` repository. Treat publishing 
    nix develop .#ci -c just bump-major
    ```
 
-4. Review the generated manifest and lockfile diff, then commit it on a focused branch, push it, and open a PR. Do not use `just release`; it creates a local tag before the reviewed GitHub release flow.
-5. Wait for required PR checks, merge the bump, switch back to `master`, pull with `--ff-only`, and wait for every required master workflow to succeed. Then continue with preflight. Never release from the bump branch or before the merged commit's CI is green.
+5. Review all manifest, Apple project, Android version-code, and
+   `frontend/src-tauri/Cargo.lock` changes. Run the applicable Maple validation
+   gates and submit the isolated bump through normal review when authorized.
+   Do not use `just release`; it creates a local tag before the reviewed GitHub
+   flow.
+6. After the bump merges, use or create a clean worktree on `master`. If another
+   worktree already owns that branch, use its checkout instead of forcing or
+   stealing it. Pull with `--ff-only` and wait for every required workflow on
+   the merged commit. Release only that commit; preflight verifies it again.
 
-## Preflight
+## Run preflight
 
-1. Run the bundled preflight from the repository root:
+Run the bundled fail-closed preflight from the repository root:
 
-   ```bash
-   preflight="$(.agents/skills/release-maple/scripts/preflight.sh)"
-   printf '%s\n' "$preflight" | jq .
-   tag="$(printf '%s' "$preflight" | jq -r .tag)"
-   previous_tag="$(printf '%s' "$preflight" | jq -r .previous_tag)"
-   head_sha="$(printf '%s' "$preflight" | jq -r .head_sha)"
-   ```
+```bash
+preflight="$(.agents/skills/release-maple/scripts/preflight.sh)"
+printf '%s\n' "$preflight" | jq .
+tag="$(printf '%s' "$preflight" | jq -r .tag)"
+previous_tag="$(printf '%s' "$preflight" | jq -r .previous_tag)"
+head_sha="$(printf '%s' "$preflight" | jq -r .head_sha)"
+```
 
-2. Stop if preflight fails. Fix the branch/version/CI issue through the normal PR process before releasing. Never overwrite a tag or release.
-3. Preview GitHub's generated title and notes:
+The script requires a clean current `master`, exact manifest version parity, a
+newer version and unused tag, and successful required workflows for the exact
+commit. Stop on any failure; correct it through the normal reviewed process.
+Never overwrite or move a release tag.
 
-   ```bash
-   gh api --method POST repos/OpenSecretCloud/Maple/releases/generate-notes \
-     -f tag_name="$tag" \
-     -f target_commitish="$head_sha" \
-     -f previous_tag_name="$previous_tag" | jq -r '.name, .body'
-   ```
+Preview GitHub's generated notes:
 
-4. Confirm the notes span the intended changes and the reported commit is still `origin/master`.
+```bash
+gh api --method POST repos/OpenSecretCloud/Maple/releases/generate-notes \
+  -f tag_name="$tag" \
+  -f target_commitish="$head_sha" \
+  -f previous_tag_name="$previous_tag" | jq -r '.name, .body'
+```
 
-## Publish
+Confirm the notes span the intended changes and recheck that `head_sha` is
+still `origin/master`. Present the tag, commit, previous tag, and notes to the
+user before creating the release unless the current request already gives
+unambiguous authority for that exact release.
 
-Create and publish the release exactly once. This creates the tag, matching the standard GitHub release GUI flow:
+## Publish once
+
+Create the GitHub Release exactly once. This creates the tag in the same flow:
 
 ```bash
 gh release create "$tag" \
@@ -68,124 +103,100 @@ gh release create "$tag" \
   --generate-notes
 ```
 
-Do not create or push a separate local tag first. Record the release URL and confirm the resulting release and workflow point to `head_sha`.
+Do not create or push a local tag first. Record the release URL and confirm the
+release and workflow resolve to `head_sha`.
 
-## Monitor Release CI
+## Monitor release CI
 
-1. Find the new `Release` run for the tag and commit:
+Find and watch the new `Release` run:
 
-   ```bash
-   gh run list --repo OpenSecretCloud/Maple --workflow Release --event release \
-     --commit "$head_sha" --limit 10 \
-     --json databaseId,displayTitle,headSha,status,conclusion,url
-   ```
+```bash
+gh run list --repo OpenSecretCloud/Maple --workflow Release --event release \
+  --commit "$head_sha" --limit 10 \
+  --json databaseId,displayTitle,headSha,status,conclusion,url
 
-2. Watch it through every platform build, artifact upload, reproducibility verifier, `latest.json`, full release verification, and verification-guide publication:
+gh run watch RELEASE_RUN_ID \
+  --repo OpenSecretCloud/Maple --exit-status --compact
+```
 
-   ```bash
-   gh run watch RELEASE_RUN_ID --repo OpenSecretCloud/Maple --exit-status --compact
-   ```
+Stay with every platform build, signature/canonical proof, artifact upload,
+updater `latest.json`, aggregate verification, and verification-guide step.
+Packaging success alone is not runtime smoke; inspect the workflow's actual
+verification and attestation results.
 
-3. If it fails, inspect the failed job logs before acting:
+On failure, read the failed logs before acting:
 
-   ```bash
-   gh run view RELEASE_RUN_ID --repo OpenSecretCloud/Maple --log-failed
-   ```
+```bash
+gh run view RELEASE_RUN_ID --repo OpenSecretCloud/Maple --log-failed
+```
 
-4. Retry only failures proven to be transient infrastructure problems, such as interrupted cache/network downloads. Wait for the run to become terminal, then use:
+Retry only a terminal failure proven to be transient infrastructure trouble:
 
-   ```bash
-   gh run rerun RELEASE_RUN_ID --repo OpenSecretCloud/Maple --failed
-   ```
+```bash
+gh run rerun RELEASE_RUN_ID --repo OpenSecretCloud/Maple --failed
+```
 
-5. Do not retry version mismatches, proof mismatches, signing failures, missing credentials, or deterministic build failures as if they were transient. Diagnose and report them. Do not delete or recreate the published release without explicit user direction.
-6. Continue watching the same run until its latest attempt concludes `success`. A failed attempt may create a skipped Zapstore workflow; this is expected and is not the final Zapstore result.
+Do not classify version/proof mismatches, deterministic builds, signing
+failures, missing credentials, or integrity checks as transient. Do not delete
+or recreate a published release without separate explicit direction.
 
-## Verify Zapstore
+## Verify downstream publication
 
-`Publish to Zapstore` starts only after the `Release` workflow completes successfully. Find the newest non-skipped workflow for `head_sha`, then watch it through `Verify and install zsp` and `Publish to Zapstore`:
+Zapstore starts only after the `Release` workflow succeeds. Select the newest
+non-skipped run for the exact commit and watch it:
 
 ```bash
 gh run list --repo OpenSecretCloud/Maple --workflow 'Publish to Zapstore' \
   --commit "$head_sha" --limit 10 \
   --json databaseId,status,conclusion,headSha,createdAt,url
 
-gh run watch ZAPSTORE_RUN_ID --repo OpenSecretCloud/Maple --exit-status --compact
+gh run watch ZAPSTORE_RUN_ID \
+  --repo OpenSecretCloud/Maple --exit-status --compact
 ```
 
-Treat pinned Go/zsp verification failures as integrity failures unless logs clearly show transient transport trouble.
+Treat pinned Go/zsp verification failures as integrity failures unless logs
+prove a transient transport problem.
 
-## Final Verification
-
-Confirm the release is published, targets the intended commit/tag, and has artifacts:
+Verify the published release and its assets:
 
 ```bash
 gh release view "$tag" --repo OpenSecretCloud/Maple \
   --json tagName,name,isDraft,isPrerelease,publishedAt,targetCommitish,url,assets
 ```
 
-Report the release URL, tag, commit SHA, main workflow URL and attempt count, Zapstore workflow URL, any retry and its evidence, and final success. Do not call the release complete while any required workflow is queued or running.
+Do not call the release complete while a required workflow is queued or
+running.
 
-## Manual Post-GitHub Release Distribution
+## Store and API handoff
 
-The GitHub and Zapstore workflows do not complete distribution through Apple or Google stores. Treat every item in this section as a manual human action. Do not open a store UI, upload a build, submit for review, or change a rollout unless the user explicitly authorizes that action at the time.
+Apple and Google actions remain manual production operations. Do not open a
+store console, choose a track, add testers, upload a build, answer compliance
+questions, submit for review, release an approved version, or change a rollout
+without explicit authorization for that exact action.
 
-Keep release-specific facts separate from general instructions. Record exact build numbers, version codes, review outcomes, and rollout choices only after a human or the relevant store confirms them.
+For an authorized handoff:
 
-### Apple TestFlight and App Store
+1. Identify the artifact from the exact tag and commit.
+2. Verify its digest, platform signature, application/bundle ID, visible
+   version, build/version code, and repository release proof.
+3. Record the destination application, tester group or release track,
+   countries/audience, rollout choice, and any review/compliance state before
+   submission.
+4. After the store reports a result, distinguish upload, processing, testing,
+   review, approval, rollout, and public availability. Do not infer one state
+   from another.
+5. If the approved client version is gated by a configured billing API, verify
+   that API recognizes the exact `vX.Y.Z` version. Any service-side version-gate
+   change or deployment is outside this repository and requires its own
+   reviewed workflow and authority.
 
-Recorded handoff fact from July 26, 2026:
+Keep time-specific build numbers, review outcomes, blockers, and rollout facts
+in the release handoff or issue that owns them, not in this evergreen skill.
 
-- [x] In App Store Connect TestFlight, the user added the `Maple Beta Testers` external tester group to the most recent Maple `master` build/version. No exact build number has been recorded here.
+## Report
 
-User-reported App Store Connect setup actions for v3.3.0:
-
-1. [x] The user created the new App Store version `3.3.0`.
-2. [x] The user populated `What's New` from the prepared v3.3.0 release summary.
-3. [x] The user attached the same current `master` build used for TestFlight. No exact build number has been recorded here.
-4. [x] The user saved the App Store version changes.
-5. [x] The user selected the action to add the version for review.
-6. [x] App Store Connect accepted the preparation and review transitions required before submission. Exact intermediate status names were not recorded here.
-7. [x] The user submitted v3.3.0 for App Review.
-8. [x] Apple approved v3.3.0 on July 27, 2026. The exact build number and release-control outcome have not been recorded here.
-
-Steps 1-8 record user-reported actions and Apple's approval. They do not establish the exact build number, intermediate status names, release-control outcome, or public App Store availability. A human must explicitly confirm those details before they are recorded as complete.
-
-Remaining human checklist:
-
-- [ ] Confirm the selected build has finished App Store Connect processing and has no blocking validation, export-compliance, or encryption questions.
-- [ ] If App Store Connect requires Beta App Review for external testing, complete the required beta metadata and submit the build for Beta App Review; record the result.
-- [ ] Confirm the approved build is available to the intended external testers and enable or publish the public TestFlight link when the user chooses to release it publicly.
-- [ ] For App Store submission, select the intended build and complete the version metadata, screenshots, privacy details, age rating, review information, export compliance, and any other required declarations.
-- [ ] Ask the user to choose the App Store release control, such as manual release, automatic release after approval, or a scheduled/phased release, before submission.
-- [x] Submit v3.3.0 for App Review and record Apple's approval. The exact build number and chosen release control remain unrecorded.
-- [ ] Confirm the approved v3.3.0 build's release-control outcome and public App Store availability.
-
-After Apple approves a Maple version, update the billing server's approved-version gate before treating Apple distribution as complete:
-
-1. In `OpenSecretCloud/maple-billing-server`, update `APPROVED_VERSION` in `src/routes/maple/products.rs` to the exact Apple-approved Maple version, including the `v` prefix. Do not approve a staged but unapproved version.
-2. Run the billing repository's pinned Nix validation with `nix develop -c just check`, then submit the isolated bump through a reviewed pull request.
-3. Merge and deploy the billing change only with explicit authorization. A merge deploys the development billing service automatically; production deployment remains a separate manual workflow.
-4. After production deployment, verify that `/v1/maple/products?version=vX.Y.Z` reports the products as available for the newly approved version, then record the billing commit, deployment, and verification result.
-
-### Google Play
-
-Recorded Google Play Console workflow for v3.3.0:
-
-1. [x] The user downloaded the signed `app-universal-release.aab` for v3.3.0.
-2. [x] In Internal testing, the user uploaded the AAB, allowed the release details to auto-fill, used the GitHub release summary as the release notes, and saved and published the internal release without errors.
-3. [x] After refreshing Google Play Console, the user promoted the internal release to Open testing and completed the required `Next` and `Save` steps until it was ready. The user chose not to continue to Publishing overview at that point.
-4. [x] The user returned to Internal testing, selected promotion to Production, and repeated the required save and next steps to attempt the production promotion.
-5. [ ] Production promotion did not succeed. Google Play blocked it with: `Your app does not support 16 KB memory page sizes.` Treat this as an active regression-investigation blocker, not as a published production release.
-
-The completed items above record human-performed console actions only. They do not establish that v3.3.0 reached Production. A human must confirm any later blocker resolution, production submission, review, rollout, and publication before those states are recorded as complete.
-
-Prerequisites and remaining human checklist:
-
-- [ ] Identify the signed `app-universal-release.aab` attached to the exact GitHub release tag and commit. Verify its GitHub artifact digest and the release reproducibility evidence before uploading it.
-- [ ] Confirm access to the correct Google Play Console application and verify that Play App Signing and the expected upload-key configuration are in place.
-- [ ] Confirm the AAB's application ID and version code are correct and that the version code has not already been used in Google Play.
-- [ ] Ask the user which track to use, such as internal testing, closed testing, open testing, or production, and whether any staged rollout is intended.
-- [ ] Create the release in the chosen track, upload the verified AAB, add the appropriate release notes, and resolve any Play Console warnings or required declarations.
-- [ ] Present the final track, version code, countries or audience, rollout percentage, and Play Console review summary to the user before submission.
-- [ ] Submit or roll out the Google Play release only with explicit user authorization, then record the resulting review and publication status.
+Report the version, tag, exact commit, release URL, main workflow URL and
+attempt count, Zapstore workflow URL, artifact verification result, any retry
+and supporting evidence, authorized store/API actions, and every boundary that
+remains unverified. Separate repository release completion from store
+distribution and live application availability.

@@ -1,5 +1,10 @@
 # Conversations/Responses API Implementation Guide
 
+> Historical implementation guide. Maple's current Responses, persistence,
+> streaming, and tool behavior has evolved beyond portions of this document.
+> Use current source, `AGENTS.md`, and the applicable `.agents/skills/` workflow
+> as the authority.
+
 ## Overview
 
 This document describes the implementation of OpenAI's Conversations/Responses API in Maple's UnifiedChat component, building on the foundation established in [unified-chat-refactor.md](./unified-chat-refactor.md).
@@ -13,9 +18,9 @@ The Conversations/Responses API provides server-side conversation state manageme
 - **Stateless client**: No localStorage dependencies, pure server-driven state
 - **Automatic context management**: Server handles conversation history and token limits
 
-## Key Differences from POC
+## Key Differences from the Historical Prototype
 
-While the proof-of-concept in `responses-poc` demonstrates the API capabilities, our production implementation differs in several key ways:
+The production implementation differed from the historical prototype in several key ways:
 
 1. **Component Architecture**: All logic stays in UnifiedChat.tsx (no Context providers)
 2. **Title Generation**: Backend generates titles automatically (no frontend generation)
@@ -1240,7 +1245,7 @@ const loadLegacyChats = async () => {
 ## Security Notes
 
 - All encryption handled by SDK's custom fetch
-- JWT authentication automatic
+- Authentication and encrypted transport handled by the SDK custom fetch
 - No sensitive data in localStorage
 - Server validates all conversation access
 
@@ -1249,7 +1254,8 @@ const loadLegacyChats = async () => {
 This implementation guide was developed by analyzing multiple sources across the OpenSecret ecosystem. Here are all the key references that provided the knowledge for this implementation:
 
 ### 1. OpenSecret Backend Documentation
-- **File**: `/Users/tony/Dev/OpenSecret/opensecret/docs/responses-implementation.md`
+- **Source**: the public `OpenSecretCloud/opensecret` repository; current
+  `src/web/responses/` source supersedes this historical guide
 - **Content**: Detailed backend implementation of conversations/responses API
 - **Key Insights**:
   - Backend auto-generates titles from first message
@@ -1257,34 +1263,21 @@ This implementation guide was developed by analyzing multiple sources across the
   - Implements OpenAI-compatible endpoints
 
 ### 2. OpenSecret SDK Implementation
-- **Directory**: `/Users/tony/Dev/OpenSecret/OpenSecret-SDK/`
+- **Source**: the public OpenSecret SDK version pinned by
+  `frontend/package.json`
 - **Key Files**:
   - `src/lib/api.ts` - Core API functions including conversations/responses endpoints
   - `src/lib/ai.ts` - Custom fetch wrapper with encryption support
   - `src/lib/test/integration/ai.test.ts` - Comprehensive integration tests showing API usage
   - `package.json` - Shows OpenAI v5.20.0+ dependency requirement
 - **Key Insights**:
-  - Custom fetch handles JWT auth and encryption automatically
+  - Custom fetch handles authentication and encryption automatically
   - Includes conversation CRUD operations
   - Supports both streaming and non-streaming responses
   - Has pagination support for conversation items
 
-### 3. Proof of Concept Implementation
-- **Directory**: `/Users/tony/Dev/Personal/responses-poc/`
-- **Key Files**:
-  - `frontend/src/contexts/ConversationContext.tsx` - Complete conversation management implementation
-  - `frontend/src/hooks/useConversation.ts` - React hook for conversation state
-  - `frontend/src/lib/openai-client.ts` - OpenAI client configuration
-  - `frontend/src/lib/streaming.ts` - SSE stream processing
-  - `frontend/src/components/ChatInterface.tsx` - UI implementation
-- **Key Insights**:
-  - Polling mechanism for cross-device sync
-  - Message deduplication strategy
-  - Streaming event handling patterns
-  - Local vs server ID management
-
-### 4. Current Maple Project Structure
-- **Directory**: `/Users/tony/Dev/OpenSecret/maple/`
+### 3. Current Maple Project Structure
+- **Directory**: this repository root
 - **Key Files**:
   - `frontend/src/components/UnifiedChat.tsx` - Current monolithic chat component
   - `frontend/src/components/Sidebar.tsx` - Existing sidebar using localStorage
@@ -1295,7 +1288,7 @@ This implementation guide was developed by analyzing multiple sources across the
   - Query parameter-based routing (no navigation)
   - Event-based communication between components
 
-### 5. Integration Test Insights
+### 4. Integration Test Insights
 
 From the SDK integration tests (`ai.test.ts`), we learned:
 

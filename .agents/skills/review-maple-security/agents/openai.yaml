@@ -1,0 +1,4 @@
+interface:
+  display_name: "Review Maple Security"
+  short_description: "Review Maple across trust boundaries"
+  default_prompt: "Use $review-maple-security to review this Maple change for security regressions."

@@ -1,5 +1,9 @@
 # Tool Call Immediate Rendering Refactor
 
+> Historical refactor note. Event names, source locations, and observed gaps
+> may no longer match the current implementation. Use current source,
+> `AGENTS.md`, and the applicable `.agents/skills/` workflow as the authority.
+
 ## Problem Statement
 
 Tool calls don't render immediately during streaming in UnifiedChat. Currently:

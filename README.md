@@ -1,373 +1,222 @@
-# Maple AI Frontend
+# Maple
 
-Uses [bun](https://bun.sh/) for development and [Tauri](https://tauri.app/) for desktop app builds.
+Maple is an open-source AI client built with React, Vite, and Tauri. It runs as
+a web application and as native desktop/mobile applications, and uses
+[OpenSecret](https://github.com/OpenSecretCloud/opensecret) for confidential
+authentication, inference, conversations, and related APIs.
 
-## Prerequisites
+Research chat and desktop Agent Mode are different client paths. Research chat
+uses the TypeScript OpenSecret SDK with the Responses and Conversations APIs;
+Agent Mode embeds Goose and uses the Rust OpenSecret SDK through Tauri. The
+local OpenAI-compatible proxy is a separate user-facing service.
 
-1. Install [Bun](https://bun.sh/):
+## Quick start
+
+The supported development environment is the Nix flake. It pins Bun, Rust,
+platform tools, and native dependencies used by the repository.
+
 ```bash
-curl -fsSL https://bun.sh/install | bash
-```
-
-2. Install Rust and its dependencies:
-```bash
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-```
-
-3. Install system dependencies:
-
-### macOS
-```bash
-# Install Xcode Command Line Tools
-xcode-select --install
-
-# Install additional dependencies via Homebrew
-brew install openssl@3
-```
-
-### Linux (Ubuntu/Debian)
-```bash
-sudo apt update
-sudo apt install libwebkit2gtk-4.1-dev \
-    build-essential \
-    curl \
-    wget \
-    file \
-    libssl-dev \
-    libgtk-3-dev \
-    libayatana-appindicator3-dev \
-    librsvg2-dev
-```
-
-4. Add required Rust targets for universal macOS builds:
-```bash
-rustup target add aarch64-apple-darwin x86_64-apple-darwin
-```
-
-## Setup
-
-1. Clone the repository and run the setup script:
-```bash
+nix develop
 ./setup-hooks.sh
-```
-
-This configures Git to use the project's pre-commit hook. Managed
-`opensecret-workspaces` checkouts enable the same hook automatically. The hook
-checks formatting, builds the frontend, runs frontend tests, and runs Rust tests
-when Tauri files are staged. When Nix is installed, the hook enters the pinned
-CI development shell automatically, including from macOS GUI environments that
-do not inherit the user's shell `PATH`. Without Nix, it uses compatible Bun and
-Cargo tools already available on `PATH`.
-
-## Development
-
-### Using Just Commands
-
-This project uses [just](https://github.com/casey/just) for common development tasks:
-
-```bash
-# List all available commands
-just
-
-# Install dependencies
 just install
-
-# Start development server
-just dev
-
-# Build the project
-just build
-
-# Format code
-just format
-
-# Run tests
-just test
-
-# Get current version
-just get-version
+test -e frontend/.env.local || cp frontend/.env.example frontend/.env.local
 ```
 
-### Manual Development
+This creates `frontend/.env.local` only when it is absent. Never overwrite an
+existing file: it may be externally managed or contain checkout-specific
+backend and application configuration. Inspect its source before changing its
+values.
 
-1. Install dependencies:
-```bash
-bun install
-```
+The common recipes below assume the active Nix shell. For an independent call,
+prefix a recipe with `nix develop -c`.
 
-2. Start the development server:
-```bash
-# For web development only
-bun run dev
+Select the intended OpenSecret API in the ignored `frontend/.env.local`:
 
-# For desktop app development
-bun tauri dev
-```
-
-Expects a `VITE_OPEN_SECRET_API_URL` environment variable to be set. For local
-OpenSecret development, copy `frontend/.env.example` to `frontend/.env.local`
-and point it at the local API:
-
-```bash
+```dotenv
 VITE_OPEN_SECRET_API_URL=http://127.0.0.1:3000
 ```
 
-The public OpenSecret client id defaults to Maple's project id
-`ba5a14b5-d915-47b1-b7b1-afda52bc5fc6`, so `VITE_CLIENT_ID` is only needed to
-override the default. (See `.env.example`)
+The public Maple client ID is already present in `.env.example`. All `VITE_*`
+values are shipped to the client and must never contain secrets.
 
-## Building
-
-### Shared Rust build cache with Nix
-
-Local Maple Nix shells use Cargo's separate build directory support to share
-Rust intermediate artifacts across Maple checkouts. Final artifacts remain in
-the current checkout under `frontend/src-tauri/target`, so existing Tauri,
-debugger, and packaging paths do not change.
-
-The default cache is separated by host system and pinned Rust version:
-
-```text
-$HOME/.cache/opensecret-workspaces/cargo-build/maple/<nix-system>/rust-<version>
-```
-
-An existing `CARGO_BUILD_BUILD_DIR` takes precedence. To temporarily restore
-Cargo's traditional checkout-local layout, set
-`MAPLE_DISABLE_SHARED_CARGO_BUILD_DIR=1` before entering `nix develop`. CI does
-not enable the local shared cache automatically.
-
-Raw `cargo clean` removes both the checkout's target directory and the
-configured shared build directory. To clean only the current checkout without
-invalidating other Maple workspaces, run:
+Start the runtime you intend to exercise:
 
 ```bash
-nix develop -c just clean-local
+just dev          # Browser/web development only
+just desktop-dev  # Tauri desktop, including Agent Mode and native features
 ```
 
-### Desktop Builds
+`just desktop-dev` is preferred over a raw `bun tauri dev`: it provisions the
+pinned ONNX Runtime and applies a local Tauri configuration overlay when one is
+present.
 
-Use the `just` commands for desktop builds:
+## API configuration
+
+`frontend/.env.example` documents Maple's public configuration surface:
+
+- `VITE_OPEN_SECRET_API_URL` selects the required OpenSecret backend.
+- `VITE_CLIENT_ID` overrides Maple's public project ID when developing against
+  another OpenSecret project.
+- `VITE_OS_FLAGS_BASE_URL` selects an optional feature-flags API.
+- `VITE_MAPLE_BILLING_API_URL` selects an optional billing API.
+- `VITE_FORCE_FEATURE_FLAGS` is a local preview override, not authorization.
+
+Flags and billing are independent clients; configure their dev or production
+API URLs for the environment being tested. A working OpenSecret chat does not
+prove billing- or flag-gated behavior. Provider credentials and administrative
+API keys belong on their servers, never in Maple.
+
+To use a local backend, follow
+[OpenSecret's own setup guide](https://github.com/OpenSecretCloud/opensecret),
+including its SQL migration step, and keep the default frontend origin unless
+you also intend to change and validate OAuth/verification callback handling.
+
+## Common commands
+
+Run commands from the repository root:
 
 ```bash
-# Release build
-just desktop-build
-
-# Debug build
-just desktop-build-debug
-
-# If you encounter CC-related errors in a Nix shell, use the -no-cc variants:
-just desktop-build-no-cc
-just desktop-build-debug-no-cc
+just                    # List recipes
+just install            # Install frontend dependencies
+just dev                # Web dev server
+just desktop-dev        # Desktop dev application
+just desktop-build-debug-overlay # Unsigned debug package with local overlay
+just build              # Local web build
+just format             # Format frontend source
+just lint               # Lint frontend source
+just rust-check         # Check the Tauri Rust crate
+just rust-lint          # Rust formatting check and strict Clippy
+just clean-local        # Clean only this checkout's Cargo artifacts
 ```
 
-Or use `bun tauri build` directly:
-```bash
-# Standard build
-bun tauri build
+Bun commands run from `frontend/`; Cargo commands run from
+`frontend/src-tauri/`. Raw `cargo clean` can remove a shared Nix Cargo build
+directory, so use `just clean-local`.
 
-# For universal macOS build (Apple Silicon + Intel)
-bun tauri build --target universal-apple-darwin
+## Validation
+
+Use the checked-in CI entry points rather than reconstructing them:
+
+```bash
+# Frozen install, formatting, ESLint, typecheck, and Bun tests
+nix develop .#ci -c ./scripts/ci/frontend.sh
+
+# Locked all-target Rust tests
+nix develop .#ci -c ./scripts/ci/rust.sh
+
+# PR-configured web artifact
+MAPLE_WEB_ENVIRONMENT=pr nix develop .#ci -c ./scripts/ci/web.sh
+
+# Nix/toolchain/workflow metadata; not application tests
+nix flake check
 ```
 
-#### Linux: ONNX Runtime Setup
+There is no general checked-in browser, packaged-app, or React-to-Tauri-command
+integration harness. Unit tests and package builds do not prove GUI, native,
+backend, billing, flags, or IPC integration. A privileged IPC change therefore
+requires a manual smoke test through the exact desktop application and native
+effect. For change-specific test selection and a repeatable evidence format,
+use `.agents/skills/validate-maple/`.
 
-Linux builds bundle ONNX Runtime 1.23.2 for PDF OCR. `just desktop-build` provisions it automatically. Before invoking `bun tauri build` directly, download the pinned shared library:
+PR build scripts deliberately ignore local `.env*` files and compile fixed PR
+endpoints. They prove PR packaging, not integration with the backend configured
+in `frontend/.env.local`. To smoke an exact desktop development application
+against that configured backend, use `just desktop-dev`, record the active
+Tauri overlay, endpoint configuration, executable and application identifier,
+then exercise the user entry point through Tauri IPC to the native result.
+
+## Platform development
+
+Desktop recipes provision ONNX Runtime automatically:
 
 ```bash
-cd frontend/src-tauri
-./scripts/provide-linux-onnxruntime.sh
+just desktop-build                 # Standard application identity
+just desktop-build-debug           # Standard application identity
+just desktop-build-debug-overlay   # Requires .local/tauri-workspace.json
 ```
 
-This downloads the pinned ONNX Runtime release, verifies its SHA-256 checksum, and extracts it to `frontend/src-tauri/onnxruntime-linux/` (which is gitignored). The script is idempotent — it skips the download if the library already exists.
+Only the overlay recipe applies `.local/tauri-workspace.json` while packaging.
+Use it when a checkout-specific bundle identity is part of the smoke test.
 
-> **Note:** CI workflows and the desktop `just` recipes call this script automatically. Run it manually only when invoking the lower-level Tauri commands directly.
-
-#### Linux: Running in Headless/Virtual Display Environments
-
-If you're running the built Maple binary in a headless environment (e.g., CI, virtual display with Xvfb), WebKit may fail to render content. Set these environment variables before launching:
+Linux desktop builds require the system libraries supplied by the Nix shell.
+For an already-built binary in a headless display environment, WebKit may need:
 
 ```bash
-export WEBKIT_DISABLE_COMPOSITING_MODE=1
-export WEBKIT_DISABLE_DMABUF_RENDERER=1
+WEBKIT_DISABLE_COMPOSITING_MODE=1 \
+WEBKIT_DISABLE_DMABUF_RENDERER=1 \
 DISPLAY=:0 ./frontend/src-tauri/target/debug/maple
 ```
 
-These are set automatically when using `nix develop` (via `flake.nix`).
+Apple development uses the pinned Apple shell and repository recipes:
 
-If you need a new set of icons: 
+```bash
+just ios-build-onnxruntime
+just ios-dev
+just ios-dev-sim 'iPhone 16 Pro'
+just ios-dev-device 'Your iPhone'
+```
 
+`just ios-fix-arch` mutates the generated Xcode project. Inspect and either
+commit or deliberately restore generated changes; do not hide them from Git.
+
+Android development is supported from x86_64 Linux; the `.#android` shell is
+not exposed on macOS:
+
+```bash
+nix develop .#android -c just android-build
 ```
-bun run tauri icon [path/to/png]
-```
+
+The CI scripts under `scripts/ci/` are the authority for PR and release-shaped
+platform builds. Some are platform-specific, remove build outputs or
+`node_modules`, and deliberately ignore local `.env*` files in favor of fixed
+PR/release endpoints; read a script before running it locally.
+
+## Architecture and feature documentation
+
+- [`docs/agent-mode-mcp.md`](docs/agent-mode-mcp.md) explains MCP configuration
+  and includes a deterministic feature smoke test.
+- [`docs/agent-mode-acp.md`](docs/agent-mode-acp.md) documents the ACP edge and
+  its trust model.
+- [`docs/pdf-ocr.md`](docs/pdf-ocr.md) covers the local PDF/OCR pipeline.
+- [`AGENTS.md`](AGENTS.md) defines placement, security, testing, and review
+  standards for contributors and coding agents.
+- [`.agents/skills/`](.agents/skills/) contains task-specific development,
+  validation, security, Agent Mode, and release procedures.
+
+`frontend/src/routeTree.gen.ts` and native platform projects contain generated
+content. Use their generators and review the resulting diff rather than editing
+generated output opportunistically.
 
 ## Releases
 
-### Setting up Signing Keys
+Release preparation and publication are production actions. A push to
+`master` starts production-shaped signed workflows and can upload an iOS build
+to TestFlight; creating a GitHub Release starts the release pipeline and
+downstream publication. Do not use either as routine validation.
 
-#### Tauri Updater Signing
-1. Generate a new signing key:
-```bash
-cargo tauri signer generate
-```
-This will create the tauri public and private key.
+Use `.agents/skills/release-maple/` for version parity, tag safety, workflow
+monitoring, artifact verification, and explicit store handoff. Do not use the
+legacy `just release` recipe to create an unreviewed local tag.
 
-2. Add the public key to `src-tauri/tauri.conf.json` in the `updater.pubkey` field
-3. Add the private key to GitHub Actions secrets:
-   - Go to repository Settings → Secrets and variables → Actions
-   - Create a new secret named `TAURI_SIGNING_PRIVATE_KEY`
-   - Create another secret named `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` if your key has a password
-   - Paste the private key from the tauri command.
+When the OpenSecret enclave changes, update and review the corresponding
+`pcr0DevValues` or `pcr0Values` in `frontend/src/app.tsx` as part of the
+attestation compatibility change.
 
-#### Apple Developer Certificate (for macOS builds)
-For proper macOS builds and notarization, you need to set up the following GitHub secrets:
+Version changes update:
 
-1. `APPLE_CERTIFICATE` - Base64-encoded p12 certificate
-   ```bash
-   base64 -i YourCertificate.p12 | pbcopy  # Copies to clipboard
-   ```
-
-2. `APPLE_CERTIFICATE_PASSWORD` - Password for the certificate
-3. `KEYCHAIN_PASSWORD` - Password for the temporary keychain (can be any secure password)
-4. `APPLE_ID` - Your Apple Developer account email
-5. `APPLE_PASSWORD` - Your Apple Developer account password or app-specific password
-6. `APPLE_TEAM_ID` - Your Apple Developer team ID
-
-#### Azure Artifact Signing (for Windows builds)
-Windows release builds use Microsoft Azure Artifact Signing through GitHub
-Actions OIDC. No Azure client secret is required.
-
-Add these GitHub Actions secrets:
-
-| GitHub secret | Source |
-|---------------|--------|
-| `AZURE_CLIENT_ID` | Microsoft Entra app registration "Application (client) ID". |
-| `AZURE_TENANT_ID` | Microsoft Entra "Directory (tenant) ID". |
-| `AZURE_SUBSCRIPTION_ID` | Azure subscription ID that contains the Artifact Signing account. |
-| `AZURE_ARTIFACT_SIGNING_ENDPOINT` | Artifact Signing account endpoint. |
-| `AZURE_ARTIFACT_SIGNING_ACCOUNT_NAME` | Artifact Signing account name. |
-| `AZURE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE_NAME` | Certificate profile name under the Artifact Signing account. |
-| `AZURE_ARTIFACT_SIGNING_EXPECTED_SUBJECT` | Expected signer certificate Subject DN for that certificate profile. |
-
-The Entra application must also have a federated credential for this GitHub
-environment:
-
-```text
-repo:OpenSecretCloud/Maple:environment:windows-signing
-```
-
-In the Azure portal, add it under Microsoft Entra ID -> App registrations ->
-the CI application -> Certificates & secrets -> Federated credentials. Use:
-
-- Organization: `OpenSecretCloud`
-- Repository: `Maple`
-- Entity type: `Environment`
-- Environment name: `windows-signing`
-- Audience: `api://AzureADTokenExchange`
-
-If the portal asks for raw values instead of GitHub-specific fields, use:
-
-- Issuer: `https://token.actions.githubusercontent.com`
-- Subject: `repo:OpenSecretCloud/Maple:environment:windows-signing`
-- Audience: `api://AzureADTokenExchange`
-
-Assign the same Entra application/service principal the `Artifact Signing
-Certificate Profile Signer` role on the Artifact Signing account, resource
-group, or subscription. The role assignment is what authorizes the OIDC-auth'd
-GitHub runner to sign with the certificate profile.
-
-The expected signer subject should match the X.509 signer certificate subject
-reported by `Get-AuthenticodeSignature`. It is usually visible on the Artifact
-Signing certificate profile as the Subject DN derived from the completed identity
-validation, for example `CN=Example Corp, O=Example Corp, L=City, S=State, C=US`.
-Do not pin the leaf certificate thumbprint for this check; Artifact Signing
-manages certificate lifecycle and can issue rotated certificates for the same
-profile identity.
-
-The Windows release job builds `maple.exe` first, Authenticode-signs it, bundles
-the NSIS installer from that signed executable, Authenticode-signs the installer,
-then creates the Tauri updater `.sig` for the final signed installer bytes. This
-ordering is required because Authenticode signing changes the file being signed;
-the Tauri updater signature must be generated after the final Windows installer
-signature is applied.
-
-Windows release verification currently checks the final signed installer bytes,
-the final Tauri updater signature, and the pinned runtime DLL proofs. It does not
-yet try to canonicalize Authenticode-signed Windows binaries back to an unsigned
-baseline.
-
-### To Create a Release
-
-#### Version Management
-Use the provided `just` commands to manage version updates:
-
-```bash
-# Bump patch version (e.g., 1.0.0 → 1.0.1)
-just bump-patch
-
-# Bump minor version (e.g., 1.0.0 → 1.1.0)
-just bump-minor
-
-# Bump major version (e.g., 1.0.0 → 2.0.0)
-just bump-major
-
-# Set a specific version
-just update-version 1.2.3
-
-# Create a release with automatic git tag
-just release 1.2.3
-```
-
-These commands automatically update all necessary files:
 - `frontend/package.json`
 - `frontend/src-tauri/tauri.conf.json`
 - `frontend/src-tauri/Cargo.toml`
 - `frontend/src-tauri/gen/apple/project.yml`
 - `frontend/src-tauri/gen/apple/maple_iOS/Info.plist`
-- `Cargo.lock` (via cargo check)
+- `frontend/src-tauri/Cargo.lock`
 
-Android `versionCode` is internal and increments by one for each Play Store upload.
-Use `just update-android-counter` for another internal/test build with the same visible version.
+## Contributing
 
-#### Creating a GitHub Release
-1. Use one of the version commands above to update the version
-2. Create a new release in GitHub:
-   - Go to Releases → Draft a new release
-   - Create a new tag (e.g., `v0.1.0`)
-   - Set a release title and description
-   - Publish the release
+Keep changes focused, follow the nearest established patterns, add regression
+coverage at the owning layer, and report exactly which checks and runtime paths
+you exercised. Security-sensitive changes should distinguish source-confirmed
+facts from deployment assumptions and live-environment observations.
 
-The GitHub Actions workflow will automatically:
-- Build the app for all platforms
-- Sign the builds
-- Upload the artifacts to the release
-- Create and upload `latest.json` for auto-updates
-
-## Updating PCR0 values
-
-If there's a new version of the enclave pushed to staging or prod, append the new PCR0 value to the `pcr0Values` or `pcr0DevValues` arrays in `frontend/src/app.tsx`.
-
-## iOS Development
-
-Run in emulator: 
-
-```bash
-dotenv -e .env.local -- bun run tauri ios dev 'iPhone 16 Pro'
-```
-
-Run on a connected phone: 
-
-```bash
-dotenv -e .env.local -- bun run tauri ios build
-```
-
-### Ignoring Local XCode Project Changes
-
-To prevent committing automatic changes to the XCode project file during local development:
-
-```bash
-# Tell Git to ignore changes to the file
-git update-index --assume-unchanged frontend/src-tauri/gen/apple/maple.xcodeproj/project.pbxproj
-
-# When you need to commit changes to this file, use:
-git update-index --no-assume-unchanged frontend/src-tauri/gen/apple/maple.xcodeproj/project.pbxproj
-```
+Before opening a pull request, run the applicable full gates above and inspect
+`git diff --check`. See `AGENTS.md` for the complete change and review standard.
