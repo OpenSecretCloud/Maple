@@ -1,13 +1,17 @@
 ---
 name: change-maple-agent-mode
-description: Develop, debug, review, and test Maple Agent Mode across its React UI, Tauri command and event bridge, account-scoped native runtime, embedded Goose integration, OpenSecret provider, developer tools, permissions, skills, MCP, and ACP adapter. Use for any change involving AgentMode, agent runtime lifecycle or persistence, Goose pins or prompts, model/tool streaming, cancellation, local filesystem or shell tools, project trust, MCP servers, external ACP callers, or Agent account isolation.
+description: Develop and debug Maple Agent Mode across its React UI, Tauri command and event bridge, account-scoped native runtime, embedded Goose integration, OpenSecret provider, developer tools, permissions, skills, MCP, and ACP adapter. Use when implementing or debugging AgentMode, agent runtime lifecycle or persistence, Goose pins or prompts, model/tool streaming, cancellation, local filesystem or shell tools, project trust, MCP servers, external ACP callers, or Agent account isolation.
 ---
 
 # Change Maple Agent Mode
 
 Work from the Maple repository root. Read root `AGENTS.md`, the current source, nearby tests, and relevant docs before editing. Treat `frontend/src-tauri/Cargo.toml`, `frontend/src-tauri/Cargo.lock`, the implementation, and test suite as authoritative when historical prose disagrees.
 
-Use `$develop-maple` for general repository setup and ordinary Maple conventions. Use `$validate-maple` for complete CI-equivalent, packaged, or cross-platform validation, and `$review-maple-security` when a change touches credentials, authorization, privileged tools, process execution, local IPC, or another trust boundary.
+Root `AGENTS.md` owns repository setup and ordinary conventions. Use
+`$validate-maple` for complete CI-equivalent, packaged, or cross-platform
+validation, and `$review-maple-security` when a change touches credentials,
+authorization, privileged tools, process execution, local IPC, or another
+trust boundary.
 
 Do not commit, push, open a PR, merge, release, or clean unrelated work unless the user explicitly requests it.
 
@@ -64,9 +68,20 @@ Put behavior in OpenSecret instead when it must be authoritative against a modif
 
 - Keep Goose live in `SmartApprove` so every sensitive tool reaches Maple's policy boundary. Persist the user-facing `Read only` (`smart_approve`) or `Allow all` (`auto`) choice separately.
 - Reset Maple's Goose permission file so `read`, `shell`, `edit`, `write`, `read_image`, `web_search`, and `open_url` route through `ask_before`; only `load_skill` is always allowed.
-- Automatic classifiers may approve only narrowly established safe behavior. Timeout, provider failure, malformed output, ambiguity, secret access, mutation, network access, or arbitrary execution must fail closed to interactive approval.
+- Derive current policy per tool from its permission configuration, automatic
+  handler, classifier, and executor. Distinguish always-allowed, automatic,
+  classifier-approved, and caller-approved paths; do not generalize one tool's
+  classifier or URL policy to another.
+- Automatic policy may approve only explicitly defined operations. On a
+  classifier-backed path, timeout, failure, or ambiguity falls back to caller
+  approval; otherwise follow the explicit per-tool policy.
 - Preserve one-shot, run-scoped permission capabilities. The calling surface owns unresolved permissions: Desktop for Desktop runs and ACP for ACP runs. Never expose one actionable request to both.
-- Bound shell time and output; kill the process group or job object on cancellation, revocation, timeout, or overflow. A child receiving ephemeral credentials must not outlive its parent command.
+- Bound shell time and output. Treat process-group or job-object cleanup as
+  best-effort containment of the current child tree, not a hard credential
+  boundary. On normal cancellation, revocation, timeout, or overflow, revoke
+  the context, request tree termination through the owned process-group or job
+  handle, and reap the wrapped child. If hard non-survival is required, keep
+  credentials out of arbitrary child environments.
 - Treat paths, shell commands, MCP definitions, headers, environment values, model output, URLs, extracted pages, and tool results as untrusted. Revalidate at the native enforcing boundary.
 - Admit `open_url` only for normalized public HTTPS URLs. Preserve private, loopback, link-local, metadata, credential-bearing, and malformed URL rejection, bounded output, per-session provenance, and explicit untrusted-evidence notices.
 
@@ -106,44 +121,49 @@ archive or current Goose `main`.
 
 ## Run Targeted Tests
 
-Run frontend tests without loading `.env.local`:
+Run the smallest relevant frontend set without Bun's automatic dotenv loading:
 
 ```bash
-cd frontend
-bun --no-env-file test src/components/AgentMode.test.ts
-bun --no-env-file test \
-  src/services/agentRuntimeService.test.ts \
-  src/services/mapleApiAuthService.test.ts \
-  src/services/agentAuthLifecycle.test.ts \
-  src/services/agentOperationFence.test.ts
+nix develop .#ci -c bash -c \
+  'cd frontend && bun --no-env-file test ./src/components/AgentMode.test.ts'
 ```
 
-Add the focused service tests matching the change, such as `agentTimeline`, `agentThoughtRunLifecycle`, `agentModels`, `agentMcpServers`, `agentProjectOrdering`, `agentSessionSelection`, `agentConnectionsAvailability`, or `flags`.
+Add only the service tests matching the changed boundary, such as runtime/auth
+lifecycle, operation fencing, timeline, models, MCP, project/session selection,
+or connection availability.
 
 Run Rust tests by affected module while iterating:
 
 ```bash
-cd frontend/src-tauri
-cargo test --locked 'agent::tests::'
-cargo test --locked 'agent::provider::tests::'
-cargo test --locked 'agent::developer_tools::tests::'
-cargo test --locked 'agent::shell_permission::tests::'
-cargo test --locked 'agent::web_permission::tests::'
-cargo test --locked 'agent::web_tools::tests::'
-cargo test --locked 'maple_api::tests::'
-cargo test --locked 'agent_host::tests::'
-cargo test --locked 'agent_acp::tests::'
+nix develop .#ci -c bash -c \
+  'cd frontend/src-tauri && cargo test --locked "agent::provider::tests::"'
 ```
 
-Select only affected module filters for the edit loop; run the complete locked Rust suite before handing off a native change. For any Agent Mode change, also run formatting, linting, typechecking, and builds required by `$validate-maple`. Unit tests do not replace a real desktop smoke.
+Replace the example filter with the affected module and add adjacent filters
+only when their boundary changed. Run the complete locked Rust suite before
+handing off a native change. For any Agent Mode change, also run formatting,
+linting, typechecking, and builds required by `$validate-maple`. Unit tests do
+not replace a real desktop smoke.
 
 ## Perform the Exact Desktop Smoke
 
-Use a local open-source OpenSecret backend or an explicitly configured development API. Use a disposable account and non-sensitive fixtures. If remote rollout has not enabled Agent Mode for that account, set `VITE_FORCE_FEATURE_FLAGS=agent_mode` in untracked `frontend/.env.local` and restart the frontend server.
+Use a local open-source OpenSecret backend or an explicitly configured
+development API. Use a disposable account and non-sensitive fixtures. In a
+standalone checkout, if remote rollout has not enabled Agent Mode for that
+account, set `VITE_FORCE_FEATURE_FLAGS=agent_mode` in the untracked
+`frontend/.env.local` and restart the frontend server. Do not edit an
+externally managed environment file; use its owning environment's configuration
+path or report the scenario unavailable.
 
 1. Record the commit SHA, `VITE_OPEN_SECRET_API_URL`, selected model ID when relevant, build profile, and whether `.local/tauri-workspace.json` is active. Record the effective Tauri identifier, dev URL, exact executable/application path, frontend-server PID, and native PID.
 2. When the scenario needs project content, create a disposable project directory with a `README.md` containing a unique marker. Record the exact directory so cleanup cannot target a broader path.
-3. Launch from the repository root with `nix develop -c just desktop-dev`. Operate the native window belonging to the recorded PID and identifier, never a browser tab or another installed app named Maple.
+3. Read the active Tauri `devUrl` and inspect its listener before launch. If it
+   is occupied, stop the process only when you can prove it belongs to this
+   checkout, using its owning lifecycle mechanism where one exists; otherwise
+   use another overlay or port. Launch from the repository root with
+   `nix develop -c just desktop-dev`. Operate the native window belonging to
+   the recorded PID and identifier, never a browser tab or another installed
+   app named Maple.
 
 Every Agent Mode UI change requires an exact native-app smoke because the web
 build does not exercise this desktop-only path. Keep the smoke proportional to

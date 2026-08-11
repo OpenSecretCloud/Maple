@@ -1,6 +1,6 @@
 ---
 name: develop-maple
-description: Develop and debug Maple features and fixes across its React/Vite frontend and Tauri/Rust application. Use for local setup, choosing the Maple-versus-OpenSecret boundary, implementing ordinary UI, state, API-client, native command, desktop, or mobile changes, running focused tests, and preparing a reviewable handoff. Route comprehensive smoke/platform validation, security review, Agent Mode work, and releases to Maple's specialized sibling skills.
+description: Develop and debug ordinary non-Agent-Mode Maple features and fixes across its React/Vite frontend and Tauri/Rust application. Use for local setup, choosing the Maple-versus-OpenSecret boundary, implementing UI, state, API-client, native command, desktop, or mobile changes, running focused tests, and preparing a reviewable handoff. Route comprehensive validation, security review, Agent Mode work, and releases to Maple's specialized sibling skills.
 ---
 
 # Develop Maple

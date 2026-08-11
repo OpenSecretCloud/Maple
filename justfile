@@ -72,6 +72,14 @@ desktop-dev:
 desktop-build-debug:
     cd frontend && src-tauri/scripts/run-with-desktop-onnxruntime.sh bun tauri build --debug
 
+# Build an unsigned debug desktop package with the required local Tauri overlay
+desktop-build-debug-overlay:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    test -f .local/tauri-workspace.json || { echo "missing .local/tauri-workspace.json" >&2; exit 1; }
+    cd frontend
+    src-tauri/scripts/run-with-desktop-onnxruntime.sh bun tauri build --debug --no-sign --config ../.local/tauri-workspace.json --config '{"bundle":{"createUpdaterArtifacts":false}}'
+
 # Build Tauri desktop release (with CC unset for compatibility)
 desktop-build-no-cc:
     cd frontend && unset CC && src-tauri/scripts/run-with-desktop-onnxruntime.sh bun tauri build

@@ -24,12 +24,13 @@ store, submit for review, or alter a rollout merely to see whether it works.
 
 ## Prepare the version
 
-1. Work from a clean checkout of current `master` and compare the checked-in
-   version with the latest published release:
+1. Prepare the bump on a clean focused branch based on current `origin/master`;
+   do not switch another worktree to `master` or force its owning worktree off
+   that branch. Compare the checked-in version with the latest release:
 
    ```bash
-   git switch master
-   git pull --ff-only origin master
+   git fetch origin master
+   git merge-base --is-ancestor origin/master HEAD
    current_version="$(nix develop .#ci -c just get-version | tail -n 1)"
    released_version="$(gh api repos/OpenSecretCloud/Maple/releases/latest --jq '.tag_name | ltrimstr("v")')"
    printf 'current=%s released=%s\n' "$current_version" "$released_version"
@@ -54,8 +55,10 @@ store, submit for review, or alter a rollout merely to see whether it works.
    gates and submit the isolated bump through normal review when authorized.
    Do not use `just release`; it creates a local tag before the reviewed GitHub
    flow.
-6. After the bump merges, return to `master`, pull with `--ff-only`, and wait
-   for every required workflow on the merged commit. Release only that commit.
+6. After the bump merges, use or create a clean worktree on `master`. If another
+   worktree already owns that branch, use its checkout instead of forcing or
+   stealing it. Pull with `--ff-only` and wait for every required workflow on
+   the merged commit. Release only that commit; preflight verifies it again.
 
 ## Run preflight
 

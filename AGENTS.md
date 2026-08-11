@@ -10,15 +10,21 @@ agent should know before changing Maple. Task-specific procedures live under
    changes and do not switch branches or rewrite history in a dirty checkout.
 2. Read the relevant source and tests before proposing placement. Do not treat
    historical design documents as stronger evidence than current code.
-3. Enter the pinned environment with `nix develop`. Install dependencies with
+3. Before creating configuration or starting or stopping services, determine
+   whether an external development environment owns this checkout's ignored
+   environment files, local Tauri overlay, ports, or processes. Preserve those
+   resources and follow that environment's lifecycle instructions. Standalone
+   setup and startup examples apply only when no external orchestrator owns the
+   affected resource.
+4. Enter the pinned environment with `nix develop`. Install dependencies with
    `just install` and enable the repository hook with `./setup-hooks.sh`.
-4. If `frontend/.env.local` is absent, create it with
+5. If `frontend/.env.local` is absent, create it with
    `test -e frontend/.env.local || cp frontend/.env.example frontend/.env.local`.
    Never overwrite an existing file: it may be externally managed or contain
    checkout-specific backend and application configuration. Record the
    selected OpenSecret, feature-flags, and billing endpoints in smoke-test
    evidence; never put secrets in `VITE_*` variables.
-5. Choose the runtime you actually need: `just dev` is web-only;
+6. Choose the runtime you actually need: `just dev` is web-only;
    `just desktop-dev` is the Tauri application and is required for Agent Mode
    and other native behavior.
 
@@ -56,10 +62,10 @@ checks for every affected client path.
   runtime, provider adapter, developer tools, permissions, trusted project
   skills, and system-prompt policy. Keep public TypeScript contracts
   Maple-owned; do not leak Goose, RMCP, or ACP types through the Tauri API.
-- OpenSecret owns authentication truth, encrypted persistence, entitlements,
-  usage accounting, provider credentials/routing, model canonicalization, and
-  server-side authorization. Maple flags and billing state may shape UX, but
-  are never authorization boundaries.
+- OpenSecret owns authentication and authorization truth, encrypted
+  persistence, provider credentials and routing, model canonicalization,
+  protected-route enforcement, and inference-usage capture. Maple may present
+  billing and flags API state, but it is not authorization or accounting truth.
 
 Prefer the narrowest existing layer. If a change crosses React, Tauri, an SDK,
 and OpenSecret, write down the contract at each boundary before editing.
@@ -141,8 +147,11 @@ review methodology in this guide and its skills.
 - Use the versions and platform dependencies pinned by `flake.nix`; do not add
   an alternate toolchain bootstrap to project docs or CI.
 - Use Bun from `frontend/`; use Cargo from `frontend/src-tauri/`.
-- Prefer `just desktop-dev` and desktop build recipes because they provision
-  the pinned ONNX Runtime and honor an active local Tauri config overlay.
+- Prefer repository desktop recipes because they provision the pinned ONNX
+  Runtime. `just desktop-dev` applies an active local Tauri config overlay;
+  standard desktop build recipes retain the standard application identity.
+  Use `just desktop-build-debug-overlay` when an unsigned, overlay-configured
+  package is required.
 - Use `just clean-local`. Raw `cargo clean` may erase a shared Nix Cargo build
   directory used by other checkouts.
 - Follow existing React, TypeScript, Rust, error, test, and accessibility

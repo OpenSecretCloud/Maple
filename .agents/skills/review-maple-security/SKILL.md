@@ -1,6 +1,6 @@
 ---
 name: review-maple-security
-description: Review Maple changes and current behavior across authentication, account isolation, local persistence, Tauri IPC and capabilities, OAuth and deep links, the Local OpenAI Proxy, Agent Mode tools and permissions, MCP, ACP, streaming concurrency, secrets, logging, and configurable API endpoints. Use for security audits, threat modeling, security-sensitive code review, regression assessment, or implementation planning when a Maple change crosses a browser, native, filesystem, process, local-network, account, or OpenSecret API trust boundary.
+description: Review Maple security across authentication, account isolation, local persistence, Tauri IPC and capabilities, OAuth and deep links, the Local OpenAI Proxy, Agent Mode tools and permissions, MCP, ACP, streaming concurrency, secrets, logging, and configurable API endpoints. Use for explicit security audits, threat modeling, security-sensitive code review, or regression assessment.
 ---
 
 # Review Maple Security
@@ -191,8 +191,18 @@ containment separately when it is part of the required policy.
 
 Require these invariants:
 
-- Keep Goose routed through action-required boundaries so Maple applies current policy to every tool call.
-- Treat classifier input as untrusted. Fail closed on ambiguity, provider failure, timeout, invalid structured output, cancellation, secret reads, scripts, builds/tests, network access, or possible mutation.
+- Derive a per-tool policy matrix from permission configuration, automatic
+  handling, classifiers, and executors. Distinguish always-allowed, automatic,
+  classifier-approved, and caller-approved paths. Do not generalize one
+  classifier or URL policy to another. Read-only is a consent and integrity
+  policy, not confidentiality or filesystem containment.
+- Treat classifier input as untrusted. On classifier-backed paths, ambiguity,
+  failure, timeout, invalid structured output, or cancellation must fall back
+  to caller approval. Establish explicit tool-specific rules for sensitive
+  reads, mutation, arbitrary execution, and network access.
+- Treat remote `read_image` as a separate network boundary. Review URL
+  admission, redirects, credentials and private destinations, size and time
+  bounds, and downloader behavior; never infer that `open_url` policy applies.
 - Bind every permission response to exact account generation, session, run, calling surface, request ID, and payload. Make IDs one-shot; reject unknown, duplicate, reused, late, cross-surface, disconnected, and cancelled responses.
 - Apply a more restrictive mode before fallible asynchronous setup or persistence so one last permissive action cannot slip through.
 - Keep Desktop and ACP events, approvals, status, and cancellation isolated. Do not make ACP runs actionable through the Desktop Tauri projection.
@@ -293,9 +303,9 @@ Require every request, stream, timer, retry, load, cancellation, and delayed cal
 
 Keep in the open-source OpenSecret backend:
 
-- token validation and account identity;
-- authorization for persisted data and account-owned resources;
-- entitlements, usage limits, billing enforcement, and API-key permissions;
+- authentication, account identity, and authorization for persisted or
+  account-owned resources;
+- protected-route enforcement and inference-usage capture;
 - provider/model routing and server-authoritative response semantics; and
 - one-time auth-code exchange or other server-enforced protocol guarantees.
 

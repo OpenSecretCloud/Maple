@@ -1,6 +1,6 @@
 ---
 name: validate-maple
-description: Validate Maple changes with risk-tiered frontend, Rust, web, desktop, mobile, integration, and exact-application checks. Use when testing, smoke-testing, reproducing, preparing a handoff, or deciding what evidence a Maple change requires, especially for Tauri IPC, Agent Mode, the local proxy, authentication, deep links, PDF/OCR, mobile behavior, CI, build tooling, or release artifacts.
+description: Run comprehensive or CI-equivalent Maple validation across frontend, Rust, web, desktop, mobile, integration, and exact-application boundaries. Use when comprehensive, smoke, packaged, or cross-platform evidence is requested, and when runtime evidence crosses Tauri IPC, Agent Mode, the local proxy, authentication, deep links, PDF/OCR, mobile behavior, or build tooling.
 ---
 
 # Validate Maple
@@ -91,11 +91,12 @@ Run commands from the repository root unless the command changes directory expli
 ### Focused frontend test
 
 ```bash
-cd frontend
-bun --no-env-file test src/path/to/changed.test.ts
+nix develop .#ci -c bash -lc \
+  'cd frontend && bun --no-env-file test ./src/path/to/changed.test.ts'
 ```
 
-Use `--no-env-file` so local secrets and endpoint overrides do not silently affect unit tests.
+Use `--no-env-file` to disable Bun's automatic dotenv loading. Variables
+already exported by the calling shell still apply.
 
 ### Complete frontend checks
 
@@ -112,6 +113,20 @@ MAPLE_WEB_ENVIRONMENT=pr nix develop .#ci -c ./scripts/ci/web.sh
 ```
 
 Use `pr` for contributor validation. Record the compiled OpenSecret, billing, and feature-flag endpoint configuration when those endpoints affect the scenario. A successful web build proves bundling, not browser behavior.
+
+To claim browser smoke for that artifact, serve the resulting `frontend/dist`
+with the checked-in preview command, then open that preview rather than the
+development server:
+
+```bash
+nix develop .#ci -c bash -lc \
+  'cd frontend && bun --no-env-file run preview'
+```
+
+Record the preview origin, server PID and checkout, compiled endpoints, browser
+storage/profile, and account/data scope. Use a disposable account only when
+sign-in or user data is required. Opening `just dev` is configured
+development-runtime evidence, not smoke evidence for the built artifact.
 
 ### Rust checks
 
@@ -196,7 +211,7 @@ selected OpenSecret backend by
 including required migrations, then launch Maple from this checkout with:
 
 ```bash
-just desktop-dev
+nix develop -c just desktop-dev
 ```
 
 `just desktop-dev` consumes the configured development endpoints and applies
@@ -204,6 +219,20 @@ the active `.local/tauri-workspace.json` overlay when present. It is the path
 for a configured local-backend desktop smoke; it is not evidence about a fixed
 PR package. Record the exact identity fields below, use a disposable account,
 and exercise the relevant backend operation.
+
+Before launch, read the active Tauri `devUrl` and inspect its listener. If it is
+occupied, stop the process only when you can prove it belongs to this checkout,
+using its owning lifecycle mechanism where one exists; otherwise select another
+overlay or port. When packaged behavior and the overlay identity are both
+required, build with:
+
+```bash
+nix develop -c just desktop-build-debug-overlay
+```
+
+On macOS, verify the produced app's `CFBundleIdentifier` from its actual
+`Contents/Info.plist` before launch. Do not infer the identifier from the config
+file alone.
 
 For privileged IPC, manually trigger the real React user action, observe the
 Tauri command and native validation, verify the exact filesystem/process/native
@@ -223,6 +252,12 @@ Before any desktop GUI smoke test, record:
 7. Disposable account and test-data scope.
 
 Target the recorded identifier and path. Never select or terminate an app only by the display name `Maple`; multiple checkouts can share it. If an overlay is active, use it consistently for build, launch, automation, and cleanup.
+
+A package with the standard identifier can share installed Maple state and
+single-instance identity. Do not launch it against non-disposable state. Use a
+package whose overlay-derived identifier you verified is distinct, or a
+disposable OS account or VM when the standard package identity itself is under
+test.
 
 Distinguish these targets:
 
@@ -253,6 +288,9 @@ Choose only scenarios relevant to the change, but cross every changed boundary.
 - For MCP, follow `docs/agent-mode-mcp.md`: use the pinned Everything server, send a unique marker, verify server request, arguments, result, and final answer, then disable or stop the server and verify a clear failure.
 - Verify that stale sessions cannot cross account boundaries when session or
   account ownership changed.
+- Before local-proxy smoke, choose and verify an unused checkout-specific
+  loopback port. After start, verify that the recorded Maple PID owns the
+  listener; do not assume the default port is available.
 
 ### PDF and OCR
 

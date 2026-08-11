@@ -27,6 +27,9 @@ existing file: it may be externally managed or contain checkout-specific
 backend and application configuration. Inspect its source before changing its
 values.
 
+The common recipes below assume the active Nix shell. For an independent call,
+prefix a recipe with `nix develop -c`.
+
 Select the intended OpenSecret API in the ignored `frontend/.env.local`:
 
 ```dotenv
@@ -77,6 +80,7 @@ just                    # List recipes
 just install            # Install frontend dependencies
 just dev                # Web dev server
 just desktop-dev        # Desktop dev application
+just desktop-build-debug-overlay # Unsigned debug package with local overlay
 just build              # Local web build
 just format             # Format frontend source
 just lint               # Lint frontend source
@@ -126,9 +130,13 @@ then exercise the user entry point through Tauri IPC to the native result.
 Desktop recipes provision ONNX Runtime automatically:
 
 ```bash
-just desktop-build
-just desktop-build-debug
+just desktop-build                 # Standard application identity
+just desktop-build-debug           # Standard application identity
+just desktop-build-debug-overlay   # Requires .local/tauri-workspace.json
 ```
+
+Only the overlay recipe applies `.local/tauri-workspace.json` while packaging.
+Use it when a checkout-specific bundle identity is part of the smoke test.
 
 Linux desktop builds require the system libraries supplied by the Nix shell.
 For an already-built binary in a headless display environment, WebKit may need:
@@ -151,7 +159,8 @@ just ios-dev-device 'Your iPhone'
 `just ios-fix-arch` mutates the generated Xcode project. Inspect and either
 commit or deliberately restore generated changes; do not hide them from Git.
 
-Android development uses the Android shell:
+Android development is supported from x86_64 Linux; the `.#android` shell is
+not exposed on macOS:
 
 ```bash
 nix develop .#android -c just android-build
